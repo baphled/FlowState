@@ -1283,6 +1283,145 @@ var _ = Describe("Engine", func() {
 				})
 			})
 
+			// Slice 2 (Phase-4 follow-ups) — mid-stream tool-result-wave
+			// saturation gate audit + regression spec. Both seams that
+			// open a provider stream (`Stream` for the initial turn and
+			// `retryStreamForToolResult` for the post-tool-result
+			// continuation) flow through `Engine.streamFromProvider`,
+			// which calls `checkContextWindowOverflow(req)` on the
+			// post-tool-result message slice (engine.go:2593,3231). A
+			// tool result large enough to push the assembled second
+			// request over `limit-reserve` MUST refuse without invoking
+			// the upstream provider a second time. This spec pins that
+			// claim against future refactors that might split
+			// streamFromProvider into per-seam paths and forget to copy
+			// the gate.
+			//
+			// Audit verdict (recorded in
+			// /home/baphled/vaults/baphled/1. Projects/FlowState/Bug Fixes/
+			// Mid-Stream Tool-Result Overflow Gate Audit (May 2026).md):
+			// gate-already-covers — single function, single gate, both
+			// paths.
+			Context("mid-stream tool-result wave (Slice 2)", func() {
+				It("refuses an over-budget retry-with-tool-result before invoking the provider a second time", func() {
+					// limit=5_000, no MaxTokens, no model OutputLimit →
+					// reserve=4_096 → usable=904. First request ("Hello"
+					// + tool schema) easily fits. The second request
+					// adds a ~5_000-char tool-result Content (~1_250
+					// tokens by the ApproximateCounter heuristic) on
+					// top of the original user message and the
+					// assistant tool_call envelope, which pushes the
+					// estimate above usable=904. The gate must refuse
+					// before streamSequenceProvider's second sequence
+					// is consumed.
+					seqProv := &streamSequenceProvider{
+						name: "test-chat-provider",
+						sequences: [][]provider.StreamChunk{
+							{
+								// Turn 1: assistant emits a tool call.
+								{
+									EventType: "tool_call",
+									ToolCall: &provider.ToolCall{
+										ID:        "call_slice2_overflow",
+										Name:      "bulky_tool",
+										Arguments: map[string]any{"q": "go"},
+									},
+								},
+							},
+							{
+								// Turn 2: should never be consumed —
+								// the gate must refuse before this
+								// sequence is dispatched. If consumed,
+								// the test detects it via
+								// seqProv.callIndex on assertion.
+								{Content: "should-not-arrive", Done: true},
+							},
+						},
+					}
+
+					// Tool result is large enough to push the second
+					// request over usable=904. 5_000 chars → ~1_250
+					// tokens via ApproximateCounter (1 token ≈ 4 chars).
+					bulkyToolOutput := strings.Repeat("y", 5_000)
+					bulkyTool := &executableMockTool{
+						name:        "bulky_tool",
+						description: "tool that returns a context-bloating payload",
+						execResult:  tool.Result{Output: bulkyToolOutput},
+					}
+
+					registry := provider.NewRegistry()
+					registry.Register(seqProv)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					// Tight limit so the tool-result wave reliably
+					// pushes the assembled request over usable.
+					manager.SetContextFallback(5_000)
+
+					mfst := manifest
+					mfst.Capabilities.Tools = []string{"bulky_tool"}
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        mfst,
+						Tools:           []tool.Tool{bulkyTool},
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+
+					chunks, err := eng.Stream(ctx, "test-agent", "Hello")
+					Expect(err).NotTo(HaveOccurred(),
+						"refusal is delivered as an error chunk, not a synchronous error")
+
+					var received []provider.StreamChunk
+					for chunk := range chunks {
+						received = append(received, chunk)
+					}
+
+					// Provider must have been invoked exactly ONCE —
+					// the first turn ran but the retry was refused by
+					// the gate before reaching streamSequenceProvider's
+					// second sequence.
+					Expect(seqProv.callIndex).To(Equal(1),
+						"provider.Stream must be invoked exactly once; "+
+							"a callIndex of 2 means the gate let the over-budget retry through")
+
+					// The tool was actually executed — the spec is
+					// pinning the post-tool-result gate, not a
+					// pre-tool-call one.
+					Expect(bulkyTool.execCalled).To(BeTrue(),
+						"the bulky tool must have been executed so the retry path was actually entered")
+
+					// A critical context-window error chunk must land
+					// on the channel, classified the same way as the
+					// initial-turn refusal.
+					var errChunk *provider.StreamChunk
+					for i := range received {
+						if received[i].Error != nil {
+							c := received[i]
+							errChunk = &c
+							break
+						}
+					}
+					Expect(errChunk).NotTo(BeNil(),
+						"expected a context-window error chunk on the retry-refusal path")
+					Expect(provider.IsCriticalStreamError(errChunk.Error)).To(BeTrue(),
+						"mid-stream context-window overflow must classify as SeverityCritical")
+
+					var pErr *provider.Error
+					Expect(errors.As(errChunk.Error, &pErr)).To(BeTrue(),
+						"error must wrap a *provider.Error so the SSE seam can branch on ErrorType")
+					Expect(pErr.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+					Expect(pErr.Message).To(MatchRegexp(`(?i)context.*(window|limit)`),
+						"the canonical user-facing message must surface on the retry seam too")
+				})
+			})
+
 			// Phase 2 — context_usage SSE event. The engine emits a
 			// single context_usage chunk at the start of every Stream so
 			// the chat UI can render a live usage chip. Shape:
