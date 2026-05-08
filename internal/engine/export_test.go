@@ -90,6 +90,22 @@ func (e *Engine) EmitMidToolLoopRefreshForTest(ctx context.Context, sessionID st
 	e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
 }
 
+// SetHeartbeatIntervalForTest overrides the default 15s streaming
+// heartbeat cadence so specs can drive the ticker at sub-second
+// intervals without sleeping. Setting zero disables emission entirely
+// (matching the hibernate semantics of the production gate).
+func (e *Engine) SetHeartbeatIntervalForTest(d time.Duration) {
+	e.heartbeatInterval = d
+}
+
+// PublishStreamingHeartbeatForTest exposes the heartbeat publish helper
+// so specs can pin the bus payload shape without standing up a full
+// Stream goroutine + ticker. Mirrors the production publishStreamingHeartbeat
+// callsite with a fixed Phase argument.
+func (e *Engine) PublishStreamingHeartbeatForTest(sessionID, agentID, phase string) {
+	e.publishStreamingHeartbeat(sessionID, agentID, phase)
+}
+
 // AppendToolResultsBatchToMessagesForTest exposes appendToolResultsBatchToMessages
 // for the context-anchoring spec. The fix injects a system-role re-anchor
 // reminder after non-trivial tool-result batches so the model does not drift

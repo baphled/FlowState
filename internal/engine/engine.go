@@ -226,6 +226,14 @@ type Engine struct {
 
 	nowFunc func() time.Time
 
+	// heartbeatInterval is the cadence at which Stream() publishes a
+	// streaming.heartbeat event onto the bus during an active turn so
+	// the chat UI's stall watchdog re-arms even when the provider is
+	// silent (long-thinking phases, mid-tool-loop quiet periods).
+	// Zero disables emission. Defaults to 15s via Engine.New, overridable
+	// via SetHeartbeatIntervalForTest in export_test.go for fast specs.
+	heartbeatInterval time.Duration
+
 	// microCompactor is the RLM Phase A Layer 1 compactor. It applies the
 	// hot/cold tool-result split to the in-flight provider message slice
 	// produced by buildContextWindow. Nil disables Phase A regardless of
@@ -655,8 +663,17 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		compactionConfig:          cfg.CompactionConfig,
 		factService:               resolveFactService(cfg),
 		nowFunc:                   resolveNowFunc(cfg),
+		heartbeatInterval:         defaultStreamingHeartbeatInterval,
 	}
 }
+
+// defaultStreamingHeartbeatInterval is the default cadence at which
+// Stream() publishes streaming.heartbeat onto the bus during an active
+// turn. Half OpenCode's 30s figure (packages/opencode/src/server/server.ts:512-520),
+// well under any realistic stall watchdog threshold, frequent enough
+// to reset adaptive watchdogs without flooding. Per the Streaming
+// Liveness ADR.
+const defaultStreamingHeartbeatInterval = 15 * time.Second
 
 // resolveFactService returns the RLM Phase B service the engine should
 // attach. Nil when the feature is disabled in CompactionConfig — the
@@ -2470,8 +2487,22 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	outChan := make(chan provider.StreamChunk, streamBufferSize)
 
+	// Streaming heartbeat: publish streaming.heartbeat onto the bus at
+	// e.heartbeatInterval cadence so the chat UI's adaptive watchdog
+	// re-arms even when the provider is silent (long-thinking phases,
+	// mid-tool-loop quiet periods, synchronous delegate spans). Per the
+	// Streaming Liveness ADR. The hbCtx derives from streamCtx so it
+	// cancels when the parent does; defer hbCancel in the chunk-pump
+	// goroutine ensures we also stop emitting when the stream completes
+	// successfully (streamCtx may outlive the turn).
+	hbCtx, hbCancel := context.WithCancel(streamCtx)
+	if e.heartbeatInterval > 0 && e.bus != nil {
+		go e.runStreamingHeartbeat(hbCtx, sessionID, streamManifest.ID)
+	}
+
 	go func() {
 		defer close(outChan)
+		defer hbCancel()
 		// Emit context_usage first so the chip pivots before any
 		// content/tool/error chunk lands. Forwarded only when the
 		// gate has enough information to compute it (token counter
@@ -2486,6 +2517,50 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	}()
 
 	return outChan, nil
+}
+
+// runStreamingHeartbeat ticks at e.heartbeatInterval and publishes a
+// streaming.heartbeat event onto the bus for the duration of an active
+// turn. Exits when ctx is cancelled (turn ends or streamCtx cancelled).
+//
+// The Phase discriminant is "thinking" by default — a safe value
+// because the adaptive watchdog's "thinking" threshold (120s in the
+// Streaming Liveness ADR) is the longest of the four, so a wrong
+// label errs on the side of fewer false-positive stalls. Refining
+// the phase from engine state (generating / tool_executing / queued)
+// is a follow-on; the wire format already carries the field so
+// frontend consumers are forward-compatible.
+//
+// Side effects:
+//   - Publishes EventStreamingHeartbeat on e.bus per tick.
+func (e *Engine) runStreamingHeartbeat(ctx context.Context, sessionID, agentID string) {
+	ticker := time.NewTicker(e.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.publishStreamingHeartbeat(sessionID, agentID, "thinking")
+		}
+	}
+}
+
+// publishStreamingHeartbeat fires one streaming.heartbeat event onto
+// the engine bus. Nil-safe on e.bus so providers / tests without a
+// wired bus don't crash.
+//
+// Side effects:
+//   - Publishes EventStreamingHeartbeat when e.bus is non-nil.
+func (e *Engine) publishStreamingHeartbeat(sessionID, agentID, phase string) {
+	if e.bus == nil {
+		return
+	}
+	e.bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+		SessionID: sessionID,
+		AgentID:   agentID,
+		Phase:     phase,
+	}))
 }
 
 // makePostTurnUsageEmitter returns a postTurnUsageEmitter closure
