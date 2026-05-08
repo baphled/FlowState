@@ -4277,3 +4277,213 @@ var _ = Describe("Slice 6a — SSE bridge for EventContextCompacted", func() {
 		}
 	})
 })
+
+// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+// the engine publishes gate.failed when runSwarmGates /
+// dispatchMemberGates halts. The api-side bridge in
+// internal/api/event_bridge.go routes the bus payload onto the
+// SSE wire via a typed writer that injects the canonical
+// `"type":"gate_failed"` discriminant. The Vue surface consumes
+// this on a discriminated-union branch and renders a persistent
+// banner (companion plan: Vue surface in C4).
+var _ = Describe("Gate Bus Bridge — SSE bridge for EventGateFailed", func() {
+	var (
+		broker     *api.SessionBroker
+		mgr        *session.Manager
+		bus        *eventbus.EventBus
+		srv        *api.Server
+		httpServer *httptest.Server
+	)
+
+	BeforeEach(func() {
+		broker = api.NewSessionBroker()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+		bus = eventbus.NewEventBus()
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(broker),
+			api.WithEventBus(bus),
+		)
+		httpServer = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		httpServer.Close()
+	})
+
+	It("forwards EventGateFailed onto the SSE wire as a typed gate_failed event", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		// Race window: give the SSE handler a chance to subscribe to
+		// the bus before publishing. Same pattern as the slice-6a SSE
+		// bridge test for context.compacted above.
+		time.Sleep(50 * time.Millisecond)
+
+		bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
+			SwarmID:        "a-team",
+			SessionID:      sess.ID,
+			Lifecycle:      "post-member",
+			MemberID:       "researcher",
+			GateName:       "post-member-researcher-relevance-gate",
+			GateKind:       "ext:relevance-gate",
+			Reason:         "off-topic",
+			Cause:          "score 0.31 < threshold 0.5",
+			CoordStoreKeys: []string{"chain/researcher/output", "chain/topic/spec"},
+		}))
+
+		// Terminate the stream so the SSE response closes cleanly.
+		source := make(chan provider.StreamChunk, 1)
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "data: ") {
+						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"gate_failed"`)),
+			"SSE handler must emit a gate_failed event when EventGateFailed fires for this session")
+		Expect(evts).To(ContainElement(ContainSubstring(`"swarm_id":"a-team"`)),
+			"swarm_id must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"lifecycle":"post-member"`)),
+			"lifecycle must round-trip onto the wire so the banner can attribute the halt")
+		Expect(evts).To(ContainElement(ContainSubstring(`"member_id":"researcher"`)),
+			"member_id must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"gate_name":"post-member-researcher-relevance-gate"`)),
+			"gate_name must round-trip onto the wire so the banner title can name the failing gate")
+		Expect(evts).To(ContainElement(ContainSubstring(`"gate_kind":"ext:relevance-gate"`)))
+		Expect(evts).To(ContainElement(ContainSubstring(`"reason":"off-topic"`)))
+		// Go's json.Marshal escapes `<` `>` `&` to their unicode escape forms
+		// by default for HTML-safety; the wire carries `<` rather than
+		// the raw `<`. The Vue parser unescapes transparently because
+		// JSON.parse does the right thing.
+		Expect(evts).To(ContainElement(ContainSubstring("\"cause\":\"score 0.31 \\u003c threshold 0.5\"")))
+		Expect(evts).To(ContainElement(ContainSubstring(`"coord_store_keys":["chain/researcher/output","chain/topic/spec"]`)))
+
+		// Defence: gate_failed payload must never leak as a plain
+		// content chunk — otherwise the assistant bubble would render
+		// the raw JSON in the chat surface.
+		for _, e := range evts {
+			if strings.Contains(e, `"swarm_id":"a-team"`) && !strings.Contains(e, `"type":"gate_failed"`) {
+				Fail("gate_failed payload leaked into a plain content chunk: " + e)
+			}
+		}
+	})
+
+	It("does NOT forward EventGateEvaluating onto the SSE wire (pass-event policy: failures only)", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		bus.Publish(events.EventGateEvaluating, events.NewGateEvaluatingEvent(events.GateEventData{
+			SwarmID:   "a-team",
+			SessionID: sess.ID,
+			Lifecycle: "pre",
+			GateCount: 3,
+		}))
+
+		source := make(chan provider.StreamChunk, 1)
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "data: ") {
+						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		for _, e := range evts {
+			Expect(e).NotTo(ContainSubstring(`"type":"gate_evaluating"`),
+				"web SSE wire must not carry gate_evaluating events; pass-event policy is gate_failed-only")
+			Expect(e).NotTo(ContainSubstring(`"type":"gate_passed"`),
+				"web SSE wire must not carry gate_passed events; pass-event policy is gate_failed-only")
+		}
+	})
+})

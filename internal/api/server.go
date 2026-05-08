@@ -2090,6 +2090,17 @@ func (s *Server) dispatchSessionBusEventSSE(w http.ResponseWriter, flusher http.
 			return
 		}
 		writeSSEContextCompacted(w, flusher, data)
+	case events.EventGateFailed:
+		// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+		// project the engine's gate.failed bus event onto the SSE
+		// wire as `"type":"gate_failed"` so the Vue chat surface
+		// renders the persistent gate-failed banner. Halt-class only;
+		// continue/warn-class failures never reach this dispatch.
+		data, ok := ev.EventData.(map[string]any)
+		if !ok {
+			return
+		}
+		writeSSEGateFailed(w, flusher, data)
 	default:
 		// Bus event without an SSE binding — safely no-op. WebSocket
 		// clients still receive it via the same bridge.
@@ -2159,6 +2170,111 @@ func writeSSEContextCompacted(w http.ResponseWriter, flusher http.Flusher, data 
 		OriginalTokens: originalTokens,
 		SummaryTokens:  summaryTokens,
 		LatencyMS:      latencyMS,
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// sseGateFailed is the wire shape for the SSE event Plans/Gate Bus
+// Bridge — Engine to SSE and TUI (May 2026) emits when the engine's
+// runSwarmGates / dispatchMemberGates halts and publishes
+// EventGateFailed on the bus. Mirrors the wire-shape contract of
+// sseContextCompacted: untyped JSON arriving from the bridge handler
+// is re-marshalled here with the canonical `"type":"gate_failed"`
+// discriminant injected so the frontend's discriminated union routes
+// correctly.
+//
+// Field semantics (mirrors events.GateEventData with snake_case keys
+// the Vue parser expects):
+//   - SwarmID — the swarm that halted; the banner subtitle attributes
+//     the failure to a swarm name.
+//   - Lifecycle — "pre" | "post" | "pre-member" | "post-member"; the
+//     banner subtitle distinguishes a swarm-boundary halt from a
+//     per-member halt.
+//   - MemberID — the failing member when Lifecycle is member-scoped;
+//     empty for swarm-level halts.
+//   - GateName — the manifest-supplied gate name; the banner title
+//     uses this verbatim ("Swarm gate halted: <gate_name>").
+//   - GateKind — "ext:<name>" or "builtin:<name>" so the banner can
+//     surface the gate family on a power-user toggle.
+//   - Reason — the typed *swarm.GateError.Reason; the banner body.
+//   - Cause — the wrapped runner error's message, or empty when the
+//     halt is clean (a gate that returned without an upstream error).
+//   - CoordStoreKeys — the keys the gate inspected, when the gate
+//     declares Inputs per Multi-Key Gate Inputs (May 2026); the
+//     banner exposes this on a "what was checked?" expander.
+type sseGateFailed struct {
+	Type           string   `json:"type"`
+	SwarmID        string   `json:"swarm_id"`
+	Lifecycle      string   `json:"lifecycle"`
+	MemberID       string   `json:"member_id"`
+	GateName       string   `json:"gate_name"`
+	GateKind       string   `json:"gate_kind"`
+	Reason         string   `json:"reason"`
+	Cause          string   `json:"cause"`
+	CoordStoreKeys []string `json:"coord_store_keys,omitempty"`
+}
+
+// writeSSEGateFailed emits a typed gate_failed SSE event by marshalling
+// the supplied bus payload with the canonical `"type":"gate_failed"`
+// discriminant injected.
+//
+// Same pattern as writeSSEContextCompacted: the bridge handler in
+// event_bridge.go produces a sanitised payload from
+// events.GateEventData; this writer adds the type field. Plans/Gate
+// Bus Bridge — Engine to SSE and TUI (May 2026).
+//
+// Expected:
+//   - data is the sanitised payload from newGateFailedHandler:
+//     `{event_type, swarm_id, lifecycle, member_id, gate_name,
+//     gate_kind, reason, cause, coord_store_keys}`.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes one SSE data line carrying the JSON-encoded gate_failed
+//     event.
+//   - Flushes response buffer.
+//   - On a payload that fails to marshal (defence in depth — the
+//     bridge handler produces a struct of primitives), drops the
+//     event silently rather than emitting a malformed event the
+//     frontend's parser would classify as "unknown" and discard.
+func writeSSEGateFailed(w http.ResponseWriter, flusher http.Flusher, data map[string]any) {
+	swarmID, _ := data["swarm_id"].(string)
+	lifecycle, _ := data["lifecycle"].(string)
+	memberID, _ := data["member_id"].(string)
+	gateName, _ := data["gate_name"].(string)
+	gateKind, _ := data["gate_kind"].(string)
+	reason, _ := data["reason"].(string)
+	cause, _ := data["cause"].(string)
+
+	var coordKeys []string
+	if raw, ok := data["coord_store_keys"]; ok {
+		switch v := raw.(type) {
+		case []string:
+			coordKeys = v
+		case []any:
+			coordKeys = make([]string, 0, len(v))
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					coordKeys = append(coordKeys, s)
+				}
+			}
+		}
+	}
+
+	payload := sseGateFailed{
+		Type:           "gate_failed",
+		SwarmID:        swarmID,
+		Lifecycle:      lifecycle,
+		MemberID:       memberID,
+		GateName:       gateName,
+		GateKind:       gateKind,
+		Reason:         reason,
+		Cause:          cause,
+		CoordStoreKeys: coordKeys,
 	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {

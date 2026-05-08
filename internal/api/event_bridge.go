@@ -31,6 +31,11 @@ func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) fu
 		{eventType: events.EventBackgroundTaskCompleted, handler: newBackgroundTaskHandler(sessionID, out)},
 		{eventType: events.EventBackgroundTaskFailed, handler: newBackgroundTaskHandler(sessionID, out)},
 		{eventType: events.EventContextCompacted, handler: newContextCompactedHandler(sessionID, out)},
+		// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+		// only gate.failed flows onto the web SSE wire — gate.evaluating
+		// and gate.passed are TUI-only affordances per the pass-event
+		// policy (failures only on the chat surface).
+		{eventType: events.EventGateFailed, handler: newGateFailedHandler(sessionID, out)},
 	}
 
 	for _, h := range handlers {
@@ -214,6 +219,62 @@ func newBackgroundTaskHandler(sessionID string, out chan<- WSChunkMsg) eventbus.
 //   - Sends to out channel on matching events.
 //   - Drops the event on a full out channel rather than blocking the
 //     bus dispatcher (matches the existing pattern across this file).
+// newGateFailedHandler creates an EventHandler that forwards a sanitised
+// gate.failed payload to the out channel when the session ID matches.
+//
+// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026): the engine
+// publishes gate.failed when runSwarmGates / dispatchMemberGates halts
+// on a *swarm.GateError. The handler projects the typed bus payload
+// (events.GateEventData) onto a sanitised map[string]any with the
+// canonical field names the SSE writer (writeSSEGateFailed) expects;
+// the writer adds the `"type":"gate_failed"` discriminant the Vue
+// surface routes on.
+//
+// Only halt-class failures reach this handler (continue-class and
+// warn-class never publish on the bus). The web pass-event policy
+// keeps the chat surface foreground-banner only — the activity pane
+// is a sibling affordance that does not project gates.
+//
+// Expected:
+//   - sessionID is the connection's session.
+//   - out accepts WSChunkMsg values.
+//
+// Returns:
+//   - An eventbus.EventHandler for gate.failed events.
+//
+// Side effects:
+//   - Sends to out channel on matching events.
+//   - Drops the event on a full out channel rather than blocking the
+//     bus dispatcher (matches the existing pattern across this file).
+func newGateFailedHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
+	return func(msg any) {
+		ge, ok := msg.(*events.GateFailedEvent)
+		if !ok || ge.Data.SessionID != sessionID {
+			return
+		}
+		sanitised := map[string]any{
+			"event_type": events.EventGateFailed,
+			"swarm_id":   ge.Data.SwarmID,
+			"lifecycle":  ge.Data.Lifecycle,
+			"member_id":  ge.Data.MemberID,
+			"gate_name":  ge.Data.GateName,
+			"gate_kind":  ge.Data.GateKind,
+			"reason":     ge.Data.Reason,
+			"cause":      ge.Data.Cause,
+		}
+		// CoordStoreKeys is optional — only ext gates with declared
+		// Inputs carry it. Surface the slice when populated so the
+		// banner's "what was checked?" expander has data to render.
+		if len(ge.Data.CoordStoreKeys) > 0 {
+			sanitised["coord_store_keys"] = ge.Data.CoordStoreKeys
+		}
+		select {
+		case out <- WSChunkMsg{EventType: events.EventGateFailed, EventData: sanitised}:
+		default:
+		}
+	}
+}
+
 func newContextCompactedHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
 	return func(msg any) {
 		ce, ok := msg.(*events.ContextCompactedEvent)
