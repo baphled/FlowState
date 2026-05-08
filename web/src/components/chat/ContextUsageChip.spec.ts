@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import ContextUsageChip from './ContextUsageChip.vue'
@@ -190,6 +190,166 @@ describe('ContextUsageChip', () => {
     const chip = wrapper.find('[data-testid="context-usage-chip"]')
     expect(chip.attributes('data-severity')).toBe('danger')
     expect(chip.classes()).toContain('context-usage-chip--danger')
+  })
+
+  // ---- Slice 6b — auto-compaction flash + tooltip ---------------------
+  //
+  // The Go SSE pipeline emits a `context_compacted` event when the L2
+  // auto-compactor's gate-proximity force-fire (Slice 6a) summarises a
+  // cold prefix. The chat store's handleContextCompactedEvent records
+  // the payload onto `lastCompaction` and increments
+  // `compactionEventCount`; the chip observes both and (a) flashes a
+  // 2-second visual acknowledgement on each new event, (b) exposes a
+  // hover tooltip carrying the saved-tokens delta whenever a compaction
+  // has fired this session.
+  //
+  // The chip's underlying severity figure keeps tracking the next
+  // `context_usage` event in parallel — the flash is purely a transient
+  // overlay that does NOT replace the live usage palette.
+
+  it('does not render the compaction flash when no event has fired (Slice 6b)', () => {
+    // Pristine state: a session that has not yet seen any compaction
+    // shows the chip without the flash overlay. The flash only ever
+    // appears in response to an event.
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 1000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 1,
+    }
+    store.compactionEventCount = 0
+    store.lastCompaction = null
+
+    const wrapper = mount(ContextUsageChip)
+
+    expect(wrapper.find('[data-component="context-compacted-flash"]').exists()).toBe(false)
+    // The chip's title attribute carries the tooltip; without a
+    // compaction the title must be absent (or empty) so the
+    // browser does not render a misleading native tooltip.
+    const chip = wrapper.find('[data-testid="context-usage-chip"]')
+    const title = chip.attributes('title') ?? ''
+    expect(title).toBe('')
+  })
+
+  it('renders the compaction flash for ~2s after a compaction event then auto-clears (Slice 6b)', async () => {
+    // Fake-timer pin on the flash duration. The chip watcher sets a
+    // `flashing` ref true, schedules a 2000ms setTimeout, then clears
+    // it. The overlay element gates on `flashing.value === true`.
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      store.currentContextUsage = {
+        inputTokens: 1000,
+        outputReserve: 4096,
+        limit: 100000,
+        percentage: 1,
+      }
+      store.compactionEventCount = 0
+      store.lastCompaction = null
+
+      const wrapper = mount(ContextUsageChip)
+      // No flash yet.
+      expect(wrapper.find('[data-component="context-compacted-flash"]').exists()).toBe(false)
+
+      // Simulate a compaction event landing — the store's handler is
+      // the canonical path but the chip's watcher only cares about
+      // the reactive state changing, so we mutate it directly.
+      store.compactionEventCount = 1
+      store.lastCompaction = {
+        originalTokens: 50000,
+        summaryTokens: 5000,
+        tokensSaved: 45000,
+        at: Date.now(),
+      }
+      await wrapper.vm.$nextTick()
+
+      // Mid-flash (1s into the 2s window) the overlay is present.
+      vi.advanceTimersByTime(1000)
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-component="context-compacted-flash"]').exists()).toBe(true)
+
+      // Past the 2s window the overlay clears itself.
+      vi.advanceTimersByTime(1500)
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-component="context-compacted-flash"]').exists()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renders a hover tooltip with the saved-tokens delta after compaction (Slice 6b)', () => {
+    // The chip's `title` attribute is the project's tooltip convention
+    // (see MessageBubble.vue's "Message failed to send" / "Revert to
+    // this message" title attrs). After a compaction event the title
+    // carries the saved-tokens delta in the same compact `K` formatter
+    // the chip uses for its primary figures (50000 → 50K).
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 5000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 5,
+    }
+    store.compactionEventCount = 1
+    store.lastCompaction = {
+      originalTokens: 50000,
+      summaryTokens: 5000,
+      tokensSaved: 45000,
+      at: Date.now(),
+    }
+
+    const wrapper = mount(ContextUsageChip)
+
+    const chip = wrapper.find('[data-testid="context-usage-chip"]')
+    const title = chip.attributes('title') ?? ''
+    expect(title).toContain('saved 45K tokens')
+    // The tooltip also surfaces the before → after pair so an operator
+    // can sanity-check the compactor's aggressiveness from the chip
+    // itself without opening a session-recording.
+    expect(title).toContain('50K')
+    expect(title).toContain('5K')
+  })
+
+  it('preserves the existing severity colours during a compaction flash (Slice 6b)', async () => {
+    // High-usage state combined with a fresh compaction event: the
+    // chip's severity (data-severity / context-usage-chip--danger)
+    // must stay intact while the flash overlay sits on top. Without
+    // this guard a future implementation that swapped the chip class
+    // during the flash would mask the danger palette and visually
+    // imply the compaction succeeded in returning the chip to neutral
+    // — which is misleading because the figure that next arrives is
+    // what the operator should be reading, not the pre-compaction
+    // figure paired with a "compacted" overlay.
+    vi.useFakeTimers()
+    try {
+      const store = useChatStore()
+      store.currentContextUsage = {
+        inputTokens: 95000,
+        outputReserve: 4096,
+        limit: 100000,
+        percentage: 95,
+      }
+
+      const wrapper = mount(ContextUsageChip)
+
+      // Fire the compaction event — flash triggers but danger stays.
+      store.compactionEventCount = 1
+      store.lastCompaction = {
+        originalTokens: 50000,
+        summaryTokens: 5000,
+        tokensSaved: 45000,
+        at: Date.now(),
+      }
+      await wrapper.vm.$nextTick()
+
+      const chip = wrapper.find('[data-testid="context-usage-chip"]')
+      expect(chip.attributes('data-severity')).toBe('danger')
+      expect(chip.classes()).toContain('context-usage-chip--danger')
+      expect(wrapper.find('[data-component="context-compacted-flash"]').exists()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reactively updates the rendered figure when the store slice changes', async () => {

@@ -293,6 +293,49 @@ describe('parseSSEPayload', () => {
     }
   })
 
+  it('classifies a context_compacted SSE event into a typed payload (Slice 6b)', () => {
+    // Slice 6b — surface auto-compaction events on the chip. The Go SSE
+    // pipeline's writeSSEContextCompacted emits
+    // {"type":"context_compacted", session_id, agent_id, original_tokens,
+    //  summary_tokens, latency_ms} when the engine's L2 auto-compactor
+    // publishes EventContextCompacted. The frontend parser routes this
+    // into a typed variant the chat store and chip can consume.
+    const payload = JSON.stringify({
+      type: 'context_compacted',
+      session_id: 's-active',
+      agent_id: 'tech-lead',
+      original_tokens: 50000,
+      summary_tokens: 5000,
+      latency_ms: 1234,
+    })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('context_compacted')
+    if (ev.kind === 'context_compacted') {
+      expect(ev.sessionId).toBe('s-active')
+      expect(ev.agentId).toBe('tech-lead')
+      expect(ev.originalTokens).toBe(50000)
+      expect(ev.summaryTokens).toBe(5000)
+      expect(ev.latencyMs).toBe(1234)
+    }
+  })
+
+  it('treats a context_compacted event with missing fields as well-formed (defaults to zero / empty string)', () => {
+    // Defensive: a degraded wire payload (a future emitter that ships
+    // only the type) must not crash the discriminated-union dispatch.
+    // Numeric fields default to 0; string fields default to ''. The
+    // chat store's handler treats zero / empty as "no information" and
+    // either ignores the event or skips the flash — see chatStore spec.
+    const ev = parseSSEPayload('{"type":"context_compacted"}')
+    expect(ev.kind).toBe('context_compacted')
+    if (ev.kind === 'context_compacted') {
+      expect(ev.sessionId).toBe('')
+      expect(ev.agentId).toBe('')
+      expect(ev.originalTokens).toBe(0)
+      expect(ev.summaryTokens).toBe(0)
+      expect(ev.latencyMs).toBe(0)
+    }
+  })
+
   it('returns malformed for non-JSON payloads', () => {
     expect(parseSSEPayload('not json {')).toEqual({ kind: 'malformed', raw: 'not json {' })
   })

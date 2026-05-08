@@ -289,6 +289,53 @@ export interface SSEContextUsageEvent {
   model: string
 }
 
+/**
+ * SSEContextCompactedEvent — auto-compaction telemetry affordance.
+ *
+ * Slice 6b of the May 2026 context-management Phase-4 follow-ups
+ * (companion to Slice 6a's gate-proximity force-fire). The engine's
+ * L2 auto-compactor publishes `EventContextCompacted` on the bus
+ * when a cold-prefix summary lands; the api-side bridge in
+ * `internal/api/event_bridge.go` routes it onto the SSE wire via
+ * `writeSSEContextCompacted` (see internal/api/server.go) which
+ * injects the canonical `"type":"context_compacted"` discriminant.
+ *
+ * The chat store routes this into a session-scoped `lastCompaction`
+ * slice + `compactionEventCount` counter; the ContextUsageChip flashes
+ * for ~2 seconds and exposes a hover tooltip with the saved-tokens
+ * delta (`originalTokens - summaryTokens`). The flash is purely
+ * a transient acknowledgement — the chip's underlying severity figure
+ * keeps tracking the next `context_usage` event in parallel so the
+ * compaction is visible without blanking the live usage figure.
+ *
+ * Field semantics:
+ *   - `sessionId` — the session the compaction fired for. Lets the
+ *     store ignore events for inactive sessions (a parent watching a
+ *     child's transcript via the SSE bridge would otherwise see the
+ *     wrong session's compaction).
+ *   - `agentId` — the manifest id that owned the compaction. Carried
+ *     for completeness; the chip's tooltip does not currently surface
+ *     it because the chip is per-conversation and the active agent is
+ *     visible elsewhere in the toolbar.
+ *   - `originalTokens` — pre-compaction token count of the cold prefix.
+ *   - `summaryTokens` — post-compaction token count of the summary.
+ *   - `latencyMs` — wall-clock latency of the summariser call. Carried
+ *     for completeness; the tooltip does not surface it today.
+ *
+ * All numeric fields default to 0 and string fields to '' when missing
+ * — a degraded wire payload (defensive: a future emitter that ships
+ * only the type) leaves the chip's existing state untouched rather
+ * than firing a spurious flash.
+ */
+export interface SSEContextCompactedEvent {
+  kind: 'context_compacted'
+  sessionId: string
+  agentId: string
+  originalTokens: number
+  summaryTokens: number
+  latencyMs: number
+}
+
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
   kind: 'unknown'
@@ -318,6 +365,7 @@ export type SSEEvent =
   | SSEProviderChangedEvent
   | SSEModelActiveEvent
   | SSEContextUsageEvent
+  | SSEContextCompactedEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
 
@@ -421,6 +469,19 @@ export function parseSSEPayload(payload: string): SSEEvent {
       percentage: typeof obj['percentage'] === 'number' ? (obj['percentage'] as number) : 0,
       provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
       model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
+    }
+  }
+
+  if (type === 'context_compacted') {
+    return {
+      kind: 'context_compacted',
+      sessionId: typeof obj['session_id'] === 'string' ? (obj['session_id'] as string) : '',
+      agentId: typeof obj['agent_id'] === 'string' ? (obj['agent_id'] as string) : '',
+      originalTokens:
+        typeof obj['original_tokens'] === 'number' ? (obj['original_tokens'] as number) : 0,
+      summaryTokens:
+        typeof obj['summary_tokens'] === 'number' ? (obj['summary_tokens'] as number) : 0,
+      latencyMs: typeof obj['latency_ms'] === 'number' ? (obj['latency_ms'] as number) : 0,
     }
   }
 

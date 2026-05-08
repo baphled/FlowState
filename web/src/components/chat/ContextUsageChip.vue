@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 
 /**
@@ -132,6 +132,79 @@ const severity = computed<'neutral' | 'warning' | 'danger'>(() => {
 })
 
 const chipClass = computed(() => `context-usage-chip context-usage-chip--${severity.value}`)
+
+/**
+ * Slice 6b — auto-compaction flash + tooltip.
+ *
+ * The chat store dispatches a `context_compacted` SSE event into
+ * `compactionEventCount` and `lastCompaction`. The chip observes the
+ * counter and runs a 2-second flash on each new event so the user sees
+ * the compactor fire (without it the auto-compactor's behaviour is
+ * silent — operators have no feedback that the engine just bought
+ * back budget). The tooltip surfaces the saved-tokens delta whenever
+ * a compaction has fired this session so an operator can see the
+ * compactor's aggressiveness on hover without leaving the chat.
+ *
+ * Why a watcher on `compactionEventCount` rather than a watcher on
+ * `lastCompaction`: the count uniquely identifies each event so a
+ * back-to-back compaction (rare, but possible if the gate-proximity
+ * trigger fires twice on consecutive turns) re-flashes the chip even
+ * if the saved-tokens figure happens to match. Watching the payload
+ * object would conflate two distinct events with the same delta.
+ */
+const FLASH_MS = 2000
+const compactionCount = computed(() => chatStore.compactionEventCount)
+const lastCompaction = computed(() => chatStore.lastCompaction)
+const flashing = ref(false)
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(compactionCount, (next, prev) => {
+  // Only flash on positive increments. Resets to 0 on session change
+  // (the store's loadSessionMessages clears the counter alongside
+  // lastCompaction) must NOT trigger a flash on the new session's
+  // empty chip.
+  if (next <= (prev ?? 0)) {
+    return
+  }
+  if (flashTimer !== null) {
+    clearTimeout(flashTimer)
+  }
+  flashing.value = true
+  flashTimer = setTimeout(() => {
+    flashing.value = false
+    flashTimer = null
+  }, FLASH_MS)
+})
+
+onBeforeUnmount(() => {
+  if (flashTimer !== null) {
+    clearTimeout(flashTimer)
+    flashTimer = null
+  }
+})
+
+/**
+ * Format a token count for the tooltip. Reuses the chip's compact
+ * `K` formatter so the tooltip and the primary figure speak the same
+ * language (50000 → 50K, not "50,000" or "50000").
+ */
+function formatTooltipTokens(n: number): string {
+  if (n < 1000) {
+    return String(n)
+  }
+  return `${Math.round(n / 1000)}K`
+}
+
+const tooltipTitle = computed(() => {
+  const lc = lastCompaction.value
+  if (lc === null || compactionCount.value === 0) {
+    return ''
+  }
+  const saved = formatTooltipTokens(lc.tokensSaved)
+  const before = formatTooltipTokens(lc.originalTokens)
+  const after = formatTooltipTokens(lc.summaryTokens)
+  return `Last compaction saved ${saved} tokens (${before} → ${after})`
+})
 </script>
 
 <template>
@@ -142,6 +215,7 @@ const chipClass = computed(() => `context-usage-chip context-usage-chip--${sever
     aria-live="polite"
     data-testid="context-usage-chip"
     :data-severity="severity"
+    :title="tooltipTitle"
   >
     <span class="context-usage-chip__counts" data-testid="context-usage-counts">
       {{ inputLabel }}/{{ limitLabel }}
@@ -149,11 +223,25 @@ const chipClass = computed(() => `context-usage-chip context-usage-chip--${sever
     <span class="context-usage-chip__percentage" data-testid="context-usage-percentage">
       {{ percentageLabel }}
     </span>
+    <!--
+      Slice 6b — auto-compaction flash overlay. Renders as an absolute
+      sibling spanning the chip; CSS keyframes drive a brief opacity
+      pulse so the existing severity palette stays visible underneath
+      (the underlying figure is what the operator should be reading;
+      the flash is a transient acknowledgement, not a replacement).
+    -->
+    <span
+      v-if="flashing"
+      class="context-usage-chip__flash"
+      data-component="context-compacted-flash"
+      aria-hidden="true"
+    />
   </div>
 </template>
 
 <style scoped>
 .context-usage-chip {
+  position: relative;
   display: inline-flex;
   align-items: baseline;
   gap: 0.35rem;
@@ -165,6 +253,40 @@ const chipClass = computed(() => `context-usage-chip context-usage-chip--${sever
   font-family: var(--font-mono, ui-monospace, monospace);
   color: var(--text-muted, #b0b0b0);
   flex-shrink: 0;
+}
+
+/*
+ * Slice 6b — auto-compaction flash overlay. Sits absolute on top of
+ * the chip and pulses opacity for 2 seconds. The colour is the same
+ * neutral palette as the chip's idle border so the flash reads as an
+ * acknowledgement rather than a severity escalation; the existing
+ * severity classes (warning / danger) keep painting the chip frame
+ * underneath so the live usage signal is not masked.
+ *
+ * pointer-events: none keeps the overlay from swallowing hover
+ * events so the chip's `title` tooltip still fires under the user's
+ * cursor.
+ */
+.context-usage-chip__flash {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  animation: context-usage-chip-flash 2s ease-out forwards;
+}
+
+@keyframes context-usage-chip-flash {
+  0% {
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 .context-usage-chip__counts {

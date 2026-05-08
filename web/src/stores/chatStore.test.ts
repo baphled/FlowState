@@ -3389,6 +3389,136 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(store.messages.length).toBe(before)
     expect(store.error).toBeNull()
   })
+
+  it('increments compactionEventCount on a context_compacted event for the active session (Slice 6b)', () => {
+    // Slice 6b — the chat store consumes the SSE bridge of the engine's
+    // EventContextCompacted bus event. Each compaction the user observes
+    // is counted so the chip can show "compacted ×N this session" if a
+    // future surface wants it; today the counter exists primarily as a
+    // canary signal — non-zero ⇒ at least one compaction has fired ⇒
+    // tooltip is meaningful.
+    const store = useChatStore()
+    store.currentSessionId = 's-active'
+    expect(store.compactionEventCount).toBe(0)
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_compacted',
+        session_id: 's-active',
+        agent_id: 'tech-lead',
+        original_tokens: 50000,
+        summary_tokens: 5000,
+        latency_ms: 1200,
+      }),
+    )
+    expect(store.compactionEventCount).toBe(1)
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_compacted',
+        session_id: 's-active',
+        agent_id: 'tech-lead',
+        original_tokens: 40000,
+        summary_tokens: 4000,
+        latency_ms: 800,
+      }),
+    )
+    expect(store.compactionEventCount).toBe(2)
+  })
+
+  it('records the most-recent compaction payload for the chip tooltip (Slice 6b)', () => {
+    // The chip tooltip reads `lastCompaction.tokensSaved` as the figure
+    // it displays. The store derives that from `originalTokens -
+    // summaryTokens` so the chip stays a pure reader. The wall-clock
+    // `at` timestamp is recorded too — the chip's tooltip uses it for
+    // the "compacted Ns ago" copy on a later iteration; today's pin
+    // just verifies the field is present and a finite number.
+    const store = useChatStore()
+    store.currentSessionId = 's-active'
+
+    const before = Date.now()
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_compacted',
+        session_id: 's-active',
+        agent_id: 'tech-lead',
+        original_tokens: 50000,
+        summary_tokens: 5000,
+        latency_ms: 1200,
+      }),
+    )
+    const after = Date.now()
+
+    expect(store.lastCompaction).not.toBeNull()
+    if (store.lastCompaction) {
+      expect(store.lastCompaction.originalTokens).toBe(50000)
+      expect(store.lastCompaction.summaryTokens).toBe(5000)
+      expect(store.lastCompaction.tokensSaved).toBe(45000)
+      expect(store.lastCompaction.at).toBeGreaterThanOrEqual(before)
+      expect(store.lastCompaction.at).toBeLessThanOrEqual(after)
+    }
+  })
+
+  it('clears compaction state on session change (Slice 6b — loadSessionMessages reset path)', async () => {
+    // The shared session-change reset clears criticalError and
+    // currentContextUsage; the same path must reset the compaction
+    // state so a stale "compacted ×3" from a prior session does not
+    // bleed into the new one. A fresh stream on the new session
+    // repopulates it.
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([] as never)
+
+    const store = useChatStore()
+    store.sessions = [
+      {
+        id: 'fresh-session',
+        agentId: 'test-agent',
+        currentAgentId: 'test-agent',
+        createdAt: '2026-05-08T00:00:00Z',
+        updatedAt: '2026-05-08T00:00:00Z',
+        messageCount: 0,
+      },
+    ] as never
+    store.compactionEventCount = 3
+    store.lastCompaction = {
+      originalTokens: 50000,
+      summaryTokens: 5000,
+      tokensSaved: 45000,
+      at: Date.now(),
+    }
+
+    await store.loadSessionMessages('fresh-session')
+
+    expect(store.compactionEventCount).toBe(0)
+    expect(store.lastCompaction).toBeNull()
+  })
+
+  it('ignores context_compacted events for a different session (Slice 6b session-scope guard)', () => {
+    // The SSE bridge in internal/api/server.go writes a
+    // context_compacted event onto the active stream's wire only —
+    // session scoping is enforced server-side. The store's guard
+    // here is a defence-in-depth pin: if a future SSE multiplexing
+    // change broadcasts events to multiple session streams, the
+    // store still ignores compactions targeting other sessions so
+    // the chip's tooltip and counter only reflect the current
+    // session's compactions.
+    const store = useChatStore()
+    store.currentSessionId = 's-a'
+    expect(store.compactionEventCount).toBe(0)
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_compacted',
+        session_id: 's-b',
+        agent_id: 'tech-lead',
+        original_tokens: 50000,
+        summary_tokens: 5000,
+        latency_ms: 1200,
+      }),
+    )
+
+    expect(store.compactionEventCount).toBe(0)
+    expect(store.lastCompaction).toBeNull()
+  })
 })
 
 describe('chatStore - DEFAULT_AGENT_ID matches the manifest convention', () => {
