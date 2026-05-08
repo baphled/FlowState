@@ -11,12 +11,14 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -601,7 +603,265 @@ var _ = Describe("EventBus Integration", func() {
 			Expect(received[0].Content).To(Equal("Hello"))
 		})
 	})
+
+	// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026) §"Engine wiring".
+	// runSwarmGates and dispatchMemberGates wrap their existing
+	// `swarm.Dispatch` call sites with bus publication so the silent
+	// swallow at orchestrator.go:275 / server.go:582-585 stops being the
+	// only diagnostic path. Pass-event policy: halt-class only on
+	// `gate.failed`; batch-level `gate.evaluating` and `gate.passed`
+	// fire once per dispatch, NOT per gate; continue-class and
+	// warn-class failures stay log-only.
+	Describe("publishes gate lifecycle events from runSwarmGates", func() {
+		It("publishes gate.evaluating and gate.passed for a clean pre-swarm batch", func() {
+			store := coordination.NewMemoryStore()
+			Expect(store.Set("planning/plan-reviewer/review", validVerdictPayload())).To(Succeed())
+
+			runner := &recordingRunner{}
+			gates := []swarm.GateSpec{
+				{Name: "envelope-check", Kind: "builtin:result-schema", When: swarm.LifecyclePreSwarm},
+				{Name: "shape-check", Kind: "builtin:result-schema", When: swarm.LifecyclePreSwarm},
+			}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			bus := eventbus.NewEventBus()
+			delegateTool.WithEventBus(bus)
+
+			capture := newGateCapture(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-sess-1")
+			_, err := delegateTool.Execute(ctx, reviewerDelegateInput())
+			Expect(err).NotTo(HaveOccurred())
+
+			evaluatingPre := capture.evaluatingFor(swarm.LifecyclePreSwarm)
+			Expect(evaluatingPre).To(HaveLen(1),
+				"runSwarmGates must publish exactly one gate.evaluating per non-empty pre-swarm batch")
+			Expect(evaluatingPre[0].Data.GateCount).To(Equal(2),
+				"GateCount carries the batch size so the activity pane can render 'evaluating N gates…'")
+			Expect(evaluatingPre[0].Data.SwarmID).To(Equal("planning-loop"))
+			Expect(evaluatingPre[0].Data.SessionID).To(Equal("parent-sess-1"),
+				"the parent session id propagates through the publish helper so subscribers can filter")
+			Expect(evaluatingPre[0].Data.MemberID).To(BeEmpty(),
+				"swarm-level gate.evaluating carries no MemberID")
+
+			passedPre := capture.passedFor(swarm.LifecyclePreSwarm)
+			Expect(passedPre).To(HaveLen(1),
+				"runSwarmGates must publish exactly one gate.passed when the batch completes without halt")
+			Expect(passedPre[0].Data.GateCount).To(Equal(2))
+			Expect(capture.failed()).To(BeEmpty(),
+				"a clean batch must NOT publish gate.failed")
+		})
+
+		It("publishes gate.failed (and not gate.passed) for a halting pre-swarm batch with the typed *swarm.GateError fields populated", func() {
+			store := coordination.NewMemoryStore()
+			runner := &recordingRunner{
+				fail: map[string]error{
+					"envelope-check": &swarm.GateError{
+						GateName: "envelope-check",
+						GateKind: "builtin:result-schema",
+						When:     swarm.LifecyclePreSwarm,
+						SwarmID:  "planning-loop",
+						Reason:   "chain_prefix missing",
+					},
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "envelope-check", Kind: "builtin:result-schema", When: swarm.LifecyclePreSwarm},
+			}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			bus := eventbus.NewEventBus()
+			delegateTool.WithEventBus(bus)
+
+			capture := newGateCapture(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-sess-fail")
+			_, err := delegateTool.Execute(ctx, reviewerDelegateInput())
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+
+			failed := capture.failed()
+			Expect(failed).To(HaveLen(1),
+				"runSwarmGates must publish exactly one gate.failed per halting gate; halt-class only")
+			Expect(failed[0].Data.GateName).To(Equal("envelope-check"))
+			Expect(failed[0].Data.GateKind).To(Equal("builtin:result-schema"))
+			Expect(failed[0].Data.Lifecycle).To(Equal(swarm.LifecyclePreSwarm))
+			Expect(failed[0].Data.SwarmID).To(Equal("planning-loop"))
+			Expect(failed[0].Data.SessionID).To(Equal("parent-sess-fail"),
+				"SessionID propagates so the API SSE bridge and TUI subscriber can filter on the active session")
+			Expect(failed[0].Data.MemberID).To(BeEmpty(),
+				"pre-swarm failures have no member context — MemberID is empty")
+			Expect(failed[0].Data.Reason).To(ContainSubstring("chain_prefix missing"))
+
+			Expect(capture.passedFor(swarm.LifecyclePreSwarm)).To(BeEmpty(),
+				"a halting batch must NOT publish gate.passed alongside gate.failed")
+		})
+	})
+
+	Describe("publishes member-scoped gate events from dispatchMemberGates", func() {
+		It("publishes gate.evaluating, gate.passed and gate.failed with MemberID populated for member-pre / member-post lifecycle points", func() {
+			store := coordination.NewMemoryStore()
+			Expect(store.Set("planning/plan-reviewer/review", validVerdictPayload())).To(Succeed())
+
+			runner := &recordingRunner{}
+			gates := []swarm.GateSpec{
+				{Name: "pre-member-plan-reviewer", Kind: "builtin:result-schema", When: swarm.LifecyclePreMember, Target: "plan-reviewer"},
+				{Name: "post-member-plan-reviewer", Kind: "builtin:result-schema", When: swarm.LifecyclePostMember, Target: "plan-reviewer"},
+			}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			bus := eventbus.NewEventBus()
+			delegateTool.WithEventBus(bus)
+
+			capture := newGateCapture(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-sess-mem")
+			_, err := delegateTool.Execute(ctx, reviewerDelegateInput())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(capture.evaluatingFor(swarm.LifecyclePreMember)).To(HaveLen(1),
+				"dispatchMemberGates must publish gate.evaluating once per member-pre batch")
+			Expect(capture.evaluatingFor(swarm.LifecyclePreMember)[0].Data.MemberID).To(Equal("plan-reviewer"))
+			Expect(capture.evaluatingFor(swarm.LifecyclePreMember)[0].Data.SessionID).To(Equal("parent-sess-mem"))
+
+			Expect(capture.passedFor(swarm.LifecyclePreMember)).To(HaveLen(1))
+			Expect(capture.passedFor(swarm.LifecyclePreMember)[0].Data.MemberID).To(Equal("plan-reviewer"))
+
+			Expect(capture.evaluatingFor(swarm.LifecyclePostMember)).To(HaveLen(1))
+			Expect(capture.passedFor(swarm.LifecyclePostMember)).To(HaveLen(1))
+			Expect(capture.failed()).To(BeEmpty())
+		})
+
+		It("publishes gate.failed with MemberID populated when a member-post gate halts", func() {
+			store := coordination.NewMemoryStore()
+			Expect(store.Set("planning/plan-reviewer/review", validVerdictPayload())).To(Succeed())
+			runner := &recordingRunner{
+				fail: map[string]error{
+					"post-member-plan-reviewer": &swarm.GateError{
+						GateName: "post-member-plan-reviewer",
+						GateKind: "builtin:result-schema",
+						When:     swarm.LifecyclePostMember,
+						MemberID: "plan-reviewer",
+						SwarmID:  "planning-loop",
+						Reason:   "schema validation failed",
+					},
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "post-member-plan-reviewer", Kind: "builtin:result-schema", When: swarm.LifecyclePostMember, Target: "plan-reviewer"},
+			}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			bus := eventbus.NewEventBus()
+			delegateTool.WithEventBus(bus)
+
+			capture := newGateCapture(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-sess-mem-fail")
+			_, err := delegateTool.Execute(ctx, reviewerDelegateInput())
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+
+			failed := capture.failed()
+			Expect(failed).To(HaveLen(1))
+			Expect(failed[0].Data.GateName).To(Equal("post-member-plan-reviewer"))
+			Expect(failed[0].Data.MemberID).To(Equal("plan-reviewer"),
+				"member-post failures carry the failing member's id so the surface can attribute the halt")
+			Expect(failed[0].Data.Lifecycle).To(Equal(swarm.LifecyclePostMember))
+			Expect(failed[0].Data.SessionID).To(Equal("parent-sess-mem-fail"))
+		})
+	})
+
+	Describe("gate publication is a no-op when the bus is not wired", func() {
+		It("does not panic and behaves identically when WithEventBus is unset", func() {
+			store := coordination.NewMemoryStore()
+			Expect(store.Set("planning/plan-reviewer/review", validVerdictPayload())).To(Succeed())
+
+			runner := &recordingRunner{}
+			gates := []swarm.GateSpec{
+				{Name: "envelope-check", Kind: "builtin:result-schema", When: swarm.LifecyclePreSwarm},
+			}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+			// No WithEventBus call — historical pre-bridge behaviour.
+
+			_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
 })
+
+// gateCapture is a thread-safe sink for gate lifecycle events
+// published onto an `*eventbus.EventBus`. Mirrors delegationCapture
+// (delegation_lifecycle_test.go) — same shape, three-status triplet.
+type gateCapture struct {
+	mu          sync.Mutex
+	evaluating  []*events.GateEvaluatingEvent
+	passed      []*events.GatePassedEvent
+	failedSlice []*events.GateFailedEvent
+}
+
+func newGateCapture(bus *eventbus.EventBus) *gateCapture {
+	c := &gateCapture{}
+	bus.Subscribe(events.EventGateEvaluating, func(ev any) {
+		if e, ok := ev.(*events.GateEvaluatingEvent); ok {
+			c.mu.Lock()
+			c.evaluating = append(c.evaluating, e)
+			c.mu.Unlock()
+		}
+	})
+	bus.Subscribe(events.EventGatePassed, func(ev any) {
+		if e, ok := ev.(*events.GatePassedEvent); ok {
+			c.mu.Lock()
+			c.passed = append(c.passed, e)
+			c.mu.Unlock()
+		}
+	})
+	bus.Subscribe(events.EventGateFailed, func(ev any) {
+		if e, ok := ev.(*events.GateFailedEvent); ok {
+			c.mu.Lock()
+			c.failedSlice = append(c.failedSlice, e)
+			c.mu.Unlock()
+		}
+	})
+	return c
+}
+
+func (c *gateCapture) evaluatingFor(lifecycle string) []*events.GateEvaluatingEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.GateEvaluatingEvent, 0, len(c.evaluating))
+	for _, e := range c.evaluating {
+		if e.Data.Lifecycle == lifecycle {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (c *gateCapture) passedFor(lifecycle string) []*events.GatePassedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.GatePassedEvent, 0, len(c.passed))
+	for _, e := range c.passed {
+		if e.Data.Lifecycle == lifecycle {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func (c *gateCapture) failed() []*events.GateFailedEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*events.GateFailedEvent, len(c.failedSlice))
+	copy(out, c.failedSlice)
+	return out
+}
 
 func newTempFileContextStore() *recall.FileContextStore {
 	tmpDir, err := os.MkdirTemp("", "engine-eventbus-test-*")

@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/gates"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
@@ -284,6 +285,172 @@ func NewDelegateTool(engines map[string]*Engine, delegationConfig agent.Delegati
 func (d *DelegateTool) WithEventBus(bus *eventbus.EventBus) *DelegateTool {
 	d.eventBus = bus
 	return d
+}
+
+// publishGateEvaluating publishes a `gate.evaluating` lifecycle marker
+// for a non-empty gate batch about to dispatch. Plans/Gate Bus Bridge
+// — Engine to SSE and TUI (May 2026): one event per `swarm.Dispatch`
+// call, NOT per gate; carries the count of gates and the lifecycle
+// point so subscribers can render an "evaluating N gates…" affordance
+// without per-gate noise.
+//
+// Expected:
+//   - swarmCtx is the active swarm context.
+//   - when is one of "pre" | "post" | "pre-member" | "post-member".
+//   - memberID is the agent id for member-scoped lifecycles; empty
+//     for swarm-level.
+//   - count is the number of gates in the batch (non-zero — callers
+//     short-circuit on empty batches before publishing).
+//
+// Side effects:
+//   - Publishes `gate.evaluating` on the bus when wired; otherwise
+//     a no-op.
+func (d *DelegateTool) publishGateEvaluating(ctx context.Context, swarmCtx *swarm.Context, when, memberID string, count int) {
+	if d.eventBus == nil {
+		return
+	}
+	d.eventBus.Publish(events.EventGateEvaluating, events.NewGateEvaluatingEvent(events.GateEventData{
+		SwarmID:   swarmCtx.SwarmID,
+		SessionID: sessionIDFromContext(ctx),
+		Lifecycle: when,
+		MemberID:  memberID,
+		GateCount: count,
+	}))
+}
+
+// publishGatePassed publishes a `gate.passed` event when a gate batch
+// completes without any halt. Plans/Gate Bus Bridge — Engine to SSE
+// and TUI (May 2026): one event per `swarm.Dispatch` call on the
+// clean path (NOT per gate); per-gate pass events are deliberately
+// suppressed by the pass-event policy.
+//
+// Expected:
+//   - swarmCtx is the active swarm context.
+//   - when is the lifecycle point.
+//   - memberID is the agent id for member-scoped lifecycles; empty
+//     for swarm-level.
+//   - count is the batch size (non-zero — callers short-circuit on
+//     empty batches before publishing).
+//
+// Side effects:
+//   - Publishes `gate.passed` on the bus when wired; otherwise a no-op.
+func (d *DelegateTool) publishGatePassed(ctx context.Context, swarmCtx *swarm.Context, when, memberID string, count int) {
+	if d.eventBus == nil {
+		return
+	}
+	d.eventBus.Publish(events.EventGatePassed, events.NewGatePassedEvent(events.GateEventData{
+		SwarmID:   swarmCtx.SwarmID,
+		SessionID: sessionIDFromContext(ctx),
+		Lifecycle: when,
+		MemberID:  memberID,
+		GateCount: count,
+	}))
+}
+
+// publishGateFailed publishes a `gate.failed` event for a halt-class
+// gate failure. Plans/Gate Bus Bridge — Engine to SSE and TUI (May
+// 2026): one event per failing gate; carries the typed
+// *swarm.GateError fields as plain strings on the bus payload so
+// subscribers do not need to thread the typed error type across the
+// boundary. Continue-class and warn-class failures stay log-only —
+// they do not reach this helper because runSwarmGates /
+// dispatchMemberGates only invoke it on `report.Halted`.
+//
+// Defensive: when err is not a *swarm.GateError (the runner taxonomy
+// permits raw context-cancellation surfaces) the helper falls back to
+// `Reason: err.Error()` with empty typed fields so the surface still
+// renders something meaningful rather than a blank banner.
+//
+// Expected:
+//   - swarmCtx is the active swarm context.
+//   - when is the lifecycle point.
+//   - memberID is the agent id for member-scoped lifecycles; empty
+//     for swarm-level.
+//   - err is the report.Err returned by `swarm.Dispatch` on halt;
+//     non-nil at every call site.
+//
+// Side effects:
+//   - Publishes `gate.failed` on the bus when wired; otherwise a no-op.
+func (d *DelegateTool) publishGateFailed(ctx context.Context, swarmCtx *swarm.Context, when, memberID string, err error) {
+	if d.eventBus == nil || err == nil {
+		return
+	}
+	data := events.GateEventData{
+		SwarmID:   swarmCtx.SwarmID,
+		SessionID: sessionIDFromContext(ctx),
+		Lifecycle: when,
+		MemberID:  memberID,
+	}
+	var gateErr *swarm.GateError
+	if errors.As(err, &gateErr) {
+		data.GateName = gateErr.GateName
+		data.GateKind = gateErr.GateKind
+		data.Reason = gateErr.Reason
+		// Prefer the gate's MemberID when present; member-post failures
+		// carry the failing member explicitly on the typed error.
+		if gateErr.MemberID != "" {
+			data.MemberID = gateErr.MemberID
+		}
+		if gateErr.Cause != nil {
+			data.Cause = gateErr.Cause.Error()
+		}
+		data.CoordStoreKeys = gateCoordStoreKeys(gateErr, swarmCtx.ChainPrefix)
+	} else {
+		data.Reason = err.Error()
+	}
+	d.eventBus.Publish(events.EventGateFailed, events.NewGateFailedEvent(data))
+}
+
+// gateExtKindPrefix is the manifest prefix the swarm validator
+// requires on ext-gate kinds (e.g. "ext:relevance-gate"). Mirrors
+// `gateKindExtPrefix` in internal/swarm/manifest.go (unexported there);
+// re-declared here so this seam can identify ext gates without a
+// public-API change to the swarm package.
+const gateExtKindPrefix = "ext:"
+
+// gateCoordStoreKeys reads the gate's declared `Inputs` from the
+// gate-input registry (Plans/Multi-Key Gate Inputs (May 2026)) and
+// returns the resolved coord-store keys in the order the manifest
+// declared them. Returns nil for legacy single-key gates and for
+// builtin gates that have no Inputs registered. The keys carry the
+// "what was checked?" affordance to surfaces.
+func gateCoordStoreKeys(gateErr *swarm.GateError, chainPrefix string) []string {
+	if gateErr == nil {
+		return nil
+	}
+	if !strings.HasPrefix(gateErr.GateKind, gateExtKindPrefix) {
+		return nil
+	}
+	gateName := strings.TrimPrefix(gateErr.GateKind, gateExtKindPrefix)
+	inputs, ok := swarm.LookupGateInputs(gateName)
+	if !ok || len(inputs) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(inputs))
+	for _, spec := range inputs {
+		member := spec.Member
+		if member == gates.TargetPlaceholder {
+			member = gateErr.MemberID
+		}
+		keys = append(keys, joinGateKey(chainPrefix, member, spec.OutputKey))
+	}
+	return keys
+}
+
+// joinGateKey builds a coord-store key from chainPrefix / member /
+// outputKey, skipping empty segments — mirrors the unexported joinKey
+// helper at internal/swarm/gate_result_schema.go:187 so the bus
+// payload's CoordStoreKeys formatting matches the gate-runner's
+// lookup formatting verbatim. Re-declared rather than exported because
+// the helper is shared only at this seam.
+func joinGateKey(parts ...string) string {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "/")
 }
 
 // publishDelegationEvent publishes a delegation lifecycle event onto the
@@ -2471,6 +2638,10 @@ func (d *DelegateTool) dispatchPreMemberGates(ctx context.Context, memberID stri
 //
 // Side effects:
 //   - Calls each matching gate's runner.
+//   - Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+//     publishes gate.evaluating before dispatch, gate.failed per
+//     halting gate, gate.passed once on a clean batch. Pass-event
+//     policy: halt-class only on gate.failed.
 func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID string) error {
 	if d.gateRunner == nil {
 		return nil
@@ -2489,10 +2660,13 @@ func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID s
 		MemberID:    memberID,
 		CoordStore:  d.coordinationStore,
 	}
+	d.publishGateEvaluating(ctx, swarmCtx, when, memberID, len(matches))
 	report := swarm.Dispatch(ctx, d.gateRunner, matches, args)
 	if report.Halted {
+		d.publishGateFailed(ctx, swarmCtx, when, memberID, report.Err)
 		return report.Err
 	}
+	d.publishGatePassed(ctx, swarmCtx, when, memberID, len(matches))
 	return nil
 }
 
@@ -2591,6 +2765,9 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 // Side effects:
 //   - Calls each matching gate's runner. MemberID is empty on the
 //     args because swarm-level gates have no per-member fan-out.
+//   - Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+//     publishes gate.evaluating before dispatch, gate.failed per
+//     halting gate, gate.passed once on a clean batch.
 func (d *DelegateTool) runSwarmGates(ctx context.Context, swarmCtx *swarm.Context, when string) error {
 	matches := swarm.SwarmGatesFor(swarmCtx.Gates, when)
 	if len(matches) == 0 {
@@ -2601,10 +2778,13 @@ func (d *DelegateTool) runSwarmGates(ctx context.Context, swarmCtx *swarm.Contex
 		ChainPrefix: swarmCtx.ChainPrefix,
 		CoordStore:  d.coordinationStore,
 	}
+	d.publishGateEvaluating(ctx, swarmCtx, when, "", len(matches))
 	report := swarm.Dispatch(ctx, d.gateRunner, matches, args)
 	if report.Halted {
+		d.publishGateFailed(ctx, swarmCtx, when, "", report.Err)
 		return report.Err
 	}
+	d.publishGatePassed(ctx, swarmCtx, when, "", len(matches))
 	return nil
 }
 
