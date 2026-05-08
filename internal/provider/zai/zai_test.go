@@ -68,6 +68,50 @@ var _ = Describe("ZAI Provider", func() {
 				Expect(model.Provider).To(Equal("zai"))
 			}
 		})
+
+		// Phase-5 Slice β — limit-registry corrections.
+		//
+		// glm-4.6 is the dominant model on the FlowState Z.AI traffic
+		// (the GLM-Saturation reproducer in session 718b5d51 ran on
+		// it). When the dynamic Models.List API call succeeds the
+		// model is enumerated; when it fails the fallback list must
+		// also surface it so the registry pipeline cannot silently
+		// hand back ctxstore.DefaultModelContextFallback. Same shape
+		// as glm-5 / glm-4.7: 128K context, 8K max output.
+		//
+		// Table-driven assertions per the limit-registry-corrections
+		// brief: extends the existing Describe("Models") seam.
+		It("advertises the canonical glm catalogue in fallback mode", func() {
+			p, err := zai.New("test-api-key")
+			Expect(err).NotTo(HaveOccurred())
+
+			models, err := p.Models()
+			Expect(err).NotTo(HaveOccurred())
+
+			byID := make(map[string]providerPkg.Model, len(models))
+			for _, m := range models {
+				byID[m.ID] = m
+			}
+
+			cases := []struct {
+				id            string
+				contextLength int
+				outputLimit   int
+			}{
+				{id: "glm-5", contextLength: 128000, outputLimit: 8192},
+				{id: "glm-4.7", contextLength: 128000, outputLimit: 8192},
+				{id: "glm-4.7-flash", contextLength: 128000, outputLimit: 8192},
+				{id: "glm-4.6", contextLength: 128000, outputLimit: 8192},
+			}
+			for _, tc := range cases {
+				m, ok := byID[tc.id]
+				Expect(ok).To(BeTrue(), "fallback list must contain %s", tc.id)
+				Expect(m.ContextLength).To(Equal(tc.contextLength),
+					"%s ContextLength must match the upstream-published limit", tc.id)
+				Expect(m.OutputLimit).To(Equal(tc.outputLimit),
+					"%s OutputLimit must match the upstream-published max-output", tc.id)
+			}
+		})
 	})
 
 	Describe("Chat", func() {

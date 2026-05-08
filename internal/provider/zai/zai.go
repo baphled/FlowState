@@ -260,6 +260,14 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 
 // fallbackModels returns a hardcoded list of known models when the API is unavailable.
 //
+// Phase-5 Slice β added glm-4.6 to the fallback list — the dynamic
+// Models.List API enumerates it on the live path, but operators
+// running offline (or against a degraded endpoint) saw the model
+// fall through to ctxstore.DefaultModelContextFallback when the
+// dynamic call failed. The May 2026 GLM-Saturation reproducer
+// (session 718b5d51) ran on glm-4.6, so the offline fallback must
+// surface its 128K window without registry consultation.
+//
 // Returns:
 //   - A slice of commonly available models.
 //
@@ -270,6 +278,7 @@ func fallbackModels() []provider.Model {
 		{ID: "glm-5", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-4.7", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-4.7-flash", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "glm-4.6", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 	}
 }
 

@@ -67,6 +67,49 @@ var _ = Describe("OpenZen Provider", func() {
 				Expect(model.Provider).To(Equal("openzen"))
 			}
 		})
+
+		// Phase-5 Slice β — limit-registry corrections.
+		//
+		// gpt-4o is OpenAI's published 128K context model. The OpenZen
+		// catalogue mirrors the upstream limits, so the fallback entry
+		// for gpt-4o must advertise 128_000 — not the catalogue-wide
+		// 200_000 default that previously bled through and caused the
+		// proactive overflow gate to mis-size its reserve and the
+		// auto-compactor's gate-proximity tier to under-fire on this
+		// model. The other catalogue entries (claude-sonnet-4-5,
+		// claude-3-5-sonnet) sit on the 200K Claude family so the
+		// catalogue default still applies to them.
+		//
+		// Table-driven assertions per the limit-registry-corrections
+		// brief: extending the existing Describe("Models") seam rather
+		// than spawning a sibling _test.go.
+		It("advertises the correct ContextLength for each fallback model", func() {
+			p, err := openzen.New("test-api-key")
+			Expect(err).NotTo(HaveOccurred())
+
+			models, err := p.Models()
+			Expect(err).NotTo(HaveOccurred())
+
+			byID := make(map[string]providerPkg.Model, len(models))
+			for _, m := range models {
+				byID[m.ID] = m
+			}
+
+			cases := []struct {
+				id            string
+				contextLength int
+			}{
+				{id: "claude-sonnet-4-5", contextLength: 200000},
+				{id: "claude-3-5-sonnet", contextLength: 200000},
+				{id: "gpt-4o", contextLength: 128000},
+			}
+			for _, tc := range cases {
+				m, ok := byID[tc.id]
+				Expect(ok).To(BeTrue(), "fallback list must contain %s", tc.id)
+				Expect(m.ContextLength).To(Equal(tc.contextLength),
+					"%s ContextLength must match the upstream-published limit", tc.id)
+			}
+		})
 	})
 
 	Describe("Chat", func() {
