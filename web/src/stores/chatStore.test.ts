@@ -3433,6 +3433,10 @@ describe('chatStore - applyContentEvent dispatch', () => {
     // `at` timestamp is recorded too — the chip's tooltip uses it for
     // the "compacted Ns ago" copy on a later iteration; today's pin
     // just verifies the field is present and a finite number.
+    //
+    // Phase-5 Slice δ added the trigger discriminant; the store
+    // captures it onto lastCompaction so the tooltip can attribute the
+    // cause without needing a sibling slice.
     const store = useChatStore()
     store.currentSessionId = 's-active'
 
@@ -3445,6 +3449,7 @@ describe('chatStore - applyContentEvent dispatch', () => {
         original_tokens: 50000,
         summary_tokens: 5000,
         latency_ms: 1200,
+        trigger: 'gate_proximity',
       }),
     )
     const after = Date.now()
@@ -3456,6 +3461,36 @@ describe('chatStore - applyContentEvent dispatch', () => {
       expect(store.lastCompaction.tokensSaved).toBe(45000)
       expect(store.lastCompaction.at).toBeGreaterThanOrEqual(before)
       expect(store.lastCompaction.at).toBeLessThanOrEqual(after)
+      expect(store.lastCompaction.trigger).toBe('gate_proximity')
+    }
+  })
+
+  it('captures the trigger discriminant for each fire (Phase-5 Slice δ)', () => {
+    // Closed vocabulary: ratio | gate_proximity | model_switch |
+    // tool_result_wave. The store stamps the field verbatim onto
+    // lastCompaction so ContextUsageChip.vue can attribute the cause
+    // without re-parsing the wire payload.
+    const store = useChatStore()
+    store.currentSessionId = 's-active'
+
+    const cases: Array<'ratio' | 'gate_proximity' | 'model_switch' | 'tool_result_wave'> = [
+      'ratio',
+      'gate_proximity',
+      'model_switch',
+      'tool_result_wave',
+    ]
+    for (const trigger of cases) {
+      store.applyContentEvent(
+        JSON.stringify({
+          type: 'context_compacted',
+          session_id: 's-active',
+          agent_id: 'tech-lead',
+          original_tokens: 10000,
+          summary_tokens: 1000,
+          trigger,
+        }),
+      )
+      expect(store.lastCompaction?.trigger).toBe(trigger)
     }
   })
 
@@ -3484,6 +3519,7 @@ describe('chatStore - applyContentEvent dispatch', () => {
       summaryTokens: 5000,
       tokensSaved: 45000,
       at: Date.now(),
+      trigger: '',
     }
 
     await store.loadSessionMessages('fresh-session')

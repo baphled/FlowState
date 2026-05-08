@@ -825,4 +825,55 @@ var _ = Describe("Events", func() {
 			Expect(parsed["attempt"]).To(Equal(float64(2)))
 		})
 	})
+
+	// Phase-5 Slice δ — Trigger discriminant on ContextCompactedEvent.
+	//
+	// Closed vocabulary: "ratio" | "gate_proximity" | "model_switch" |
+	// "tool_result_wave". The field was added in Slice α; Slice δ surfaces
+	// it onto the SSE wire and the Vue chip tooltip. This spec pins the
+	// shape at the engine seam — the source of truth — so subsequent
+	// bridges cannot silently drop the discriminant.
+	Describe("ContextCompactedEvent", func() {
+		It("implements Event interface and sets fields including Trigger", func() {
+			data := events.ContextCompactedEventData{
+				SessionID:      "sess-δ",
+				AgentID:        "delta-agent",
+				OriginalTokens: 12000,
+				SummaryTokens:  3000,
+				LatencyMS:      800,
+				Trigger:        "model_switch",
+			}
+			ts := time.Now().Add(-time.Minute)
+			evt := events.NewContextCompactedEvent(data, ts)
+			Expect(evt.EventType()).To(Equal("context.compacted"))
+			Expect(evt.Timestamp()).To(BeTemporally("~", ts, time.Second))
+			Expect(evt.Data).To(Equal(data))
+			Expect(evt.Data.Trigger).To(Equal("model_switch"),
+				"NewContextCompactedEvent must preserve the Trigger discriminant verbatim — Slice δ surfaces this onto the chip tooltip")
+		})
+
+		It("tolerates an empty Trigger for forward-compatibility", func() {
+			data := events.ContextCompactedEventData{
+				SessionID:      "sess-legacy",
+				OriginalTokens: 5000,
+				SummaryTokens:  1000,
+			}
+			evt := events.NewContextCompactedEvent(data)
+			Expect(evt.Data.Trigger).To(BeEmpty(),
+				"empty Trigger is tolerated so historical events that pre-date the field remain decodable")
+		})
+
+		It("serialises Trigger to JSON for the wire bridge", func() {
+			data := events.ContextCompactedEventData{
+				SessionID: "sess-wire",
+				Trigger:   "tool_result_wave",
+			}
+			raw, err := json.Marshal(data)
+			Expect(err).NotTo(HaveOccurred())
+			var parsed map[string]any
+			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+			Expect(parsed["Trigger"]).To(Equal("tool_result_wave"),
+				"the Go field name flows verbatim through json.Marshal — the bridge handler re-keys to snake_case for the SSE wire")
+		})
+	})
 })

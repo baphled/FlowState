@@ -281,6 +281,12 @@ func newContextCompactedHandler(sessionID string, out chan<- WSChunkMsg) eventbu
 		if !ok || ce.Data.SessionID != sessionID {
 			return
 		}
+		// Phase-5 Slice δ — surface the Trigger discriminant onto the
+		// SSE wire under the snake_case key the writer + Vue parser
+		// expect. Closed vocabulary: ratio | gate_proximity |
+		// model_switch | tool_result_wave; an empty value passes
+		// through verbatim so historical events that pre-date the
+		// field remain decodable.
 		sanitised := map[string]any{
 			"event_type":      events.EventContextCompacted,
 			"session_id":      ce.Data.SessionID,
@@ -288,6 +294,7 @@ func newContextCompactedHandler(sessionID string, out chan<- WSChunkMsg) eventbu
 			"original_tokens": ce.Data.OriginalTokens,
 			"summary_tokens":  ce.Data.SummaryTokens,
 			"latency_ms":      ce.Data.LatencyMS,
+			"trigger":         ce.Data.Trigger,
 		}
 		select {
 		case out <- WSChunkMsg{EventType: events.EventContextCompacted, EventData: sanitised}:

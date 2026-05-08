@@ -214,12 +214,17 @@ var _ = Describe("subscribeSessionBus", func() {
 			// out channel so SSE/WS subscribers can render the
 			// compaction affordance (Slice 6b consumes this on the
 			// Vue chip).
+			//
+			// Phase-5 Slice δ added the trigger discriminant to the
+			// payload so the chip tooltip can attribute the cause
+			// (ratio | gate_proximity | model_switch | tool_result_wave).
 			bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
 				SessionID:      "sess-1",
 				AgentID:        "Tech-Lead",
 				OriginalTokens: 50_000,
 				SummaryTokens:  5_000,
 				LatencyMS:      420,
+				Trigger:        "gate_proximity",
 			}))
 
 			var msg api.WSChunkMsg
@@ -233,6 +238,8 @@ var _ = Describe("subscribeSessionBus", func() {
 			Expect(data["original_tokens"]).To(Equal(50_000))
 			Expect(data["summary_tokens"]).To(Equal(5_000))
 			Expect(data["latency_ms"]).To(Equal(int64(420)))
+			Expect(data["trigger"]).To(Equal("gate_proximity"),
+				"Phase-5 Slice δ: bridge handler must surface the Trigger discriminant under the snake_case key the SSE writer + Vue parser expect")
 		})
 
 		It("drops context.compacted events for other sessions", func() {

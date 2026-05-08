@@ -382,6 +382,12 @@ export const useChatStore = defineStore('chat', {
       summaryTokens: number
       tokensSaved: number
       at: number
+      // Phase-5 Slice δ — Trigger discriminant identifies the path
+      // that fired compaction. Closed vocabulary: ratio |
+      // gate_proximity | model_switch | tool_result_wave. Empty is
+      // tolerated for forward-compatibility; the chip tooltip falls
+      // back to the generic copy when unrecognised.
+      trigger: string
     } | null,
     // ---- swarm gate-failure surface (Plans/Gate Bus Bridge) -----------
     //
@@ -1586,6 +1592,10 @@ export const useChatStore = defineStore('chat', {
             sessionId: event.sessionId,
             originalTokens: event.originalTokens,
             summaryTokens: event.summaryTokens,
+            // Phase-5 Slice δ — surface the Trigger discriminant onto
+            // the chip tooltip. Empty default tolerates historical
+            // events that pre-date the field.
+            trigger: event.trigger,
           })
           return
         case 'gate_failed':
@@ -1965,6 +1975,12 @@ export const useChatStore = defineStore('chat', {
       sessionId: string
       originalTokens: number
       summaryTokens: number
+      /**
+       * Phase-5 Slice δ — Trigger discriminant. Empty defaults to ''
+       * so the call site that pre-dates the field still works; the
+       * chip tooltip falls back to the generic copy in that case.
+       */
+      trigger?: string
     }): void {
       // Defence in depth: ignore events for inactive sessions. The
       // api server already scopes the SSE wire to the active session
@@ -1981,6 +1997,7 @@ export const useChatStore = defineStore('chat', {
         summaryTokens: info.summaryTokens,
         tokensSaved: info.originalTokens - info.summaryTokens,
         at: Date.now(),
+        trigger: info.trigger ?? '',
       }
     },
 
