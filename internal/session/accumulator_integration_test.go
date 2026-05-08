@@ -38,7 +38,11 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 		Expect(retrieved.Messages[0].AgentID).To(Equal("agent-a"))
 	})
 
-	It("handles stream completion (channel close) gracefully — appends no messages when no content", func() {
+	It("handles stream completion (channel close) gracefully — emits an empty_turn placeholder when no content (Slice C — Streaming Coherence May 2026)", func() {
+		// Pre-slice this test pinned "no messages on empty stream". The new
+		// contract: an empty stream produces an `empty_turn` placeholder so
+		// the chat UI can render a soft-error affordance immediately on
+		// Done rather than wait 60s for the watchdog to trip.
 		sess, err := mgr.CreateSession("agent-a")
 		Expect(err).NotTo(HaveOccurred())
 
@@ -50,10 +54,12 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 
 		retrieved, err := mgr.GetSession(sess.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(retrieved.Messages).To(BeEmpty())
+		Expect(retrieved.Messages).To(HaveLen(1))
+		Expect(retrieved.Messages[0].Role).To(Equal("assistant"))
+		Expect(retrieved.Messages[0].StopReason).To(Equal(session.StopReasonEmptyTurn))
 	})
 
-	It("handles error chunks — forwards error to consumers without storing an assistant message", func() {
+	It("handles error chunks — forwards error to consumers and emits empty_turn placeholder (Slice C)", func() {
 		sess, err := mgr.CreateSession("agent-a")
 		Expect(err).NotTo(HaveOccurred())
 
@@ -72,7 +78,11 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 
 		retrieved, err := mgr.GetSession(sess.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(retrieved.Messages).To(BeEmpty())
+		// Slice C — error chunks count as a true-empty turn for the
+		// UI affordance: the placeholder makes the failure visible
+		// without waiting for the 60s watchdog.
+		Expect(retrieved.Messages).To(HaveLen(1))
+		Expect(retrieved.Messages[0].StopReason).To(Equal(session.StopReasonEmptyTurn))
 	})
 
 	It("RegisterSession idempotency — same ID twice doesn't duplicate the session", func() {
@@ -163,7 +173,11 @@ var _ = Describe("AccumulateStream integration", Label("integration"), func() {
 
 		retrieved, err := mgr.GetSession(sess.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(retrieved.Messages).To(BeEmpty())
+		// Slice C — closing an empty channel even with cancelled context
+		// still emits the empty_turn placeholder (the synthesizer fires
+		// on the !ok branch). Mirrors the empty-channel happy path above.
+		Expect(retrieved.Messages).To(HaveLen(1))
+		Expect(retrieved.Messages[0].StopReason).To(Equal(session.StopReasonEmptyTurn))
 		_ = ctx
 	})
 })

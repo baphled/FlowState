@@ -774,6 +774,73 @@ var _ = Describe("AccumulateStream", func() {
 		})
 	})
 
+	// Streaming Coherence — Slice C (May 2026). True-empty-turn fall-through:
+	// when a turn produced no content, no thinking, and no tool calls, the
+	// accumulator must still emit a placeholder assistant message stamped
+	// with StopReasonEmptyTurn so the chat UI can render a soft-error
+	// affordance immediately on Done. Pre-slice such turns left the in-
+	// flight bubble running until the 60s watchdog tripped.
+	Context("when a turn produces no content, no thinking, and no tool calls (true empty turn — Slice C)", func() {
+		It("synthesises a placeholder assistant stamped with StopReasonEmptyTurn", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			// A bare Done with no preceding content / thinking / tool_call —
+			// the upstream stream finished with nothing produced.
+			rawCh <- provider.StreamChunk{
+				ModelID:    "claude-sonnet-4-6",
+				ProviderID: "anthropic",
+				Done:       true,
+			}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"true-empty turn must still produce an assistant placeholder so the UI can "+
+					"render an empty_turn affordance instead of leaving the in-flight bubble running")
+			Expect(assistantMsgs[0].Content).To(BeEmpty())
+			Expect(assistantMsgs[0].ThinkingBlocks).To(BeEmpty())
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonEmptyTurn))
+			Expect(assistantMsgs[0].ModelName).To(Equal("claude-sonnet-4-6"))
+			Expect(assistantMsgs[0].ProviderName).To(Equal("anthropic"))
+		})
+
+		It("does NOT synthesise on a tool-bearing turn", func() {
+			// A tool-bearing turn's deliverable is the tool result; an
+			// empty-turn placeholder would be wrong there. The synthesizer
+			// gates on `!turnHadToolCall` to avoid this.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				ModelID:    "claude-sonnet-4-6",
+				ProviderID: "anthropic",
+				ToolCall: &provider.ToolCall{
+					ID:        "tc-1",
+					Name:      "read_file",
+					Arguments: map[string]any{"path": "/tmp/foo"},
+				},
+			}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			// No empty-turn placeholder among the assistant messages.
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					Expect(m.StopReason).NotTo(Equal(session.StopReasonEmptyTurn),
+						"tool-bearing turns must not produce empty_turn placeholders")
+				}
+			}
+		})
+	})
+
 	Context("when delegation info arrives", func() {
 		It("stores a delegation message when status is completed", func() {
 			rawCh := make(chan provider.StreamChunk, 2)
@@ -1380,11 +1447,16 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
 		})
 
-		It("does NOT synthesise a placeholder when the turn produced no content AND no thinking at all (true stall)", func() {
-			// Negative: a true stall — no content, no thinking text, no
-			// thinking blocks, no tool calls — must NOT trigger synthesis.
-			// Otherwise every provider error or aborted turn would persist
-			// a phantom assistant message.
+		It("DOES synthesise an empty_turn placeholder when the turn produced no content AND no thinking AND no tools (Slice C — Streaming Coherence May 2026)", func() {
+			// Streaming Coherence Slice C — pre-slice this behaviour was
+			// "no placeholder; the in-flight bubble is left to the watchdog".
+			// That left the user staring at a stuck indicator for 60s on
+			// every empty turn (provider returned nothing — billing limit,
+			// a model bug, an aborted turn). The new contract: synthesise
+			// an `empty_turn` placeholder so the chat UI can render a
+			// soft-error affordance immediately on Done. The previous
+			// behaviour pin is replaced by this one — the new contract is
+			// the better default for the user.
 			rawCh := make(chan provider.StreamChunk, 1)
 			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
 			close(rawCh)
@@ -1398,10 +1470,12 @@ var _ = Describe("AccumulateStream", func() {
 					assistantMsgs = append(assistantMsgs, m)
 				}
 			}
-			Expect(assistantMsgs).To(BeEmpty(),
-				"a turn with no content and no thinking is a genuine stall, not a "+
-					"thinking-only degraded turn — synthesising a placeholder here "+
-					"would persist phantom assistant messages on every aborted turn")
+			Expect(assistantMsgs).To(HaveLen(1),
+				"true-empty turn must produce exactly one placeholder")
+			Expect(assistantMsgs[0].Content).To(BeEmpty())
+			Expect(assistantMsgs[0].ThinkingBlocks).To(BeEmpty())
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonEmptyTurn))
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
 		})
 
 		It("does NOT regress a content-bearing turn when raw Thinking text was also present", func() {

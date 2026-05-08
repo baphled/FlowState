@@ -146,6 +146,18 @@ type streamAccumState struct {
 	// assistant turn. See bug-fix note "Tool-bearing turn coverage
 	// (delivered May 2026)" for the full forensic trace.
 	turnHadToolCall bool
+	// turnPlaceholderEmitted (Streaming Coherence Slice C, May 2026) —
+	// prevents synthesizePlaceholderAssistant from double-firing within
+	// the same turn. Both the chunk.Done path and the channel-close
+	// path call the synthesizer; without this gate a true-empty Done
+	// followed by channel close would persist two empty-turn placeholders.
+	turnPlaceholderEmitted bool
+	// turnHadDelegation (Streaming Coherence Slice C, May 2026) —
+	// records whether a delegation chunk was observed this turn. The
+	// empty-turn placeholder must not fire when the turn produced a
+	// delegation_started / delegation message; that artefact is the
+	// turn's deliverable.
+	turnHadDelegation bool
 }
 
 // providerProducesUnifiedAssistant reports whether the named provider's
@@ -352,6 +364,12 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 func applyThinkingAndContent(
 	appender MessageAppender, s *streamAccumState, chunk provider.StreamChunk,
 ) {
+	if chunk.Thinking != "" || chunk.Signature != "" || chunk.Content != "" {
+		// Streaming Coherence Slice C — fresh turn signal. Any non-Done
+		// chunk that carries content / thinking opens a new turn so the
+		// per-turn placeholder gate must be reset.
+		s.turnPlaceholderEmitted = false
+	}
 	if chunk.Thinking != "" || chunk.Signature != "" {
 		s.thinkingBuf.WriteString(chunk.Thinking)
 		if chunk.Signature != "" {
@@ -390,6 +408,9 @@ func applyToolCall(appender MessageAppender, s *streamAccumState, tc *provider.T
 	s.lastToolName = tc.Name
 	s.lastToolInput = input
 	s.turnHadToolCall = true
+	// Streaming Coherence Slice C — a tool round is a fresh turn signal;
+	// reset the per-turn placeholder gate.
+	s.turnPlaceholderEmitted = false
 }
 
 // applyToolResult stores a tool_result or tool_error message.
@@ -435,6 +456,11 @@ func applyToolResult(appender MessageAppender, s *streamAccumState, tr *provider
 //     "delegation" message.
 //   - Does nothing for any other status value.
 func applyDelegation(appender MessageAppender, s *streamAccumState, info *provider.DelegationInfo) {
+	// Streaming Coherence Slice C — record any delegation activity so
+	// the empty-turn synthesiser does not fire on a delegation-bearing
+	// turn (the delegation card is the deliverable).
+	s.turnHadDelegation = true
+	s.turnPlaceholderEmitted = false
 	switch info.Status {
 	case "started", "running", "in_progress":
 		if s.seenStartedChains == nil {
@@ -570,6 +596,12 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	s.contentBuf.Reset()
 	s.thinkingBlocks = nil
 	s.turnStopReason = ""
+	// Streaming Coherence Slice C — content-bearing turn does its own
+	// emit; mark the per-turn placeholder slot as filled so the
+	// subsequent synthesizer call (chunk.Done after flushContent) is a
+	// no-op rather than emitting an empty-turn placeholder beside the
+	// just-flushed content.
+	s.turnPlaceholderEmitted = true
 }
 
 // StopReasonThinkingOnly is the synthetic stop reason stamped on a
@@ -594,6 +626,21 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 // in the FlowState vault for the forensic trace; reproducer session
 // 718b5d51-f01b-45f0-80bb-31329a9d44e7.
 const StopReasonThinkingOnly = "thinking_only"
+
+// StopReasonEmptyTurn is the synthetic stop reason stamped on a placeholder
+// assistant Message when a turn produced no content, no thinking, and no
+// tool calls — a true empty turn (Streaming Coherence Slice C, May 2026).
+// Pre-slice such turns persisted no assistant artefact at all and the UI's
+// in-flight assistant bubble was left running with empty content; the user
+// observed "no answer, indicator stuck" until the watchdog tripped 60s
+// later. The placeholder makes the silence visible: the chat UI renders a
+// soft-error affordance (mirroring `thinking_only`) so the user knows the
+// turn ended without producing output and can compose a follow-up rather
+// than wait for nothing.
+//
+// Wire-format-stable: the value is read by the Vue `MessageBubble`
+// render branch, not by any backend consumer.
+const StopReasonEmptyTurn = "empty_turn"
 
 // synthesizePlaceholderAssistant emits an empty-content assistant message
 // carrying the accumulated thinking blocks when a turn produced reasoning
@@ -650,7 +697,45 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 	if s.contentBuf.Len() != 0 {
 		return
 	}
+	// Streaming Coherence Slice C (May 2026) — re-entry guard. Both
+	// chunk.Done and channel-close call this synthesizer; emit at most
+	// once per turn.
+	if s.turnPlaceholderEmitted {
+		return
+	}
+	// Streaming Coherence Slice C (May 2026) — true-empty-turn fall-through.
+	//
+	// Pre-slice this synthesizer required `len(s.thinkingBlocks) > 0`. A
+	// turn that produced nothing — no content, no thinking, no tool call
+	// — left the UI's in-flight bubble running until the 60s watchdog
+	// tripped. The fall-through below emits a placeholder assistant
+	// stamped with `StopReasonEmptyTurn` so the chat UI renders a soft-
+	// error affordance immediately on Done.
+	//
+	// Gating:
+	//   - contentBuf empty (existing gate above).
+	//   - thinkingBlocks empty (this branch — the prior contract still
+	//     handles thinking-only).
+	//   - No tool call this turn (`turnHadToolCall == false`). A
+	//     tool-bearing turn never warrants an empty-turn placeholder:
+	//     the tool-result is the turn's deliverable.
 	if len(s.thinkingBlocks) == 0 {
+		// Empty-turn placeholder gates: no tools (tool-result is the
+		// deliverable), no delegations (delegation card is the
+		// deliverable). When neither, the turn is truly empty and
+		// warrants an empty_turn placeholder.
+		if !s.turnHadToolCall && !s.turnHadDelegation {
+			appender.AppendMessage(s.sessionID, Message{
+				Role:         "assistant",
+				Content:      "",
+				AgentID:      s.agentID,
+				ModelName:    s.lastModelID,
+				ProviderName: s.lastProviderID,
+				StopReason:   StopReasonEmptyTurn,
+			})
+			s.turnStopReason = ""
+			s.turnPlaceholderEmitted = true
+		}
 		return
 	}
 	// Provider-aware suppression: only providers whose wire format
@@ -688,6 +773,7 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 	})
 	s.thinkingBlocks = nil
 	s.turnStopReason = ""
+	s.turnPlaceholderEmitted = true
 }
 
 // formatDelegationSummary builds a human-readable summary of a delegation event.

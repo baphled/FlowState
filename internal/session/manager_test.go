@@ -1462,7 +1462,11 @@ var _ = Describe("Manager", func() {
 			sess, err = mgr.CreateSession("test-agent")
 			Expect(err).NotTo(HaveOccurred())
 
-			// Seed three messages via SendMessage so each has a real UUID.
+			// Seed three user messages via SendMessage so each has a real UUID.
+			// Streaming Coherence Slice C — each Done chunk now also emits
+			// an `empty_turn` placeholder assistant message (Slice C contract:
+			// no content, no thinking, no tool, no delegation). The seed
+			// produces 3 user + 3 placeholder = 6 persisted messages.
 			for _, text := range []string{"first", "second", "third"} {
 				mockStream.addChunk(provider.StreamChunk{Done: true})
 				_, err = mgr.SendMessage(ctx, sess.ID, text)
@@ -1472,7 +1476,7 @@ var _ = Describe("Manager", func() {
 			Eventually(func() int {
 				got, _ := mgr.GetSession(sess.ID)
 				return len(got.Messages)
-			}).Should(Equal(3))
+			}).Should(Equal(6))
 		})
 
 		Context("happy path", func() {
