@@ -423,9 +423,27 @@ func (o *Orchestrator) SwitchAgent(_ context.Context, sessionID, agentID string)
 // and updates the session's CurrentProviderID/CurrentModelID via the
 // session manager. Mirror of SwitchAgent for the model preference.
 //
+// Phase-5 Slice α — model-switch compaction trigger: BEFORE the
+// preference swings, the orchestrator asks the engine whether the
+// persisted history would saturate the new model's window
+// (MaybeCompactForModel). If so, the trigger force-fires the auto-
+// compactor on the still-active engine state. Without this, switching
+// from a 200K-window model to a 32K-window model in mid-conversation
+// caused the next Stream call to refuse at the proactive overflow
+// gate with no auto-recovery — operators saw the saturation but had
+// no remediation path other than starting a fresh session.
+//
+// Order matters: compaction MUST run before SetModelPreference. The
+// trigger inspects the persisted history against the destination
+// model's window via ResolveContextLength; if SetModelPreference ran
+// first, the engine would resolve limits against the new model
+// regardless of which orchestrator call is in flight, masking the
+// "would the next request refuse?" check that motivates firing.
+//
 // Expected:
 //   - sessionID identifies an existing session, or "" for a
-//     session-less switch.
+//     session-less switch (the compaction trigger is a no-op then —
+//     it is session-scoped).
 //   - providerName and modelName identify the target preference;
 //     no validation against a registry is performed here — the
 //     engine accepts the preference verbatim and resolves on next
@@ -436,11 +454,21 @@ func (o *Orchestrator) SwitchAgent(_ context.Context, sessionID, agentID string)
 //   - The session-manager error when UpdateSessionModel fails.
 //
 // Side effects:
+//   - Calls engine.MaybeCompactForModel BEFORE SetModelPreference
+//     when sessionID is non-empty AND an engine is wired. May
+//     produce one summariser LLM call and a ContextCompactedEvent
+//     bus emission.
 //   - Calls engine.SetModelPreference with the supplied pair.
 //   - Calls sessionManager.UpdateSessionModel when sessionID is
 //     non-empty AND a session manager is wired.
-func (o *Orchestrator) SwitchModel(_ context.Context, sessionID, providerName, modelName string) error {
+func (o *Orchestrator) SwitchModel(ctx context.Context, sessionID, providerName, modelName string) error {
 	if o.engine != nil {
+		// Phase-5 Slice α — fire the model-switch compaction trigger
+		// BEFORE the preference swings. Session-less switches skip
+		// the trigger (it has nothing session-scoped to drive).
+		if sessionID != "" {
+			o.engine.MaybeCompactForModel(ctx, sessionID, providerName, modelName)
+		}
 		o.engine.SetModelPreference(providerName, modelName)
 	}
 	if o.sessionManager != nil && sessionID != "" {

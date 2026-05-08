@@ -49,8 +49,10 @@ func (f *fakeOrchestratorStreamer) Stream(_ context.Context, agentID string, mes
 
 // fakeOrchestratorEngine satisfies swarm.DispatchEngine plus the wider
 // orchestrator engine surface (SetManifest, SetModelPreference,
-// SetContextStore) so the new lifecycle methods can be exercised in
-// isolation. Records every invocation for assertion.
+// SetContextStore, MaybeCompactForModel) so the new lifecycle methods
+// can be exercised in isolation. Records every invocation for
+// assertion. Phase-5 Slice α added MaybeCompactForModel so SwitchModel
+// can force-fire compaction before the engine swings the preference.
 type fakeOrchestratorEngine struct {
 	contexts      []*swarm.Context
 	flushCalls    int
@@ -65,6 +67,24 @@ type fakeOrchestratorEngine struct {
 	contextStores         []*recall.FileContextStore
 	contextStoreSessions  []string
 	contextStoreCallCount int
+
+	// Phase-5 Slice α — model-switch compaction trigger.
+	// MaybeCompactForModel call recorder + invocation order trace.
+	// orderTrace records the sequence of MaybeCompactForModel,
+	// SetModelPreference (and any future switch-time calls) so the
+	// orchestrator-side spec can pin the ordering invariant: the
+	// trigger must run BEFORE the preference swings — otherwise the
+	// engine resolves limits against the new model and the
+	// estimated-vs-usable comparison becomes self-fulfilling.
+	maybeCompactCalls     []fakeMaybeCompactCall
+	maybeCompactReturn    string
+	orderTrace            []string
+}
+
+type fakeMaybeCompactCall struct {
+	sessionID string
+	provider  string
+	model     string
 }
 
 func (f *fakeOrchestratorEngine) SetSwarmContext(ctx *swarm.Context) {
@@ -95,6 +115,17 @@ func (f *fakeOrchestratorEngine) SetManifest(m agent.Manifest) {
 func (f *fakeOrchestratorEngine) SetModelPreference(providerName, modelName string) {
 	f.modelPrefProviders = append(f.modelPrefProviders, providerName)
 	f.modelPrefModels = append(f.modelPrefModels, modelName)
+	f.orderTrace = append(f.orderTrace, "SetModelPreference")
+}
+
+func (f *fakeOrchestratorEngine) MaybeCompactForModel(_ context.Context, sessionID, providerName, modelName string) string {
+	f.maybeCompactCalls = append(f.maybeCompactCalls, fakeMaybeCompactCall{
+		sessionID: sessionID,
+		provider:  providerName,
+		model:     modelName,
+	})
+	f.orderTrace = append(f.orderTrace, "MaybeCompactForModel")
+	return f.maybeCompactReturn
 }
 
 func (f *fakeOrchestratorEngine) SetContextStore(store *recall.FileContextStore, sessionID string) {
@@ -437,6 +468,41 @@ var _ = Describe("SessionOrchestrator", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(eng.modelPrefProviders).To(Equal([]string{"openai"}))
 			Expect(eng.modelPrefModels).To(Equal([]string{"gpt-4o"}))
+		})
+
+		// Phase-5 Slice α — model-switch compaction trigger.
+		//
+		// SwitchModel must call MaybeCompactForModel BEFORE
+		// SetModelPreference. The trigger inspects the persisted
+		// history against the new model's window; if it ran AFTER the
+		// preference swing the engine would resolve limits against the
+		// new model regardless and the gate would no longer be the
+		// "would the next request refuse?" check that motivates
+		// firing.
+		It("calls MaybeCompactForModel BEFORE SetModelPreference (Phase-5 Slice α)", func() {
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
+
+			err := orch.SwitchModel(context.Background(), "session-α", "tiny-provider", "tiny-model")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(eng.maybeCompactCalls).To(HaveLen(1),
+				"MaybeCompactForModel must fire on every SwitchModel call so a smaller-window switch cannot strand the next Stream behind the proactive overflow gate")
+			Expect(eng.maybeCompactCalls[0].sessionID).To(Equal("session-α"))
+			Expect(eng.maybeCompactCalls[0].provider).To(Equal("tiny-provider"))
+			Expect(eng.maybeCompactCalls[0].model).To(Equal("tiny-model"))
+			Expect(eng.orderTrace).To(Equal([]string{"MaybeCompactForModel", "SetModelPreference"}),
+				"the trigger must run before the preference swings — otherwise the engine resolves limits against the new model and the estimated-vs-usable comparison becomes self-fulfilling")
+		})
+
+		It("does not call MaybeCompactForModel when sessionID is empty", func() {
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
+
+			err := orch.SwitchModel(context.Background(), "", "tiny-provider", "tiny-model")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(eng.maybeCompactCalls).To(BeEmpty(),
+				"a session-less SwitchModel cannot drive a session-scoped trigger; the preference still updates")
+			Expect(eng.modelPrefProviders).To(Equal([]string{"tiny-provider"}))
 		})
 	})
 

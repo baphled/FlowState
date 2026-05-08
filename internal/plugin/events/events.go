@@ -1421,12 +1421,25 @@ func NewRecallSummarizedEvent(data RecallSummarizedEventData, ts ...time.Time) *
 // fields mirror streaming.ContextCompactedEvent so a single set of
 // subscribers can decode either the internal bus event or the wire
 // event without adapting field names.
+//
+// Phase-5 Slice α added the Trigger discriminant so subscribers can
+// attribute the cause (ratio | gate_proximity | model_switch |
+// tool_result_wave). Slice δ surfaces the value across the
+// engine→bus→bridge→Vue plumbing onto the chip's hover tooltip; Slice
+// α and Slice γ stamp the new values internally so the wire shape
+// only carries an authoritative figure once δ lands.
 type ContextCompactedEventData struct {
 	SessionID      string
 	AgentID        string
 	OriginalTokens int
 	SummaryTokens  int
 	LatencyMS      int64
+	// Trigger identifies the path that fired compaction. Closed
+	// vocabulary: "ratio" | "gate_proximity" | "model_switch" |
+	// "tool_result_wave". Empty string is tolerated by subscribers
+	// (defence in depth — historical events that pre-date the field
+	// remain decodable) but is never produced by current emit sites.
+	Trigger string
 }
 
 // ContextCompactedEvent is published when auto-compaction produces a

@@ -4066,8 +4066,16 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// the production seam where Stream() callers seldom set
 	// MaxTokens explicitly.
 	forceCompactForGate := e.gateProximityForceCompact(&manifestCopy, userMessage, tokenBudget)
+	// Translate the bool into the trigger discriminant string the
+	// downstream emit site stamps on the bus event. "gate_proximity"
+	// is the canonical name for Slice 6a's force tier; empty means
+	// "no force, ratio tier may still fire".
+	gateProxTrigger := ""
+	if forceCompactForGate {
+		gateProxTrigger = "gate_proximity"
+	}
 
-	compactedSummary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, forceCompactForGate)
+	compactedSummary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, gateProxTrigger)
 
 	result := e.assembleBuildResult(buildResultInputs{
 		manifest:         &manifestCopy,
@@ -4127,12 +4135,13 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - manifest has been prepared with the current system prompt (used to
 //     determine SlidingWindowSize).
 //   - tokenBudget is the full model context limit.
-//   - forceFire is the gate-proximity decision computed by
-//     buildContextWindow via shouldAutoCompactForGate. When true the
-//     ratio gate is bypassed; the AutoCompaction.Enabled flag and the
-//     "have content to summarise" check still apply — operators retain
-//     a single opt-out and we never invoke the summariser on an empty
-//     transcript.
+//   - forceTrigger is the discriminant for the force-fire path.
+//     Empty string means "ratio path only — no force". Non-empty
+//     bypasses the ratio gate; the AutoCompaction.Enabled flag and the
+//     "have content to summarise" check still apply. Closed
+//     vocabulary: "gate_proximity" (Slice 6a's tier),
+//     "model_switch" (Phase-5 Slice α), "tool_result_wave"
+//     (Phase-5 Slice γ).
 //
 // Returns:
 //   - The summary text ("[auto-compacted summary]: <json>") when
@@ -4140,7 +4149,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - The built window falls back to the normal path on:
 //   - feature disabled,
 //   - compactor nil,
-//   - token load under threshold AND gate-proximity quiet,
+//   - token load under threshold AND no force trigger,
 //   - compactor error (logged, not fatal).
 //
 // Side effects:
@@ -4148,7 +4157,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - Updates e.lastCompactionSummary on success; cleared on non-fire.
 //   - Publishes a pluginevents.ContextCompactedEvent on the engine bus
 //     on successful compaction (T10b per ADR - Tool-Call Atomicity).
-func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int, forceFire bool) string {
+//     Phase-5 Slice α/δ stamps the Trigger field.
+func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int, forceTrigger string) string {
+	forceFire := forceTrigger != ""
 	threshold, ok := e.autoCompactionThreshold(manifest, tokenBudget)
 	if !ok {
 		// Feature disabled or preconditions unmet — clear the cross-
@@ -4224,7 +4235,16 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	e.buildStateMu.Unlock()
 
 	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
-	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency)
+	// Determine the trigger discriminant. forceTrigger wins when the
+	// force-fire path drove the decision — that's the cause attribution
+	// the operator wants. Empty force-trigger means the ratio tier was
+	// the deciding voice; stamp "ratio" so subscribers can distinguish
+	// the soft-heuristic fire from the hard force tiers.
+	trigger := forceTrigger
+	if trigger == "" {
+		trigger = "ratio"
+	}
+	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency, trigger)
 	return summaryText
 }
 
@@ -4818,6 +4838,93 @@ func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage
 	return e.shouldAutoCompactForGate(estimated, tokenBudget, reserve)
 }
 
+// MaybeCompactForModel resolves the supplied (newProvider, newModel)
+// pair through the registry pipeline (ResolveContextLength /
+// ResolveOutputLimit) and force-fires the auto-compactor when the
+// persisted history estimate would saturate the new model's window.
+// Phase-5 Slice α — orchestrator.SwitchModel calls this BEFORE
+// engine.SetModelPreference so a switch to a smaller-window model
+// cannot strand the next Stream call behind the proactive overflow
+// gate's refusal with no auto-recovery.
+//
+// The trigger threads "model_switch" through publishContextCompactedEvent
+// so subscribers (Slice δ's chip tooltip) can attribute the cause
+// distinctly from ratio / gate_proximity / tool_result_wave fires.
+//
+// Expected:
+//   - ctx carries cancellation/deadline for the (potential) summariser call.
+//   - sessionID identifies the session the switch is happening in;
+//     threaded through the emitted event so per-session subscribers
+//     (chatStore handleContextCompactedEvent) only see their session's
+//     compaction.
+//   - newProvider / newModel identify the destination model; resolved
+//     via the same ResolveContextLength pipeline the proactive
+//     overflow gate uses so the trigger and the gate agree on the
+//     same picture of the budget.
+//
+// Returns:
+//   - The summary text ("[auto-compacted summary]: <json>") when
+//     compaction fired and succeeded; empty otherwise (degenerate
+//     resolution, fits comfortably, feature disabled, summariser
+//     error).
+//
+// No-op cases (return ""):
+//   - sessionID empty (no session-scoped trigger to drive),
+//   - newProvider/newModel resolves to a non-positive ContextLength
+//     (degenerate registry data — refuse to compact against garbage
+//     budgets),
+//   - the persisted history estimate fits comfortably under the new
+//     model's usable window (limit - reserve - 5% safety margin),
+//   - maybeAutoCompact's own preconditions reject (compactor nil,
+//     enabled=false, empty transcript, summariser error).
+//
+// Side effects:
+//   - One LLM call via the AutoCompactor on the fire path.
+//   - Updates e.lastCompactionSummary / sessionCompactionMemo on success.
+//   - Publishes a pluginevents.ContextCompactedEvent with
+//     Trigger="model_switch" on the engine bus on a successful fire.
+func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvider, newModel string) string {
+	if e == nil || sessionID == "" || e.tokenCounter == nil || e.store == nil {
+		return ""
+	}
+
+	// Resolve the new model's window through the same pipeline the
+	// gate consults. ResolveContextLength returns the registry's
+	// ContextLength when the failover manager knows the pair; falls
+	// back to e.systemPromptBudget otherwise. A non-positive value
+	// means "no budget signal" — refuse to compact against garbage.
+	newLimit := e.ResolveContextLength(newProvider, newModel)
+	if newLimit <= 0 {
+		return ""
+	}
+
+	// Build the candidate request: every persisted message in the
+	// store, no in-flight user turn (the switch is between turns).
+	// The reserve flows through outputReserveFor against
+	// (newProvider, newModel) so we measure against the destination
+	// model's response budget, not the active model's.
+	allMessages := e.store.AllMessages()
+	syntheticReq := &provider.ChatRequest{
+		Provider: newProvider,
+		Model:    newModel,
+		Messages: allMessages,
+	}
+	estimated := e.estimateRequestTokens(syntheticReq)
+	reserve := e.outputReserveFor(syntheticReq)
+
+	// Same boundary the gate-proximity tier uses: fire when the
+	// estimate would land within the proactive overflow gate's
+	// 5% safety margin of refusal on the new window. Without the
+	// safety margin we'd only fire when there is no room left for
+	// the summary itself, defeating the point.
+	if !e.shouldAutoCompactForGate(estimated, newLimit, reserve) {
+		return ""
+	}
+
+	manifest := e.Manifest()
+	return e.maybeAutoCompact(ctx, sessionID, &manifest, newLimit, "model_switch")
+}
+
 // preferredProviderModel returns the first PreferredModels entry on
 // the manifest, falling back to the empty pair when none is set.
 // The empty pair flows through ResolveOutputLimit → 0 → outputReserveFor
@@ -4838,16 +4945,24 @@ func preferredProviderModel(manifest *agent.Manifest) (string, string) {
 // failed or no-op compactions are not emitted so subscribers do not see
 // phantom events.
 //
+// Phase-5 Slice α added the trigger parameter so the emitted event
+// carries a discriminant identifying which tier fired the compaction
+// ("ratio", "gate_proximity", "model_switch", "tool_result_wave").
+// Slice δ surfaces the field across the wire bridge and onto the chip
+// tooltip; this seam is the source of truth.
+//
 // Expected:
 //   - sessionID and agentID identify the emission source.
 //   - recentTokens is the pre-compaction token count the summary replaces.
 //   - summaryText is the final "[auto-compacted summary]: <json>" string
 //     injected into the built window.
 //   - latency is the wall-clock duration of the Compact call.
+//   - trigger is the closed-vocabulary discriminant identifying the
+//     fire path. Empty is tolerated for forward-compatibility.
 //
 // Side effects:
 //   - Publishes one event on the engine bus if non-nil; otherwise no-op.
-func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration) {
+func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration, trigger string) {
 	summaryTokens := e.tokenCounter.Count(summaryText)
 	delta := recentTokens - summaryTokens
 	if e.compressionMetrics != nil {
@@ -4888,6 +5003,7 @@ func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentT
 		OriginalTokens: recentTokens,
 		SummaryTokens:  summaryTokens,
 		LatencyMS:      latency.Milliseconds(),
+		Trigger:        trigger,
 	}))
 }
 

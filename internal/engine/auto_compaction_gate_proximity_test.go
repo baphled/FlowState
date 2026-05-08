@@ -14,6 +14,7 @@ import (
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/engine"
 	pluginevents "github.com/baphled/flowstate/internal/plugin/events"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 )
@@ -263,5 +264,184 @@ var _ = Describe("Engine auto-compaction gate-proximity force-trigger", func() {
 		Expect(got.OriginalTokens).To(BeNumerically(">", 0))
 		Expect(got.SummaryTokens).To(BeNumerically(">", 0))
 		Expect(got.LatencyMS).To(BeNumerically(">=", 0))
+		Expect(got.Trigger).To(Equal("gate_proximity"),
+			"gate-proximity fire must stamp Trigger so subscribers can attribute the cause")
+	})
+
+	// Phase-5 Slice α — model-switch compaction trigger.
+	//
+	// Orchestrator.SwitchModel routes through Engine.MaybeCompactForModel
+	// BEFORE installing the new preference. Resolves the new model's
+	// ContextLength via the failover manager, computes the persisted
+	// history estimate, and force-fires maybeAutoCompact when the
+	// estimate would land within the proactive overflow gate's refusal
+	// boundary on the new (smaller) window. Without this, switching
+	// from a 200K-window model to a 32K-window model in mid-conversation
+	// caused the next Stream call to refuse with no auto-recovery.
+	//
+	// The trigger threads "model_switch" through the
+	// ContextCompactedEventData.Trigger field so subscribers can
+	// distinguish this cause from the ratio / gate-proximity tiers.
+	Context("MaybeCompactForModel — model-switch trigger", func() {
+		It("force-fires compaction when persisted history would saturate the new (smaller) model's window", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newModelSwitchEngine(summariser, true)
+
+			// Seed 60_000 tokens — fits the source model's 100K window
+			// but exceeds the destination 'tiny-model' which the
+			// fixture pins at 30K via the failover manager. The
+			// persisted history estimate should trip the proactive
+			// overflow gate on the next Stream call against tiny-model
+			// unless compaction fires.
+			seedGateProxMessages(store, 60)
+
+			summary := eng.MaybeCompactForModel(context.Background(),
+				"sess-model-switch-fire", "tiny-provider", "tiny-model")
+
+			Expect(summariser.calls.Load()).To(Equal(int32(1)),
+				"model-switch trigger must force compaction when the persisted history exceeds the new model's usable window")
+			Expect(summary).NotTo(BeEmpty(),
+				"on a successful compaction the method returns the summary text")
+		})
+
+		It("does not fire when the persisted history fits comfortably under the new model's window", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newModelSwitchEngine(summariser, true)
+
+			// 5_000 tokens — fits the destination 30K window with
+			// ample headroom. The trigger must stay quiet.
+			seedGateProxMessages(store, 5)
+
+			summary := eng.MaybeCompactForModel(context.Background(),
+				"sess-model-switch-quiet", "tiny-provider", "tiny-model")
+
+			Expect(summariser.calls.Load()).To(Equal(int32(0)),
+				"model-switch trigger must not fire when the next request fits the new window")
+			Expect(summary).To(BeEmpty())
+		})
+
+		It("publishes EventContextCompacted with Trigger=\"model_switch\" on a model-switch fire", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newModelSwitchEngine(summariser, true)
+
+			var (
+				mu       sync.Mutex
+				observed []pluginevents.ContextCompactedEventData
+			)
+			eng.EventBus().Subscribe(pluginevents.EventContextCompacted, func(evt any) {
+				e, ok := evt.(*pluginevents.ContextCompactedEvent)
+				Expect(ok).To(BeTrue())
+				mu.Lock()
+				observed = append(observed, e.Data)
+				mu.Unlock()
+			})
+
+			seedGateProxMessages(store, 60)
+			_ = eng.MaybeCompactForModel(context.Background(),
+				"sess-model-switch-event", "tiny-provider", "tiny-model")
+
+			Eventually(func() int {
+				mu.Lock()
+				defer mu.Unlock()
+				return len(observed)
+			}, 500*time.Millisecond).Should(Equal(1))
+
+			mu.Lock()
+			got := observed[0]
+			mu.Unlock()
+
+			Expect(got.SessionID).To(Equal("sess-model-switch-event"))
+			Expect(got.Trigger).To(Equal("model_switch"),
+				"model-switch fire must stamp the Trigger discriminant so the chip tooltip can attribute the cause")
+			Expect(got.OriginalTokens).To(BeNumerically(">", 0))
+			Expect(got.SummaryTokens).To(BeNumerically(">", 0))
+		})
+
+		It("is a no-op when the new provider/model resolves to a non-positive limit", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newModelSwitchEngine(summariser, true)
+
+			seedGateProxMessages(store, 60)
+
+			// The failover manager has no entry for "unknown-provider";
+			// ResolveContextLength returns the contextFallback. We
+			// configured the fallback at 100_000 (newModelSwitchEngine
+			// default). 60K seeded comfortably fits 100K — quiet path.
+			//
+			// What we're pinning here: the trigger relies on the
+			// resolved figure being trustworthy. A degenerate
+			// resolution (zero or negative) must NOT trigger
+			// compaction with garbage budgets.
+			_ = eng.MaybeCompactForModel(context.Background(),
+				"sess-model-switch-unknown", "unknown-provider", "unknown-model")
+
+			Expect(summariser.calls.Load()).To(Equal(int32(0)),
+				"unresolved provider/model must not force compaction")
+		})
 	})
 })
+
+// newModelSwitchEngine wires an engine with a real failover.Manager
+// backed by a mockProvider that advertises a 30K context for
+// 'tiny-provider/tiny-model' so MaybeCompactForModel has a target with
+// a meaningfully smaller window than the gateProxCounter's 100K
+// ModelLimit. Without this seam the engine's ResolveContextLength
+// would return e.systemPromptBudget regardless of the model name and
+// the model-switch trigger could not be exercised.
+//
+// The same gateProxCounter is used so seedGateProxMessages controls
+// the persisted history estimate predictably.
+func newModelSwitchEngine(
+	summariser ctxstore.Summariser,
+	enabled bool,
+) (*engine.Engine, *recall.FileContextStore) {
+	tempDir := GinkgoT().TempDir()
+	store, err := recall.NewFileContextStore(tempDir+"/ctx.json", "test-model")
+	Expect(err).NotTo(HaveOccurred())
+
+	cfg := ctxstore.DefaultCompressionConfig()
+	cfg.AutoCompaction.Enabled = enabled
+	// Pin the ratio threshold high so only the model-switch
+	// force-fire can trigger compaction.
+	cfg.AutoCompaction.Threshold = 0.99
+
+	cm := agent.DefaultContextManagement()
+	cm.CompactionThreshold = 0
+	cm.SlidingWindowSize = 200
+
+	testManifest := agent.Manifest{
+		ID:                "model-switch-agent",
+		Name:              "Model-Switch Agent",
+		Instructions:      agent.Instructions{SystemPrompt: "sys"},
+		ContextManagement: cm,
+	}
+
+	// The mock provider advertises tiny-model at 30K so the
+	// failover manager's ResolveContextLength returns 30_000 for
+	// (tiny-provider, tiny-model). The 100K fallback then catches
+	// the unknown-provider/unknown-model spec.
+	tinyProvider := &mockProvider{
+		name: "tiny-provider",
+		models: []provider.Model{
+			{ID: "tiny-model", Provider: "tiny-provider", ContextLength: 30000, OutputLimit: 4096},
+		},
+	}
+	registry := provider.NewRegistry()
+	registry.Register(tinyProvider)
+
+	health := failover.NewHealthManager()
+	mgr := failover.NewManager(registry, health, 5*time.Minute)
+	mgr.SetContextFallback(100000)
+
+	eng := engine.New(engine.Config{
+		ChatProvider:      tinyProvider,
+		Manifest:          testManifest,
+		Store:             store,
+		TokenCounter:      gateProxCounter{},
+		AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
+		CompressionConfig: cfg,
+		Registry:          registry,
+		FailoverManager:   mgr,
+	})
+	return eng, store
+}
