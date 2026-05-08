@@ -100,6 +100,28 @@ func RegisterBuiltin(r Registration) {
 	builtinRegistrations = append(builtinRegistrations, r)
 }
 
+// RegisteredBuiltins returns a copy of all builtin Registrations the
+// init-side-effect chain has gathered so far. This exists so the
+// internal/plugin/builtin/all guard tests can assert that every built-in
+// plugin advertised by the package's blank-import list is actually
+// reachable through the canonical registration contract — closing the
+// drift gap where a plugin package adds an init() but the barrel
+// package forgets the blank-import (or vice versa).
+//
+// The returned slice is a copy; mutating it does not affect the package
+// state.
+//
+// Expected: callable any time after init().
+// Returns: defensive copy of the registration slice.
+// Side effects: none.
+func RegisteredBuiltins() []Registration {
+	builtinMu.RLock()
+	defer builtinMu.RUnlock()
+	out := make([]Registration, len(builtinRegistrations))
+	copy(out, builtinRegistrations)
+	return out
+}
+
 // safeCallFactory invokes a factory, converting any panic into an error.
 //
 // Expected: name is the plugin name; factory is non-nil.
