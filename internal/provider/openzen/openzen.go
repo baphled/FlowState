@@ -214,8 +214,16 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 
 // fallbackModels returns a hardcoded list of known models when the API is unavailable.
 //
+// Per-model ContextLength figures track the upstream-published limits
+// rather than the catalogue-wide defaultContextLength: the Claude
+// Sonnet family ships at 200K, but gpt-4o ships at 128K (OpenAI's
+// published limit). Phase-5 Slice β corrected gpt-4o from the
+// catalogue default — the previous 200_000 figure caused the engine's
+// proactive overflow gate to over-allocate and the auto-compactor's
+// gate-proximity tier to under-fire on this model.
+//
 // Returns:
-//   - A slice of commonly available models.
+//   - A slice of commonly available models with their published per-model limits.
 //
 // Side effects:
 //   - None.
@@ -223,6 +231,6 @@ func fallbackModels() []provider.Model {
 	return []provider.Model{
 		{ID: "claude-sonnet-4-5", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "claude-3-5-sonnet", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
-		{ID: "gpt-4o", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "gpt-4o", Provider: providerName, ContextLength: 128000, OutputLimit: defaultOutputLimit},
 	}
 }

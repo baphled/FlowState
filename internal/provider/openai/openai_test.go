@@ -100,6 +100,51 @@ var _ = Describe("OpenAI Provider", func() {
 				Expect(m.Provider).To(Equal("openai"))
 			}
 		})
+
+		// Phase-5 Slice β — limit-registry corrections.
+		//
+		// gpt-5 was missing from the registry: any caller that picked
+		// the model fell through to the engine's
+		// ctxstore.DefaultModelContextFallback (16K), which forced the
+		// proactive overflow gate to refuse healthy turns and starved
+		// the auto-compactor's gate-proximity tier. Add it explicitly
+		// at OpenAI's published gpt-5 limits (400K context, 128K max
+		// output) so registry consultation surfaces the real budget.
+		//
+		// Table-driven assertions per the limit-registry-corrections
+		// brief: extends the existing Describe("Models") seam.
+		It("advertises the correct ContextLength and OutputLimit for each model", func() {
+			p, err := openai.New("test-api-key")
+			Expect(err).NotTo(HaveOccurred())
+
+			models, err := p.Models()
+			Expect(err).NotTo(HaveOccurred())
+
+			byID := make(map[string]providerPkg.Model, len(models))
+			for _, m := range models {
+				byID[m.ID] = m
+			}
+
+			cases := []struct {
+				id            string
+				contextLength int
+				outputLimit   int
+			}{
+				{id: "gpt-5", contextLength: 400000, outputLimit: 128000},
+				{id: "gpt-4o", contextLength: 128000, outputLimit: 16384},
+				{id: "gpt-4o-mini", contextLength: 128000, outputLimit: 16384},
+				{id: "gpt-4-turbo", contextLength: 128000, outputLimit: 4096},
+				{id: "gpt-3.5-turbo", contextLength: 16385, outputLimit: 4096},
+			}
+			for _, tc := range cases {
+				m, ok := byID[tc.id]
+				Expect(ok).To(BeTrue(), "registry must contain %s", tc.id)
+				Expect(m.ContextLength).To(Equal(tc.contextLength),
+					"%s ContextLength must match the upstream-published limit", tc.id)
+				Expect(m.OutputLimit).To(Equal(tc.outputLimit),
+					"%s OutputLimit must match the upstream-published max-output", tc.id)
+			}
+		})
 	})
 
 	Describe("Chat", func() {

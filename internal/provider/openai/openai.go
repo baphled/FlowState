@@ -159,7 +159,14 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	// (gpt-4o family ships 16384-token max output; gpt-3.5-turbo ships
 	// 4096). Surfaced via Slice 1 of the Phase-4 follow-ups so the
 	// engine's overflow gate sizes its output reserve per-model.
+	//
+	// Phase-5 Slice β added gpt-5 (400K context, 128K max output, per
+	// OpenAI's published gpt-5 specs) — without the explicit entry,
+	// callers selecting the model fell through to the engine's
+	// ctxstore.DefaultModelContextFallback (16K) and forced spurious
+	// overflow refusals.
 	return []provider.Model{
+		{ID: "gpt-5", Provider: "openai", ContextLength: 400000, OutputLimit: 128000},
 		{ID: "gpt-4o", Provider: "openai", ContextLength: 128000, OutputLimit: 16384},
 		{ID: "gpt-4o-mini", Provider: "openai", ContextLength: 128000, OutputLimit: 16384},
 		{ID: "gpt-4-turbo", Provider: "openai", ContextLength: 128000, OutputLimit: 4096},
