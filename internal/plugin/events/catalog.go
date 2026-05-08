@@ -272,6 +272,25 @@ var Catalog = []EventCatalogEntry{
 			" by giving the SSE bridge a typed signal to project to the gate-failed banner.",
 	},
 	{
+		Topic:       EventStreamingHeartbeat,
+		Constant:    "EventStreamingHeartbeat",
+		EventType:   "streaming.heartbeat",
+		Struct:      "StreamingHeartbeatEvent",
+		Publishers:  []string{"engine.go (streamFromProvider + tool-loop)", "provider/anthropic (forwarded ping)"},
+		Subscribers: []string{"api.subscribeSessionBus (default-bridge-to-sse)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Streaming Coherence — Slice F (May 2026). Engine emits a heartbeat at" +
+			" most every ~15s during a turn so the chat UI's stall watchdog re-arms even" +
+			" when the provider pauses content emission (long thinking, sandboxed tool" +
+			" execution, queued delegation). Anthropic ping events MUST be forwarded as" +
+			" this heartbeat rather than silently dropped per the Engine Bus Event" +
+			" Taxonomy ADR's anti-pattern callout. The payload carries the turn-phase" +
+			" discriminant the frontend's adaptive watchdog reads to pick a per-phase" +
+			" threshold (generating 45s, thinking 120s, tool_executing 180s, queued 300s).",
+	},
+	{
 		Topic:       EventContextWindowBuilt,
 		Constant:    "EventContextWindowBuilt",
 		EventType:   "context.window",

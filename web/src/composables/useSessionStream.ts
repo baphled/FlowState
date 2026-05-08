@@ -1,13 +1,44 @@
 import { subscribeSessionStream } from '@/api'
 
 /**
- * 60s fail-safe — if no SSE activity arrives during a send, the consumer
- * assumes the stream is dead and notifies the caller via `onTrip` so it can
- * clear isLoading. Without this the submit gate would stay locked forever
- * after a network hiccup, presenting to the user as "the chat is stuck".
- * Reset on every chunk; cancelled when the stream cleanly terminates.
+ * Default 60s fail-safe — if no SSE activity arrives during a send, the
+ * consumer assumes the stream is dead and notifies the caller via
+ * `onTrip` so it can clear isLoading. Without this the submit gate
+ * would stay locked forever after a network hiccup, presenting to the
+ * user as "the chat is stuck". Reset on every chunk; cancelled when the
+ * stream cleanly terminates.
  */
 export const SSE_STALL_TIMEOUT_MS = 60_000
+
+/**
+ * Streaming Coherence Slice F (May 2026) — adaptive per-phase thresholds.
+ *
+ * The engine's `streaming.heartbeat` event carries a `phase`
+ * discriminant; the watchdog reads it to pick a per-phase threshold
+ * appropriate to what the stream is doing right now:
+ *
+ *   - "generating"     →  45s — content tokens are arriving fast.
+ *   - "thinking"       → 120s — reasoning providers can pause for minutes.
+ *   - "tool_executing" → 180s — long shell scripts, sandboxed builds.
+ *   - "queued"         → 300s — rate-limit backoff, sandbox queue.
+ *
+ * Empty / unrecognised phase falls back to the legacy SSE_STALL_TIMEOUT_MS.
+ *
+ * Surface the table as a const so tests can pin the thresholds.
+ */
+export const SSE_STALL_TIMEOUT_BY_PHASE_MS: Record<string, number> = {
+  generating: 45_000,
+  thinking: 120_000,
+  tool_executing: 180_000,
+  queued: 300_000,
+}
+
+export function stallTimeoutForPhase(phase: string | undefined): number {
+  if (phase && SSE_STALL_TIMEOUT_BY_PHASE_MS[phase] !== undefined) {
+    return SSE_STALL_TIMEOUT_BY_PHASE_MS[phase]
+  }
+  return SSE_STALL_TIMEOUT_MS
+}
 
 /**
  * Callbacks injected by the consumer of useSessionStream. The composable owns
@@ -54,9 +85,14 @@ export interface SessionStream {
   /**
    * Arm (or re-arm) the stall watchdog. Cancels any existing timer first
    * so callers can safely call this on every chunk to indicate liveness.
-   * `onTrip` fires exactly once after SSE_STALL_TIMEOUT_MS of inactivity.
+   * `onTrip` fires exactly once after `timeoutMs` of inactivity (defaults
+   * to SSE_STALL_TIMEOUT_MS for legacy callers).
+   *
+   * Streaming Coherence Slice F (May 2026): the per-phase override
+   * lets the chat store pick from SSE_STALL_TIMEOUT_BY_PHASE_MS based
+   * on the latest engine heartbeat's phase discriminant.
    */
-  armWatchdog(onTrip: () => void): void
+  armWatchdog(onTrip: () => void, timeoutMs?: number): void
   /**
    * Cancel any pending watchdog timer without firing it. Safe to call when
    * no timer is armed.
@@ -120,15 +156,16 @@ export function useSessionStream(): SessionStream {
     }
   }
 
-  function armWatchdog(onTrip: () => void): void {
+  function armWatchdog(onTrip: () => void, timeoutMs?: number): void {
     clearWatchdog()
+    const effective = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : SSE_STALL_TIMEOUT_MS
     stallWatchdog = setTimeout(() => {
       // Mark the timer as fired BEFORE invoking onTrip so the consumer's
       // callback can synchronously re-arm via this composable without a
       // double-clear racing with the just-cleared handle.
       stallWatchdog = null
       onTrip()
-    }, SSE_STALL_TIMEOUT_MS)
+    }, effective)
   }
 
   function connect(sessionId: string, callbacks: SessionStreamCallbacks): void {
