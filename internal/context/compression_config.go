@@ -10,10 +10,12 @@ import (
 
 // CompressionConfig configures the three-layer context compression system.
 //
-// All three layers (MicroCompaction, AutoCompaction, SessionMemory) default
-// to Enabled: false so that adding CompressionConfig to the root config is
-// a no-op for existing deployments. Individual layers are activated by
-// setting Enabled: true in the loaded configuration.
+// AutoCompaction defaults to Enabled: true (Slice 6c of the Context-
+// Management Phase-4 follow-ups); the more invasive MicroCompaction and
+// SessionMemory layers default to Enabled: false. Operators who want the
+// pre-flip behaviour set `compression.auto_compaction.enabled: false`
+// explicitly. Individual layers can otherwise be activated by setting
+// Enabled: true in the loaded configuration.
 //
 // Defaults are centralised in DefaultCompressionConfig. No threshold or
 // storage path may be hard-coded elsewhere in the codebase — all consumers
@@ -137,8 +139,10 @@ type CompressionMetrics struct {
 	OverheadTokens int
 }
 
-// DefaultCompressionConfig returns a CompressionConfig with every layer
-// disabled and all numeric/path fields populated to safe defaults.
+// DefaultCompressionConfig returns a CompressionConfig with the
+// view-only L2 auto-compaction layer enabled by default, the more
+// invasive L1 micro-compaction and L3 session-memory layers left
+// opt-in, and every numeric/path field populated to a safe default.
 //
 // This constructor is the single source of truth for compression defaults.
 // Callers that wish to alter behaviour should start from this value and
@@ -150,7 +154,7 @@ type CompressionMetrics struct {
 //   - MicroCompaction.TokenThreshold:    1000
 //   - MicroCompaction.StorageDir:        ~/.flowstate/compacted
 //   - MicroCompaction.PlaceholderTokens: 50
-//   - AutoCompaction.Enabled:            false
+//   - AutoCompaction.Enabled:            true
 //   - AutoCompaction.Threshold:          0.75
 //   - SessionMemory.Enabled:             false
 //   - SessionMemory.StorageDir:          ~/.flowstate/session-memory
@@ -171,7 +175,15 @@ func DefaultCompressionConfig() CompressionConfig {
 			IdleTTL:           30 * time.Minute,
 		},
 		AutoCompaction: AutoCompactionConfig{
-			Enabled:   false,
+			// Default-enabled (Slice 6c of the Context-Management
+			// Phase-4 follow-ups). The L2 view-only auto-compactor is
+			// the saturation safety net for long sessions; operators
+			// who want the previous behaviour set
+			// `compression.auto_compaction.enabled: false` in
+			// config.yaml. Threshold of 0.75 stays the validated
+			// default and is overridable per-agent through
+			// manifest.context_management.compaction_threshold.
+			Enabled:   true,
 			Threshold: 0.75,
 		},
 		SessionMemory: SessionMemoryConfig{

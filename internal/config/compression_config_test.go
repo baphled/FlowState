@@ -24,11 +24,15 @@ var _ = Describe("CompressionConfig wiring", func() {
 	})
 
 	Describe("DefaultConfig", func() {
-		It("ships all compression layers disabled", func() {
+		// Slice 6c default-flip: AutoCompaction is enabled by default;
+		// MicroCompaction and SessionMemory remain opt-in. The chain
+		// from DefaultConfig -> DefaultCompressionConfig must propagate
+		// the new default.
+		It("ships auto-compaction enabled and other layers opt-in", func() {
 			cfg := config.DefaultConfig()
 
+			Expect(cfg.Compression.AutoCompaction.Enabled).To(BeTrue())
 			Expect(cfg.Compression.MicroCompaction.Enabled).To(BeFalse())
-			Expect(cfg.Compression.AutoCompaction.Enabled).To(BeFalse())
 			Expect(cfg.Compression.SessionMemory.Enabled).To(BeFalse())
 		})
 
@@ -96,8 +100,11 @@ log_level: info
 				homeDir, homeErr := os.UserHomeDir()
 				Expect(homeErr).NotTo(HaveOccurred())
 
+				// Slice 6c: AutoCompaction defaults to true via the
+				// compression-defaults chain; the other two layers
+				// remain opt-in.
 				Expect(cfg.Compression.MicroCompaction.Enabled).To(BeFalse())
-				Expect(cfg.Compression.AutoCompaction.Enabled).To(BeFalse())
+				Expect(cfg.Compression.AutoCompaction.Enabled).To(BeTrue())
 				Expect(cfg.Compression.SessionMemory.Enabled).To(BeFalse())
 
 				Expect(cfg.Compression.MicroCompaction.HotTailSize).To(Equal(5))
