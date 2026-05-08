@@ -2130,6 +2130,12 @@ type sseContextCompacted struct {
 	OriginalTokens int    `json:"original_tokens"`
 	SummaryTokens  int    `json:"summary_tokens"`
 	LatencyMS      int64  `json:"latency_ms"`
+	// Trigger identifies the path that fired compaction. Closed
+	// vocabulary: ratio | gate_proximity | model_switch |
+	// tool_result_wave. Empty is tolerated so historical events that
+	// pre-date the field remain decodable; the chip tooltip falls back
+	// to the generic copy.
+	Trigger string `json:"trigger,omitempty"`
 }
 
 // writeSSEContextCompacted emits a typed context_compacted SSE event by
@@ -2162,6 +2168,10 @@ func writeSSEContextCompacted(w http.ResponseWriter, flusher http.Flusher, data 
 	originalTokens, _ := data["original_tokens"].(int)
 	summaryTokens, _ := data["summary_tokens"].(int)
 	latencyMS, _ := data["latency_ms"].(int64)
+	// Phase-5 Slice δ — the Trigger discriminant flows verbatim from
+	// the bridge handler. Empty is tolerated so historical events that
+	// pre-date the field remain decodable.
+	trigger, _ := data["trigger"].(string)
 
 	payload := sseContextCompacted{
 		Type:           "context_compacted",
@@ -2170,6 +2180,7 @@ func writeSSEContextCompacted(w http.ResponseWriter, flusher http.Flusher, data 
 		OriginalTokens: originalTokens,
 		SummaryTokens:  summaryTokens,
 		LatencyMS:      latencyMS,
+		Trigger:        trigger,
 	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {

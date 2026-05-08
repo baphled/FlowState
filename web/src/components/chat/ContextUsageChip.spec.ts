@@ -261,6 +261,7 @@ describe('ContextUsageChip', () => {
         summaryTokens: 5000,
         tokensSaved: 45000,
         at: Date.now(),
+        trigger: '',
       }
       await wrapper.vm.$nextTick()
 
@@ -297,6 +298,7 @@ describe('ContextUsageChip', () => {
       summaryTokens: 5000,
       tokensSaved: 45000,
       at: Date.now(),
+      trigger: '',
     }
 
     const wrapper = mount(ContextUsageChip)
@@ -309,6 +311,143 @@ describe('ContextUsageChip', () => {
     // itself without opening a session-recording.
     expect(title).toContain('50K')
     expect(title).toContain('5K')
+  })
+
+  // ---- Phase-5 Slice δ — Trigger discriminant in chip tooltip --------
+  //
+  // The compaction trigger discriminant lands on `lastCompaction.trigger`
+  // (set by the chat store). The chip tooltip reads it and surfaces a
+  // human-readable phrase distinguishing the four causes:
+  //
+  //   - "ratio"             → "compacted on threshold"
+  //   - "gate_proximity"    → "compacted near limit"
+  //   - "model_switch"      → "compacted on model switch"
+  //   - "tool_result_wave"  → "compacted after tool result"
+  //
+  // Empty / unknown triggers fall back to the generic copy so historical
+  // events that pre-date the field remain decodable.
+
+  it('surfaces "compacted on threshold" copy for trigger=ratio (Slice δ)', () => {
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 5000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 5,
+    }
+    store.compactionEventCount = 1
+    store.lastCompaction = {
+      originalTokens: 50000,
+      summaryTokens: 5000,
+      tokensSaved: 45000,
+      at: Date.now(),
+      trigger: 'ratio',
+    }
+
+    const wrapper = mount(ContextUsageChip)
+
+    const title = wrapper.find('[data-testid="context-usage-chip"]').attributes('title') ?? ''
+    expect(title).toContain('compacted on threshold')
+  })
+
+  it('surfaces "compacted near limit" copy for trigger=gate_proximity (Slice δ)', () => {
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 95000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 95,
+    }
+    store.compactionEventCount = 1
+    store.lastCompaction = {
+      originalTokens: 50000,
+      summaryTokens: 5000,
+      tokensSaved: 45000,
+      at: Date.now(),
+      trigger: 'gate_proximity',
+    }
+
+    const wrapper = mount(ContextUsageChip)
+
+    const title = wrapper.find('[data-testid="context-usage-chip"]').attributes('title') ?? ''
+    expect(title).toContain('compacted near limit')
+  })
+
+  it('surfaces "compacted on model switch" copy for trigger=model_switch (Slice δ)', () => {
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 5000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 5,
+    }
+    store.compactionEventCount = 1
+    store.lastCompaction = {
+      originalTokens: 50000,
+      summaryTokens: 5000,
+      tokensSaved: 45000,
+      at: Date.now(),
+      trigger: 'model_switch',
+    }
+
+    const wrapper = mount(ContextUsageChip)
+
+    const title = wrapper.find('[data-testid="context-usage-chip"]').attributes('title') ?? ''
+    expect(title).toContain('compacted on model switch')
+  })
+
+  it('surfaces "compacted after tool result" copy for trigger=tool_result_wave (Slice δ)', () => {
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 5000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 5,
+    }
+    store.compactionEventCount = 1
+    store.lastCompaction = {
+      originalTokens: 50000,
+      summaryTokens: 5000,
+      tokensSaved: 45000,
+      at: Date.now(),
+      trigger: 'tool_result_wave',
+    }
+
+    const wrapper = mount(ContextUsageChip)
+
+    const title = wrapper.find('[data-testid="context-usage-chip"]').attributes('title') ?? ''
+    expect(title).toContain('compacted after tool result')
+  })
+
+  it('falls back to the generic copy when trigger is empty or unknown (Slice δ)', () => {
+    // Defence in depth: a historical event that pre-dates the field
+    // (or a future emitter that ships an unrecognised value) keeps the
+    // saved-tokens copy without surfacing a misattribution.
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 5000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 5,
+    }
+    store.compactionEventCount = 1
+    store.lastCompaction = {
+      originalTokens: 50000,
+      summaryTokens: 5000,
+      tokensSaved: 45000,
+      at: Date.now(),
+      trigger: '',
+    }
+
+    const wrapper = mount(ContextUsageChip)
+
+    const title = wrapper.find('[data-testid="context-usage-chip"]').attributes('title') ?? ''
+    expect(title).toContain('saved 45K tokens')
+    // No misattribution for empty trigger.
+    expect(title).not.toContain('compacted on threshold')
+    expect(title).not.toContain('compacted near limit')
+    expect(title).not.toContain('compacted on model switch')
+    expect(title).not.toContain('compacted after tool result')
   })
 
   it('preserves the existing severity colours during a compaction flash (Slice 6b)', async () => {
@@ -340,6 +479,7 @@ describe('ContextUsageChip', () => {
         summaryTokens: 5000,
         tokensSaved: 45000,
         at: Date.now(),
+        trigger: '',
       }
       await wrapper.vm.$nextTick()
 

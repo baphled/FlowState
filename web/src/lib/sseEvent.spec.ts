@@ -297,9 +297,14 @@ describe('parseSSEPayload', () => {
     // Slice 6b — surface auto-compaction events on the chip. The Go SSE
     // pipeline's writeSSEContextCompacted emits
     // {"type":"context_compacted", session_id, agent_id, original_tokens,
-    //  summary_tokens, latency_ms} when the engine's L2 auto-compactor
-    // publishes EventContextCompacted. The frontend parser routes this
-    // into a typed variant the chat store and chip can consume.
+    //  summary_tokens, latency_ms, trigger} when the engine's L2
+    // auto-compactor publishes EventContextCompacted. The frontend
+    // parser routes this into a typed variant the chat store and chip
+    // can consume.
+    //
+    // Phase-5 Slice δ added the trigger discriminant so the chip
+    // tooltip can attribute the cause (ratio | gate_proximity |
+    // model_switch | tool_result_wave).
     const payload = JSON.stringify({
       type: 'context_compacted',
       session_id: 's-active',
@@ -307,6 +312,7 @@ describe('parseSSEPayload', () => {
       original_tokens: 50000,
       summary_tokens: 5000,
       latency_ms: 1234,
+      trigger: 'model_switch',
     })
     const ev = parseSSEPayload(payload)
     expect(ev.kind).toBe('context_compacted')
@@ -316,6 +322,7 @@ describe('parseSSEPayload', () => {
       expect(ev.originalTokens).toBe(50000)
       expect(ev.summaryTokens).toBe(5000)
       expect(ev.latencyMs).toBe(1234)
+      expect(ev.trigger).toBe('model_switch')
     }
   })
 
@@ -377,6 +384,10 @@ describe('parseSSEPayload', () => {
     // Numeric fields default to 0; string fields default to ''. The
     // chat store's handler treats zero / empty as "no information" and
     // either ignores the event or skips the flash — see chatStore spec.
+    //
+    // Phase-5 Slice δ: an empty trigger is tolerated so historical
+    // events that pre-date the field remain decodable; the chip tooltip
+    // falls back to the generic copy when trigger is empty.
     const ev = parseSSEPayload('{"type":"context_compacted"}')
     expect(ev.kind).toBe('context_compacted')
     if (ev.kind === 'context_compacted') {
@@ -385,6 +396,7 @@ describe('parseSSEPayload', () => {
       expect(ev.originalTokens).toBe(0)
       expect(ev.summaryTokens).toBe(0)
       expect(ev.latencyMs).toBe(0)
+      expect(ev.trigger).toBe('')
     }
   })
 

@@ -334,6 +334,25 @@ export interface SSEContextCompactedEvent {
   originalTokens: number
   summaryTokens: number
   latencyMs: number
+  /**
+   * Trigger discriminant — Phase-5 Slice δ.
+   *
+   * Closed vocabulary on the wire:
+   *   - "ratio"             → soft heuristic (`recent / budget > threshold`)
+   *   - "gate_proximity"    → next request would refuse on the proactive
+   *                           overflow gate (within 5% safety margin)
+   *   - "model_switch"      → orchestrator.SwitchModel detected the
+   *                           persisted history would saturate the new
+   *                           (smaller) model's window
+   *   - "tool_result_wave"  → mid-tool-loop hook fired between batches
+   *                           after the persisted store crossed the
+   *                           gate-proximity boundary
+   *
+   * Empty / unknown values are tolerated so historical events remain
+   * decodable; the chip tooltip falls back to the generic
+   * "saved Ns tokens" copy when the discriminant is unrecognised.
+   */
+  trigger: string
 }
 
 /**
@@ -534,6 +553,11 @@ export function parseSSEPayload(payload: string): SSEEvent {
       summaryTokens:
         typeof obj['summary_tokens'] === 'number' ? (obj['summary_tokens'] as number) : 0,
       latencyMs: typeof obj['latency_ms'] === 'number' ? (obj['latency_ms'] as number) : 0,
+      // Phase-5 Slice δ — Trigger discriminant. Empty default ('')
+      // tolerates historical wire payloads that pre-date the field;
+      // the chip tooltip falls back to the generic "saved Ns tokens"
+      // copy when the discriminant is empty / unrecognised.
+      trigger: typeof obj['trigger'] === 'string' ? (obj['trigger'] as string) : '',
     }
   }
 

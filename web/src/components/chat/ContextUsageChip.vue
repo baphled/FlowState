@@ -195,6 +195,31 @@ function formatTooltipTokens(n: number): string {
   return `${Math.round(n / 1000)}K`
 }
 
+/**
+ * Phase-5 Slice δ — human-readable copy for each compaction trigger.
+ *
+ * The closed-vocabulary discriminant from the SSE wire maps onto
+ * tooltip copy that attributes the cause: each phrase reads as a
+ * complete sentence fragment when concatenated with the saved-tokens
+ * figure. Empty / unrecognised triggers return '' so the tooltip
+ * falls back to the generic "Last compaction saved Ns tokens" line
+ * without misattribution.
+ */
+function triggerPhrase(trigger: string): string {
+  switch (trigger) {
+    case 'ratio':
+      return 'compacted on threshold'
+    case 'gate_proximity':
+      return 'compacted near limit'
+    case 'model_switch':
+      return 'compacted on model switch'
+    case 'tool_result_wave':
+      return 'compacted after tool result'
+    default:
+      return ''
+  }
+}
+
 const tooltipTitle = computed(() => {
   const lc = lastCompaction.value
   if (lc === null || compactionCount.value === 0) {
@@ -203,6 +228,10 @@ const tooltipTitle = computed(() => {
   const saved = formatTooltipTokens(lc.tokensSaved)
   const before = formatTooltipTokens(lc.originalTokens)
   const after = formatTooltipTokens(lc.summaryTokens)
+  const phrase = triggerPhrase(lc.trigger)
+  if (phrase !== '') {
+    return `Last compaction saved ${saved} tokens (${before} → ${after}) — ${phrase}`
+  }
   return `Last compaction saved ${saved} tokens (${before} → ${after})`
 })
 </script>
