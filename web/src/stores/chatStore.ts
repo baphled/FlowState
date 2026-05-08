@@ -166,14 +166,69 @@ function describeFailoverReason(reason: string): string {
   }
 }
 
-// Module-instantiated streaming lifecycle. The composable owns the EventSource
-// and stall watchdog handles internally; the store treats it as an opaque
-// dependency. Single-instance preserves the pre-extraction "one in-flight SSE
-// per page" invariant — concurrent connect calls still tear down the prior
-// connection. Per-test isolation continues to work via setActivePinia +
-// FakeEventSource.instances reset (the composable consumes the same global
-// EventSource constructor that the FakeEventSource mock swaps in).
-const sessionStream: SessionStream = useSessionStream()
+// Per-session SSE singleton registry (Slice B — Streaming Coherence May 2026).
+//
+// Pre-slice the store carried ONE module-scoped `useSessionStream()` so
+// every session switch tore down the active SSE — observable as session A
+// going dark the moment the user opened B even though A's turn was still
+// in flight server-side. The fix: a map keyed by sessionId, each entry a
+// fresh `SessionStream` lifecycle. Switching sessions no longer cancels A's
+// stream; A keeps streaming in the background and B opens its own.
+//
+// Lifecycle:
+//   - getSessionStream(sessionId) returns the existing stream for the
+//     session or lazily creates one. Per-test isolation works because
+//     each test calls setActivePinia(createPinia()) and the closure-
+//     captured `streams` map below resets when the module is freshly
+//     loaded by Vitest's test runner via resetModules. (Vitest does NOT
+//     reset module state between tests by default, so we expose
+//     `__resetSessionStreams` for explicit teardown.)
+//   - disconnectSessionStream(sessionId) closes a specific session's
+//     EventSource and drops it from the map. Used on session deletion
+//     and revertToMessage.
+//   - disconnectAllSessionStreams() — defensive teardown for full reset.
+//
+// Why a closure-captured Map rather than a Pinia state field: Pinia's
+// reactivity proxies object identity, but EventSource instances must
+// remain stable references for the FakeEventSource test harness to read
+// `instances.length`. Closure-scoping keeps them out of the reactivity
+// graph, matching the pre-slice single-instance pattern.
+const streams = new Map<string, SessionStream>()
+
+function getSessionStream(sessionId: string): SessionStream {
+  let stream = streams.get(sessionId)
+  if (!stream) {
+    stream = useSessionStream()
+    streams.set(sessionId, stream)
+  }
+  return stream
+}
+
+function disconnectSessionStream(sessionId: string): void {
+  const stream = streams.get(sessionId)
+  if (stream) {
+    stream.disconnect()
+    streams.delete(sessionId)
+  }
+}
+
+function disconnectAllSessionStreams(): void {
+  for (const stream of streams.values()) {
+    stream.disconnect()
+  }
+  streams.clear()
+}
+
+/**
+ * __resetSessionStreams — test-only export so suites that exercise
+ * cross-test session-stream isolation can drop all stream references
+ * between cases. Vitest does not reset module-scoped state between
+ * tests; without this hook a stream from test A would leak into
+ * test B's `FakeEventSource.instances`. NOT for production use.
+ */
+export function __resetSessionStreams(): void {
+  disconnectAllSessionStreams()
+}
 
 function getPersistedSessionId(): string | null {
   if (typeof window === 'undefined') {
@@ -813,9 +868,11 @@ export const useChatStore = defineStore('chat', {
 
       this.setSessionStreaming(sessionId, { isLoading: true, isStreaming: true })
 
+      const capturedSessionId = sessionId
+      const sessionStream = getSessionStream(capturedSessionId)
       const close = (): void => {
-        sessionStream.disconnect()
-        this.setSessionStreaming(sessionId, { isLoading: false, isStreaming: false })
+        disconnectSessionStream(capturedSessionId)
+        this.setSessionStreaming(capturedSessionId, { isLoading: false, isStreaming: false })
 
         // Reconcile unconditionally — the pre-fix `lastMsg?.role === 'user'`
         // gate dropped the more common case where chunks had arrived but the
@@ -823,20 +880,20 @@ export const useChatStore = defineStore('chat', {
         // sealed assistant content, a tool_result, a delegation completion).
         // reconcileFromBackend re-checks currentSessionId before and after
         // its await so a session switch concurrent with this call is safe.
-        void this.reconcileFromBackend(sessionId)
+        void this.reconcileFromBackend(capturedSessionId)
       }
 
-      // connect tears down any prior SSE, opens a new one, and arms the stall
-      // watchdog. The watchdog onTrip handler is the same store action used
-      // for sendMessage so user-visible recovery behaviour is identical.
-      // sessionId is captured in every callback closure so a mid-stream
-      // session switch never lands chunks on the wrong session.
-      // (Compounding bugs C-3, C-6 from the PR-2 plan.)
-      const capturedSessionId = sessionId
+      // Per-session stream (Slice B) — connect on the session's own
+      // SessionStream lifecycle. The watchdog onTrip handler is the same
+      // store action used for sendMessage so user-visible recovery
+      // behaviour is identical.
       sessionStream.connect(capturedSessionId, {
         onMessage: (payload) => {
           // C-3: discard chunks if the user navigated away while this
-          // stream was still alive.
+          // stream was still alive. Pre-Slice-B this also implied the
+          // stream was about to be torn down; in Slice B the stream
+          // keeps running and chunks for the inactive session land
+          // through reconcile when the user returns.
           if (this.currentSessionId !== capturedSessionId) return
           this.applyContentEvent(payload)
           if (payload === '[DONE]') {
@@ -1064,10 +1121,14 @@ export const useChatStore = defineStore('chat', {
     },
 
     async loadSessionMessages(sessionId: string): Promise<void> {
-      // Close any in-progress SSE from a prior session. Without this, the
-      // stale SSE's close() callback can fire after the session switch and
-      // overwrite the new session's messages with the old session's content.
-      sessionStream.disconnect()
+      // Per-session SSE singleton (Slice B — Streaming Coherence May 2026):
+      // do NOT disconnect the prior session's stream on switch. Each
+      // session keeps its own EventSource so session A continues to
+      // stream in the background while the user reads / composes in B.
+      // The chunk handler's `currentSessionId !== capturedSessionId`
+      // guard prevents A's chunks from landing on B's view; A's
+      // canonical state is recovered via reconcileFromBackend when the
+      // user returns to A (or when A's stream completes server-side).
       this.setSessionStreaming(sessionId, { isLoading: true })
       this.error = null
       // A critical-class banner from a prior session is no longer
@@ -1131,11 +1192,14 @@ export const useChatStore = defineStore('chat', {
         todoStore.setCurrentSession(sessionId)
         todoStore.hydrateFromMessages(sessionId, this.messages)
       } finally {
-        // Compounding bug C-7: switching to an idle session while
-        // isStreaming was true (left over from a prior session's SSE) leaves
-        // the activity indicator pulsing on a session that has nothing in
-        // flight. Clear both flags for the target session.
-        this.setSessionStreaming(sessionId, { isLoading: false, isStreaming: false })
+        // Per-session state — clear isLoading on the target session
+        // (the message-history fetch is done). DO NOT clear isStreaming:
+        // the target session may still have an active SSE stream
+        // (Slice B per-session-singleton invariant) that landed earlier
+        // chunks while the user was on a different session. Pre-Slice-B
+        // this method tore down the prior session's stream and reset
+        // both flags; that path is gone.
+        this.setSessionStreaming(sessionId, { isLoading: false })
       }
     },
 
@@ -1392,11 +1456,14 @@ export const useChatStore = defineStore('chat', {
         // Fresh-Session Duplicate User Bubble + Missing Streaming
         // Affordance (May 2026)".
         const capturedSessionId = sessionId
-        sessionStream.connect(capturedSessionId, {
+        const sendStream = getSessionStream(capturedSessionId)
+        sendStream.connect(capturedSessionId, {
           onMessage: (payload) => {
             // C-3: discard chunks if the user navigated away while this
             // stream was still alive — they belong to capturedSessionId,
-            // not the now-active session.
+            // not the now-active session. The stream itself remains
+            // open (Slice B per-session singleton); chunks are dropped
+            // at this guard until the user returns or [DONE] arrives.
             if (this.currentSessionId !== capturedSessionId) return
             this.applyContentEvent(payload)
             if (payload === '[DONE]') {
@@ -1404,7 +1471,7 @@ export const useChatStore = defineStore('chat', {
               // auto-reconnect and register a second broker subscriber
               // before the finally block runs. Reconcile is intentionally
               // NOT called here — see the post-await reconcile below.
-              sessionStream.disconnect()
+              disconnectSessionStream(capturedSessionId)
             }
           },
           onError: () => {
@@ -1416,7 +1483,7 @@ export const useChatStore = defineStore('chat', {
             // catch/finally below covers the failure path so a network
             // drop never triggers a reconcile that races with the still
             // pending POST resolution.
-            sessionStream.disconnect()
+            disconnectSessionStream(capturedSessionId)
           },
           onStall: () => this.handleStreamStall(capturedSessionId),
         })
@@ -1478,12 +1545,16 @@ export const useChatStore = defineStore('chat', {
           local.status = 'failed'
         }
       } finally {
-        sessionStream.disconnect()
         // Per-session state (Slice A) — clear flags on the session this
         // send targeted (resolved either at sendMessage entry or via the
         // lazy-create branch). If the user has navigated to a different
         // session in the meantime, that session's slot is unaffected.
         const completedSessionId = this.currentSessionId ?? initialSessionId
+        // Per-session SSE singleton (Slice B) — disconnect the specific
+        // session's stream rather than a global one.
+        if (completedSessionId) {
+          disconnectSessionStream(completedSessionId)
+        }
         this.setSessionStreaming(completedSessionId, { isLoading: false, isStreaming: false })
       }
     },
@@ -1501,7 +1572,15 @@ export const useChatStore = defineStore('chat', {
     // a navigation). When omitted, reconcile is skipped on trip — legacy
     // call sites still get the gate-clearing behaviour.
     armStallWatchdog(sessionId?: string): void {
-      sessionStream.armWatchdog(() => this.handleStreamStall(sessionId))
+      // Per-session SSE singleton (Slice B) — arm the watchdog on the
+      // specific session's stream. Falls back to the current session
+      // when caller did not supply one (legacy callers).
+      const target = sessionId ?? this.currentSessionId ?? ''
+      if (!target) return
+      const stream = streams.get(target)
+      if (stream) {
+        stream.armWatchdog(() => this.handleStreamStall(target))
+      }
     },
 
     // Stall trip handler. Stream stalled — unsticky the input gate so the
@@ -1784,7 +1863,12 @@ export const useChatStore = defineStore('chat', {
       // session's slot. The send finally block clears isLoading
       // (separate concern: gate vs. liveness affordance).
       this.setSessionStreaming(this.currentSessionId, { isStreaming: false })
-      sessionStream.clearWatchdog()
+      // Per-session SSE singleton (Slice B) — clear the watchdog on
+      // the current session's stream.
+      const stream = this.currentSessionId ? streams.get(this.currentSessionId) : undefined
+      if (stream) {
+        stream.clearWatchdog()
+      }
     },
 
     handleContentChunk(info: { content?: unknown }): void {
@@ -2322,7 +2406,8 @@ export const useChatStore = defineStore('chat', {
       const content = this.messages[idx].content
       // Kill any in-flight stream before truncating — without this, chunks
       // arriving after the slice would re-insert content that was just removed.
-      sessionStream.disconnect()
+      // Per-session SSE singleton (Slice B) — drop the specific session.
+      disconnectSessionStream(this.currentSessionId)
       // Per-session state (Slice A) — clear in-flight flags on the
       // session being reverted.
       this.setSessionStreaming(this.currentSessionId, { isLoading: false, isStreaming: false })
