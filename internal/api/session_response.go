@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/baphled/flowstate/internal/session"
@@ -16,6 +17,15 @@ import (
 // progress for this session. The Vue frontend uses this flag to reconnect
 // an EventSource on page load without relying solely on the local message
 // heuristic (last-message role check).
+//
+// ContextUsage carries the always-on context-window usage figure the
+// chat UI's chip renders. Phase 3 of the May 2026 saturation fix
+// includes this on agent / model PATCH responses so the chip ticks up
+// to reflect the new (provider, model, message) state without waiting
+// for the next pre-send streamed event. Embedded as a json.RawMessage
+// because the wire shape is owned by the engine's contextUsagePayload
+// (engine.go) and the api server forwards it verbatim. Omitted when no
+// ContextUsageProvider is wired or the figure cannot be computed.
 type SessionResponse struct {
 	ID                string            `json:"id"`
 	AgentID           string            `json:"agentId"`
@@ -29,13 +39,15 @@ type SessionResponse struct {
 	Messages          []session.Message `json:"messages"`
 	MessageCount      int               `json:"messageCount"`
 	IsStreaming       bool              `json:"isStreaming"`
+	ContextUsage      json.RawMessage   `json:"contextUsage,omitempty"`
 	CreatedAt         time.Time         `json:"createdAt"`
 	UpdatedAt         time.Time         `json:"updatedAt"`
 }
 
 // sessionResponseOptions holds functional-option state for NewSessionResponse.
 type sessionResponseOptions struct {
-	isStreaming bool
+	isStreaming  bool
+	contextUsage json.RawMessage
 }
 
 // SessionResponseOption is a functional option for NewSessionResponse.
@@ -47,6 +59,18 @@ type SessionResponseOption func(*sessionResponseOptions)
 func WithIsStreaming(streaming bool) SessionResponseOption {
 	return func(o *sessionResponseOptions) {
 		o.isStreaming = streaming
+	}
+}
+
+// WithContextUsage annotates the response with the engine's current
+// context_usage payload (Phase 3). Pass the JSON bytes verbatim from
+// the engine — the wire shape is owned by the engine and the api
+// server forwards it without re-parsing.
+func WithContextUsage(payload []byte) SessionResponseOption {
+	return func(o *sessionResponseOptions) {
+		if len(payload) > 0 {
+			o.contextUsage = json.RawMessage(payload)
+		}
 	}
 }
 
@@ -79,6 +103,7 @@ func NewSessionResponse(sess *session.Session, opts ...SessionResponseOption) *S
 		Messages:          messages,
 		MessageCount:      len(messages),
 		IsStreaming:       o.isStreaming,
+		ContextUsage:      o.contextUsage,
 		CreatedAt:         sess.CreatedAt,
 		UpdatedAt:         sess.UpdatedAt,
 	}

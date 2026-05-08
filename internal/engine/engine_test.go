@@ -1229,6 +1229,214 @@ var _ = Describe("Engine", func() {
 					}
 				})
 			})
+
+			// Phase 3 — TUI-cadence parity. The TUI's StatusBar reads
+			// LastContextResult().TokensUsed on every redraw so the chip
+			// reflects the *current* state at all times. The web chip
+			// previously hid until the first pre-send event landed; the
+			// engine now emits a fresh context_usage chunk after each
+			// completed turn so the chip ticks up to reflect the
+			// just-extended message history (no waiting for the next
+			// pre-send to see the cost of the last reply).
+			Context("post-turn context_usage emission (Phase 3)", func() {
+				It("emits a fresh context_usage chunk before the terminal Done chunk", func() {
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(100_000)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					chunks, err := eng.Stream(context.Background(), "test-agent", "Hello world")
+					Expect(err).NotTo(HaveOccurred())
+
+					var received []provider.StreamChunk
+					for chunk := range chunks {
+						received = append(received, chunk)
+					}
+
+					// At minimum we expect TWO context_usage chunks:
+					// one pre-send (Phase 2) and one post-turn (Phase 3).
+					var usageIdxs []int
+					var doneIdx = -1
+					for i := range received {
+						if received[i].EventType == "context_usage" {
+							usageIdxs = append(usageIdxs, i)
+						}
+						if received[i].Done && doneIdx == -1 {
+							doneIdx = i
+						}
+					}
+					Expect(len(usageIdxs)).To(BeNumerically(">=", 2),
+						"expected at least two context_usage chunks (pre-send + post-turn); got %d", len(usageIdxs))
+					Expect(doneIdx).NotTo(Equal(-1), "Done chunk must be emitted")
+
+					// The post-turn usage chunk MUST land before Done so
+					// SSE consumers (which return on Done) actually see
+					// it.
+					lastUsageIdx := usageIdxs[len(usageIdxs)-1]
+					Expect(lastUsageIdx).To(BeNumerically("<", doneIdx),
+						"post-turn context_usage must precede Done so the chip updates before stream-close")
+				})
+
+				It("preserves the pre-send context_usage emission as the first artefact", func() {
+					// Regression guard: Phase 2's wire-ordering pin
+					// (pre-send usage BEFORE provider chunks) must
+					// survive Phase 3's additional emission.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(100_000)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+					Expect(err).NotTo(HaveOccurred())
+
+					var received []provider.StreamChunk
+					for chunk := range chunks {
+						received = append(received, chunk)
+					}
+					Expect(received).NotTo(BeEmpty())
+					Expect(received[0].EventType).To(Equal("context_usage"),
+						"pre-send context_usage must remain the first artefact")
+				})
+			})
+
+			// Phase 3 — session-load + agent/model-switch parity. The
+			// engine exposes a public helper that the api server uses
+			// to compute the current usage shape on demand (session
+			// SSE-connect, agent PATCH, model PATCH). Same payload
+			// shape as the streamed chunk so the frontend dispatches
+			// once.
+			Context("ContextUsageJSONForSession (Phase 3 helper)", func() {
+				It("returns the JSON payload and hasUsage=true when the engine can compute the figure", func() {
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(100_000)
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					payload, ok := eng.ContextUsageJSONForSession(
+						"test-chat-provider", "test-model",
+						[]provider.Message{{Role: "user", Content: "hello"}},
+					)
+					Expect(ok).To(BeTrue(), "engine has a counter and a known limit; helper must compute usage")
+					Expect(payload).NotTo(BeEmpty())
+
+					var parsed map[string]interface{}
+					Expect(json.Unmarshal([]byte(payload), &parsed)).To(Succeed())
+					Expect(parsed).To(HaveKey("input_tokens"))
+					Expect(parsed).To(HaveKey("output_reserve"))
+					Expect(parsed).To(HaveKey("limit"))
+					Expect(parsed).To(HaveKey("percentage"))
+					Expect(parsed).To(HaveKey("provider"))
+					Expect(parsed).To(HaveKey("model"))
+					Expect(parsed["limit"]).To(BeNumerically("==", 100_000))
+					Expect(parsed["provider"]).To(Equal("test-chat-provider"))
+					Expect(parsed["model"]).To(Equal("test-model"))
+				})
+
+				It("returns hasUsage=false when no token counter is wired", func() {
+					eng := engine.New(engine.Config{
+						ChatProvider: chatProvider,
+						Manifest:     manifest,
+						// No TokenCounter wired
+					})
+
+					_, ok := eng.ContextUsageJSONForSession("test-chat-provider", "test-model",
+						[]provider.Message{{Role: "user", Content: "hi"}})
+					Expect(ok).To(BeFalse(), "no counter, no usage payload")
+				})
+
+				It("includes per-tool overhead in the input estimate by reading the engine's current schema set", func() {
+					// Same input messages but two engines — one with no
+					// tools, one with a tool that adds a name +
+					// description + per-tool fixed overhead. The wired-
+					// engine's input_tokens MUST exceed the bare engine's
+					// figure so the chip's "what does the next send cost"
+					// reflects the active tool slate, matching the pre-
+					// send chunk's behaviour.
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+					manager.SetContextFallback(100_000)
+
+					bareEng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					toolyEng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest: agent.Manifest{
+							ID:   "test-agent",
+							Name: "test",
+							Capabilities: agent.Capabilities{
+								Tools: []string{"a-noisy-tool"},
+							},
+						},
+						Tools: []tool.Tool{&mockTool{
+							name:        "a-noisy-tool",
+							description: "A description that consumes some tokens",
+						}},
+						TokenCounter: ctxstore.NewApproximateCounter(),
+					})
+
+					payloadBare, okBare := bareEng.ContextUsageJSONForSession(
+						"test-chat-provider", "test-model",
+						[]provider.Message{{Role: "user", Content: "hi"}},
+					)
+					payloadTooly, okTooly := toolyEng.ContextUsageJSONForSession(
+						"test-chat-provider", "test-model",
+						[]provider.Message{{Role: "user", Content: "hi"}},
+					)
+					Expect(okBare).To(BeTrue())
+					Expect(okTooly).To(BeTrue())
+
+					var bare, tooly map[string]interface{}
+					Expect(json.Unmarshal([]byte(payloadBare), &bare)).To(Succeed())
+					Expect(json.Unmarshal([]byte(payloadTooly), &tooly)).To(Succeed())
+
+					Expect(tooly["input_tokens"]).To(BeNumerically(">", bare["input_tokens"]),
+						"the helper must include the engine's tool-schema overhead so the figure matches what the next send would actually cost")
+				})
+			})
 		})
 	})
 

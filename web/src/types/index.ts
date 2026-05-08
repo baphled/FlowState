@@ -211,6 +211,23 @@ export interface Session {
   messageCount: number
   /** True when the backend broker has an active Publish in progress. Always emitted. */
   isStreaming: boolean
+  /**
+   * Phase 3 — TUI-cadence parity. Carries the engine's current
+   * context_usage shape on agent / model PATCH responses so the
+   * chat UI's chip ticks up to reflect the new (provider, model,
+   * messages) state without waiting for the next pre-send streamed
+   * event. Wire shape mirrors the streamed `context_usage` SSE
+   * event payload exactly. Omitted when the engine cannot compute a
+   * meaningful figure (no token counter, no resolvable limit).
+   */
+  contextUsage?: {
+    input_tokens: number
+    output_reserve: number
+    limit: number
+    percentage: number
+    provider: string
+    model: string
+  }
   createdAt: string
   updatedAt: string
 }

@@ -3500,3 +3500,299 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 		})
 	})
 })
+
+// fakeContextUsageProvider records the (provider, model, messages) the
+// api server hands it and returns a deterministic JSON payload so tests
+// pin the wire shape and the call site without standing up the engine.
+type fakeContextUsageProvider struct {
+	mu            sync.Mutex
+	calls         int
+	lastProvider  string
+	lastModel     string
+	lastMsgCount  int
+	hasUsage      bool
+	staticPayload string
+}
+
+func (f *fakeContextUsageProvider) ContextUsageJSONForSession(providerID, modelID string, messages []provider.Message) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.lastProvider = providerID
+	f.lastModel = modelID
+	f.lastMsgCount = len(messages)
+	if !f.hasUsage {
+		return "", false
+	}
+	return f.staticPayload, true
+}
+
+// Phase 3 — TUI-cadence parity. The chip must reflect the *current*
+// usage at all times: on session-load (SSE-connect), after each
+// completed turn (engine emission), and on agent/model switch
+// (PATCH response carries the figure).
+var _ = Describe("Phase 3 — context_usage cadence parity", func() {
+	Describe("GET /api/v1/sessions/{id}/stream emits a context_usage SSE event on connect", func() {
+		var (
+			broker     *api.SessionBroker
+			mgr        *session.Manager
+			srv        *api.Server
+			httpServer *httptest.Server
+			usage      *fakeContextUsageProvider
+		)
+
+		BeforeEach(func() {
+			broker = api.NewSessionBroker()
+			mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+			usage = &fakeContextUsageProvider{
+				hasUsage: true,
+				staticPayload: `{"input_tokens":1234,"output_reserve":4096,"limit":100000,` +
+					`"percentage":1,"provider":"zai","model":"glm-4.6"}`,
+			}
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			srv = api.NewServer(
+				&mockStreamer{chunks: []provider.StreamChunk{}},
+				registry,
+				disc,
+				nil,
+				api.WithSessionManager(mgr),
+				api.WithSessionBroker(broker),
+				api.WithContextUsageProvider(usage),
+			)
+			httpServer = httptest.NewServer(srv.Handler())
+		})
+
+		AfterEach(func() {
+			httpServer.Close()
+		})
+
+		It("writes a typed context_usage SSE event before any broker chunk on session-load", func() {
+			// Session with no live publisher — the SSE handler still
+			// emits a context_usage event upfront so the chip
+			// hydrates the moment the user opens the session,
+			// matching the TUI's StatusBar which reads
+			// LastContextResult on every redraw.
+			sessID := "phase3-session-load"
+			mgr.RestoreSessions([]*session.Session{
+				{
+					ID:                sessID,
+					AgentID:           "test-agent",
+					CurrentProviderID: "zai",
+					CurrentModelID:    "glm-4.6",
+					Messages: []session.Message{
+						{ID: "m1", Role: "assistant", Content: "previous reply"},
+					},
+				},
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			url := httpServer.URL + "/api/v1/sessions/" + sessID + "/stream"
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+			Expect(err).NotTo(HaveOccurred())
+
+			resp, err := http.DefaultClient.Do(req)
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			eventsCh := make(chan []string, 1)
+			go func() {
+				reader := bufio.NewReader(resp.Body)
+				var evts []string
+				for {
+					line, readErr := reader.ReadString('\n')
+					if line != "" {
+						trimmed := strings.TrimSpace(line)
+						if strings.HasPrefix(trimmed, "data: ") {
+							evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+						}
+						if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+							break
+						}
+					}
+					if readErr != nil {
+						break
+					}
+				}
+				eventsCh <- evts
+			}()
+
+			var evts []string
+			Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+			Expect(evts).NotTo(BeEmpty(), "SSE handler must emit at least one event on session-load")
+			Expect(evts).To(ContainElement(ContainSubstring(`"type":"context_usage"`)),
+				"SSE handler must emit a context_usage event on connect so the chip hydrates immediately")
+			Expect(evts).To(ContainElement(ContainSubstring(`"limit":100000`)),
+				"context_usage payload must round-trip onto the wire")
+
+			Expect(usage.calls).To(BeNumerically(">=", 1),
+				"the SSE handler must call the context-usage provider with the session's current state")
+			Expect(usage.lastProvider).To(Equal("zai"))
+			Expect(usage.lastModel).To(Equal("glm-4.6"))
+			Expect(usage.lastMsgCount).To(BeNumerically(">=", 1),
+				"the helper must receive the session's current messages so the input-token estimate reflects accumulated history")
+		})
+
+		It("falls back gracefully when the context-usage provider has nothing to compute", func() {
+			usage.hasUsage = false
+
+			// Sealed session: last message is non-user. The handler
+			// uses SubscribeIfPublishing which fast-paths to [DONE]
+			// when no broker run is in flight, giving the test a
+			// deterministic terminator without a publisher.
+			sessID := "phase3-no-usage"
+			mgr.RestoreSessions([]*session.Session{
+				{
+					ID:      sessID,
+					AgentID: "test-agent",
+					Messages: []session.Message{
+						{ID: "m1", Role: "assistant", Content: "previous reply"},
+					},
+				},
+			})
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+
+			url := httpServer.URL + "/api/v1/sessions/" + sessID + "/stream"
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+			Expect(err).NotTo(HaveOccurred())
+
+			resp, err := http.DefaultClient.Do(req)
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			eventsCh := make(chan []string, 1)
+			go func() {
+				reader := bufio.NewReader(resp.Body)
+				var evts []string
+				for {
+					line, readErr := reader.ReadString('\n')
+					if line != "" {
+						trimmed := strings.TrimSpace(line)
+						if strings.HasPrefix(trimmed, "data: ") {
+							evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+						}
+						if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+							break
+						}
+					}
+					if readErr != nil {
+						break
+					}
+				}
+				eventsCh <- evts
+			}()
+
+			var evts []string
+			Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+			for _, e := range evts {
+				Expect(e).NotTo(ContainSubstring(`"type":"context_usage"`),
+					"no usage event when provider can't compute — chip stays on prior state")
+			}
+		})
+	})
+
+	Describe("PATCH /api/v1/sessions/{id}/agent includes contextUsage in response", func() {
+		var (
+			recorder *httptest.ResponseRecorder
+			mgr      *session.Manager
+			srv      *api.Server
+			usage    *fakeContextUsageProvider
+		)
+
+		BeforeEach(func() {
+			recorder = httptest.NewRecorder()
+			mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+			usage = &fakeContextUsageProvider{
+				hasUsage: true,
+				staticPayload: `{"input_tokens":2222,"output_reserve":4096,"limit":200000,` +
+					`"percentage":1,"provider":"anthropic","model":"claude-sonnet-4-6"}`,
+			}
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			srv = api.NewServer(
+				&mockStreamer{chunks: []provider.StreamChunk{}},
+				registry,
+				disc,
+				nil,
+				api.WithSessionManager(mgr),
+				api.WithContextUsageProvider(usage),
+			)
+		})
+
+		It("returns the new context_usage shape in the JSON response so the chip updates on switch", func() {
+			sess, err := mgr.CreateSession("agent-original")
+			Expect(err).NotTo(HaveOccurred())
+
+			body := `{"agentId":"plan-writer"}`
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/agent", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			var out map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+			Expect(out).To(HaveKey("contextUsage"),
+				"agent-switch response must carry the fresh context_usage shape so the chip updates without waiting for the next turn")
+
+			cu, ok := out["contextUsage"].(map[string]interface{})
+			Expect(ok).To(BeTrue(), "contextUsage must be a JSON object, not a raw string")
+			Expect(cu).To(HaveKey("input_tokens"))
+			Expect(cu).To(HaveKey("limit"))
+			Expect(cu).To(HaveKeyWithValue("limit", float64(200000)))
+		})
+	})
+
+	Describe("PATCH /api/v1/sessions/{id}/model includes contextUsage in response", func() {
+		var (
+			recorder *httptest.ResponseRecorder
+			mgr      *session.Manager
+			srv      *api.Server
+			usage    *fakeContextUsageProvider
+		)
+
+		BeforeEach(func() {
+			recorder = httptest.NewRecorder()
+			mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+			usage = &fakeContextUsageProvider{
+				hasUsage: true,
+				staticPayload: `{"input_tokens":1500,"output_reserve":4096,"limit":100000,` +
+					`"percentage":1,"provider":"zai","model":"glm-4.6"}`,
+			}
+			registry := agent.NewRegistry()
+			disc := discovery.NewAgentDiscovery(nil)
+			srv = api.NewServer(
+				&mockStreamer{chunks: []provider.StreamChunk{}},
+				registry,
+				disc,
+				nil,
+				api.WithSessionManager(mgr),
+				api.WithContextUsageProvider(usage),
+			)
+		})
+
+		It("returns the new context_usage shape in the JSON response on model switch", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+
+			body := `{"modelId":"glm-4.6","providerId":"zai"}`
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/model", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			var out map[string]interface{}
+			Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+			Expect(out).To(HaveKey("contextUsage"),
+				"model-switch response must carry the fresh context_usage shape so the chip pivots to the new limit immediately")
+
+			Expect(usage.lastProvider).To(Equal("zai"),
+				"the helper must receive the new provider id so the figure reflects the post-switch state")
+			Expect(usage.lastModel).To(Equal("glm-4.6"),
+				"the helper must receive the new model id so the figure reflects the post-switch state")
+		})
+	})
+})

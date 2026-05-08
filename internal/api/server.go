@@ -53,6 +53,7 @@ type Server struct {
 	eventBus               *eventbus.EventBus
 	metricsHandler         http.Handler
 	modelLister            ModelLister
+	contextUsageProvider   ContextUsageProvider
 	mux                    *http.ServeMux
 }
 
@@ -193,6 +194,34 @@ type ModelLister func() ([]provider.Model, error)
 // callers can distinguish "no model lister wired" from "no models found".
 func WithModelLister(l ModelLister) ServerOption {
 	return func(s *Server) { s.modelLister = l }
+}
+
+// ContextUsageProvider returns the JSON payload (engine-side
+// contextUsagePayload shape) the api server emits to keep the chat
+// UI's usage chip in sync with current state outside the streamed
+// pre-send / post-turn moments. Phase 3 of the May 2026 saturation
+// fix wires this so the chip always reflects the current state, not
+// just after the user sends — matching the TUI's StatusBar which
+// reads engine.LastContextResult on every redraw.
+//
+// Production wires (*engine.Engine).ContextUsageJSONForSession.
+//
+// Returns ("", false) when the engine cannot compute a meaningful
+// figure (no token counter wired, or no resolvable limit). Server
+// suppresses the event in that case rather than emitting a malformed
+// chunk the frontend would classify as "unknown".
+type ContextUsageProvider interface {
+	ContextUsageJSONForSession(providerID, modelID string, messages []provider.Message) (string, bool)
+}
+
+// WithContextUsageProvider installs the helper the api server calls on
+// session-load (SSE-connect) and after agent / model PATCH so the
+// chat UI's usage chip ticks up immediately rather than waiting for
+// the next pre-send to land. Without this option the server still
+// works — it just cannot push fresh figures outside streamed events,
+// matching the pre-Phase-3 behaviour.
+func WithContextUsageProvider(p ContextUsageProvider) ServerOption {
+	return func(s *Server) { s.contextUsageProvider = p }
 }
 
 // SetBackgroundManager sets the background manager after server construction.
@@ -857,6 +886,17 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+
+	// Phase 3 — TUI-cadence parity. Emit a context_usage SSE event
+	// on connect so the chat UI's usage chip hydrates with the
+	// session's current state the moment the SSE connection lands,
+	// matching the TUI's StatusBar which reflects current state on
+	// every redraw (internal/tui/intents/chat/intent.go syncStatusBar).
+	// Pre-fix the chip stayed hidden until the next pre-send event,
+	// so a user reopening a session saw a blank chip until they
+	// started typing.
+	s.emitSessionLoadContextUsage(w, flusher, id)
+
 	if s.sessionBroker == nil {
 		// No live broker — the SSE stream contract is "live events only";
 		// historical content lives on GET /api/v1/sessions/{id}/messages.
@@ -1830,6 +1870,86 @@ type sseContextUsage struct {
 	Model         string `json:"model"`
 }
 
+// contextUsageForSnapshot returns the raw JSON payload of the engine's
+// current context_usage figure for the given session snapshot, or an
+// empty slice when the api server has no ContextUsageProvider wired or
+// the engine cannot compute a meaningful figure. Centralised so the
+// SSE-on-load and PATCH-response sites agree on the same projection
+// semantics (session.Message → provider.Message + which fields carry).
+//
+// Expected:
+//   - snap is the session snapshot to compute usage for. Read-only.
+//
+// Returns:
+//   - The raw JSON payload as a byte slice ready to drop into a
+//     SessionResponse.ContextUsage via WithContextUsage.
+//   - An empty slice when the provider is unwired or returns
+//     hasUsage=false.
+//
+// Side effects:
+//   - None.
+func (s *Server) contextUsageForSnapshot(snap *session.Session) []byte {
+	if s == nil || s.contextUsageProvider == nil || snap == nil {
+		return nil
+	}
+	providerMsgs := make([]provider.Message, 0, len(snap.Messages))
+	for _, m := range snap.Messages {
+		providerMsgs = append(providerMsgs, provider.Message{
+			Role:           m.Role,
+			Content:        m.Content,
+			ThinkingBlocks: m.ThinkingBlocks,
+			StopReason:     m.StopReason,
+		})
+	}
+	payload, ok := s.contextUsageProvider.ContextUsageJSONForSession(
+		snap.CurrentProviderID, snap.CurrentModelID, providerMsgs,
+	)
+	if !ok || payload == "" {
+		return nil
+	}
+	return []byte(payload)
+}
+
+// emitSessionLoadContextUsage writes a typed context_usage SSE event
+// to the response if the api server has a ContextUsageProvider wired
+// AND the provider returns a payload for the session's current state.
+// No-op otherwise — the chat UI's chip falls back to its empty-state
+// affordance until the next streamed context_usage event lands.
+//
+// The payload reflects the session's CurrentProviderID +
+// CurrentModelID and the snapshot's persisted message history, so the
+// chip's input-token estimate accounts for prior turns (the figure
+// the user wants to see on session-load: "if I sent another turn now
+// this is the cost").
+//
+// session.Message → provider.Message projection mirrors
+// session.Manager.SendMessage's projection: Role, Content,
+// ThinkingBlocks, StopReason are propagated; ToolCalls/ToolResults
+// the manager rebuilds inline are not relevant for the input-token
+// estimate.
+//
+// Expected:
+//   - sessionID identifies a session known to the manager.
+//
+// Side effects:
+//   - On a successful payload: writes one SSE data line carrying the
+//     `{"type":"context_usage", ...}` JSON and flushes.
+//   - On absence of a provider OR a degraded payload: no write.
+func (s *Server) emitSessionLoadContextUsage(w http.ResponseWriter, flusher http.Flusher, sessionID string) {
+	if s == nil || s.contextUsageProvider == nil || s.sessionManager == nil {
+		return
+	}
+	snap, err := s.sessionManager.SnapshotSession(sessionID)
+	if err != nil {
+		return
+	}
+	payload := s.contextUsageForSnapshot(&snap)
+	if len(payload) == 0 {
+		return
+	}
+	writeSSEContextUsage(w, flusher, string(payload))
+}
+
 // writeSSEContextUsage emits a typed context_usage SSE event by
 // re-parsing the payload JSON marshalled by the engine and re-emitting
 // it with the canonical "type":"context_usage" discriminant injected.
@@ -2150,7 +2270,12 @@ func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, NewSessionResponse(&snap))
+	// Phase 3 — annotate the response with the post-switch
+	// context_usage shape so the chat UI's chip ticks up to reflect
+	// the new agent's preferred model / context limit without
+	// waiting for the next pre-send streamed event.
+	usage := s.contextUsageForSnapshot(&snap)
+	writeJSON(w, NewSessionResponse(&snap, WithContextUsage(usage)))
 }
 
 // handleUpdateSessionModel switches the active provider+model pairing for a session.
@@ -2197,7 +2322,11 @@ func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, NewSessionResponse(&snap))
+	// Phase 3 — annotate the response with the post-switch
+	// context_usage shape so the chat UI's chip pivots to the new
+	// limit immediately rather than waiting for the next pre-send.
+	usage := s.contextUsageForSnapshot(&snap)
+	writeJSON(w, NewSessionResponse(&snap, WithContextUsage(usage)))
 }
 
 // modelDescriptor is the wire shape for a single model entry in the

@@ -2336,6 +2336,13 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	// refuses the request.
 	usageChunk, hasUsage := e.buildContextUsageChunk(&req)
 
+	// Phase 3 — post-turn emitter. Constructed once per Stream so the
+	// goroutine inside the loop can emit a fresh context_usage chunk
+	// before every terminal Done. Only wired when the engine can
+	// compute a meaningful figure for the request — same gate as the
+	// pre-send chunk above so degraded environments stay quiet.
+	postTurnEmitter := e.makePostTurnUsageEmitter(&req, hasUsage)
+
 	providerChunks, err := e.streamFromProvider(streamCtx, &req)
 	e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
 	if err != nil {
@@ -2355,12 +2362,72 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		if hasUsage {
 			outChan <- usageChunk
 		}
-		e.streamWithToolLoop(streamCtx, sessionID, messages, providerChunks, outChan)
+		e.streamWithToolLoop(streamCtx, sessionID, messages, providerChunks, outChan, postTurnEmitter)
 		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
 		e.dispatchKnowledgeExtraction(sessionID, messages)
 	}()
 
 	return outChan, nil
+}
+
+// makePostTurnUsageEmitter returns a postTurnUsageEmitter closure
+// captured against the in-flight request, or nil when the engine cannot
+// compute a meaningful figure for the request (no counter, no limit).
+//
+// The closure synthesises a trailing assistant message from the just-
+// completed turn's accumulated content / thinking and rebuilds the
+// context_usage payload against (req.Messages + assistant turn). The
+// chip ticks up to roughly "what the next send would cost" — matching
+// the TUI status-bar's per-redraw refresh against LastContextResult.
+//
+// Expected:
+//   - req captures the request the stream is running against. Provider,
+//     Model, Messages, Tools and MaxTokens are all read off req.
+//   - hasUsage is the pre-send gate's verdict. When false the closure
+//     is nil so the post-turn emit is suppressed for the same
+//     environments where the pre-send chunk would also be missing.
+//
+// Returns:
+//   - The closure, or nil when hasUsage=false.
+//
+// Side effects:
+//   - None at construction. The closure has no side effects beyond
+//     writing one StreamChunk per call to the supplied outChan.
+func (e *Engine) makePostTurnUsageEmitter(req *provider.ChatRequest, hasUsage bool) postTurnUsageEmitter {
+	if !hasUsage || req == nil {
+		return nil
+	}
+	// Snapshot the immutable request fields so the closure is not
+	// aliased to a caller-mutable struct.
+	providerID := req.Provider
+	modelID := req.Model
+	tools := req.Tools
+	maxTokens := req.MaxTokens
+	baseMessages := make([]provider.Message, len(req.Messages))
+	copy(baseMessages, req.Messages)
+
+	return func(outChan chan<- provider.StreamChunk, postTurnContent, postTurnThinking string) {
+		// Build a synthetic post-turn message slice. The caller's
+		// baseMessages is the pre-send input; appending the assistant
+		// turn produces the input the next send would carry, which is
+		// the figure the chip should display post-turn.
+		msgs := baseMessages
+		if postTurnContent != "" || postTurnThinking != "" {
+			msgs = append(msgs, provider.Message{
+				Role:     "assistant",
+				Content:  postTurnContent,
+				Thinking: postTurnThinking,
+			})
+		}
+		body, ok := e.buildContextUsagePayload(providerID, modelID, msgs, tools, maxTokens)
+		if !ok {
+			return
+		}
+		outChan <- provider.StreamChunk{
+			EventType: "context_usage",
+			Content:   body,
+		}
+	}
 }
 
 // dispatchKnowledgeExtraction fires the Phase 3 knowledge extractor on
@@ -2709,16 +2776,68 @@ type contextUsagePayload struct {
 // Side effects:
 //   - None beyond JSON marshalling.
 func (e *Engine) buildContextUsageChunk(req *provider.ChatRequest) (provider.StreamChunk, bool) {
-	if e == nil || req == nil || e.tokenCounter == nil {
+	if e == nil || req == nil {
 		return provider.StreamChunk{}, false
 	}
-	limit := e.ResolveContextLength(req.Provider, req.Model)
-	if limit <= 0 {
+	body, ok := e.buildContextUsagePayload(req.Provider, req.Model, req.Messages, req.Tools, req.MaxTokens)
+	if !ok {
 		return provider.StreamChunk{}, false
+	}
+	return provider.StreamChunk{
+		EventType: "context_usage",
+		Content:   body,
+	}, true
+}
+
+// buildContextUsagePayload is the shared core of every context_usage
+// emitter. It returns the JSON-marshalled contextUsagePayload for the
+// (provider, model, messages, tools, maxTokens) tuple, or hasUsage=false
+// when the engine cannot compute a meaningful figure (no counter or no
+// resolvable limit).
+//
+// Phase 3 extracted this from buildContextUsageChunk so the post-turn
+// emission and the api-server's session-load / agent-model-switch hooks
+// re-use the exact same shape and reserve formula as the pre-send
+// emission. Drift between emission sites was the failure mode this
+// extraction prevents — every `context_usage` event the chip dispatches
+// must agree on output_reserve / percentage / limit semantics.
+//
+// Expected:
+//   - providerID and modelID identify the (provider, model) pair the
+//     usage figure is for.
+//   - messages is the conversation slice the input-token estimate
+//     should be computed against.
+//   - tools is the tool-schema slice the per-tool overhead is summed
+//     across (zero when no tools are wired).
+//   - maxTokens is the caller-supplied output limit; pass 0 to use
+//     defaultOutputReserve.
+//
+// Returns:
+//   - body — JSON encoding of contextUsagePayload, ready to drop into
+//     a StreamChunk.Content or write to an SSE response verbatim.
+//   - hasUsage=false when no token counter is wired OR the resolved
+//     limit is zero.
+//
+// Side effects:
+//   - None beyond JSON marshalling.
+func (e *Engine) buildContextUsagePayload(providerID, modelID string, messages []provider.Message, tools []provider.Tool, maxTokens int) (string, bool) {
+	if e == nil || e.tokenCounter == nil {
+		return "", false
+	}
+	limit := e.ResolveContextLength(providerID, modelID)
+	if limit <= 0 {
+		return "", false
 	}
 
-	estimated := e.estimateRequestTokens(req)
-	reserve := outputReserveFor(req)
+	syntheticReq := &provider.ChatRequest{
+		Provider:  providerID,
+		Model:     modelID,
+		Messages:  messages,
+		Tools:     tools,
+		MaxTokens: maxTokens,
+	}
+	estimated := e.estimateRequestTokens(syntheticReq)
+	reserve := outputReserveFor(syntheticReq)
 	pct := 0
 	if limit > 0 {
 		pct = (estimated * 100) / limit
@@ -2732,20 +2851,56 @@ func (e *Engine) buildContextUsageChunk(req *provider.ChatRequest) (provider.Str
 		OutputReserve: reserve,
 		Limit:         limit,
 		Percentage:    pct,
-		Provider:      req.Provider,
-		Model:         req.Model,
+		Provider:      providerID,
+		Model:         modelID,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		// Marshal cannot fail for a struct of primitives, but if it
 		// somehow did we suppress the event rather than emitting a
 		// malformed chunk the parser would classify as "unknown".
-		return provider.StreamChunk{}, false
+		return "", false
 	}
-	return provider.StreamChunk{
-		EventType: "context_usage",
-		Content:   string(body),
-	}, true
+	return string(body), true
+}
+
+// ContextUsageJSONForSession is the public Phase 3 helper the api server
+// calls on session-load (SSE-connect) and after agent / model switch
+// PATCH so the chip ticks up immediately rather than waiting for the
+// next pre-send. Returns the same JSON payload shape the streamed
+// `context_usage` chunk carries — the api server writes it directly to
+// the SSE response (with the type discriminant injected) on
+// /sessions/{id}/stream connect, and embeds it in the JSON body of the
+// agent / model PATCH responses.
+//
+// Mirrors the TUI's StatusBar pattern (internal/tui/intents/chat/intent.go
+// syncStatusBar): the chip reflects current state at all times, not
+// just after a send.
+//
+// Expected:
+//   - providerID and modelID identify the (provider, model) pair the
+//     usage figure is for. Caller is the api server passing the
+//     session's CurrentProviderID / CurrentModelID.
+//   - messages is the session's current message history projected to
+//     provider.Message shape.
+//
+// Returns:
+//   - JSON body of contextUsagePayload (no `type` field — the SSE
+//     writer / JSON serialiser at the api boundary injects that),
+//     OR an empty string when hasUsage=false.
+//   - hasUsage=false when no token counter is wired or the resolved
+//     limit is zero. The api server suppresses the event in that case
+//     rather than emitting a malformed chunk.
+//
+// Side effects:
+//   - None beyond JSON marshalling.
+func (e *Engine) ContextUsageJSONForSession(providerID, modelID string, messages []provider.Message) (string, bool) {
+	// Build the tool-schema slice from the current manifest so the
+	// per-tool overhead in the estimate matches what a fresh send
+	// would carry. The pre-send emission already pays this cost via
+	// buildToolSchemasCtx; reuse the same surface for cadence parity.
+	tools := e.ToolSchemas()
+	return e.buildContextUsagePayload(providerID, modelID, messages, tools, 0)
 }
 
 // estimateRequestTokens approximates the prompt-token count for req
@@ -2854,12 +3009,13 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 func (e *Engine) streamWithToolLoop(
 	ctx context.Context, sessionID string, messages []provider.Message,
 	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
+	postTurnUsage postTurnUsageEmitter,
 ) {
 	defer e.evictCompletedBackgroundTasks()
 
 	attempt := 0
 	for {
-		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan)
+		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
 		if result.done {
 			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
@@ -3062,6 +3218,28 @@ func (e *Engine) retryStreamForToolResult(
 	return chunks, nil
 }
 
+// postTurnUsageEmitter is the optional pre-Done hook the goroutine in
+// Stream installs so a fresh `context_usage` chunk is forwarded before
+// every terminal Done. Mirrors the TUI's per-redraw status-bar refresh
+// (internal/tui/intents/chat/intent.go syncStatusBar) — the chip ticks
+// up to reflect the just-extended message history rather than waiting
+// for the user's next send.
+//
+// Parameters:
+//   - outChan is the engine's output channel; the callback writes the
+//     fresh context_usage chunk to it.
+//   - postTurnContent / postTurnThinking carry the just-completed
+//     assistant turn's accumulated text / thinking. The callback
+//     synthesises a trailing assistant message from these so the
+//     post-turn input-token estimate ticks up to "what the next
+//     turn's send would cost".
+//
+// The callback is non-nil only when the engine has a token counter
+// wired AND a resolvable limit; nil suppresses post-turn emission so
+// degraded environments (no counter, no limit) match the pre-send
+// behaviour.
+type postTurnUsageEmitter func(outChan chan<- provider.StreamChunk, postTurnContent, postTurnThinking string)
+
 // streamChunkResult carries the assembled output from processStreamChunks.
 type streamChunkResult struct {
 	toolCalls       []*provider.ToolCall // all tool calls emitted in one assistant turn
@@ -3104,6 +3282,7 @@ const turnOpenMarker = " "
 //     before the tool artefact.
 func (e *Engine) processStreamChunks(
 	ctx context.Context, sessionID string, providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
+	postTurnUsage postTurnUsageEmitter,
 ) streamChunkResult {
 	var responseContent strings.Builder
 	var thinkingContent strings.Builder
@@ -3114,14 +3293,22 @@ func (e *Engine) processStreamChunks(
 	var sawTextOrThinking bool
 	var toolCalls []*provider.ToolCall
 
+	emitPostTurn := func() {
+		if postTurnUsage != nil {
+			postTurnUsage(outChan, responseContent.String(), thinkingContent.String())
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
+			emitPostTurn()
 			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
 				if len(toolCalls) == 0 {
+					emitPostTurn()
 					outChan <- provider.StreamChunk{Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 				}
 				return streamChunkResult{
@@ -3195,6 +3382,11 @@ func (e *Engine) processStreamChunks(
 						thinkingContent: thinkingContent.String(),
 					}
 				}
+				// Phase 3 — emit a fresh context_usage chunk before
+				// the terminal Done so the chip ticks up to reflect
+				// the just-extended message history. SSE consumers
+				// return on Done, so this MUST land first.
+				emitPostTurn()
 				outChan <- chunk
 				return streamChunkResult{
 					responseContent: responseContent.String(),
