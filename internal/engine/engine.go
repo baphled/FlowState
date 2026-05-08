@@ -3248,6 +3248,16 @@ func (e *Engine) streamWithToolLoop(
 		}
 		messages = e.appendToolResultsBatchToMessages(messages, result.toolCalls, toolResults)
 
+		// Phase-5 Slice γ — mid-tool-loop refresh. Emits a fresh
+		// context_usage chunk so the chip tracks the swelling
+		// tool-result wave between batches, AND fires the
+		// tool-result-wave compaction trigger when the persisted
+		// store crosses the gate-proximity boundary. Without this
+		// hook the chip stays stale until terminal Done and
+		// maybeAutoCompact never fires from the tool-loop path
+		// (retryStreamForToolResult bypasses buildContextWindow).
+		e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+
 		attempt++
 		var streamErr error
 		providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
@@ -4836,6 +4846,66 @@ func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage
 	estimated := e.estimateRequestTokens(syntheticReq)
 	reserve := e.outputReserveFor(syntheticReq)
 	return e.shouldAutoCompactForGate(estimated, tokenBudget, reserve)
+}
+
+// emitMidToolLoopRefresh runs the Phase-5 Slice γ post-tool-batch
+// affordances: emits a fresh context_usage chunk so the chip ticks
+// up to reflect the just-extended persisted store, AND consults
+// gateProximityForceCompact on the active manifest's persisted
+// history; on a positive verdict, force-fires the auto-compactor
+// with trigger="tool_result_wave" so the next user turn's
+// buildContextWindow injects the freshly-computed summary rather
+// than running the cold path against a swollen prefix.
+//
+// Called from streamWithToolLoop between
+// appendToolResultsBatchToMessages and retryStreamForToolResult.
+// processStreamChunks only invokes the postTurnUsage callback on
+// terminal Done; without this hook the chip stays stale even after
+// a 700KB tool result wave, and retryStreamForToolResult builds a
+// fresh ChatRequest that bypasses buildContextWindow so
+// maybeAutoCompact never fires from the tool-loop path either.
+//
+// Expected:
+//   - ctx carries cancellation/deadline for the (potential) summariser call.
+//   - sessionID identifies the active session; threaded through to
+//     publishContextCompactedEvent on a fire.
+//   - outChan is the engine's stream output channel; the helper writes
+//     one context_usage chunk to it when a usage figure can be
+//     computed.
+//
+// Side effects:
+//   - Writes one context_usage StreamChunk to outChan (best-effort —
+//     suppressed when buildContextUsagePayload reports no figure).
+//   - On a positive gate-proximity verdict, fires maybeAutoCompact
+//     which can issue one summariser LLM call and publish one
+//     ContextCompactedEvent with Trigger="tool_result_wave".
+func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) {
+	if e == nil || e.store == nil || sessionID == "" {
+		return
+	}
+	providerID := e.LastProvider()
+	modelID := e.LastModel()
+
+	// Chip refresh — emit a fresh context_usage chunk reflecting the
+	// just-extended persisted store. Tool results were appended to
+	// e.store via storeToolResult before this hook runs, so
+	// AllMessages() carries the swollen wave.
+	if outChan != nil {
+		if body, ok := e.buildContextUsagePayload(providerID, modelID, e.store.AllMessages(), nil, 0); ok {
+			outChan <- provider.StreamChunk{EventType: "context_usage", Content: body}
+		}
+	}
+
+	// Compaction trigger — consult gateProximityForceCompact on the
+	// active manifest's persisted history. The userMessage argument
+	// is empty: we are between batches in a single user turn, no
+	// in-flight user turn to anticipate.
+	manifestCopy := e.Manifest()
+	tokenBudget := e.ModelContextLimit()
+	if !e.gateProximityForceCompact(&manifestCopy, "", tokenBudget) {
+		return
+	}
+	e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, "tool_result_wave")
 }
 
 // MaybeCompactForModel resolves the supplied (newProvider, newModel)

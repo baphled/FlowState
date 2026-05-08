@@ -131,6 +131,18 @@ func (f *fakeDispatchEngine) SetContextStore(_ *recall.FileContextStore, _ strin
 	f.contextStoreCalls++
 }
 
+// MaybeCompactForModel satisfies the Phase-5 Slice α addition to the
+// orchestrator's Engine interface. The API parity tests do not assert
+// against the trigger directly (the engine-side spec at the gate-
+// proximity seam pins the per-trigger behaviour), but without this
+// method the fake fails the orchestrator's `if wider, ok := eng.(Engine)`
+// auto-narrow type assertion and the lifecycle-half engine field
+// silently stays nil — every parity-fan-out spec then fails because
+// SetManifest / SetModelPreference never run.
+func (f *fakeDispatchEngine) MaybeCompactForModel(_ context.Context, _, _, _ string) string {
+	return ""
+}
+
 var _ = Describe("Server", func() {
 	var (
 		server          *api.Server
