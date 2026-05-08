@@ -2428,7 +2428,24 @@ func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request
 		http.Error(w, "agentId is required", http.StatusBadRequest)
 		return
 	}
-	if err := s.sessionManager.UpdateSessionAgent(id, req.AgentID); err != nil {
+	// Per ADR - Session Orchestrator for Surface Parity §"SwitchAgent",
+	// the API agent-switch fans out via the orchestrator so the engine
+	// half (SetManifest) lands alongside the session-manager metadata
+	// update. Pre-lift only the manager half ran on this endpoint —
+	// the engine kept the stale manifest until the next stream call,
+	// which made multi-turn web chat lose context whenever the user
+	// switched agents (the session reported the new agent but the
+	// engine streamed under the old one). Closes Audit Finding 3 (web
+	// half).
+	orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager)
+	if _, err := orch.SwitchAgent(r.Context(), id, req.AgentID); err != nil {
+		// SessionManager.UpdateSessionAgent reports session-not-found
+		// via the wrapped error — preserve the existing 404 contract
+		// for the most common failure mode. Orchestrator.SwitchAgent
+		// also returns ErrAgentNotFound for an unknown agent id; that
+		// surfaces as a 404 too, matching the historical "session not
+		// found" rendering of any UpdateSessionAgent failure on this
+		// route.
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -2480,7 +2497,13 @@ func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request
 		http.Error(w, "providerId is required", http.StatusBadRequest)
 		return
 	}
-	if err := s.sessionManager.UpdateSessionModel(id, req.ProviderID, req.ModelID); err != nil {
+	// Per ADR - Session Orchestrator for Surface Parity §"SwitchModel",
+	// the API model-switch fans out via the orchestrator so the engine
+	// half (SetModelPreference) lands alongside the session-manager
+	// metadata update. Same parity gap as the agent route — closes
+	// Audit Finding 3 (web half).
+	orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager)
+	if err := orch.SwitchModel(r.Context(), id, req.ProviderID, req.ModelID); err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -74,6 +75,15 @@ type fakeDispatchEngine struct {
 	snapshotCalls    int
 	restoreCalls     int
 	lastRestored     any
+	// Lifecycle recorders — the API agent / model PATCH handlers fan
+	// out via Orchestrator.SwitchAgent / SwitchModel post-lift, which
+	// expect the wider Engine surface (SetManifest +
+	// SetModelPreference + SetContextStore). Tests assert on these
+	// counters to pin the parity-fan-out contract.
+	manifestSet         []agent.Manifest
+	modelPrefProviders  []string
+	modelPrefModels     []string
+	contextStoreCalls   int
 }
 
 func (f *fakeDispatchEngine) SetSwarmContext(ctx *swarm.Context) {
@@ -102,6 +112,24 @@ func (f *fakeDispatchEngine) RestoreManifest(snapshot any) {
 
 func (f *fakeDispatchEngine) SkipAgentFiles() bool     { return false }
 func (f *fakeDispatchEngine) SetSkipAgentFiles(_ bool) {}
+
+// SetManifest, SetModelPreference, SetContextStore satisfy the wider
+// orchestrator.Engine interface. Without them the fake only satisfies
+// swarm.DispatchEngine and orchestrator.New's auto-narrow leaves the
+// lifecycle-half engine field nil — agent / model PATCH parity tests
+// would silently no-op the engine half.
+func (f *fakeDispatchEngine) SetManifest(m agent.Manifest) {
+	f.manifestSet = append(f.manifestSet, m)
+}
+
+func (f *fakeDispatchEngine) SetModelPreference(providerName, modelName string) {
+	f.modelPrefProviders = append(f.modelPrefProviders, providerName)
+	f.modelPrefModels = append(f.modelPrefModels, modelName)
+}
+
+func (f *fakeDispatchEngine) SetContextStore(_ *recall.FileContextStore, _ string) {
+	f.contextStoreCalls++
+}
 
 var _ = Describe("Server", func() {
 	var (
@@ -2828,20 +2856,28 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 		streamer *mockStreamer
 		mgr      *session.Manager
 		srv      *api.Server
+		eng      *fakeDispatchEngine
+		registry *agent.Registry
 	)
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
 		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
 		mgr = session.NewManager(streamer)
-		registry := agent.NewRegistry()
+		registry = agent.NewRegistry()
+		// Register the target agent so the orchestrator's SwitchAgent
+		// resolves the manifest and fans out engine.SetManifest. Pre-lift
+		// the registry was unused on this route.
+		registry.Register(&agent.Manifest{ID: "plan-writer", Name: "Plan Writer"})
 		disc := discovery.NewAgentDiscovery(nil)
+		eng = &fakeDispatchEngine{}
 		srv = api.NewServer(
 			streamer,
 			registry,
 			disc,
 			nil,
 			api.WithSessionManager(mgr),
+			api.WithDispatchEngine(eng),
 		)
 	})
 
@@ -2862,6 +2898,25 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
 		Expect(out).To(HaveKey("agentId"))
 		Expect(out).NotTo(HaveKey("agent_id"))
+	})
+
+	It("fans out the agent switch to the engine via Orchestrator.SwitchAgent (post-lift)", func() {
+		sess, err := mgr.CreateSession("agent-original")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"agentId":"plan-writer"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/agent", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		// Per ADR - Session Orchestrator for Surface Parity §"SwitchAgent",
+		// the API agent route must fan out to engine.SetManifest alongside
+		// the session-manager metadata update. Pre-lift only the manager
+		// half ran; the engine kept the stale manifest until the next
+		// stream call, breaking multi-turn web chat. Closes Audit Finding 3.
+		Expect(eng.manifestSet).To(HaveLen(1),
+			"engine.SetManifest must fire once per agent switch via the orchestrator fan-out")
+		Expect(eng.manifestSet[0].ID).To(Equal("plan-writer"))
 	})
 
 	It("routes subsequent messages through the new agent", func() {
@@ -2903,6 +2958,7 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/model JSON contract", func() {
 		streamer *mockStreamer
 		mgr      *session.Manager
 		srv      *api.Server
+		eng      *fakeDispatchEngine
 	)
 
 	BeforeEach(func() {
@@ -2911,13 +2967,34 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/model JSON contract", func() {
 		mgr = session.NewManager(streamer)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
+		eng = &fakeDispatchEngine{}
 		srv = api.NewServer(
 			streamer,
 			registry,
 			disc,
 			nil,
 			api.WithSessionManager(mgr),
+			api.WithDispatchEngine(eng),
 		)
+	})
+
+	It("fans out the model switch to the engine via Orchestrator.SwitchModel (post-lift)", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"modelId":"claude-opus-4.7","providerId":"anthropic"}`
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/sessions/"+sess.ID+"/model", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		// Per ADR - Session Orchestrator for Surface Parity §"SwitchModel",
+		// the API model route must fan out to engine.SetModelPreference
+		// alongside the session-manager metadata update. Pre-lift only the
+		// manager half ran. Closes Audit Finding 3 (model half).
+		Expect(eng.modelPrefProviders).To(Equal([]string{"anthropic"}),
+			"engine.SetModelPreference must fire with the supplied provider id")
+		Expect(eng.modelPrefModels).To(Equal([]string{"claude-opus-4.7"}),
+			"engine.SetModelPreference must fire with the supplied model id")
 	})
 
 	It("updates the session's current model and provider and returns camelCase JSON", func() {
@@ -3906,6 +3983,12 @@ var _ = Describe("Phase 3 — context_usage cadence parity", func() {
 					`"percentage":1,"provider":"anthropic","model":"claude-sonnet-4-6"}`,
 			}
 			registry := agent.NewRegistry()
+			// Post-lift the agent route routes through Orchestrator.SwitchAgent
+			// which resolves agentId against the registry before SetManifest /
+			// UpdateSessionAgent. Pre-lift the registry was unused on this
+			// route; register the target so the test's intent (verify the
+			// contextUsage is annotated on the response) still holds.
+			registry.Register(&agent.Manifest{ID: "plan-writer", Name: "Plan Writer"})
 			disc := discovery.NewAgentDiscovery(nil)
 			srv = api.NewServer(
 				&mockStreamer{chunks: []provider.StreamChunk{}},
