@@ -3669,7 +3669,17 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			continue
 		}
 		slog.Info("engine tool call", "tool", toolCall.Name)
-		e.publishToolBeforeEvent(sessionID, toolCall.Name, toolCall.Arguments)
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Engine wiring".
+		// Resolve the FlowState-internal correlation id from the engine's
+		// canonical correlator; this is the same call the streaming path
+		// makes when it stamps StreamChunk.InternalToolCallID (engine.go
+		// lines 3198, 3235). Pre-resolving once here lets every bus event
+		// in this call's lifecycle carry the matching IDs without any
+		// additional lookup.
+		internalToolCallID := e.toolCallCorrelator.InternalID(
+			sessionID, toolCall.ID, toolCall.Name, toolCall.Arguments,
+		)
+		e.publishToolBeforeEvent(sessionID, toolCall.Name, toolCall.Arguments, toolCall.ID, internalToolCallID)
 		input := tool.Input{
 			Name:      toolCall.Name,
 			Arguments: toolCall.Arguments,
@@ -3679,7 +3689,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		if valErr != nil {
 			slog.Warn("tool argument validation failed", "tool", toolCall.Name, "error", valErr)
 			result := tool.Result{Output: valErr.Error(), Error: valErr}
-			e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, valErr)
+			e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, valErr, toolCall.ID, internalToolCallID)
 			return result, nil
 		}
 		input.Arguments = validated
@@ -3692,7 +3702,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			slog.Warn("tool execution error", "tool", toolCall.Name, "error", err)
 		}
 		result.Error = err
-		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, err)
+		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, err, toolCall.ID, internalToolCallID)
 		// A *swarm.GateError signals that a post-member or post-swarm
 		// gate refused this tool call's output (or its preconditions).
 		// Returning nil here would let the parent agent's tool loop
@@ -5689,17 +5699,26 @@ func (e *Engine) publishSessionEvent(sessionID string, action string) {
 // Expected:
 //   - toolName identifies the tool being executed.
 //   - args contains the tool arguments.
+//   - toolCallID is the upstream provider wire id (P14b audit trail); empty
+//     when the call originates from a non-provider source.
+//   - internalToolCallID is the FlowState session-scoped canonical id (P14)
+//     stable across provider failover. Plans/Tool Execute Bus Bridge — Engine
+//     to SSE (May 2026) — both ids propagate through the bus event so the
+//     web SSE projector and the TUI subscriber key SwarmEvents on the same
+//     identifier the chunk-driven path used today.
 //
 // Returns:
 //   - None.
 //
 // Side effects:
 //   - Publishes a tool execution start event on the engine bus.
-func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args map[string]interface{}) {
+func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args map[string]interface{}, toolCallID string, internalToolCallID string) {
 	e.bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
-		SessionID: sessionID,
-		ToolName:  toolName,
-		Args:      args,
+		SessionID:          sessionID,
+		ToolName:           toolName,
+		Args:               args,
+		ToolCallID:         toolCallID,
+		InternalToolCallID: internalToolCallID,
 	}))
 }
 
@@ -5710,33 +5729,43 @@ func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args 
 //   - args contains the tool arguments.
 //   - result contains the tool output.
 //   - execErr contains the execution error, if any.
+//   - toolCallID and internalToolCallID carry the same correlation IDs as
+//     the matching publishToolBeforeEvent call; both propagate through the
+//     terminal events (tool.execute.after, tool.execute.result on success,
+//     tool.execute.error on failure).
 //
 // Returns:
 //   - None.
 //
 // Side effects:
 //   - Publishes a tool execution completion event on the engine bus.
-func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args map[string]interface{}, result string, execErr error) {
+func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args map[string]interface{}, result string, execErr error, toolCallID string, internalToolCallID string) {
 	e.bus.Publish(events.EventToolExecuteAfter, events.NewToolEvent(events.ToolEventData{
-		SessionID: sessionID,
-		ToolName:  toolName,
-		Args:      args,
-		Result:    result,
-		Error:     execErr,
+		SessionID:          sessionID,
+		ToolName:           toolName,
+		Args:               args,
+		Result:             result,
+		Error:              execErr,
+		ToolCallID:         toolCallID,
+		InternalToolCallID: internalToolCallID,
 	}))
 	if execErr == nil {
 		e.bus.Publish(events.EventToolExecuteResult, events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
-			SessionID: sessionID,
-			ToolName:  toolName,
-			Args:      args,
-			Result:    result,
+			SessionID:          sessionID,
+			ToolName:           toolName,
+			Args:               args,
+			Result:             result,
+			ToolCallID:         toolCallID,
+			InternalToolCallID: internalToolCallID,
 		}))
 	} else {
 		e.bus.Publish(events.EventToolExecuteError, events.NewToolExecuteErrorEvent(events.ToolExecuteErrorEventData{
-			SessionID: sessionID,
-			ToolName:  toolName,
-			Args:      args,
-			Error:     execErr,
+			SessionID:          sessionID,
+			ToolName:           toolName,
+			Args:               args,
+			Error:              execErr,
+			ToolCallID:         toolCallID,
+			InternalToolCallID: internalToolCallID,
 		}))
 	}
 }
