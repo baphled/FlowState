@@ -5,8 +5,11 @@ import (
 	. "github.com/onsi/gomega"
 
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/baphled/flowstate/internal/learning"
+	"github.com/baphled/flowstate/internal/mcp"
 )
 
 var _ = Describe("LearningHook", func() {
@@ -210,6 +213,99 @@ func (c *integrationMemoryClient) WriteLearningRecord(record *learning.Record) e
 	}
 	return nil
 }
+
+// panickingError is an error implementation whose Error method dereferences a
+// nil pointer, simulating a misbehaving error returned by an upstream
+// dependency. It exists to pin the defence-in-depth behaviour of Hook.Handle:
+// a panic from Error() must not escape the hook goroutine.
+type panickingError struct {
+	inner *struct{ msg string }
+}
+
+func (e *panickingError) Error() string {
+	// Force a nil pointer dereference, mirroring the runtime error signature
+	// observed in the April 2026 panic.
+	return e.inner.msg
+}
+
+var _ = Describe("LearningHook panic safety (regression for April 2026 nil pointer panic)", func() {
+	Context("when the MemoryClient returns a typed-nil-Type *json.UnmarshalTypeError", func() {
+		It("should return an error whose Error() method does not panic", func() {
+			// This pins the original bug: MCPMemoryClient previously constructed
+			// `&json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}`;
+			// the stdlib Error() method dereferences Type. Calling Error()
+			// (or any code path that does, e.g. errors.Is, joining errors,
+			// custom log handlers without %v's recover) panics with
+			// "runtime error: invalid memory address or nil pointer dereference",
+			// which is exactly the signature observed in flowstate.log on
+			// 2026-04-27T20:12:11 and the five rapid-fire occurrences that
+			// followed.
+			poisoned := &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+			stubClient := &stubMemoryClient{
+				onWrite: func(record *learning.Record) error {
+					return poisoned
+				},
+			}
+			hook := learning.NewLearningHook(stubClient)
+			ctx := context.Background()
+
+			err := hook.Handle(ctx, &learning.ToolCallResult{})
+
+			Expect(err).To(HaveOccurred())
+			// Calling Error() on the surfaced error must not panic.
+			Expect(func() {
+				_ = err.Error()
+			}).NotTo(Panic())
+		})
+	})
+
+	Context("when the MemoryClient returns an error whose Error() method panics", func() {
+		It("should not let the panic escape the hook goroutine", func() {
+			stubClient := &stubMemoryClient{
+				onWrite: func(record *learning.Record) error {
+					return &panickingError{inner: nil}
+				},
+			}
+			hook := learning.NewLearningHook(stubClient)
+			ctx := context.Background()
+
+			Expect(func() {
+				err := hook.Handle(ctx, &learning.ToolCallResult{})
+				// The hook must absorb the panic and return either nil or
+				// an error whose Error() is itself safe.
+				if err != nil {
+					_ = err.Error()
+				}
+			}).NotTo(Panic())
+		})
+	})
+
+	Context("when the MCP memory client receives an IsError tool result", func() {
+		It("should return an error that is safe to log via Error() / fmt.Sprintf", func() {
+			// Pins the source side: every WriteLearningRecord failure path that
+			// the live system can actually exercise (CreateEntities → IsError)
+			// must yield an error with a working Error() method, not a
+			// typed-nil reflect.Type that panics on dereference.
+			client := &mockMCPClient{
+				result: &mcp.ToolResult{Content: "boom", IsError: true},
+			}
+			mem := &learning.MCPMemoryClient{
+				MCPClient: client,
+				MCPServer: "memory",
+			}
+			err := mem.WriteLearningRecord(&learning.Record{
+				AgentID:   "agent-1",
+				ToolsUsed: []string{"tool-a"},
+				Outcome:   "completed",
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(func() {
+				_ = err.Error()
+				_ = fmt.Sprintf("%v", err)
+			}).NotTo(Panic())
+		})
+	})
+})
 
 var _ = Describe("LearningHook (AC2-AC4 RED phase)", func() {
 	Context("populating ToolsUsed from call stack", func() {
