@@ -269,6 +269,105 @@ var _ = Describe("EventBus Integration", func() {
 			defer mu.Unlock()
 			Expect(order).To(Equal([]string{"before", "after"}))
 		})
+
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Engine wiring".
+		// The publishToolBeforeEvent / publishToolAfterEvent seams must
+		// stamp the upstream provider-scoped ToolCallID (P14b) and the
+		// FlowState session-scoped InternalToolCallID (P14) on every
+		// tool.execute.* event the engine publishes. Without these, the
+		// SSE projector cannot key its SwarmEvents on a stable id and
+		// downstream coalesce drops.
+		Context("with correlation IDs", func() {
+			It("stamps ToolCallID and InternalToolCallID on tool.execute.before", func() {
+				eng := engine.New(engine.Config{ChatProvider: seqProvider, Manifest: toolManifest, Tools: []tool.Tool{testTool}})
+				var mu sync.Mutex
+				var beforeEvents []*events.ToolEvent
+				eng.EventBus().Subscribe("tool.execute.before", func(event any) {
+					if te, ok := event.(*events.ToolEvent); ok {
+						mu.Lock()
+						beforeEvents = append(beforeEvents, te)
+						mu.Unlock()
+					}
+				})
+				chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain channel
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(beforeEvents).To(HaveLen(1))
+				Expect(beforeEvents[0].Data.ToolCallID).To(Equal("call_evt_test"),
+					"the upstream provider tool-use id (P14b) must propagate from the chunk to the bus event")
+				Expect(beforeEvents[0].Data.InternalToolCallID).NotTo(BeEmpty(),
+					"the FlowState-internal correlation id (P14) must be stamped at publication; "+
+						"downstream consumers key on this for failover-stable SwarmEvent IDs")
+			})
+
+			It("stamps the same correlation IDs on tool.execute.after and tool.execute.result (success path)", func() {
+				eng := engine.New(engine.Config{ChatProvider: seqProvider, Manifest: toolManifest, Tools: []tool.Tool{testTool}})
+				var mu sync.Mutex
+				var afterEvents []*events.ToolEvent
+				var resultEvents []*events.ToolExecuteResultEvent
+				eng.EventBus().Subscribe("tool.execute.after", func(event any) {
+					if te, ok := event.(*events.ToolEvent); ok {
+						mu.Lock()
+						afterEvents = append(afterEvents, te)
+						mu.Unlock()
+					}
+				})
+				eng.EventBus().Subscribe("tool.execute.result", func(event any) {
+					if re, ok := event.(*events.ToolExecuteResultEvent); ok {
+						mu.Lock()
+						resultEvents = append(resultEvents, re)
+						mu.Unlock()
+					}
+				})
+				chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain channel
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(afterEvents).To(HaveLen(1))
+				Expect(afterEvents[0].Data.ToolCallID).To(Equal("call_evt_test"))
+				Expect(afterEvents[0].Data.InternalToolCallID).NotTo(BeEmpty())
+
+				Expect(resultEvents).To(HaveLen(1),
+					"on the success path the engine publishes tool.execute.result alongside tool.execute.after")
+				Expect(resultEvents[0].Data.ToolCallID).To(Equal("call_evt_test"))
+				Expect(resultEvents[0].Data.InternalToolCallID).NotTo(BeEmpty())
+				Expect(resultEvents[0].Data.InternalToolCallID).To(Equal(afterEvents[0].Data.InternalToolCallID),
+					"after and result must share the same InternalToolCallID — both fire from the same call site")
+			})
+
+			It("stamps correlation IDs on tool.execute.error (failure path)", func() {
+				testTool.execErr = errors.New("tool failed")
+				seqProvider.sequences = [][]provider.StreamChunk{
+					{{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_fail_id", Name: "test_tool", Arguments: map[string]interface{}{}}}},
+					{{Content: "Tool failed.", Done: true}},
+				}
+				eng := engine.New(engine.Config{ChatProvider: seqProvider, Manifest: toolManifest, Tools: []tool.Tool{testTool}})
+				var mu sync.Mutex
+				var errorEvents []*events.ToolExecuteErrorEvent
+				eng.EventBus().Subscribe("tool.execute.error", func(event any) {
+					if ee, ok := event.(*events.ToolExecuteErrorEvent); ok {
+						mu.Lock()
+						errorEvents = append(errorEvents, ee)
+						mu.Unlock()
+					}
+				})
+				chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain channel
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(errorEvents).To(HaveLen(1),
+					"the failure path publishes tool.execute.error alongside tool.execute.after")
+				Expect(errorEvents[0].Data.ToolCallID).To(Equal("call_fail_id"))
+				Expect(errorEvents[0].Data.InternalToolCallID).NotTo(BeEmpty())
+			})
+		})
 	})
 
 	Describe("provider error events", func() {
