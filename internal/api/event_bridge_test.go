@@ -107,6 +107,106 @@ var _ = Describe("subscribeSessionBus", func() {
 			Expect(data["provider"]).To(Equal("openai"))
 		})
 
+		It("forwards gate.failed events for the matching session as a sanitised payload", func() {
+			// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+			// the engine publishes gate.failed when runSwarmGates /
+			// dispatchMemberGates halts. The session bus bridge must
+			// forward a sanitised payload onto the out channel so the
+			// SSE writer can render the gate-failed banner. Web subscribes
+			// ONLY to gate.failed — gate.evaluating and gate.passed are
+			// suppressed to keep the failure-signal:noise ratio sane.
+			bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
+				SwarmID:        "a-team",
+				SessionID:      "sess-1",
+				Lifecycle:      "post-member",
+				MemberID:       "researcher",
+				GateName:       "post-member-researcher-relevance-gate",
+				GateKind:       "ext:relevance-gate",
+				Reason:         "off-topic",
+				Cause:          "score below threshold",
+				CoordStoreKeys: []string{"chain/researcher/output", "chain/topic/spec"},
+			}))
+
+			var msg api.WSChunkMsg
+			Eventually(out, 2*time.Second).Should(Receive(&msg))
+			Expect(msg.EventType).To(Equal("gate.failed"))
+			data, ok := msg.EventData.(map[string]any)
+			Expect(ok).To(BeTrue(), "gate.failed EventData must be map[string]any for SSE marshalling")
+			Expect(data["event_type"]).To(Equal("gate.failed"))
+			Expect(data["swarm_id"]).To(Equal("a-team"))
+			Expect(data["lifecycle"]).To(Equal("post-member"))
+			Expect(data["member_id"]).To(Equal("researcher"))
+			Expect(data["gate_name"]).To(Equal("post-member-researcher-relevance-gate"))
+			Expect(data["gate_kind"]).To(Equal("ext:relevance-gate"))
+			Expect(data["reason"]).To(Equal("off-topic"))
+			Expect(data["cause"]).To(Equal("score below threshold"))
+			Expect(data["coord_store_keys"]).To(Equal([]string{"chain/researcher/output", "chain/topic/spec"}))
+		})
+
+		It("drops gate.failed events for other sessions", func() {
+			bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
+				SwarmID:   "a-team",
+				SessionID: "sess-other",
+				Lifecycle: "pre",
+				GateName:  "envelope-check",
+				GateKind:  "builtin:result-schema",
+				Reason:    "schema validation failed",
+			}))
+
+			Consistently(func() bool {
+				select {
+				case msg := <-out:
+					return msg.EventType == "gate.failed"
+				default:
+					return false
+				}
+			}, 200*time.Millisecond).Should(BeFalse(),
+				"gate.failed events for other sessions must not reach this subscriber")
+		})
+
+		It("does NOT subscribe to gate.evaluating (web pass-event policy: failures only)", func() {
+			// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+			// the web SSE bridge subscribes ONLY to gate.failed. A
+			// gate.evaluating event must NOT show up on the bridge's
+			// out channel — the chat surface is request-reply and an
+			// extra evaluating-marker risks UX noise.
+			bus.Publish(events.EventGateEvaluating, events.NewGateEvaluatingEvent(events.GateEventData{
+				SwarmID:   "a-team",
+				SessionID: "sess-1",
+				Lifecycle: "pre",
+				GateCount: 3,
+			}))
+
+			Consistently(func() bool {
+				select {
+				case msg := <-out:
+					return msg.EventType == "gate.evaluating"
+				default:
+					return false
+				}
+			}, 200*time.Millisecond).Should(BeFalse(),
+				"web SSE bridge must NOT forward gate.evaluating events; pass-event policy is gate.failed-only")
+		})
+
+		It("does NOT subscribe to gate.passed (web pass-event policy: failures only)", func() {
+			bus.Publish(events.EventGatePassed, events.NewGatePassedEvent(events.GateEventData{
+				SwarmID:   "a-team",
+				SessionID: "sess-1",
+				Lifecycle: "post",
+				GateCount: 3,
+			}))
+
+			Consistently(func() bool {
+				select {
+				case msg := <-out:
+					return msg.EventType == "gate.passed"
+				default:
+					return false
+				}
+			}, 200*time.Millisecond).Should(BeFalse(),
+				"web SSE bridge must NOT forward gate.passed events; per-batch passes are TUI-only affordances")
+		})
+
 		It("forwards context.compacted events for the matching session", func() {
 			// Slice 6a — the engine's L2 auto-compactor publishes
 			// EventContextCompacted on success. The session bus
