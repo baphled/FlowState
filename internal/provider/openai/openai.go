@@ -155,10 +155,14 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 // Side effects:
 //   - None.
 func (p *Provider) Models() ([]provider.Model, error) {
+	// OutputLimit values from OpenAI's published model documentation
+	// (gpt-4o family ships 16384-token max output; gpt-3.5-turbo ships
+	// 4096). Surfaced via Slice 1 of the Phase-4 follow-ups so the
+	// engine's overflow gate sizes its output reserve per-model.
 	return []provider.Model{
-		{ID: "gpt-4o", Provider: "openai", ContextLength: 128000},
-		{ID: "gpt-4o-mini", Provider: "openai", ContextLength: 128000},
-		{ID: "gpt-4-turbo", Provider: "openai", ContextLength: 128000},
-		{ID: "gpt-3.5-turbo", Provider: "openai", ContextLength: 16385},
+		{ID: "gpt-4o", Provider: "openai", ContextLength: 128000, OutputLimit: 16384},
+		{ID: "gpt-4o-mini", Provider: "openai", ContextLength: 128000, OutputLimit: 16384},
+		{ID: "gpt-4-turbo", Provider: "openai", ContextLength: 128000, OutputLimit: 4096},
+		{ID: "gpt-3.5-turbo", Provider: "openai", ContextLength: 16385, OutputLimit: 4096},
 	}, nil
 }

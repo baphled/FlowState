@@ -69,6 +69,14 @@ func NewWithClient(baseURL string, httpClient *http.Client) (*Provider, error) {
 const (
 	defaultMaxTokens = 4096
 	providerName     = "ollama"
+	// defaultOutputLimit is the conservative per-model output budget
+	// the registry advertises for local Ollama models. Local model
+	// output budgets vary widely with quantisation and runtime config;
+	// 4096 is the smallest plausible-for-most-uses default. Slice 1 of
+	// the Phase-4 follow-ups added the field so the engine's overflow
+	// gate can size its output reserve per-model rather than against a
+	// shared hardcoded 4096 default.
+	defaultOutputLimit = 4096
 )
 
 // knownModelContextLengths maps Ollama model family prefixes to their
@@ -339,6 +347,7 @@ func (p *Provider) Models() ([]provider.Model, error) {
 			ID:            resp.Models[i].Name,
 			Provider:      providerName,
 			ContextLength: resolveOllamaContextLength(resp.Models[i].Name),
+			OutputLimit:   defaultOutputLimit,
 		})
 	}
 

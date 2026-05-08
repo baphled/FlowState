@@ -2632,8 +2632,18 @@ const (
 // outputReserveFor returns the output reserve to subtract from the raw
 // context limit before comparing against the estimated input. The reserve
 // is `max(req.MaxTokens, minOutputReserve)` when MaxTokens is non-zero,
-// otherwise `defaultOutputReserve`. Centralised so the gate and the
+// otherwise `max(model.OutputLimit, minOutputReserve)` when the provider
+// registry advertises a per-model OutputLimit, otherwise the engine's
+// hardcoded `defaultOutputReserve`. Centralised so the gate and the
 // context_usage event emitter agree on the same value.
+//
+// Promoted to a method on *Engine in Slice 1 of the Phase-4 follow-ups
+// so the resolver can route through the failover manager. Pre-Slice-1
+// the helper was a free function and the reserve was always
+// `max(req.MaxTokens or 4096, 1024)` — a one-size-fits-all default. Per-
+// model OutputLimit lets an Anthropic 200K-context model and a glm-4.6
+// 128K-context model declare their own reasonable output budgets without
+// the caller having to stamp MaxTokens.
 //
 // Expected:
 //   - req is non-nil. MaxTokens may be zero.
@@ -2643,12 +2653,21 @@ const (
 //
 // Side effects:
 //   - None.
-func outputReserveFor(req *provider.ChatRequest) int {
+func (e *Engine) outputReserveFor(req *provider.ChatRequest) int {
 	if req.MaxTokens > 0 {
 		if req.MaxTokens < minOutputReserve {
 			return minOutputReserve
 		}
 		return req.MaxTokens
+	}
+	if e != nil {
+		modelLimit := e.ResolveOutputLimit(req.Provider, req.Model)
+		if modelLimit > 0 {
+			if modelLimit < minOutputReserve {
+				return minOutputReserve
+			}
+			return modelLimit
+		}
 	}
 	return defaultOutputReserve
 }
@@ -2714,7 +2733,7 @@ func (e *Engine) checkContextWindowOverflow(req *provider.ChatRequest) *provider
 	}
 
 	estimated := e.estimateRequestTokens(req)
-	reserve := outputReserveFor(req)
+	reserve := e.outputReserveFor(req)
 	usable := limit - reserve
 	if usable < 1 {
 		usable = 1
@@ -2837,7 +2856,7 @@ func (e *Engine) buildContextUsagePayload(providerID, modelID string, messages [
 		MaxTokens: maxTokens,
 	}
 	estimated := e.estimateRequestTokens(syntheticReq)
-	reserve := outputReserveFor(syntheticReq)
+	reserve := e.outputReserveFor(syntheticReq)
 	pct := 0
 	if limit > 0 {
 		pct = (estimated * 100) / limit
@@ -5169,6 +5188,34 @@ func (e *Engine) ResolveContextLength(providerName, model string) int {
 		return e.failoverManager.ResolveContextLength(providerName, model)
 	}
 	return e.resolvedSystemPromptBudget()
+}
+
+// ResolveOutputLimit returns the per-model OutputLimit (response token
+// budget) for the given provider/model pair. Mirrors ResolveContextLength
+// in shape so the overflow gate and the context_usage emitter can consult
+// both fields via the same registry pipeline.
+//
+// Used by outputReserveFor to tighten the Phase-2 reserve formula from
+// `max(req.MaxTokens or 4096, 1024)` to
+// `max(req.MaxTokens or model.OutputLimit, 1024)` — see Slice 1 of the
+// Phase-4 follow-up plan.
+//
+// Expected:
+//   - providerName and model identify a known provider/model pair.
+//
+// Returns:
+//   - The model's positive OutputLimit when the failover manager is
+//     wired AND the registry advertises one for the pair.
+//   - Zero otherwise. Callers treat zero as "no registry data" and apply
+//     their own fallback (e.g. defaultOutputReserve).
+//
+// Side effects:
+//   - None.
+func (e *Engine) ResolveOutputLimit(providerName, model string) int {
+	if e == nil || e.failoverManager == nil {
+		return 0
+	}
+	return e.failoverManager.ResolveOutputLimit(providerName, model)
 }
 
 // resolvedSystemPromptBudget returns the engine's configured fallback

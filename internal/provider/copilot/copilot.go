@@ -27,6 +27,13 @@ const (
 	headerAccept         = "application/json"
 	headerContentType    = "application/json"
 	defaultContextLength = 128000
+	// defaultOutputLimit is the Copilot fallback per-model max-output.
+	// The dynamically-fetched /models endpoint does not advertise
+	// per-model output limits today, so 4096 is the conservative shared
+	// figure for unknown entries. Slice 1 of the Phase-4 follow-ups
+	// adds the field; per-model overrides on the gpt-4o / claude / o1
+	// families are populated in fallbackModels.
+	defaultOutputLimit   = 4096
 	copilotUserAgent     = "GitHubCopilotChat/0.35.0"
 	copilotEditorVersion = "vscode/1.107.0"
 	copilotPluginVersion = "copilot-chat/0.35.0"
@@ -201,12 +208,18 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 			ID:            m.ID,
 			Provider:      providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		})
 	}
 	return models, nil
 }
 
 // fallbackModels returns a hardcoded list of known GitHub Copilot models.
+//
+// OutputLimit values follow the upstream-vendor docs for each backing
+// family (gpt-4o = 16K, claude-3.5 = 8K, o1 = 32K). Slice 1 of the
+// Phase-4 follow-ups added the field so the engine's overflow gate can
+// size its output reserve per-model rather than against a shared 4096.
 //
 // Returns:
 //   - A static slice of well-known Copilot model definitions.
@@ -215,11 +228,11 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
-		{ID: "gpt-4o", Provider: providerName, ContextLength: 128000},
-		{ID: "gpt-4o-mini", Provider: providerName, ContextLength: 128000},
-		{ID: "claude-3.5-sonnet", Provider: providerName, ContextLength: 200000},
-		{ID: "o1-mini", Provider: providerName, ContextLength: 65536},
-		{ID: "o1-preview", Provider: providerName, ContextLength: 32768},
+		{ID: "gpt-4o", Provider: providerName, ContextLength: 128000, OutputLimit: 16384},
+		{ID: "gpt-4o-mini", Provider: providerName, ContextLength: 128000, OutputLimit: 16384},
+		{ID: "claude-3.5-sonnet", Provider: providerName, ContextLength: 200000, OutputLimit: 8192},
+		{ID: "o1-mini", Provider: providerName, ContextLength: 65536, OutputLimit: 32768},
+		{ID: "o1-preview", Provider: providerName, ContextLength: 32768, OutputLimit: 32768},
 	}
 }
 

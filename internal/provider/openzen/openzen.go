@@ -15,7 +15,13 @@ const (
 	providerName         = "openzen"
 	defaultBaseURL       = "https://api.openzen.ai"
 	defaultContextLength = 200000
-	defaultEmbedModel    = "text-embedding-3-small"
+	// defaultOutputLimit is the OpenZen fallback per-model max-output.
+	// The OpenZen catalogue mirrors the claude / gpt-4o lineage, both
+	// of which ship 8192-token outputs in their reference docs. Slice 1
+	// of the Phase-4 follow-ups added the field so the engine's
+	// overflow gate can size its output reserve per-model.
+	defaultOutputLimit = 8192
+	defaultEmbedModel  = "text-embedding-3-small"
 )
 
 var errAPIKeyRequired = errors.New("OpenZen API key is required")
@@ -199,6 +205,7 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 			ID:            modelsPage.Data[i].ID,
 			Provider:      providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		})
 	}
 
@@ -214,8 +221,8 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
-		{ID: "claude-sonnet-4-5", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "claude-3-5-sonnet", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "gpt-4o", Provider: providerName, ContextLength: defaultContextLength},
+		{ID: "claude-sonnet-4-5", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "claude-3-5-sonnet", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "gpt-4o", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 	}
 }

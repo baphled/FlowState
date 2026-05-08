@@ -25,7 +25,13 @@ const (
 	providerName         = "ollamacloud"
 	defaultBaseURL       = "https://ollama.com/api"
 	defaultContextLength = 131072
-	defaultEmbedModel    = "text-embedding-3-small"
+	// defaultOutputLimit is the conservative per-model output budget the
+	// registry advertises for Ollama Cloud entries. The hosted models
+	// vary widely; 4096 matches the smallest plausible non-empty
+	// response. Slice 1 of the Phase-4 follow-ups added the field so
+	// the engine's overflow gate can size its output reserve per-model.
+	defaultOutputLimit = 4096
+	defaultEmbedModel  = "text-embedding-3-small"
 )
 
 var errAPIKeyRequired = errors.New("ollama Cloud API key is required")
@@ -215,6 +221,7 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 			ID:            modelsPage.Data[i].ID,
 			Provider:      providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		})
 	}
 
@@ -230,10 +237,10 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
-		{ID: "llama3.3:70b", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "llama3.2:latest", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "qwen2.5:72b", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "mistral:latest", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "phi3:latest", Provider: providerName, ContextLength: defaultContextLength},
+		{ID: "llama3.3:70b", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "llama3.2:latest", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "qwen2.5:72b", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "mistral:latest", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "phi3:latest", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 	}
 }
