@@ -18,10 +18,14 @@ import { test, expect, Page } from '@playwright/test'
  *     writeSSEContextUsage (see internal/api/server.go).
  *
  * Behaviour pinned (assertions are user-observable, not internal):
- *   - Chip hidden before any context_usage chunk arrives.
- *   - Chip visible after a chunk lands; renders the formatted figure.
+ *   - Chip is permanently visible whenever a model is selected
+ *     (Phase 3 — TUI-cadence parity, May 2026 follow-up). Empty
+ *     state shows `—/—` placeholder before any context_usage chunk
+ *     lands.
+ *   - Chip renders the formatted figure after a usage chunk lands.
  *   - Severity classes pivot at the 75% / 90% thresholds.
- *   - A degraded payload (limit=0) does NOT render the chip.
+ *   - A degraded payload (limit=0) falls back to the empty-state
+ *     placeholder rather than rendering a misleading `1234/0`.
  */
 
 interface SSEChannel {
@@ -92,7 +96,15 @@ async function bootstrapMocks(page: Page): Promise<void> {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: '{"providers":[]}',
+      body: JSON.stringify({
+        providers: [
+          {
+            id: 'anthropic',
+            name: 'Anthropic',
+            models: [{ id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6' }],
+          },
+        ],
+      }),
     })
   })
   await page.route('**/api/v1/sessions', async (route) => {
@@ -104,6 +116,12 @@ async function bootstrapMocks(page: Page): Promise<void> {
           id: 'session-1',
           agentId: 'agent-1',
           currentAgentId: 'agent-1',
+          // Phase 3 — chip visibility predicate requires a selected
+          // model. Seed the session with a default pair so the chip
+          // mounts with the empty-state placeholder before any
+          // context_usage chunk arrives.
+          currentProviderId: 'anthropic',
+          currentModelId: 'claude-sonnet-4-6',
           title: 'Test',
           createdAt: '2026-05-08T00:00:00Z',
           updatedAt: '2026-05-08T00:00:01Z',
@@ -186,12 +204,19 @@ test.describe('Context usage chip — live UI', () => {
     await bootstrapMocks(page)
   })
 
-  test('chip is hidden before any context_usage chunk and renders on a usage chunk', async ({
+  test('chip shows empty-state placeholder before any context_usage chunk and renders the figure once one lands', async ({
     page,
   }) => {
     await gotoChatAndOpenStream(page)
 
-    await expect(page.locator('[data-testid="context-usage-chip"]')).toHaveCount(0)
+    // Phase 3 — chip is permanently visible whenever a model is
+    // selected. Pre-Phase-3 the chip stayed hidden until the first
+    // pre-send context_usage event landed; the user reopening a
+    // session saw a blank toolbar until they typed.
+    const chip = page.locator('[data-testid="context-usage-chip"]')
+    await expect(chip).toBeVisible()
+    await expect(chip).toHaveAttribute('data-severity', 'neutral')
+    await expect(page.locator('[data-testid="context-usage-counts"]')).toContainText('—/—')
 
     await fireSSE(
       page,
@@ -206,8 +231,6 @@ test.describe('Context usage chip — live UI', () => {
       }),
     )
 
-    const chip = page.locator('[data-testid="context-usage-chip"]')
-    await expect(chip).toBeVisible()
     await expect(chip).toHaveAttribute('role', 'status')
     await expect(page.locator('[data-testid="context-usage-counts"]')).toContainText('12K/100K')
     await expect(page.locator('[data-testid="context-usage-percentage"]')).toContainText('12%')
@@ -255,11 +278,14 @@ test.describe('Context usage chip — live UI', () => {
     expect(colour).toContain('220, 38, 38')
   })
 
-  test('a degraded payload (limit=0) does NOT render the chip', async ({ page }) => {
+  test('a degraded payload (limit=0) falls back to the empty-state placeholder', async ({ page }) => {
     // Defensive guard pinned by ContextUsageChip.spec.ts. The engine
     // suppresses the chunk when limit<=0 so this should never reach
     // the chip in practice; the chip's own guard catches a future
-    // emitter regression.
+    // emitter regression. With Phase 3's always-visible behaviour
+    // we no longer hide the chip — it falls back to the empty-state
+    // placeholder so the affordance remains present without
+    // misleading the user with `1234/0`.
     await gotoChatAndOpenStream(page)
 
     await fireSSE(
@@ -275,7 +301,25 @@ test.describe('Context usage chip — live UI', () => {
       }),
     )
 
-    await expect(page.locator('[data-testid="context-usage-chip"]')).toHaveCount(0)
+    const chip = page.locator('[data-testid="context-usage-chip"]')
+    await expect(chip).toBeVisible()
+    await expect(page.locator('[data-testid="context-usage-counts"]')).toContainText('—/—')
+  })
+
+  test('chip is visible on initial page load before any send (Phase 3 — always-visible)', async ({
+    page,
+  }) => {
+    // The chip must be present the moment the user opens the
+    // session, matching the TUI's StatusBar (always visible). This
+    // closes the regression where the user could open a session and
+    // see a blank toolbar slot until they typed.
+    await page.goto('/chat')
+    await expect(page.getByTestId('message-input')).toBeVisible()
+
+    const chip = page.locator('[data-testid="context-usage-chip"]')
+    await expect(chip).toBeVisible()
+    await expect(chip).toHaveAttribute('data-severity', 'neutral')
+    await expect(page.locator('[data-testid="context-usage-counts"]')).toContainText('—/—')
   })
 
   test('chip updates the rendered figure as successive context_usage chunks arrive', async ({

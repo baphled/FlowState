@@ -14,14 +14,32 @@ import { useChatStore } from '@/stores/chatStore'
  * in applyContentEvent and populates `currentContextUsage`. This chip
  * binds to that state.
  *
+ * Phase 3 (May 2026 follow-up) — TUI-cadence parity. The chip is now
+ * permanently visible whenever a model is selected, mirroring the
+ * TUI's StatusBar (internal/tui/intents/chat/intent.go syncStatusBar)
+ * which reads engine.LastContextResult on every redraw and reflects
+ * current state at all times. Pre-Phase-3 the chip stayed hidden
+ * until the first context_usage event landed; the user reopening a
+ * session saw a blank toolbar until they started typing. The empty
+ * state is a placeholder figure (`—/—`) with the neutral palette so
+ * the affordance is present without misleading the user with
+ * synthetic numeric figures.
+ *
  * Mounted between the provider-label and the ModelPicker in the
  * ChatView toolbar so the user sees how close the request is to
  * saturating the model's window without scrolling away from their
  * message.
  *
  * Visual contract:
- *   - Only renders when currentContextUsage is non-null AND limit > 0
- *     (a zero limit would render a meaningless `1234/0`).
+ *   - Renders whenever a model is selected (currentModelId !== '').
+ *     Hides only on the rare bootstrap edge where no model is yet
+ *     known.
+ *   - Empty-state placeholder fires when currentContextUsage is null
+ *     OR carries a degraded limit=0 payload — the chip shows `—/—`
+ *     and `—%` with the neutral palette. Server-side emitters (SSE-
+ *     on-load, post-turn, agent/model PATCH) hydrate the figure
+ *     within milliseconds in production so the empty state is
+ *     barely-perceptible.
  *   - Numeric formatter rounds to thousands: `12345 → 12K`. Keeps the
  *     chip compact in a toolbar with finite real estate.
  *   - Threshold colours mirror the CriticalErrorBanner palette so a
@@ -41,10 +59,28 @@ const chatStore = useChatStore()
 
 const usage = computed(() => chatStore.currentContextUsage)
 
-const isVisible = computed(() => {
+/**
+ * Visibility predicate — the chip renders whenever a model is
+ * selected. Phase 3 removed the `currentContextUsage !== null` gate
+ * because the TUI parity goal is "always visible, reflects current
+ * state". Without a model the chip has no provider/limit reference
+ * to display so we keep it hidden — the no-model bootstrap edge.
+ */
+const isVisible = computed(() => chatStore.currentModelId !== '')
+
+/**
+ * The chip's empty-state predicate. True when we have no usage
+ * payload OR the payload's limit is zero (degraded). The figure
+ * formatters branch on this so the placeholder copy is centralised
+ * here.
+ */
+const isEmptyState = computed(() => {
   const u = usage.value
-  return u !== null && u.limit > 0
+  return u === null || u.limit <= 0
 })
+
+const EMPTY_STATE_COUNT = '—'
+const EMPTY_STATE_PERCENTAGE = '—'
 
 /**
  * Formats a token count to the chip's compact representation. Values
@@ -60,9 +96,15 @@ function formatTokens(n: number): string {
   return `${Math.round(n / 1000)}K`
 }
 
-const inputLabel = computed(() => formatTokens(usage.value?.inputTokens ?? 0))
-const limitLabel = computed(() => formatTokens(usage.value?.limit ?? 0))
-const percentageLabel = computed(() => `${usage.value?.percentage ?? 0}%`)
+const inputLabel = computed(() =>
+  isEmptyState.value ? EMPTY_STATE_COUNT : formatTokens(usage.value?.inputTokens ?? 0),
+)
+const limitLabel = computed(() =>
+  isEmptyState.value ? EMPTY_STATE_COUNT : formatTokens(usage.value?.limit ?? 0),
+)
+const percentageLabel = computed(() =>
+  isEmptyState.value ? `${EMPTY_STATE_PERCENTAGE}%` : `${usage.value?.percentage ?? 0}%`,
+)
 
 /**
  * Severity classification — matches the CriticalErrorBanner palette
@@ -71,8 +113,14 @@ const percentageLabel = computed(() => `${usage.value?.percentage ?? 0}%`)
  * saturation profile: most healthy turns sit below 50%; sustained
  * 75%+ usage indicates the conversation is approaching the gate;
  * 90%+ is "compact or fail next turn" territory.
+ *
+ * Empty-state always renders neutral so the toolbar reads as quiet
+ * until real data lands.
  */
 const severity = computed<'neutral' | 'warning' | 'danger'>(() => {
+  if (isEmptyState.value) {
+    return 'neutral'
+  }
   const pct = usage.value?.percentage ?? 0
   if (pct >= 90) {
     return 'danger'

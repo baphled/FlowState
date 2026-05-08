@@ -3216,6 +3216,57 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(store.currentModelId).toBe('claude-sonnet-4-6')
   })
 
+  it('applies contextUsage from a session response to currentContextUsage (Phase 3 PATCH dispatch)', () => {
+    // Phase 3 of the May 2026 saturation fix — TUI-cadence parity.
+    // The api server attaches the engine's fresh context_usage shape
+    // to PATCH /agent and PATCH /model responses so the chip ticks
+    // up immediately rather than waiting for the next pre-send. The
+    // store routes the field through handleContextUsageEvent, which
+    // is the same code path the SSE-streamed event uses.
+    const store = useChatStore()
+
+    store.applyContextUsageFromSession({
+      contextUsage: {
+        input_tokens: 4567,
+        output_reserve: 4096,
+        limit: 200000,
+        percentage: 2,
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+      },
+    })
+
+    expect(store.currentContextUsage).toEqual({
+      inputTokens: 4567,
+      outputReserve: 4096,
+      limit: 200000,
+      percentage: 2,
+    })
+  })
+
+  it('is a no-op when a session response carries no contextUsage (degraded backend)', () => {
+    // Server-side contextUsage is suppressed when no token counter
+    // is wired or the model has no resolvable limit. The store must
+    // not blank an existing figure in that case — the chip stays on
+    // the prior display rather than reverting to the empty state.
+    const store = useChatStore()
+    store.currentContextUsage = {
+      inputTokens: 1234,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 1,
+    }
+
+    store.applyContextUsageFromSession({})
+
+    expect(store.currentContextUsage).toEqual({
+      inputTokens: 1234,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 1,
+    })
+  })
+
   it('does NOT fire a model_active toast when a provider_changed just toasted the same transition', async () => {
     // Failover sequence on the wire: provider_changed (rich copy with
     // failure reason) → model_active (target same provider+model).

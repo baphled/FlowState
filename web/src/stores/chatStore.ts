@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import type { Agent, Message, Model, SessionSummary, Swarm } from '@/types'
+import type { Agent, Message, Model, Session, SessionSummary, Swarm } from '@/types'
 import {
   createSession,
   fetchAgents,
@@ -786,7 +786,12 @@ export const useChatStore = defineStore('chat', {
       }
 
       try {
-        await updateSessionAgent(this.currentSessionId, agentId)
+        const updated = await updateSessionAgent(this.currentSessionId, agentId)
+        // Phase 3 — TUI-cadence parity. The PATCH response carries
+        // the engine's fresh context_usage shape so the chip ticks
+        // up to reflect the new agent's preferred model / context
+        // limit without waiting for the next pre-send.
+        this.applyContextUsageFromSession(updated)
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to update session agent'
       }
@@ -809,10 +814,38 @@ export const useChatStore = defineStore('chat', {
       }
 
       try {
-        await updateSessionModel(this.currentSessionId, modelId, providerId)
+        const updated = await updateSessionModel(this.currentSessionId, modelId, providerId)
+        // Phase 3 — TUI-cadence parity. The PATCH response carries
+        // the engine's fresh context_usage shape so the chip
+        // pivots to the new limit immediately rather than waiting
+        // for the next pre-send.
+        this.applyContextUsageFromSession(updated)
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to update session model'
       }
+    },
+
+    /**
+     * Phase 3 helper — read the PATCH response's contextUsage field
+     * (when present) and route it through handleContextUsageEvent so
+     * the chip updates via the same code path as the SSE-streamed
+     * event. Snake-case wire shape is mapped to the camelCase store
+     * shape inline.
+     *
+     * No-op when the field is missing — degraded engines (no token
+     * counter, no resolvable limit) suppress the field server-side.
+     */
+    applyContextUsageFromSession(session: { contextUsage?: Session['contextUsage'] }): void {
+      const cu = session.contextUsage
+      if (!cu) {
+        return
+      }
+      this.handleContextUsageEvent({
+        inputTokens: cu.input_tokens,
+        outputReserve: cu.output_reserve,
+        limit: cu.limit,
+        percentage: cu.percentage,
+      })
     },
 
     async loadModels(): Promise<void> {

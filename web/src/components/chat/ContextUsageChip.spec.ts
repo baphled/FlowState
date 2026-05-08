@@ -15,20 +15,59 @@ import { useChatStore } from '@/stores/chatStore'
 describe('ContextUsageChip', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    // Phase 3 — visibility predicate now requires a selected model.
+    // Existing specs that exercise figure rendering / severity all
+    // assume a model is selected, so seed it once here. Specs that
+    // exercise the no-model edge override this explicitly.
+    const store = useChatStore()
+    store.currentModelId = 'glm-4.6'
   })
 
-  it('does not render when currentContextUsage is null', () => {
+  it('renders an empty-state chip when a model is selected but no usage event has fired yet', () => {
+    // Phase 3 — TUI-cadence parity. The chip is now permanently
+    // visible whenever a model is selected, mirroring the TUI's
+    // StatusBar (always visible, reflects current state). Empty
+    // state shows a placeholder text without numeric figures so the
+    // user sees the affordance is present and waiting for data
+    // rather than concluding it is broken.
+    const store = useChatStore()
+    store.currentModelId = 'glm-4.6'
+    store.currentContextUsage = null
+
+    const wrapper = mount(ContextUsageChip)
+
+    const chip = wrapper.find('[data-testid="context-usage-chip"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.attributes('data-severity')).toBe('neutral')
+    // Empty-state copy: dashes for both counts so "0/0" doesn't
+    // miscommunicate "saturated zero-budget context".
+    expect(wrapper.find('[data-testid="context-usage-counts"]').text()).toBe('—/—')
+    expect(wrapper.find('[data-testid="context-usage-percentage"]').text()).toBe('—%')
+  })
+
+  it('does not render when no model is selected', () => {
+    // No-model edge: at very early bootstrap the user has not
+    // picked a model and the session has no current model. Hide
+    // the chip rather than show a model-less affordance.
+    const store = useChatStore()
+    store.currentModelId = ''
+    store.currentContextUsage = null
+
     const wrapper = mount(ContextUsageChip)
 
     expect(wrapper.find('[data-testid="context-usage-chip"]').exists()).toBe(false)
   })
 
-  it('does not render when limit is zero (degraded payload guard)', () => {
+  it('falls back to empty-state when a degraded payload arrives with limit=0', () => {
     // A zero-limit figure would render `1234/0` which is meaningless.
     // The engine suppresses the chunk when limit<=0 so this should
     // never reach the chip in practice, but the chip guards against
-    // a future emitter regression.
+    // a future emitter regression. With Phase 3's always-visible
+    // behaviour we no longer hide the chip — instead the figure
+    // falls back to the empty-state placeholder so the affordance
+    // remains present without misleading the user.
     const store = useChatStore()
+    store.currentModelId = 'glm-4.6'
     store.currentContextUsage = {
       inputTokens: 1234,
       outputReserve: 4096,
@@ -38,7 +77,9 @@ describe('ContextUsageChip', () => {
 
     const wrapper = mount(ContextUsageChip)
 
-    expect(wrapper.find('[data-testid="context-usage-chip"]').exists()).toBe(false)
+    const chip = wrapper.find('[data-testid="context-usage-chip"]')
+    expect(chip.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="context-usage-counts"]').text()).toBe('—/—')
   })
 
   it('renders the chip with input/limit and percentage when currentContextUsage is set', () => {

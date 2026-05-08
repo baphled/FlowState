@@ -769,6 +769,12 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		api.WithMetricsHandler(promhttp.HandlerFor(traced.metrics, promhttp.HandlerOpts{})),
 		api.WithEventBus(eng.EventBus()),
 		api.WithModelLister(modelListerFromRegistry(params.providerRegistry)),
+		// Phase 3 — TUI-cadence parity. The engine implements the
+		// ContextUsageProvider interface via ContextUsageJSONForSession;
+		// the api server calls it on session-load (SSE-connect) and
+		// after agent / model PATCH so the chat UI's usage chip reflects
+		// current state without waiting for the next pre-send.
+		api.WithContextUsageProvider(eng),
 	)
 	return &runtimeComponents{
 		engine:          eng,
