@@ -125,6 +125,10 @@ type BackgroundTaskCompletedMsg struct {
 // fields. Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) added
 // ToolBefore and ToolResult; ToolError already existed for the notifier path
 // and now also feeds the SwarmEventStore (one bus event, two side-effects).
+// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026) added GateFailed
+// and GateEvaluating; the chat intent activates the previously dead
+// surfaceSwarmGateFailure helper as the notification renderer for
+// halt-class swarm gate failures.
 type EventBusNotificationMsg struct {
 	ProviderError       *events.ProviderErrorEvent
 	RateLimited         *events.ProviderEvent
@@ -135,6 +139,20 @@ type EventBusNotificationMsg struct {
 	DelegationFailed    *events.DelegationFailedEvent
 	ToolBefore          *events.ToolEvent
 	ToolResult          *events.ToolExecuteResultEvent
+	// GateEvaluating carries a swarm-gate batch lifecycle marker.
+	// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026): the
+	// chat intent listens for parity with the API SSE bridge but the
+	// TUI activity pane does NOT yet render a transient "evaluating
+	// N gates…" affordance — the field carries the event for future
+	// per-gate timeline work without a behaviour change today.
+	GateEvaluating *events.GateEvaluatingEvent
+	// GateFailed carries a halt-class swarm-gate failure. The handler
+	// routes through surfaceSwarmGateFailure to render a Warning
+	// notification — the dead-but-ready helper at intent.go is now
+	// live for the first time. GatePassed is intentionally not exposed
+	// to the TUI; per-batch passes are silent in the activity pane to
+	// keep the failure-signal:noise ratio sane.
+	GateFailed *events.GateFailedEvent
 }
 
 // SwarmEventAppendedMsg signals that a new entry has been written to the
@@ -1060,6 +1078,36 @@ func (i *Intent) subscribeToFailoverEvents() {
 		default:
 		}
 	})
+
+	// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026) §"TUI
+	// consumer migration". The engine publishes gate.failed when a
+	// halt-class swarm-gate failure occurs at runSwarmGates /
+	// dispatchMemberGates; the chat intent surfaces it through the
+	// previously dead surfaceSwarmGateFailure helper. gate.evaluating
+	// is also subscribed for parity with the API SSE bridge but does
+	// not yet drive a UI affordance — the field carries the event for
+	// future timeline work. gate.passed is intentionally not
+	// subscribed (per-batch silent passes).
+	bus.Subscribe(events.EventGateFailed, func(msg any) {
+		evt, ok := msg.(*events.GateFailedEvent)
+		if !ok || evt.Data.SessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{GateFailed: evt}:
+		default:
+		}
+	})
+	bus.Subscribe(events.EventGateEvaluating, func(msg any) {
+		evt, ok := msg.(*events.GateEvaluatingEvent)
+		if !ok || evt.Data.SessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{GateEvaluating: evt}:
+		default:
+		}
+	})
 }
 
 // waitForEventBusNotification returns a tea.Cmd that blocks until an event bus
@@ -1124,9 +1172,52 @@ func (i *Intent) handleEventBusNotification(msg EventBusNotificationMsg) tea.Cmd
 		i.appendToolCallSwarmEvent(msg.ToolBefore.Data, msg.ToolBefore.Timestamp())
 	case msg.ToolResult != nil:
 		i.appendToolResultSwarmEvent(msg.ToolResult.Data, msg.ToolResult.Timestamp())
+	case msg.GateFailed != nil:
+		// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+		// activate the previously dead surfaceSwarmGateFailure helper.
+		// Reconstruct a *swarm.GateError from the bus payload's typed
+		// fields so the helper's existing renderer (which formats via
+		// err.Error()) produces the same notification body the typed
+		// failure path would have produced before publication.
+		i.surfaceSwarmGateFailure(buildGateErrorFromEvent(msg.GateFailed.Data))
+	case msg.GateEvaluating != nil:
+		// Carried for parity with the API SSE bridge; the TUI activity
+		// pane does not yet render a transient "evaluating gates…"
+		// status. Future timeline work attaches here without a bus
+		// re-wiring.
 	}
 	i.refreshViewport()
 	return i.waitForEventBusNotification()
+}
+
+// buildGateErrorFromEvent reconstructs a *swarm.GateError from the bus
+// event's typed fields so surfaceSwarmGateFailure's existing renderer
+// (which formats via err.Error()) produces the same body it would have
+// produced before bus publication. Plans/Gate Bus Bridge — Engine to
+// SSE and TUI (May 2026): keeps the helper untouched while activating
+// it on the bus path; the alternative (refactoring the renderer to
+// accept GateEventData directly) would break the "no refactor while
+// wiring" constraint.
+//
+// Expected:
+//   - data is the bus payload from gate.failed; GateName populated.
+//
+// Returns:
+//   - A *swarm.GateError with the typed fields populated; suitable
+//     for passing to surfaceSwarmGateFailure.
+func buildGateErrorFromEvent(data events.GateEventData) *swarm.GateError {
+	gateErr := &swarm.GateError{
+		GateName: data.GateName,
+		GateKind: data.GateKind,
+		When:     data.Lifecycle,
+		SwarmID:  data.SwarmID,
+		MemberID: data.MemberID,
+		Reason:   data.Reason,
+	}
+	if data.Cause != "" {
+		gateErr.Cause = errors.New(data.Cause)
+	}
+	return gateErr
 }
 
 // appendDelegationSwarmEvent projects an `events.DelegationEventData` payload

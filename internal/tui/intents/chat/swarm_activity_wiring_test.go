@@ -248,6 +248,66 @@ var _ = Describe("swarm activity pane wiring", func() {
 		})
 	})
 
+	Describe("Gate lifecycle events feed the notification manager via the bus", func() {
+		// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+		// the engine publishes gate.failed when runSwarmGates /
+		// dispatchMemberGates halts; the chat intent extends
+		// EventBusNotificationMsg with GateFailed and routes through
+		// the previously dead surfaceSwarmGateFailure helper. The
+		// notification manager renders a Warning notification — the
+		// existing renderer is preserved verbatim per the plan's
+		// non-replacement constraint.
+
+		It("surfaces a swarm-gate-failure notification on a halt-class gate.failed bus event", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				GateFailed: events.NewGateFailedEvent(events.GateEventData{
+					SwarmID:   "a-team",
+					SessionID: "test-session",
+					Lifecycle: "post-member",
+					MemberID:  "researcher",
+					GateName:  "post-member-researcher-relevance-gate",
+					GateKind:  "ext:relevance-gate",
+					Reason:    "off-topic",
+				}),
+			})
+
+			mgr := intent.NotificationManagerForTest()
+			Expect(mgr).NotTo(BeNil())
+			var titles, messages []string
+			for _, n := range mgr.Active() {
+				titles = append(titles, n.Title)
+				messages = append(messages, n.Message)
+			}
+			Expect(titles).To(ContainElement(ContainSubstring("Swarm gate failure")),
+				"the previously dead surfaceSwarmGateFailure helper must fire on a gate.failed bus event")
+			Expect(messages).To(ContainElement(ContainSubstring("post-member-researcher-relevance-gate")),
+				"notification body must name the failing gate so the operator knows what halted")
+			Expect(messages).To(ContainElement(ContainSubstring("off-topic")),
+				"notification body must surface the typed Reason from the *swarm.GateError")
+		})
+
+		It("does not surface a notification when GateFailed is not set on the message", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				ToolBefore: events.NewToolEvent(events.ToolEventData{
+					SessionID:          "test-session",
+					ToolName:           "ReadFile",
+					InternalToolCallID: "fs_internal_read",
+				}),
+			})
+
+			mgr := intent.NotificationManagerForTest()
+			Expect(mgr).NotTo(BeNil())
+			for _, n := range mgr.Active() {
+				Expect(n.Title).NotTo(ContainSubstring("Swarm gate failure"),
+					"a non-gate-failed bus event must not produce a swarm-gate-failure notification")
+			}
+		})
+	})
+
 	Describe("recordSwarmEvent with nil store", func() {
 		It("is a no-op when the swarm store has been cleared to nil", func() {
 			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})

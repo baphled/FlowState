@@ -336,6 +336,57 @@ export interface SSEContextCompactedEvent {
   latencyMs: number
 }
 
+/**
+ * SSEGateFailedEvent — halt-class swarm-gate failure affordance.
+ *
+ * Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026). The
+ * engine publishes `gate.failed` on the bus when runSwarmGates /
+ * dispatchMemberGates halts on a *swarm.GateError; the api-side
+ * bridge in `internal/api/event_bridge.go` routes it onto the SSE
+ * wire via `writeSSEGateFailed` (see internal/api/server.go) which
+ * injects the canonical `"type":"gate_failed"` discriminant.
+ *
+ * The chat store routes this into a session-scoped `lastGateFailure`
+ * slice the GateFailureBanner reads. The banner persists until either
+ * Dismiss click or session change — gate failures halt the dispatch,
+ * so the operator must acknowledge the affordance rather than have
+ * it auto-clear.
+ *
+ * Field semantics:
+ *   - `swarmId` — the swarm that halted (e.g. "a-team", "board-room");
+ *     the banner subtitle attributes the failure.
+ *   - `lifecycle` — one of "pre" | "post" | "pre-member" | "post-member".
+ *     Distinguishes a swarm-boundary halt from a per-member halt.
+ *   - `memberId` — the failing member when lifecycle is member-scoped;
+ *     empty for swarm-level halts.
+ *   - `gateName` — the manifest-supplied gate name; the banner title
+ *     uses this verbatim ("Swarm gate halted: <gateName>").
+ *   - `gateKind` — "ext:<name>" or "builtin:<name>"; surfaced on a
+ *     power-user toggle.
+ *   - `reason` — the typed *swarm.GateError.Reason; the banner body.
+ *   - `cause` — the wrapped runner error's message, or empty when
+ *     the halt is clean (a gate that returned without an upstream error).
+ *   - `coordStoreKeys` — the keys the gate inspected, when the gate
+ *     declares Inputs per Multi-Key Gate Inputs (May 2026); the banner
+ *     exposes this on a "what was checked?" expander.
+ *
+ * All string fields default to '' when missing on the wire; coord_store_keys
+ * defaults to []. A degraded payload (no fields beyond `type`) leaves the
+ * banner with empty copy rather than crashing the discriminated-union
+ * dispatch.
+ */
+export interface SSEGateFailedEvent {
+  kind: 'gate_failed'
+  swarmId: string
+  lifecycle: string
+  memberId: string
+  gateName: string
+  gateKind: string
+  reason: string
+  cause: string
+  coordStoreKeys: string[]
+}
+
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
   kind: 'unknown'
@@ -366,6 +417,7 @@ export type SSEEvent =
   | SSEModelActiveEvent
   | SSEContextUsageEvent
   | SSEContextCompactedEvent
+  | SSEGateFailedEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
 
@@ -482,6 +534,32 @@ export function parseSSEPayload(payload: string): SSEEvent {
       summaryTokens:
         typeof obj['summary_tokens'] === 'number' ? (obj['summary_tokens'] as number) : 0,
       latencyMs: typeof obj['latency_ms'] === 'number' ? (obj['latency_ms'] as number) : 0,
+    }
+  }
+
+  if (type === 'gate_failed') {
+    // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+    // halt-class swarm gate failure. coord_store_keys is optional —
+    // populated only when the gate declares Inputs (Multi-Key Gate
+    // Inputs plan). String fields default to ''; the keys array
+    // defaults to []. A degraded wire payload (only `type`) leaves
+    // the banner with empty copy rather than crashing the dispatch.
+    let coordStoreKeys: string[] = []
+    if (Array.isArray(obj['coord_store_keys'])) {
+      coordStoreKeys = (obj['coord_store_keys'] as unknown[]).filter(
+        (k): k is string => typeof k === 'string',
+      )
+    }
+    return {
+      kind: 'gate_failed',
+      swarmId: typeof obj['swarm_id'] === 'string' ? (obj['swarm_id'] as string) : '',
+      lifecycle: typeof obj['lifecycle'] === 'string' ? (obj['lifecycle'] as string) : '',
+      memberId: typeof obj['member_id'] === 'string' ? (obj['member_id'] as string) : '',
+      gateName: typeof obj['gate_name'] === 'string' ? (obj['gate_name'] as string) : '',
+      gateKind: typeof obj['gate_kind'] === 'string' ? (obj['gate_kind'] as string) : '',
+      reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
+      cause: typeof obj['cause'] === 'string' ? (obj['cause'] as string) : '',
+      coordStoreKeys,
     }
   }
 
