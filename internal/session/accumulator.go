@@ -642,6 +642,19 @@ const StopReasonThinkingOnly = "thinking_only"
 // render branch, not by any backend consumer.
 const StopReasonEmptyTurn = "empty_turn"
 
+// StopReasonTurnInterrupted is the synthetic stop reason stamped on a
+// placeholder assistant Message when a tool-bearing turn ends due to a
+// provider stream closure (network drop, timeout, or provider failure).
+// The tool calls are persisted as-is, allowing the chat UI to render
+// them with an interrupted state indicator and the user to retry or
+// branch. Without this synthetic Done, the session has no assistant
+// artefact and the chat UI's in-flight bubble hangs until the 60s
+// watchdog trips (session 1776011172813458779, May 2026).
+//
+// Wire-format-stable: the value is read by the Vue `MessageBubble`
+// render branch, not by any backend consumer.
+const StopReasonTurnInterrupted = "turn_interrupted"
+
 // synthesizePlaceholderAssistant emits an empty-content assistant message
 // carrying the accumulated thinking blocks when a turn produced reasoning
 // without an enclosing assistant artefact.
