@@ -30,6 +30,7 @@ func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) fu
 		{eventType: events.EventBackgroundTaskStarted, handler: newBackgroundTaskHandler(sessionID, out)},
 		{eventType: events.EventBackgroundTaskCompleted, handler: newBackgroundTaskHandler(sessionID, out)},
 		{eventType: events.EventBackgroundTaskFailed, handler: newBackgroundTaskHandler(sessionID, out)},
+		{eventType: events.EventContextCompacted, handler: newContextCompactedHandler(sessionID, out)},
 	}
 
 	for _, h := range handlers {
@@ -185,6 +186,50 @@ func newBackgroundTaskHandler(sessionID string, out chan<- WSChunkMsg) eventbus.
 
 		select {
 		case out <- WSChunkMsg{EventType: eventType, EventData: sanitised}:
+		default:
+		}
+	}
+}
+
+// newContextCompactedHandler creates an EventHandler that forwards
+// EventContextCompacted bus events to the out channel when the session
+// ID matches. Slice 6a of the Phase-4 follow-ups bridges the engine's
+// auto-compaction telemetry onto the wire so Vue clients can render a
+// compaction affordance (Slice 6b consumes this on the chip).
+//
+// The sanitised payload mirrors the engine's
+// pluginevents.ContextCompactedEventData fields (session_id, agent_id,
+// original_tokens, summary_tokens, latency_ms) plus the canonical
+// `event_type` discriminant the SSE writer emits as
+// `"type":"context_compacted"`.
+//
+// Expected:
+//   - sessionID is the connection's session.
+//   - out accepts WSChunkMsg values.
+//
+// Returns:
+//   - An eventbus.EventHandler for context.compacted events.
+//
+// Side effects:
+//   - Sends to out channel on matching events.
+//   - Drops the event on a full out channel rather than blocking the
+//     bus dispatcher (matches the existing pattern across this file).
+func newContextCompactedHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
+	return func(msg any) {
+		ce, ok := msg.(*events.ContextCompactedEvent)
+		if !ok || ce.Data.SessionID != sessionID {
+			return
+		}
+		sanitised := map[string]any{
+			"event_type":      events.EventContextCompacted,
+			"session_id":      ce.Data.SessionID,
+			"agent_id":        ce.Data.AgentID,
+			"original_tokens": ce.Data.OriginalTokens,
+			"summary_tokens":  ce.Data.SummaryTokens,
+			"latency_ms":      ce.Data.LatencyMS,
+		}
+		select {
+		case out <- WSChunkMsg{EventType: events.EventContextCompacted, EventData: sanitised}:
 		default:
 		}
 	}
