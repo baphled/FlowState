@@ -1104,6 +1104,185 @@ var _ = Describe("Engine", func() {
 				})
 			})
 
+			// Slice 1 (Phase-4 follow-ups) — per-model OutputLimit in the
+			// provider registry tightens the Phase-2 reserve formula from
+			//   reserve = max(req.MaxTokens or 4096, 1024)
+			// to
+			//   reserve = max(req.MaxTokens or model.OutputLimit, 1024)
+			// so each (provider, model) declares its own reasonable output
+			// budget rather than sharing a single hardcoded 4096 default.
+			// Mirrors OpenCode's compaction.ts:30-39 which reads
+			// `model.limit.output`. The resolver mirrors
+			// Engine.ResolveContextLength: route through the failover
+			// manager when wired, fall back to defaultModelOutputLimit
+			// (=defaultOutputReserve=4096) otherwise so a missing-registry-
+			// value yields no behaviour change vs the Phase-2 default.
+			Context("output reserve sourced from per-model registry (Slice 1)", func() {
+				It("uses model.OutputLimit when MaxTokens is unset", func() {
+					// limit=10_000, OutputLimit=8192 → usable = 1_808.
+					// Old default reserve=4096 → old usable = 5_904.
+					// A ~3_000-token input PASSED under the old check
+					// (3_000 ≤ 5_904) and now must REFUSE
+					// (3_000 > 1_808). Pins the new formula precisely
+					// rather than just "tighter than before".
+					chatProvider.models = []provider.Model{
+						{ID: "test-model", Provider: "test-chat-provider", ContextLength: 10_000, OutputLimit: 8192},
+					}
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					// 12_000 chars → heuristic ~3_000 tokens. Sits above
+					// new usable (1_808) and below old usable (5_904).
+					msg := strings.Repeat("x", 12_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", msg)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+
+					Expect(chatProvider.capturedRequest).To(BeNil(),
+						"OutputLimit=8192 → usable=1_808; ~3_000-token input must refuse "+
+							"(would have passed under the old hardcoded 4096 default)")
+				})
+
+				It("falls back to defaultOutputReserve when the registry returns zero", func() {
+					// Regression guard: a Models() entry that omits
+					// OutputLimit (zero value) must yield the existing
+					// 4096 fallback. Same scenario as the Phase-2 base
+					// case: limit=5_000, reserve=4_096, usable=904; a
+					// ~1_500-token input refuses under the default.
+					chatProvider.models = []provider.Model{
+						{ID: "test-model", Provider: "test-chat-provider", ContextLength: 5_000},
+					}
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					msg := strings.Repeat("x", 6_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", msg)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+
+					Expect(chatProvider.capturedRequest).To(BeNil(),
+						"OutputLimit=0 → fall back to default 4096 reserve; "+
+							"~1_500-token input must still refuse against usable=904")
+				})
+
+				It("honours MaxTokens when stamped, ignoring registry OutputLimit", func() {
+					// limit=10_000, OutputLimit=8192, MaxTokens=2048 →
+					// reserve=max(2048, 1024)=2048 → usable=7_952. A
+					// ~3_000-token input that REFUSED under the
+					// OutputLimit-only path now PASSES because the
+					// caller's MaxTokens stamp takes precedence over
+					// the registry default. Pins MaxTokens-source
+					// precedence: caller > registry > engine default.
+					chatProvider.models = []provider.Model{
+						{ID: "test-model", Provider: "test-chat-provider", ContextLength: 10_000, OutputLimit: 8192},
+					}
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+
+					mfst := manifest
+					mfst.OrchestratorMeta = agent.OrchestratorMetadata{Category: "explicit-max"}
+					resolver := engine.NewCategoryResolver(map[string]engine.CategoryConfig{
+						"explicit-max": {MaxTokens: 2048},
+					})
+
+					eng := engine.New(engine.Config{
+						Registry:         registry,
+						FailoverManager:  manager,
+						Manifest:         mfst,
+						TokenCounter:     ctxstore.NewApproximateCounter(),
+						CategoryResolver: resolver,
+					})
+
+					msg := strings.Repeat("x", 12_000)
+					chunks, err := eng.Stream(context.Background(), "test-agent", msg)
+					Expect(err).NotTo(HaveOccurred())
+					for range chunks {
+					}
+
+					Expect(chatProvider.capturedRequest).NotTo(BeNil(),
+						"MaxTokens=2048 must take precedence over registry OutputLimit=8192; "+
+							"usable=7_952 → ~3_000-token input passes")
+				})
+
+				It("emits the registry-sourced output_reserve in the context_usage chunk", func() {
+					// The chip must reflect the same reserve the gate
+					// uses — drift between emitter and gate was the
+					// failure mode the Phase-3 buildContextUsagePayload
+					// extraction prevents. Slice 1 extends the contract
+					// to the new resolver: when MaxTokens is unset and
+					// the registry carries OutputLimit=8192, the chunk's
+					// `output_reserve` field must be 8192, not 4096.
+					chatProvider.models = []provider.Model{
+						{ID: "test-model", Provider: "test-chat-provider", ContextLength: 100_000, OutputLimit: 8192},
+					}
+					registry := provider.NewRegistry()
+					registry.Register(chatProvider)
+					health := failover.NewHealthManager()
+					manager := failover.NewManager(registry, health, 5*time.Minute)
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "test-chat-provider", Model: "test-model"},
+					})
+
+					eng := engine.New(engine.Config{
+						Registry:        registry,
+						FailoverManager: manager,
+						Manifest:        manifest,
+						TokenCounter:    ctxstore.NewApproximateCounter(),
+					})
+
+					chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+					Expect(err).NotTo(HaveOccurred())
+
+					var usage *provider.StreamChunk
+					for chunk := range chunks {
+						if chunk.EventType == "context_usage" && usage == nil {
+							c := chunk
+							usage = &c
+						}
+					}
+					Expect(usage).NotTo(BeNil(),
+						"a context_usage chunk must be emitted")
+
+					var payload map[string]interface{}
+					Expect(json.Unmarshal([]byte(usage.Content), &payload)).To(Succeed())
+
+					Expect(payload["output_reserve"]).To(BeNumerically("==", 8_192),
+						"context_usage payload must surface the registry-sourced reserve, not the 4096 default")
+					Expect(payload["limit"]).To(BeNumerically("==", 100_000))
+				})
+			})
+
 			// Phase 2 — context_usage SSE event. The engine emits a
 			// single context_usage chunk at the start of every Stream so
 			// the chat UI can render a live usage chip. Shape:

@@ -92,6 +92,43 @@ func (m *Manager) ResolveContextLength(providerName, model string) int {
 	return fallback
 }
 
+// ResolveOutputLimit returns the per-model output token budget for the
+// given provider/model. Mirrors ResolveContextLength in shape so the
+// engine's overflow gate and context_usage emitter can consult both via
+// the same registry round-trip. Used to tighten the Phase-2 reserve
+// formula from `max(req.MaxTokens or 4096, 1024)` to
+// `max(req.MaxTokens or model.OutputLimit, 1024)`.
+//
+// Expected:
+//   - providerName is the name of the provider to query.
+//   - model is the model identifier to look up.
+//
+// Returns:
+//   - The model's OutputLimit when the provider knows the pair AND
+//     advertises a positive OutputLimit for it.
+//   - Zero when the provider is missing, errors, or returns a model
+//     entry with OutputLimit unset. The engine treats zero as "no
+//     registry data" and falls back to its defaultOutputReserve.
+//
+// Side effects:
+//   - None.
+func (m *Manager) ResolveOutputLimit(providerName, model string) int {
+	p, err := m.registry.Get(providerName)
+	if err != nil {
+		return 0
+	}
+	models, err := p.Models()
+	if err != nil {
+		return 0
+	}
+	for _, candidate := range models {
+		if candidate.ID == model && candidate.OutputLimit > 0 {
+			return candidate.OutputLimit
+		}
+	}
+	return 0
+}
+
 // resolvedFallback returns the operator-configured fallback when set,
 // or defaultManagerFallback otherwise. Lock-aware so callers stay
 // thread-safe alongside SetContextFallback.

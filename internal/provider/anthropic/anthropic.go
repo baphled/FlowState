@@ -23,8 +23,15 @@ var errAPIKeyRequired = errors.New("anthropic API key is required")
 var errOAuthTokenRequired = errors.New("anthropic OAuth token is required")
 
 const (
-	providerName          = "anthropic"
-	defaultContextLength  = 200000
+	providerName         = "anthropic"
+	defaultContextLength = 200000
+	// defaultOutputLimit is Anthropic's published per-model max-output
+	// tokens for the claude-3.5+ family (8192 since claude-3-5-sonnet).
+	// The provider registry surfaces it on every Models() entry so the
+	// engine's overflow gate can size its output reserve per-model
+	// rather than against a shared 4096 default — see Slice 1 of the
+	// Phase-4 follow-ups plan.
+	defaultOutputLimit    = 8192
 	streamChannelBuffSize = 16
 	defaultMaxTokens      = 4096
 	oauthTokenPrefix      = "sk-ant-oat01-"
@@ -446,6 +453,7 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 			ID:            info.ID,
 			Provider:      providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		})
 	}
 	if err := pager.Err(); err != nil {
@@ -466,14 +474,17 @@ func fallbackModels() []provider.Model {
 		{
 			ID: "claude-sonnet-4-20250514", Provider: providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		},
 		{
 			ID: "claude-3-5-haiku-latest", Provider: providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		},
 		{
 			ID: "claude-opus-4-20250514", Provider: providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		},
 	}
 }

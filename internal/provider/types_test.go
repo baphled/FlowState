@@ -9,6 +9,29 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+var _ = Describe("Model", func() {
+	// Slice 1 — the registry-side carrier of the per-model output budget.
+	// The engine's overflow gate consults this field via
+	// Engine.ResolveOutputLimit so the reserve formula
+	//   reserve = max(req.MaxTokens or model.OutputLimit, 1024)
+	// can tighten from the static 4096 default to a per-model figure.
+	// A registry entry that omits OutputLimit (zero-value int) preserves
+	// the prior behaviour: the engine falls back to defaultOutputReserve.
+	It("carries an OutputLimit field defaulting to zero", func() {
+		// Field-presence pin — a Models() implementation that does not set
+		// OutputLimit must still construct cleanly and yield zero.
+		m := Model{ID: "x", Provider: "y", ContextLength: 1}
+		Expect(m.OutputLimit).To(Equal(0))
+	})
+
+	It("carries an OutputLimit field that round-trips a populated value", func() {
+		// Population pin — providers that DO set OutputLimit must see the
+		// value preserved on the struct.
+		m := Model{ID: "x", Provider: "y", ContextLength: 1, OutputLimit: 8192}
+		Expect(m.OutputLimit).To(Equal(8192))
+	})
+})
+
 var _ = Describe("ToolResultInfo", func() {
 	It("stores content and error state", func() {
 		info := &ToolResultInfo{

@@ -33,7 +33,14 @@ const (
 	PlanCoding = "coding"
 
 	defaultContextLength = 128000
-	defaultEmbedModel    = "embedding-3"
+	// defaultOutputLimit is Z.AI's published per-model max-output for
+	// the glm-4.x / glm-5 family — 8192 tokens (conservative; the
+	// upstream docs allow up to 16K on glm-5). Slice 1 of the Phase-4
+	// follow-ups added the field so the engine's overflow gate can
+	// size its output reserve per-model rather than against a shared
+	// hardcoded 4096 default.
+	defaultOutputLimit = 8192
+	defaultEmbedModel  = "embedding-3"
 )
 
 // BaseURLForPlan returns the Z.AI base URL for the named plan.
@@ -244,6 +251,7 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 			ID:            modelsPage.Data[i].ID,
 			Provider:      providerName,
 			ContextLength: defaultContextLength,
+			OutputLimit:   defaultOutputLimit,
 		})
 	}
 
@@ -259,9 +267,9 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
-		{ID: "glm-5", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "glm-4.7", Provider: providerName, ContextLength: defaultContextLength},
-		{ID: "glm-4.7-flash", Provider: providerName, ContextLength: defaultContextLength},
+		{ID: "glm-5", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "glm-4.7", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
+		{ID: "glm-4.7-flash", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 	}
 }
 

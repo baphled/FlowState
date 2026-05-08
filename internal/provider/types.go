@@ -261,10 +261,23 @@ type EmbedRequest struct {
 }
 
 // Model describes an available LLM model.
+//
+// OutputLimit declares the maximum response tokens the model is configured
+// to produce. The engine's overflow gate consults it via
+// Engine.ResolveOutputLimit so the reserve formula
+//
+//	reserve = max(req.MaxTokens or model.OutputLimit, 1024)
+//
+// can tighten from a single hardcoded 4096 default to a per-model figure.
+// Mirrors OpenCode's `Provider.Model.limit.output` (compaction.ts:30-39).
+// Zero value preserves the prior behaviour: the engine falls back to its
+// defaultOutputReserve constant, so a registry entry that omits OutputLimit
+// is no behaviour change vs the Phase-2 default.
 type Model struct {
 	ID            string
 	Provider      string
 	ContextLength int
+	OutputLimit   int
 }
 
 // ModelPreference specifies a preferred model and provider combination.
