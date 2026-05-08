@@ -100,6 +100,8 @@ func (h *streamEventHandler) handleEvent(
 		return h.handleMessageDelta(event)
 	case "message_stop":
 		return provider.StreamChunk{Done: true}, true
+	case "ping":
+		return provider.StreamChunk{EventType: "ping"}, true
 	default:
 		return provider.StreamChunk{}, false
 	}

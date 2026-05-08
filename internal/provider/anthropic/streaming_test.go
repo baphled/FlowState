@@ -301,7 +301,7 @@ var _ = Describe("streamEventHandler", func() {
 		Context("when receiving an unrecognised event type", func() {
 			It("does not emit a chunk", func() {
 				event := anthropicAPI.MessageStreamEventUnion{
-					Type: "ping",
+					Type: "unknown_future_event",
 				}
 
 				_, shouldSend := handler.handleEvent(event)
@@ -688,6 +688,20 @@ var _ = Describe("streamEventHandler", func() {
 				Expect(shouldSend).To(BeTrue())
 				Expect(chunk.ToolCallID).To(Equal(""))
 			})
+		})
+	})
+
+	Context("when receiving a ping event", func() {
+		It("returns a marker chunk with EventType=ping", func() {
+			event := anthropicAPI.MessageStreamEventUnion{
+				Type: "ping",
+			}
+
+			chunk, shouldSend := handler.handleEvent(event)
+
+			Expect(shouldSend).To(BeTrue())
+			Expect(chunk.EventType).To(Equal("ping"))
+			Expect(chunk.Done).To(BeFalse())
 		})
 	})
 
