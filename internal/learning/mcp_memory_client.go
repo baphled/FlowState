@@ -6,10 +6,19 @@ package learning
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/mcp"
 )
+
+// errMCPToolReportedError is returned when an MCP tool call completes with
+// the IsError sentinel set on the result. It replaces a previous
+// `&json.UnmarshalTypeError{Type: nil}` misuse that panicked when its
+// Error() method dereferenced the nil reflect.Type — the root cause of the
+// "learning hook error" %!v(PANIC=Error method) entries observed in
+// flowstate.log on 2026-04-27.
+var errMCPToolReportedError = errors.New("MCP tool reported an error result")
 
 // Compile-time assertion that MCPMemoryClient implements MemoryClient.
 var _ MemoryClient = (*MCPMemoryClient)(nil)
@@ -105,7 +114,7 @@ func (m *MCPMemoryClient) OpenNodes(ctx context.Context, names []string) (Knowle
 		return KnowledgeGraph{Entities: []Entity{}, Relations: []Relation{}}, nil
 	}
 	if out.Entities == nil || out.Relations == nil {
-		return KnowledgeGraph{}, &json.UnmarshalTypeError{Value: "missing 'entities' or 'relations' field in MCP response", Type: nil}
+		return KnowledgeGraph{}, errors.New("missing 'entities' or 'relations' field in MCP response")
 	}
 	return out, nil
 }
@@ -274,7 +283,7 @@ func (m *MCPMemoryClient) callAndUnmarshal(ctx context.Context, toolName string,
 		return false, err
 	}
 	if result.IsError {
-		return false, &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+		return false, fmt.Errorf("MCP %q on server %q: %w", toolName, m.MCPServer, errMCPToolReportedError)
 	}
 	return mcp.DecodeContent(result.Content, target,
 		"tool", toolName, "server", m.MCPServer)
@@ -305,7 +314,7 @@ func (m *MCPMemoryClient) callAndParseEntities(ctx context.Context, toolName str
 		return nil, err
 	}
 	if result.IsError {
-		return nil, &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+		return nil, fmt.Errorf("MCP %q on server %q: %w", toolName, m.MCPServer, errMCPToolReportedError)
 	}
 	return parseEntities([]byte(result.Content), toolName, m.MCPServer)
 }
@@ -334,7 +343,7 @@ func (m *MCPMemoryClient) callAndParseRelations(ctx context.Context, toolName st
 		return nil, err
 	}
 	if result.IsError {
-		return nil, &json.UnmarshalTypeError{Value: "MCP tool error", Type: nil}
+		return nil, fmt.Errorf("MCP %q on server %q: %w", toolName, m.MCPServer, errMCPToolReportedError)
 	}
 	return parseRelations([]byte(result.Content), toolName, m.MCPServer)
 }
@@ -380,7 +389,7 @@ func parseEntities(content []byte, toolName, serverName string) ([]Entity, error
 		if wrapped.Entities != nil {
 			return wrapped.Entities, nil
 		}
-		return nil, &json.UnmarshalTypeError{Value: "missing 'entities' field in MCP response", Type: nil}
+		return nil, fmt.Errorf("missing 'entities' field in MCP %q response from server %q", toolName, serverName)
 	}
 	var bare []Entity
 	if bareErr := json.Unmarshal(content, &bare); bareErr == nil {
@@ -417,7 +426,7 @@ func parseRelations(content []byte, toolName, serverName string) ([]Relation, er
 		if wrapped.Relations != nil {
 			return wrapped.Relations, nil
 		}
-		return nil, &json.UnmarshalTypeError{Value: "missing 'relations' field in MCP response", Type: nil}
+		return nil, fmt.Errorf("missing 'relations' field in MCP %q response from server %q", toolName, serverName)
 	}
 	var bare []Relation
 	if bareErr := json.Unmarshal(content, &bare); bareErr == nil {
