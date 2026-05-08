@@ -381,6 +381,125 @@ var _ = Describe("Engine auto-compaction gate-proximity force-trigger", func() {
 	})
 })
 
+// Phase-5 Slice γ — mid-tool-loop emission + trigger.
+//
+// The hot path. processStreamChunks only invokes the postTurnUsage
+// callback on terminal Done. Between tool batches the chip stays
+// stale even after a 700KB tool result. retryStreamForToolResult
+// builds a fresh ChatRequest that bypasses buildContextWindow so
+// maybeAutoCompact never fires from this path either.
+//
+// The new hook (emitMidToolLoopRefresh, exposed via
+// EmitMidToolLoopRefreshForTest) plugs both gaps:
+//   1. Emits a fresh context_usage chunk reflecting the just-extended
+//      messages slice so the chip tracks the swelling tool-result
+//      wave between batches.
+//   2. Consults gateProximityForceCompact against the persisted
+//      store; on a positive verdict, force-fires maybeAutoCompact
+//      with trigger="tool_result_wave" so the next user turn's
+//      buildContextWindow injects the freshly-computed summary
+//      rather than running the cold path against a swollen prefix.
+//
+// Pinned at the helper level: the engine seam is the source of
+// truth for both affordances. The streamWithToolLoop call site
+// invokes the helper between appendToolResultsBatchToMessages and
+// retryStreamForToolResult — verified via the engine's full suite.
+var _ = Describe("Engine mid-tool-loop refresh hook", func() {
+	It("emits a fresh context_usage chunk reflecting the persisted store", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, store := newGateProxEngine(summariser, true, 0.99)
+
+		// Seed a small history so the proximity tier stays quiet —
+		// this spec is purely about chip cadence.
+		seedGateProxMessages(store, 5)
+
+		outChan := make(chan provider.StreamChunk, 4)
+		eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-tool-loop-cadence", outChan)
+
+		// Drain the channel; the helper writes synchronously.
+		close(outChan)
+		var contextUsage []provider.StreamChunk
+		for chunk := range outChan {
+			if chunk.EventType == "context_usage" {
+				contextUsage = append(contextUsage, chunk)
+			}
+		}
+
+		Expect(contextUsage).To(HaveLen(1),
+			"a fresh context_usage chunk must land between tool batches so the chip tracks the swelling tool-result wave")
+		Expect(contextUsage[0].Content).NotTo(BeEmpty(),
+			"the chunk's Content carries the JSON-encoded payload the chip reads")
+		Expect(summariser.calls.Load()).To(Equal(int32(0)),
+			"a small persisted store must NOT trigger compaction from this path")
+	})
+
+	It("force-fires compaction with Trigger=\"tool_result_wave\" when the persisted store exceeds the gate-proximity boundary", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, store := newGateProxEngine(summariser, true, 0.99)
+
+		// Seed 95K tokens — same boundary the gate-proximity force
+		// tier crosses (>90_904 against limit=100_000, reserve=4_096,
+		// 5% safety margin = 5_000).
+		seedGateProxMessages(store, 95)
+
+		var (
+			mu       sync.Mutex
+			observed []pluginevents.ContextCompactedEventData
+		)
+		eng.EventBus().Subscribe(pluginevents.EventContextCompacted, func(evt any) {
+			e, ok := evt.(*pluginevents.ContextCompactedEvent)
+			Expect(ok).To(BeTrue())
+			mu.Lock()
+			observed = append(observed, e.Data)
+			mu.Unlock()
+		})
+
+		outChan := make(chan provider.StreamChunk, 4)
+		eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-tool-result-wave", outChan)
+		close(outChan)
+		// Drain so the goroutine doesn't park.
+		for range outChan {
+		}
+
+		Expect(summariser.calls.Load()).To(Equal(int32(1)),
+			"the persisted store crosses the gate-proximity boundary; the tool-result-wave trigger must fire")
+
+		Eventually(func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(observed)
+		}, 500*time.Millisecond).Should(Equal(1))
+
+		mu.Lock()
+		got := observed[0]
+		mu.Unlock()
+
+		Expect(got.SessionID).To(Equal("sess-tool-result-wave"))
+		Expect(got.Trigger).To(Equal("tool_result_wave"),
+			"mid-tool-loop fire must stamp the dedicated trigger discriminant so the chip tooltip can attribute the cause")
+	})
+
+	It("does not double-fire when called from a session that already compacted on this turn", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, store := newGateProxEngine(summariser, true, 0.99)
+		seedGateProxMessages(store, 95)
+
+		outChan := make(chan provider.StreamChunk, 8)
+		// First call — fires.
+		eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-no-double", outChan)
+		// Second call against the same persisted state — H2 memo
+		// should reuse the cached summary; summariser is invoked
+		// exactly once, no second event.
+		eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-no-double", outChan)
+		close(outChan)
+		for range outChan {
+		}
+
+		Expect(summariser.calls.Load()).To(Equal(int32(1)),
+			"H2 memoisation must coalesce duplicate fires when the cold range is unchanged")
+	})
+})
+
 // newModelSwitchEngine wires an engine with a real failover.Manager
 // backed by a mockProvider that advertises a 30K context for
 // 'tiny-provider/tiny-model' so MaybeCompactForModel has a target with

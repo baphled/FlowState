@@ -82,6 +82,14 @@ func SanitiseDelegationMessageForTest(msg string) string {
 	return sanitiseDelegationMessage(msg)
 }
 
+// EmitMidToolLoopRefreshForTest exposes the Phase-5 Slice γ post-tool-
+// batch hook so the gate-proximity test suite can pin its two
+// affordances (context_usage emission + tool_result_wave force-fire)
+// without standing up a full multi-batch tool-loop end-to-end.
+func (e *Engine) EmitMidToolLoopRefreshForTest(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) {
+	e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+}
+
 // AppendToolResultsBatchToMessagesForTest exposes appendToolResultsBatchToMessages
 // for the context-anchoring spec. The fix injects a system-role re-anchor
 // reminder after non-trivial tool-result batches so the model does not drift
