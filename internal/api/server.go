@@ -956,11 +956,30 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unsubscribe()
 
+	// Slice 6a — bridge bus events for this session into the SSE
+	// stream. The auto-compactor publishes EventContextCompacted on
+	// the engine bus when an L2 compaction succeeds; the bridge
+	// handler in event_bridge.go fans matching events into busCh as
+	// WSChunkMsg values, and the select below multiplexes them with
+	// the broker's stream chunks. The buffer is sized at 16 — bus
+	// events arrive at most once per turn so the handler should
+	// never see backpressure on this channel; the buffer is purely
+	// to absorb a publish that races the SSE write.
+	busCh := make(chan WSChunkMsg, 16)
+	stopBus := s.subscribeSessionBus(id, busCh)
+	defer stopBus()
+
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case ev, ok := <-busCh:
+			if !ok {
+				continue
+			}
+			s.dispatchSessionBusEventSSE(w, flusher, ev)
+			continue
 		case chunk, ok := <-liveCh:
 			if !ok {
 				writeSSEDone(w, flusher)
@@ -1992,6 +2011,113 @@ func writeSSEContextUsage(w http.ResponseWriter, flusher http.Flusher, payload s
 		Model:         parsed.Model,
 	}
 	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// dispatchSessionBusEventSSE routes a session-scoped bus event from
+// subscribeSessionBus onto the SSE wire. Slice 6a wires
+// EventContextCompacted; future bus events that should mirror onto
+// SSE add a case here. Bus events that aren't intended for SSE (the
+// existing tool.execute.* / provider.rate_limited family, which
+// only WS clients consume today) fall through to the default branch
+// and are silently dropped — adding new SSE surfaces is opt-in here.
+//
+// Expected:
+//   - ev is a WSChunkMsg produced by one of the handlers in
+//     event_bridge.go.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes one SSE data line per event whose EventType has a case
+//     below; flushes after every successful write.
+//   - Drops events without an SSE counterpart silently — they remain
+//     visible to WebSocket clients via the same bridge.
+func (s *Server) dispatchSessionBusEventSSE(w http.ResponseWriter, flusher http.Flusher, ev WSChunkMsg) {
+	switch ev.EventType {
+	case events.EventContextCompacted:
+		// Slice 6a — bridge the engine's L2 auto-compactor telemetry
+		// onto the SSE wire. The bridge handler produces a
+		// map[string]any payload with the canonical fields; the
+		// writer adds the `"type":"context_compacted"` discriminant.
+		data, ok := ev.EventData.(map[string]any)
+		if !ok {
+			return
+		}
+		writeSSEContextCompacted(w, flusher, data)
+	default:
+		// Bus event without an SSE binding — safely no-op. WebSocket
+		// clients still receive it via the same bridge.
+	}
+}
+
+// sseContextCompacted is the wire shape for the SSE event Slice 6a
+// emits when the engine's L2 auto-compactor publishes
+// EventContextCompacted on the bus. Mirrors the wire-shape contract
+// of sseContextUsage: untyped JSON arriving from the bridge handler is
+// re-marshalled here with the canonical `"type":"context_compacted"`
+// discriminant injected so the frontend's discriminated union routes
+// correctly.
+//
+// Field semantics:
+//   - SessionID — the session the compaction fired for; lets the
+//     frontend ignore events that don't match the active session.
+//   - AgentID — the manifest id that owned the compaction; the chip
+//     uses this for the "compacted by <agent>" attribution.
+//   - OriginalTokens — pre-compaction token count of the cold prefix.
+//   - SummaryTokens — post-compaction token count of the summary.
+//   - LatencyMS — wall-clock latency of the summariser call.
+type sseContextCompacted struct {
+	Type           string `json:"type"`
+	SessionID      string `json:"session_id"`
+	AgentID        string `json:"agent_id"`
+	OriginalTokens int    `json:"original_tokens"`
+	SummaryTokens  int    `json:"summary_tokens"`
+	LatencyMS      int64  `json:"latency_ms"`
+}
+
+// writeSSEContextCompacted emits a typed context_compacted SSE event by
+// marshalling the supplied bus payload with the canonical
+// `"type":"context_compacted"` discriminant injected.
+//
+// Same pattern as writeSSEContextUsage: the bridge handler in
+// event_bridge.go produces a sanitised payload from
+// pluginevents.ContextCompactedEventData; this writer adds the type
+// field. Slice 6a — bridge for the L2 auto-compactor's bus event onto
+// the SSE wire so Slice 6b's chip flash can render.
+//
+// Expected:
+//   - data is the sanitised payload from newContextCompactedHandler:
+//     `{event_type, session_id, agent_id, original_tokens,
+//     summary_tokens, latency_ms}`.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes one SSE data line carrying the JSON-encoded
+//     context_compacted event.
+//   - Flushes response buffer.
+//   - On a payload that fails to marshal (defence in depth — the
+//     bridge handler produces a struct of primitives), drops the
+//     event silently rather than emitting a malformed event the
+//     frontend's parser would classify as "unknown" and discard.
+func writeSSEContextCompacted(w http.ResponseWriter, flusher http.Flusher, data map[string]any) {
+	sessionID, _ := data["session_id"].(string)
+	agentID, _ := data["agent_id"].(string)
+	originalTokens, _ := data["original_tokens"].(int)
+	summaryTokens, _ := data["summary_tokens"].(int)
+	latencyMS, _ := data["latency_ms"].(int64)
+
+	payload := sseContextCompacted{
+		Type:           "context_compacted",
+		SessionID:      sessionID,
+		AgentID:        agentID,
+		OriginalTokens: originalTokens,
+		SummaryTokens:  summaryTokens,
+		LatencyMS:      latencyMS,
+	}
+	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}

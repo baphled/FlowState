@@ -4045,7 +4045,19 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	searchResults := e.dispatchContextAssemblyHooks(ctx, sessionID, userMessage, tokenBudget)
 
-	compactedSummary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget)
+	// Slice 6a — gate-proximity tier. Synthesise a candidate
+	// ChatRequest from the persisted message history plus the
+	// current user turn, then ask shouldAutoCompactForGate whether
+	// the assembled estimate sits within 5% of the proactive gate's
+	// refusal boundary. The estimate uses the engine's tokenCounter
+	// (same path the gate uses), so the trigger and the gate agree
+	// on the same picture of the request. The reserve resolves
+	// through outputReserveFor with no MaxTokens override — matching
+	// the production seam where Stream() callers seldom set
+	// MaxTokens explicitly.
+	forceCompactForGate := e.gateProximityForceCompact(&manifestCopy, userMessage, tokenBudget)
+
+	compactedSummary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, forceCompactForGate)
 
 	result := e.assembleBuildResult(buildResultInputs{
 		manifest:         &manifestCopy,
@@ -4092,7 +4104,10 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 // maybeAutoCompact runs the Phase 2 auto-compaction trigger when the
 // engine is configured with an AutoCompactor, the feature is enabled,
-// and the recent-message token load exceeds the configured threshold.
+// and either (a) the recent-message token load exceeds the configured
+// threshold or (b) Slice 6a's gate-proximity tier (forceFire) demands
+// compaction because the next request would land within 5% of the
+// proactive saturation gate's refusal boundary.
 //
 // Expected:
 //   - ctx carries cancellation/deadline for the LLM call.
@@ -4102,6 +4117,12 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - manifest has been prepared with the current system prompt (used to
 //     determine SlidingWindowSize).
 //   - tokenBudget is the full model context limit.
+//   - forceFire is the gate-proximity decision computed by
+//     buildContextWindow via shouldAutoCompactForGate. When true the
+//     ratio gate is bypassed; the AutoCompaction.Enabled flag and the
+//     "have content to summarise" check still apply — operators retain
+//     a single opt-out and we never invoke the summariser on an empty
+//     transcript.
 //
 // Returns:
 //   - The summary text ("[auto-compacted summary]: <json>") when
@@ -4109,7 +4130,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - The built window falls back to the normal path on:
 //   - feature disabled,
 //   - compactor nil,
-//   - token load under threshold,
+//   - token load under threshold AND gate-proximity quiet,
 //   - compactor error (logged, not fatal).
 //
 // Side effects:
@@ -4117,7 +4138,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 //   - Updates e.lastCompactionSummary on success; cleared on non-fire.
 //   - Publishes a pluginevents.ContextCompactedEvent on the engine bus
 //     on successful compaction (T10b per ADR - Tool-Call Atomicity).
-func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int) string {
+func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int, forceFire bool) string {
 	threshold, ok := e.autoCompactionThreshold(manifest, tokenBudget)
 	if !ok {
 		// Feature disabled or preconditions unmet — clear the cross-
@@ -4127,13 +4148,20 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		// disabling compaction for one turn (e.g. tokenBudget <= 0
 		// during a degraded build) should not force the next enabled
 		// turn to re-summarise if the cold prefix has not changed.
+		//
+		// forceFire is honoured *only* when the feature flag and
+		// preconditions allow: AutoCompaction.Enabled = false is the
+		// operator's deliberate opt-out and gate-proximity must not
+		// bypass it. The proactive gate then refuses the request on
+		// its own — operators see the saturation loudly rather than
+		// silently re-summarising.
 		e.buildStateMu.Lock()
 		e.lastCompactionSummary = nil
 		e.buildStateMu.Unlock()
 		return ""
 	}
 
-	recent, recentTokens, fire := e.autoCompactionCandidates(manifest, tokenBudget, threshold)
+	recent, recentTokens, fire := e.autoCompactionCandidates(manifest, tokenBudget, threshold, forceFire)
 	if !fire {
 		// Below threshold — clear the cross-session pointer as
 		// before. Same per-session-memo retention rationale applies.
@@ -4625,20 +4653,29 @@ func (e *Engine) autoCompactionThreshold(manifest *agent.Manifest, tokenBudget i
 // be unit-tested independently of the LLM call and so the trigger
 // function stays inside the funlen gate.
 //
+// Slice 6a (Phase 4 follow-ups) added the forceFire signal so the
+// gate-proximity tier — computed in buildContextWindow against the
+// full assembled-request token estimate — can OR onto the existing
+// ratio decision. When forceFire is true, the only remaining guard
+// is the "have content to summarise" check; the ratio threshold is
+// bypassed.
+//
 // Expected:
 //   - manifest carries ContextManagement to pick the sliding window size.
 //   - tokenBudget is the model context limit.
 //   - threshold is the ratio above which compaction fires.
+//   - forceFire is true when an external signal (Slice 6a's gate-
+//     proximity check) demands compaction regardless of the ratio.
 //
 // Returns:
 //   - recent: the recent-message slice counted against the budget.
 //   - recentTokens: sum of token counts for those messages.
-//   - fire: true when the ratio exceeds threshold and there is content
-//     to summarise; false when compaction should be skipped.
+//   - fire: true when (ratio > threshold OR forceFire) and there is
+//     content to summarise; false when compaction should be skipped.
 //
 // Side effects:
 //   - None.
-func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget int, threshold float64) ([]provider.Message, int, bool) {
+func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, bool) {
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
 		slidingWindowSize = 10
@@ -4651,11 +4688,139 @@ func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget 
 	for i := range recent {
 		recentTokens += e.tokenCounter.Count(recent[i].Content)
 	}
+	if forceFire {
+		return recent, recentTokens, true
+	}
 	ratio := float64(recentTokens) / float64(tokenBudget)
 	if ratio <= threshold {
 		return nil, 0, false
 	}
 	return recent, recentTokens, true
+}
+
+// shouldAutoCompactForGate reports whether the proactive saturation
+// gate (Phase 1 — checkContextWindowOverflow) would refuse the next
+// request within a 5% safety margin of its hard boundary. This is
+// Slice 6a's force-trigger source: the L2 ratio threshold is decoupled
+// from the gate's actual usable budget, so under heavy single-turn
+// loads the gate could refuse a request that the ratio path declined
+// to compact. shouldAutoCompactForGate fires compaction *before* the
+// gate gets a chance to refuse, leaving the gate as the unconditional
+// floor that catches degenerate cases (compaction failure, summary
+// still over budget).
+//
+// Boundary: estimated > limit - reserve - (limit / 20)
+//
+// The 5% safety margin (limit / 20) gives the compactor headroom to
+// produce a summary that still fits under the gate. Without it the
+// trigger would fire only when there is no room left for the summary
+// itself, defeating the point of compacting.
+//
+// Degenerate-budget guard: when limit <= reserve + safetyMargin the
+// helper returns false. The proactive gate's own clamp (usable < 1 →
+// 1) means it would refuse essentially every non-empty request, and
+// firing the trigger in that territory would just churn compaction
+// against a budget that can never accept the result. The ratio path
+// remains the sole signal in that regime — operators see refusals
+// loudly via the gate rather than silently via burnt summariser
+// tokens.
+//
+// Expected:
+//   - estimated is the prompt-token cost of the assembled request.
+//   - limit is the model's resolved context length (matches
+//     checkContextWindowOverflow's `limit`).
+//   - reserve is the output reserve from outputReserveFor (matches
+//     checkContextWindowOverflow's `reserve`).
+//
+// Returns:
+//   - true when compaction should be force-fired.
+//   - false when the request comfortably fits OR the budget is
+//     degenerate.
+//
+// Side effects:
+//   - None.
+func (e *Engine) shouldAutoCompactForGate(estimated, limit, reserve int) bool {
+	if limit <= 0 {
+		return false
+	}
+	safetyMargin := limit / 20
+	usable := limit - reserve - safetyMargin
+	if usable < 1 {
+		// Degenerate territory — the gate's own clamp means it will
+		// refuse nearly every request. Force-trigger here would just
+		// loop the summariser against an unattainable target.
+		return false
+	}
+	return estimated > usable
+}
+
+// gateProximityForceCompact composes the gate-proximity decision for
+// the current build: pick the preferred provider/model from the
+// manifest (so reserve resolves through the same registry pipeline
+// the gate uses), synthesise a candidate ChatRequest from the
+// persisted store + the current user turn, and ask
+// shouldAutoCompactForGate whether the estimated input sits within
+// 5% of refusal.
+//
+// Returns false in any of these conditions (which mirror the gate's
+// own no-op cases):
+//   - tokenBudget <= 0 (degenerate model resolution).
+//   - tokenCounter is nil (cannot estimate).
+//   - store is nil (no transcript to compact).
+//
+// The returned boolean is then ORed into autoCompactionCandidates'
+// fire decision via maybeAutoCompact's forceFire parameter.
+//
+// Expected:
+//   - manifest is the per-stream manifest copy maybeAutoCompact will
+//     use (provider/model preferences flow through PreferredModels).
+//   - userMessage is the in-flight user turn — counted into the
+//     estimate so a single turn that pushes through the boundary
+//     also forces the trigger.
+//   - tokenBudget is the resolved per-model context limit (matches
+//     the value passed into maybeAutoCompact).
+//
+// Returns:
+//   - true when the gate-proximity boundary would be crossed.
+//   - false when the request fits comfortably OR pre-conditions are
+//     unmet.
+//
+// Side effects:
+//   - None.
+func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage string, tokenBudget int) bool {
+	if e == nil || tokenBudget <= 0 || e.tokenCounter == nil || e.store == nil {
+		return false
+	}
+	prefProvider, prefModel := preferredProviderModel(manifest)
+	allMessages := e.store.AllMessages()
+	candidate := make([]provider.Message, 0, len(allMessages)+1)
+	candidate = append(candidate, allMessages...)
+	if userMessage != "" {
+		candidate = append(candidate, provider.Message{Role: "user", Content: userMessage})
+	}
+	syntheticReq := &provider.ChatRequest{
+		Provider: prefProvider,
+		Model:    prefModel,
+		Messages: candidate,
+	}
+	estimated := e.estimateRequestTokens(syntheticReq)
+	reserve := e.outputReserveFor(syntheticReq)
+	return e.shouldAutoCompactForGate(estimated, tokenBudget, reserve)
+}
+
+// preferredProviderModel returns the first PreferredModels entry on
+// the manifest, falling back to the empty pair when none is set.
+// The empty pair flows through ResolveOutputLimit → 0 → outputReserveFor
+// → defaultOutputReserve, mirroring the no-MaxTokens path the gate
+// itself takes for callers without an explicit override.
+//
+// Side effects:
+//   - None.
+func preferredProviderModel(manifest *agent.Manifest) (string, string) {
+	if manifest == nil || len(manifest.PreferredModels) == 0 {
+		return "", ""
+	}
+	return manifest.PreferredModels[0].Provider, manifest.PreferredModels[0].Model
 }
 
 // publishContextCompactedEvent emits the T10b ContextCompactedEvent on

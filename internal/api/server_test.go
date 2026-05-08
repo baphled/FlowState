@@ -3796,3 +3796,209 @@ var _ = Describe("Phase 3 — context_usage cadence parity", func() {
 		})
 	})
 })
+
+// Slice 6a — SSE bridge for EventContextCompacted.
+//
+// The engine's L2 auto-compactor publishes EventContextCompacted on
+// the engine bus when compaction succeeds. Slice 6a bridges that bus
+// event onto the SSE wire so Vue clients can render a compaction
+// affordance (Slice 6b consumes this on the chip). The bridge
+// preserves the existing SSE writer pattern: the engine emits
+// untyped JSON bodies, the SSE writer injects the
+// `"type":"context_compacted"` discriminant, and the frontend's
+// discriminated union routes on that field.
+var _ = Describe("Slice 6a — SSE bridge for EventContextCompacted", func() {
+	var (
+		broker     *api.SessionBroker
+		mgr        *session.Manager
+		bus        *eventbus.EventBus
+		srv        *api.Server
+		httpServer *httptest.Server
+	)
+
+	BeforeEach(func() {
+		broker = api.NewSessionBroker()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+		bus = eventbus.NewEventBus()
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(broker),
+			api.WithEventBus(bus),
+		)
+		httpServer = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		httpServer.Close()
+	})
+
+	It("forwards EventContextCompacted onto the SSE wire as a typed context_compacted event", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		// Give the SSE handler a chance to subscribe to the bus
+		// before we publish the event. Without this race window
+		// the publish can land before any subscriber is wired and
+		// the event is silently dropped.
+		time.Sleep(50 * time.Millisecond)
+
+		bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
+			SessionID:      sess.ID,
+			AgentID:        "Tech-Lead",
+			OriginalTokens: 50_000,
+			SummaryTokens:  5_000,
+			LatencyMS:      420,
+		}))
+
+		// Close the broker channel to terminate the SSE stream after
+		// the bus event has had a chance to flush. A no-content
+		// stream chunk pinned by Done lets the existing dispatcher
+		// emit [DONE] without polluting the wire with content.
+		source := make(chan provider.StreamChunk, 1)
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "data: ") {
+						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"context_compacted"`)),
+			"SSE handler must emit a context_compacted event when EventContextCompacted fires for this session")
+		Expect(evts).To(ContainElement(ContainSubstring(`"original_tokens":50000`)),
+			"original_tokens must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"summary_tokens":5000`)),
+			"summary_tokens must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"latency_ms":420`)),
+			"latency_ms must round-trip onto the wire")
+		Expect(evts).To(ContainElement(ContainSubstring(`"agent_id":"Tech-Lead"`)),
+			"agent_id must round-trip onto the wire so the chip can attribute the compaction")
+		Expect(evts).To(ContainElement(ContainSubstring(`"session_id":"`+sess.ID+`"`)),
+			"session_id must round-trip onto the wire so the frontend can correlate state")
+
+		// MUST NOT leak the JSON payload as a plain content chunk —
+		// otherwise the assistant bubble would render the raw JSON.
+		for _, e := range evts {
+			if strings.Contains(e, `"original_tokens":50000`) && !strings.Contains(e, `"type":"context_compacted"`) {
+				Fail("context_compacted payload leaked into a plain content chunk: " + e)
+			}
+		}
+	})
+
+	It("does not forward EventContextCompacted from a different session", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		// Different session id — MUST NOT reach this subscriber.
+		bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
+			SessionID:      "sess-other",
+			AgentID:        "Tech-Lead",
+			OriginalTokens: 50_000,
+			SummaryTokens:  5_000,
+			LatencyMS:      420,
+		}))
+
+		// Terminate the stream.
+		source := make(chan provider.StreamChunk, 1)
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "data: ") {
+						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		for _, e := range evts {
+			Expect(e).NotTo(ContainSubstring(`"type":"context_compacted"`),
+				"compaction events from a different session must not reach this SSE subscriber")
+		}
+	})
+})
