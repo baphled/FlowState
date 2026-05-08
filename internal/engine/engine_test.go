@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -270,6 +271,90 @@ var _ = Describe("Engine", func() {
 				}
 
 				Expect(received).NotTo(BeEmpty())
+			})
+		})
+
+		// Slice 3 — Spill-file cleanup scheduler wiring.
+		// Phase 4 introduced spill files at <UserCacheDir>/flowstate/
+		// tool-output/<session>/. Without retention they leak. The
+		// engine constructor now launches truncate.StartCleanupScheduler
+		// alongside the existing Item-4 idle sweeper and stops it on
+		// Shutdown via a second sweeperStopFunc.
+		Context("when ToolOutputRetention is configured", func() {
+			var (
+				toolOutputDir string
+				cleanerCalls  atomic.Int32
+				stubCleaner   func(root string, retention time.Duration) error
+			)
+
+			BeforeEach(func() {
+				var err error
+				toolOutputDir, err = os.MkdirTemp("", "engine-tool-output-*")
+				Expect(err).NotTo(HaveOccurred())
+				cleanerCalls.Store(0)
+				// The stub returns the engine's ToolOutputCleaner
+				// signature verbatim (incl. the error result the
+				// engine logs at DEBUG and ignores). Always-nil here
+				// is the spec contract — exercising the error path
+				// would only assert on slog output, which is out of
+				// scope for the launch/shutdown pinning specs.
+				stubCleaner = func(_ string, _ time.Duration) error { //nolint:unparam // signature must match Config.ToolOutputCleaner
+					cleanerCalls.Add(1)
+					return nil
+				}
+			})
+
+			AfterEach(func() {
+				_ = os.RemoveAll(toolOutputDir)
+			})
+
+			It("starts the truncate cleanup scheduler when retention is positive", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider:          chatProvider,
+					Manifest:              manifest,
+					ToolOutputDir:         toolOutputDir,
+					ToolOutputRetention:   7 * 24 * time.Hour,
+					ToolOutputCleanupTick: 20 * time.Millisecond,
+					ToolOutputCleaner:     stubCleaner,
+				})
+				Expect(eng).NotTo(BeNil())
+
+				// Synchronous launch sweep + at least one tick.
+				Eventually(cleanerCalls.Load, 500*time.Millisecond, 10*time.Millisecond).
+					Should(BeNumerically(">=", int32(2)))
+
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				Expect(eng.Shutdown(ctx)).To(Succeed())
+
+				// Allow any in-flight tick to drain, then sample twice
+				// to confirm the count is genuinely frozen rather than
+				// just slow.
+				time.Sleep(80 * time.Millisecond)
+				before := cleanerCalls.Load()
+				time.Sleep(80 * time.Millisecond)
+				Expect(cleanerCalls.Load()).To(Equal(before),
+					"scheduler must stop ticking after Shutdown")
+			})
+
+			It("skips the scheduler when ToolOutputRetention is negative", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider:          chatProvider,
+					Manifest:              manifest,
+					ToolOutputDir:         toolOutputDir,
+					ToolOutputRetention:   -1,
+					ToolOutputCleanupTick: 20 * time.Millisecond,
+					ToolOutputCleaner:     stubCleaner,
+				})
+				Expect(eng).NotTo(BeNil())
+
+				time.Sleep(120 * time.Millisecond) // enough for several ticks if scheduled.
+				Expect(cleanerCalls.Load()).To(Equal(int32(0)),
+					"negative retention is the documented escape hatch — scheduler must not start")
+
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				Expect(eng.Shutdown(ctx)).To(Succeed())
 			})
 		})
 	})
