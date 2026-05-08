@@ -353,6 +353,36 @@ export const useChatStore = defineStore('chat', {
       limit: number
       percentage: number
     } | null,
+    // ---- auto-compaction telemetry (Slice 6b — Phase 4 follow-up) -------
+    //
+    // The Go SSE pipeline emits a `context_compacted` event when the L2
+    // auto-compactor publishes EventContextCompacted on the bus (Slice 6a
+    // wired the bridge in internal/api/event_bridge.go +
+    // writeSSEContextCompacted in internal/api/server.go). The store
+    // routes it through handleContextCompactedEvent which:
+    //   - Increments `compactionEventCount` (canary signal: non-zero ⇒
+    //     at least one compaction has fired this session ⇒ tooltip is
+    //     meaningful).
+    //   - Records the most-recent compaction's payload onto
+    //     `lastCompaction` so the ContextUsageChip can derive its
+    //     tooltip copy ("Last compaction saved 45K tokens (50K → 5K)").
+    //
+    // Both fields reset on session change (loadSessionMessages) — a stale
+    // compaction figure from a prior session must NOT bleed into the new
+    // session's chip.
+    //
+    // Why a structured slice rather than threading raw payload via props:
+    // the chip lives at the toolbar level (mounted once in ChatView.vue)
+    // while the dispatch lives in the store. A central slice keeps one
+    // source of truth and lets the chip render purely from store state,
+    // mirroring `currentContextUsage` for `context_usage`.
+    compactionEventCount: 0,
+    lastCompaction: null as {
+      originalTokens: number
+      summaryTokens: number
+      tokensSaved: number
+      at: number
+    } | null,
     // lastToolName tracks the tool whose result is expected next over the
     // SSE stream. The server emits `tool_call` then `tool_result` as a pair
     // (see internal/api/sse_consumer.go WriteToolCall/WriteToolResult), but
@@ -937,6 +967,13 @@ export const useChatStore = defineStore('chat', {
       // on the prior session and is meaningless on a different one.
       // The next stream's first context_usage event repopulates it.
       this.currentContextUsage = null
+      // Slice 6b — auto-compaction telemetry is per-session. A stale
+      // "compacted ×3" counter or "saved 45K tokens" tooltip from a
+      // prior session must NOT bleed into the new one's chip. The
+      // next stream's first context_compacted event (if any)
+      // repopulates these.
+      this.compactionEventCount = 0
+      this.lastCompaction = null
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
@@ -1512,6 +1549,13 @@ export const useChatStore = defineStore('chat', {
             percentage: event.percentage,
           })
           return
+        case 'context_compacted':
+          this.handleContextCompactedEvent({
+            sessionId: event.sessionId,
+            originalTokens: event.originalTokens,
+            summaryTokens: event.summaryTokens,
+          })
+          return
         case 'unknown':
         case 'malformed':
           // Defensive: log structural-only metadata (no chunk content) so a
@@ -1812,6 +1856,63 @@ export const useChatStore = defineStore('chat', {
         outputReserve: info.outputReserve,
         limit: info.limit,
         percentage: info.percentage,
+      }
+    },
+
+    /**
+     * context_compacted handler — Slice 6b of the May 2026
+     * context-management Phase-4 follow-ups (companion to Slice 6a's
+     * gate-proximity force-fire).
+     *
+     * The Go SSE pipeline emits a `context_compacted` event when the
+     * engine's L2 auto-compactor publishes EventContextCompacted on
+     * the bus and the api-side bridge routes it onto the wire. The
+     * handler:
+     *
+     *   - Ignores events whose `sessionId` does not match the
+     *     `currentSessionId`. The api server scopes the SSE wire to
+     *     the active session so this is a defence-in-depth guard
+     *     against a future SSE multiplexing change.
+     *   - Increments `compactionEventCount`. Non-zero is the canary
+     *     signal the chip uses to enable its tooltip — without at
+     *     least one compaction this session, the tooltip would be
+     *     misleading.
+     *   - Records the most-recent compaction onto `lastCompaction`
+     *     with `tokensSaved = originalTokens - summaryTokens` and
+     *     `at = Date.now()`. The chip's tooltip copy is derived from
+     *     this state.
+     *   - Triggers a Pinia reactive update; the chip's flash watcher
+     *     (in ContextUsageChip.vue) observes the `compactionEventCount`
+     *     getter increment and runs a 2-second flash class toggle.
+     *     Mirroring the chip-side state-driven pattern (rather than
+     *     pushing into a transient toast) keeps the source of truth
+     *     in the store and lets the flash survive component re-mount
+     *     with the same event count.
+     *
+     * Both `compactionEventCount` and `lastCompaction` reset on
+     * session change (loadSessionMessages) so a stale figure from
+     * a prior session does not bleed into the new one.
+     */
+    handleContextCompactedEvent(info: {
+      sessionId: string
+      originalTokens: number
+      summaryTokens: number
+    }): void {
+      // Defence in depth: ignore events for inactive sessions. The
+      // api server already scopes the SSE wire to the active session
+      // so in practice this guard never trips — but a future
+      // SSE-multiplexing change must not silently surface another
+      // session's compaction on this chip.
+      if (info.sessionId !== '' && this.currentSessionId !== info.sessionId) {
+        return
+      }
+
+      this.compactionEventCount += 1
+      this.lastCompaction = {
+        originalTokens: info.originalTokens,
+        summaryTokens: info.summaryTokens,
+        tokensSaved: info.originalTokens - info.summaryTokens,
+        at: Date.now(),
       }
     },
 
