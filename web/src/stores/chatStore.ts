@@ -297,6 +297,24 @@ export const useChatStore = defineStore('chat', {
     currentSessionId: null as string | null,
     sessions: [] as SessionSummary[],
     messages: [] as Message[],
+    // Per-session streaming state (Slice A — Streaming Coherence May 2026).
+    //
+    // Pre-slice the store carried flat global `isLoading` / `isStreaming`
+    // booleans. That conflated all sessions onto a single in-flight slot
+    // — composing in session B was blocked while session A streamed,
+    // because the composer's submit gate read the global flag. The fix:
+    // a per-session record keyed by session id with an isolated slot for
+    // each, and `streamingFor(sessionId)` / `setSessionStreaming` as the
+    // canonical access surface.
+    //
+    // Legacy `isLoading` / `isStreaming` remain as state fields that
+    // shadow the active session's slot (`setSessionStreaming` updates
+    // both when sessionId === currentSessionId). This preserves
+    // backwards-compatible writes (`store.isLoading = true` on test
+    // setup) and reads while the per-session map carries the
+    // multi-session truth. New consumers should prefer
+    // `streamingFor(sessionId)` so per-session isolation is observable.
+    sessionStreaming: {} as Record<string, { isLoading: boolean; isStreaming: boolean }>,
     isLoading: false,
     isStreaming: false,
     isLoadingSessions: false,
@@ -555,9 +573,73 @@ export const useChatStore = defineStore('chat', {
       const sorted = [...children].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       return sorted[0].id
     },
+
+    // streamingFor (Slice A — Streaming Coherence May 2026) — per-session
+    // streaming-state lookup. Returns a fresh `{isLoading: false, isStreaming:
+    // false}` for sessions with no slot so callers do not need to guard for
+    // missing entries. Components that compose in session B while session A
+    // is streaming MUST read this rather than the legacy `isLoading` flag —
+    // pre-slice the flat flag conflated all sessions on a single in-flight
+    // slot and bounced session B's send.
+    streamingFor(state) {
+      return (sessionId: string | null | undefined): { isLoading: boolean; isStreaming: boolean } => {
+        if (!sessionId) return { isLoading: state.isLoading, isStreaming: state.isStreaming }
+        const slot = state.sessionStreaming[sessionId]
+        return slot ? { isLoading: slot.isLoading, isStreaming: slot.isStreaming } : { isLoading: false, isStreaming: false }
+      }
+    },
   },
 
   actions: {
+    // setSessionStreaming (Slice A — Streaming Coherence May 2026) — the
+    // canonical mutator for the per-session streaming-state record. Patches
+    // the named session's slot, creating it if absent. Pinia's reactivity
+    // proxies the record so component getters re-evaluate when a slot
+    // changes.
+    //
+    // Mirroring contract: when sessionId matches currentSessionId (the
+    // user-visible active session) the legacy flat `isLoading` /
+    // `isStreaming` fields are also synced. Components that have not yet
+    // been migrated to `streamingFor(sessionId)` keep working unchanged
+    // for the active-session view. When sessionId differs from
+    // currentSessionId (the cross-session non-blocking case), the flat
+    // fields are intentionally left alone — that is the whole point of
+    // the per-session record.
+    //
+    // A no-op when sessionId is empty (defensive — the pre-session-create
+    // first-send branch passes null before the createSession round-trip
+    // returns).
+    setSessionStreaming(
+      sessionId: string | null,
+      patch: Partial<{ isLoading: boolean; isStreaming: boolean }>,
+    ): void {
+      if (!sessionId) {
+        // No session yet — the pre-session-create fast path. Mirror to the
+        // flat fields so the legacy gate / indicator behaviour is intact.
+        if (patch.isLoading !== undefined) this.isLoading = patch.isLoading
+        if (patch.isStreaming !== undefined) this.isStreaming = patch.isStreaming
+        return
+      }
+      const prior = this.sessionStreaming[sessionId] ?? { isLoading: false, isStreaming: false }
+      const next = {
+        isLoading: patch.isLoading !== undefined ? patch.isLoading : prior.isLoading,
+        isStreaming: patch.isStreaming !== undefined ? patch.isStreaming : prior.isStreaming,
+      }
+      this.sessionStreaming[sessionId] = next
+      if (sessionId === this.currentSessionId) {
+        this.isLoading = next.isLoading
+        this.isStreaming = next.isStreaming
+      }
+    },
+
+    // clearSessionStreaming — drop the slot entirely. Used when a session
+    // is removed; otherwise prefer `setSessionStreaming(id, {isLoading: false,
+    // isStreaming: false})` to retain the slot for late-arriving events.
+    clearSessionStreaming(sessionId: string | null): void {
+      if (!sessionId) return
+      delete this.sessionStreaming[sessionId]
+    },
+
     // bootstrap: singleton wrapper around restoreStateFromBackend.
     //
     // App-level callers (the loading overlay in App.vue, ChatView's
@@ -729,13 +811,11 @@ export const useChatStore = defineStore('chat', {
         if (!needsReattach) return
       }
 
-      this.isLoading = true
-      this.isStreaming = true
+      this.setSessionStreaming(sessionId, { isLoading: true, isStreaming: true })
 
       const close = (): void => {
         sessionStream.disconnect()
-        this.isLoading = false
-        this.isStreaming = false
+        this.setSessionStreaming(sessionId, { isLoading: false, isStreaming: false })
 
         // Reconcile unconditionally — the pre-fix `lastMsg?.role === 'user'`
         // gate dropped the more common case where chunks had arrived but the
@@ -988,7 +1068,7 @@ export const useChatStore = defineStore('chat', {
       // stale SSE's close() callback can fire after the session switch and
       // overwrite the new session's messages with the old session's content.
       sessionStream.disconnect()
-      this.isLoading = true
+      this.setSessionStreaming(sessionId, { isLoading: true })
       this.error = null
       // A critical-class banner from a prior session is no longer
       // relevant once the user switches contexts. The banner is bound
@@ -1051,12 +1131,11 @@ export const useChatStore = defineStore('chat', {
         todoStore.setCurrentSession(sessionId)
         todoStore.hydrateFromMessages(sessionId, this.messages)
       } finally {
-        this.isLoading = false
         // Compounding bug C-7: switching to an idle session while
         // isStreaming was true (left over from a prior session's SSE) leaves
         // the activity indicator pulsing on a session that has nothing in
-        // flight. Clear both flags here.
-        this.isStreaming = false
+        // flight. Clear both flags for the target session.
+        this.setSessionStreaming(sessionId, { isLoading: false, isStreaming: false })
       }
     },
 
@@ -1222,23 +1301,35 @@ export const useChatStore = defineStore('chat', {
       // rejection. The MessageInput component additionally surfaces a toast
       // — the two surface independently because non-input call sites
       // (e.g. programmatic resends) still need a visible signal.
-      if (this.isLoading) {
+      //
+      // Per-session state (Slice A) — read the gate from the active
+      // session's slot, NOT the flat legacy field. Pre-slice the flat
+      // gate bounced session B's send while session A was streaming;
+      // now session B's gate is independent. Fall back to the flat
+      // field when no current session exists (lazy-create branch
+      // hasn't run yet) — that's the legacy-shape contract for the
+      // pre-session-create gate.
+      const gateState = this.currentSessionId
+        ? this.streamingFor(this.currentSessionId)
+        : { isLoading: this.isLoading, isStreaming: this.isStreaming }
+      if (gateState.isLoading) {
         this.error = 'An earlier message is still in flight. Wait for it to finish or reload the page.'
         return
       }
 
       this.error = null
-      this.isLoading = true
-      // Note on activity affordance: `isStreaming` is intentionally NOT
-      // set true here — the SSE stream hasn't actually started yet, and
-      // `isStreaming` retains its precise meaning ("SSE chunks are
-      // arriving"). The user-facing "agent is working" indicator
-      // surfaces while either flag is true (see ChatView.vue v-if), so
-      // the affordance is continuously visible from this point through
-      // to the post-send reconcile completing — a regression in either
-      // gate would otherwise hide the indicator on backends that emit
-      // no intermediate `content` events.
-      this.isStreaming = false
+      // Per-session state (Slice A) — gate the active session, not a flat
+      // global. `isStreaming` is intentionally NOT set true here — the SSE
+      // stream hasn't actually started yet, and `isStreaming` retains its
+      // precise meaning ("SSE chunks are arriving"). The user-facing
+      // "agent is working" indicator surfaces while either flag is true
+      // (see ChatView.vue v-if), so the affordance is continuously
+      // visible from this point through to the post-send reconcile
+      // completing — a regression in either gate would otherwise hide
+      // the indicator on backends that emit no intermediate `content`
+      // events.
+      const initialSessionId = this.currentSessionId
+      this.setSessionStreaming(initialSessionId, { isLoading: true, isStreaming: false })
 
       // Optimistic id is `temp-${Date.now()}-${rand}` rather than just
       // `temp-${Date.now()}` so concurrent sends within the same millisecond
@@ -1259,6 +1350,10 @@ export const useChatStore = defineStore('chat', {
           sessionId = session.id
           this.currentSessionId = sessionId
           persistSessionId(sessionId)
+          // Per-session state (Slice A) — the in-flight slot was attached
+          // to the prior null id; transfer it to the freshly-created
+          // session so the gate / indicator continue to read true.
+          this.setSessionStreaming(sessionId, { isLoading: true, isStreaming: false })
           // Mirror newSession: the lazy-create path on a brand-new chat
           // (user types into a session-less view and hits send) must
           // surface the seed defaults onto the chip too, otherwise the
@@ -1384,8 +1479,12 @@ export const useChatStore = defineStore('chat', {
         }
       } finally {
         sessionStream.disconnect()
-        this.isLoading = false
-        this.isStreaming = false
+        // Per-session state (Slice A) — clear flags on the session this
+        // send targeted (resolved either at sendMessage entry or via the
+        // lazy-create branch). If the user has navigated to a different
+        // session in the meantime, that session's slot is unaffected.
+        const completedSessionId = this.currentSessionId ?? initialSessionId
+        this.setSessionStreaming(completedSessionId, { isLoading: false, isStreaming: false })
       }
     },
 
@@ -1419,8 +1518,9 @@ export const useChatStore = defineStore('chat', {
     // gate-clearing behaviour remains unchanged.
     handleStreamStall(sessionId?: string): void {
       this.error = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
-      this.isLoading = false
-      this.isStreaming = false
+      // Per-session state (Slice A) — clear flags on the session that
+      // armed the watchdog. Pre-slice this cleared the global flag.
+      this.setSessionStreaming(sessionId ?? this.currentSessionId, { isLoading: false, isStreaming: false })
       if (sessionId) {
         void this.reconcileFromBackend(sessionId)
       }
@@ -1680,7 +1780,10 @@ export const useChatStore = defineStore('chat', {
       if (inFlight) {
         inFlight.status = 'completed'
       }
-      this.isStreaming = false
+      // Per-session state (Slice A) — clear isStreaming on the current
+      // session's slot. The send finally block clears isLoading
+      // (separate concern: gate vs. liveness affordance).
+      this.setSessionStreaming(this.currentSessionId, { isStreaming: false })
       sessionStream.clearWatchdog()
     },
 
@@ -1713,7 +1816,8 @@ export const useChatStore = defineStore('chat', {
 
       target.content = (target.content ?? '') + info.content
       target.status = 'running'
-      this.isStreaming = true
+      // Per-session state (Slice A) — set on the current session's slot.
+      this.setSessionStreaming(this.currentSessionId, { isStreaming: true })
     },
 
     /**
@@ -1756,7 +1860,8 @@ export const useChatStore = defineStore('chat', {
       target.thinkingContent = (target.thinkingContent ?? '') + info.content
       // Note: target.content is INTENTIONALLY untouched. The model's private
       // reasoning is not the assistant's reply.
-      this.isStreaming = true
+      // Per-session state (Slice A) — set on the current session's slot.
+      this.setSessionStreaming(this.currentSessionId, { isStreaming: true })
     },
 
     /**
@@ -2218,8 +2323,9 @@ export const useChatStore = defineStore('chat', {
       // Kill any in-flight stream before truncating — without this, chunks
       // arriving after the slice would re-insert content that was just removed.
       sessionStream.disconnect()
-      this.isLoading = false
-      this.isStreaming = false
+      // Per-session state (Slice A) — clear in-flight flags on the
+      // session being reverted.
+      this.setSessionStreaming(this.currentSessionId, { isLoading: false, isStreaming: false })
       await truncateSessionMessages(this.currentSessionId, messageId)
       this.messages = this.messages.slice(0, idx)
       this.composerText = content

@@ -4365,3 +4365,92 @@ describe('chatStore - loadSwarms (Web Swarm Mention Parity)', () => {
     expect(store.swarms).toEqual([])
   })
 })
+
+// Per-Session Streaming State (Slice A — Streaming Coherence May 2026)
+//
+// Pre-slice the store carried flat global `isLoading` / `isStreaming` flags
+// — when session A was streaming the user could not compose in session B
+// because the composer's submit gate read the global flag. The fix:
+// per-session truth via `sessionStreaming: Record<sessionId, {...}>` and
+// a `streamingFor(sessionId)` getter. The flat `isLoading` / `isStreaming`
+// continue to read for the active session via getters, so existing
+// consumers (ChatView indicator, send gate) keep working unchanged for the
+// happy path while session B's gate is no longer mis-blocked.
+describe('chatStore - per-session streaming state (Slice A)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  it('streamingFor returns isolated state per session', () => {
+    const store = useChatStore()
+
+    expect(store.streamingFor('session-A')).toEqual({ isLoading: false, isStreaming: false })
+
+    store.setSessionStreaming('session-A', { isLoading: true })
+    expect(store.streamingFor('session-A').isLoading).toBe(true)
+    // Session B is unaffected.
+    expect(store.streamingFor('session-B').isLoading).toBe(false)
+
+    store.setSessionStreaming('session-B', { isStreaming: true })
+    expect(store.streamingFor('session-B').isStreaming).toBe(true)
+    // Session A is still loading=true, isStreaming=false.
+    expect(store.streamingFor('session-A')).toEqual({ isLoading: true, isStreaming: false })
+  })
+
+  it('isLoading and isStreaming getters mirror the active session slot', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-active'
+
+    expect(store.isLoading).toBe(false)
+    expect(store.isStreaming).toBe(false)
+
+    store.setSessionStreaming('session-active', { isLoading: true, isStreaming: true })
+
+    expect(store.isLoading).toBe(true)
+    expect(store.isStreaming).toBe(true)
+
+    // A different session's streaming state must not bleed into the
+    // current-session getters.
+    store.setSessionStreaming('session-other', { isLoading: true })
+    store.setSessionStreaming('session-active', { isLoading: false, isStreaming: false })
+    expect(store.isLoading).toBe(false)
+    expect(store.isStreaming).toBe(false)
+    expect(store.streamingFor('session-other').isLoading).toBe(true)
+  })
+
+  it('isLoading getter reads false when no session is active', () => {
+    const store = useChatStore()
+    store.currentSessionId = null
+    // Even if a stale slot exists for some other session, the getter
+    // reads from the current session — null means "no current".
+    store.setSessionStreaming('session-stale', { isLoading: true, isStreaming: true })
+    expect(store.isLoading).toBe(false)
+    expect(store.isStreaming).toBe(false)
+  })
+
+  it('sendMessage on session B does not block while session A is loading (cross-session non-blocking)', async () => {
+    // Slice A keystone: the submit gate is per-session. Session A is
+    // loading; session B accepts a fresh send. Pre-slice the global
+    // gate forced session B's send to bounce. The MessageInput consumer
+    // reads streamingFor(currentSessionId).isLoading.
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+
+    // Session A is mid-flight.
+    store.setSessionStreaming('session-A', { isLoading: true, isStreaming: true })
+
+    // User switches to session B and submits.
+    store.currentSessionId = 'session-B'
+    expect(store.streamingFor('session-B').isLoading).toBe(false)
+    expect(store.isLoading).toBe(false)
+
+    await store.sendMessage('hello on B')
+
+    expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith('session-B', 'hello on B')
+    // Session A's slot remains untouched by session B's send.
+    expect(store.streamingFor('session-A').isLoading).toBe(true)
+  })
+})
