@@ -42,6 +42,65 @@ var _ = Describe("Events", func() {
 			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
 			Expect(evt.Data).To(Equal(data))
 		})
+
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Schema growth":
+		// ToolEventData grows two correlation identifiers to close the schema gap
+		// the chunk-driven SwarmEvent path carried today. ToolCallID is the
+		// upstream provider wire id (P14b audit trail); InternalToolCallID is the
+		// FlowState session-scoped canonical id stable across provider failover.
+		// Both are `omitempty` so pre-bridge events.jsonl recordings stay
+		// byte-identical when decoded.
+		Context("with correlation IDs", func() {
+			It("emits tool_call_id and internal_tool_call_id JSON keys when populated", func() {
+				data := events.ToolEventData{
+					ToolName:           "bash",
+					Args:               map[string]any{"cmd": "ls"},
+					ToolCallID:         "toolu_01ABC",
+					InternalToolCallID: "fs_internal_42",
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				var parsed map[string]any
+				Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+				Expect(parsed["tool_call_id"]).To(Equal("toolu_01ABC"))
+				Expect(parsed["internal_tool_call_id"]).To(Equal("fs_internal_42"))
+			})
+
+			It("omits tool_call_id and internal_tool_call_id when empty", func() {
+				data := events.ToolEventData{
+					ToolName: "bash",
+					Args:     map[string]any{"cmd": "ls"},
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(raw)).NotTo(ContainSubstring("tool_call_id"))
+				Expect(string(raw)).NotTo(ContainSubstring("internal_tool_call_id"))
+			})
+
+			It("preserves the existing keys when the new fields are empty (round-trip invariance)", func() {
+				// Persisted-format invariance: a pre-bridge ToolEventData
+				// (no correlation IDs) marshalled today must produce the
+				// same JSON shape it produced before the schema grew.
+				// `omitempty` is the load-bearing tag — adding new fields
+				// must not surface them on the wire when unset.
+				data := events.ToolEventData{
+					SessionID: "sess-1",
+					ToolName:  "bash",
+					Args:      map[string]any{"cmd": "ls"},
+					Result:    "output",
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				var parsed map[string]any
+				Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+				Expect(parsed).To(HaveKey("session_id"))
+				Expect(parsed).To(HaveKey("tool_name"))
+				Expect(parsed).To(HaveKey("args"))
+				Expect(parsed).To(HaveKey("result"))
+				Expect(parsed).NotTo(HaveKey("tool_call_id"))
+				Expect(parsed).NotTo(HaveKey("internal_tool_call_id"))
+			})
+		})
 	})
 
 	Describe("ProviderEvent", func() {
@@ -354,6 +413,52 @@ var _ = Describe("Events", func() {
 			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
 			Expect(parsed["error"]).To(Equal("tool failed"))
 		})
+
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Schema growth".
+		Context("with correlation IDs", func() {
+			It("emits tool_call_id and internal_tool_call_id JSON keys when populated", func() {
+				data := events.ToolExecuteErrorEventData{
+					ToolName:           "bash",
+					Args:               map[string]any{"cmd": "false"},
+					Error:              errors.New("exit 1"),
+					ToolCallID:         "toolu_01ERR",
+					InternalToolCallID: "fs_internal_err",
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				var parsed map[string]any
+				Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+				Expect(parsed["tool_call_id"]).To(Equal("toolu_01ERR"))
+				Expect(parsed["internal_tool_call_id"]).To(Equal("fs_internal_err"))
+			})
+
+			It("omits tool_call_id and internal_tool_call_id when empty", func() {
+				data := events.ToolExecuteErrorEventData{
+					ToolName: "bash",
+					Error:    errors.New("exit 1"),
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(raw)).NotTo(ContainSubstring("tool_call_id"))
+				Expect(string(raw)).NotTo(ContainSubstring("internal_tool_call_id"))
+			})
+
+			It("preserves the pre-bridge JSON shape when the new fields are empty", func() {
+				data := events.ToolExecuteErrorEventData{
+					SessionID: "sess-1",
+					ToolName:  "bash",
+					Error:     errors.New("boom"),
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				var parsed map[string]any
+				Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+				Expect(parsed).To(HaveKey("tool_name"))
+				Expect(parsed).To(HaveKey("error"))
+				Expect(parsed).NotTo(HaveKey("tool_call_id"))
+				Expect(parsed).NotTo(HaveKey("internal_tool_call_id"))
+			})
+		})
 	})
 
 	Describe("ToolExecuteResultEvent", func() {
@@ -379,6 +484,50 @@ var _ = Describe("Events", func() {
 			var parsed map[string]any
 			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
 			Expect(parsed["result"]).To(Equal("ok"))
+		})
+
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Schema growth".
+		Context("with correlation IDs", func() {
+			It("emits tool_call_id and internal_tool_call_id JSON keys when populated", func() {
+				data := events.ToolExecuteResultEventData{
+					ToolName:           "bash",
+					Args:               map[string]any{"cmd": "ls"},
+					Result:             "a.txt",
+					ToolCallID:         "toolu_01OK",
+					InternalToolCallID: "fs_internal_ok",
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				var parsed map[string]any
+				Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+				Expect(parsed["tool_call_id"]).To(Equal("toolu_01OK"))
+				Expect(parsed["internal_tool_call_id"]).To(Equal("fs_internal_ok"))
+			})
+
+			It("omits tool_call_id and internal_tool_call_id when empty", func() {
+				data := events.ToolExecuteResultEventData{
+					ToolName: "bash",
+					Result:   "ok",
+				}
+				raw, err := json.Marshal(data)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(raw)).NotTo(ContainSubstring("tool_call_id"))
+				Expect(string(raw)).NotTo(ContainSubstring("internal_tool_call_id"))
+			})
+
+			It("decodes pre-bridge fixtures without the new keys (additive on the wire)", func() {
+				// ToolExecuteResultEventData uses plain JSON tags (no
+				// custom MarshalJSON), so json.Unmarshal works
+				// symmetrically. A pre-bridge fixture (no correlation
+				// IDs) must decode cleanly with the new fields
+				// zero-valued.
+				fixture := []byte(`{"session_id":"sess-1","tool_name":"bash","result":"ok"}`)
+				var got events.ToolExecuteResultEventData
+				Expect(json.Unmarshal(fixture, &got)).To(Succeed())
+				Expect(got.ToolName).To(Equal("bash"))
+				Expect(got.ToolCallID).To(BeEmpty())
+				Expect(got.InternalToolCallID).To(BeEmpty())
+			})
 		})
 	})
 
