@@ -315,17 +315,21 @@ var _ = Describe("Compression wiring end-to-end activation", func() {
 	})
 })
 
-// Compression wiring opt-in contract.
+// Compression wiring opt-out contract.
 //
-// With cfg.Compression left at defaults (every Enabled=false)
-// buildCompressionComponents must produce a bundle where AutoCompactor
-// and SessionMemoryStore are nil. This prevents a regression where a
-// caller flips defaults and silently activates compression on every
-// deployment.
+// Slice 6c flips the AutoCompaction default to true. This spec now
+// pins the explicit opt-out path: setting AutoCompaction.Enabled=false
+// (and SessionMemory.Enabled=false) on top of DefaultCompressionConfig
+// must still produce a bundle where AutoCompactor and
+// SessionMemoryStore are nil. This prevents a regression where a
+// future config refactor decouples Enabled from the wiring decision.
 var _ = Describe("Compression wiring zero-value bundle", func() {
 	It("produces nil AutoCompactor and SessionMemoryStore when compression is disabled", func() {
+		compressionCfg := ctxstore.DefaultCompressionConfig()
+		compressionCfg.AutoCompaction.Enabled = false
+		compressionCfg.SessionMemory.Enabled = false
 		cfg := &config.AppConfig{
-			Compression: ctxstore.DefaultCompressionConfig(),
+			Compression: compressionCfg,
 		}
 
 		metricsReg := prometheus.NewRegistry()

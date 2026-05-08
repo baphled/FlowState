@@ -12,11 +12,35 @@ import (
 
 var _ = Describe("CompressionConfig", func() {
 	Describe("DefaultCompressionConfig", func() {
-		It("disables every layer by default", func() {
+		// Slice 6c of the Context-Management Phase-4 follow-ups flips
+		// AutoCompaction.Enabled from false to true. The L2 surface has
+		// been live behind the flag since the round-2 wiring landed
+		// (Slices 6a + 6b); flipping the default closes the saturation
+		// defect by making auto-compaction on by default. Operators
+		// who want the previous behaviour set
+		// `compression.auto_compaction.enabled: false` explicitly.
+		It("enables auto-compaction by default", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+
+			Expect(cfg.AutoCompaction.Enabled).To(BeTrue())
+		})
+
+		// Micro-compaction stays opt-in. It writes spill files to disk
+		// and is more invasive than L2's view-only summary; flipping
+		// it on by default is a separate operator decision.
+		It("leaves micro-compaction disabled by default", func() {
 			cfg := flowctx.DefaultCompressionConfig()
 
 			Expect(cfg.MicroCompaction.Enabled).To(BeFalse())
-			Expect(cfg.AutoCompaction.Enabled).To(BeFalse())
+		})
+
+		// Session-memory stays opt-in. It requires an explicit chat
+		// model identifier (see the M6 validation rule below) and runs
+		// a per-turn knowledge-extractor request against the provider;
+		// neither belongs in a zero-config default.
+		It("leaves session-memory disabled by default", func() {
+			cfg := flowctx.DefaultCompressionConfig()
+
 			Expect(cfg.SessionMemory.Enabled).To(BeFalse())
 		})
 

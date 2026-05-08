@@ -125,7 +125,7 @@ For a full walkthrough, see the [Demo Guide](docs/DEMO.md).
 
 ## Context Compression
 
-FlowState ships a three-layer compression pipeline that keeps long-running sessions inside provider token budgets without mutating the canonical transcript. Every layer is opt-in, and each can be enabled independently via the `compression:` block in `config.yaml`.
+FlowState ships a three-layer compression pipeline that keeps long-running sessions inside provider token budgets without mutating the canonical transcript. Layer 2 (auto-compaction) is enabled by default since the May 2026 Phase-4 follow-ups; the more invasive Layer 1 (micro-compaction) and Layer 3 (session-memory) layers stay opt-in. To disable Layer 2 set `compression.auto_compaction.enabled: false` in `config.yaml`. Each layer can be tuned via the `compression:` block.
 
 - **Layer 1 — Micro-compaction** (`micro_compaction`) replaces older tool-heavy units with short placeholders while keeping the recent "hot tail" verbatim. Spilled payloads land under `~/.flowstate/compacted/{session-id}/` and can be rehydrated on demand.
 - **Layer 2 — Auto-compaction** (`auto_compaction`) fires when recent-message tokens exceed the configured fraction of the model context window. A summariser produces a structured `CompactionSummary` (intent, decisions, next steps, files-to-restore) that is injected as a single assistant message in place of the cold range. Compaction is strictly view-only: `session.Messages` is never mutated.
