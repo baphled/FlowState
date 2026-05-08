@@ -4714,4 +4714,148 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
     resolveSendB({ id: 'session-B', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
     await Promise.all([sendA, sendB])
   })
+
+  // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
+  describe('escape-twice cancel cascade', () => {
+    it('sends DELETE /api/v1/sessions/{id}/stream on second escape within 600ms', async () => {
+      const store = useChatStore()
+      store.agentId = 'agent-1'
+      store.currentSessionId = 'session-1'
+
+      // Mock the DELETE endpoint
+      vi.stubGlobal('fetch', vi.fn((url: string, opts: RequestInit) => {
+        if (opts.method === 'DELETE' && url.includes('/stream')) {
+          return Promise.resolve({ status: 204 } as Response)
+        }
+        return Promise.reject(new Error('unexpected request'))
+      }))
+
+      // Start a message stream
+      let resolveSend: (v: any) => void = () => {}
+      vi.mocked(sendSessionMessage).mockImplementationOnce(
+        () => new Promise<any>((resolve) => { resolveSend = resolve }),
+      )
+
+      vi.useFakeTimers()
+      try {
+        const sendPromise = store.sendMessage('test cancel')
+        await Promise.resolve()
+        await Promise.resolve()
+
+        // Simulate first escape press
+        const escapeEvent1 = new KeyboardEvent('keydown', { key: 'Escape' })
+        document.dispatchEvent(escapeEvent1)
+        await Promise.resolve()
+
+        // Cancel should not have been sent yet
+        expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
+          expect.stringContaining('/stream'),
+          expect.objectContaining({ method: 'DELETE' }),
+        )
+
+        // Simulate second escape press within 600ms
+        vi.advanceTimersByTime(300)
+        const escapeEvent2 = new KeyboardEvent('keydown', { key: 'Escape' })
+        document.dispatchEvent(escapeEvent2)
+        await Promise.resolve()
+
+        // Now the DELETE should have been called
+        expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+          expect.stringContaining('/stream'),
+          expect.objectContaining({ method: 'DELETE' }),
+        )
+
+        resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+        await sendPromise
+      } finally {
+        vi.useRealTimers()
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('does not send cancel on single escape', async () => {
+      const store = useChatStore()
+      store.agentId = 'agent-1'
+      store.currentSessionId = 'session-1'
+
+      const fetchSpy = vi.fn(() => Promise.resolve({ status: 204 } as Response))
+      vi.stubGlobal('fetch', fetchSpy)
+
+      // Start a message stream
+      let resolveSend: (v: any) => void = () => {}
+      vi.mocked(sendSessionMessage).mockImplementationOnce(
+        () => new Promise<any>((resolve) => { resolveSend = resolve }),
+      )
+
+      vi.useFakeTimers()
+      try {
+        const sendPromise = store.sendMessage('test')
+        await Promise.resolve()
+        await Promise.resolve()
+
+        // Single escape press
+        const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape' })
+        document.dispatchEvent(escapeEvent)
+        await Promise.resolve()
+
+        // Wait beyond the 600ms window
+        vi.advanceTimersByTime(700)
+        await Promise.resolve()
+
+        // No DELETE should be sent
+        expect(fetchSpy).not.toHaveBeenCalled()
+
+        resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+        await sendPromise
+      } finally {
+        vi.useRealTimers()
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('closes the active EventSource when cancel is sent', async () => {
+      const store = useChatStore()
+      store.agentId = 'agent-1'
+      store.currentSessionId = 'session-1'
+
+      vi.stubGlobal('fetch', vi.fn((url: string, opts: RequestInit) => {
+        if (opts.method === 'DELETE' && url.includes('/stream')) {
+          return Promise.resolve({ status: 204 } as Response)
+        }
+        return Promise.reject(new Error('unexpected request'))
+      }))
+
+      // Start a message stream
+      let resolveSend: (v: any) => void = () => {}
+      vi.mocked(sendSessionMessage).mockImplementationOnce(
+        () => new Promise<any>((resolve) => { resolveSend = resolve }),
+      )
+
+      vi.useFakeTimers()
+      try {
+        const sendPromise = store.sendMessage('test')
+        await Promise.resolve()
+        await Promise.resolve()
+
+        // Capture the EventSource that was created
+        const eventSource = FakeEventSource.instances[FakeEventSource.instances.length - 1]
+        expect(eventSource.closed).toBe(false)
+
+        // Double press escape
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+        vi.advanceTimersByTime(300)
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+        await Promise.resolve()
+
+        // EventSource should be closed
+        expect(eventSource.closed).toBe(true)
+
+        resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+        await sendPromise
+      } finally {
+        vi.useRealTimers()
+        vi.unstubAllGlobals()
+      }
+    })
+  })
 })

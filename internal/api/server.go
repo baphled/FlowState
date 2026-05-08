@@ -370,6 +370,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/sessions", s.handleListV1Sessions)
 	s.mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
+	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}/stream", s.handleCancelStream)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/messages", s.handleSessionMessages)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
@@ -1126,6 +1127,31 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 
 // handleListSessions writes all available sessions as JSON to the response.
 //
+// handleCancelStream cancels an in-flight streaming turn for a session.
+//
+// Expected:
+//   - Request path parameter "id" identifies an existing session.
+//
+// Returns:
+//   - 204 No Content when a cancel was fired for an in-flight turn.
+//   - 404 Not Found when no in-flight turn exists for the session.
+//
+// Side effects:
+//   - Fires the context cancellation for the session's streaming turn,
+//     propagating cancellation through the entire turn pipeline.
+func (s *Server) handleCancelStream(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	if s.sessionManager.CancelInflight(id) {
+		w.WriteHeader(http.StatusNoContent)
+	} else {
+		http.Error(w, "no in-flight turn", http.StatusNotFound)
+	}
+}
+
 // Expected:
 //   - None.
 //

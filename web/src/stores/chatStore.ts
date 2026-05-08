@@ -397,6 +397,10 @@ export const useChatStore = defineStore('chat', {
     // empty / unrecognised. Stored per-session so a stalled session A
     // does not borrow session B's longer threshold.
     streamingPhase: {} as Record<string, string>,
+    // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
+    // Tracks escape press count and timeout for the 600ms chord window.
+    escapePressCount: 0,
+    escapeTimeoutId: null as ReturnType<typeof setTimeout> | null,
     isLoading: false,
     isStreaming: false,
     isLoadingSessions: false,
@@ -1653,6 +1657,55 @@ export const useChatStore = defineStore('chat', {
               }
             })
           }
+        }
+      }
+    },
+
+    // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
+    // Handles escape key presses for cancelling in-flight streaming turns.
+    // First press increments the count; second press within 600ms fires the
+    // DELETE /api/v1/sessions/{id}/stream endpoint and closes the EventSource.
+    async handleEscapeKey(): Promise<void> {
+      const sessionId = this.currentSessionId
+      if (!sessionId) return
+
+      // Gate: only cancel if actively streaming
+      const state = this.streamingFor(sessionId)
+      if (!state.isStreaming) return
+
+      this.escapePressCount++
+
+      if (this.escapePressCount === 1) {
+        // First press: set up a 600ms window for the second press
+        if (this.escapeTimeoutId !== null) {
+          clearTimeout(this.escapeTimeoutId)
+        }
+        this.escapeTimeoutId = setTimeout(() => {
+          // Window closed without a second press; reset
+          this.escapePressCount = 0
+          this.escapeTimeoutId = null
+        }, 600)
+      } else if (this.escapePressCount >= 2) {
+        // Second press within 600ms: cancel the turn
+        if (this.escapeTimeoutId !== null) {
+          clearTimeout(this.escapeTimeoutId)
+          this.escapeTimeoutId = null
+        }
+        this.escapePressCount = 0
+
+        try {
+          // Fire the DELETE endpoint to cancel the in-flight turn
+          const response = await fetch(`/api/v1/sessions/${sessionId}/stream`, {
+            method: 'DELETE',
+          })
+
+          if (response.ok || response.status === 404) {
+            // Cancel succeeded or no turn in flight — close the EventSource
+            disconnectSessionStream(sessionId)
+          }
+        } catch (error) {
+          // Network error; still close the stream to release UI
+          disconnectSessionStream(sessionId)
         }
       }
     },
