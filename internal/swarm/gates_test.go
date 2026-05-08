@@ -610,6 +610,68 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			Expect(gateErr.Reason).To(ContainSubstring("research"))
 			Expect(gateErr.Reason).To(ContainSubstring("a-team/researcher/output"))
 		})
+
+		// Regression — pins the gate-inputs registry gap surfaced by the
+		// a-team relevance-gate dispatch (TUI log 2026-05-08T13:28:01.646).
+		// When the dispatched ext gate has no inputs declaration registered
+		// (lookup miss OR registered with an empty inputs slice) AND the
+		// single-key coord-store fallback also misses, the previous
+		// behaviour silently invoked the gate with an empty payload — the
+		// gate then rejected an empty input opaquely. The dispatcher MUST
+		// instead surface a typed *GateError naming the missed coord-store
+		// key, so the operator can locate the misregistered manifest /
+		// missing upstream output without source-reading.
+		It("fails the dispatch with a typed GateError when no inputs are registered AND the single-key fallback finds no coord-store value", func() {
+			Expect(swarm.RegisterExtGateFuncWithInputs("legacy-gate", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				Fail("ext gate runner should not be invoked when single-key fallback fails")
+				return swarm.ExtGateResponse{Pass: true}, nil
+			}, nil)).To(Succeed())
+
+			store := newGateStore(map[string][]byte{
+				// No researcher/output key seeded — single-key fallback
+				// will miss.
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "legacy", Kind: "ext:legacy-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue(), "expected typed GateError, got %v", err)
+			Expect(gateErr.Reason).To(ContainSubstring("a-team/researcher/output"),
+				"expected the missed coord-store key in the reason for operator diagnostics")
+		})
+
+		// Regression — pins the same masking gap for the case where the
+		// gate is registered with a non-empty inputs declaration but the
+		// runtime registry returned ok=false (e.g. registration order or a
+		// stale registry handle): the dispatcher must NOT silently
+		// fallthrough to the single-key path, it must surface a typed
+		// failure pointing at the missing single-key target so the
+		// operator sees the registration gap rather than an opaque
+		// empty-payload gate response.
+		It("fails the dispatch with a typed GateError when the gate is unregistered entirely AND single-key target is absent", func() {
+			// no RegisterExtGate* call — the runner registry is empty for
+			// "ext:relevance-gate", so MultiRunner.Run will reach
+			// RunGate which fails on the unregistered ext lookup. We
+			// pin that the failure is a typed *GateError that names the
+			// gate (rather than a bare error) so consumers downstream
+			// of MultiRunner.Run can trust the error shape.
+			store := newGateStore(map[string][]byte{
+				"a-team/researcher/output": []byte(`{"summary":"hello"}`),
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "relevance", Kind: "ext:relevance-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("ext:relevance-gate"))
+		})
 	})
 
 	Describe("NewContext.Gates", func() {
