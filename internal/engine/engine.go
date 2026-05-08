@@ -3529,10 +3529,17 @@ func (e *Engine) processStreamChunks(
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
-				if len(toolCalls) == 0 {
-					emitPostTurn()
-					outChan <- provider.StreamChunk{Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
+				// Emit Done unconditionally on channel close, regardless of whether
+				// tool calls are pending. This ensures the accumulator receives a
+				// terminal event and can synthesize a placeholder if needed.
+				// When tool calls are pending, the stop reason is StopReasonTurnInterrupted
+				// so the UI can render the interrupted state appropriately.
+				emitPostTurn()
+				stopReason := session.StopReasonEmptyTurn
+				if len(toolCalls) > 0 {
+					stopReason = session.StopReasonTurnInterrupted
 				}
+				outChan <- provider.StreamChunk{Done: true, StopReason: stopReason, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 				return streamChunkResult{
 					toolCalls:       toolCalls,
 					responseContent: responseContent.String(),
