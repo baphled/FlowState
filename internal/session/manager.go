@@ -178,6 +178,14 @@ type Manager struct {
 	// persistFn overrides the default PersistSession implementation.
 	// Nil means use PersistSession. Only set in tests via export_test.go.
 	persistFn func(dir string, sess *Session) error
+
+	// inflightMu guards the inflight map.
+	inflightMu sync.Mutex
+	// inflight maps session IDs to their context cancel functions.
+	// When a SendMessage turn starts, a cancel function is registered here.
+	// CancelInflight looks up the cancel and fires it; the turn's goroutine
+	// deregisters on exit.
+	inflight map[string]context.CancelFunc
 }
 
 // NewManager creates a new session manager with the given streamer.
@@ -194,6 +202,7 @@ func NewManager(streamer streaming.Streamer) *Manager {
 		sessions:      make(map[string]*Session),
 		streamer:      streamer,
 		notifications: make(map[string][]streaming.CompletionNotificationEvent),
+		inflight:      make(map[string]context.CancelFunc),
 	}
 }
 
@@ -1068,7 +1077,23 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		seeder.SeedHistory(sessionID, providerMsgs)
 	}
 
-	ctx = context.WithValue(ctx, IDKey{}, sessionID)
+	// Wrap the context with WithCancel so CancelInflight can terminate the turn.
+	// Register the cancel function keyed by sessionID so a concurrent API call
+	// can cancel the in-flight turn. The cancel is deregistered when the turn
+	// completes (AccumulateStream closes its channel).
+	cancelCtx, cancel := context.WithCancel(ctx)
+	m.inflightMu.Lock()
+	m.inflight[sessionID] = cancel
+	m.inflightMu.Unlock()
+
+	// Start a monitor goroutine that deregisters the cancel when the turn is done
+	go func() {
+		// Wait for the turn to complete by checking if the cancel is still registered
+		// and the context is done. A better approach is to use a channel that gets
+		// closed by the turn completion — we'll handle that via a wrapper below.
+	}()
+
+	ctx = context.WithValue(cancelCtx, IDKey{}, sessionID)
 	// Attach the per-session prior history so the engine's
 	// buildContextWindow can source the model request payload from this
 	// session's messages alone, not from the shared FileContextStore that
@@ -1084,24 +1109,45 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	}
 	rawCh, err := m.streamer.Stream(ctx, agentID, message)
 	if err != nil {
+		// Clean up the registered cancel on stream error
+		m.inflightMu.Lock()
+		delete(m.inflight, sessionID)
+		m.inflightMu.Unlock()
 		return nil, err
 	}
 
 	accumCh := AccumulateStream(ctx, m, sessionID, agentID, rawCh)
 
-	if m.recorder != nil {
-		teedCh := make(chan provider.StreamChunk, 64)
-		go func() {
-			defer close(teedCh)
-			for chunk := range accumCh {
-				m.recorder.RecordChunk(sessionID, chunk)
-				teedCh <- chunk
-			}
+	// Wrap the accumCh to deregister the cancel when the turn completes.
+	// We do this at the outermost layer (before recorder tee, before return)
+	// so the cancel is deregistered only when all consumers have finished.
+	finalCh := make(chan provider.StreamChunk, 64)
+	// Capture sessionID explicitly to avoid race detector issues with closure variable access
+	capturedSessionID := sessionID
+	hasRecorder := m.recorder != nil
+	go func() {
+		defer close(finalCh)
+		defer func() {
+			m.inflightMu.Lock()
+			delete(m.inflight, capturedSessionID)
+			m.inflightMu.Unlock()
 		}()
-		return teedCh, nil
-	}
 
-	return accumCh, nil
+		if hasRecorder {
+			// If we have a recorder, tee the chunks
+			for chunk := range accumCh {
+				m.recorder.RecordChunk(capturedSessionID, chunk)
+				finalCh <- chunk
+			}
+		} else {
+			// Otherwise, just forward
+			for chunk := range accumCh {
+				finalCh <- chunk
+			}
+		}
+	}()
+
+	return finalCh, nil
 }
 
 // UpdateSessionAgent updates the active agent for the given session.
@@ -1318,6 +1364,33 @@ func (m *Manager) TruncateMessages(sessionID, afterMessageID string) error {
 	sess.UpdatedAt = time.Now()
 	m.persistLocked(sess)
 	return nil
+}
+
+// CancelInflight fires the context cancellation for the in-flight turn of a session.
+//
+// Expected:
+//   - sessionID identifies the session with a potentially in-flight turn.
+//
+// Returns:
+//   - true when a cancel was registered and fired for this session.
+//   - false when no in-flight turn exists for the session.
+//
+// Side effects:
+//   - Cancels the context passed to the streamer, which propagates to all
+//     downstream goroutines and context-aware operations.
+//   - Does not deregister the cancel function; that is done by the turn's
+//     draining goroutine on channel close.
+func (m *Manager) CancelInflight(sessionID string) bool {
+	m.inflightMu.Lock()
+	defer m.inflightMu.Unlock()
+
+	cancel, ok := m.inflight[sessionID]
+	if !ok {
+		return false
+	}
+
+	cancel()
+	return true
 }
 
 // Depth returns the number of parent links between a session and the root.

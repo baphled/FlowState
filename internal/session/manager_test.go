@@ -13,6 +13,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/google/uuid"
 )
 
 var _ = Describe("Manager", func() {
@@ -2139,6 +2140,127 @@ var _ = Describe("Manager", func() {
 			// No panic, no error — graceful no-op for non-seeder streamers.
 		})
 	})
+
+	Describe("CancelInflight", func() {
+		var (
+			contextAwareStreamer *contextTrackingStreamer
+		)
+
+		BeforeEach(func() {
+			contextAwareStreamer = newContextTrackingStreamer()
+			mgr = session.NewManager(contextAwareStreamer)
+		})
+
+		Context("when a turn is streaming", func() {
+			It("cancels the context of the in-flight turn and propagates to the channel", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				sess.Messages = append(sess.Messages, session.Message{
+					ID:      uuid.New().String(),
+					Role:    "user",
+					Content: "test",
+					AgentID: "test-agent",
+				})
+				mgr.RestoreSessions([]*session.Session{sess})
+
+				// Start a turn; it will create a long-running channel
+				chunksCh, err := mgr.SendMessage(context.Background(), sess.ID, "Continue")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Give the goroutine time to register the cancel func
+				time.Sleep(10 * time.Millisecond)
+
+				// Cancel the in-flight turn
+				cancelled := mgr.CancelInflight(sess.ID)
+				Expect(cancelled).To(BeTrue())
+
+				// The context should now be done
+				Expect(contextAwareStreamer.lastStreamCtx).NotTo(BeNil())
+				Expect(contextAwareStreamer.lastStreamCtx.Done()).To(BeClosed())
+
+				// The channel should eventually close due to context cancellation
+				Eventually(func() bool {
+					_, ok := <-chunksCh
+					return !ok // true when channel is closed
+				}).Should(BeTrue())
+			})
+
+			It("returns true when a cancel was fired", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				sess.Messages = append(sess.Messages, session.Message{
+					ID:      uuid.New().String(),
+					Role:    "user",
+					Content: "test",
+					AgentID: "test-agent",
+				})
+				mgr.RestoreSessions([]*session.Session{sess})
+
+				// Start a turn
+				_, err = mgr.SendMessage(context.Background(), sess.ID, "Continue")
+				Expect(err).NotTo(HaveOccurred())
+
+				time.Sleep(10 * time.Millisecond)
+
+				// Cancel should return true when there's an in-flight turn
+				cancelled := mgr.CancelInflight(sess.ID)
+				Expect(cancelled).To(BeTrue())
+			})
+
+			It("deregisters the cancel function after the turn completes", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				sess.Messages = append(sess.Messages, session.Message{
+					ID:      uuid.New().String(),
+					Role:    "user",
+					Content: "test",
+					AgentID: "test-agent",
+				})
+				mgr.RestoreSessions([]*session.Session{sess})
+
+				// Add a Done chunk so the turn completes quickly
+				contextAwareStreamer.addChunk(provider.StreamChunk{Done: true})
+
+				// Start a turn
+				chunksCh, err := mgr.SendMessage(context.Background(), sess.ID, "Continue")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Consume the channel in a goroutine so it completes
+				done := make(chan struct{})
+				go func() {
+					for range chunksCh {
+					}
+					close(done)
+				}()
+
+				// Wait for the channel to close
+				Eventually(done).Should(BeClosed())
+
+				// After the turn completes, cancel should return false
+				cancelled := mgr.CancelInflight(sess.ID)
+				Expect(cancelled).To(BeFalse())
+			})
+		})
+
+		Context("when no turn is in-flight", func() {
+			It("returns false when no in-flight turn exists", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Cancel with no in-flight turn should return false
+				cancelled := mgr.CancelInflight(sess.ID)
+				Expect(cancelled).To(BeFalse())
+			})
+
+			It("returns false for non-existent sessions", func() {
+				cancelled := mgr.CancelInflight("non-existent-id")
+				Expect(cancelled).To(BeFalse())
+			})
+		})
+	})
 })
 
 // mockHistorySeederStreamer implements both streaming.Streamer and
@@ -2214,4 +2336,53 @@ func (s *spyRecorder) RecordChunk(sessionID string, chunk provider.StreamChunk) 
 	defer s.mu.Unlock()
 	s.sessionIDs = append(s.sessionIDs, sessionID)
 	s.chunks = append(s.chunks, chunk)
+}
+
+// contextTrackingStreamer tracks the context passed to Stream and allows
+// returning long-running channels for testing context cancellation.
+type contextTrackingStreamer struct {
+	mu            sync.Mutex
+	lastStreamCtx context.Context
+	chunks        []provider.StreamChunk
+}
+
+func newContextTrackingStreamer() *contextTrackingStreamer {
+	return &contextTrackingStreamer{
+		chunks: make([]provider.StreamChunk, 0),
+	}
+}
+
+func (m *contextTrackingStreamer) addChunk(chunk provider.StreamChunk) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.chunks = append(m.chunks, chunk)
+}
+
+func (m *contextTrackingStreamer) Stream(ctx context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
+	m.mu.Lock()
+	m.lastStreamCtx = ctx
+	chunks := make([]provider.StreamChunk, len(m.chunks))
+	copy(chunks, m.chunks)
+	m.chunks = nil
+	m.mu.Unlock()
+
+	ch := make(chan provider.StreamChunk, len(chunks)+1)
+	go func() {
+		defer close(ch)
+		// Send pre-added chunks (or block on context if no chunks)
+		if len(chunks) > 0 {
+			for i := range chunks {
+				select {
+				case <-ctx.Done():
+					return
+				case ch <- chunks[i]:
+				}
+			}
+		} else {
+			// No chunks: block until context cancellation for testing
+			<-ctx.Done()
+		}
+	}()
+
+	return ch, nil
 }

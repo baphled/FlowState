@@ -248,6 +248,14 @@ onMounted(async () => {
   }
   scrollMessagePaneToBottom('smooth')
   void swarmStore.connect()
+
+  // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
+  // Register global keydown listener for escape-twice keybinding.
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      void chatStore.handleEscapeKey()
+    }
+  })
 })
 
 onBeforeUnmount(() => {
