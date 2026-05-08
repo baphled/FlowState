@@ -108,12 +108,23 @@ func NewSessionEvent(data SessionEventData, ts ...time.Time) *SessionEvent {
 // Expected: used as payload for ToolEvent.
 // Returns: struct with tool event fields.
 // Side effects: none.
+//
+// ToolCallID and InternalToolCallID are correlation identifiers added by
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026). ToolCallID is
+// the upstream provider wire id (P14b audit trail); InternalToolCallID is
+// the FlowState session-scoped canonical id stable across provider failover
+// (P14). Both are populated by the engine at the publishToolBeforeEvent /
+// publishToolAfterEvent seams; both are `omitempty` so pre-bridge
+// `events.jsonl` recordings decode byte-identical and post-bridge
+// recordings carry the IDs whenever the engine knows them.
 type ToolEventData struct {
-	SessionID string
-	ToolName  string
-	Args      map[string]any
-	Result    any
-	Error     error
+	SessionID          string
+	ToolName           string
+	Args               map[string]any
+	Result             any
+	Error              error
+	ToolCallID         string
+	InternalToolCallID string
 }
 
 // MarshalJSON serialises ToolEventData while preserving error messages.
@@ -129,18 +140,22 @@ type ToolEventData struct {
 //   - None.
 func (d ToolEventData) MarshalJSON() ([]byte, error) {
 	type payload struct {
-		SessionID string         `json:"session_id,omitempty"`
-		ToolName  string         `json:"tool_name"`
-		Args      map[string]any `json:"args,omitempty"`
-		Result    any            `json:"result,omitempty"`
-		Error     string         `json:"error,omitempty"`
+		SessionID          string         `json:"session_id,omitempty"`
+		ToolName           string         `json:"tool_name"`
+		Args               map[string]any `json:"args,omitempty"`
+		Result             any            `json:"result,omitempty"`
+		Error              string         `json:"error,omitempty"`
+		ToolCallID         string         `json:"tool_call_id,omitempty"`
+		InternalToolCallID string         `json:"internal_tool_call_id,omitempty"`
 	}
 
 	data := payload{
-		SessionID: d.SessionID,
-		ToolName:  d.ToolName,
-		Args:      d.Args,
-		Result:    d.Result,
+		SessionID:          d.SessionID,
+		ToolName:           d.ToolName,
+		Args:               d.Args,
+		Result:             d.Result,
+		ToolCallID:         d.ToolCallID,
+		InternalToolCallID: d.InternalToolCallID,
 	}
 	if d.Error != nil {
 		data.Error = d.Error.Error()
@@ -949,11 +964,17 @@ func NewSessionResumedEvent(data SessionResumedEventData, ts ...time.Time) *Sess
 }
 
 // ToolExecuteErrorEventData holds data for tool execution error events.
+//
+// ToolCallID and InternalToolCallID are correlation identifiers added by
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026); see
+// ToolEventData for semantics.
 type ToolExecuteErrorEventData struct {
-	SessionID string
-	ToolName  string
-	Args      map[string]any
-	Error     error
+	SessionID          string
+	ToolName           string
+	Args               map[string]any
+	Error              error
+	ToolCallID         string
+	InternalToolCallID string
 }
 
 // MarshalJSON serialises ToolExecuteErrorEventData while preserving error messages.
@@ -969,12 +990,20 @@ type ToolExecuteErrorEventData struct {
 //   - None.
 func (d ToolExecuteErrorEventData) MarshalJSON() ([]byte, error) {
 	type payload struct {
-		SessionID string         `json:"session_id,omitempty"`
-		ToolName  string         `json:"tool_name"`
-		Args      map[string]any `json:"args,omitempty"`
-		Error     string         `json:"error,omitempty"`
+		SessionID          string         `json:"session_id,omitempty"`
+		ToolName           string         `json:"tool_name"`
+		Args               map[string]any `json:"args,omitempty"`
+		Error              string         `json:"error,omitempty"`
+		ToolCallID         string         `json:"tool_call_id,omitempty"`
+		InternalToolCallID string         `json:"internal_tool_call_id,omitempty"`
 	}
-	data := payload{SessionID: d.SessionID, ToolName: d.ToolName, Args: d.Args}
+	data := payload{
+		SessionID:          d.SessionID,
+		ToolName:           d.ToolName,
+		Args:               d.Args,
+		ToolCallID:         d.ToolCallID,
+		InternalToolCallID: d.InternalToolCallID,
+	}
 	if d.Error != nil {
 		data.Error = d.Error.Error()
 	}
@@ -1010,11 +1039,17 @@ func NewToolExecuteErrorEvent(data ToolExecuteErrorEventData, ts ...time.Time) *
 }
 
 // ToolExecuteResultEventData holds data for tool execution result events.
+//
+// ToolCallID and InternalToolCallID are correlation identifiers added by
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026); see
+// ToolEventData for semantics.
 type ToolExecuteResultEventData struct {
-	SessionID string         `json:"session_id,omitempty"`
-	ToolName  string         `json:"tool_name"`
-	Args      map[string]any `json:"args,omitempty"`
-	Result    any            `json:"result,omitempty"`
+	SessionID          string         `json:"session_id,omitempty"`
+	ToolName           string         `json:"tool_name"`
+	Args               map[string]any `json:"args,omitempty"`
+	Result             any            `json:"result,omitempty"`
+	ToolCallID         string         `json:"tool_call_id,omitempty"`
+	InternalToolCallID string         `json:"internal_tool_call_id,omitempty"`
 }
 
 // ToolExecuteResultEvent represents a tool execution result event.
