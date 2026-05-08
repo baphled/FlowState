@@ -51,14 +51,11 @@ import (
 	"github.com/baphled/flowstate/internal/tool/bash"
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
-	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
-	plantool "github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
-	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
-	toolswarm "github.com/baphled/flowstate/internal/tool/swarm"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
+	"github.com/baphled/flowstate/internal/tool/toolset"
 	toolsvault "github.com/baphled/flowstate/internal/tool/vault"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
@@ -827,11 +824,11 @@ type engineAssemblyParams struct {
 // Side effects:
 //   - None.
 func buildEngineParams(in engineAssemblyParams) engineParams {
-	appTools := appendChainTools(in.tools.tools, in.chainStore)
-	appTools = appendSwarmTools(appTools, in.swarmRegistry)
-	appTools = appendMemoryTools(appTools, in.memoryClient)
-	appTools = appendVaultTools(appTools, in.vaultHandler)
-	appTools = appendVaultIndexTools(appTools, in.setup.cfg)
+	appTools := toolset.AppendChainTools(in.tools.tools, in.chainStore)
+	appTools = toolset.AppendSwarmTools(appTools, in.swarmRegistry)
+	appTools = toolset.AppendMemoryTools(appTools, in.memoryClient)
+	appTools = toolset.AppendVaultTools(appTools, in.vaultHandler)
+	appTools = toolset.AppendVaultIndexTools(appTools, in.setup.cfg)
 	return engineParams{
 		defaultProvider:         in.traced.provider,
 		ollamaProvider:          in.setup.ollamaProvider,
@@ -866,91 +863,6 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		recallEmbeddingModel:    in.recallEmbeddingModel,
 		sessionEmbeddingLookup:  in.sessionEmbeddingLookup,
 	}
-}
-
-// appendChainTools appends chain context tools when a chain store is available.
-// This gives the root engine cross-agent context queries without delegation.
-//
-// Expected:
-//   - base is the existing tool slice (not nil).
-//   - cs may be nil; when nil the original slice is returned unchanged.
-//
-// Returns:
-//   - The tool slice with chain_search_context and chain_get_messages appended,
-//     or the original slice when cs is nil.
-//
-// Side effects:
-//   - None.
-func appendSwarmTools(base []tool.Tool, reg *swarm.Registry) []tool.Tool {
-	if reg == nil {
-		return base
-	}
-	return append(base,
-		toolswarm.NewSwarmListTool(reg),
-		toolswarm.NewSwarmInfoTool(reg),
-		toolswarm.NewSwarmValidateTool(reg),
-	)
-}
-
-// appendMemoryTools appends the native mcp_memory_search_nodes and
-// mcp_memory_open_nodes tools when a MemoryClient is available.
-// Returns base unchanged when client is nil (Qdrant not configured).
-func appendMemoryTools(base []tool.Tool, client learning.MemoryClient) []tool.Tool {
-	if client == nil {
-		return base
-	}
-	return append(base,
-		toolmemory.NewSearchNodesTool(client),
-		toolmemory.NewOpenNodesTool(client),
-	)
-}
-
-// appendVaultTools appends the native mcp_vault-rag_query_vault tool when a
-// vault Handler is available. Returns base unchanged when handler is nil
-// (Qdrant not configured or vault collection unavailable).
-func appendVaultTools(base []tool.Tool, handler toolsvault.Handler) []tool.Tool {
-	if handler == nil {
-		return base
-	}
-	return append(base, toolsvault.NewQueryVaultTool(handler))
-}
-
-// appendVaultIndexTools appends the vault_index and vault_sync tools when
-// the app config has both a vault path and a Qdrant URL configured.
-// Returns base unchanged when either is absent.
-func appendVaultIndexTools(base []tool.Tool, cfg *config.AppConfig) []tool.Tool {
-	if cfg == nil || cfg.VaultPath == "" || cfg.Qdrant.URL == "" {
-		return base
-	}
-	collection := cfg.VaultCollection
-	if collection == "" {
-		collection = defaultVaultCollection
-	}
-	ollamaHost := cfg.Providers.Ollama.Host
-	if ollamaHost == "" {
-		ollamaHost = "http://localhost:11434"
-	}
-	idxCfg := toolsvault.IndexerConfig{
-		VaultRoot:      cfg.VaultPath,
-		Collection:     collection,
-		QdrantURL:      cfg.Qdrant.URL,
-		OllamaHost:     ollamaHost,
-		EmbeddingModel: cfg.ResolvedEmbeddingModel(),
-	}
-	return append(base,
-		toolsvault.NewIndexVaultTool(idxCfg),
-		toolsvault.NewSyncVaultTool(idxCfg),
-	)
-}
-
-func appendChainTools(base []tool.Tool, cs recall.ChainContextStore) []tool.Tool {
-	if cs == nil {
-		return base
-	}
-	return append(base,
-		toolrecall.NewChainSearchTool(cs),
-		toolrecall.NewChainGetMessagesTool(cs),
-	)
 }
 
 // createCoordinationStore returns a file-backed coordination store when
@@ -1095,7 +1007,7 @@ type toolPipelineResult struct {
 func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	mcpMgr := mcpclient.NewManager()
 	todoStore := todotool.NewMemoryStore()
-	appTools := buildTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation())
+	appTools := toolset.BuildAppTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation())
 	allServers := appmcp.MergeServers(cfg.MCPServers, config.DiscoverMCPServers())
 	mcpTools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
@@ -2069,9 +1981,9 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 		tools = append(tools, a.mcpTools...)
 	}
 
-	tools = appendMemoryTools(tools, a.memoryClient)
-	tools = appendVaultTools(tools, a.vaultHandler)
-	tools = appendVaultIndexTools(tools, a.Config)
+	tools = toolset.AppendMemoryTools(tools, a.memoryClient)
+	tools = toolset.AppendVaultTools(tools, a.vaultHandler)
+	tools = toolset.AppendVaultIndexTools(tools, a.Config)
 
 	return tools
 }
@@ -2541,36 +2453,6 @@ func (a *App) DisconnectAll() error {
 		return nil
 	}
 	return a.mcpClient.DisconnectAll()
-}
-
-// buildTools constructs and returns the default set of available tools.
-//
-// Expected:
-//   - skillLoader is a non-nil skill.FileSkillLoader.
-//   - todoStore is the app-level Store for persisting todo state.
-//   - plansDir is the directory containing FlowState plan markdown files
-//     (typically ${DataDir}/plans). Passed to the plan_list and plan_read
-//     tools so harness agents can enumerate and read plans in-process
-//     without delegating filesystem searches that may look in the wrong
-//     directory.
-//
-// Returns:
-//   - A slice containing bash, file, web, skill_load, todowrite, plan_list,
-//     and plan_read tools.
-//
-// Side effects:
-//   - Initialises new tool instances.
-func buildTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store, plansDir string) []tool.Tool {
-	return []tool.Tool{
-		bash.New(),
-		read.New(),
-		write.New(),
-		web.New(),
-		skilltool.New(skillLoader),
-		todotool.New(todoStore),
-		plantool.NewList(plansDir),
-		plantool.NewRead(plansDir),
-	}
 }
 
 // buildPathGuard constructs a pathguard.Guard that blocks access to the
@@ -3871,20 +3753,21 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 	return learning.NewVectorStoreMemoryClient(ensuring, embedder, col)
 }
 
-// defaultVaultCollection is the Qdrant collection used by flowstate-vault-server.
-// Must stay in sync with cmd/flowstate-vault-server/main.go:defaultQdrantCollection.
-const defaultVaultCollection = "flowstate-vault"
-
 // buildVaultQueryHandler constructs a vaultindex.QueryHandler backed by Qdrant
 // when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
 // callers treat nil as "vault RAG tool disabled".
+//
+// The collection-name fallback uses toolset.DefaultVaultCollection so the
+// two callers (this handler and toolset.AppendVaultIndexTools) stay in
+// lock-step on the canonical collection name. Must stay in sync with
+// cmd/flowstate-vault-server/main.go:defaultQdrantCollection.
 func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester) toolsvault.Handler {
 	if cfg == nil || cfg.Qdrant.URL == "" {
 		return nil
 	}
 	collection := cfg.VaultCollection
 	if collection == "" {
-		collection = defaultVaultCollection
+		collection = toolset.DefaultVaultCollection
 	}
 	client := qdrantrecall.NewClient(cfg.Qdrant.URL, cfg.Qdrant.APIKey, nil)
 	embedder := newRecallEmbedder(ollamaProvider, cfg.ResolvedEmbeddingModel())

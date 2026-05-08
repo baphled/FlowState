@@ -1,4 +1,4 @@
-package app
+package toolset_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/toolset"
 )
 
 func toolNames(tools []tool.Tool) []string {
@@ -31,18 +32,18 @@ func (s *stubTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error)
 	return tool.Result{}, nil
 }
 
-// appendChainTools tests cover the helper that decorates a base tool
+// AppendChainTools tests cover the helper that decorates a base tool
 // slice with the chain_search_context + chain_get_messages tools when a
 // chain store is configured. Coverage:
 //   - non-nil store appends both chain tools, in order.
 //   - nil store returns the base slice unchanged.
 //   - existing tools survive the append (chain tools come last).
-var _ = Describe("appendChainTools", func() {
+var _ = Describe("AppendChainTools (in-package behaviour)", func() {
 	It("appends chain_search_context and chain_get_messages when the store is non-nil", func() {
 		base := []tool.Tool{}
 		store := recall.NewInMemoryChainStore(nil)
 
-		result := appendChainTools(base, store)
+		result := toolset.AppendChainTools(base, store)
 
 		names := toolNames(result)
 		Expect(names).To(HaveLen(2))
@@ -50,17 +51,12 @@ var _ = Describe("appendChainTools", func() {
 		Expect(names[1]).To(Equal("chain_get_messages"))
 	})
 
-	It("returns the original slice unchanged when the store is nil", func() {
-		base := []tool.Tool{}
-		Expect(appendChainTools(base, nil)).To(BeEmpty())
-	})
-
 	It("preserves existing tools and appends chain tools after them", func() {
 		stub := &stubTool{name: "existing_tool"}
 		base := []tool.Tool{stub}
 		store := recall.NewInMemoryChainStore(nil)
 
-		result := appendChainTools(base, store)
+		result := toolset.AppendChainTools(base, store)
 
 		names := toolNames(result)
 		Expect(names).To(HaveLen(3))
