@@ -65,10 +65,17 @@ var _ = Describe("Intent.View swarm activity row labels", func() {
 				}),
 			})
 		case streaming.EventToolCall:
-			intent.Update(chat.StreamChunkMsg{
-				ToolCallID:   "toolu_lbl",
-				ToolCallName: "bash",
-				ToolStatus:   "started",
+			// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026):
+			// tool-call events flow via the bus path. Drive
+			// HandleEventBusNotificationForTest so the test runs the
+			// same projection the production path runs at runtime.
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				ToolBefore: events.NewToolEvent(events.ToolEventData{
+					SessionID:          "test-session",
+					ToolName:           "bash",
+					ToolCallID:         "toolu_lbl",
+					InternalToolCallID: "fs_internal_lbl",
+				}),
 			})
 		case streaming.EventPlan:
 			intent.Update(chat.StreamChunkMsg{

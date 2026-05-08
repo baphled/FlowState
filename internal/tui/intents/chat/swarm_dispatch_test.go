@@ -68,10 +68,14 @@ var _ = Describe("Chat intent SwarmEvent dispatch", func() {
 	It("emits a SwarmEventAppendedMsg carrying the event ID for chunks that map to events", func() {
 		intent := newIntent()
 
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026):
+		// tool_call/tool_result chunks no longer map; the only
+		// chunk-driven activity-event types remaining are plan_artifact
+		// and review_verdict. Use plan_artifact here as the canonical
+		// example.
 		cmd := intent.RecordSwarmEventForTest(chat.StreamChunkMsg{
-			ToolCallID:   "toolu_01DISPATCH",
-			ToolCallName: "read_file",
-			ToolStatus:   "started",
+			EventType: streaming.EventTypePlanArtifact,
+			Content:   "dispatch plan body",
 		})
 
 		Expect(cmd).NotTo(BeNil(),
@@ -80,7 +84,8 @@ var _ = Describe("Chat intent SwarmEvent dispatch", func() {
 		appended, ok := msg.(chat.SwarmEventAppendedMsg)
 		Expect(ok).To(BeTrue(),
 			"expected tea.Cmd to resolve to SwarmEventAppendedMsg, got %T (%v)", msg, msg)
-		Expect(appended.ID).To(Equal("toolu_01DISPATCH"))
+		Expect(appended.ID).NotTo(BeEmpty(),
+			"the appended-msg ID must be non-empty (UUID v4 for plan/review events)")
 	})
 
 	It("returns a nil Cmd when the chunk has no activity metadata", func() {
@@ -96,20 +101,19 @@ var _ = Describe("Chat intent SwarmEvent dispatch", func() {
 		Expect(cmd).To(BeNil())
 	})
 
-	It("batches the SwarmEventAppendedMsg into the cmd chain returned by handleStreamChunkMsg for tool_call chunks", func() {
+	It("batches the SwarmEventAppendedMsg into the cmd chain returned by handleStreamChunkMsg for plan_artifact chunks", func() {
 		// Plans/Delegation Bus Bridge — Engine to SSE (May 2026):
-		// delegation events no longer flow through handleStreamChunkMsg
-		// (they fire via the bus). The batching contract still
-		// applies to the remaining chunk-driven event types
-		// (tool_call, tool_result, plan, review); ToolCall is the
-		// canonical example that exercises the same code path the
-		// removed delegation case used to.
+		// delegation events no longer flow through handleStreamChunkMsg.
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026):
+		// tool_call/tool_result events also no longer flow through it.
+		// The remaining chunk-driven activity-event types are
+		// plan_artifact and review_verdict; plan_artifact is the
+		// canonical example exercising the same batching path.
 		intent := newIntent()
 
 		cmd := intent.Update(chat.StreamChunkMsg{
-			ToolCallID:   "toolu_batch",
-			ToolCallName: "bash",
-			ToolStatus:   "started",
+			EventType: streaming.EventTypePlanArtifact,
+			Content:   "batch plan body",
 		})
 
 		Expect(cmd).NotTo(BeNil(),
@@ -119,6 +123,6 @@ var _ = Describe("Chat intent SwarmEvent dispatch", func() {
 
 		swarmEvents := intent.SwarmStoreForTest().All()
 		Expect(swarmEvents).To(HaveLen(1))
-		Expect(swarmEvents[0].Type).To(Equal(streaming.EventToolCall))
+		Expect(swarmEvents[0].Type).To(Equal(streaming.EventPlan))
 	})
 })

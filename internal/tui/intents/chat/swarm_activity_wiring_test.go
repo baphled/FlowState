@@ -1,6 +1,8 @@
 package chat_test
 
 import (
+	"fmt"
+
 	tea "github.com/charmbracelet/bubbletea"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -109,7 +111,37 @@ var _ = Describe("swarm activity pane wiring", func() {
 					"the engine publishes on the bus and the bus subscriber owns the projection")
 		})
 
-		It("appends a tool_call event when ToolCallName is present", func() {
+		It("appends a tool_call event when a tool.execute.before bus event fires", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026):
+			// tool-call events no longer flow through the chunk pipeline;
+			// the chat intent subscribes to tool.execute.before on the
+			// engine's event bus and projects ToolEventData onto a
+			// SwarmEvent via appendToolCallSwarmEvent. The TUI ends as a
+			// bus consumer indistinguishable from the web SSE handler.
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				ToolBefore: events.NewToolEvent(events.ToolEventData{
+					SessionID:          "test-session",
+					ToolName:           "ReadFile",
+					ToolCallID:         "toolu_01READ",
+					InternalToolCallID: "fs_internal_read",
+				}),
+			})
+
+			swarmEvents := intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(1))
+			Expect(swarmEvents[0].Type).To(Equal(streaming.EventToolCall))
+			Expect(swarmEvents[0].Status).To(Equal("started"))
+			Expect(swarmEvents[0].ID).To(Equal("fs_internal_read"),
+				"the SwarmEvent.ID is the FlowState-internal correlation id for failover-stable coalesce")
+			Expect(swarmEvents[0].Metadata["provider_tool_use_id"]).To(Equal("toolu_01READ"))
+
+			view := intent.View()
+			Expect(view).To(ContainSubstring("Tool Call"))
+		})
+
+		It("ignores tool-call chunks (chunk-side path is now consumer-agnostic noise)", func() {
 			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 
 			intent.Update(chat.StreamChunkMsg{
@@ -117,16 +149,68 @@ var _ = Describe("swarm activity pane wiring", func() {
 				ToolStatus:   "started",
 			})
 
-			events := intent.SwarmStoreForTest().All()
-			Expect(events).To(HaveLen(1))
-			Expect(events[0].Type).To(Equal(streaming.EventToolCall))
-			Expect(events[0].Status).To(Equal("started"))
+			Expect(intent.SwarmStoreForTest().All()).To(BeEmpty(),
+				"chunk-side ToolCallName/ToolStatus no longer populates the activity store; "+
+					"the engine publishes tool.execute.before on the bus and the bus subscriber "+
+					"owns the projection")
+		})
 
-			view := intent.View()
-			// The activity row renders the human label "Tool Call"
-			// (not the wire identifier "tool_call"). See the
-			// swarm_activity_human_labels_test.go contract.
-			Expect(view).To(ContainSubstring("Tool Call"))
+		It("appends a tool_result event when tool.execute.result fires on the bus", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				ToolResult: events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
+					SessionID:          "test-session",
+					ToolName:           "ReadFile",
+					Result:             "file contents",
+					ToolCallID:         "toolu_01READ",
+					InternalToolCallID: "fs_internal_read",
+				}),
+			})
+
+			swarmEvents := intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(1))
+			Expect(swarmEvents[0].Type).To(Equal(streaming.EventToolResult))
+			Expect(swarmEvents[0].Status).To(Equal("completed"))
+			Expect(swarmEvents[0].ID).To(Equal("fs_internal_read"),
+				"call/result share the InternalToolCallID so coalesce pairs them")
+			Expect(swarmEvents[0].Metadata["content"]).To(Equal("file contents"))
+		})
+
+		It("appends an error tool_result event when tool.execute.error fires on the bus", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			intent.HandleEventBusNotificationForTest(chat.EventBusNotificationMsg{
+				ToolError: events.NewToolExecuteErrorEvent(events.ToolExecuteErrorEventData{
+					SessionID:          "test-session",
+					ToolName:           "ReadFile",
+					Error:              fmt.Errorf("permission denied"),
+					ToolCallID:         "toolu_01ERR",
+					InternalToolCallID: "fs_internal_err",
+				}),
+			})
+
+			swarmEvents := intent.SwarmStoreForTest().All()
+			Expect(swarmEvents).To(HaveLen(1))
+			Expect(swarmEvents[0].Type).To(Equal(streaming.EventToolResult))
+			Expect(swarmEvents[0].Status).To(Equal("error"))
+			Expect(swarmEvents[0].ID).To(Equal("fs_internal_err"))
+			Expect(swarmEvents[0].Metadata["error"]).To(Equal("permission denied"))
+		})
+
+		It("ignores tool-result chunks (chunk-side path is now consumer-agnostic noise)", func() {
+			intent.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+
+			intent.Update(chat.StreamChunkMsg{
+				EventType:  "tool_result",
+				ToolCallID: "toolu_01R",
+				ToolResult: "ok",
+			})
+
+			Expect(intent.SwarmStoreForTest().All()).To(BeEmpty(),
+				"chunk-side tool_result no longer populates the activity store; "+
+					"the engine publishes tool.execute.result on the bus and the bus subscriber "+
+					"owns the projection")
 		})
 
 		It("appends a plan event when EventType is plan_artifact", func() {
@@ -200,15 +284,6 @@ var _ = Describe("swarm activity pane wiring", func() {
 			Expect(ok).To(BeFalse())
 		})
 
-		It("defaults tool-call status to started when ToolStatus is empty", func() {
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				ToolCallName: "WriteFile",
-			}, "agent-1")
-			Expect(ok).To(BeTrue())
-			Expect(ev.Status).To(Equal("started"))
-			Expect(ev.AgentID).To(Equal("agent-1"))
-		})
-
 		It("returns false for a chunk carrying only DelegationInfo (delegation events flow via the bus now)", func() {
 			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
 				DelegationInfo: &provider.DelegationInfo{
@@ -223,22 +298,25 @@ var _ = Describe("swarm activity pane wiring", func() {
 					"absent, so a chunk with only DelegationInfo no longer maps")
 		})
 
-		It("falls through to ToolCallName mapping when both DelegationInfo and ToolCallName are present", func() {
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				DelegationInfo: &provider.DelegationInfo{
-					ChainID:     "chain-precedence",
-					TargetAgent: "target",
-					Status:      "started",
-				},
+		It("returns false for a chunk carrying only ToolCallName (tool-call events flow via the bus now)", func() {
+			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
 				ToolCallName: "WriteFile",
 				ToolStatus:   "started",
 			}, "agent-1")
+			Expect(ok).To(BeFalse(),
+				"Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) lifted "+
+					"tool-call event production into the engine; the chunk-side "+
+					"branch in swarmEventFromChunk is intentionally absent")
+		})
 
-			Expect(ok).To(BeTrue())
-			Expect(ev.Type).To(Equal(streaming.EventToolCall),
-				"with the chunk-side DelegationInfo branch removed, the ToolCallName "+
-					"branch is the next match — the bus path owns delegation projection")
-			Expect(ev.AgentID).To(Equal("agent-1"))
+		It("returns false for a chunk carrying tool_result metadata (tool-result events flow via the bus now)", func() {
+			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
+				EventType:  "tool_result",
+				ToolCallID: "toolu_01R",
+				ToolResult: "ok",
+			}, "agent-1")
+			Expect(ok).To(BeFalse(),
+				"chunk-side tool_result no longer maps; the bus path owns the projection")
 		})
 
 		It("maps plan_artifact event type to EventPlan", func() {
@@ -260,8 +338,6 @@ var _ = Describe("swarm activity pane wiring", func() {
 		})
 
 		It("does not record a swarm event for a pure-content status_transition chunk", func() {
-			// status_transition is in the streamingEventMeta set but is not a
-			// SwarmEventType — it should not leak into the activity pane.
 			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
 				EventType: streaming.EventTypeStatusTransition,
 				Content:   "any",
@@ -269,51 +345,19 @@ var _ = Describe("swarm activity pane wiring", func() {
 			Expect(ok).To(BeFalse(),
 				"status_transition chunks must not produce SwarmEvents")
 		})
-
-		It("returns a tool_call event when only ToolStatus is set and preserves the status", func() {
-			// Mirrors the established contract: ToolCallName OR ToolStatus
-			// triggers a tool_call event, with status defaulting when empty.
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				ToolStatus: "completed",
-			}, "chat-agent")
-			Expect(ok).To(BeTrue())
-			Expect(ev.Type).To(Equal(streaming.EventToolCall))
-			Expect(ev.Status).To(Equal("completed"))
-		})
 	})
 
 	Describe("P2 T3: SwarmEvent.ID is populated for every event kind", func() {
 		// Plans/Delegation Bus Bridge — Engine to SSE (May 2026): the
 		// chunk-side delegation branch is removed; the bus path owns
 		// the projection and uses ChainID as the SwarmEvent.ID via
-		// appendDelegationSwarmEvent. The id-from-ChainID contract is
-		// preserved end-to-end through the new bus path; pinned in
-		// the bus-driven specs above.
-
-		It("uses the chunk's ToolCallID for tool_call events when provided", func() {
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				ToolCallID:   "toolu_01ABC",
-				ToolCallName: "bash",
-				ToolStatus:   "started",
-			}, "chat-agent")
-			Expect(ok).To(BeTrue())
-			Expect(ev.ID).To(Equal("toolu_01ABC"),
-				"tool_call ID must equal the upstream provider's tool-use ID "+
-					"so the P3 coalesce state machine can match start and result")
-		})
-
-		It("generates a non-empty ID for a tool_call chunk missing ToolCallID", func() {
-			// Providers that don't supply a tool-use ID must still yield events
-			// with non-empty IDs — the P3 state machine must never key on "".
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				ToolCallName: "bash",
-				ToolStatus:   "started",
-			}, "chat-agent")
-			Expect(ok).To(BeTrue())
-			Expect(ev.ID).NotTo(BeEmpty(),
-				"tool_call events must always have a non-empty ID, even when "+
-					"the provider did not surface a tool-use ID")
-		})
+		// appendDelegationSwarmEvent.
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026): the
+		// chunk-side tool-call/tool-result branches are also removed;
+		// the bus path owns the projection and uses InternalToolCallID
+		// as the SwarmEvent.ID via appendToolCallSwarmEvent /
+		// appendToolResultSwarmEvent. Both contracts are pinned in the
+		// bus-driven specs above and in swarm_event_invariants_test.go.
 
 		It("generates a non-empty ID for plan events", func() {
 			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
@@ -350,53 +394,6 @@ var _ = Describe("swarm activity pane wiring", func() {
 			Expect(ok2).To(BeTrue())
 			Expect(ev1.ID).NotTo(Equal(ev2.ID),
 				"distinct plan events must produce distinct IDs")
-		})
-	})
-
-	Describe("P2 T3: tool_result chunk mapping", func() {
-		It("emits an EventToolResult event when chunk has ToolCallID and ToolResult but no call metadata", func() {
-			ev, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				EventType:   "tool_result",
-				ToolCallID:  "toolu_01RESULT",
-				ToolResult:  "output from bash",
-				ToolIsError: false,
-			}, "chat-agent")
-			Expect(ok).To(BeTrue())
-			Expect(ev.Type).To(Equal(streaming.EventToolResult),
-				"a tool_result chunk must map to EventToolResult, not EventToolCall")
-			Expect(ev.ID).To(Equal("toolu_01RESULT"),
-				"tool_result's ID must equal the originating tool_call's ID so the "+
-					"coalesce state machine can pair them")
-		})
-
-		It("tool_result's ID matches the originating tool_call's ID", func() {
-			// This is the core correlation invariant that P3 will rely on:
-			// tool_call -> tool_result with the same ToolCallID must produce
-			// two SwarmEvents whose IDs are identical.
-			call, okCall := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				ToolCallID:   "toolu_01MATCH",
-				ToolCallName: "bash",
-				ToolStatus:   "started",
-			}, "chat-agent")
-			result, okResult := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				EventType:  "tool_result",
-				ToolCallID: "toolu_01MATCH",
-				ToolResult: "output",
-			}, "chat-agent")
-
-			Expect(okCall).To(BeTrue())
-			Expect(okResult).To(BeTrue())
-			Expect(call.Type).To(Equal(streaming.EventToolCall))
-			Expect(result.Type).To(Equal(streaming.EventToolResult))
-			Expect(call.ID).To(Equal(result.ID),
-				"tool_call and tool_result with the same ToolCallID must share an ID")
-		})
-
-		It("does not produce a tool_result event when a chunk carries only content", func() {
-			_, ok := chat.SwarmEventFromChunkForTest(chat.StreamChunkMsg{
-				Content: "hello",
-			}, "chat-agent")
-			Expect(ok).To(BeFalse())
 		})
 	})
 

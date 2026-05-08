@@ -29,30 +29,15 @@ var _ = Describe("SwarmEvent creation invariants (P4)", func() {
 		wantType streaming.SwarmEventType
 	}
 
-	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026): the
-	// delegation branch is no longer chunk-driven; the bus path is
-	// pinned in its own Describe below using HandleEventBusNotificationForTest.
+	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026): delegation
+	// events flow via the bus.
+	// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026):
+	// tool-call/tool-result events flow via the bus too. Their
+	// invariants are pinned in the bus-driven Describe block below
+	// using HandleEventBusNotificationForTest. The chunk-side
+	// invariants here cover only the residual branches —
+	// plan_artifact and review_verdict.
 	cases := []chunkCase{
-		{
-			name: "tool_call",
-			chunk: chat.StreamChunkMsg{
-				ToolCallID:   "toolu_01",
-				ToolCallName: "bash",
-				ToolStatus:   "started",
-			},
-			fallback: "engineer",
-			wantType: streaming.EventToolCall,
-		},
-		{
-			name: "tool_result",
-			chunk: chat.StreamChunkMsg{
-				EventType:  "tool_result",
-				ToolCallID: "toolu_01",
-				ToolResult: "ok",
-			},
-			fallback: "engineer",
-			wantType: streaming.EventToolResult,
-		},
 		{
 			name: "plan",
 			chunk: chat.StreamChunkMsg{
