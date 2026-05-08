@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -2985,6 +2986,84 @@ var _ = Describe("Engine", func() {
 			Expect(capturer.capturedRequest).NotTo(BeNil())
 			Expect(capturer.capturedRequest.MaxTokens).To(BeZero())
 			Expect(capturer.capturedRequest.Temperature).To(BeNil())
+		})
+	})
+
+	Describe("Anthropic ping passthrough", func() {
+		Context("when provider emits a ping chunk", func() {
+			It("publishes a streaming.heartbeat event and does not forward the ping chunk", func() {
+				sharedBus := eventbus.NewEventBus()
+				var mu sync.Mutex
+				var heartbeatEvents []*events.StreamingHeartbeatEvent
+				sharedBus.Subscribe(events.EventStreamingHeartbeat, func(event any) {
+					if hb, ok := event.(*events.StreamingHeartbeatEvent); ok {
+						mu.Lock()
+						heartbeatEvents = append(heartbeatEvents, hb)
+						mu.Unlock()
+					}
+				})
+
+				chatProvider := &mockProvider{
+					name: "test-provider",
+					streamChunks: []provider.StreamChunk{
+						{EventType: "ping"},
+						{Content: "response", Done: true},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest: agent.Manifest{
+						ID:   "test-agent",
+						Name: "Test Agent",
+						Instructions: agent.Instructions{
+							SystemPrompt: "You are a helpful assistant.",
+						},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+					EventBus: sharedBus,
+				})
+
+				store := newTempFileContextStore()
+				DeferCleanup(func() { cleanupStore(store) })
+				sessionID := "test-ping-session"
+				eng.SetContextStore(store, sessionID)
+
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
+
+				var outChunks []provider.StreamChunk
+				chunks, err := eng.Stream(ctx, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+
+				for chunk := range chunks {
+					outChunks = append(outChunks, chunk)
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				// Verify that a heartbeat event was published
+				Expect(heartbeatEvents).To(HaveLen(1))
+				Expect(heartbeatEvents[0].Data.SessionID).To(Equal(sessionID))
+				Expect(heartbeatEvents[0].Data.Phase).To(Equal("thinking"))
+
+				// Verify that the ping chunk was NOT forwarded to outChunks
+				for _, chunk := range outChunks {
+					Expect(chunk.EventType).NotTo(Equal("ping"), "ping chunks should not be forwarded to output")
+				}
+
+				// Verify that the response content was still forwarded
+				hasResponse := false
+				for _, chunk := range outChunks {
+					if chunk.Content == "response" {
+						hasResponse = true
+						break
+					}
+				}
+				Expect(hasResponse).To(BeTrue(), "response content should be forwarded")
+			})
 		})
 	})
 })

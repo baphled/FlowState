@@ -3577,6 +3577,14 @@ func (e *Engine) processStreamChunks(
 			if streaming.IsControlEvent(chunk.EventType) {
 				continue
 			}
+			// Anthropic ping events signal provider liveness during long
+			// thinking phases. Emit a streaming.heartbeat event on the bus
+			// for the watchdog adaptive timeout, but do NOT forward the chunk
+			// to outChan — it's an internal signal, not user-visible output.
+			if chunk.EventType == "ping" {
+				e.publishStreamingHeartbeat(sessionID, e.activeAgentID(ctx), "thinking")
+				continue
+			}
 			// Typed observability events (provider_changed, model_active)
 			// carry structured metadata in chunk.Content for the chat UI's
 			// failover toast and chip-pivot affordances. Concatenating
