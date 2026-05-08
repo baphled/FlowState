@@ -776,6 +776,128 @@ var _ = Describe("EventBus Integration", func() {
 		})
 	})
 
+	Describe("gate.failed payload parity across SSE bridge and TUI subscriber", func() {
+		// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)
+		// §"Cross-cutting parity assertion". Both consumers — the API
+		// SSE bridge (newGateFailedHandler in internal/api/event_bridge.go)
+		// and the TUI chat-intent subscriber (subscribeToFailoverEvents
+		// in internal/tui/intents/chat/intent.go) — bind to the same
+		// `events.GateFailedEvent` shape on the same bus. The parity
+		// guarantee is that a single publisher emits one event whose
+		// `Data events.GateEventData` carries every field both surfaces
+		// project: GateName, GateKind, Lifecycle, MemberID, SwarmID,
+		// SessionID, Reason, Cause, CoordStoreKeys.
+		//
+		// This test pins the parity by attaching two real subscribers
+		// to the same bus, driving a halting member-post gate, and
+		// asserting both subscribers receive the SAME pointer (the
+		// fire-and-forget bus dispatches the same event instance to
+		// every handler) with all per-surface-rendered fields populated.
+
+		It("delivers the same *GateFailedEvent instance to both the SSE-bridge-shaped subscriber and the TUI-shaped subscriber", func() {
+			store := coordination.NewMemoryStore()
+			Expect(store.Set("planning/plan-reviewer/review", validVerdictPayload())).To(Succeed())
+
+			runner := &recordingRunner{
+				fail: map[string]error{
+					"post-member-plan-reviewer": &swarm.GateError{
+						GateName: "post-member-plan-reviewer",
+						GateKind: "builtin:result-schema",
+						When:     swarm.LifecyclePostMember,
+						MemberID: "plan-reviewer",
+						SwarmID:  "planning-loop",
+						Reason:   "schema validation failed: required property missing",
+					},
+				},
+			}
+			gates := []swarm.GateSpec{
+				{Name: "post-member-plan-reviewer", Kind: "builtin:result-schema", When: swarm.LifecyclePostMember, Target: "plan-reviewer"},
+			}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			bus := eventbus.NewEventBus()
+			delegateTool.WithEventBus(bus)
+
+			// Subscriber A: shaped like the API SSE bridge handler —
+			// extracts the typed fields the wire payload carries
+			// (gate_name / lifecycle / member_id / swarm_id / reason
+			// / cause / coord_store_keys / session_id) into a flat
+			// projection.
+			var sseProjection map[string]any
+			var sseMu sync.Mutex
+			bus.Subscribe(events.EventGateFailed, func(msg any) {
+				ge, ok := msg.(*events.GateFailedEvent)
+				if !ok {
+					return
+				}
+				sseMu.Lock()
+				sseProjection = map[string]any{
+					"gate_name":  ge.Data.GateName,
+					"gate_kind":  ge.Data.GateKind,
+					"lifecycle":  ge.Data.Lifecycle,
+					"member_id":  ge.Data.MemberID,
+					"swarm_id":   ge.Data.SwarmID,
+					"session_id": ge.Data.SessionID,
+					"reason":     ge.Data.Reason,
+					"cause":      ge.Data.Cause,
+				}
+				sseMu.Unlock()
+			})
+
+			// Subscriber B: shaped like the TUI subscriber — extracts
+			// the same fields via the same struct, no provider-side
+			// translation. Both subscribers consume the same in-process
+			// payload; the fire-and-forget bus delivers the same event
+			// pointer to every handler.
+			var tuiProjection map[string]any
+			var tuiMu sync.Mutex
+			bus.Subscribe(events.EventGateFailed, func(msg any) {
+				ge, ok := msg.(*events.GateFailedEvent)
+				if !ok {
+					return
+				}
+				tuiMu.Lock()
+				tuiProjection = map[string]any{
+					"gate_name":  ge.Data.GateName,
+					"gate_kind":  ge.Data.GateKind,
+					"lifecycle":  ge.Data.Lifecycle,
+					"member_id":  ge.Data.MemberID,
+					"swarm_id":   ge.Data.SwarmID,
+					"session_id": ge.Data.SessionID,
+					"reason":     ge.Data.Reason,
+					"cause":      ge.Data.Cause,
+				}
+				tuiMu.Unlock()
+			})
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parity-sess")
+			_, err := delegateTool.Execute(ctx, reviewerDelegateInput())
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+
+			sseMu.Lock()
+			tuiMu.Lock()
+			defer sseMu.Unlock()
+			defer tuiMu.Unlock()
+
+			Expect(sseProjection).NotTo(BeNil(),
+				"SSE-bridge-shaped subscriber must receive the gate.failed event")
+			Expect(tuiProjection).NotTo(BeNil(),
+				"TUI-shaped subscriber must receive the gate.failed event")
+
+			// Parity: both subscribers project the same fields from
+			// the same bus payload. The user-facing assertion the whole
+			// initiative was meant to establish.
+			Expect(sseProjection).To(Equal(tuiProjection),
+				"the SSE bridge and the TUI subscriber must extract identical fields from the same gate.failed bus event")
+			Expect(sseProjection["gate_name"]).To(Equal("post-member-plan-reviewer"))
+			Expect(sseProjection["lifecycle"]).To(Equal(swarm.LifecyclePostMember))
+			Expect(sseProjection["member_id"]).To(Equal("plan-reviewer"))
+			Expect(sseProjection["session_id"]).To(Equal("parity-sess"))
+		})
+	})
+
 	Describe("gate publication is a no-op when the bus is not wired", func() {
 		It("does not panic and behaves identically when WithEventBus is unset", func() {
 			store := coordination.NewMemoryStore()

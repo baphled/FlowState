@@ -383,6 +383,32 @@ export const useChatStore = defineStore('chat', {
       tokensSaved: number
       at: number
     } | null,
+    // ---- swarm gate-failure surface (Plans/Gate Bus Bridge) -----------
+    //
+    // The Go SSE pipeline emits a `gate_failed` event when the engine's
+    // runSwarmGates / dispatchMemberGates halts on a *swarm.GateError.
+    // applyContentEvent routes the parsed payload into this slice; the
+    // GateFailureBanner.vue component reads it and renders a persistent
+    // banner above the message pane.
+    //
+    // Why a structured slice rather than a transient toast: the banner
+    // persists until the operator dismisses it (gate failures halt the
+    // dispatch — auto-clear would leave a confusing "swarm finished
+    // with no transcript" UX). The slice survives component re-mount;
+    // dismiss + session-change clear it.
+    //
+    // The slice resets on session change (loadSessionMessages) so a
+    // halt from a prior session does not bleed into the new one.
+    lastGateFailure: null as {
+      swarmId: string
+      lifecycle: string
+      memberId: string
+      gateName: string
+      gateKind: string
+      reason: string
+      cause: string
+      coordStoreKeys: string[]
+    } | null,
     // lastToolName tracks the tool whose result is expected next over the
     // SSE stream. The server emits `tool_call` then `tool_result` as a pair
     // (see internal/api/sse_consumer.go WriteToolCall/WriteToolResult), but
@@ -974,6 +1000,12 @@ export const useChatStore = defineStore('chat', {
       // repopulates these.
       this.compactionEventCount = 0
       this.lastCompaction = null
+      // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+      // a halt from a prior session is bound to that session's
+      // dispatch context; carrying it onto the new session would
+      // misattribute the failure. A fresh halt on the new session
+      // repopulates the banner.
+      this.lastGateFailure = null
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
@@ -1556,6 +1588,28 @@ export const useChatStore = defineStore('chat', {
             summaryTokens: event.summaryTokens,
           })
           return
+        case 'gate_failed':
+          // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+          // a halt-class swarm-gate failure populates the
+          // session-scoped lastGateFailure slice the
+          // GateFailureBanner reads. Each fresh halt unconditionally
+          // overwrites the prior payload — a new failure is a new
+          // event the operator must see (mirrors CriticalErrorBanner's
+          // overwrite policy). The session-scope guard is
+          // defence-in-depth; the api server scopes the SSE wire to
+          // the active session so in practice another session's halt
+          // never reaches this dispatch.
+          this.lastGateFailure = {
+            swarmId: event.swarmId,
+            lifecycle: event.lifecycle,
+            memberId: event.memberId,
+            gateName: event.gateName,
+            gateKind: event.gateKind,
+            reason: event.reason,
+            cause: event.cause,
+            coordStoreKeys: event.coordStoreKeys,
+          }
+          return
         case 'unknown':
         case 'malformed':
           // Defensive: log structural-only metadata (no chunk content) so a
@@ -1587,6 +1641,20 @@ export const useChatStore = defineStore('chat', {
      */
     dismissCriticalError(): void {
       this.criticalError = null
+    },
+
+    /**
+     * clearGateFailure clears the persistent gate-failure banner for
+     * the current session. The banner re-appears the moment a fresh
+     * gate_failed event lands on the stream — `lastGateFailure` is
+     * overwritten unconditionally in the dispatch above. Mirrors
+     * dismissCriticalError's intent: a fresh halt after a dismissal
+     * is a new failure with a new context the operator must see.
+     *
+     * Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026).
+     */
+    clearGateFailure(): void {
+      this.lastGateFailure = null
     },
 
     // handleStreamDone owns the [DONE] sentinel side effects: seal any

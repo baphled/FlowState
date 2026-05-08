@@ -319,6 +319,58 @@ describe('parseSSEPayload', () => {
     }
   })
 
+  it('classifies a gate_failed SSE event into a typed payload (Gate Bus Bridge)', () => {
+    // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+    // surface halt-class swarm-gate failures on the Vue chat surface.
+    // The Go SSE pipeline's writeSSEGateFailed emits
+    // {"type":"gate_failed", swarm_id, lifecycle, member_id, gate_name,
+    //  gate_kind, reason, cause, coord_store_keys} when the engine's
+    // runSwarmGates / dispatchMemberGates halts. The frontend parser
+    // routes this into a typed variant the chat store and banner can
+    // consume.
+    const payload = JSON.stringify({
+      type: 'gate_failed',
+      swarm_id: 'a-team',
+      lifecycle: 'post-member',
+      member_id: 'researcher',
+      gate_name: 'post-member-researcher-relevance-gate',
+      gate_kind: 'ext:relevance-gate',
+      reason: 'off-topic',
+      cause: 'score 0.31 < threshold 0.5',
+      coord_store_keys: ['chain/researcher/output', 'chain/topic/spec'],
+    })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('gate_failed')
+    if (ev.kind === 'gate_failed') {
+      expect(ev.swarmId).toBe('a-team')
+      expect(ev.lifecycle).toBe('post-member')
+      expect(ev.memberId).toBe('researcher')
+      expect(ev.gateName).toBe('post-member-researcher-relevance-gate')
+      expect(ev.gateKind).toBe('ext:relevance-gate')
+      expect(ev.reason).toBe('off-topic')
+      expect(ev.cause).toBe('score 0.31 < threshold 0.5')
+      expect(ev.coordStoreKeys).toEqual(['chain/researcher/output', 'chain/topic/spec'])
+    }
+  })
+
+  it('treats a gate_failed event with missing fields as well-formed (defaults to empty strings / empty array)', () => {
+    // Defensive: a degraded wire payload (missing optional fields)
+    // must not crash the discriminated-union dispatch. String fields
+    // default to ''; coord_store_keys defaults to [].
+    const ev = parseSSEPayload('{"type":"gate_failed"}')
+    expect(ev.kind).toBe('gate_failed')
+    if (ev.kind === 'gate_failed') {
+      expect(ev.swarmId).toBe('')
+      expect(ev.lifecycle).toBe('')
+      expect(ev.memberId).toBe('')
+      expect(ev.gateName).toBe('')
+      expect(ev.gateKind).toBe('')
+      expect(ev.reason).toBe('')
+      expect(ev.cause).toBe('')
+      expect(ev.coordStoreKeys).toEqual([])
+    }
+  })
+
   it('treats a context_compacted event with missing fields as well-formed (defaults to zero / empty string)', () => {
     // Defensive: a degraded wire payload (a future emitter that ships
     // only the type) must not crash the discriminated-union dispatch.

@@ -3519,6 +3519,127 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(store.compactionEventCount).toBe(0)
     expect(store.lastCompaction).toBeNull()
   })
+
+  it('populates lastGateFailure on a gate_failed event (Gate Bus Bridge)', () => {
+    // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026): the
+    // chat store consumes the SSE bridge of the engine's
+    // EventGateFailed bus event and routes it onto a session-scoped
+    // lastGateFailure slice the GateFailureBanner reads. Mirrors the
+    // lastCompaction pattern (state-driven affordance rather than
+    // transient toast) so the banner survives component re-mount.
+    const store = useChatStore()
+    store.currentSessionId = 's-active'
+    expect(store.lastGateFailure).toBeNull()
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'gate_failed',
+        swarm_id: 'a-team',
+        lifecycle: 'post-member',
+        member_id: 'researcher',
+        gate_name: 'post-member-researcher-relevance-gate',
+        gate_kind: 'ext:relevance-gate',
+        reason: 'off-topic',
+        cause: 'score 0.31 < threshold 0.5',
+        coord_store_keys: ['chain/researcher/output', 'chain/topic/spec'],
+      }),
+    )
+
+    expect(store.lastGateFailure).not.toBeNull()
+    if (store.lastGateFailure) {
+      expect(store.lastGateFailure.swarmId).toBe('a-team')
+      expect(store.lastGateFailure.lifecycle).toBe('post-member')
+      expect(store.lastGateFailure.memberId).toBe('researcher')
+      expect(store.lastGateFailure.gateName).toBe('post-member-researcher-relevance-gate')
+      expect(store.lastGateFailure.gateKind).toBe('ext:relevance-gate')
+      expect(store.lastGateFailure.reason).toBe('off-topic')
+      expect(store.lastGateFailure.cause).toBe('score 0.31 < threshold 0.5')
+      expect(store.lastGateFailure.coordStoreKeys).toEqual([
+        'chain/researcher/output',
+        'chain/topic/spec',
+      ])
+    }
+  })
+
+  it('overwrites lastGateFailure when a fresh gate_failed event arrives (each halt is foreground-renderable)', () => {
+    // A subsequent halt must replace the prior lastGateFailure so
+    // the banner shows the latest failure (matches CriticalErrorBanner's
+    // unconditional overwrite policy — a fresh fatal needs a fresh
+    // banner with the new context).
+    const store = useChatStore()
+    store.currentSessionId = 's-active'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'gate_failed',
+        gate_name: 'first-halt',
+        reason: 'first reason',
+      }),
+    )
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'gate_failed',
+        gate_name: 'second-halt',
+        reason: 'second reason',
+      }),
+    )
+
+    expect(store.lastGateFailure?.gateName).toBe('second-halt')
+    expect(store.lastGateFailure?.reason).toBe('second reason')
+  })
+
+  it('clearGateFailure resets the slice (banner Dismiss action)', () => {
+    const store = useChatStore()
+    store.currentSessionId = 's-active'
+    store.lastGateFailure = {
+      swarmId: 'a-team',
+      lifecycle: 'post',
+      memberId: '',
+      gateName: 'envelope-check',
+      gateKind: 'builtin:result-schema',
+      reason: 'schema validation failed',
+      cause: '',
+      coordStoreKeys: [],
+    }
+
+    store.clearGateFailure()
+
+    expect(store.lastGateFailure).toBeNull()
+  })
+
+  it('clears lastGateFailure on session change (loadSessionMessages reset path)', async () => {
+    // The shared session-change reset clears criticalError,
+    // currentContextUsage, and the compaction state; the same path
+    // must reset lastGateFailure so a stale halt from a prior session
+    // does not bleed into the new one.
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([] as never)
+
+    const store = useChatStore()
+    store.sessions = [
+      {
+        id: 'fresh-gate-session',
+        agentId: 'test-agent',
+        currentAgentId: 'test-agent',
+        createdAt: '2026-05-08T00:00:00Z',
+        updatedAt: '2026-05-08T00:00:00Z',
+        messageCount: 0,
+      },
+    ] as never
+    store.lastGateFailure = {
+      swarmId: 'old-swarm',
+      lifecycle: 'pre',
+      memberId: '',
+      gateName: 'old-gate',
+      gateKind: 'builtin:result-schema',
+      reason: 'old reason',
+      cause: '',
+      coordStoreKeys: [],
+    }
+
+    await store.loadSessionMessages('fresh-gate-session')
+
+    expect(store.lastGateFailure).toBeNull()
+  })
 })
 
 describe('chatStore - DEFAULT_AGENT_ID matches the manifest convention', () => {
