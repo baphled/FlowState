@@ -278,9 +278,9 @@ func New(cfg *config.AppConfig) (*App, error) {
 		learningStore:      learningStore,
 		memoryClient:       memClient,
 		vaultHandler:       vaultHandler,
-		failoverHook:       pluginFailoverHook(pluginRT),
-		failoverManager:    pluginFailoverManager(pluginRT),
-		dispatcher:         pluginDispatcher(pluginRT),
+		failoverHook:       pluginRT.FailoverHook(),
+		failoverManager:    pluginRT.FailoverManager(),
+		dispatcher:         pluginRT.Dispatcher(),
 	})
 	if err != nil {
 		return nil, err
@@ -2680,54 +2680,29 @@ func wireFailoverManager(rt *pluginRuntime, providerRegistry *provider.Registry)
 	rt.failoverManager = failover.NewManager(providerRegistry, rt.healthManager, 5*time.Minute)
 }
 
-// pluginFailoverManager returns the failover manager from the plugin runtime, or nil
-// when the runtime is not initialised.
-//
-// Expected:
-//   - rt may be nil; when nil the function returns nil.
-//
-// Returns:
-//   - The failover manager, or nil when rt is nil.
-//
-// Side effects:
-//   - None.
-func pluginFailoverManager(rt *pluginRuntime) *failover.Manager {
+// FailoverManager returns the failover manager held by the plugin
+// runtime, or nil when the runtime is not initialised. Call sites use
+// the nil-safe receiver pattern so app.New does not have to guard the
+// rt parameter explicitly.
+func (rt *pluginRuntime) FailoverManager() *failover.Manager {
 	if rt == nil {
 		return nil
 	}
 	return rt.failoverManager
 }
 
-// pluginFailoverHook returns the failover hook from the plugin runtime, or nil
-// when the runtime is not initialised.
-//
-// Expected:
-//   - rt may be nil; when nil the function returns nil.
-//
-// Returns:
-//   - The failover hook, or nil when rt is nil.
-//
-// Side effects:
-//   - None.
-func pluginFailoverHook(rt *pluginRuntime) *failover.Hook {
+// FailoverHook returns the failover hook held by the plugin runtime,
+// or nil when the runtime is not initialised.
+func (rt *pluginRuntime) FailoverHook() *failover.Hook {
 	if rt == nil {
 		return nil
 	}
 	return rt.failoverHook
 }
 
-// pluginDispatcher returns the external dispatcher from the plugin runtime, or nil
-// when the runtime is not initialised.
-//
-// Expected:
-//   - rt may be nil; when nil the function returns nil.
-//
-// Returns:
-//   - The external dispatcher, or nil when rt is nil.
-//
-// Side effects:
-//   - None.
-func pluginDispatcher(rt *pluginRuntime) *external.Dispatcher {
+// Dispatcher returns the external dispatcher held by the plugin
+// runtime, or nil when the runtime is not initialised.
+func (rt *pluginRuntime) Dispatcher() *external.Dispatcher {
 	if rt == nil {
 		return nil
 	}
