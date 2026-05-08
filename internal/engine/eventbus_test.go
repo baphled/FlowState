@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -915,7 +916,134 @@ var _ = Describe("EventBus Integration", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("streaming heartbeat (Slice F follow-up)", func() {
+		It("publishStreamingHeartbeat publishes EventStreamingHeartbeat with the supplied payload", func() {
+			sharedBus := eventbus.NewEventBus()
+			var mu sync.Mutex
+			var received []events.StreamingHeartbeatEventData
+			sharedBus.Subscribe(events.EventStreamingHeartbeat, func(event any) {
+				if hb, ok := event.(*events.StreamingHeartbeatEvent); ok {
+					mu.Lock()
+					received = append(received, hb.Data)
+					mu.Unlock()
+				}
+			})
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				EventBus:     sharedBus,
+			})
+
+			eng.PublishStreamingHeartbeatForTest("session-hb-1", "agent-hb-1", "thinking")
+
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(received).To(HaveLen(1))
+			Expect(received[0].SessionID).To(Equal("session-hb-1"))
+			Expect(received[0].AgentID).To(Equal("agent-hb-1"))
+			Expect(received[0].Phase).To(Equal("thinking"))
+		})
+
+		It("Stream() emits heartbeats at the configured interval during a turn", func() {
+			sharedBus := eventbus.NewEventBus()
+			var mu sync.Mutex
+			var received []events.StreamingHeartbeatEventData
+			sharedBus.Subscribe(events.EventStreamingHeartbeat, func(event any) {
+				if hb, ok := event.(*events.StreamingHeartbeatEvent); ok {
+					mu.Lock()
+					received = append(received, hb.Data)
+					mu.Unlock()
+				}
+			})
+
+			// Provider that holds the channel open for 60ms before
+			// emitting Done so the 5ms ticker fires multiple times.
+			slow := &slowDoneChatProvider{delay: 60 * time.Millisecond}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: slow,
+				Manifest:     manifest,
+				EventBus:     sharedBus,
+			})
+			eng.SetHeartbeatIntervalForTest(5 * time.Millisecond)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+			out, err := eng.Stream(ctx, manifest.ID, "ping")
+			Expect(err).NotTo(HaveOccurred())
+			for range out {
+				// Drain to completion.
+			}
+
+			mu.Lock()
+			count := len(received)
+			mu.Unlock()
+			// 60ms / 5ms = ~12 ticks; allow generous lower bound for
+			// scheduler jitter.
+			Expect(count).To(BeNumerically(">=", 1), "expected at least one heartbeat fire during a 60ms slow-Done turn")
+		})
+
+		It("Stream() suppresses heartbeats when SetHeartbeatIntervalForTest(0)", func() {
+			sharedBus := eventbus.NewEventBus()
+			var mu sync.Mutex
+			var received int
+			sharedBus.Subscribe(events.EventStreamingHeartbeat, func(_ any) {
+				mu.Lock()
+				received++
+				mu.Unlock()
+			})
+
+			slow := &slowDoneChatProvider{delay: 30 * time.Millisecond}
+			eng := engine.New(engine.Config{
+				ChatProvider: slow,
+				Manifest:     manifest,
+				EventBus:     sharedBus,
+			})
+			eng.SetHeartbeatIntervalForTest(0)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			defer cancel()
+			out, err := eng.Stream(ctx, manifest.ID, "ping")
+			Expect(err).NotTo(HaveOccurred())
+			for range out {
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(received).To(Equal(0), "expected no heartbeats when interval is zero")
+		})
+	})
 })
+
+// slowDoneChatProvider holds the chunk channel open for `delay` before
+// emitting a single Done chunk, so the heartbeat ticker has time to
+// fire while the stream is "live" but quiet.
+type slowDoneChatProvider struct {
+	delay time.Duration
+}
+
+func (p *slowDoneChatProvider) Name() string { return "slow-done-test" }
+func (p *slowDoneChatProvider) Stream(ctx context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 1)
+	go func() {
+		defer close(ch)
+		select {
+		case <-time.After(p.delay):
+		case <-ctx.Done():
+			return
+		}
+		ch <- provider.StreamChunk{Done: true}
+	}()
+	return ch, nil
+}
+func (p *slowDoneChatProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+func (p *slowDoneChatProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+func (p *slowDoneChatProvider) Models() ([]provider.Model, error) { return nil, nil }
 
 // gateCapture is a thread-safe sink for gate lifecycle events
 // published onto an `*eventbus.EventBus`. Mirrors delegationCapture
