@@ -653,6 +653,149 @@ var _ = Describe("Events", func() {
 		})
 	})
 
+	// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+	// the engine grows three swarm-gate lifecycle events on the bus.
+	// GateEventData mirrors DelegationEventData's shape (one struct,
+	// three wrapper types, started/completed/failed-style triplet)
+	// using `Reason string` and `Cause string` so default Go JSON
+	// marshalling suffices without a custom MarshalJSON.
+	Describe("GateEvaluatingEvent", func() {
+		It("implements Event interface and sets fields", func() {
+			data := events.GateEventData{
+				SwarmID:    "swarm-99",
+				SessionID:  "sess-99",
+				Lifecycle:  "pre",
+				GateCount:  2,
+			}
+			ts := time.Now().Add(-time.Minute)
+			evt := events.NewGateEvaluatingEvent(data, ts)
+			Expect(evt.EventType()).To(Equal("gate.evaluating"))
+			Expect(evt.Timestamp()).To(BeTemporally("~", ts, time.Second))
+			Expect(evt.Data).To(Equal(data))
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			evt := events.NewGateEvaluatingEvent(events.GateEventData{
+				SwarmID:   "swarm-x",
+				SessionID: "sess-x",
+				Lifecycle: "pre",
+				GateCount: 1,
+			})
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+
+		It("serialises to JSON with default Go field names so subscribers can decode without a custom MarshalJSON", func() {
+			data := events.GateEventData{
+				SwarmID:   "swarm-j",
+				SessionID: "sess-j",
+				Lifecycle: "pre",
+				GateCount: 3,
+			}
+			raw, err := json.Marshal(data)
+			Expect(err).NotTo(HaveOccurred())
+
+			var parsed map[string]any
+			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+			Expect(parsed).To(HaveKey("SwarmID"))
+			Expect(parsed).To(HaveKey("SessionID"))
+			Expect(parsed["Lifecycle"]).To(Equal("pre"))
+			Expect(parsed["GateCount"]).To(Equal(float64(3)))
+		})
+	})
+
+	Describe("GatePassedEvent", func() {
+		It("implements Event interface and sets fields with batch-level shape", func() {
+			data := events.GateEventData{
+				SwarmID:   "swarm-c",
+				SessionID: "sess-c",
+				Lifecycle: "post",
+				MemberID:  "",
+				GateCount: 4,
+			}
+			evt := events.NewGatePassedEvent(data)
+			Expect(evt.EventType()).To(Equal("gate.passed"))
+			Expect(evt.Data.GateCount).To(Equal(4))
+			Expect(evt.Data.MemberID).To(BeEmpty(),
+				"swarm-level pass events carry no MemberID — set only on member-pre/post lifecycle points")
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			evt := events.NewGatePassedEvent(events.GateEventData{Lifecycle: "post"})
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+	})
+
+	Describe("GateFailedEvent", func() {
+		It("implements Event interface and carries the typed *swarm.GateError fields as plain strings", func() {
+			data := events.GateEventData{
+				SwarmID:   "swarm-f",
+				SessionID: "sess-f",
+				Lifecycle: "post-member",
+				MemberID:  "plan-reviewer",
+				GateName:  "post-member-plan-reviewer-result-schema",
+				GateKind:  "builtin:result-schema",
+				Reason:    "schema validation failed",
+				Cause:     "missing required property \"verdict\"",
+			}
+			evt := events.NewGateFailedEvent(data)
+			Expect(evt.EventType()).To(Equal("gate.failed"))
+			Expect(evt.Data.GateName).To(Equal("post-member-plan-reviewer-result-schema"))
+			Expect(evt.Data.MemberID).To(Equal("plan-reviewer"))
+			Expect(evt.Data.Reason).To(ContainSubstring("schema validation failed"))
+		})
+
+		It("serialises typed gate-error fields as plain strings", func() {
+			data := events.GateEventData{
+				SwarmID:        "swarm-fj",
+				SessionID:      "sess-fj",
+				Lifecycle:      "pre",
+				GateName:       "envelope-check",
+				GateKind:       "ext:relevance-gate",
+				Reason:         "off-topic",
+				CoordStoreKeys: []string{"chain/researcher/output", "chain/topic/spec"},
+			}
+			raw, err := json.Marshal(data)
+			Expect(err).NotTo(HaveOccurred())
+			var parsed map[string]any
+			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
+			Expect(parsed["GateName"]).To(Equal("envelope-check"))
+			Expect(parsed["GateKind"]).To(Equal("ext:relevance-gate"))
+			Expect(parsed["Reason"]).To(Equal("off-topic"))
+			coords, ok := parsed["CoordStoreKeys"].([]any)
+			Expect(ok).To(BeTrue())
+			Expect(coords).To(HaveLen(2))
+		})
+
+		It("defaults timestamp to now when not provided", func() {
+			evt := events.NewGateFailedEvent(events.GateEventData{Lifecycle: "post"})
+			Expect(evt.Timestamp()).To(BeTemporally("~", time.Now(), time.Second))
+		})
+	})
+
+	Describe("Gate event catalog registration", func() {
+		// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+		// the catalog gains three new entries with StatusActive so
+		// downstream tooling (T11 validation, T13 docs) discovers
+		// the new topics without re-deriving the pattern.
+		It("registers gate.evaluating, gate.passed and gate.failed with StatusActive", func() {
+			topics := map[string]bool{
+				events.EventGateEvaluating: false,
+				events.EventGatePassed:     false,
+				events.EventGateFailed:     false,
+			}
+			for _, entry := range events.Catalog {
+				if _, ok := topics[entry.Topic]; ok {
+					Expect(entry.Status).To(Equal(events.StatusActive),
+						"%q must be active in the catalog", entry.Topic)
+					topics[entry.Topic] = true
+				}
+			}
+			for topic, found := range topics {
+				Expect(found).To(BeTrue(), "catalog missing entry for %q", topic)
+			}
+		})
+	})
+
 	Describe("ProviderRequestRetryEvent", func() {
 		It("implements Event interface and sets fields", func() {
 			data := events.ProviderRequestRetryEventData{

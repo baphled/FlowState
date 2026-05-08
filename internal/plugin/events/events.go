@@ -775,6 +775,159 @@ func NewDelegationFailedEvent(data DelegationEventData, ts ...time.Time) *Delega
 	}
 }
 
+// GateEventData holds data for swarm gate lifecycle events emitted by
+// the engine's DelegateTool at the seam where gate batches dispatch.
+//
+// This payload is in-process: the bus delivers it to subscribers (the
+// API SSE handler and the chat-intent subscriber) which project it to
+// wire shapes consumed by surfaces. Mirrors the DelegationEventData
+// shape — one struct, three wrapper types — and uses `Reason string`
+// + `Cause string` so default JSON marshalling suffices without a
+// bespoke MarshalJSON method.
+//
+// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
+//   - GateEvaluating events carry a non-zero GateCount and an empty
+//     GateName/GateKind/Reason/Cause/CoordStoreKeys.
+//   - GatePassed events also carry GateCount and empty per-gate
+//     fields — the batch-level pass policy means individual gate
+//     passes do NOT publish.
+//   - GateFailed events carry the per-gate fields populated from the
+//     typed *swarm.GateError; GateCount is zero on failure events.
+//
+// Halt-class failures only — continue-class and warn-class do not
+// publish on the bus today; surfaces render only halt-class.
+type GateEventData struct {
+	// SwarmID is the active swarm context's identifier; non-empty.
+	SwarmID string
+	// SessionID is the parent session that issued the swarm dispatch.
+	// Subscribers filter on this to scope events to their pane.
+	SessionID string
+	// Lifecycle is one of "pre" | "post" | "pre-member" | "post-member"
+	// (matches swarm.LifecyclePreSwarm / LifecyclePostSwarm /
+	// LifecyclePreMember / LifecyclePostMember).
+	Lifecycle string
+	// MemberID names the swarm member when Lifecycle is "pre-member"
+	// or "post-member"; empty for swarm-level lifecycle points.
+	MemberID string
+	// GateName is the manifest-supplied name of the failing gate.
+	// Empty on Evaluating / Passed events (batch-level), populated on
+	// Failed events (per-gate).
+	GateName string
+	// GateKind is the kind string (e.g. "ext:relevance-gate",
+	// "builtin:result-schema"). Empty on Evaluating / Passed.
+	GateKind string
+	// Reason is the typed *swarm.GateError.Reason; empty on
+	// Evaluating / Passed events.
+	Reason string
+	// Cause is the *swarm.GateError.Cause's Error() string; empty
+	// when the typed error has no cause (e.g. a clean halt rather
+	// than a runner crash).
+	Cause string
+	// CoordStoreKeys is the slice of keys the gate read from the
+	// coordination store (when the gate has Inputs declared per
+	// the Multi-Key Gate Inputs plan); empty on legacy single-key
+	// gates and on Passed/Evaluating events. Surfaces render this
+	// for the operator's "what was checked?" affordance.
+	CoordStoreKeys []string
+	// GateCount is the number of gates in the batch (Evaluating /
+	// Passed events only); zero on Failed events.
+	GateCount int
+}
+
+// GateEvaluatingEvent represents a swarm gate batch about to run.
+// Published once per `swarm.Dispatch` call when at least one gate
+// matches the lifecycle; carries the count of gates and the lifecycle
+// point so the activity pane can render an "evaluating gates…"
+// affordance without per-gate noise.
+type GateEvaluatingEvent struct {
+	BaseEvent
+	Data GateEventData
+}
+
+// NewGateEvaluatingEvent creates a new gate evaluating event.
+//
+// Expected:
+//   - data carries the lifecycle marker payload (GateCount > 0).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A GateEvaluatingEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewGateEvaluatingEvent(data GateEventData, ts ...time.Time) *GateEvaluatingEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &GateEvaluatingEvent{
+		BaseEvent: BaseEvent{eventType: EventGateEvaluating, timestamp: t},
+		Data:      data,
+	}
+}
+
+// GatePassedEvent represents a clean swarm gate batch — every gate in
+// the batch returned without halting. Single event per `swarm.Dispatch`;
+// per-gate pass events are deliberately suppressed by the pass-event
+// policy.
+type GatePassedEvent struct {
+	BaseEvent
+	Data GateEventData
+}
+
+// NewGatePassedEvent creates a new gate passed event.
+//
+// Expected:
+//   - data carries the batch-level summary (GateCount > 0).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A GatePassedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewGatePassedEvent(data GateEventData, ts ...time.Time) *GatePassedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &GatePassedEvent{
+		BaseEvent: BaseEvent{eventType: EventGatePassed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// GateFailedEvent represents a halt-class swarm gate failure. One event
+// per failing gate; carries the typed *swarm.GateError fields as plain
+// strings so subscribers do not need to thread the error type across
+// the bus boundary.
+type GateFailedEvent struct {
+	BaseEvent
+	Data GateEventData
+}
+
+// NewGateFailedEvent creates a new gate failed event.
+//
+// Expected:
+//   - data carries the per-gate failure payload (GateName populated).
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A GateFailedEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewGateFailedEvent(data GateEventData, ts ...time.Time) *GateFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &GateFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventGateFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
 // ProviderResponseEventData holds data for provider response events emitted
 // when a streaming provider call completes successfully.
 //
@@ -1417,4 +1570,7 @@ var (
 	_ Event = (*ContextCompactedEvent)(nil)
 	_ Event = (*DiscoveryPublishedEvent)(nil)
 	_ Event = (*LearningRecordedEvent)(nil)
+	_ Event = (*GateEvaluatingEvent)(nil)
+	_ Event = (*GatePassedEvent)(nil)
+	_ Event = (*GateFailedEvent)(nil)
 )

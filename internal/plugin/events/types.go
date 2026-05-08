@@ -44,6 +44,9 @@
 //   - context.compacted
 //   - discovery.published
 //   - learning.recorded
+//   - gate.evaluating
+//   - gate.passed
+//   - gate.failed
 //
 // Dynamic event types (e.g. "session."+action) are not represented as constants.
 package events
@@ -81,4 +84,14 @@ const (
 	EventContextCompacted        = "context.compacted"
 	EventDiscoveryPublished      = "discovery.published"
 	EventLearningRecorded        = "learning.recorded"
+	// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026): swarm
+	// gate lifecycle events. The engine publishes one batch-level
+	// `gate.evaluating` and one batch-level `gate.passed` per
+	// `swarm.Dispatch` call site (clean batches), or one per-failing-
+	// gate `gate.failed` on halt-class failure. Continue-class and
+	// warn-class failures are intentionally NOT published; the web
+	// surface subscribes to `gate.failed` only.
+	EventGateEvaluating = "gate.evaluating"
+	EventGatePassed     = "gate.passed"
+	EventGateFailed     = "gate.failed"
 )
