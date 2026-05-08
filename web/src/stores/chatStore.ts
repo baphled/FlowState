@@ -1853,11 +1853,42 @@ export const useChatStore = defineStore('chat', {
     // by sendMessage's finally block or by maybeReattachStream's close
     // handler — both already in place.
     handleStreamDone(): void {
-      const inFlight = [...this.messages].reverse().find(
-        (message) => message.role === 'assistant' && message.status === 'running',
-      )
-      if (inFlight) {
-        inFlight.status = 'completed'
+      // Streaming Coherence Slice C (May 2026) — seal ALL running
+      // assistant + delegation rows on [DONE], not just the last
+      // reverse-find. Pre-slice the loop kept any but the most recent
+      // running row in a permanent "running" state when an intermediate
+      // tool round closed; the user observed delegation cards stuck on
+      // an in-progress spinner long after the parent turn completed.
+      let sealedAny = false
+      for (const message of this.messages) {
+        if (message.status === 'running' &&
+            (message.role === 'assistant' || message.role === 'delegation_started')) {
+          message.status = 'completed'
+          sealedAny = true
+        }
+      }
+      // Streaming Coherence Slice C — empty-turn placeholder. When
+      // [DONE] arrives without any running assistant having been
+      // created (engine-side `synthesizePlaceholderAssistant` did not
+      // emit a placeholder for whatever reason — degraded provider,
+      // legacy session, race), still render a soft-error bubble so
+      // the user sees the silence rather than waiting for the
+      // 60s watchdog to trip.
+      if (!sealedAny) {
+        const lastMsg = this.messages[this.messages.length - 1]
+        const lastIsUser = lastMsg && lastMsg.role === 'user'
+        if (lastIsUser || this.messages.length === 0) {
+          // No assistant artefact landed. Render an empty-turn
+          // placeholder so the chat thread closes cleanly.
+          this.messages.push({
+            id: `empty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'assistant',
+            content: '',
+            timestamp: new Date().toISOString(),
+            status: 'completed',
+            stopReason: 'empty_turn',
+          })
+        }
       }
       // Per-session state (Slice A) — clear isStreaming on the current
       // session's slot. The send finally block clears isLoading

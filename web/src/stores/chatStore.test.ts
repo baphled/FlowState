@@ -4508,6 +4508,50 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
     await sendA
   })
 
+  it('renders an empty_turn placeholder when DONE arrives with no running assistant (Slice C)', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    // Simulate the user-prompt-only state — POST sent, no assistant
+    // chunks landed, then [DONE] arrives.
+    store.messages = [
+      { id: 'msg-user', role: 'user', content: 'hello', timestamp: '' },
+    ]
+    store.handleStreamDone()
+    expect(store.messages).toHaveLength(2)
+    expect(store.messages[1].role).toBe('assistant')
+    expect(store.messages[1].stopReason).toBe('empty_turn')
+    expect(store.messages[1].content).toBe('')
+    expect(store.messages[1].status).toBe('completed')
+  })
+
+  it('does NOT render an empty_turn placeholder when a running assistant existed (Slice C)', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-user', role: 'user', content: 'hello', timestamp: '' },
+      { id: 'msg-asst', role: 'assistant', content: 'partial reply', timestamp: '', status: 'running' },
+    ]
+    store.handleStreamDone()
+    expect(store.messages).toHaveLength(2)
+    expect(store.messages[1].status).toBe('completed')
+    expect(store.messages[1].stopReason).toBeUndefined()
+  })
+
+  it('seals ALL running assistant/delegation rows on DONE (Slice C — delegation panel coherence)', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.messages = [
+      { id: 'msg-user', role: 'user', content: 'task', timestamp: '' },
+      { id: 'del-1', role: 'delegation_started', content: '', timestamp: '', status: 'running', chainId: 'a' },
+      { id: 'asst-1', role: 'assistant', content: 'mid-reply', timestamp: '', status: 'running' },
+      { id: 'del-2', role: 'delegation_started', content: '', timestamp: '', status: 'running', chainId: 'b' },
+    ]
+    store.handleStreamDone()
+    expect(store.messages.find((m) => m.id === 'del-1')?.status).toBe('completed')
+    expect(store.messages.find((m) => m.id === 'asst-1')?.status).toBe('completed')
+    expect(store.messages.find((m) => m.id === 'del-2')?.status).toBe('completed')
+  })
+
   it('opens an independent EventSource for each session', async () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
