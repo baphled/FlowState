@@ -564,7 +564,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	// dispatch helper, preserving the agent-only contract used by
 	// older API consumers.
 	if s.swarmRegistry != nil {
-		orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer)
+		orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager)
 		err := orch.ProcessUserInput(r.Context(), orchestrator.UserInput{
 			Message:      req.Message,
 			DefaultAgent: req.AgentID,

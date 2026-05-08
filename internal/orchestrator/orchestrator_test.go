@@ -2,13 +2,17 @@ package orchestrator_test
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	contextpkg "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"testing"
 )
@@ -43,14 +47,24 @@ func (f *fakeOrchestratorStreamer) Stream(_ context.Context, agentID string, mes
 	return out, nil
 }
 
-// fakeOrchestratorEngine satisfies swarm.DispatchEngine and records
-// whether the orchestrator's swarm dispatch lifecycle ran.
+// fakeOrchestratorEngine satisfies swarm.DispatchEngine plus the wider
+// orchestrator engine surface (SetManifest, SetModelPreference,
+// SetContextStore) so the new lifecycle methods can be exercised in
+// isolation. Records every invocation for assertion.
 type fakeOrchestratorEngine struct {
 	contexts      []*swarm.Context
 	flushCalls    int
 	snapshotCalls int
 	restoreCalls  int
 	skipFiles     bool
+
+	// Lifecycle-method recorders.
+	manifestSet           []agent.Manifest
+	modelPrefProviders    []string
+	modelPrefModels       []string
+	contextStores         []*recall.FileContextStore
+	contextStoreSessions  []string
+	contextStoreCallCount int
 }
 
 func (f *fakeOrchestratorEngine) SetSwarmContext(ctx *swarm.Context) {
@@ -73,6 +87,104 @@ func (f *fakeOrchestratorEngine) RestoreManifest(_ any) {
 
 func (f *fakeOrchestratorEngine) SkipAgentFiles() bool        { return f.skipFiles }
 func (f *fakeOrchestratorEngine) SetSkipAgentFiles(skip bool) { f.skipFiles = skip }
+
+func (f *fakeOrchestratorEngine) SetManifest(m agent.Manifest) {
+	f.manifestSet = append(f.manifestSet, m)
+}
+
+func (f *fakeOrchestratorEngine) SetModelPreference(providerName, modelName string) {
+	f.modelPrefProviders = append(f.modelPrefProviders, providerName)
+	f.modelPrefModels = append(f.modelPrefModels, modelName)
+}
+
+func (f *fakeOrchestratorEngine) SetContextStore(store *recall.FileContextStore, sessionID string) {
+	f.contextStores = append(f.contextStores, store)
+	f.contextStoreSessions = append(f.contextStoreSessions, sessionID)
+	f.contextStoreCallCount++
+}
+
+// fakeSessionManager satisfies the orchestrator's SessionManager
+// edge interface and records every UpdateSessionAgent / UpdateSessionModel
+// call so the parity-fan-out tests can assert both the engine and the
+// manager mutate together.
+type fakeSessionManager struct {
+	agentSessions   []string
+	agentIDs        []string
+	modelSessions   []string
+	modelProviders  []string
+	modelModels     []string
+	updateAgentErr  error
+	updateModelErr  error
+}
+
+func (f *fakeSessionManager) UpdateSessionAgent(sessionID, agentID string) error {
+	f.agentSessions = append(f.agentSessions, sessionID)
+	f.agentIDs = append(f.agentIDs, agentID)
+	return f.updateAgentErr
+}
+
+func (f *fakeSessionManager) UpdateSessionModel(sessionID, providerName, modelName string) error {
+	f.modelSessions = append(f.modelSessions, sessionID)
+	f.modelProviders = append(f.modelProviders, providerName)
+	f.modelModels = append(f.modelModels, modelName)
+	return f.updateModelErr
+}
+
+// fakeSessionStore satisfies the orchestrator's SessionStore edge
+// interface — Save / Load — and records inputs for assertion.
+type fakeSessionStore struct {
+	saved        []fakeSessionSaveCall
+	loadStore    *recall.FileContextStore
+	loadErr      error
+	saveErr      error
+}
+
+type fakeSessionSaveCall struct {
+	sessionID string
+	store     *recall.FileContextStore
+	meta      contextpkg.SessionMetadata
+}
+
+func (f *fakeSessionStore) Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error {
+	f.saved = append(f.saved, fakeSessionSaveCall{sessionID: sessionID, store: store, meta: meta})
+	return f.saveErr
+}
+
+func (f *fakeSessionStore) Load(_ string) (*recall.FileContextStore, error) {
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
+	return f.loadStore, nil
+}
+
+// fakeSessionStoreWithEvents mirrors fakeSessionStore but additionally
+// satisfies the orchestrator's SwarmEventPersister capability so
+// LoadSession / SaveTurnEnd can be exercised against the optional
+// event-persistence path.
+type fakeSessionStoreWithEvents struct {
+	fakeSessionStore
+	loadedEvents       []streaming.SwarmEvent
+	loadEventsErr      error
+	savedEventsBySess  map[string][]streaming.SwarmEvent
+	saveEventsErr      error
+	saveEventsCalls    int
+}
+
+func (f *fakeSessionStoreWithEvents) LoadEvents(_ string) ([]streaming.SwarmEvent, error) {
+	if f.loadEventsErr != nil {
+		return nil, f.loadEventsErr
+	}
+	return f.loadedEvents, nil
+}
+
+func (f *fakeSessionStoreWithEvents) SaveEvents(sessionID string, evs []streaming.SwarmEvent) error {
+	f.saveEventsCalls++
+	if f.savedEventsBySess == nil {
+		f.savedEventsBySess = map[string][]streaming.SwarmEvent{}
+	}
+	f.savedEventsBySess[sessionID] = evs
+	return f.saveEventsErr
+}
 
 // fakeStreamConsumer implements streaming.StreamConsumer minimally.
 type fakeStreamConsumer struct {
@@ -119,7 +231,7 @@ var _ = Describe("SessionOrchestrator", func() {
 	Describe("ProcessUserInput", func() {
 		Context("when DefaultAgent resolves to an agent and ScanMentions is false", func() {
 			It("streams from that agent without installing a swarm context", func() {
-				orch := orchestrator.New(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
 
 				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "hello",
@@ -142,7 +254,7 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when DefaultAgent resolves to a swarm and ScanMentions is false", func() {
 			It("streams from the swarm's lead and installs the swarm context", func() {
-				orch := orchestrator.New(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
 
 				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "trace the auth path",
@@ -160,7 +272,7 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when ScanMentions is true and the message contains @<swarm-id>", func() {
 			It("the @-mention overrides DefaultAgent", func() {
-				orch := orchestrator.New(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
 
 				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "@bug-hunt please look at the auth module",
@@ -178,7 +290,7 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when ScanMentions is true but only agent @-mentions appear", func() {
 			It("falls through to DefaultAgent (agent mentions don't redirect)", func() {
-				orch := orchestrator.New(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
 
 				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "ask @explorer to look at this",
@@ -194,7 +306,7 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when ScanMentions is true and an unknown @-mention appears", func() {
 			It("skips it and falls through to DefaultAgent", func() {
-				orch := orchestrator.New(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
 
 				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "ping @ghost-thing about it",
@@ -209,7 +321,7 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when both DefaultAgent is empty and ScanMentions matches no swarm", func() {
 			It("returns the no-target error", func() {
-				orch := orchestrator.New(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
 
 				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "",
@@ -226,7 +338,7 @@ var _ = Describe("SessionOrchestrator", func() {
 
 		Context("when DefaultAgent is unknown", func() {
 			It("returns swarm.NotFoundError without driving the streamer", func() {
-				orch := orchestrator.New(eng, registry, swarmReg, streamer)
+				orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
 
 				err := orch.ProcessUserInput(context.Background(), orchestrator.UserInput{
 					Message:      "hi",
@@ -237,6 +349,291 @@ var _ = Describe("SessionOrchestrator", func() {
 				Expect(err.Error()).To(ContainSubstring("ghost"))
 				Expect(streamer.capturedAgentID).To(Equal(""))
 			})
+		})
+	})
+
+	Describe("SwitchAgent", func() {
+		It("swaps the engine manifest and updates the session manager on a single call", func() {
+			mgr := &fakeSessionManager{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, mgr)
+
+			manifest, err := orch.SwitchAgent(context.Background(), "session-x", "Senior-Engineer")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manifest).NotTo(BeNil())
+			Expect(manifest.ID).To(Equal("Senior-Engineer"))
+			Expect(eng.manifestSet).To(HaveLen(1))
+			Expect(eng.manifestSet[0].ID).To(Equal("Senior-Engineer"))
+			Expect(mgr.agentSessions).To(Equal([]string{"session-x"}))
+			Expect(mgr.agentIDs).To(Equal([]string{"Senior-Engineer"}))
+		})
+
+		It("returns ErrAgentNotFound when the registry yields nothing", func() {
+			mgr := &fakeSessionManager{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, mgr)
+
+			manifest, err := orch.SwitchAgent(context.Background(), "session-x", "ghost-agent")
+
+			Expect(err).To(MatchError(orchestrator.ErrAgentNotFound))
+			Expect(manifest).To(BeNil())
+			Expect(eng.manifestSet).To(BeEmpty())
+			Expect(mgr.agentSessions).To(BeEmpty())
+		})
+
+		It("does not touch the session manager when sessionID is empty", func() {
+			mgr := &fakeSessionManager{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, mgr)
+
+			manifest, err := orch.SwitchAgent(context.Background(), "", "executor")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manifest.ID).To(Equal("executor"))
+			Expect(eng.manifestSet).To(HaveLen(1))
+			Expect(mgr.agentSessions).To(BeEmpty())
+		})
+
+		It("still mutates the engine when no session manager is wired", func() {
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
+
+			manifest, err := orch.SwitchAgent(context.Background(), "session-x", "executor")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manifest.ID).To(Equal("executor"))
+			Expect(eng.manifestSet).To(HaveLen(1))
+		})
+	})
+
+	Describe("SwitchModel", func() {
+		It("sets the engine model preference and updates the session manager on a single call", func() {
+			mgr := &fakeSessionManager{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, mgr)
+
+			err := orch.SwitchModel(context.Background(), "session-x", "ollama", "llama3")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(eng.modelPrefProviders).To(Equal([]string{"ollama"}))
+			Expect(eng.modelPrefModels).To(Equal([]string{"llama3"}))
+			Expect(mgr.modelSessions).To(Equal([]string{"session-x"}))
+			Expect(mgr.modelProviders).To(Equal([]string{"ollama"}))
+			Expect(mgr.modelModels).To(Equal([]string{"llama3"}))
+		})
+
+		It("does not touch the session manager when sessionID is empty", func() {
+			mgr := &fakeSessionManager{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, mgr)
+
+			err := orch.SwitchModel(context.Background(), "", "ollama", "llama3")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(eng.modelPrefProviders).To(HaveLen(1))
+			Expect(mgr.modelSessions).To(BeEmpty())
+		})
+
+		It("still mutates the engine when no session manager is wired", func() {
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
+
+			err := orch.SwitchModel(context.Background(), "session-x", "openai", "gpt-4o")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(eng.modelPrefProviders).To(Equal([]string{"openai"}))
+			Expect(eng.modelPrefModels).To(Equal([]string{"gpt-4o"}))
+		})
+	})
+
+	Describe("LoadSession", func() {
+		It("loads the context store, installs it on the engine, and returns the bundle", func() {
+			loaded := recall.NewEmptyContextStore("")
+			loaded.Append(provider.Message{Role: "user", Content: "hello"})
+			store := &fakeSessionStore{loadStore: loaded}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			ls, err := orch.LoadSession(context.Background(), "session-loaded")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ls).NotTo(BeNil())
+			Expect(ls.Store).To(BeIdenticalTo(loaded))
+			Expect(eng.contextStoreCallCount).To(Equal(1))
+			Expect(eng.contextStores[0]).To(BeIdenticalTo(loaded))
+			Expect(eng.contextStoreSessions[0]).To(Equal("session-loaded"))
+		})
+
+		It("returns the persisted swarm events when the store satisfies SwarmEventPersister", func() {
+			loaded := recall.NewEmptyContextStore("")
+			events := []streaming.SwarmEvent{
+				{ID: "evt-1", AgentID: "explorer", Type: streaming.EventDelegation},
+			}
+			store := &fakeSessionStoreWithEvents{
+				fakeSessionStore: fakeSessionStore{loadStore: loaded},
+				loadedEvents:     events,
+			}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			ls, err := orch.LoadSession(context.Background(), "session-loaded")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ls.SwarmEvents).To(HaveLen(1))
+			Expect(ls.SwarmEvents[0].ID).To(Equal("evt-1"))
+		})
+
+		It("returns nil swarm events when the store does not satisfy SwarmEventPersister", func() {
+			loaded := recall.NewEmptyContextStore("")
+			store := &fakeSessionStore{loadStore: loaded}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			ls, err := orch.LoadSession(context.Background(), "session-loaded")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ls.SwarmEvents).To(BeNil())
+		})
+
+		It("swallows LoadEvents errors and returns nil swarm events (matches TUI fallback)", func() {
+			loaded := recall.NewEmptyContextStore("")
+			store := &fakeSessionStoreWithEvents{
+				fakeSessionStore: fakeSessionStore{loadStore: loaded},
+				loadEventsErr:    errors.New("WAL is corrupt"),
+			}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			ls, err := orch.LoadSession(context.Background(), "session-loaded")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ls.SwarmEvents).To(BeEmpty())
+		})
+
+		It("returns ErrStoreNotConfigured when the orchestrator has no SessionStore", func() {
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
+
+			_, err := orch.LoadSession(context.Background(), "session-loaded")
+
+			Expect(err).To(MatchError(orchestrator.ErrStoreNotConfigured))
+		})
+	})
+
+	Describe("NewSession", func() {
+		It("generates a UUID v4 and installs an empty store on the engine", func() {
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
+
+			sessionID, err := orch.NewSession(context.Background())
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sessionID).NotTo(BeEmpty())
+			// UUID v4 string length is 36 characters (8-4-4-4-12 hex with dashes).
+			Expect(sessionID).To(HaveLen(36))
+			Expect(eng.contextStoreCallCount).To(Equal(1))
+			Expect(eng.contextStoreSessions[0]).To(Equal(sessionID))
+			Expect(eng.contextStores[0]).NotTo(BeNil())
+		})
+
+		It("tolerates a nil engine for test-minimal compositions", func() {
+			orch := orchestrator.New(nil, registry, swarmReg, streamer, nil, nil)
+
+			sessionID, err := orch.NewSession(context.Background())
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sessionID).NotTo(BeEmpty())
+		})
+	})
+
+	Describe("SaveTurnEnd", func() {
+		It("saves session metadata verbatim from the supplied snapshot", func() {
+			store := &fakeSessionStore{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			cs := recall.NewEmptyContextStore("")
+			err := orch.SaveTurnEnd(context.Background(), "session-x", orchestrator.TurnSnapshot{
+				Store:        cs,
+				AgentID:      "executor",
+				SystemPrompt: "you are an executor",
+				LoadedSkills: []string{"pre-action", "memory-keeper"},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.saved).To(HaveLen(1))
+			Expect(store.saved[0].sessionID).To(Equal("session-x"))
+			Expect(store.saved[0].store).To(BeIdenticalTo(cs))
+			Expect(store.saved[0].meta.AgentID).To(Equal("executor"))
+			Expect(store.saved[0].meta.SystemPrompt).To(Equal("you are an executor"))
+			Expect(store.saved[0].meta.LoadedSkills).To(Equal([]string{"pre-action", "memory-keeper"}))
+		})
+
+		It("calls SaveEvents when the store supports it AND swarm events are non-empty", func() {
+			store := &fakeSessionStoreWithEvents{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			cs := recall.NewEmptyContextStore("")
+			events := []streaming.SwarmEvent{
+				{ID: "evt-1", AgentID: "explorer"},
+			}
+			err := orch.SaveTurnEnd(context.Background(), "session-x", orchestrator.TurnSnapshot{
+				Store:       cs,
+				AgentID:     "executor",
+				SwarmEvents: events,
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.saveEventsCalls).To(Equal(1))
+			Expect(store.savedEventsBySess["session-x"]).To(HaveLen(1))
+		})
+
+		It("does NOT call SaveEvents when the swarm-event slice is empty", func() {
+			store := &fakeSessionStoreWithEvents{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			cs := recall.NewEmptyContextStore("")
+			err := orch.SaveTurnEnd(context.Background(), "session-x", orchestrator.TurnSnapshot{
+				Store:       cs,
+				AgentID:     "executor",
+				SwarmEvents: nil,
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.saveEventsCalls).To(Equal(0))
+		})
+
+		It("returns the underlying Save error verbatim (fatal)", func() {
+			store := &fakeSessionStore{saveErr: errors.New("disk full")}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			cs := recall.NewEmptyContextStore("")
+			err := orch.SaveTurnEnd(context.Background(), "session-x", orchestrator.TurnSnapshot{
+				Store: cs,
+			})
+
+			Expect(err).To(MatchError("disk full"))
+		})
+
+		It("ignores SaveEvents errors (best-effort, mirrors TUI saveSession asymmetry)", func() {
+			store := &fakeSessionStoreWithEvents{
+				saveEventsErr: errors.New("event WAL fsync failed"),
+			}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			cs := recall.NewEmptyContextStore("")
+			err := orch.SaveTurnEnd(context.Background(), "session-x", orchestrator.TurnSnapshot{
+				Store:       cs,
+				SwarmEvents: []streaming.SwarmEvent{{ID: "evt-1"}},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.saveEventsCalls).To(Equal(1))
+		})
+
+		It("returns ErrStoreNotConfigured when no SessionStore is wired", func() {
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, nil, nil)
+
+			err := orch.SaveTurnEnd(context.Background(), "session-x", orchestrator.TurnSnapshot{})
+
+			Expect(err).To(MatchError(orchestrator.ErrStoreNotConfigured))
+		})
+
+		It("is a no-op when snapshot.Store is nil (caller has no engine state to persist)", func() {
+			store := &fakeSessionStore{}
+			orch := orchestrator.New(eng, registry, swarmReg, streamer, store, nil)
+
+			err := orch.SaveTurnEnd(context.Background(), "session-x", orchestrator.TurnSnapshot{Store: nil})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.saved).To(BeEmpty())
 		})
 	})
 })

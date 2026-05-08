@@ -13,8 +13,11 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
+
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 )
@@ -42,10 +45,21 @@ import (
 // recurring bug classes (TUI persistent identity swap, child
 // session events.jsonl gaps, manifest leak across turns).
 type Orchestrator struct {
-	engine        swarm.DispatchEngine
-	agentRegistry *agent.Registry
-	swarmRegistry *swarm.Registry
-	streamer      streaming.Streamer
+	// dispatchEngine is the streaming-half engine surface — narrow on
+	// purpose so test fakes that exercise only ProcessUserInput / Stream
+	// can satisfy it without growing the lifecycle setters.
+	dispatchEngine swarm.DispatchEngine
+	// engine is the wider lifecycle-half engine surface used by
+	// SwitchAgent / SwitchModel / LoadSession / NewSession. Production
+	// wires the same *engine.Engine into both fields; tests that only
+	// exercise the streaming path can leave engine nil and rely on the
+	// per-method nil-tolerance.
+	engine         Engine
+	agentRegistry  *agent.Registry
+	swarmRegistry  *swarm.Registry
+	streamer       streaming.Streamer
+	sessionStore   SessionStore
+	sessionManager SessionManager
 }
 
 // UserInput is the surface-agnostic input to ProcessUserInput.
@@ -88,18 +102,28 @@ type UserInput struct {
 // the orchestrator; this error is a defensive guard.
 var errNoTarget = errors.New("session orchestrator: no agent or swarm target resolved from input")
 
-// New wires the orchestrator's dependencies. All
-// fields are required for production use; tests may pass fakes that
-// satisfy the narrow interfaces.
+// New wires the orchestrator's dependencies. The streaming-half
+// fields are required for production use; the lifecycle-half fields
+// (sessionStore, sessionManager) are nullable so test fixtures and
+// minimal compositions can skip them.
 //
 // Expected:
-//   - eng is a non-nil swarm.DispatchEngine (typically *engine.Engine).
+//   - eng is a non-nil Engine (typically *engine.Engine). May be nil
+//     in test-minimal compositions; lifecycle methods guard against
+//     nil per the same nil-tolerance pattern Stream uses today
+//     (orchestrator.go:200-209,238).
 //   - agentReg is the agent registry (may be nil; resolution falls
 //     through to swarm-only matching when nil).
 //   - swarmReg is the swarm registry (may be nil; orchestrator then
 //     short-circuits dispatch to a plain agent stream).
 //   - streamer drives the underlying provider stream (typically the
 //     same *engine.Engine via the Streamer interface).
+//   - sessionStore is the session-persistence surface used by
+//     LoadSession / SaveTurnEnd. May be nil — those methods then
+//     return errStoreNotConfigured.
+//   - sessionManager is the per-session metadata manager used by
+//     SwitchAgent / SwitchModel. May be nil — those methods then
+//     skip the manager call and only mutate the engine.
 //
 // Returns:
 //   - A configured *Orchestrator.
@@ -111,13 +135,25 @@ func New(
 	agentReg *agent.Registry,
 	swarmReg *swarm.Registry,
 	streamer streaming.Streamer,
+	sessionStore SessionStore,
+	sessionManager SessionManager,
 ) *Orchestrator {
-	return &Orchestrator{
-		engine:        eng,
-		agentRegistry: agentReg,
-		swarmRegistry: swarmReg,
-		streamer:      streamer,
+	o := &Orchestrator{
+		dispatchEngine: eng,
+		agentRegistry:  agentReg,
+		swarmRegistry:  swarmReg,
+		streamer:       streamer,
+		sessionStore:   sessionStore,
+		sessionManager: sessionManager,
 	}
+	// Auto-narrow when the dispatch engine also satisfies the wider
+	// lifecycle surface. *engine.Engine satisfies both in production;
+	// fake DispatchEngines used by streaming-only tests do not — those
+	// tests rely on per-method nil-tolerance.
+	if wider, ok := eng.(Engine); ok {
+		o.engine = wider
+	}
+	return o
 }
 
 // ProcessUserInput is the canonical entry point for "a user/client
@@ -156,7 +192,7 @@ func (o *Orchestrator) ProcessUserInput(
 	if err != nil {
 		return err
 	}
-	return swarm.DispatchSwarm(ctx, o.engine, swarmCtx, o.streamer, consumer, leadID, req.Message)
+	return swarm.DispatchSwarm(ctx, o.dispatchEngine, swarmCtx, o.streamer, consumer, leadID, req.Message)
 }
 
 // Stream is the async cousin of ProcessUserInput. Returns a channel
@@ -198,18 +234,18 @@ func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provid
 
 	var snapshot any
 	var prevSkipFiles bool
-	if o.engine != nil {
-		snapshot = o.engine.ManifestSnapshot()
-		prevSkipFiles = o.engine.SkipAgentFiles()
-		o.engine.SetSwarmContext(swarmCtx)
-		o.engine.SetSkipAgentFiles(true)
+	if o.dispatchEngine != nil {
+		snapshot = o.dispatchEngine.ManifestSnapshot()
+		prevSkipFiles = o.dispatchEngine.SkipAgentFiles()
+		o.dispatchEngine.SetSwarmContext(swarmCtx)
+		o.dispatchEngine.SetSkipAgentFiles(true)
 	}
 
 	src, err := o.streamer.Stream(ctx, leadID, req.Message)
 	if err != nil {
-		if o.engine != nil {
-			o.engine.RestoreManifest(snapshot)
-			o.engine.SetSkipAgentFiles(prevSkipFiles)
+		if o.dispatchEngine != nil {
+			o.dispatchEngine.RestoreManifest(snapshot)
+			o.dispatchEngine.SetSkipAgentFiles(prevSkipFiles)
 		}
 		return nil, err
 	}
@@ -235,10 +271,10 @@ func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provid
 			}
 		}
 	cleanup:
-		if o.engine != nil {
-			_ = o.engine.FlushSwarmLifecycle(ctx)
-			o.engine.RestoreManifest(snapshot)
-			o.engine.SetSkipAgentFiles(prevSkipFiles)
+		if o.dispatchEngine != nil {
+			_ = o.dispatchEngine.FlushSwarmLifecycle(ctx)
+			o.dispatchEngine.RestoreManifest(snapshot)
+			o.dispatchEngine.SetSkipAgentFiles(prevSkipFiles)
 		}
 	}()
 	return out, nil
@@ -334,3 +370,218 @@ func (o *Orchestrator) agentLookup() swarm.HasAgent {
 		return ok
 	}
 }
+
+// SwitchAgent installs a new agent manifest on the engine and updates
+// the session's CurrentAgentID via the session manager. Returns the
+// resolved manifest so callers can sync surface state (status bar,
+// SSE response payload) without re-resolving.
+//
+// Per ADR - Session Orchestrator for Surface Parity, this method is
+// the single owner of agent-switch lifecycle across CLI, TUI, and
+// API. Pre-lift the TUI's applyAgentSwitch and the API's
+// handleUpdateSessionAgent each composed engine + session-manager
+// calls themselves; post-lift they both route through here so the
+// engine half cannot drift from the session-metadata half.
+//
+// Expected:
+//   - sessionID identifies an existing session, or "" for a
+//     session-less switch (skips the session-manager call).
+//   - agentID is a registry id or alias; resolved via
+//     agent.Registry.GetByNameOrAlias.
+//
+// Returns:
+//   - The resolved *agent.Manifest on success.
+//   - errAgentNotFound when the registry yields nothing.
+//
+// Side effects:
+//   - Calls engine.SetManifest with the resolved manifest.
+//   - Calls sessionManager.UpdateSessionAgent when sessionID is
+//     non-empty AND a session manager is wired.
+func (o *Orchestrator) SwitchAgent(_ context.Context, sessionID, agentID string) (*agent.Manifest, error) {
+	if o.agentRegistry == nil {
+		return nil, errAgentNotFound
+	}
+	manifest, ok := o.agentRegistry.GetByNameOrAlias(agentID)
+	if !ok {
+		manifest, ok = o.agentRegistry.Get(agentID)
+	}
+	if !ok || manifest == nil {
+		return nil, errAgentNotFound
+	}
+	if o.engine != nil {
+		o.engine.SetManifest(*manifest)
+	}
+	if o.sessionManager != nil && sessionID != "" {
+		if err := o.sessionManager.UpdateSessionAgent(sessionID, manifest.ID); err != nil {
+			return manifest, err
+		}
+	}
+	return manifest, nil
+}
+
+// SwitchModel installs a new provider/model preference on the engine
+// and updates the session's CurrentProviderID/CurrentModelID via the
+// session manager. Mirror of SwitchAgent for the model preference.
+//
+// Expected:
+//   - sessionID identifies an existing session, or "" for a
+//     session-less switch.
+//   - providerName and modelName identify the target preference;
+//     no validation against a registry is performed here — the
+//     engine accepts the preference verbatim and resolves on next
+//     stream call.
+//
+// Returns:
+//   - nil on success.
+//   - The session-manager error when UpdateSessionModel fails.
+//
+// Side effects:
+//   - Calls engine.SetModelPreference with the supplied pair.
+//   - Calls sessionManager.UpdateSessionModel when sessionID is
+//     non-empty AND a session manager is wired.
+func (o *Orchestrator) SwitchModel(_ context.Context, sessionID, providerName, modelName string) error {
+	if o.engine != nil {
+		o.engine.SetModelPreference(providerName, modelName)
+	}
+	if o.sessionManager != nil && sessionID != "" {
+		return o.sessionManager.UpdateSessionModel(sessionID, providerName, modelName)
+	}
+	return nil
+}
+
+// LoadSession rehydrates a session: loads the context store from the
+// session store, restores swarm events from the persisted WAL when
+// the store satisfies SwarmEventPersister, installs the store on the
+// engine, and returns a fully-populated LoadedSession bundle for the
+// surface to render.
+//
+// Per ADR - Session Orchestrator for Surface Parity §LoadSession,
+// the orchestrator owns the load + engine install; surfaces own the
+// per-store apply for the swarm-event slice (TUI's i.swarmStore is
+// intent-scoped, web's will be SSE-connection-scoped).
+//
+// Expected:
+//   - sessionID is the persisted session id.
+//
+// Returns:
+//   - *LoadedSession with Store, Metadata (zero-value today; populated
+//     once the SessionStore exposes a Load shape that returns
+//     metadata), and SwarmEvents populated.
+//   - errStoreNotConfigured when no SessionStore is wired.
+//   - errSessionNotFound when Load yields a nil store.
+//   - The wrapped error from sessionStore.Load on read failure.
+//
+// Side effects:
+//   - Calls engine.SetContextStore(store, sessionID) on success.
+//   - Reads the persisted WAL via SwarmEventPersister.LoadEvents
+//     when supported. WAL read errors are swallowed (matches the
+//     TUI's existing fallback at intent.go:resetAndRestoreSwarmEvents).
+func (o *Orchestrator) LoadSession(_ context.Context, sessionID string) (*LoadedSession, error) {
+	if o.sessionStore == nil {
+		return nil, errStoreNotConfigured
+	}
+	store, err := o.sessionStore.Load(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if store == nil {
+		return nil, errSessionNotFound
+	}
+	if o.engine != nil {
+		o.engine.SetContextStore(store, sessionID)
+	}
+	loaded := &LoadedSession{
+		Store: store,
+	}
+	if ep, ok := o.sessionStore.(SwarmEventPersister); ok {
+		// Mirror intent.go:resetAndRestoreSwarmEvents — a WAL read
+		// error is non-fatal; the surface continues with no events.
+		if events, evErr := ep.LoadEvents(sessionID); evErr == nil {
+			loaded.SwarmEvents = events
+		}
+	}
+	return loaded, nil
+}
+
+// NewSession generates a fresh session id (UUID v4) and installs an
+// empty context store on the engine. Mirrors the TUI's
+// createNewSession (intent.go:createNewSession) so the engine state
+// flips together with the new id.
+//
+// Returns:
+//   - The generated session id.
+//   - nil error today; reserved for future failure modes.
+//
+// Side effects:
+//   - Calls engine.SetContextStore with a new empty store and the
+//     generated id.
+func (o *Orchestrator) NewSession(_ context.Context) (string, error) {
+	sessionID := uuid.New().String()
+	if o.engine != nil {
+		o.engine.SetContextStore(recall.NewEmptyContextStore(""), sessionID)
+	}
+	return sessionID, nil
+}
+
+// SaveTurnEnd persists the session and its swarm events at end of
+// turn. The snapshot is built by the caller — surfaces read engine
+// state on their own goroutine (the TUI's Bubble Tea loop, the CLI's
+// main goroutine) where ownership of concurrent reads is unambiguous;
+// the orchestrator accepts the pre-built TurnSnapshot and performs
+// only the persistence side-effects.
+//
+// Per ADR - Session Orchestrator for Surface Parity §SaveTurnEnd,
+// SaveEvents errors are non-fatal — event loss is tolerable, but a
+// failed Save is not. This mirrors the TUI's existing asymmetry at
+// intent.go:saveSession.
+//
+// Expected:
+//   - sessionID is non-empty.
+//   - snapshot.Store is non-nil; otherwise the call is a no-op.
+//
+// Returns:
+//   - nil on success.
+//   - errStoreNotConfigured when no SessionStore is wired.
+//   - The wrapped error from sessionStore.Save on persistence
+//     failure (this IS fatal for the caller).
+//
+// Side effects:
+//   - Calls sessionStore.Save with the snapshot's store + metadata.
+//   - When the store satisfies SwarmEventPersister AND the snapshot
+//     carries non-empty SwarmEvents, calls SaveEvents (best-effort;
+//     errors logged silently as in the TUI's existing path).
+func (o *Orchestrator) SaveTurnEnd(_ context.Context, sessionID string, snapshot TurnSnapshot) error {
+	if o.sessionStore == nil {
+		return errStoreNotConfigured
+	}
+	if snapshot.Store == nil {
+		return nil
+	}
+	meta := contextMetadataFromSnapshot(snapshot)
+	if err := o.sessionStore.Save(sessionID, snapshot.Store, meta); err != nil {
+		return err
+	}
+	if ep, ok := o.sessionStore.(SwarmEventPersister); ok && len(snapshot.SwarmEvents) > 0 {
+		// Match intent.go:saveSession's intentional swallow — event
+		// persistence is best-effort; a SaveEvents failure must not
+		// fail the caller's turn-end signal.
+		_ = ep.SaveEvents(sessionID, snapshot.SwarmEvents)
+	}
+	return nil
+}
+
+// errors exported for tests and callers that need to discriminate
+// orchestrator-side failures from underlying store / manager errors.
+//
+// ErrAgentNotFound mirrors errAgentNotFound. ErrSessionNotFound mirrors
+// errSessionNotFound. ErrStoreNotConfigured mirrors errStoreNotConfigured.
+var (
+	ErrAgentNotFound      = errAgentNotFound
+	ErrSessionNotFound    = errSessionNotFound
+	ErrStoreNotConfigured = errStoreNotConfigured
+)
+
+// errorsAlias lets the package satisfy errors.Is checks without exposing
+// the underlying sentinels via package-level value redeclaration —
+// keeps the Go vet "tag mismatch" checker quiet on the explicit aliases.
+var _ = errors.Is

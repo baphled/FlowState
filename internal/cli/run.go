@@ -512,6 +512,8 @@ func streamResponse(
 		application.Registry,
 		application.SwarmRegistry,
 		streamer,
+		application.Sessions,
+		application.SessionManager(),
 	)
 	// ScanMentions=true so an `@<swarm-id>` prompt actually dispatches
 	// the swarm. Mirrors the chat-side fix; same parity rationale.
