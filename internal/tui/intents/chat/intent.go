@@ -120,11 +120,21 @@ type BackgroundTaskCompletedMsg struct {
 // event loop. Event bus handlers run on arbitrary goroutines; this message
 // carries the event payload safely into Update() for processing on the main
 // goroutine.
+//
+// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) added the delegation
+// fields. Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) added
+// ToolBefore and ToolResult; ToolError already existed for the notifier path
+// and now also feeds the SwarmEventStore (one bus event, two side-effects).
 type EventBusNotificationMsg struct {
-	ProviderError     *events.ProviderErrorEvent
-	RateLimited       *events.ProviderEvent
-	ToolError         *events.ToolExecuteErrorEvent
-	CategoryModelSwap *engine.CategoryModelSwap
+	ProviderError       *events.ProviderErrorEvent
+	RateLimited         *events.ProviderEvent
+	ToolError           *events.ToolExecuteErrorEvent
+	CategoryModelSwap   *engine.CategoryModelSwap
+	DelegationStarted   *events.DelegationStartedEvent
+	DelegationCompleted *events.DelegationCompletedEvent
+	DelegationFailed    *events.DelegationFailedEvent
+	ToolBefore          *events.ToolEvent
+	ToolResult          *events.ToolExecuteResultEvent
 }
 
 // SwarmEventAppendedMsg signals that a new entry has been written to the
@@ -919,6 +929,72 @@ func (i *Intent) subscribeToFailoverEvents() {
 		default:
 		}
 	})
+
+	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026) §"TUI
+	// consumer migration". The chat intent ends as a bus subscriber
+	// for delegation lifecycle events; the chunk-driven `DelegationInfo`
+	// branch in swarmEventFromChunk is intentionally absent. Events are
+	// filtered by ParentSessionID so siblings' events do not bleed
+	// across activity panes.
+	bus.Subscribe(events.EventDelegationStarted, func(msg any) {
+		evt, ok := msg.(*events.DelegationStartedEvent)
+		if !ok || evt.Data.ParentSessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{DelegationStarted: evt}:
+		default:
+		}
+	})
+	bus.Subscribe(events.EventDelegationCompleted, func(msg any) {
+		evt, ok := msg.(*events.DelegationCompletedEvent)
+		if !ok || evt.Data.ParentSessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{DelegationCompleted: evt}:
+		default:
+		}
+	})
+	bus.Subscribe(events.EventDelegationFailed, func(msg any) {
+		evt, ok := msg.(*events.DelegationFailedEvent)
+		if !ok || evt.Data.ParentSessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{DelegationFailed: evt}:
+		default:
+		}
+	})
+
+	// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"TUI
+	// consumer migration". The chat intent subscribes to the
+	// tool.execute.before and tool.execute.result topics; the
+	// tool.execute.error subscription above continues to feed the
+	// notifier and now ALSO feeds the SwarmEventStore via the same
+	// EventBusNotificationMsg. Both side-effects coexist on one bus
+	// event — the notifier path is preserved per the plan's
+	// non-replacement constraint.
+	bus.Subscribe(events.EventToolExecuteBefore, func(msg any) {
+		evt, ok := msg.(*events.ToolEvent)
+		if !ok || evt.Data.SessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{ToolBefore: evt}:
+		default:
+		}
+	})
+	bus.Subscribe(events.EventToolExecuteResult, func(msg any) {
+		evt, ok := msg.(*events.ToolExecuteResultEvent)
+		if !ok || evt.Data.SessionID != i.sessionID {
+			return
+		}
+		select {
+		case i.eventNotifChan <- EventBusNotificationMsg{ToolResult: evt}:
+		default:
+		}
+	})
 }
 
 // waitForEventBusNotification returns a tea.Cmd that blocks until an event bus
@@ -961,15 +1037,205 @@ func (i *Intent) handleEventBusNotification(msg EventBusNotificationMsg) tea.Cmd
 	case msg.RateLimited != nil:
 		i.notifications.AddProviderRateLimitedNotification(msg.RateLimited)
 	case msg.ToolError != nil:
+		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026)
+		// §"Backwards compatibility": one bus event, two side-effects.
+		// The notifier path is preserved (toast on hard tool failures);
+		// the SwarmEventStore append makes the activity-pane line for
+		// the failed call complete-with-error as a parallel projection.
 		i.notifications.AddToolExecuteErrorNotification(msg.ToolError)
+		i.appendToolResultSwarmEventFromError(msg.ToolError.Data, msg.ToolError.Timestamp())
 	case msg.CategoryModelSwap != nil:
 		swap := msg.CategoryModelSwap
 		i.notifications.AddCategoryModelSwapNotification(
 			swap.Category, swap.Original, swap.Chosen, swap.Reason,
 		)
+	case msg.DelegationStarted != nil:
+		i.appendDelegationSwarmEvent(msg.DelegationStarted.Data, "started", msg.DelegationStarted.Timestamp())
+	case msg.DelegationCompleted != nil:
+		i.appendDelegationSwarmEvent(msg.DelegationCompleted.Data, "completed", msg.DelegationCompleted.Timestamp())
+	case msg.DelegationFailed != nil:
+		i.appendDelegationSwarmEvent(msg.DelegationFailed.Data, "failed", msg.DelegationFailed.Timestamp())
+	case msg.ToolBefore != nil:
+		i.appendToolCallSwarmEvent(msg.ToolBefore.Data, msg.ToolBefore.Timestamp())
+	case msg.ToolResult != nil:
+		i.appendToolResultSwarmEvent(msg.ToolResult.Data, msg.ToolResult.Timestamp())
 	}
 	i.refreshViewport()
 	return i.waitForEventBusNotification()
+}
+
+// appendDelegationSwarmEvent projects an `events.DelegationEventData` payload
+// onto the activity-pane SwarmEvent shape and writes it to the per-intent
+// store. Mirrors the projection the chunk-driven `delegationSwarmEvent`
+// helper used to perform — the migration is which subscriber populates the
+// store, not the SwarmEvent shape downstream surfaces consume.
+//
+// Plans/Delegation Bus Bridge — Engine to SSE (May 2026).
+//
+// Expected:
+//   - data carries the bus payload from the engine.
+//   - status is one of "started", "completed", "failed".
+//   - ts is the bus event's timestamp; preserved on the SwarmEvent so the
+//     activity row's wall-clock matches the engine-side firing order.
+//
+// Side effects:
+//   - Appends to i.swarmStore under the store mutex (concurrent-safe).
+func (i *Intent) appendDelegationSwarmEvent(data events.DelegationEventData, status string, ts time.Time) {
+	if i.swarmStore == nil {
+		return
+	}
+	agentID := data.TargetAgent
+	if agentID == "" {
+		agentID = i.agentID
+	}
+	metadata := map[string]interface{}{
+		"source_agent":      data.SourceAgent,
+		"description":       data.Description,
+		"child_session_id":  data.ChildSessionID,
+		"parent_session_id": data.ParentSessionID,
+	}
+	if data.ModelName != "" {
+		metadata["model_name"] = data.ModelName
+	}
+	if data.ProviderName != "" {
+		metadata["provider_name"] = data.ProviderName
+	}
+	if data.ToolCalls > 0 {
+		metadata["tool_calls"] = data.ToolCalls
+	}
+	if data.LastTool != "" {
+		metadata["last_tool"] = data.LastTool
+	}
+	if data.Error != "" {
+		metadata["error"] = data.Error
+	}
+	i.swarmStore.Append(streaming.SwarmEvent{
+		ID:            ensureEventID(data.ChainID),
+		Type:          streaming.EventDelegation,
+		Status:        status,
+		Timestamp:     ts.UTC(),
+		AgentID:       agentID,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      metadata,
+	})
+}
+
+// appendToolCallSwarmEvent projects an `events.ToolEventData` payload
+// (published on tool.execute.before) onto the activity-pane SwarmEvent
+// shape and writes it to the per-intent store. The SwarmEvent.ID is the
+// FlowState session-scoped InternalToolCallID (P14, failover-stable);
+// metadata.provider_tool_use_id preserves the upstream wire id (P14b)
+// for the audit trail.
+//
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026).
+//
+// Expected:
+//   - data carries the bus payload from the engine.
+//   - ts is the bus event's timestamp.
+//
+// Side effects:
+//   - Appends to i.swarmStore under the store mutex (concurrent-safe).
+func (i *Intent) appendToolCallSwarmEvent(data events.ToolEventData, ts time.Time) {
+	if i.swarmStore == nil {
+		return
+	}
+	metadata := map[string]interface{}{
+		"tool_name": data.ToolName,
+		"is_error":  false,
+	}
+	if data.ToolCallID != "" {
+		metadata["provider_tool_use_id"] = data.ToolCallID
+	}
+	id := data.InternalToolCallID
+	if id == "" {
+		id = data.ToolCallID
+	}
+	i.swarmStore.Append(streaming.SwarmEvent{
+		ID:            ensureEventID(id),
+		Type:          streaming.EventToolCall,
+		Status:        "started",
+		Timestamp:     ts.UTC(),
+		AgentID:       i.agentID,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      metadata,
+	})
+}
+
+// appendToolResultSwarmEvent projects an `events.ToolExecuteResultEventData`
+// payload (published on tool.execute.result, success path) onto the
+// activity-pane SwarmEvent shape. Shares the InternalToolCallID with the
+// originating tool_call event so the P3 coalesce state machine pairs
+// call/result on a single timeline row.
+//
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026).
+//
+// Side effects:
+//   - Appends to i.swarmStore under the store mutex (concurrent-safe).
+func (i *Intent) appendToolResultSwarmEvent(data events.ToolExecuteResultEventData, ts time.Time) {
+	if i.swarmStore == nil {
+		return
+	}
+	metadata := map[string]interface{}{
+		"is_error": false,
+		"content":  data.Result,
+	}
+	if data.ToolCallID != "" {
+		metadata["provider_tool_use_id"] = data.ToolCallID
+	}
+	id := data.InternalToolCallID
+	if id == "" {
+		id = data.ToolCallID
+	}
+	i.swarmStore.Append(streaming.SwarmEvent{
+		ID:            ensureEventID(id),
+		Type:          streaming.EventToolResult,
+		Status:        "completed",
+		Timestamp:     ts.UTC(),
+		AgentID:       i.agentID,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      metadata,
+	})
+}
+
+// appendToolResultSwarmEventFromError projects an
+// `events.ToolExecuteErrorEventData` payload (published on tool.execute.error,
+// failure path) onto the activity-pane SwarmEvent shape. Status is "error"
+// (not "completed"); the error message lives in metadata.error. Fires
+// alongside the notifier path on the same bus event — both side-effects
+// coexist per the plan's backwards-compatibility constraint.
+//
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026).
+//
+// Side effects:
+//   - Appends to i.swarmStore under the store mutex (concurrent-safe).
+func (i *Intent) appendToolResultSwarmEventFromError(data events.ToolExecuteErrorEventData, ts time.Time) {
+	if i.swarmStore == nil {
+		return
+	}
+	errMsg := ""
+	if data.Error != nil {
+		errMsg = data.Error.Error()
+	}
+	metadata := map[string]interface{}{
+		"is_error": true,
+		"error":    errMsg,
+	}
+	if data.ToolCallID != "" {
+		metadata["provider_tool_use_id"] = data.ToolCallID
+	}
+	id := data.InternalToolCallID
+	if id == "" {
+		id = data.ToolCallID
+	}
+	i.swarmStore.Append(streaming.SwarmEvent{
+		ID:            ensureEventID(id),
+		Type:          streaming.EventToolResult,
+		Status:        "error",
+		Timestamp:     ts.UTC(),
+		AgentID:       i.agentID,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      metadata,
+	})
 }
 
 // Update processes a Bubble Tea message and returns any command to execute.
@@ -2480,15 +2746,19 @@ func (i *Intent) recordSwarmEvent(msg StreamChunkMsg) tea.Cmd {
 // Side effects:
 //   - None.
 func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.SwarmEvent, bool) {
-	if msg.DelegationInfo != nil {
-		return delegationSwarmEvent(msg, fallbackAgent), true
-	}
-	if msg.ToolCallName != "" || msg.ToolStatus != "" {
-		return toolCallSwarmEvent(msg, fallbackAgent), true
-	}
-	if isToolResultChunk(msg) {
-		return toolResultSwarmEvent(msg, fallbackAgent), true
-	}
+	// Plans/Delegation Bus Bridge — Engine to SSE (May 2026): the
+	// chunk-side DelegationInfo branch is intentionally absent. The
+	// engine publishes delegation.{started,completed,failed} on the
+	// engine event bus (see engine/delegation.go::emitDelegationEvent)
+	// and the chat intent subscribes via subscribeToFailoverEvents.
+	// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026): the
+	// chunk-side tool-call/tool-result branches are also absent. The
+	// engine publishes tool.execute.{before,result,error} on the bus
+	// (see engine.go::publishToolBeforeEvent / publishToolAfterEvent)
+	// and the chat intent subscribes there too. The chunk-driven
+	// pipeline is preserved for transcript text and accumulator
+	// persistence (it is the canonical surface for those needs) but
+	// no longer populates the activity-pane SwarmEventStore.
 	switch msg.EventType {
 	case streaming.EventTypePlanArtifact:
 		return planOrReviewSwarmEvent(streaming.EventPlan, msg, fallbackAgent), true
@@ -2496,144 +2766,6 @@ func swarmEventFromChunk(msg StreamChunkMsg, fallbackAgent string) (streaming.Sw
 		return planOrReviewSwarmEvent(streaming.EventReview, msg, fallbackAgent), true
 	}
 	return streaming.SwarmEvent{}, false
-}
-
-// delegationSwarmEvent constructs an EventDelegation SwarmEvent from a chunk
-// carrying DelegationInfo.
-//
-// Expected:
-//   - msg.DelegationInfo is non-nil.
-//   - fallbackAgent is the chat intent's agent ID used when DelegationInfo
-//     carries no TargetAgent.
-//
-// Returns:
-//   - A populated SwarmEvent with EventDelegation type and the DelegationInfo
-//     ChainID as its ID (generated UUID when ChainID is empty).
-//
-// Side effects:
-//   - None.
-func delegationSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
-	agentID := msg.DelegationInfo.TargetAgent
-	if agentID == "" {
-		agentID = fallbackAgent
-	}
-	return streaming.SwarmEvent{
-		ID:            ensureEventID(msg.DelegationInfo.ChainID),
-		Type:          streaming.EventDelegation,
-		Status:        msg.DelegationInfo.Status,
-		Timestamp:     time.Now().UTC(),
-		AgentID:       agentID,
-		SchemaVersion: streaming.CurrentSchemaVersion,
-		Metadata: map[string]interface{}{
-			"source_agent": msg.DelegationInfo.SourceAgent,
-			"description":  msg.DelegationInfo.Description,
-		},
-	}
-}
-
-// toolCallSwarmEvent constructs an EventToolCall SwarmEvent from a chunk
-// carrying tool-call start/status metadata.
-//
-// Expected:
-//   - msg carries a non-empty ToolCallName or ToolStatus.
-//   - fallbackAgent is the chat intent's agent ID (used as AgentID).
-//
-// Returns:
-//   - A SwarmEvent with EventToolCall type. ID is the upstream tool-use ID
-//     when the provider surfaces one (msg.ToolCallID), otherwise a generated
-//     UUID.
-//
-// Side effects:
-//   - None.
-func toolCallSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
-	status := msg.ToolStatus
-	if status == "" {
-		status = "started"
-	}
-	metadata := map[string]interface{}{
-		"tool_name": msg.ToolCallName,
-		"is_error":  msg.ToolIsError,
-	}
-	// Preserve the native provider-scoped id as metadata for the Ctrl+E
-	// details modal's audit trail, even when the SwarmEvent.ID itself is
-	// the FlowState-internal id (P14b). Empty ToolCallID is omitted so
-	// persisted events stay clean.
-	if msg.ToolCallID != "" {
-		metadata["provider_tool_use_id"] = msg.ToolCallID
-	}
-	return streaming.SwarmEvent{
-		ID:            ensureEventID(preferredCorrelationID(msg)),
-		Type:          streaming.EventToolCall,
-		Status:        status,
-		Timestamp:     time.Now().UTC(),
-		AgentID:       fallbackAgent,
-		SchemaVersion: streaming.CurrentSchemaVersion,
-		Metadata:      metadata,
-	}
-}
-
-// isToolResultChunk reports whether a chunk carries a tool-result payload.
-//
-// A chunk is a tool_result when it either carries the explicit "tool_result"
-// EventType (emitted by the engine after tool execution) or when the intent
-// layer observes a ToolCallID plus ToolResult body without any tool-call
-// start/status fields.
-//
-// Expected:
-//   - msg is the chunk under consideration.
-//
-// Returns:
-//   - true when the chunk should map to EventToolResult.
-//
-// Side effects:
-//   - None.
-func isToolResultChunk(msg StreamChunkMsg) bool {
-	if msg.EventType == "tool_result" {
-		return true
-	}
-	return msg.ToolCallID != "" && msg.ToolResult != ""
-}
-
-// toolResultSwarmEvent constructs an EventToolResult SwarmEvent from a chunk
-// that carries the output (or error) of a completed tool call.
-//
-// The ID is the originating tool_call's ID (msg.ToolCallID) so the P3 coalesce
-// state machine can pair call and result into a single pane line.
-//
-// Expected:
-//   - msg carries a tool_result payload (see isToolResultChunk).
-//   - fallbackAgent is the chat intent's agent ID (used as AgentID).
-//
-// Returns:
-//   - A SwarmEvent with EventToolResult type. Status is "error" when
-//     ToolIsError is true, otherwise "completed".
-//
-// Side effects:
-//   - None.
-func toolResultSwarmEvent(msg StreamChunkMsg, fallbackAgent string) streaming.SwarmEvent {
-	status := "completed"
-	if msg.ToolIsError {
-		status = "error"
-	}
-	metadata := map[string]interface{}{
-		"content":  msg.ToolResult,
-		"is_error": msg.ToolIsError,
-	}
-	// Preserve the native provider-scoped id alongside the internal one
-	// (P14b audit trail). The SwarmEvent.ID itself is the internal id so
-	// coalesce pairs across a provider failover.
-	if msg.ToolCallID != "" {
-		metadata["provider_tool_use_id"] = msg.ToolCallID
-	}
-	return streaming.SwarmEvent{
-		ID:            ensureEventID(preferredCorrelationID(msg)),
-		Type:          streaming.EventToolResult,
-		Status:        status,
-		Timestamp:     time.Now().UTC(),
-		AgentID:       fallbackAgent,
-		SchemaVersion: streaming.CurrentSchemaVersion,
-		Metadata:      metadata,
-	}
 }
 
 // planOrReviewSwarmEvent constructs a plan or review SwarmEvent. Both share
@@ -2685,33 +2817,6 @@ func ensureEventID(id string) string {
 		return id
 	}
 	return uuid.NewString()
-}
-
-// preferredCorrelationID chooses the identifier to seed a tool-call or
-// tool-result SwarmEvent.ID with. It prefers the FlowState-internal id
-// stamped by the engine (P14a) so coalesce pairs a tool_call on provider
-// A with its tool_result on provider B even when the providers mint
-// disjoint native tool-use ids. The native ToolCallID is the fallback —
-// used for pre-P14 chunk fixtures in tests and as a defensive path when
-// the engine has not yet wired the correlator on a given code path.
-//
-// An empty return value is tolerated; ensureEventID mints a UUID when
-// neither id was surfaced on the chunk (for example a provider that
-// omits ids entirely, which P2 T3's invariant already covers).
-//
-// Expected:
-//   - msg is any StreamChunkMsg whose ID fields may be empty.
-//
-// Returns:
-//   - msg.InternalToolCallID when non-empty; otherwise msg.ToolCallID.
-//
-// Side effects:
-//   - None.
-func preferredCorrelationID(msg StreamChunkMsg) string {
-	if msg.InternalToolCallID != "" {
-		return msg.InternalToolCallID
-	}
-	return msg.ToolCallID
 }
 
 // streamingEventMeta returns the display title and notification level for a streaming event type.
