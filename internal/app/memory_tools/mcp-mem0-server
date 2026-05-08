@@ -9,7 +9,7 @@
 # Environment variables consumed by the JS server itself:
 #   MEM0_QDRANT_URL       Qdrant server URL      (default: http://localhost:6333)
 #   MEM0_OLLAMA_URL       Ollama server URL      (default: http://localhost:11434)
-#   MEM0_COLLECTION       Qdrant collection name (default: opencode_memory)
+#   MEM0_COLLECTION       Qdrant collection name (default: flowstate-recall)
 #   MEM0_EMBEDDING_MODEL  Embedding model        (default: nomic-embed-text)
 #   MEM0_ENABLED          Set to 'false' to use the in-memory backend
 set -euo pipefail
