@@ -29,6 +29,7 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 	"github.com/baphled/flowstate/internal/tracer"
 )
 
@@ -193,6 +194,17 @@ type Engine struct {
 	// Shutdown can return only after the ticker is fully stopped.
 	sweeperStop sweeperStopFunc
 	sweeperDone chan struct{}
+
+	// toolOutputCleanupStop signals the Slice 3 spill-file cleanup
+	// goroutine to exit. Closed exactly once by Shutdown. Nil when
+	// the scheduler was disabled (cfg.ToolOutputRetention < 0) so
+	// the same code path handles the disabled case as a no-op.
+	// A separate field rather than a slice/[]sweeperStopFunc keeps
+	// the close-once dance grep-able and makes the disable-guard
+	// site obvious. Refactoring both sweeper-stops into a
+	// []sweeperStopFunc is a clean-up for a follow-on, not this
+	// slice — see the parent plan's "Open Risks" entry.
+	toolOutputCleanupStop sweeperStopFunc
 
 	// Item 3 removed the splitter-scoped buildWindowMu. Per-build
 	// engine-owned state (lastContextResult, lastCompactionSummary)
@@ -425,6 +437,35 @@ type Config struct {
 	// results still beat no results, and refusing a query breaks user
 	// workflows. Nil disables the diagnostic.
 	SessionEmbeddingLookup func(sessionID string) (string, bool)
+
+	// ToolOutputDir overrides the on-disk root the cleanup scheduler
+	// sweeps. Empty falls back to <UserCacheDir>/flowstate/tool-output
+	// — the same default the truncate package writes spill files to.
+	// Tests pin a tmp dir so the scheduler does not stomp the user's
+	// real cache.
+	ToolOutputDir string
+
+	// ToolOutputRetention is the maximum age a spill file may reach
+	// before the engine-launched cleanup goroutine unlinks it. Zero
+	// inherits truncate.DefaultCleanupRetention (7 days). Strictly
+	// negative DISABLES the scheduler — the documented escape hatch
+	// for tests and headless workloads that do not want a background
+	// goroutine launched at engine.New time.
+	ToolOutputRetention time.Duration
+
+	// ToolOutputCleanupTick is the interval the cleanup goroutine
+	// sleeps between sweeps. Zero inherits truncate.DefaultCleanupTick
+	// (1 hour). Tests pass small intervals (10-50ms) to drive
+	// deterministic sweeps without waiting an hour.
+	ToolOutputCleanupTick time.Duration
+
+	// ToolOutputCleaner is the optional injection seam that lets
+	// tests substitute the real truncate.Cleanup function with a
+	// counter-stub. Nil falls back to truncate.Cleanup. Production
+	// callers always leave this nil — only the engine spec uses it
+	// to assert on launch and shutdown semantics without touching
+	// the real cache directory.
+	ToolOutputCleaner func(root string, retention time.Duration) error
 }
 
 // New creates a new Engine from the given configuration.
@@ -464,6 +505,7 @@ func New(cfg Config) *Engine {
 	propagateSystemPromptBudget(cfg)
 	bus.Subscribe(events.EventSessionEnded, eng.handleSessionEnded) // C1 eviction
 	maybeStartIdleSweeper(eng, cfg)                                 // Item 4 sweeper
+	maybeStartToolOutputCleanup(eng, cfg)                           // Slice 3 cleanup
 	return eng
 }
 
@@ -719,6 +761,71 @@ func maybeStartIdleSweeper(eng *Engine, cfg Config) {
 	eng.startIdleSweeper(ttl)
 }
 
+// maybeStartToolOutputCleanup launches the Slice 3 background
+// goroutine that prunes spill files older than the configured
+// retention. Mirrors maybeStartIdleSweeper's enable-guard layout so
+// both sweepers read the same shape — the disable-guard site is
+// grep-able and the constructor stays under the funlen gate.
+//
+// Disabling: cfg.ToolOutputRetention < 0 short-circuits with no
+// goroutine launched. Tests and headless workloads use this escape
+// hatch to keep engine.New side-effect-free.
+//
+// Defaults: zero retention falls back to truncate.DefaultCleanupRetention
+// (7 days); zero tick falls back to truncate.DefaultCleanupTick (1 hour).
+//
+// Expected:
+//   - eng is a non-nil, freshly constructed Engine.
+//   - cfg is the same Config used to construct eng so the disable
+//     guard's view of ToolOutputRetention matches New's.
+//
+// Side effects:
+//   - Spawns one goroutine + writes eng.toolOutputCleanupStop when
+//     retention is non-negative; otherwise no-op.
+func maybeStartToolOutputCleanup(eng *Engine, cfg Config) {
+	if cfg.ToolOutputRetention < 0 {
+		return
+	}
+	retention := cfg.ToolOutputRetention
+	if retention == 0 {
+		retention = truncate.DefaultCleanupRetention
+	}
+	tick := cfg.ToolOutputCleanupTick
+	if tick == 0 {
+		tick = truncate.DefaultCleanupTick
+	}
+
+	cleaner := cfg.ToolOutputCleaner
+	if cleaner == nil {
+		cleaner = truncate.Cleanup
+	}
+
+	// Synchronous initial sweep so the launch effect is observable
+	// immediately. The goroutine then handles ongoing ticks.
+	if err := cleaner(cfg.ToolOutputDir, retention); err != nil {
+		slog.Debug("engine: initial tool-output cleanup error", "err", err)
+	}
+
+	stop := make(chan struct{})
+	var once sync.Once
+	eng.toolOutputCleanupStop = func() { once.Do(func() { close(stop) }) }
+
+	go func() {
+		ticker := time.NewTicker(tick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if err := cleaner(cfg.ToolOutputDir, retention); err != nil {
+					slog.Debug("engine: tool-output cleanup error", "err", err)
+				}
+			}
+		}
+	}()
+}
+
 // sessionSplitterEntry pairs a cached HotColdSplitter with the last
 // time ensureSessionSplitter touched it. The idle sweeper uses the
 // timestamp to decide whether an entry has gone stale under
@@ -972,6 +1079,14 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 	sweeperDone := e.sweeperDone
 	e.sweeperStop = nil
 	e.sweeperDone = nil
+	// Slice 3 cleanup-stop snapshots alongside the existing sweeper
+	// so a second Shutdown finds the field cleared and skips the
+	// close. The cleanup goroutine has no done-channel because its
+	// Cleanup callback is bounded (filepath.WalkDir over a small
+	// directory + per-file unlinks); a deadline-bounded join would
+	// be over-engineering.
+	stopToolOutputCleanup := e.toolOutputCleanupStop
+	e.toolOutputCleanupStop = nil
 	e.splitterMu.Unlock()
 	if stopSweeper != nil {
 		stopSweeper()
@@ -982,6 +1097,9 @@ func (e *Engine) Shutdown(ctx context.Context) error {
 				return ctx.Err()
 			}
 		}
+	}
+	if stopToolOutputCleanup != nil {
+		stopToolOutputCleanup()
 	}
 
 	// Step 1+2: snapshot, clear, stop.

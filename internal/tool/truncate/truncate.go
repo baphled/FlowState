@@ -1,13 +1,17 @@
 package truncate
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -291,3 +295,202 @@ var errOverflowFailed = errors.New("truncate: failed to write overflow spill")
 
 // OverflowError returns the sentinel for spill-write failures.
 func OverflowError() error { return errOverflowFailed }
+
+// Default scheduler knobs for the spill-file cleanup goroutine.
+// Match OpenCode's tool/truncation.ts:14-15 (HOUR_MS / RETENTION_MS).
+const (
+	// DefaultCleanupTick is the interval the engine-launched cleanup
+	// goroutine fires at when no override is configured.
+	DefaultCleanupTick = 1 * time.Hour
+	// DefaultCleanupRetention is the maximum age a spill file may
+	// reach before Cleanup unlinks it. Matches OpenCode's 7-day cap.
+	DefaultCleanupRetention = 7 * 24 * time.Hour
+	// SafeWriteWindow names the buffer below which a file is treated
+	// as potentially mid-write. Cleanup never deletes files inside this
+	// window even when retention has elapsed, defending against
+	// clock skew and concurrent spill writes that race the sweep.
+	// Lower-bound is unexported because callers must not be able to
+	// shrink it: shrinking risks pruning files mid-flush.
+	safeWriteWindow = 5 * time.Second
+)
+
+// Cleanup walks root and unlinks any regular file whose mtime is
+// older than time.Now().Add(-retention). The walk is best-effort: a
+// permission error or other per-file failure is logged at DEBUG and
+// the walk proceeds. Per-file unlink failures do not abort the sweep.
+//
+// Empty session subdirectories under root are deliberately preserved.
+// They cost a few inodes apiece, and re-creating them on every spill
+// is a wasted syscall — the per-session directory is part of the
+// path contract documented at overflowDir.
+//
+// Symlink hygiene: removals go through os.Root.Remove(relPath), which
+// refuses to traverse outside the opened root. This forecloses
+// symlink-TOCTOU attacks even though the spill directory is FlowState-
+// owned in practice (gosec G122 satisfied by API choice).
+//
+// Behaviour contract:
+//
+//   - root does not exist            → returns nil (no-op).
+//   - retention <= 0                 → still applies the safeWriteWindow
+//     guard, so files newer than 5 seconds survive even at zero
+//     retention. This makes Cleanup safe to call alongside an active
+//     spill write without a separate "tool active" interlock.
+//   - per-file Stat / Remove fails  → logged, skipped, walk continues.
+//   - WalkDir returns first IO err  → returned to the caller (the
+//     scheduler treats a non-nil error as a transient sweep failure
+//     and retries on the next tick).
+func Cleanup(root string, retention time.Duration) error {
+	if root == "" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return err
+		}
+		root = filepath.Join(cache, "flowstate", "tool-output")
+	}
+	rootHandle, err := os.OpenRoot(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer func() { _ = rootHandle.Close() }()
+
+	now := time.Now()
+	cutoff := now.Add(-retention)
+	safeFloor := now.Add(-safeWriteWindow)
+
+	visitor := cleanupVisitor{
+		root:       root,
+		rootHandle: rootHandle,
+		cutoff:     cutoff,
+		safeFloor:  safeFloor,
+	}
+	walkErr := filepath.WalkDir(root, visitor.visit)
+	if walkErr != nil && !errors.Is(walkErr, fs.ErrNotExist) {
+		return walkErr
+	}
+	return nil
+}
+
+// cleanupVisitor bundles the per-walk state shared across every
+// filepath.WalkDir callback invocation. Extracted so the visit method
+// stays under the revive argument-limit gate while keeping the walker
+// callback under the gocognit complexity ceiling.
+type cleanupVisitor struct {
+	root       string
+	rootHandle *os.Root
+	cutoff     time.Time
+	safeFloor  time.Time
+}
+
+// visit handles one filepath.WalkDir entry. Returns SkipAll only when
+// the root entirely disappears mid-walk; every other error path logs
+// at DEBUG and continues so a single bad file cannot abort the sweep.
+func (c cleanupVisitor) visit(path string, d fs.DirEntry, fnErr error) error {
+	if fnErr != nil {
+		if errors.Is(fnErr, fs.ErrNotExist) {
+			return filepath.SkipAll
+		}
+		slog.Debug("truncate.Cleanup: walk error", "path", path, "err", fnErr)
+		return nil
+	}
+	if d.IsDir() {
+		return nil
+	}
+	info, statErr := d.Info()
+	if statErr != nil {
+		slog.Debug("truncate.Cleanup: stat error", "path", path, "err", statErr)
+		return nil
+	}
+	if !shouldRemove(info, c.cutoff, c.safeFloor) {
+		return nil
+	}
+	rel, relErr := filepath.Rel(c.root, path)
+	if relErr != nil {
+		slog.Debug("truncate.Cleanup: rel error", "path", path, "err", relErr)
+		return nil
+	}
+	if removeErr := c.rootHandle.Remove(rel); removeErr != nil {
+		slog.Debug("truncate.Cleanup: remove error", "path", path, "err", removeErr)
+	}
+	return nil
+}
+
+// shouldRemove decides whether a single entry is eligible for
+// pruning. Non-regular files (symlinks, sockets, devices), files
+// inside the safeWriteWindow, and files newer than the cutoff all
+// survive. The spill writer only creates regular files; anything
+// else in the tree is foreign and Cleanup must not chase it.
+func shouldRemove(info fs.FileInfo, cutoff, safeFloor time.Time) bool {
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	mtime := info.ModTime()
+	if mtime.After(safeFloor) {
+		return false
+	}
+	return mtime.Before(cutoff)
+}
+
+// StartCleanupScheduler launches a background goroutine that calls
+// Cleanup once at start and then on every tick of the supplied
+// interval. The goroutine exits when ctx is cancelled OR the returned
+// stop func is invoked. Stop is idempotent (sync.Once-guarded
+// channel close, mirroring engine.go's sweeperStopFunc pattern).
+//
+// Disabling: when retention is strictly negative the scheduler does
+// not start. Stop is a no-op in that case. Tests and headless
+// workloads use this escape hatch to keep the engine constructor
+// total-cost zero.
+//
+// Tick floor: a non-positive tick falls back to DefaultCleanupTick
+// rather than spinning. Production callers should pass
+// DefaultCleanupTick; tests pass small intervals (10-50ms) to drive
+// deterministic sweeps without waiting an hour.
+//
+// Side effects:
+//   - One goroutine spawned per call.
+//   - One Cleanup invocation synchronously before the goroutine
+//     enters its select loop, so the first sweep is observable
+//     immediately and the spec does not have to wait for tick #1.
+func StartCleanupScheduler(ctx context.Context, root string, retention, tick time.Duration) func() {
+	if retention < 0 {
+		return func() {}
+	}
+	if tick <= 0 {
+		tick = DefaultCleanupTick
+	}
+
+	// First sweep happens synchronously so callers and specs observe
+	// the cleanup effect immediately on launch — matching OpenCode's
+	// scheduler.register({ run: cleanup }) shape where the runner
+	// invokes the callback once at registration time.
+	if err := Cleanup(root, retention); err != nil {
+		slog.Debug("truncate.StartCleanupScheduler: initial sweep error", "err", err)
+	}
+
+	stop := make(chan struct{})
+	var once sync.Once
+	stopFn := func() { once.Do(func() { close(stop) }) }
+
+	go func() {
+		ticker := time.NewTicker(tick)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := Cleanup(root, retention); err != nil {
+					slog.Debug("truncate.StartCleanupScheduler: sweep error", "err", err)
+				}
+			}
+		}
+	}()
+
+	return stopFn
+}
