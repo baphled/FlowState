@@ -36,6 +36,7 @@ import {
 import {
   DEFAULT_AGENT_ID,
   TOOL_ACTIVITY_DISMISS_MS,
+  __resetSessionStreams,
   composeToolActivityMessage,
   describeToolName,
   useChatStore,
@@ -151,6 +152,9 @@ vi.mock('../api', () => ({
 afterEach(() => {
   const { dismissAll } = useToast()
   dismissAll()
+  // Per-session SSE singletons (Slice B) — module-scoped Map persists
+  // between tests; reset so a stream from test A does not leak into B.
+  __resetSessionStreams()
 })
 
 describe('chatStore - restoreStateFromBackend', () => {
@@ -4452,5 +4456,96 @@ describe('chatStore - per-session streaming state (Slice A)', () => {
     expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith('session-B', 'hello on B')
     // Session A's slot remains untouched by session B's send.
     expect(store.streamingFor('session-A').isLoading).toBe(true)
+  })
+})
+
+// Per-Session SSE Singleton (Slice B — Streaming Coherence May 2026)
+//
+// Pre-slice a single module-scoped EventSource backed every session.
+// Switching from A to B called sessionStream.disconnect() inside
+// loadSessionMessages, which closed A's stream even though A's turn
+// was still in flight server-side — visible as A going dark while
+// the user opened B. Slice B introduces a Map<sessionId, SessionStream>
+// so each session keeps its own EventSource for as long as the session
+// is alive.
+describe('chatStore - per-session SSE singleton (Slice B)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+    FakeEventSource.instances.length = 0
+  })
+
+  it('does not disconnect the prior session stream on session switch', async () => {
+    // Reproduces the Slice B keystone: a stream open for session-A
+    // must survive a switch to session-B. Pre-slice loadSessionMessages
+    // called sessionStream.disconnect() unconditionally; that path is
+    // gone.
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-A'
+
+    // Hold sendMessage on session-A indefinitely so the SSE stays open.
+    let resolveSendA: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () => new Promise<any>((resolve) => { resolveSendA = resolve }),
+    )
+    const sendA = store.sendMessage('long task on A')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(FakeEventSource.instances.length).toBe(1)
+    const esA = FakeEventSource.instances[0]
+    expect(esA.closed).toBe(false)
+
+    // User switches to session-B. A's stream MUST stay open.
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([])
+    await store.loadSessionMessages('session-B')
+    expect(esA.closed).toBe(false)
+
+    // Tidy
+    resolveSendA({ id: 'session-A', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+    await sendA
+  })
+
+  it('opens an independent EventSource for each session', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+
+    // Send on session-A (held in flight).
+    store.currentSessionId = 'session-A'
+    let resolveSendA: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () => new Promise<any>((resolve) => { resolveSendA = resolve }),
+    )
+    const sendA = store.sendMessage('on A')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Switch to session-B (without disconnect).
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([])
+    await store.loadSessionMessages('session-B')
+
+    // Send on session-B.
+    let resolveSendB: (v: any) => void = () => {}
+    vi.mocked(sendSessionMessage).mockImplementationOnce(
+      () => new Promise<any>((resolve) => { resolveSendB = resolve }),
+    )
+    const sendB = store.sendMessage('on B')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Two distinct EventSources — one per session — both open.
+    expect(FakeEventSource.instances.length).toBe(2)
+    expect(FakeEventSource.instances[0].closed).toBe(false)
+    expect(FakeEventSource.instances[1].closed).toBe(false)
+    // URL identifies the session each stream subscribed to.
+    expect(FakeEventSource.instances[0].url).toContain('session-A')
+    expect(FakeEventSource.instances[1].url).toContain('session-B')
+
+    // Tidy
+    resolveSendA({ id: 'session-A', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+    resolveSendB({ id: 'session-B', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+    await Promise.all([sendA, sendB])
   })
 })
