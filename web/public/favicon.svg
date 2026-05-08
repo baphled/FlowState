@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FlowState favicon — "flow ribbon traversing nodes" motif.
+
+  Encodes the two halves of the brand:
+    flow  — curved, directional ribbon with arrowhead
+    state — two distinct nodes (start filled, end outlined) representing
+            engine bus / state-machine transitions
+
+  Design rules:
+    - Single colour via currentColor so the SVG inherits the consumer's
+      text colour (browser tab ink, OS dark mode, theme accent).
+    - All geometry on a 32 unit grid; readable at 16px.
+    - No raster, no gradients, no text — scales cleanly to any size.
+
+  Theming:
+    Most browsers render favicons against their chrome (not the page),
+    so prefers-color-scheme inside the SVG handles light/dark UAs.
+    Apps that embed this asset directly inherit currentColor.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="FlowState">
+  <style>
+    :root { color: #7aa2f7; }
+    @media (prefers-color-scheme: light) {
+      :root { color: #3d6fd4; }
+    }
+    .stroke { stroke: currentColor; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .fill { fill: currentColor; }
+  </style>
+
+  <!-- Flow ribbon: bezier from lower-left node to upper-right node. -->
+  <path class="stroke" stroke-width="2.4" d="M 8 22 C 12 22, 14 10, 24 10" />
+
+  <!-- Arrowhead at the head of the ribbon. -->
+  <path class="stroke" stroke-width="2.4" d="M 21 7.5 L 24 10 L 21.5 13" />
+
+  <!-- Start state: filled node. -->
+  <circle class="fill" cx="8" cy="22" r="3.2" />
+
+  <!-- End state: outlined node, drawn over the ribbon end so the
+       ribbon visually "enters" the node. -->
+  <circle cx="24" cy="10" r="3.2" fill="none" stroke="currentColor" stroke-width="2.2" />
+</svg>

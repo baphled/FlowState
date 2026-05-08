@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FlowState logo — 256-grid version of the favicon mark with optional
+  "FlowState" wordmark beneath. Same "flow ribbon traversing nodes"
+  motif, scaled and refined for marketing / app-shell display.
+
+  Use this asset where the mark needs to read at >=64px, e.g. an
+  about page, README, or splash. For browser-tab use, prefer
+  /favicon.svg (smaller, simpler).
+
+  Theming:
+    All colour comes from currentColor. Set the CSS color property
+    on a parent element to theme the mark; e.g. assign the accent
+    CSS custom property. The wordmark uses the same colour so the
+    entire lockup tracks one variable.
+
+  ViewBox is 256x320 to accommodate the wordmark; the mark itself
+  occupies the upper 256x256 region so consumers that only want the
+  glyph can use viewBox="0 0 256 256".
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 320" width="256" height="320" role="img" aria-label="FlowState">
+  <title>FlowState</title>
+
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Flow ribbon: bezier from start node to end node, mirrored
+         from the favicon path scaled to 256. -->
+    <path stroke-width="18" d="M 64 176 C 96 176, 112 80, 192 80" />
+
+    <!-- Arrowhead at the head of the ribbon. -->
+    <path stroke-width="18" d="M 168 60 L 192 80 L 172 104" />
+
+    <!-- End state: outlined node. -->
+    <circle cx="192" cy="80" r="24" stroke-width="16" />
+  </g>
+
+  <!-- Start state: filled node. Drawn after the strokes so the ribbon
+       appears to emerge from it. -->
+  <circle cx="64" cy="176" r="24" fill="currentColor" />
+
+  <!-- Wordmark. Inter-style sans, weight 600, tracked +40 to match
+       the splash treatment in index.html. -->
+  <text
+    x="128"
+    y="270"
+    text-anchor="middle"
+    fill="currentColor"
+    font-family="Inter, system-ui, -apple-system, sans-serif"
+    font-size="40"
+    font-weight="600"
+    letter-spacing="2"
+  >FlowState</text>
+</svg>
