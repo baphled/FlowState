@@ -544,7 +544,7 @@ func streamResponse(
 // Side effects:
 //   - Saves session to the store if available, writes warning to stderr on failure.
 func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
-	if application.Sessions == nil {
+	if application.Sessions == nil || application.Engine == nil {
 		return
 	}
 	store := application.Engine.ContextStore()
@@ -556,12 +556,35 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 	for i := range loadedSkills {
 		skillNames = append(skillNames, loadedSkills[i].Name)
 	}
-	metadata := ctxstore.SessionMetadata{
+	// Per ADR - Session Orchestrator for Surface Parity §"SaveTurnEnd",
+	// CLI end-of-turn save fans out via the orchestrator so the
+	// metadata + (optional) swarm-event persistence converge with the
+	// TUI's saveSession path. Pre-lift the CLI built ctxstore.SessionMetadata
+	// inline and called application.Sessions.Save directly; the TUI did
+	// the same plus a SwarmEventPersister-capability check. Lifting
+	// collapses the two compositions onto Orchestrator.SaveTurnEnd —
+	// closes Audit Finding 4.
+	orch := application.Orchestrator
+	if orch == nil {
+		// Defensive fallback for App constructions that omit the
+		// orchestrator (test fixtures). Mirrors the pre-lift inline path.
+		metadata := ctxstore.SessionMetadata{
+			AgentID:      application.Engine.Manifest().ID,
+			SystemPrompt: application.Engine.BuildSystemPrompt(),
+			LoadedSkills: skillNames,
+		}
+		if err := application.Sessions.Save(sessionID, store, metadata); err != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", err)
+		}
+		return
+	}
+	snapshot := orchestrator.TurnSnapshot{
+		Store:        store,
 		AgentID:      application.Engine.Manifest().ID,
 		SystemPrompt: application.Engine.BuildSystemPrompt(),
 		LoadedSkills: skillNames,
 	}
-	if err := application.Sessions.Save(sessionID, store, metadata); err != nil {
+	if err := orch.SaveTurnEnd(cmd.Context(), sessionID, snapshot); err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", err)
 	}
 }

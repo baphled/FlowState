@@ -476,23 +476,42 @@ func getConsumerResponse(consumer streaming.StreamConsumer) string {
 // Side effects:
 //   - Saves session to the store if available, writes warning to stderr on failure.
 func saveSessionIfAvailable(cmd *cobra.Command, application *app.App, sessionID string) {
-	if application.Sessions != nil {
-		store := application.Engine.ContextStore()
-		if store != nil {
-			loadedSkills := application.Engine.LoadedSkills()
-			skillNames := make([]string, 0, len(loadedSkills))
-			for i := range loadedSkills {
-				skillNames = append(skillNames, loadedSkills[i].Name)
-			}
-			metadata := ctxstore.SessionMetadata{
-				AgentID:      application.Engine.Manifest().ID,
-				SystemPrompt: application.Engine.BuildSystemPrompt(),
-				LoadedSkills: skillNames,
-			}
-			if saveErr := application.Sessions.Save(sessionID, store, metadata); saveErr != nil {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
-			}
+	if application.Sessions == nil || application.Engine == nil {
+		return
+	}
+	store := application.Engine.ContextStore()
+	if store == nil {
+		return
+	}
+	loadedSkills := application.Engine.LoadedSkills()
+	skillNames := make([]string, 0, len(loadedSkills))
+	for i := range loadedSkills {
+		skillNames = append(skillNames, loadedSkills[i].Name)
+	}
+	// Per ADR - Session Orchestrator for Surface Parity §"SaveTurnEnd",
+	// the chat-message end-of-turn save uses the orchestrator so the
+	// path mirrors run.go::saveSession and the TUI's saveSession.
+	// Closes Audit Finding 4.
+	orch := application.Orchestrator
+	if orch == nil {
+		metadata := ctxstore.SessionMetadata{
+			AgentID:      application.Engine.Manifest().ID,
+			SystemPrompt: application.Engine.BuildSystemPrompt(),
+			LoadedSkills: skillNames,
 		}
+		if saveErr := application.Sessions.Save(sessionID, store, metadata); saveErr != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
+		}
+		return
+	}
+	snapshot := orchestrator.TurnSnapshot{
+		Store:        store,
+		AgentID:      application.Engine.Manifest().ID,
+		SystemPrompt: application.Engine.BuildSystemPrompt(),
+		LoadedSkills: skillNames,
+	}
+	if saveErr := orch.SaveTurnEnd(cmd.Context(), sessionID, snapshot); saveErr != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", saveErr)
 	}
 }
 

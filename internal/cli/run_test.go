@@ -12,8 +12,10 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
+	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/swarm"
@@ -594,6 +596,62 @@ var _ = Describe("run command", func() {
 			"persisted session must carry the user prompt that was in flight at the moment of cancellation")
 	})
 })
+
+// SaveTurnEnd parity-fan-out (post-C4) — pin that the
+// orchestrator-routed end-of-turn save persists the same shape the
+// inline fallback would. The full round-trip via runPrompt is exercised
+// elsewhere in this file ("persists the parent session on context
+// cancellation mid-stream" and the JSON-output specs around line 253);
+// here we exercise the SaveTurnEnd primitive directly so the
+// projection from TurnSnapshot onto contextpkg.SessionMetadata is
+// pinned at the orchestrator seam.
+var _ = Describe("CLI saveSession metadata parity (C4 — Session Orchestrator Lift)", func() {
+	It("Orchestrator.SaveTurnEnd projects TurnSnapshot fields onto SessionMetadata identically to the inline path", func() {
+		dir := filepath.Join(GinkgoT().TempDir(), "save-turn-end")
+		Expect(os.MkdirAll(dir, 0o750)).To(Succeed())
+
+		// Drive the inline path first.
+		inline, err := app.NewForTest(app.TestConfig{DataDir: filepath.Dir(dir), SessionsDir: dir})
+		Expect(err).NotTo(HaveOccurred())
+		store := recall.NewEmptyContextStore("")
+		Expect(inline.Sessions.Save("inline-sess", store, mustInlineMeta())).To(Succeed())
+		inlineBytes, err := os.ReadFile(filepath.Join(dir, "inline-sess.json"))
+		Expect(err).NotTo(HaveOccurred())
+
+		// Drive the orchestrator path with the same metadata fields.
+		orch := orchestrator.New(nil, nil, nil, nil, inline.Sessions, nil)
+		snap := orchestrator.TurnSnapshot{
+			Store:        store,
+			AgentID:      "worker",
+			SystemPrompt: "you are a helpful worker.",
+			LoadedSkills: []string{"pre-action", "memory-keeper"},
+		}
+		Expect(orch.SaveTurnEnd(context.Background(), "orch-sess", snap)).To(Succeed())
+		orchBytes, err := os.ReadFile(filepath.Join(dir, "orch-sess.json"))
+		Expect(err).NotTo(HaveOccurred())
+
+		var inlineDoc, orchDoc map[string]any
+		Expect(json.Unmarshal(inlineBytes, &inlineDoc)).To(Succeed())
+		Expect(json.Unmarshal(orchBytes, &orchDoc)).To(Succeed())
+		// session_id and last_active diverge by construction; everything
+		// else (agent_id, system_prompt, loaded_skills, embedding_model)
+		// must agree.
+		delete(inlineDoc, "session_id")
+		delete(orchDoc, "session_id")
+		delete(inlineDoc, "last_active")
+		delete(orchDoc, "last_active")
+		Expect(orchDoc).To(Equal(inlineDoc),
+			"Orchestrator.SaveTurnEnd must persist the same metadata shape as the inline path")
+	})
+})
+
+func mustInlineMeta() ctxstore.SessionMetadata {
+	return ctxstore.SessionMetadata{
+		AgentID:      "worker",
+		SystemPrompt: "you are a helpful worker.",
+		LoadedSkills: []string{"pre-action", "memory-keeper"},
+	}
+}
 
 type failingGateRunner struct {
 	err error
