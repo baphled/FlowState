@@ -773,13 +773,20 @@ describe('chatStore - sendMessage', () => {
     })
   })
 
-  it('marks streaming as finished when the DONE sentinel arrives', () => {
+  it('keeps isStreaming true on intermediate [DONE] between tool rounds (Slice D — activity-indicator continuity)', () => {
+    // Streaming Coherence Slice D — pre-slice DONE flipped isStreaming
+    // false on every sentinel including intermediate DONEs. The user
+    // observed indicator flicker. New contract: isStreaming stays true
+    // across intermediate DONEs and is only cleared by the send finally
+    // block when the outer turn completes.
     const store = useChatStore()
-    store.isStreaming = true
+    store.currentSessionId = 'sess-1'
+    store.setSessionStreaming('sess-1', { isStreaming: true })
 
     store.applyContentEvent('[DONE]')
 
-    expect(store.isStreaming).toBe(false)
+    // Pre-slice this asserted false; new contract is sticky-until-outer.
+    expect(store.isStreaming).toBe(true)
   })
 })
 
@@ -3352,16 +3359,22 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(store.error).toBe('something broke')
   })
 
-  it('seals the in-flight assistant and clears isStreaming on [DONE]', () => {
+  it('seals the in-flight assistant on [DONE] (Slice D — isStreaming stays sticky until outer turn ends)', () => {
+    // Streaming Coherence Slice D — DONE seals the running row but
+    // does NOT clear isStreaming. The send finally block clears the
+    // streaming flag when the outer turn completes. Pre-slice the
+    // flag flipped on every DONE; the user saw indicator flicker
+    // between tool rounds.
     const store = useChatStore()
+    store.currentSessionId = 'sess-1'
     store.messages = [
       { id: 'u1', role: 'user', content: 'go', timestamp: '' },
       { id: 'a1', role: 'assistant', content: 'partial', timestamp: '', status: 'running' },
     ]
-    store.isStreaming = true
+    store.setSessionStreaming('sess-1', { isStreaming: true })
     store.applyContentEvent('[DONE]')
     expect(store.messages.find((m) => m.id === 'a1')?.status).toBe('completed')
-    expect(store.isStreaming).toBe(false)
+    expect(store.isStreaming).toBe(true)
   })
 
   it('does NOT route an untyped delegation-shaped payload (structural fallback removed)', () => {
@@ -4535,6 +4548,27 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
     expect(store.messages).toHaveLength(2)
     expect(store.messages[1].status).toBe('completed')
     expect(store.messages[1].stopReason).toBeUndefined()
+  })
+
+  it('does NOT flip isStreaming false on intermediate DONE between tool rounds (Slice D — activity-indicator continuity)', () => {
+    // Streaming Coherence Slice D — pre-slice handleStreamDone flipped
+    // isStreaming=false on every [DONE] including the intermediate
+    // sentinels between tool rounds. The activity indicator flickered
+    // off-and-on between rounds. The new contract: isStreaming stays
+    // true until the outer turn completes (the send finally block).
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.setSessionStreaming('session-1', { isLoading: true, isStreaming: true })
+    // Mid-stream content arrived, then [DONE] arrives mid-tool-loop.
+    store.messages = [
+      { id: 'msg-user', role: 'user', content: 'task', timestamp: '' },
+      { id: 'asst-1', role: 'assistant', content: 'mid-reply', timestamp: '', status: 'running' },
+    ]
+    store.handleStreamDone()
+    // The streaming row was sealed (Slice C), but isStreaming stays
+    // true so the activity indicator keeps showing across rounds.
+    expect(store.isStreaming).toBe(true)
+    expect(store.isLoading).toBe(true)
   })
 
   it('seals ALL running assistant/delegation rows on DONE (Slice C — delegation panel coherence)', () => {
