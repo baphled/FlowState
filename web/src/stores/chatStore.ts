@@ -370,6 +370,18 @@ export const useChatStore = defineStore('chat', {
     // multi-session truth. New consumers should prefer
     // `streamingFor(sessionId)` so per-session isolation is observable.
     sessionStreaming: {} as Record<string, { isLoading: boolean; isStreaming: boolean }>,
+    // Per-session queued prompts (Slice E — Streaming Coherence May 2026).
+    //
+    // Pre-slice submit-while-streaming was rejected with a toast ("Send
+    // blocked: an earlier message is still in flight"). The new contract:
+    // submit-while-streaming pushes the prompt onto the session's queue;
+    // when the outer turn completes (handleStreamDone equivalent in the
+    // send finally block), the next queued prompt is auto-submitted.
+    //
+    // Per-session keying so cross-session composition does not interfere.
+    // Pinia reactivity proxies the record so the QueuedPromptStrip watcher
+    // re-renders when slots change.
+    queuedPrompts: {} as Record<string, string[]>,
     isLoading: false,
     isStreaming: false,
     isLoadingSessions: false,
@@ -693,6 +705,40 @@ export const useChatStore = defineStore('chat', {
     clearSessionStreaming(sessionId: string | null): void {
       if (!sessionId) return
       delete this.sessionStreaming[sessionId]
+    },
+
+    // queuePromptFor (Slice E — Streaming Coherence May 2026) — push a
+    // prompt onto the named session's queue. The QueuedPromptStrip
+    // watcher re-renders when the slot changes.
+    queuePromptFor(sessionId: string | null, text: string): void {
+      if (!sessionId || !text) return
+      const existing = this.queuedPrompts[sessionId] ?? []
+      this.queuedPrompts[sessionId] = [...existing, text]
+    },
+
+    // popQueuedPromptFor (Slice E) — remove a queued prompt at the
+    // given index and return its text. Used by the strip's X click to
+    // revert + edit-then-resend (mirrors revertToMessage's edit pattern).
+    popQueuedPromptFor(sessionId: string | null, index: number): string | null {
+      if (!sessionId) return null
+      const existing = this.queuedPrompts[sessionId] ?? []
+      if (index < 0 || index >= existing.length) return null
+      const removed = existing[index]
+      this.queuedPrompts[sessionId] = existing.filter((_, i) => i !== index)
+      return removed
+    },
+
+    // shiftQueuedPromptFor (Slice E) — pop the head of the queue,
+    // returning the prompt or null when empty. Called by the
+    // post-stream-completion auto-submit path inside sendMessage's
+    // finally block.
+    shiftQueuedPromptFor(sessionId: string | null): string | null {
+      if (!sessionId) return null
+      const existing = this.queuedPrompts[sessionId] ?? []
+      if (existing.length === 0) return null
+      const head = existing[0]
+      this.queuedPrompts[sessionId] = existing.slice(1)
+      return head
     },
 
     // bootstrap: singleton wrapper around restoreStateFromBackend.
@@ -1377,7 +1423,12 @@ export const useChatStore = defineStore('chat', {
         ? this.streamingFor(this.currentSessionId)
         : { isLoading: this.isLoading, isStreaming: this.isStreaming }
       if (gateState.isLoading) {
-        this.error = 'An earlier message is still in flight. Wait for it to finish or reload the page.'
+        // Streaming Coherence Slice E (May 2026) — queued prompts.
+        // Submit-while-streaming pushes onto the session's queue
+        // instead of bouncing the prompt with a toast. The send
+        // finally block auto-submits the queue head when the outer
+        // turn completes.
+        this.queuePromptFor(this.currentSessionId, text)
         return
       }
 
@@ -1556,6 +1607,34 @@ export const useChatStore = defineStore('chat', {
           disconnectSessionStream(completedSessionId)
         }
         this.setSessionStreaming(completedSessionId, { isLoading: false, isStreaming: false })
+        // Streaming Coherence Slice E (May 2026) — queued-prompt drain.
+        // After the outer turn completes, fire the next queued prompt
+        // for THIS session (not the active session — the user may have
+        // navigated). The recursion is bounded: each queued prompt
+        // either succeeds (drain continues) or fails (queue retains
+        // remaining prompts; user can retry). Microtask-scheduled so
+        // the finally block resolves before the next send begins —
+        // observers of the streaming flag transition see false before
+        // it goes back to true.
+        if (completedSessionId) {
+          const nextPrompt = this.shiftQueuedPromptFor(completedSessionId)
+          if (nextPrompt !== null) {
+            void Promise.resolve().then(() => {
+              // Re-check the session is still active before firing — a
+              // mid-flight session deletion or navigation can leave the
+              // queue stranded; the user picking the session up again
+              // can re-trigger the drain.
+              if (this.currentSessionId === completedSessionId) {
+                void this.sendMessage(nextPrompt)
+              } else {
+                // Restore the prompt to the head of the queue so it is
+                // not lost on background-session drain.
+                const remaining = this.queuedPrompts[completedSessionId] ?? []
+                this.queuedPrompts[completedSessionId] = [nextPrompt, ...remaining]
+              }
+            })
+          }
+        }
       }
     },
 

@@ -1730,15 +1730,20 @@ describe('chatStore - sendMessage surfacing when isLoading is already true (sile
   // existing chat-error footer renders, AND a toast fires for an in-front
   // surfacing the user cannot miss.
 
-  it('sets store.error so the chat-error footer surfaces the rejection (was silent return)', async () => {
+  it('queues the prompt instead of bouncing when isLoading is already true (Slice E — queued prompts)', async () => {
+    // Streaming Coherence Slice E (May 2026) — pre-slice this gate
+    // bounced the prompt with `store.error = "in flight..."`. The new
+    // contract: silently push onto the session's queue; the strip
+    // shows the pending pill and the auto-drain fires it on outer
+    // turn completion.
     const store = useChatStore()
-    store.isLoading = true
+    store.currentSessionId = 'sess-q'
+    store.setSessionStreaming('sess-q', { isLoading: true })
 
     await store.sendMessage('continue')
 
-    expect(store.error).toBeTruthy()
-    expect(String(store.error)).toMatch(/(in.flight|already|wait|reload)/i)
-    // The send pipeline must NOT have been reached.
+    expect(store.error).toBeNull()
+    expect(store.queuedPrompts['sess-q']).toEqual(['continue'])
     expect(vi.mocked(sendSessionMessage)).not.toHaveBeenCalled()
   })
 })
@@ -4584,6 +4589,40 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
     expect(store.messages.find((m) => m.id === 'del-1')?.status).toBe('completed')
     expect(store.messages.find((m) => m.id === 'asst-1')?.status).toBe('completed')
     expect(store.messages.find((m) => m.id === 'del-2')?.status).toBe('completed')
+  })
+
+  // Slice E — Queued Prompts with Revert (Streaming Coherence May 2026).
+  it('queues prompts per-session via queuePromptFor (Slice E)', () => {
+    const store = useChatStore()
+    store.queuePromptFor('sess-A', 'first')
+    store.queuePromptFor('sess-A', 'second')
+    store.queuePromptFor('sess-B', 'on B only')
+
+    expect(store.queuedPrompts['sess-A']).toEqual(['first', 'second'])
+    expect(store.queuedPrompts['sess-B']).toEqual(['on B only'])
+  })
+
+  it('popQueuedPromptFor removes by index and returns text (Slice E — revert UX)', () => {
+    const store = useChatStore()
+    store.queuedPrompts['sess-A'] = ['a', 'b', 'c']
+
+    expect(store.popQueuedPromptFor('sess-A', 1)).toBe('b')
+    expect(store.queuedPrompts['sess-A']).toEqual(['a', 'c'])
+    // Out-of-range returns null and does not mutate.
+    expect(store.popQueuedPromptFor('sess-A', 99)).toBe(null)
+    expect(store.queuedPrompts['sess-A']).toEqual(['a', 'c'])
+  })
+
+  it('shiftQueuedPromptFor pops the head (Slice E — auto-drain)', () => {
+    const store = useChatStore()
+    store.queuedPrompts['sess-A'] = ['head', 'mid', 'tail']
+
+    expect(store.shiftQueuedPromptFor('sess-A')).toBe('head')
+    expect(store.queuedPrompts['sess-A']).toEqual(['mid', 'tail'])
+
+    expect(store.shiftQueuedPromptFor('sess-A')).toBe('mid')
+    expect(store.shiftQueuedPromptFor('sess-A')).toBe('tail')
+    expect(store.shiftQueuedPromptFor('sess-A')).toBe(null)
   })
 
   it('opens an independent EventSource for each session', async () => {
