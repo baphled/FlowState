@@ -3204,6 +3204,198 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 	})
 })
 
+// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Test
+// Strategy" §"API SSE seam". The /api/swarm/events endpoint already
+// subscribes to tool.execute.{before,result,error}; its projector
+// must use the new InternalToolCallID as the SwarmEvent.ID, expose
+// provider_tool_use_id and content in metadata, and stamp
+// SchemaVersion. The legacy <sessionID>:<toolName> id-fabrication is
+// preserved as a defensive fallback when the engine has not yet
+// surfaced the internal id.
+var _ = Describe("GET /api/swarm/events tool.execute.* projection", func() {
+	var (
+		bus *eventbus.EventBus
+		srv *api.Server
+		hs  *httptest.Server
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		hs = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		hs.Close()
+	})
+
+	publishAndDrain := func(publish func()) []map[string]any {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(80 * time.Millisecond)
+		publish()
+
+		var resp *http.Response
+		Eventually(respCh, 2*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []map[string]any, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var collected []map[string]any
+			for {
+				line, readErr := reader.ReadString('\n')
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "data: ") {
+					payload := strings.TrimPrefix(trimmed, "data: ")
+					var parsed map[string]any
+					if json.Unmarshal([]byte(payload), &parsed) == nil {
+						collected = append(collected, parsed)
+					}
+				}
+				if readErr != nil {
+					break
+				}
+				if len(collected) >= 2 {
+					break
+				}
+			}
+			eventsCh <- collected
+		}()
+
+		var collected []map[string]any
+		Eventually(eventsCh, 3*time.Second).Should(Receive(&collected))
+		return collected
+	}
+
+	It("uses InternalToolCallID as the SwarmEvent ID for tool.execute.before", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
+				SessionID:          "sess-1",
+				ToolName:           "bash",
+				ToolCallID:         "toolu_01ABC",
+				InternalToolCallID: "fs_internal_42",
+			}))
+		})
+
+		var ev map[string]any
+		for _, c := range collected {
+			if c["type"] == string(streaming.EventToolCall) {
+				ev = c
+				break
+			}
+		}
+		Expect(ev).NotTo(BeNil(),
+			"the SSE stream must emit a tool_call event for tool.execute.before")
+		Expect(ev["id"]).To(Equal("fs_internal_42"),
+			"the SwarmEvent.ID is the InternalToolCallID — the failover-stable correlation id")
+		Expect(ev["status"]).To(Equal("started"))
+		Expect(ev["agent_id"]).To(Equal("sess-1"))
+		Expect(ev["schema_version"]).NotTo(BeNil(),
+			"every projected event must stamp SchemaVersion")
+
+		metadata, ok := ev["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["tool_name"]).To(Equal("bash"))
+		Expect(metadata["provider_tool_use_id"]).To(Equal("toolu_01ABC"),
+			"provider_tool_use_id preserves the upstream wire id for the audit trail")
+	})
+
+	It("uses InternalToolCallID and exposes content in metadata for tool.execute.result", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventToolExecuteResult, events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
+				SessionID:          "sess-1",
+				ToolName:           "bash",
+				Result:             "file contents",
+				ToolCallID:         "toolu_01OK",
+				InternalToolCallID: "fs_internal_ok",
+			}))
+		})
+
+		var ev map[string]any
+		for _, c := range collected {
+			if c["type"] == string(streaming.EventToolResult) {
+				ev = c
+				break
+			}
+		}
+		Expect(ev).NotTo(BeNil())
+		Expect(ev["id"]).To(Equal("fs_internal_ok"))
+		Expect(ev["status"]).To(Equal("completed"))
+		metadata, ok := ev["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["tool_name"]).To(Equal("bash"))
+		Expect(metadata["provider_tool_use_id"]).To(Equal("toolu_01OK"))
+		Expect(metadata["content"]).To(Equal("file contents"),
+			"the result body must surface as metadata.content for the activity pane")
+	})
+
+	It("uses InternalToolCallID and exposes the error message for tool.execute.error", func() {
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventToolExecuteError, events.NewToolExecuteErrorEvent(events.ToolExecuteErrorEventData{
+				SessionID:          "sess-1",
+				ToolName:           "bash",
+				Error:              errors.New("exit 1"),
+				ToolCallID:         "toolu_01ERR",
+				InternalToolCallID: "fs_internal_err",
+			}))
+		})
+
+		var ev map[string]any
+		for _, c := range collected {
+			if c["type"] == string(streaming.EventToolResult) {
+				ev = c
+				break
+			}
+		}
+		Expect(ev).NotTo(BeNil())
+		Expect(ev["id"]).To(Equal("fs_internal_err"))
+		Expect(ev["status"]).To(Equal("error"))
+		metadata, ok := ev["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["tool_name"]).To(Equal("bash"))
+		Expect(metadata["provider_tool_use_id"]).To(Equal("toolu_01ERR"))
+		Expect(metadata["error"]).To(Equal("exit 1"))
+	})
+
+	It("falls back to <sessionID>:<toolName> when InternalToolCallID is empty (defensive)", func() {
+		// Defensive path: in normal operation post-bridge the engine always
+		// stamps the internal id. The fallback prevents a regression in any
+		// code path that does not yet route through executeToolCall from
+		// manifesting as a silent SSE drop (the projector keys on a
+		// non-empty id).
+		collected := publishAndDrain(func() {
+			bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
+				SessionID: "sess-fallback",
+				ToolName:  "bash",
+			}))
+		})
+
+		var ev map[string]any
+		for _, c := range collected {
+			if c["type"] == string(streaming.EventToolCall) {
+				ev = c
+				break
+			}
+		}
+		Expect(ev).NotTo(BeNil())
+		Expect(ev["id"]).To(Equal("sess-fallback:bash"),
+			"absent the internal id, the legacy fabricated form ensures the SSE projector still emits an event")
+	})
+})
+
 var _ = Describe("POST /api/v1/sessions seeds default model from agent manifest", func() {
 	// Regression cover for the May 2026 chip-not-rendering bug: a brand-new
 	// session was returned with empty currentModelId / currentProviderId
