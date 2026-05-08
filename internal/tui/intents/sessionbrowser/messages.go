@@ -2,6 +2,7 @@ package sessionbrowser
 
 import (
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/streaming"
 )
 
 // SessionSelectedMsg is sent when a session is selected from the browser.
@@ -11,10 +12,19 @@ type SessionSelectedMsg struct {
 }
 
 // SessionLoadedMsg is sent when a session has been loaded from disk.
+//
+// SwarmEvents carries the persisted swarm-event WAL replay produced
+// by Orchestrator.LoadSession. The chat intent applies these to its
+// per-intent SwarmEventStore on receipt; surfaces that don't drive a
+// store can ignore the field. Pre-lift the chat intent re-loaded the
+// WAL itself via resetAndRestoreSwarmEvents; post-lift the orchestrator
+// is the single owner of the WAL read so the web SSE surface inherits
+// the same primitive when it adopts session-load UX.
 type SessionLoadedMsg struct {
-	SessionID string
-	Store     *recall.FileContextStore
-	Err       error
+	SessionID   string
+	Store       *recall.FileContextStore
+	SwarmEvents []streaming.SwarmEvent
+	Err         error
 }
 
 // SessionDeletedMsg is sent after the browser attempts to delete a session

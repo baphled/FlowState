@@ -296,6 +296,12 @@ type SessionManager interface {
 	// UpdateSessionAgent updates the active agent for the given session so
 	// subsequent SendMessage calls route to the switched-to agent.
 	UpdateSessionAgent(sessionID string, agentID string) error
+	// UpdateSessionModel updates the active provider+model preference for
+	// the given session. Used by the orchestrator's SwitchModel fan-out
+	// so the manager-side metadata sidecar tracks the engine-side
+	// SetModelPreference per ADR - Session Orchestrator for Surface
+	// Parity.
+	UpdateSessionModel(sessionID string, providerName string, modelName string) error
 }
 
 // IntentConfig holds the configuration for creating a new chat Intent.
@@ -325,7 +331,22 @@ type IntentConfig struct {
 
 // Intent handles chat interactions in the TUI.
 type Intent struct {
-	app                AppShell
+	app AppShell
+	// orchestrator is the canonical lifecycle owner for engine state
+	// mutations on the chat intent's behalf — agent switches, model
+	// switches, session loads / new sessions, end-of-turn save. Per
+	// ADR - Session Orchestrator for Surface Parity §"Hard
+	// Architectural Constraint", the chat intent does not call
+	// engine.SetManifest / SetModelPreference / SetContextStore /
+	// SetSwarmContext / FlushSwarmLifecycle / RestoreManifest
+	// directly; every such call routes through this orchestrator.
+	// Lazily constructed in NewIntent from the supplied engine,
+	// streamer, registries, sessionStore, sessionManager so the
+	// constructor surface stays unchanged. Nil-safe at every call
+	// site (per Orchestrator's nil-tolerance pattern) so test
+	// fixtures that omit engine + manager continue to compile and
+	// run.
+	orchestrator       *orchestrator.Orchestrator
 	engine             *engine.Engine
 	streamer           Streamer
 	sessionManager     SessionManager
@@ -692,6 +713,7 @@ func NewIntent(cfg IntentConfig) *Intent {
 
 	intent := &Intent{
 		app:                  cfg.App,
+		orchestrator:         buildIntentOrchestrator(cfg),
 		engine:               cfg.Engine,
 		streamer:             cfg.Streamer,
 		sessionManager:       cfg.SessionManager,
@@ -730,6 +752,49 @@ func NewIntent(cfg IntentConfig) *Intent {
 	intent.refreshSessionTrail()
 	intent.EnsureDefaultSlashRegistry()
 	return intent
+}
+
+// buildIntentOrchestrator wires a chat-scoped Orchestrator with the
+// IntentConfig's engine, registries, streamer, sessionStore, and
+// sessionManager. Called once from NewIntent so the intent's lifecycle
+// methods (applyAgentSwitch, handleModelCommand, openModelSelector
+// closure, createNewSession, handleSessionLoaded, saveSession) reuse a
+// single orchestrator instance instead of constructing one per call.
+//
+// Per ADR - Session Orchestrator for Surface Parity §"Hard
+// Architectural Constraint", the chat intent does not call
+// engine.SetManifest / SetModelPreference / SetContextStore directly;
+// every such call goes through the orchestrator returned here.
+//
+// The constructor is nil-tolerant: any subset of {engine, streamer,
+// sessionStore, sessionManager} may be nil — orchestrator methods
+// degrade per the per-method nil-tolerance documented on
+// orchestrator.New, so test fixtures that omit dependencies continue
+// to compile and run.
+//
+// Expected:
+//   - cfg is the chat IntentConfig.
+//
+// Returns:
+//   - The configured *orchestrator.Orchestrator. Always non-nil so
+//     callers can dereference unconditionally.
+//
+// Side effects:
+//   - None.
+func buildIntentOrchestrator(cfg IntentConfig) *orchestrator.Orchestrator {
+	var sessionStore orchestrator.SessionStore
+	if cfg.SessionStore != nil {
+		sessionStore = cfg.SessionStore
+	}
+	var sessionMgr orchestrator.SessionManager
+	if cfg.SessionManager != nil {
+		sessionMgr = cfg.SessionManager
+	}
+	var eng swarm.DispatchEngine
+	if cfg.Engine != nil {
+		eng = cfg.Engine
+	}
+	return orchestrator.New(eng, cfg.AgentRegistry, cfg.SwarmRegistry, cfg.Streamer, sessionStore, sessionMgr)
 }
 
 // defaultSwarmsDir returns the user-config swarms directory used by the
@@ -2386,7 +2451,14 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 	}
 	if msg.Done {
 		i.resetTurnState()
-		i.flushSwarmLifecycleOnTurnEnd()
+		// Per ADR - Session Orchestrator for Surface Parity §"Stream —
+		// absorbs Finding 2", FlushSwarmLifecycle is owned by
+		// orchestrator.Stream's cleanup goroutine on swarm-dispatch
+		// turns. On non-swarm turns the engine has no swarm context
+		// installed and FlushSwarmLifecycle is a no-op, so the
+		// historical intent-side call is duplicate / dead-code on every
+		// Done chunk. Removed; orchestrator.Stream is the single source
+		// of truth for the post-stream flush.
 	}
 	if !msg.Done && msg.Next != nil {
 		return batchCmds(tea.Batch(msg.Next, i.ensureSpinnerActive()), appendedCmd)
@@ -2395,34 +2467,6 @@ func (i *Intent) handleStreamChunkMsg(msg StreamChunkMsg) tea.Cmd {
 		return batchCmds(i.saveSession(), appendedCmd)
 	}
 	return batchCmds(i.ensureSpinnerActive(), appendedCmd)
-}
-
-// flushSwarmLifecycleOnTurnEnd dispatches the swarm-level post gates
-// after the lead's stream completes within the TUI. Mirrors the CLI
-// run / chat-message wiring: post-swarm is the last lifecycle point in
-// a swarm run, and the TUI's Done chunk is the first moment the lead's
-// own stream has finished. When no swarm context is installed on the
-// engine the call is a no-op.
-//
-// Errors are surfaced via the notification manager rather than
-// returned: the TUI is mid-render and a returned error would otherwise
-// only get logged, leaving the operator with no feedback. The chat
-// view stays responsive on a gate failure; the next user turn is the
-// natural retry surface.
-//
-// Expected:
-//   - i is non-nil; called from handleStreamChunkMsg on a Done chunk.
-//
-// Side effects:
-//   - May call DelegateTool gate runners via the engine's flush proxy.
-//   - On gate failure, posts a Warning notification.
-func (i *Intent) flushSwarmLifecycleOnTurnEnd() {
-	if i.engine == nil {
-		return
-	}
-	if err := i.engine.FlushSwarmLifecycle(context.Background()); err != nil {
-		i.surfaceSwarmGateFailure(err)
-	}
 }
 
 // surfaceSwarmGateFailure renders a swarm gate failure as a warning
@@ -2842,8 +2886,16 @@ func streamingEventMeta(eventType string) (string, notification.Level) {
 	}
 }
 
-// saveSession builds session metadata from the current engine state and persists
-// the session asynchronously via a tea.Cmd.
+// saveSession builds a TurnSnapshot from the current engine state and
+// hands it to Orchestrator.SaveTurnEnd via a tea.Cmd.
+//
+// Per ADR - Session Orchestrator for Surface Parity §"SaveTurnEnd",
+// the snapshot fields are read on the Bubble Tea goroutine (where
+// engine reads are unambiguous) and the orchestrator performs the
+// persistence side-effects on the Cmd goroutine (where I/O does not
+// block the event loop). The asymmetry between fatal Save errors and
+// best-effort SaveEvents errors moves into the orchestrator method
+// itself.
 //
 // Returns:
 //   - A tea.Cmd that writes the session to disk and returns a SessionSavedMsg.
@@ -2851,24 +2903,17 @@ func streamingEventMeta(eventType string) (string, notification.Level) {
 // Side effects:
 //   - None until the returned Cmd is executed by the Bubble Tea runtime.
 func (i *Intent) saveSession() tea.Cmd {
-	if i.sessionStore == nil || i.engine == nil {
+	if i.orchestrator == nil || i.engine == nil {
 		return nil
 	}
 	store := i.engine.ContextStore()
 	if store == nil {
 		return nil
 	}
-	sessionStore := i.sessionStore
-	sessionID := i.sessionID
 	loadedSkills := i.engine.LoadedSkills()
 	skillNames := make([]string, 0, len(loadedSkills))
-	for i := range loadedSkills {
-		skillNames = append(skillNames, loadedSkills[i].Name)
-	}
-	meta := contextpkg.SessionMetadata{
-		AgentID:      i.agentID,
-		SystemPrompt: i.engine.BuildSystemPrompt(),
-		LoadedSkills: skillNames,
+	for idx := range loadedSkills {
+		skillNames = append(skillNames, loadedSkills[idx].Name)
 	}
 	// Capture swarm events outside the closure so All() is called on the
 	// Bubble Tea goroutine (same as other field reads above). The store's
@@ -2878,15 +2923,17 @@ func (i *Intent) saveSession() tea.Cmd {
 	if i.swarmStore != nil {
 		swarmEvents = i.swarmStore.All()
 	}
+	snapshot := orchestrator.TurnSnapshot{
+		Store:        store,
+		AgentID:      i.agentID,
+		SystemPrompt: i.engine.BuildSystemPrompt(),
+		LoadedSkills: skillNames,
+		SwarmEvents:  swarmEvents,
+	}
+	sessionID := i.sessionID
+	orch := i.orchestrator
 	return func() tea.Msg {
-		saveErr := sessionStore.Save(sessionID, store, meta)
-		// Persist swarm events alongside the session when the store
-		// supports it. Errors are intentionally swallowed: event loss
-		// is tolerable, but a failed session save is not.
-		if ep, ok := sessionStore.(SwarmEventPersister); ok && len(swarmEvents) > 0 {
-			//nolint:errcheck // Event persistence is best-effort; session save must not fail for events.
-			ep.SaveEvents(sessionID, swarmEvents)
-		}
+		saveErr := orch.SaveTurnEnd(context.Background(), sessionID, snapshot)
 		return SessionSavedMsg{Err: saveErr}
 	}
 }
@@ -3478,10 +3525,9 @@ skipAgentDetect:
 	// chat-vs-dispatch discriminator.
 	var dispatchStream <-chan provider.StreamChunk
 	var dispatchErr error
-	if i.swarmRegistry != nil && i.engine != nil {
-		orch := orchestrator.New(i.engine, i.agentRegistry, i.swarmRegistry, i.streamer, nil, nil)
-		if orch.IsSwarmMention(userMessage) {
-			dispatchStream, dispatchErr = orch.Stream(ctx, orchestrator.UserInput{
+	if i.swarmRegistry != nil && i.engine != nil && i.orchestrator != nil {
+		if i.orchestrator.IsSwarmMention(userMessage) {
+			dispatchStream, dispatchErr = i.orchestrator.Stream(ctx, orchestrator.UserInput{
 				Message:      userMessage,
 				DefaultAgent: i.agentID,
 				ScanMentions: true,
@@ -3948,7 +3994,7 @@ func (i *Intent) handleModelsCommand() string {
 //
 // Side effects:
 //   - Updates providerName and modelName if valid format.
-//   - Calls engine.SetModelPreference if valid format.
+//   - Calls Orchestrator.SwitchModel if valid format.
 func (i *Intent) handleModelCommand(args string) string {
 	if args == "" {
 		return "Usage: /model <provider>/<model-name>\nExample: /model ollama/llama2"
@@ -3959,10 +4005,14 @@ func (i *Intent) handleModelCommand(args string) string {
 	}
 	providerName := strings.TrimSpace(parts[0])
 	model := strings.TrimSpace(parts[1])
-	i.engine.SetModelPreference(providerName, model)
+	if i.orchestrator != nil {
+		_ = i.orchestrator.SwitchModel(context.Background(), i.sessionID, providerName, model)
+	}
 	i.providerName = providerName
 	i.modelName = model
-	i.tokenBudget = i.engine.ModelContextLimit()
+	if i.engine != nil {
+		i.tokenBudget = i.engine.ModelContextLimit()
+	}
 	i.syncStatusBar()
 	i.syncViewAgentMeta()
 	return "Switched to model: " + providerName + "/" + model
@@ -3978,7 +4028,7 @@ func (i *Intent) handleModelCommand(args string) string {
 //
 // Side effects:
 //   - Updates agentID and syncs status bar if agent is found.
-//   - Calls engine.SetManifest if agent is found.
+//   - Calls Orchestrator.SwitchAgent (via applyAgentSwitch) if agent is found.
 func (i *Intent) handleAgentCommand(args string) string {
 	if args == "" {
 		return "Usage: /agent <agent-id>\nExample: /agent planner"
@@ -4113,10 +4163,14 @@ func (i *Intent) openModelSelector() tea.Cmd {
 			AppShell:         i.app,
 			ProviderRegistry: i.app,
 			OnSelect: func(provider, model string) {
-				i.engine.SetModelPreference(provider, model)
+				if i.orchestrator != nil {
+					_ = i.orchestrator.SwitchModel(context.Background(), i.sessionID, provider, model)
+				}
 				i.providerName = provider
 				i.modelName = model
-				i.tokenBudget = i.engine.ModelContextLimit()
+				if i.engine != nil {
+					i.tokenBudget = i.engine.ModelContextLimit()
+				}
 				i.syncStatusBar()
 				i.syncViewAgentMeta()
 			},
@@ -4333,14 +4387,26 @@ func (i *Intent) handleSessionResult(msg sessionbrowser.SessionSelectedMsg) tea.
 
 // createNewSession resets the chat to a fresh session with a new ID.
 //
+// Per ADR - Session Orchestrator for Surface Parity §"NewSession",
+// id generation + engine.SetContextStore is delegated to the
+// orchestrator so the web SSE surface (when it adopts new-session
+// UX) routes through the same primitive.
+//
 // Returns:
 //   - nil (no async command needed).
 //
 // Side effects:
 //   - Generates a new session ID, resets the chat view, and syncs the status bar.
 func (i *Intent) createNewSession() tea.Cmd {
-	i.sessionID = uuid.New().String()
-	i.engine.SetContextStore(recall.NewEmptyContextStore(""), i.sessionID)
+	if i.orchestrator != nil {
+		newID, _ := i.orchestrator.NewSession(context.Background())
+		i.sessionID = newID
+	} else {
+		// Fall back to the historical inline path when no orchestrator
+		// is wired (test fixtures with no engine surface). Mirrors the
+		// pre-lift control flow.
+		i.sessionID = uuid.New().String()
+	}
 	i.view = chat.NewView()
 	i.syncViewAgentMeta()
 	i.refreshViewport()
@@ -4365,7 +4431,14 @@ func (i *Intent) switchToSession(sessionID string) tea.Cmd {
 	return tea.Batch(i.ensureSpinnerActive(), i.loadSessionAsync(sessionID))
 }
 
-// loadSessionAsync returns a command that loads a session from disk.
+// loadSessionAsync returns a command that loads a session via the
+// orchestrator. Per ADR - Session Orchestrator for Surface Parity
+// §"LoadSession", the orchestrator owns disk read + engine install +
+// swarm-event WAL replay; the surface owns the per-store apply (the
+// per-intent i.swarmStore). This function reads on the tea.Cmd
+// goroutine so the Bubble Tea loop stays responsive during the disk
+// fetch — the orchestrator method is synchronous but the wrapper Cmd
+// keeps it off the event-loop thread.
 //
 // Expected:
 //   - sessionID is a non-empty string matching an existing session file.
@@ -4374,10 +4447,29 @@ func (i *Intent) switchToSession(sessionID string) tea.Cmd {
 //   - A tea.Cmd that sends a SessionLoadedMsg when the load completes.
 //
 // Side effects:
-//   - None (I/O happens inside the returned command).
+//   - I/O happens inside the returned command.
+//   - On success the orchestrator calls engine.SetContextStore.
 func (i *Intent) loadSessionAsync(sessionID string) tea.Cmd {
 	store := i.sessionStore
+	orch := i.orchestrator
 	return func() tea.Msg {
+		if orch != nil {
+			loaded, err := orch.LoadSession(context.Background(), sessionID)
+			if err != nil {
+				return sessionbrowser.SessionLoadedMsg{
+					SessionID: sessionID,
+					Err:       err,
+				}
+			}
+			return sessionbrowser.SessionLoadedMsg{
+				SessionID:   sessionID,
+				Store:       loaded.Store,
+				SwarmEvents: loaded.SwarmEvents,
+			}
+		}
+		// Test-minimal fallback: no orchestrator wired, drop back to
+		// direct sessionStore.Load. Engine install is skipped (matching
+		// the old i.engine != nil guard at handleSessionLoaded).
 		loadedStore, err := store.Load(sessionID)
 		return sessionbrowser.SessionLoadedMsg{
 			SessionID: sessionID,
@@ -4629,8 +4721,15 @@ func (i *Intent) renderSessionContent(sess *session.Session) string {
 	return v.RenderContent(i.width)
 }
 
-// resetAndRestoreSwarmEvents clears the in-memory swarm event store and
-// re-populates it from the session's persisted WAL on session switch.
+// applySwarmEventsToStore clears the in-memory swarm event store and
+// re-populates it from the orchestrator-loaded slice on session switch.
+//
+// Per ADR - Session Orchestrator for Surface Parity §"LoadSession",
+// the orchestrator owns the WAL read; this function owns the
+// per-intent store apply. The engine.SetContextStore install + the
+// disk read have already happened on the load Cmd's goroutine; this
+// runs on the Bubble Tea goroutine where i.swarmStore mutations are
+// safe alongside live render reads.
 //
 // P5/B2 contract:
 //  1. Clear() runs unconditionally — this severs any events that belonged to
@@ -4645,33 +4744,27 @@ func (i *Intent) renderSessionContent(sess *session.Session) string {
 //     effort for legacy wrappers; the default stores all support restore.
 //
 // Expected:
-//   - sessionID identifies the session being loaded.
+//   - events is the orchestrator-loaded slice (may be nil/empty).
 //
 // Side effects:
 //   - Mutates i.swarmStore via Clear + restore.
-//   - Reads the persisted WAL via i.sessionStore.LoadEvents when available.
-func (i *Intent) resetAndRestoreSwarmEvents(sessionID string) {
+func (i *Intent) applySwarmEventsToStore(events []streaming.SwarmEvent) {
 	if i.swarmStore == nil {
 		return
 	}
 	i.swarmStore.Clear()
-	ep, ok := i.sessionStore.(SwarmEventPersister)
-	if !ok {
-		return
-	}
-	restored, err := ep.LoadEvents(sessionID)
-	if err != nil || len(restored) == 0 {
+	if len(events) == 0 {
 		return
 	}
 	if restorer, ok := i.swarmStore.(streaming.EventRestorer); ok {
-		restorer.RestoreEvents(restored)
+		restorer.RestoreEvents(events)
 		return
 	}
 	// Fallback for stores that do not implement the restore contract. The
 	// default stores (MemorySwarmStore, persistedSwarmStore) both satisfy
 	// EventRestorer, so this branch is reserved for future wrappers.
-	for idx := range restored {
-		i.swarmStore.Append(restored[idx])
+	for idx := range events {
+		i.swarmStore.Append(events[idx])
 	}
 }
 
@@ -4694,12 +4787,12 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 		i.errorModal = feedback.NewErrorModal("Session Error", "Failed to load session: "+msg.Err.Error())
 		return nil
 	}
-	if i.engine != nil {
-		// The engine is optional in test-minimal constructions (BDD
-		// fixtures that drive the intent without a full engine wired
-		// in). Production callers always supply one.
-		i.engine.SetContextStore(msg.Store, msg.SessionID)
-	}
+	// Engine.SetContextStore was already called by Orchestrator.LoadSession
+	// inside loadSessionAsync; the test-minimal fallback path also
+	// produces a SessionLoadedMsg without engine install (matching the
+	// pre-lift `i.engine != nil` guard). No engine call here per
+	// ADR - Session Orchestrator for Surface Parity §"Hard
+	// Architectural Constraint".
 	i.view = chat.NewView()
 	// P17.S3: session switch wipes the approval cache so 's'-granted
 	// approvals cannot leak across sessions. Re-initialised as an
@@ -4720,7 +4813,22 @@ func (i *Intent) handleSessionLoaded(msg sessionbrowser.SessionLoadedMsg) tea.Cm
 	// call), so we count from the restored messages here.
 	i.tokenCount = i.countTokensFromStore(msg.Store)
 	i.responseTokenCount = 0
-	i.resetAndRestoreSwarmEvents(msg.SessionID)
+	// Apply the orchestrator-loaded swarm-event slice to the per-intent
+	// store (P5/B2 contract: Clear unconditionally + restore through the
+	// EventRestorer path so the WAL is not re-appended). When the
+	// SessionLoadedMsg arrives without SwarmEvents (test fixtures that
+	// dispatch the msg directly, bypassing loadSessionAsync), fall back
+	// to a direct WAL read so the P5/B2 isolation guarantee still holds.
+	events := msg.SwarmEvents
+	if events == nil {
+		if ep, ok := i.sessionStore.(SwarmEventPersister); ok {
+			restored, err := ep.LoadEvents(msg.SessionID)
+			if err == nil {
+				events = restored
+			}
+		}
+	}
+	i.applySwarmEventsToStore(events)
 	i.atBottom = true
 	i.refreshViewport()
 	i.syncStatusBar()
@@ -4993,22 +5101,36 @@ func (i *Intent) toggleAgent() tea.Cmd {
 // of them produces "agent changed but TUI didn't notice" bugs of
 // the kind reported on 2026-04-27 against the picker path.
 //
+// Per ADR - Session Orchestrator for Surface Parity §"Hard
+// Architectural Constraint", the engine swap + session manager fan-out
+// is delegated to Orchestrator.SwitchAgent; this function shrinks to
+// surface-state sync (status bar, view meta, token budget) and
+// delegation. The orchestrator is the single owner of the engine and
+// session-manager half so the web SSE path closes the same parity gap
+// when C3 lifts handleUpdateSessionAgent on the same call.
+//
 // Expected:
 //   - manifest is non-nil and represents the agent the caller wants
 //     active. The function does not consult the registry; the caller
 //     is responsible for already having resolved the manifest.
 func (i *Intent) applyAgentSwitch(manifest *agent.Manifest) {
-	if manifest == nil || i.engine == nil {
+	if manifest == nil {
 		return
 	}
-	i.engine.SetManifest(*manifest)
+	if i.orchestrator != nil {
+		// SwitchAgent owns SetManifest + UpdateSessionAgent. The
+		// returned manifest is the registry-resolved value; we passed
+		// in a manifest, so the result is identical, but routing
+		// through the orchestrator preserves the contract that engine
+		// state never mutates outside internal/orchestrator/.
+		_, _ = i.orchestrator.SwitchAgent(context.Background(), i.sessionID, manifest.ID)
+	}
 	i.agentID = manifest.ID
-	i.tokenBudget = i.engine.ModelContextLimit()
+	if i.engine != nil {
+		i.tokenBudget = i.engine.ModelContextLimit()
+	}
 	i.syncStatusBar()
 	i.syncViewAgentMeta()
-	if i.sessionManager != nil && i.sessionID != "" {
-		_ = i.sessionManager.UpdateSessionAgent(i.sessionID, manifest.ID)
-	}
 }
 
 // nextAgentInCycle returns the manifest immediately after currentID in
