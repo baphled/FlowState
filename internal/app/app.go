@@ -511,6 +511,8 @@ func buildApp(params appBuildParams) *App {
 			agentRegistry,
 			params.swarmRegistry,
 			runtime.streamer,
+			sessionStore,
+			runtime.sessionManager,
 		),
 		TodoStore:        runtime.todoStore,
 		mcpClient:        runtime.mcpManager,
@@ -2249,6 +2251,29 @@ func (a *App) SkillsDir() string {
 //   - None.
 func (a *App) SessionsDir() string {
 	return filepath.Join(a.Config.DataDir, "sessions")
+}
+
+// SessionManager returns the session manager wired into the
+// application, or nil when the application was constructed without
+// session management (BDD test fixtures, headless drivers).
+//
+// Per ADR - Session Orchestrator for Surface Parity, the orchestrator
+// uses this manager to fan out SwitchAgent / SwitchModel to the
+// per-session metadata sidecar alongside the engine half. CLI run
+// and chat commands call this to thread the manager into the
+// orchestrator's New constructor.
+//
+// Returns:
+//   - The configured *session.Manager, or nil when the application
+//     boot path skipped session management.
+//
+// Side effects:
+//   - None.
+func (a *App) SessionManager() *session.Manager {
+	if a == nil {
+		return nil
+	}
+	return a.sessionManager
 }
 
 // delegateCompactionConfig returns the RLM Phase A compaction config

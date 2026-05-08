@@ -376,6 +376,8 @@ func streamChatResponse(
 		application.Registry,
 		application.SwarmRegistry,
 		streamer,
+		application.Sessions,
+		application.SessionManager(),
 	)
 	// ScanMentions=true so a CLI single-message that starts with
 	// `@<swarm-id>` (the documented swarm-dispatch syntax) actually

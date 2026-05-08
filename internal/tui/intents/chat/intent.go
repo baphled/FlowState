@@ -3479,7 +3479,7 @@ skipAgentDetect:
 	var dispatchStream <-chan provider.StreamChunk
 	var dispatchErr error
 	if i.swarmRegistry != nil && i.engine != nil {
-		orch := orchestrator.New(i.engine, i.agentRegistry, i.swarmRegistry, i.streamer)
+		orch := orchestrator.New(i.engine, i.agentRegistry, i.swarmRegistry, i.streamer, nil, nil)
 		if orch.IsSwarmMention(userMessage) {
 			dispatchStream, dispatchErr = orch.Stream(ctx, orchestrator.UserInput{
 				Message:      userMessage,
