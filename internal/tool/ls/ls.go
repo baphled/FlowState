@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
 // Tool implements directory listing operations.
@@ -94,7 +96,7 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - Reads the filesystem.
-func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	rawPath, ok := input.Arguments["path"].(string)
 	if !ok || strings.TrimSpace(rawPath) == "" {
 		return tool.Result{}, errors.New("path argument is required")
@@ -134,7 +136,21 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 	}
 
 	sort.Strings(items)
-	return tool.Result{Output: strings.Join(items, "\n")}, nil
+	output := strings.Join(items, "\n")
+	output = capOutput(ctx, output)
+	return tool.Result{Output: output}, nil
+}
+
+// capOutput applies the shared truncation envelope using the session ID
+// from ctx so oversized directory listings never blow up the model
+// context.
+func capOutput(ctx context.Context, output string) string {
+	sessionID, _ := ctx.Value(session.IDKey{}).(string)
+	r := truncate.Apply(output, truncate.Options{
+		SessionID: sessionID,
+		ToolName:  "ls",
+	})
+	return r.Content
 }
 
 // optionalString returns a string argument when present.

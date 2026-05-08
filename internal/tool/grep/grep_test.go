@@ -2,6 +2,7 @@ package grep_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,24 @@ var _ = Describe("Grep Tool", func() {
 		It("returns a Go error when pattern is missing", func() {
 			_, err := grepTool.Execute(ctx, tool.Input{Name: "grep", Arguments: map[string]interface{}{"path": tempDir}})
 			Expect(err).To(HaveOccurred())
+		})
+
+		It("truncates oversized match output and embeds the recovery hint", func() {
+			for i := 0; i < 2500; i++ {
+				p := filepath.Join(tempDir, fmt.Sprintf("f%04d.txt", i))
+				Expect(os.WriteFile(p, []byte("needle here\n"), 0o600)).To(Succeed())
+			}
+			result, err := grepTool.Execute(ctx, tool.Input{
+				Name: "grep",
+				Arguments: map[string]interface{}{
+					"pattern": "needle",
+					"path":    tempDir,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Contains(result.Output, "truncated")).To(BeTrue())
+			Expect(result.Output).To(ContainSubstring("grep"))
+			Expect(result.Output).To(ContainSubstring("offset"))
 		})
 	})
 })
