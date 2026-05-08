@@ -118,6 +118,7 @@ var NamespaceRules = struct {
 		"background.",
 		"context.",
 		"delegation.",
+		"gate.",
 		"plugin.",
 		"prompt.",
 		"provider.",
@@ -221,6 +222,54 @@ var Catalog = []EventCatalogEntry{
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
+	},
+	{
+		Topic:       EventGateEvaluating,
+		Constant:    "EventGateEvaluating",
+		EventType:   "gate.evaluating",
+		Struct:      "GateEvaluatingEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
+			" Published once per swarm.Dispatch call when at least one gate matches" +
+			" the lifecycle. Carries GateCount and Lifecycle; per-gate fields are empty." +
+			" The web SSE bridge does NOT subscribe to this topic — the chat surface" +
+			" is request-reply and an extra evaluating-marker risks UX noise.",
+	},
+	{
+		Topic:       EventGatePassed,
+		Constant:    "EventGatePassed",
+		EventType:   "gate.passed",
+		Struct:      "GatePassedEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
+			" Single event per swarm.Dispatch call when the batch completes without halt." +
+			" Per-gate pass events are deliberately suppressed by the pass-event policy" +
+			" — surfaces want a clean failure-signal:noise ratio. No subscribers today;" +
+			" published for future timeline-style affordances and for catalog completeness.",
+	},
+	{
+		Topic:       EventGateFailed,
+		Constant:    "EventGateFailed",
+		EventType:   "gate.failed",
+		Struct:      "GateFailedEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.subscribeSessionBus", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
+			" One event per failing gate on halt-class failures only; continue-class" +
+			" and warn-class failures stay log-only because they do not interrupt the stream." +
+			" Replaces the silent-swallow path at internal/api/server.go's chat handler" +
+			" by giving the SSE bridge a typed signal to project to the gate-failed banner.",
 	},
 	{
 		Topic:       EventContextWindowBuilt,
