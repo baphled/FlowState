@@ -386,6 +386,15 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 //     fails dispatch with a typed *GateError before the gate is
 //     invoked — the gate's failure_policy then governs continuation.
 //
+// Failure surfacing — both modes raise a typed *GateError when their
+// coord-store read fails. The single-key path used to swallow the
+// readMemberOutput error and forward an empty payload, which masked
+// the registry/coord-store gap the A-Team relevance-gate dispatch
+// surfaced (TUI log 2026-05-08T13:28:01.646: gate ran with payload_bytes=0
+// and the gate's empty-input rejection bubbled up as an opaque failure).
+// Routing the error here keeps the operator-visible reason pointing at
+// the actual missing key rather than the symptomatic gate response.
+//
 // Expected:
 //   - gate is the GateSpec being dispatched; gate.Kind has the "ext:"
 //     prefix when this helper is reached.
@@ -394,7 +403,8 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 // Returns:
 //   - A populated GateInput and nil error on the success path.
 //   - The zero GateInput plus a *GateError on a multi-key composition
-//     failure (missing declared key, etc.).
+//     failure OR a single-key fallback miss (either path now propagates
+//     coord-store misses uniformly).
 //
 // Side effects:
 //   - Reads at most one coord-store key per declared input (multi-key
@@ -410,9 +420,11 @@ func gateInputFromArgs(gate GateSpec, args GateArgs) (GateInput, error) {
 		in.Payload = payload
 		return in, nil
 	}
-	if payload, err := readMemberOutput(gate, args); err == nil {
-		in.Payload = payload
+	payload, err := readMemberOutput(gate, args)
+	if err != nil {
+		return GateInput{}, newGateFailure(gate, args, err.Error(), err)
 	}
+	in.Payload = payload
 	return in, nil
 }
 
