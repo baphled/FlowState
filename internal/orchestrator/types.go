@@ -7,6 +7,7 @@
 package orchestrator
 
 import (
+	"context"
 	"errors"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -18,17 +19,24 @@ import (
 
 // Engine is the wider orchestrator-level engine surface — it combines
 // swarm.DispatchEngine (the streaming half) with the lifecycle setters
-// (SetManifest, SetModelPreference, SetContextStore) the new
-// SwitchAgent / SwitchModel / LoadSession / NewSession methods need.
+// (SetManifest, SetModelPreference, SetContextStore,
+// MaybeCompactForModel) the new SwitchAgent / SwitchModel /
+// LoadSession / NewSession methods need.
 //
 // *engine.Engine satisfies this interface in production; tests pass
 // a fake. We declare it at the orchestrator's edge per
 // ADR - FlowState Engine Boundary Invariant 4.
+//
+// Phase-5 Slice α added MaybeCompactForModel so SwitchModel can force-
+// fire compaction BEFORE the preference swings — switching to a
+// smaller-window model otherwise stranded the next Stream call behind
+// the proactive overflow gate's refusal with no auto-recovery.
 type Engine interface {
 	swarm.DispatchEngine
 	SetManifest(agent.Manifest)
 	SetModelPreference(providerName, modelName string)
 	SetContextStore(store *recall.FileContextStore, sessionID string)
+	MaybeCompactForModel(ctx context.Context, sessionID, providerName, modelName string) string
 }
 
 // SessionStore is the narrow surface the orchestrator needs from the
