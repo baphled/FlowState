@@ -16,29 +16,60 @@ import (
 )
 
 // fakeSessionSender records SendMessage calls and returns a controllable stream.
+// A per-session hang gate lets tests block SendMessage for a specific session
+// to simulate a wedged provider without affecting other sessions.
 type fakeSessionSender struct {
 	mu              sync.Mutex
 	sendCalls       []string // session IDs of SendMessage calls
 	notifications   map[string][]streaming.CompletionNotificationEvent
 	ensuredSessions []string
+	hangBySession   map[string]chan struct{}
+	ctxBySession    map[string]context.Context //nolint:containedctx // test-only fixture for inspecting the deadline triggerRePrompt picked
 }
 
 func newFakeSessionSender() *fakeSessionSender {
 	return &fakeSessionSender{
 		notifications: make(map[string][]streaming.CompletionNotificationEvent),
+		hangBySession: make(map[string]chan struct{}),
+		ctxBySession:  make(map[string]context.Context),
 	}
 }
 
-func (f *fakeSessionSender) SendMessage(_ context.Context, sessionID string, _ string) (<-chan provider.StreamChunk, error) {
+// hangSession arranges for the next SendMessage call for sessionID to block
+// until the returned release channel is closed (or the call's context fires).
+func (f *fakeSessionSender) hangSession(sessionID string) chan struct{} {
+	release := make(chan struct{})
+	f.mu.Lock()
+	f.hangBySession[sessionID] = release
+	f.mu.Unlock()
+	return release
+}
+
+func (f *fakeSessionSender) SendMessage(ctx context.Context, sessionID string, _ string) (<-chan provider.StreamChunk, error) {
 	f.mu.Lock()
 	f.sendCalls = append(f.sendCalls, sessionID)
+	f.ctxBySession[sessionID] = ctx
+	hang := f.hangBySession[sessionID]
 	f.mu.Unlock()
+
+	if hang != nil {
+		select {
+		case <-hang:
+		case <-ctx.Done():
+		}
+	}
 
 	ch := make(chan provider.StreamChunk, 2)
 	ch <- provider.StreamChunk{Content: "re-prompt response"}
 	ch <- provider.StreamChunk{Done: true}
 	close(ch)
 	return ch, nil
+}
+
+func (f *fakeSessionSender) getCtxFor(sessionID string) context.Context {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ctxBySession[sessionID]
 }
 
 func (f *fakeSessionSender) GetNotifications(sessionID string) ([]streaming.CompletionNotificationEvent, error) {
@@ -402,6 +433,118 @@ var _ = Describe("CompletionOrchestrator", func() {
 			Consistently(func() []string {
 				return sender.getSendCalls()
 			}, "500ms", "50ms").Should(BeEmpty())
+		})
+	})
+
+	// H4 — drainLoop must NOT block on triggerRePrompt: a wedged provider for
+	// one session must not silently drop completion notifications for every
+	// other session. The drain goroutine's only contract is "pick events off
+	// completionCh and dispatch the re-prompt onto a worker"; the re-prompt
+	// itself runs concurrently with a per-call deadline.
+	Describe("H4 — drain loop does not block on a wedged re-prompt", func() {
+		It("dispatches re-prompts for session B while session A's provider is wedged", func() {
+			// Session A — provider hangs forever (until release fires).
+			releaseA := sender.hangSession("sess-A")
+			defer close(releaseA) // unblock at test teardown so the goroutine exits cleanly
+
+			sender.addNotification("sess-A", streaming.CompletionNotificationEvent{
+				TaskID: "task-A", Agent: "explorer", Duration: time.Second,
+			})
+			ctxA := context.WithValue(context.Background(), session.IDKey{}, "sess-A")
+			bgMgr.Launch(ctxA, "task-A", "explorer", "wedged session", func(ctx context.Context) (string, error) {
+				return "done", nil
+			})
+
+			// Wait for A's SendMessage to be in flight (sender records the call
+			// before blocking). This proves the orchestrator has dispatched A's
+			// re-prompt and is now wedged inside SendMessage.
+			Eventually(func() []string {
+				return sender.getSendCalls()
+			}, "2s", "50ms").Should(ContainElement("sess-A"))
+
+			// Now fire a completion for session B. With H4 unfixed, the drain
+			// goroutine is wedged inside A's synchronous triggerRePrompt and B's
+			// re-prompt never dispatches. With H4 fixed, B should be dispatched
+			// concurrently within seconds.
+			sender.addNotification("sess-B", streaming.CompletionNotificationEvent{
+				TaskID: "task-B", Agent: "librarian", Duration: time.Second,
+			})
+			ctxB := context.WithValue(context.Background(), session.IDKey{}, "sess-B")
+			bgMgr.Launch(ctxB, "task-B", "librarian", "fast session", func(ctx context.Context) (string, error) {
+				return "done", nil
+			})
+
+			Eventually(func() []string {
+				return sender.getSendCalls()
+			}, "3s", "50ms").Should(ContainElement("sess-B"),
+				"session B's re-prompt must dispatch while session A is wedged inside SendMessage")
+		})
+
+		It("applies a per-re-prompt deadline so a wedged provider eventually unblocks", func() {
+			// Session A — provider hangs; we never close its release. The fix
+			// must impose a deadline on the SendMessage context so the inner
+			// hang select returns on ctx.Done(), the re-prompt goroutine exits,
+			// and the CAS flag is cleared. We can verify this by observing the
+			// CAS flag clear (a follow-up notification triggers another
+			// SendMessage call once the first re-prompt's defer has run).
+			releaseA := sender.hangSession("sess-deadline")
+			_ = releaseA // intentionally never released — deadline must save us
+
+			orchTight := engine.NewCompletionOrchestrator(bgMgr, sender, bus, broker)
+			engine.SetRePromptTimeout(orchTight, 200*time.Millisecond)
+			orchTight.Start()
+			defer orchTight.Stop()
+
+			// Stop the default orch so only orchTight handles events.
+			orch.Stop()
+
+			sender.addNotification("sess-deadline", streaming.CompletionNotificationEvent{
+				TaskID: "task-d1", Agent: "explorer", Duration: time.Second,
+			})
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "sess-deadline")
+			bgMgr.Launch(ctx, "task-d1", "explorer", "first", func(ctx context.Context) (string, error) {
+				return "done", nil
+			})
+
+			// First SendMessage should be invoked.
+			Eventually(func() []string {
+				return sender.getSendCalls()
+			}, "2s", "50ms").Should(ContainElement("sess-deadline"))
+
+			// The first SendMessage's context must carry a deadline (proves the
+			// fix wires WithTimeout into triggerRePrompt rather than the bare
+			// context.Background() we had before).
+			Eventually(func() bool {
+				c := sender.getCtxFor("sess-deadline")
+				if c == nil {
+					return false
+				}
+				_, ok := c.Deadline()
+				return ok
+			}, "2s", "50ms").Should(BeTrue(),
+				"triggerRePrompt's context must have a deadline so a wedged provider is recoverable")
+
+			// After the deadline fires, the CAS flag must clear so subsequent
+			// completions trigger a new re-prompt. Drop a fresh notification
+			// + task and confirm a second SendMessage call is observed.
+			sender.addNotification("sess-deadline", streaming.CompletionNotificationEvent{
+				TaskID: "task-d2", Agent: "explorer", Duration: time.Second,
+			})
+			bgMgr.Launch(ctx, "task-d2", "explorer", "second", func(ctx context.Context) (string, error) {
+				return "done", nil
+			})
+
+			Eventually(func() int {
+				calls := sender.getSendCalls()
+				count := 0
+				for _, s := range calls {
+					if s == "sess-deadline" {
+						count++
+					}
+				}
+				return count
+			}, "3s", "50ms").Should(BeNumerically(">=", 2),
+				"after the per-re-prompt deadline trips, the CAS flag must clear so new completions can re-prompt")
 		})
 	})
 })
