@@ -1382,16 +1382,35 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 	eventCh := make(chan interface{}, 64)
 	stopCh := make(chan struct{})
 
+	// Non-blocking forwarder: the bus.Publish caller is the engine, the tool
+	// executor, or any other publisher goroutine. A naive `eventCh <- msg`
+	// blocks Publish indefinitely when the SSE consumer is slow or has
+	// disconnected mid-publish (deferred Unsubscribe still in-flight). One
+	// stalled swarm-events client would then DoS every tool execution across
+	// every session (QA bughunt 2026-05-08, C3) and leak goroutines under
+	// disconnect churn (H6, same root cause).
+	//
+	// The select+default pattern matches the prevailing approach in
+	// event_bridge.go's WebSocket handlers: drop on full / on disconnect
+	// rather than block the bus dispatcher.
+	forward := func(msg any) {
+		select {
+		case eventCh <- msg:
+		case <-stopCh:
+		default:
+			// eventCh full — drop the event rather than wedge Publish.
+		}
+	}
 	handlers := map[string]eventbus.EventHandler{
-		"tool.execute.before":       func(msg any) { eventCh <- msg },
-		"tool.execute.result":       func(msg any) { eventCh <- msg },
-		"tool.execute.error":        func(msg any) { eventCh <- msg },
-		"background.task.started":   func(msg any) { eventCh <- msg },
-		"background.task.completed": func(msg any) { eventCh <- msg },
-		"background.task.failed":    func(msg any) { eventCh <- msg },
-		"delegation.started":        func(msg any) { eventCh <- msg },
-		"delegation.completed":      func(msg any) { eventCh <- msg },
-		"delegation.failed":         func(msg any) { eventCh <- msg },
+		"tool.execute.before":       forward,
+		"tool.execute.result":       forward,
+		"tool.execute.error":        forward,
+		"background.task.started":   forward,
+		"background.task.completed": forward,
+		"background.task.failed":    forward,
+		"delegation.started":        forward,
+		"delegation.completed":      forward,
+		"delegation.failed":         forward,
 	}
 
 	for topic, handler := range handlers {

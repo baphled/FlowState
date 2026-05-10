@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -3201,6 +3204,168 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 		metadata, ok := delegation["metadata"].(map[string]any)
 		Expect(ok).To(BeTrue())
 		Expect(metadata["error"]).To(Equal("stream initialisation failed"))
+	})
+})
+
+// QA bughunt 2026-05-08, C3: handleSwarmEvents blocking sends DoS engine.
+//
+// The /api/swarm/events handler historically registered bus event handlers as
+// `func(msg any) { eventCh <- msg }` with no `select { case ...: default: }`
+// guard. The eventCh has cap 64. When the SSE client is slow or has just
+// disconnected (deferred Unsubscribe still in-flight), eventCh fills and every
+// subsequent bus.Publish from any session — tool execution, delegation,
+// background tasks — calls these handlers, which block on the full channel.
+// One slow swarm-events client wedges every tool execution across every
+// session.
+//
+// H6 (handler still queued after disconnect) shares the same root cause and is
+// closed by the same fix: dropping on a full channel means the in-flight
+// Publish goroutines that captured the handler before deferred Unsubscribe ran
+// no longer block on a dead consumer.
+//
+// Pinning specs: bus.Publish must NEVER block on the swarm-events handler,
+// even when the SSE consumer has stalled and eventCh is at capacity. This
+// matches the pattern already used by event_bridge.go (drop-on-full).
+var _ = Describe("GET /api/swarm/events backpressure isolation (C3 / H6)", func() {
+	var (
+		bus *eventbus.EventBus
+		srv *api.Server
+		hs  *httptest.Server
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		hs = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		hs.Close()
+	})
+
+	// Stand the handler up with a deliberately stalled consumer. We do this by
+	// dialling the server raw, sending a GET, and then never reading the
+	// response body. Once the kernel's write buffer fills, flusher.Flush()
+	// blocks the consumer goroutine inside handleSwarmEvents, eventCh stops
+	// draining, and after `cap(eventCh)` events any further blocking handler
+	// would wedge bus.Publish.
+	startStalledSwarmConsumer := func() (cleanup func()) {
+		u, err := url.Parse(hs.URL)
+		Expect(err).NotTo(HaveOccurred())
+
+		conn, err := net.Dial("tcp", u.Host)
+		Expect(err).NotTo(HaveOccurred())
+
+		req := "GET /api/swarm/events HTTP/1.1\r\n" +
+			"Host: " + u.Host + "\r\n" +
+			"Accept: text/event-stream\r\n" +
+			"Connection: keep-alive\r\n\r\n"
+		_, err = conn.Write([]byte(req))
+		Expect(err).NotTo(HaveOccurred())
+
+		// Give the handler time to register its bus subscriptions.
+		time.Sleep(120 * time.Millisecond)
+
+		return func() { _ = conn.Close() }
+	}
+
+	It("does not wedge bus.Publish when the SSE consumer has stalled and eventCh is full", func() {
+		cleanup := startStalledSwarmConsumer()
+		defer cleanup()
+
+		// Flood the bus with far more events than the handler's eventCh
+		// capacity (64) + any kernel TCP send buffer. Each Publish runs
+		// synchronously through every registered handler — including the
+		// stalled swarm-events handler — so once eventCh fills, an unguarded
+		// handler blocks Publish indefinitely.
+		//
+		// Delegation events are projected with the full `description` and
+		// other metadata onto the wire, so a bulky Description guarantees the
+		// consumer goroutine's flusher.Flush() blocks on the kernel send
+		// buffer once the stalled TCP reader is overwhelmed, which in turn
+		// stops eventCh from draining.
+		bulkyDesc := strings.Repeat("x", 16384)
+		floodDone := make(chan struct{})
+		go func() {
+			defer close(floodDone)
+			for i := 0; i < 500; i++ {
+				bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
+					ChainID:         "chain-flood",
+					ParentSessionID: "parent",
+					ChildSessionID:  "child",
+					SourceAgent:     "lead",
+					TargetAgent:     "qa",
+					Description:     bulkyDesc,
+				}))
+			}
+		}()
+
+		// The flood goroutine itself must terminate within a tight deadline.
+		// Pre-fix this hangs forever on roughly the 65th publish (cap of
+		// eventCh) once the stalled consumer's flusher.Flush() also blocks
+		// on the kernel send buffer.
+		Eventually(floodDone, 3*time.Second).Should(BeClosed(),
+			"bus.Publish must not block on the stalled swarm-events handler — "+
+				"a slow SSE consumer must not DoS every other publisher")
+
+		// Independent publish from a second goroutine, simulating a tool
+		// execution path. With the fix in place this returns immediately; the
+		// blocking-send variant wedges this goroutine on the stalled consumer.
+		independentDone := make(chan struct{})
+		go func() {
+			defer close(independentDone)
+			bus.Publish(events.EventDelegationCompleted, events.NewDelegationCompletedEvent(events.DelegationEventData{
+				ChainID:         "engine-call",
+				ParentSessionID: "engine",
+				ChildSessionID:  "engine-child",
+				SourceAgent:     "engine",
+				TargetAgent:     "tool-runner",
+				Description:     bulkyDesc,
+			}))
+		}()
+
+		Eventually(independentDone, 500*time.Millisecond).Should(BeClosed(),
+			"a fresh bus.Publish from any other session must complete promptly even "+
+				"while the swarm-events consumer is stalled")
+	})
+
+	It("does not leak goroutines wedged on a dead consumer after disconnect (H6)", func() {
+		// Capture a baseline goroutine count, then churn through many
+		// connect-flood-disconnect cycles. With the blocking-send variant,
+		// every disconnect leaves Publish goroutines wedged on the now-closed
+		// handler's eventCh. The drop-on-full guard makes this safe.
+		baseline := runtime.NumGoroutine()
+
+		bulkyDesc := strings.Repeat("y", 16384)
+		for cycle := 0; cycle < 5; cycle++ {
+			cleanup := startStalledSwarmConsumer()
+
+			// Fill the channel and overflow it. Bulky description ensures we
+			// pin the disconnect-with-in-flight-Publish race; a small payload
+			// would clear the consumer's TCP buffer faster than the test can
+			// disconnect.
+			for i := 0; i < 200; i++ {
+				bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
+					ChainID:         "chain-cycle",
+					ParentSessionID: "parent",
+					ChildSessionID:  "child",
+					SourceAgent:     "lead",
+					TargetAgent:     "qa",
+					Description:     bulkyDesc,
+				}))
+			}
+
+			cleanup()
+			// Allow deferred Unsubscribe + handler goroutines to settle.
+			time.Sleep(80 * time.Millisecond)
+		}
+
+		// We allow some slack — httptest workers, GC goroutines, etc. — but a
+		// goroutine leak proportional to events published would blow well past
+		// this bound (5 cycles * 100 publishes = 500 wedged goroutines).
+		Eventually(runtime.NumGoroutine, 2*time.Second, 50*time.Millisecond).
+			Should(BeNumerically("<", baseline+50),
+				"connect-flood-disconnect churn must not leak goroutines wedged on a dead handler's eventCh")
 	})
 })
 
