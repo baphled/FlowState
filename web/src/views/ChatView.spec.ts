@@ -86,8 +86,14 @@ describe('ChatView selector bar', () => {
 
     const main = wrapper.find('.chat-main')
     const children = main.element.children
+    // Pin updated for QW-9: the message pane is now wrapped in
+    // `.message-pane-wrap` so a floating scroll-to-bottom button can be
+    // absolutely positioned inside the same stacking context. The wrap is
+    // the structural container that takes the message pane's previous
+    // place in the .chat-main flow; the selector bar must still sit after
+    // it and before MessageInput.
     const messagePaneIdx = Array.from(children).findIndex(
-      (el) => el instanceof HTMLElement && el.classList.contains('message-pane'),
+      (el) => el instanceof HTMLElement && el.classList.contains('message-pane-wrap'),
     )
     const selectorBarIdx = Array.from(children).findIndex(
       (el) => el instanceof HTMLElement && (el as HTMLElement).dataset.testid === 'input-selector-bar',
@@ -386,6 +392,177 @@ describe('ChatView auto-scroll', () => {
     await nextTick()
 
     expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+  })
+})
+
+// QW-9 — Scroll-to-bottom button. The chat pane's `userScrolledUp` flag (see
+// ChatView.vue) suppresses auto-scroll while the user is reading earlier
+// messages. Until QW-9 the only way back to the latest message was to scroll
+// the pane manually. This block pins the new floating affordance: hidden when
+// at the bottom, visible when scrolled up, click clears `userScrolledUp` and
+// scrolls smoothly to the latest message, and re-arms auto-scroll for
+// subsequent streaming chunks.
+describe('ChatView scroll-to-bottom button (QW-9)', () => {
+  const scrollToSpy = vi.fn()
+  const scrollMetrics = {
+    scrollHeight: 1000,
+    scrollTop: 0,
+    clientHeight: 500,
+  }
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    scrollToSpy.mockReset()
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+      value: scrollToSpy,
+      configurable: true,
+      writable: true,
+    })
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return scrollMetrics.scrollHeight
+      },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return scrollMetrics.scrollTop
+      },
+      set(value: number) {
+        scrollMetrics.scrollTop = value
+      },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return scrollMetrics.clientHeight
+      },
+    })
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('hides the scroll-to-bottom button when the message pane is at the bottom', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="scroll-to-bottom-btn"]').exists()).toBe(false)
+  })
+
+  it('shows the scroll-to-bottom button when the user scrolls up', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    scrollMetrics.scrollTop = 0
+    await wrapper.find('[data-testid="chat-message-pane"]').trigger('scroll')
+
+    expect(wrapper.find('[data-testid="scroll-to-bottom-btn"]').exists()).toBe(true)
+  })
+
+  it('scrolls the message pane to the bottom and re-arms auto-scroll when clicked', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    // Scroll up to reveal the button.
+    scrollMetrics.scrollTop = 0
+    await wrapper.find('[data-testid="chat-message-pane"]').trigger('scroll')
+    scrollToSpy.mockClear()
+
+    const button = wrapper.find('[data-testid="scroll-to-bottom-btn"]')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    await nextTick()
+
+    // Click scrolls to the bottom smoothly.
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+
+    // Auto-scroll is re-armed: a subsequent new message fires scroll again
+    // even though the pane's reported scrollTop hasn't moved (the smooth
+    // animation is asynchronous and JSDOM doesn't run it).
+    scrollToSpy.mockClear()
+    const chatStore = useChatStore()
+    chatStore.messages = [
+      { id: 'assistant-1', role: 'assistant', content: 'hello', timestamp: new Date().toISOString() },
+    ]
+    await nextTick()
+    await nextTick()
+
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+    expect(wrapper.find('[data-testid="scroll-to-bottom-btn"]').exists()).toBe(false)
+  })
+
+  it('keeps the button visible and does not auto-scroll when new content arrives while the user is scrolled up', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    scrollMetrics.scrollTop = 0
+    await wrapper.find('[data-testid="chat-message-pane"]').trigger('scroll')
+    scrollToSpy.mockClear()
+
+    const chatStore = useChatStore()
+    chatStore.messages = [
+      { id: 'assistant-1', role: 'assistant', content: 'hello', timestamp: new Date().toISOString() },
+    ]
+    await nextTick()
+    await nextTick()
+
+    expect(scrollToSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="scroll-to-bottom-btn"]').exists()).toBe(true)
+  })
+
+  it('exposes an aria-label on the scroll-to-bottom button', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    scrollMetrics.scrollTop = 0
+    await wrapper.find('[data-testid="chat-message-pane"]').trigger('scroll')
+
+    const button = wrapper.find('[data-testid="scroll-to-bottom-btn"]')
+    expect(button.exists()).toBe(true)
+    expect(button.attributes('aria-label')).toBe('Scroll to latest message')
   })
 })
 

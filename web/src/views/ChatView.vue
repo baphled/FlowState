@@ -75,6 +75,18 @@ function scrollMessagePaneToBottom(behavior: ScrollBehavior = 'smooth'): void {
   lastScrollTop = el.scrollTop
 }
 
+// QW-9 — Scroll-to-bottom affordance. Clicking the floating button clears
+// the userScrolledUp gate (re-arming auto-scroll for subsequent streaming
+// chunks) and immediately scrolls smoothly to the latest message. The button
+// itself is hidden whenever userScrolledUp is false (the user is already at
+// or near the bottom), so this handler is only ever invoked from a visible
+// button. The flag flip must happen before the scrollMessagePaneToBottom
+// call: that helper short-circuits when userScrolledUp is true.
+function handleScrollToBottomClick(): void {
+  userScrolledUp.value = false
+  scrollMessagePaneToBottom('smooth')
+}
+
 let scrollRaf: number | null = null
 function scheduleInstantScroll(): void {
   if (scrollRaf !== null) {
@@ -305,25 +317,60 @@ onBeforeUnmount(() => {
       -->
       <CriticalErrorBanner />
 
-      <section ref="messagePaneRef" class="message-pane" data-testid="chat-message-pane" @scroll="onMessagePaneScroll">
-        <div v-if="groupedMessages.length === 0" class="empty-state" data-testid="chat-empty-state">
-          Start a conversation with the selected agent.
-        </div>
-        <div v-else class="message-list" data-testid="message-list">
-          <template v-for="(entry, index) in groupedMessages" :key="entry.type === 'message' ? entry.message.id : `context-group-${index}`">
-            <MessageBubble
-              v-if="entry.type === 'message'"
-              :message="entry.message"
-              :agent-name="agentNameFor(entry.message)"
-            />
-            <ContextToolGroup
-              v-else-if="entry.type === 'context-group'"
-              :messages="entry.messages"
-              :tool-counts="entry.toolCounts"
-            />
-          </template>
-        </div>
-      </section>
+      <div class="message-pane-wrap">
+        <section ref="messagePaneRef" class="message-pane" data-testid="chat-message-pane" @scroll="onMessagePaneScroll">
+          <div v-if="groupedMessages.length === 0" class="empty-state" data-testid="chat-empty-state">
+            Start a conversation with the selected agent.
+          </div>
+          <div v-else class="message-list" data-testid="message-list">
+            <template v-for="(entry, index) in groupedMessages" :key="entry.type === 'message' ? entry.message.id : `context-group-${index}`">
+              <MessageBubble
+                v-if="entry.type === 'message'"
+                :message="entry.message"
+                :agent-name="agentNameFor(entry.message)"
+              />
+              <ContextToolGroup
+                v-else-if="entry.type === 'context-group'"
+                :messages="entry.messages"
+                :tool-counts="entry.toolCounts"
+              />
+            </template>
+          </div>
+        </section>
+        <!--
+          QW-9 — Floating scroll-to-bottom affordance. Visible only when the
+          user has scrolled up (userScrolledUp=true). Click clears the gate
+          and smooth-scrolls to the latest message, re-arming auto-scroll
+          for subsequent streaming chunks. Layered above the message pane
+          via absolute positioning inside .message-pane-wrap so it doesn't
+          shift the existing flex layout (DelegationStrip / ChildSessionsPanel
+          / input-selector-bar all still flow normally below the wrap).
+        -->
+        <button
+          v-if="userScrolledUp"
+          type="button"
+          class="scroll-to-bottom-btn"
+          data-testid="scroll-to-bottom-btn"
+          aria-label="Scroll to latest message"
+          title="Scroll to latest message"
+          @click="handleScrollToBottomClick"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      </div>
 
       <DelegationStrip />
       <!--
@@ -468,6 +515,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.message-pane-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .message-pane {
   flex: 1;
   min-height: 0;
@@ -476,6 +531,46 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+
+/*
+ * QW-9 — Floating scroll-to-bottom button. Pinned to the bottom-right of
+ * the message-pane wrap so it sits inside the chat thread region, above
+ * the messages but below the DelegationStrip / ChildSessionsPanel /
+ * composer (those are siblings of .message-pane-wrap, not children, so
+ * they flow normally and the button never overlaps them). The 1.25rem
+ * inset clears the typical scrollbar gutter without overlapping a
+ * MessageBubble's right edge.
+ */
+.scroll-to-bottom-btn {
+  position: absolute;
+  right: 1.25rem;
+  bottom: 1rem;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  z-index: 5;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: var(--bg-hover, var(--bg-elevated));
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.24);
+}
+
+.scroll-to-bottom-btn:focus-visible {
+  outline: 2px solid var(--accent, #4c8bf5);
+  outline-offset: 2px;
 }
 
 .message-list {
