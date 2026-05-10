@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import type { SwarmEvent } from '@/types'
 import { joinBaseURL } from '@/api'
+import { useChatStore } from '@/stores/chatStore'
 
 const MAX_EVENTS = 500
 
@@ -10,6 +11,13 @@ export const useSwarmStore = defineStore('swarm', () => {
   const isLive = ref(false)
   const error = ref<string | null>(null)
   const abortController = ref<AbortController | null>(null)
+
+  // Generation token. Every connect() increments this. The active read loop
+  // captures the value at start and only mutates store state (events, isLive,
+  // error) when its captured generation still matches the current. This pins
+  // the M8 contract: a late `read()` resolution from a previous generation —
+  // including the generation's `finally` block — must not touch the store.
+  const generation = ref(0)
 
   function ingestEventLine(line: string): void {
     if (!line.startsWith('data: ')) {
@@ -40,11 +48,32 @@ export const useSwarmStore = defineStore('swarm', () => {
   async function connect(): Promise<void> {
     await disconnect()
     error.value = null
+
+    // H5 follow-up: GET /api/swarm/events now requires ?session_id=<id>. Read
+    // the active session from the canonical source (chatStore.currentSessionId
+    // — the same field NavBar/SessionSwitcher/QueuedPromptStrip read). If the
+    // caller invoked connect() with no active session, fail loudly: no fetch,
+    // a visible error string, and isLive stays false. A silent skip would mask
+    // the upstream routing bug (button enabled with no session in scope).
+    const sessionId = useChatStore().currentSessionId
+    if (!sessionId) {
+      error.value = 'cannot connect to swarm events: no active session id'
+      isLive.value = false
+      return
+    }
+
+    // Claim a fresh generation for this loop. The captured value below is the
+    // *only* token this invocation will check before mutating shared state.
+    generation.value += 1
+    const myGeneration = generation.value
+
     isLive.value = true
     abortController.value = new AbortController()
 
+    const url = joinBaseURL(`/swarm/events?session_id=${encodeURIComponent(sessionId)}`)
+
     try {
-      const response = await fetch(joinBaseURL('/swarm/events'), {
+      const response = await fetch(url, {
         signal: abortController.value.signal,
       })
 
@@ -62,6 +91,12 @@ export const useSwarmStore = defineStore('swarm', () => {
 
       while (true) {
         const { done, value } = await reader.read()
+        // Generation check on EVERY post-await resumption: if a newer connect()
+        // has fired, this loop is stale and must not append events or flip
+        // isLive/error. Just exit silently.
+        if (myGeneration !== generation.value) {
+          return
+        }
         if (done) {
           // Flush any remaining bytes held by the decoder's internal state,
           // then process whatever is left in the line buffer.
@@ -79,11 +114,20 @@ export const useSwarmStore = defineStore('swarm', () => {
         }
       }
     } catch (e) {
+      // Stale generation: swallow without touching error.value (newer
+      // generation owns the slot now).
+      if (myGeneration !== generation.value) {
+        return
+      }
       if (e instanceof Error && e.name !== 'AbortError') {
         error.value = e.message
       }
     } finally {
-      isLive.value = false
+      // Same guard for the success path's finally — only the live generation
+      // gets to flip isLive off.
+      if (myGeneration === generation.value) {
+        isLive.value = false
+      }
     }
   }
 
