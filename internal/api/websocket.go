@@ -110,11 +110,12 @@ func (s *Server) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) 
 	}
 
 	out := make(chan WSChunkMsg, 128)
+	quit := make(chan struct{})
 	writeDone := make(chan struct{})
 	ctx := r.Context()
 
 	go func() {
-		writeWSLoop(ctx, conn, out)
+		writeWSLoop(ctx, conn, out, quit)
 		close(writeDone)
 	}()
 
@@ -130,8 +131,34 @@ func (s *Server) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	close(out)
+	// C2 — channel-close ordering. Pre-fix this did `close(out)` then
+	// `stopBus()`. Bus subscribe handlers (event_bridge.go) use
+	// `select { case out <- msg: default: }` — on a CLOSED channel
+	// `select` does NOT take the default branch, it panics with
+	// "send on closed channel". Between `close(out)` and Unsubscribe
+	// any of nine bus topics firing (tool.before/result/error,
+	// rate_limited, three background_task variants, context_compacted,
+	// gate.failed) crashes the publisher's goroutine.
+	//
+	// Fix: never close `out`. Mirrors the SSE handler pattern in
+	// server.go (handleSessionStream / busCh): the channel is left open
+	// and goes out of scope when the request handler returns; bus
+	// handlers held in stale Publish-snapshots either deliver into the
+	// buffer or take the default branch on a full chan, never panic.
+	// We signal the writer via `quit` and drive shutdown as:
+	//   1. stopBus() — Unsubscribe removes our handlers; future
+	//      Publish snapshots will not include them.
+	//   2. close(quit) — writer's select sees quit closed and exits.
+	//   3. <-writeDone — wait for the writer goroutine to drain.
+	//   4. closeWebSocket(conn) — tear down the underlying connection.
+	// eventbus.Publish snapshots handlers under RLock and dispatches
+	// outside the lock, so a publish that started before stopBus may
+	// still call a now-removed handler — that handler now writes to an
+	// open buffered channel (16 slots in the SSE path, 128 here) or
+	// drops via the default branch when the buffer is full. Neither
+	// path panics, which is the C2 fix invariant.
 	stopBus()
+	close(quit)
 	<-writeDone
 	closeWebSocket(conn)
 }
@@ -166,13 +193,38 @@ func readWSMessage(ctx context.Context, conn *websocket.Conn) (wsIncomingMsg, bo
 //   - ctx is a valid context for cancellation.
 //   - conn is an open WebSocket connection.
 //   - out is a readable channel of WSChunkMsg values.
+//   - quit is closed by the handler when the connection should drain and exit.
 //
 // Side effects:
-//   - Writes JSON-encoded messages to conn until out is closed or ctx is cancelled.
-func writeWSLoop(ctx context.Context, conn *websocket.Conn, out <-chan WSChunkMsg) {
-	for msg := range out {
-		if err := sendWSMsg(ctx, conn, msg); err != nil {
-			return
+//   - Writes JSON-encoded messages to conn until quit is closed, ctx is
+//     cancelled, or sendWSMsg returns an error.
+//
+// Note (Bug C2): the loop intentionally does not range over out — out is
+// never closed by the handler (handlers take a default branch on a full
+// buffer rather than panic on a closed chan). Shutdown is signalled via
+// quit. After quit is closed the writer drains any buffered messages so
+// chunks already in flight reach the client before the connection tears
+// down, then exits.
+func writeWSLoop(ctx context.Context, conn *websocket.Conn, out <-chan WSChunkMsg, quit <-chan struct{}) {
+	for {
+		select {
+		case msg := <-out:
+			if err := sendWSMsg(ctx, conn, msg); err != nil {
+				return
+			}
+		case <-quit:
+			// Drain any buffered messages so in-flight chunks
+			// reach the client before tearing down.
+			for {
+				select {
+				case msg := <-out:
+					if err := sendWSMsg(ctx, conn, msg); err != nil {
+						return
+					}
+				default:
+					return
+				}
+			}
 		}
 	}
 }
