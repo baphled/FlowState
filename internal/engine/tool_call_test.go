@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -715,6 +716,71 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				for _, result := range results {
 					Expect(result.Message.Role).NotTo(Equal("tool"))
 				}
+			})
+		})
+
+		// Path C double-Done emit (Bug C1, May 2026 bughunt). When a provider
+		// stream closes with pending tool_calls but the tool loop succeeds in
+		// opening a follow-up stream that completes normally, the consumer
+		// MUST observe exactly one Done — the natural completion Done from
+		// the follow-up stream. The intermediate close-with-pending-tools
+		// must NOT emit a synthetic Done{StopReasonTurnInterrupted}, because
+		// SSE/Vue consumers `break` on first Done and would render an
+		// "interrupted" state for a turn that actually completed.
+		//
+		// See `Bug Fixes/C1 — Path C Double-Done Emit (May 2026).md` in the
+		// FlowState vault for the forensic trace; bughunt confidence 0.85.
+		Context("when stream closes with pending tool_calls then a follow-up stream completes normally", func() {
+			BeforeEach(func() {
+				// First sequence: tool_call only, no Done — channel close
+				// drives the close-with-pending-tools branch in
+				// processStreamChunks.
+				// Second sequence: natural completion Done — the post-tool
+				// follow-up turn the tool loop opens via
+				// retryStreamForToolResult.
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_pathc",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"step": "first"},
+							},
+						},
+					},
+					{
+						{Content: "Final answer after tool.", Done: true},
+					},
+				}
+			})
+
+			It("forwards exactly one Done to the consumer with the natural completion stop reason", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use the tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var doneChunks []provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.Done {
+						doneChunks = append(doneChunks, chunk)
+					}
+				}
+
+				Expect(doneChunks).To(HaveLen(1),
+					"consumer must observe exactly one Done across the close-with-pending-tools + retry-stream lifecycle")
+				Expect(doneChunks[0].StopReason).NotTo(Equal(session.StopReasonTurnInterrupted),
+					"the surviving Done must NOT carry turn_interrupted when the tool loop completed naturally")
+				Expect(testTool.execCalled).To(BeTrue(),
+					"tool must still execute — the fix only suppresses the spurious mid-loop Done")
+				Expect(chatProvider.callIndex).To(Equal(2),
+					"both provider streams must run: the tool-bearing close, and the follow-up retry stream")
 			})
 		})
 	})

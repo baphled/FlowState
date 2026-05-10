@@ -3529,17 +3529,38 @@ func (e *Engine) processStreamChunks(
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case chunk, ok := <-providerChunks:
 			if !ok {
-				// Emit Done unconditionally on channel close, regardless of whether
-				// tool calls are pending. This ensures the accumulator receives a
-				// terminal event and can synthesize a placeholder if needed.
-				// When tool calls are pending, the stop reason is StopReasonTurnInterrupted
-				// so the UI can render the interrupted state appropriately.
-				emitPostTurn()
-				stopReason := session.StopReasonEmptyTurn
-				if len(toolCalls) > 0 {
-					stopReason = session.StopReasonTurnInterrupted
+				// Channel close handling splits on pending tool calls:
+				//
+				//   - No pending tool calls (true empty-response Path C):
+				//     emit a synthetic Done{StopReasonEmptyTurn} so the
+				//     accumulator can synthesise a placeholder assistant
+				//     and the chat UI's in-flight bubble doesn't hang
+				//     until the watchdog trips. This is the legitimate
+				//     intent of commit 8c939f7d.
+				//
+				//   - Pending tool calls: do NOT emit Done here. The
+				//     tool loop in streamWithToolLoop will execute the
+				//     pending calls and open a follow-up provider stream
+				//     via retryStreamForToolResult. The follow-up
+				//     stream's natural Done is the turn's terminal
+				//     event. If the retry stream-init itself fails,
+				//     streamWithToolLoop emits Done{Error} from there —
+				//     that's the genuine interrupted path. Emitting a
+				//     synthetic Done{StopReasonTurnInterrupted} here
+				//     produced a double-Done: SSE/Vue consumers `break`
+				//     on first Done, so the second Done from the
+				//     follow-up stream was dropped and the user saw an
+				//     "interrupted" state for a turn that completed
+				//     successfully (Bug C1, May 2026 bughunt).
+				if len(toolCalls) == 0 {
+					emitPostTurn()
+					outChan <- provider.StreamChunk{
+						Done:       true,
+						StopReason: session.StopReasonEmptyTurn,
+						ModelID:    e.LastModel(),
+						ProviderID: e.LastProvider(),
+					}
 				}
-				outChan <- provider.StreamChunk{Done: true, StopReason: stopReason, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 				return streamChunkResult{
 					toolCalls:       toolCalls,
 					responseContent: responseContent.String(),
