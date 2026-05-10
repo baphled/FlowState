@@ -1,0 +1,242 @@
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
+import { useSwarmStore } from '@/stores/swarmStore'
+import { useChatStore } from '@/stores/chatStore'
+
+/**
+ * Test helpers — build a controllable ReadableStream-shaped reader so we can
+ * drive the connect() loop step-by-step from the test, including the post-abort
+ * "late chunk arrives" case that pins the M8 generation-token contract.
+ */
+type FakeChunk = { value: Uint8Array; done?: false } | { value?: undefined; done: true }
+
+function controllableReader() {
+  // Each pending read() call resolves when we push a chunk via emit() / close().
+  const queue: FakeChunk[] = []
+  const waiters: Array<(c: FakeChunk) => void> = []
+  let aborted = false
+
+  function dispatch(): void {
+    while (queue.length > 0 && waiters.length > 0) {
+      const w = waiters.shift()!
+      const c = queue.shift()!
+      w(c)
+    }
+  }
+
+  return {
+    reader: {
+      read: vi.fn(() => {
+        if (aborted) {
+          return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+        }
+        return new Promise<FakeChunk>((resolve) => {
+          waiters.push(resolve)
+          dispatch()
+        })
+      }),
+      cancel: vi.fn(() => {
+        aborted = true
+        // Drain any waiters with an abort error.
+        while (waiters.length > 0) {
+          const w = waiters.shift()!
+          // Resolve as a rejection-shaped chunk; in real life cancel() rejects pending reads.
+          w({ done: true })
+        }
+        return Promise.resolve()
+      }),
+      releaseLock: vi.fn(),
+    },
+    emit(text: string): void {
+      const value = new TextEncoder().encode(text)
+      queue.push({ value, done: false })
+      dispatch()
+    },
+    close(): void {
+      queue.push({ done: true })
+      dispatch()
+    },
+    abort(): void {
+      aborted = true
+      // Pending reads get an abort rejection.
+      while (waiters.length > 0) {
+        const w = waiters.shift()!
+        // Resolve waiter with done so the loop exits — but production code
+        // would observe AbortError. We simulate the abort path by rejecting
+        // through the read mock on the *next* call.
+        w({ done: true })
+      }
+    },
+  }
+}
+
+function makeFetchResponse(reader: ReturnType<typeof controllableReader>['reader']) {
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader: () => reader,
+    },
+  } as unknown as Response
+}
+
+function flushMicrotasks(times = 5): Promise<void> {
+  return (async () => {
+    for (let i = 0; i < times; i++) {
+      await Promise.resolve()
+    }
+  })()
+}
+
+describe('swarmStore.connect — H5 follow-up: session_id threading', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('passes ?session_id=<currentSessionId> on the swarm/events URL when a session is active', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-active-1'
+
+    const ctrl = controllableReader()
+    const fetchSpy = vi.fn(() => Promise.resolve(makeFetchResponse(ctrl.reader)))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+    const p = swarm.connect()
+    await flushMicrotasks()
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const firstCall = fetchSpy.mock.calls[0] as unknown as [string | URL, ...unknown[]]
+    const calledUrl = String(firstCall[0])
+    expect(calledUrl).toContain('/swarm/events')
+    expect(calledUrl).toContain('session_id=session-active-1')
+
+    // Tear down cleanly.
+    ctrl.close()
+    await swarm.disconnect()
+    await p
+  })
+
+  it('fails loudly without firing fetch when no session id is available (routing bug indicator)', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = null
+
+    const fetchSpy = vi.fn(() => {
+      throw new Error('fetch must not be called when no session id is available')
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+    await swarm.connect()
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(swarm.error).not.toBeNull()
+    expect(swarm.error).toMatch(/session/i)
+    expect(swarm.isLive).toBe(false)
+  })
+})
+
+describe('swarmStore.connect — M8: generation-token isolation across reconnect', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('does not append events read from a stale generation after reconnect', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-gen-1'
+
+    const ctrlA = controllableReader()
+    const ctrlB = controllableReader()
+    let call = 0
+    const fetchSpy = vi.fn(() => {
+      call += 1
+      return Promise.resolve(makeFetchResponse(call === 1 ? ctrlA.reader : ctrlB.reader))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+
+    // First connect — generation 1.
+    const pA = swarm.connect()
+    await flushMicrotasks()
+
+    // First-generation publishes one valid event.
+    ctrlA.emit('data: {"id":"evt-gen1-A","type":"tool_call","timestamp":"2026-05-10T00:00:00Z","agent_id":"a"}\n')
+    await flushMicrotasks()
+    expect(swarm.events.map((e) => e.id)).toEqual(['evt-gen1-A'])
+
+    // Now reconnect — generation 2. connect() awaits disconnect() which aborts gen 1,
+    // but the prior read loop's pending Promise may still settle late and try to mutate.
+    const pB = swarm.connect()
+    await flushMicrotasks()
+
+    // Second-generation publishes its own event.
+    ctrlB.emit('data: {"id":"evt-gen2-B","type":"tool_call","timestamp":"2026-05-10T00:00:01Z","agent_id":"b"}\n')
+    await flushMicrotasks()
+
+    // Now simulate the gen-1 reader's late chunk landing AFTER reconnect — this
+    // is the exact race M8 pins. The store must NOT append it: gen-1 is stale.
+    ctrlA.emit('data: {"id":"evt-gen1-LATE","type":"tool_call","timestamp":"2026-05-10T00:00:02Z","agent_id":"a"}\n')
+    await flushMicrotasks()
+
+    const ids = swarm.events.map((e) => e.id)
+    expect(ids).toContain('evt-gen2-B')
+    expect(ids).not.toContain('evt-gen1-LATE')
+
+    // Tear down both controllers.
+    ctrlA.close()
+    ctrlB.close()
+    await swarm.disconnect()
+    await Promise.all([pA, pB])
+  })
+
+  it('does not flicker isLive=false from a stale generation after reconnect', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-gen-2'
+
+    const ctrlA = controllableReader()
+    const ctrlB = controllableReader()
+    let call = 0
+    const fetchSpy = vi.fn(() => {
+      call += 1
+      return Promise.resolve(makeFetchResponse(call === 1 ? ctrlA.reader : ctrlB.reader))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+
+    const pA = swarm.connect()
+    await flushMicrotasks()
+    expect(swarm.isLive).toBe(true)
+
+    // Reconnect mid-stream.
+    const pB = swarm.connect()
+    await flushMicrotasks()
+
+    // Gen 2 is now active. Force gen 1's loop to finish (close its stream) —
+    // its `finally { isLive.value = false }` MUST NOT touch the live flag,
+    // because gen 2 owns it.
+    ctrlA.close()
+    await flushMicrotasks()
+
+    // Gen 2 still streaming, isLive must still be true.
+    expect(swarm.isLive).toBe(true)
+
+    // Clean up gen 2.
+    ctrlB.close()
+    await flushMicrotasks()
+    expect(swarm.isLive).toBe(false)
+
+    await Promise.all([pA, pB])
+  })
+})
