@@ -338,3 +338,80 @@ var _ = Describe("subscribeSessionBus", func() {
 type someError string
 
 func (e someError) Error() string { return string(e) }
+
+// Bug C2 — handleSessionWebSocket panics on bus event after channel close.
+//
+// internal/api/websocket.go pre-fix did `close(out)` then `stopBus()`. Bus
+// handlers (event_bridge.go) perform a non-blocking send via
+// `select { case out <- msg: default: }`. On a CLOSED channel `select` does
+// NOT take the default branch — it panics with "send on closed channel".
+// Between `close(out)` and Unsubscribe any of nine bus topics firing
+// (tool.before/result/error, rate_limited, three background_task variants,
+// context_compacted, gate.failed) crashes the publisher's goroutine.
+//
+// The WS-handler fix avoids closing `out` at all (it now signals the
+// writer goroutine via a quit channel, mirroring the SSE handler's busCh
+// pattern). The specs below pin the bridge-level lifecycle invariants any
+// future caller of subscribeSessionBus must respect:
+//
+//  1. close(out) before stop() panics on a subsequent bus publish — pinning
+//     the bug class. Any future caller that closes the channel before
+//     unsubscribing repeats the C2 panic; this spec is the contract guard.
+//  2. stop() before close(out) is panic-safe — Unsubscribe removes the
+//     handler from the bus's snapshot map before the channel is closed,
+//     so a subsequent publish finds no handler and never sends.
+var _ = Describe("subscribeSessionBus — channel-close lifecycle (Bug C2)", func() {
+	var (
+		bus  *eventbus.EventBus
+		srv  *api.Server
+		out  chan api.WSChunkMsg
+		stop func()
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		out = make(chan api.WSChunkMsg, 16)
+		stop = srv.SubscribeSessionBus("sess-1", out)
+	})
+
+	It("close(out) before stop() panics on a subsequent bus publish — pins the bug class", func() {
+		// BUGGY ORDER: close before stop. This is the pre-fix
+		// websocket.go cleanup shape. The handler closure (still in
+		// the bus's handler list) runs `select { case out <- msg:
+		// default: }` which panics on a closed channel. Pins the bug
+		// class so any future caller that closes the channel before
+		// unsubscribing fails this invariant explicitly.
+		close(out)
+
+		Expect(func() {
+			bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
+				SessionID: "sess-1",
+				ToolName:  "read",
+			}))
+		}).To(Panic(),
+			"close(out) before stop() must panic on subsequent publish — this is the C2 bug class")
+
+		stop()
+	})
+
+	It("stop() before close(out) is panic-safe under publish — pins the fix invariant", func() {
+		// SAFE ORDER: stop before close. Unsubscribe removes our
+		// handlers from the bus's handler map before the channel
+		// closes, so a publish after stop() finds no handlers and
+		// never sends to the closed channel. The WS handler post-C2
+		// fix avoids close(out) entirely (signalling the writer via a
+		// quit channel instead) — this spec stays as a guard for any
+		// future caller that does need to close the bridge channel.
+		stop()
+		close(out)
+
+		Expect(func() {
+			bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
+				SessionID: "sess-1",
+				ToolName:  "read",
+			}))
+		}).NotTo(Panic(),
+			"stop() before close(out) must be panic-safe — this is the C2 fix invariant")
+	})
+})
