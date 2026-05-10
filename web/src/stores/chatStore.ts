@@ -960,7 +960,10 @@ export const useChatStore = defineStore('chat', {
           // keeps running and chunks for the inactive session land
           // through reconcile when the user returns.
           if (this.currentSessionId !== capturedSessionId) return
-          this.applyContentEvent(payload)
+          // M7 — thread capturedSessionId so phase + watchdog re-arm
+          // scope to this stream's session even if the user navigates
+          // between the C-3 guard above and applyContentEvent below.
+          this.applyContentEvent(payload, capturedSessionId)
           if (payload === '[DONE]') {
             close()
           }
@@ -1539,7 +1542,10 @@ export const useChatStore = defineStore('chat', {
             // open (Slice B per-session singleton); chunks are dropped
             // at this guard until the user returns or [DONE] arrives.
             if (this.currentSessionId !== capturedSessionId) return
-            this.applyContentEvent(payload)
+            // M7 — thread capturedSessionId so phase + watchdog re-arm
+            // scope to this stream's session even if the user navigates
+            // between the C-3 guard above and applyContentEvent below.
+            this.applyContentEvent(payload, capturedSessionId)
             if (payload === '[DONE]') {
               // Close immediately on stream end so the browser cannot
               // auto-reconnect and register a second broker subscriber
@@ -1831,7 +1837,7 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    applyContentEvent(payload: string): void {
+    applyContentEvent(payload: string, capturedSessionId?: string): void {
       // Classify into the discriminated union — see web/src/lib/sseEvent.ts
       // for the source-of-truth list of event variants tracked from the Go
       // emitter. The exhaustive switch below means a new event type added
@@ -1846,21 +1852,31 @@ export const useChatStore = defineStore('chat', {
       // structural fallback was dead code.
       const event: SSEEvent = parseSSEPayload(payload)
 
+      // M7 — phase + watchdog scoping must follow the chunk's session, NOT
+      // the global currentSessionId. SSE callers thread their captured id
+      // (sendMessage / maybeReattachStream both keep `capturedSessionId`
+      // closure-scoped past the C-3 guard); legacy and test callers
+      // omitting the argument fall back to currentSessionId for backwards
+      // compatibility. Without this, a chunk arriving for session A while
+      // the user has navigated to B writes A's phase under B's key and
+      // re-arms B's watchdog against A's chunk activity — false positives
+      // on B and missed stalls on A.
+      const targetSessionId = capturedSessionId ?? this.currentSessionId ?? undefined
+
       // Streaming Coherence Slice F (May 2026) — record the latest
       // engine heartbeat phase BEFORE arming the watchdog so the
       // adaptive threshold (45/120/180/300s) is in effect when the
       // arm runs below.
-      if (event.kind === 'streaming_heartbeat' && this.currentSessionId) {
-        this.streamingPhase[this.currentSessionId] = event.phase || ''
+      if (event.kind === 'streaming_heartbeat' && targetSessionId) {
+        this.streamingPhase[targetSessionId] = event.phase || ''
       }
 
       // Any SSE event counts as "the stream is alive" — re-arm the
       // watchdog so a slow but progressing stream is never killed.
-      // The watchdog only trips on dead streams. Pass currentSessionId so a
-      // trip can reconcile against the right session (the C-3 chunk-handler
-      // guard ensures applyContentEvent only runs while currentSessionId
-      // still matches the streaming session).
-      this.armStallWatchdog(this.currentSessionId ?? undefined)
+      // The watchdog only trips on dead streams. Pass the chunk's own
+      // session so a trip reconciles the right session even if the user
+      // has navigated mid-stream.
+      this.armStallWatchdog(targetSessionId)
 
       switch (event.kind) {
         case 'done':
@@ -1948,15 +1964,10 @@ export const useChatStore = defineStore('chat', {
           // The engine's heartbeat ticks every ~15s during a turn so
           // the stall watchdog re-arms even when content emission
           // pauses (long thinking, sandboxed tool execution). The
-          // phase discriminant updates the per-session phase slot;
-          // the watchdog reads it to pick a per-phase threshold on
-          // its next arm.
-          if (this.currentSessionId) {
-            this.streamingPhase[this.currentSessionId] = event.phase || ''
-          }
-          // The armStallWatchdog call at the top of applyContentEvent
-          // already re-armed the watchdog for this chunk; nothing else
-          // to do here.
+          // phase write + watchdog re-arm both happened above (before
+          // this switch) under `targetSessionId` so they follow the
+          // chunk's own session, not currentSessionId — see M7. Nothing
+          // else to do here.
           return
         case 'gate_failed':
           // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):

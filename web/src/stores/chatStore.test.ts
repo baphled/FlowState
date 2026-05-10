@@ -4715,6 +4715,122 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
     await Promise.all([sendA, sendB])
   })
 
+  // M7 — applyContentEvent must scope phase + watchdog re-arm to the chunk's
+  // session, NOT the global currentSessionId. The C-3 chunk-handler guard
+  // ensures `currentSessionId === capturedSessionId` for the SSE-driven
+  // entry, but the contract is defence-in-depth: any caller that supplies
+  // a session id must have phase recorded and the watchdog re-armed against
+  // THAT session, regardless of where the user navigated to.
+  //
+  // Pre-fix: applyContentEvent read this.currentSessionId for both the
+  // heartbeat phase write (line 1854) and the armStallWatchdog call
+  // (line 1863). A chunk arriving for session A while the user has
+  // navigated to B writes A's phase under B's key and re-arms B's
+  // watchdog against A's chunk activity — false positives, missed stalls.
+  describe('M7 — applyContentEvent scopes phase and watchdog to chunk session, not currentSessionId', () => {
+    it('writes streaming.heartbeat phase under the chunk\'s session, not currentSessionId', () => {
+      const store = useChatStore()
+      // User has navigated from A to B mid-stream.
+      store.currentSessionId = 'sess-B'
+      store.streamingPhase['sess-A'] = 'thinking'
+      store.streamingPhase['sess-B'] = 'generating'
+
+      // A's stream emits a heartbeat with a new phase — pre-fix this
+      // would clobber sess-B's phase. Post-fix it lands on sess-A.
+      store.applyContentEvent(
+        JSON.stringify({ type: 'streaming.heartbeat', phase: 'tool_executing' }),
+        'sess-A',
+      )
+
+      expect(store.streamingPhase['sess-A']).toBe('tool_executing')
+      expect(store.streamingPhase['sess-B']).toBe('generating')
+    })
+
+    it('re-arms the chunk session\'s watchdog (not currentSessionId\'s) so a stall trip fires for the correct session', async () => {
+      // Two sessions both have an open stream. User starts on A, sends a
+      // message, then navigates to B and sends there too. Mid-flight, A
+      // emits a content chunk. The watchdog arming on that chunk MUST
+      // target A's stream, not B's — otherwise A's true stall is masked
+      // and B's active stream is interrupted by a spurious stall trip.
+      //
+      // We instrument the test by stubbing fetchSessionMessages to record
+      // which session reconcileFromBackend is called for; handleStreamStall
+      // calls reconcile on the session whose watchdog tripped.
+      vi.useFakeTimers()
+      try {
+        const store = useChatStore()
+        store.agentId = 'agent-1'
+
+        // Open a stream on A.
+        store.currentSessionId = 'session-A'
+        let resolveSendA: (v: any) => void = () => {}
+        vi.mocked(sendSessionMessage).mockImplementationOnce(
+          () => new Promise<any>((resolve) => { resolveSendA = resolve }),
+        )
+        const sendA = store.sendMessage('on A')
+        await Promise.resolve()
+        await Promise.resolve()
+
+        // Switch to B and open a stream there too.
+        vi.mocked(fetchSessionMessages).mockResolvedValueOnce([])
+        await store.loadSessionMessages('session-B')
+        let resolveSendB: (v: any) => void = () => {}
+        vi.mocked(sendSessionMessage).mockImplementationOnce(
+          () => new Promise<any>((resolve) => { resolveSendB = resolve }),
+        )
+        const sendB = store.sendMessage('on B')
+        await Promise.resolve()
+        await Promise.resolve()
+
+        expect(store.currentSessionId).toBe('session-B')
+        // Both streams are armed (one watchdog per FakeEventSource opened).
+        expect(FakeEventSource.instances.length).toBe(2)
+
+        // Track which sessions reconcileFromBackend pulls history for —
+        // handleStreamStall fires reconcile for the session whose watchdog
+        // tripped. We will assert on this list below.
+        const reconciledSessions: string[] = []
+        vi.mocked(fetchSessionMessages).mockImplementation(async (sid: string) => {
+          reconciledSessions.push(sid)
+          return []
+        })
+
+        // 30s passes — no stall yet on either session.
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(reconciledSessions).toEqual([])
+
+        // A's stream produces a chunk. The C-3 guard would normally drop
+        // this at the chunk handler since currentSessionId !== A; we
+        // bypass it to exercise the underlying contract directly. The
+        // watchdog re-arm MUST target A (the chunk's session), not B.
+        store.applyContentEvent(JSON.stringify({ content: 'late from A' }), 'session-A')
+
+        // 35s further (total 65s on the original watchdog arms for both
+        // sessions). Pre-fix: A's chunk re-armed B's watchdog, so B's
+        // trip is delayed past the 65s mark and reconciliation fires
+        // against A (the bug — A is "active" but its chunk activity was
+        // mis-attributed). Post-fix: A's watchdog was re-armed by A's
+        // chunk; only B's original 60s timer fires, reconciling B.
+        await vi.advanceTimersByTimeAsync(35_000)
+        // Flush microtasks so the reconcile's awaited fetch lands.
+        await Promise.resolve()
+        await Promise.resolve()
+
+        // Exactly one stall trip fired — for the session whose watchdog
+        // was NOT re-armed (B). A's was re-armed by its own chunk.
+        expect(reconciledSessions).toEqual(['session-B'])
+
+        // Tidy.
+        resolveSendA({ id: 'session-A', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+        resolveSendB({ id: 'session-B', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
+        await sendA
+        await sendB
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
   // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
   describe('escape-twice cancel cascade', () => {
     it('sends DELETE /api/v1/sessions/{id}/stream on second escape within 600ms', async () => {
