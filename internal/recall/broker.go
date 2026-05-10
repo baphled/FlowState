@@ -2,6 +2,7 @@ package recall
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sort"
 	"sync"
@@ -9,6 +10,31 @@ import (
 
 	"github.com/baphled/flowstate/internal/learning"
 )
+
+// ErrAllSourcesFailed is the sentinel error returned by Broker.Query
+// when every configured (non-nil) source returned an error.
+//
+// M9 (Bug Hunt Findings May 2026). Before this sentinel existed the
+// broker swallowed every per-source error, logged a warning, and
+// returned (nil, nil) — making a complete recall outage
+// indistinguishable from a zero-result query against a healthy
+// broker. Long conversations could therefore silently degrade to
+// recency-only retrieval with no observable signal anywhere on the
+// wire.
+//
+// Callers that need only a single discrimination point should
+// `errors.Is(err, ErrAllSourcesFailed)`. Callers that want the
+// individual per-source failures (operator triage, structured
+// logging) can `errors.Unwrap` the returned error: the broker joins
+// the per-source errors via errors.Join so each underlying cause
+// remains reachable via errors.Is / errors.As on its concrete type.
+//
+// A *partial* failure (some sources succeed, others fail) intentionally
+// does NOT surface as ErrAllSourcesFailed. The healthy sources'
+// observations are still returned and err is nil. This preserves the
+// pre-M9 lenience for the common transient-source case while keeping
+// the all-failed mode discriminable.
+var ErrAllSourcesFailed = errors.New("recall: all configured sources failed")
 
 type dateRangeKey struct{}
 
@@ -82,7 +108,13 @@ func NewRecallBroker(sessionSource, chainSource, hierarchySource, learningSource
 // Query returns merged observations from all configured sources.
 //
 // Expected: ctx is non-nil when query scoping is required.
-// Returns: observations merged from every configured source, ordered by freshness.
+// Returns: observations merged from every configured source, ordered
+// by freshness. When every configured (non-nil) source returns an
+// error the result is empty and err wraps ErrAllSourcesFailed —
+// callers can discriminate "all recall sources broken" from "no
+// matches" via errors.Is(err, ErrAllSourcesFailed). Partial failures
+// (some sources succeed) preserve the pre-M9 lenience: healthy
+// observations are returned and err is nil.
 // Side effects: queries all configured sources concurrently and logs source errors.
 func (b *broker) Query(ctx context.Context, query string, limit int) ([]Observation, error) {
 	if ctx == nil {
@@ -90,7 +122,17 @@ func (b *broker) Query(ctx context.Context, query string, limit int) ([]Observat
 	}
 
 	agentID := b.agentIDFromContext(ctx)
-	results := b.collect(ctx, query, limit)
+	results, sourceErrs, configuredCount := b.collectWithErrors(ctx, query, limit)
+
+	// M9: if every configured source errored, surface a typed error
+	// so the caller can distinguish total failure from "no results".
+	// Zero configured sources is intentionally NOT a failure — that's
+	// a benign no-op config, not a fan-out exhaustion.
+	if configuredCount > 0 && len(sourceErrs) == configuredCount {
+		joined := errors.Join(sourceErrs...)
+		return []Observation{}, errors.Join(ErrAllSourcesFailed, joined)
+	}
+
 	merged := b.merge(results, agentID)
 	if dr, ok := dateRangeFromContext(ctx); ok {
 		merged = b.filterByDateRange(merged, dr)
@@ -99,17 +141,34 @@ func (b *broker) Query(ctx context.Context, query string, limit int) ([]Observat
 	return b.limitResults(merged, limit), nil
 }
 
-// collect queries all configured sources in parallel and preserves their result sets.
+// collectWithErrors queries all configured sources in parallel and
+// returns their result sets alongside the per-source errors and the
+// number of non-nil sources that were dispatched.
 //
 // Expected: ctx is usable by each source query and query/limit are forwarded unchanged.
-// Returns: one result slice per configured source, with nil entries for skipped or failed sources.
+// Returns:
+//   - results: one observation slice per configured source, with nil
+//     entries for nil or failed sources.
+//   - sourceErrs: aggregated per-source errors in undefined order. The
+//     caller compares len(sourceErrs) against configuredCount to
+//     decide whether every configured source failed (M9 sentinel
+//     return).
+//   - configuredCount: the number of non-nil sources actually
+//     dispatched. nil entries are absent rather than failed, so they
+//     must not skew the all-failed determination.
+//
 // Side effects: launches concurrent source queries and logs any query failures.
-func (b *broker) collect(ctx context.Context, query string, limit int) [][]Observation {
+func (b *broker) collectWithErrors(ctx context.Context, query string, limit int) ([][]Observation, []error, int) {
 	sources := []Source{b.sessionSource, b.chainSource, b.hierarchySource, b.learningSource}
 	sources = append(sources, b.extraSources...)
 	results := make([][]Observation, len(sources))
 
-	var wg sync.WaitGroup
+	var (
+		mu              sync.Mutex
+		sourceErrs      []error
+		configuredCount int
+		wg              sync.WaitGroup
+	)
 	wg.Add(len(sources))
 	for i, source := range sources {
 		go func(index int, source Source) {
@@ -117,16 +176,22 @@ func (b *broker) collect(ctx context.Context, query string, limit int) [][]Obser
 			if source == nil {
 				return
 			}
+			mu.Lock()
+			configuredCount++
+			mu.Unlock()
 			observations, err := source.Query(ctx, query, limit)
 			if err != nil {
 				log.Printf("warning: recall source query failed: %v", err)
+				mu.Lock()
+				sourceErrs = append(sourceErrs, err)
+				mu.Unlock()
 				return
 			}
 			results[index] = observations
 		}(i, source)
 	}
 	wg.Wait()
-	return results
+	return results, sourceErrs, configuredCount
 }
 
 // merge filters and combines source results into a single slice.

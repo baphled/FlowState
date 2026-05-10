@@ -524,6 +524,24 @@ var Catalog = []EventCatalogEntry{
 		Delivery:    "fire-and-forget",
 	},
 	{
+		Topic:       EventRecallChainSearchFailed,
+		Constant:    "EventRecallChainSearchFailed",
+		EventType:   "recall.chain.search.failed",
+		Struct:      "RecallChainSearchFailedEvent",
+		Publishers:  []string{"recall/chain_search.go"},
+		Subscribers: []string{"eventlogger"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "M9 (Bug Hunt Findings May 2026). Distinguishes genuine recall failure" +
+			" (Qdrant down, dimension mismatch, network timeout, broker fan-out exhausted)" +
+			" from the silent-zero-results fallback that the pre-existing" +
+			" `recall.chain.searched` event masked. Subscribers that need to surface" +
+			" recall health on a dashboard or trigger user-visible warnings must" +
+			" subscribe to this topic. Fire-and-forget; complements rather than" +
+			" replaces `recall.chain.searched`.",
+	},
+	{
 		Topic:       EventRecallSummarized,
 		Constant:    "EventRecallSummarized",
 		EventType:   "recall.summarized",
