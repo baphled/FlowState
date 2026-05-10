@@ -13,6 +13,50 @@ const md = new MarkdownIt({
   breaks: true,
 })
 
+// M6 (Bug Hunt May 2026): tighten link validation. markdown-it 14's default
+// validateLink regex-tests the trimmed lower-cased URL but does NOT URL-
+// decode first, so `javascript%3Aalert(1)` slips through, renders as
+// `href="javascript%3Aalert(1)"`, and the browser decodes %3A → ":" on
+// click — script executes in the chat origin. We replace the default with
+// a strict scheme allowlist: http, https, mailto, fragments (#…), and
+// relative paths (./…, ../…, /…). Everything else (javascript, vbscript,
+// data, file, blob, ftp, scheme-relative //) becomes plain text.
+const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
+
+md.validateLink = (url: string): boolean => {
+  if (typeof url !== 'string') return false
+  // Decode percent-encoding so `javascript%3A...` cannot bypass the check.
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(url)
+  } catch {
+    decoded = url
+  }
+  const trimmed = decoded.trim().toLowerCase()
+  if (trimmed === '') return false
+  // Scheme-relative `//host` inherits the page protocol — disallow.
+  if (trimmed.startsWith('//')) return false
+  // Fragment-only (`#anchor`) and relative paths (`/`, `./`, `../`) are
+  // safe — no scheme to abuse.
+  if (
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('./') ||
+    trimmed.startsWith('../')
+  ) {
+    return true
+  }
+  // Anything containing a colon before the first slash is a scheme — gate
+  // it. Anything else (e.g. `guide.md`) is a relative reference.
+  const colonIdx = trimmed.indexOf(':')
+  const slashIdx = trimmed.indexOf('/')
+  if (colonIdx === -1 || (slashIdx !== -1 && slashIdx < colonIdx)) {
+    return true
+  }
+  const scheme = trimmed.slice(0, colonIdx + 1)
+  return ALLOWED_SCHEMES.has(scheme)
+}
+
 const renderedHtml = computed(() => md.render(props.content))
 </script>
 
