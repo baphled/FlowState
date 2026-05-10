@@ -3152,11 +3152,14 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 		hs.Close()
 	})
 
-	publishAndDrain := func(publish func()) []map[string]any {
+	publishAndDrain := func(sessionID string, publish func()) []map[string]any {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events", http.NoBody)
+		// H5 (May 2026): /api/swarm/events now requires ?session_id= and
+		// filters cross-tenant events. Existing projection specs scope to the
+		// session whose publish() they exercise.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events?session_id="+sessionID, http.NoBody)
 		Expect(err).NotTo(HaveOccurred())
 
 		respCh := make(chan *http.Response, 1)
@@ -3206,7 +3209,7 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 	}
 
 	It("emits a delegation event with metadata.child_session_id when delegation.started fires on the bus", func() {
-		collected := publishAndDrain(func() {
+		collected := publishAndDrain("parent-sse", func() {
 			bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
 				ChainID:         "chain-sse-1",
 				ParentSessionID: "parent-sse",
@@ -3239,7 +3242,7 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 	})
 
 	It("emits a delegation event with status=completed when delegation.completed fires", func() {
-		collected := publishAndDrain(func() {
+		collected := publishAndDrain("parent", func() {
 			bus.Publish(events.EventDelegationCompleted, events.NewDelegationCompletedEvent(events.DelegationEventData{
 				ChainID:         "chain-sse-c",
 				ParentSessionID: "parent",
@@ -3270,7 +3273,7 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 	})
 
 	It("emits a delegation event with status=failed and the error message when delegation.failed fires", func() {
-		collected := publishAndDrain(func() {
+		collected := publishAndDrain("parent", func() {
 			bus.Publish(events.EventDelegationFailed, events.NewDelegationFailedEvent(events.DelegationEventData{
 				ChainID:         "chain-sse-f",
 				ParentSessionID: "parent",
@@ -3321,11 +3324,14 @@ var _ = Describe("GET /api/swarm/events tool.execute.* projection", func() {
 		hs.Close()
 	})
 
-	publishAndDrain := func(publish func()) []map[string]any {
+	publishAndDrain := func(sessionID string, publish func()) []map[string]any {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events", http.NoBody)
+		// H5 (May 2026): /api/swarm/events now requires ?session_id= and
+		// filters cross-tenant events. Existing projection specs scope to the
+		// session whose publish() they exercise.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events?session_id="+sessionID, http.NoBody)
 		Expect(err).NotTo(HaveOccurred())
 
 		respCh := make(chan *http.Response, 1)
@@ -3373,7 +3379,7 @@ var _ = Describe("GET /api/swarm/events tool.execute.* projection", func() {
 	}
 
 	It("uses InternalToolCallID as the SwarmEvent ID for tool.execute.before", func() {
-		collected := publishAndDrain(func() {
+		collected := publishAndDrain("sess-1", func() {
 			bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
 				SessionID:          "sess-1",
 				ToolName:           "bash",
@@ -3406,7 +3412,7 @@ var _ = Describe("GET /api/swarm/events tool.execute.* projection", func() {
 	})
 
 	It("uses InternalToolCallID and exposes content in metadata for tool.execute.result", func() {
-		collected := publishAndDrain(func() {
+		collected := publishAndDrain("sess-1", func() {
 			bus.Publish(events.EventToolExecuteResult, events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
 				SessionID:          "sess-1",
 				ToolName:           "bash",
@@ -3435,7 +3441,7 @@ var _ = Describe("GET /api/swarm/events tool.execute.* projection", func() {
 	})
 
 	It("uses InternalToolCallID and exposes the error message for tool.execute.error", func() {
-		collected := publishAndDrain(func() {
+		collected := publishAndDrain("sess-1", func() {
 			bus.Publish(events.EventToolExecuteError, events.NewToolExecuteErrorEvent(events.ToolExecuteErrorEventData{
 				SessionID:          "sess-1",
 				ToolName:           "bash",
@@ -3468,7 +3474,7 @@ var _ = Describe("GET /api/swarm/events tool.execute.* projection", func() {
 		// code path that does not yet route through executeToolCall from
 		// manifesting as a silent SSE drop (the projector keys on a
 		// non-empty id).
-		collected := publishAndDrain(func() {
+		collected := publishAndDrain("sess-fallback", func() {
 			bus.Publish(events.EventToolExecuteBefore, events.NewToolEvent(events.ToolEventData{
 				SessionID: "sess-fallback",
 				ToolName:  "bash",
@@ -3537,7 +3543,13 @@ var _ = Describe("GET /api/swarm/events backpressure isolation (C3 / H6)", func(
 		conn, err := net.Dial("tcp", u.Host)
 		Expect(err).NotTo(HaveOccurred())
 
-		req := "GET /api/swarm/events HTTP/1.1\r\n" +
+		// H5 (May 2026): the handler now requires ?session_id=. The
+		// backpressure spec only cares that a slow consumer cannot wedge the
+		// bus, so any non-empty session id is valid here — both flood
+		// publishes use ChildSessionID="child" / ParentSessionID="parent",
+		// "parent" is in scope for this consumer and exercises the same
+		// drop-on-full path.
+		req := "GET /api/swarm/events?session_id=parent HTTP/1.1\r\n" +
 			"Host: " + u.Host + "\r\n" +
 			"Accept: text/event-stream\r\n" +
 			"Connection: keep-alive\r\n\r\n"
@@ -3647,6 +3659,222 @@ var _ = Describe("GET /api/swarm/events backpressure isolation (C3 / H6)", func(
 		Eventually(runtime.NumGoroutine, 2*time.Second, 50*time.Millisecond).
 			Should(BeNumerically("<", baseline+50),
 				"connect-flood-disconnect churn must not leak goroutines wedged on a dead handler's eventCh")
+	})
+})
+
+// QA bughunt 2026-05-08, H5: handleSwarmEvents cross-tenant event leak.
+//
+// The /api/swarm/events handler historically subscribed to nine bus topics
+// globally with no per-request session filter and no auth. Any client could
+// connect anonymously and receive SessionID, tool names, error strings, and
+// delegation chains for every active session in the process. Documented as
+// "H5" in vault Bug Hunt Findings (May 2026).
+//
+// Fix shape: require ?session_id=<id> on the request; filter projected events
+// such that only events whose underlying SessionID (tool/background) or
+// Parent/Child SessionID (delegation) matches the requested session are
+// emitted. Anonymous global subscription returns 400.
+//
+// Pinning specs:
+//
+//  1. A request without ?session_id= MUST be rejected (no leak surface).
+//  2. A request with ?session_id=A MUST receive events for session A and MUST
+//     NOT receive events for session B published concurrently — the cross-
+//     tenant leak.
+//  3. Delegation events match on either Parent or Child session id, since
+//     both surfaces participate in the chain (the parent surface needs the
+//     started/completed; the child surface needs the parent linkage).
+var _ = Describe("GET /api/swarm/events session filter (H5)", func() {
+	var (
+		bus *eventbus.EventBus
+		srv *api.Server
+		hs  *httptest.Server
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		hs = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		hs.Close()
+	})
+
+	// streamEvents opens an SSE connection at the given URL and returns up to
+	// `expect` decoded data frames (after the initial `connected` frame). The
+	// connection is closed when the deadline fires or the expected count is
+	// reached, whichever is first.
+	streamEvents := func(rawURL string, expect int, deadline time.Duration) []map[string]any {
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil
+		}
+
+		var collected []map[string]any
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, readErr := reader.ReadString('\n')
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "data: ") {
+				payload := strings.TrimPrefix(trimmed, "data: ")
+				var parsed map[string]any
+				if json.Unmarshal([]byte(payload), &parsed) == nil {
+					collected = append(collected, parsed)
+				}
+			}
+			if readErr != nil {
+				return collected
+			}
+			if expect > 0 && len(collected) >= expect {
+				return collected
+			}
+		}
+	}
+
+	It("rejects requests without a session_id query parameter", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		resp, err := http.DefaultClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+
+		Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+			"unfiltered subscription is the cross-tenant leak — the handler must reject anonymous global subscribers")
+	})
+
+	It("emits tool events for the requested session and drops events from other sessions", func() {
+		// Open a stream scoped to session-A. Publish tool events for both
+		// session-A and session-B concurrently. The connection must see the
+		// session-A event and never see the session-B event.
+		//
+		// To make the leak detection deterministic regardless of scheduling
+		// order we publish session-B FIRST (the leak), then session-A. With
+		// the unfiltered handler both arrive on the wire; with the filtered
+		// handler only the session-A frame arrives. Reading until we observe
+		// the connected hello + the owned session-A frame proves session-B
+		// did not appear (since publish order placed it earlier in the bus
+		// queue).
+		streamURL := hs.URL + "/api/swarm/events?session_id=session-A"
+
+		eventsCh := make(chan []map[string]any, 1)
+		go func() {
+			eventsCh <- streamEvents(streamURL, 2, 2*time.Second)
+		}()
+
+		// Allow the handler to register its bus subscriptions.
+		time.Sleep(120 * time.Millisecond)
+
+		// session-B published FIRST — must NOT be emitted on session-A's
+		// stream. This is the cross-tenant leak: tool name + result body for
+		// an unrelated tenant ahead of the owner's frame.
+		bus.Publish(events.EventToolExecuteResult, events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
+			SessionID:          "session-B",
+			ToolName:           "secret_tool",
+			InternalToolCallID: "tcid-B",
+			ToolCallID:         "prov-B",
+			Result:             "leaked-from-B",
+		}))
+
+		// session-A — should be emitted.
+		bus.Publish(events.EventToolExecuteResult, events.NewToolExecuteResultEvent(events.ToolExecuteResultEventData{
+			SessionID:          "session-A",
+			ToolName:           "bash",
+			InternalToolCallID: "tcid-A",
+			ToolCallID:         "prov-A",
+			Result:             "for-A",
+		}))
+
+		var collected []map[string]any
+		Eventually(eventsCh, 3*time.Second).Should(Receive(&collected))
+
+		// Sanity: connected frame is first.
+		Expect(collected).NotTo(BeEmpty())
+		Expect(collected[0]["type"]).To(Equal("connected"))
+
+		// Event frames after the connected hello.
+		var leaked []map[string]any
+		var owned []map[string]any
+		for _, ev := range collected[1:] {
+			if ev["agent_id"] == "session-A" {
+				owned = append(owned, ev)
+			}
+			if ev["agent_id"] == "session-B" {
+				leaked = append(leaked, ev)
+			}
+			if md, ok := ev["metadata"].(map[string]any); ok {
+				if name, _ := md["tool_name"].(string); name == "secret_tool" {
+					leaked = append(leaked, ev)
+				}
+			}
+		}
+
+		Expect(leaked).To(BeEmpty(),
+			"H5: a session-A subscriber must NEVER receive tool events for session-B")
+		Expect(owned).NotTo(BeEmpty(),
+			"a session-A subscriber must still receive its own tool events post-filter")
+	})
+
+	It("emits delegation events when either Parent or Child session id matches the filter", func() {
+		// Subscribe scoped to the child session — the typical surface, since
+		// the child UI clicks through into its own delegation panel.
+		streamURL := hs.URL + "/api/swarm/events?session_id=child-1"
+
+		eventsCh := make(chan []map[string]any, 1)
+		go func() {
+			eventsCh <- streamEvents(streamURL, 3, 2*time.Second)
+		}()
+		time.Sleep(120 * time.Millisecond)
+
+		// Owned: child-1 is the ChildSessionID — must be emitted.
+		bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
+			ChainID:         "chain-owned",
+			ParentSessionID: "parent-1",
+			ChildSessionID:  "child-1",
+			SourceAgent:     "lead",
+			TargetAgent:     "qa",
+		}))
+
+		// Foreign: neither parent nor child match — must be filtered.
+		bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
+			ChainID:         "chain-foreign",
+			ParentSessionID: "parent-X",
+			ChildSessionID:  "child-X",
+			SourceAgent:     "lead",
+			TargetAgent:     "qa",
+		}))
+
+		var collected []map[string]any
+		Eventually(eventsCh, 3*time.Second).Should(Receive(&collected))
+
+		var owned, leaked []map[string]any
+		for _, ev := range collected[1:] {
+			if ev["id"] == "chain-owned" {
+				owned = append(owned, ev)
+			}
+			if ev["id"] == "chain-foreign" {
+				leaked = append(leaked, ev)
+			}
+		}
+		Expect(owned).NotTo(BeEmpty(),
+			"a delegation whose ChildSessionID matches the filter must reach the subscriber")
+		Expect(leaked).To(BeEmpty(),
+			"H5: a delegation whose Parent/Child both fall outside the filter must NOT leak")
 	})
 })
 
