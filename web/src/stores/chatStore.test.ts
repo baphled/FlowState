@@ -4832,6 +4832,22 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
   })
 
   // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
+  //
+  // These specs exercise the store-layer contract: handleEscapeKey()
+  // tracks press count, opens a 600ms window on the first call, and on
+  // the second call within the window fires DELETE /api/v1/sessions/
+  // {id}/stream and closes the per-session EventSource.
+  //
+  // Originally the specs dispatched DOM keydown events on `document` —
+  // but this file is a store-level unit test; the document-keydown
+  // listener that bridges into handleEscapeKey lives in ChatView.vue
+  // (registered in onMounted, torn down in onBeforeUnmount per H9).
+  // The store test never mounts ChatView, so dispatching DOM events
+  // hit no listener and the store was never invoked. The DOM-dispatch
+  // wiring is covered separately in ChatView.spec.ts under
+  // "ChatView Escape keydown listener lifecycle (H9)" — those specs
+  // assert document → handleEscapeKey routing and onBeforeUnmount
+  // teardown. Here we test the store contract directly.
   describe('escape-twice cancel cascade', () => {
     it('sends DELETE /api/v1/sessions/{id}/stream on second escape within 600ms', async () => {
       const store = useChatStore()
@@ -4841,7 +4857,11 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
       // Mock the DELETE endpoint
       vi.stubGlobal('fetch', vi.fn((url: string, opts: RequestInit) => {
         if (opts.method === 'DELETE' && url.includes('/stream')) {
-          return Promise.resolve({ status: 204 } as Response)
+          // handleEscapeKey checks `response.ok` before calling
+          // disconnectSessionStream. A bare `{ status: 204 }` literal
+          // omits the `ok` getter that real Response has, so the
+          // success branch is silently skipped — include `ok: true`.
+          return Promise.resolve({ ok: true, status: 204 } as Response)
         }
         return Promise.reject(new Error('unexpected request'))
       }))
@@ -4858,24 +4878,27 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
         await Promise.resolve()
         await Promise.resolve()
 
-        // Simulate first escape press
-        const escapeEvent1 = new KeyboardEvent('keydown', { key: 'Escape' })
-        document.dispatchEvent(escapeEvent1)
-        await Promise.resolve()
+        // sendMessage sets isLoading:true, isStreaming:false — chunks
+        // have not arrived yet. handleEscapeKey gates on isStreaming
+        // (line 1680), so simulate the post-first-chunk state where
+        // SSE is actively streaming and cancel is meaningful.
+        store.setSessionStreaming('session-1', { isStreaming: true })
 
-        // Cancel should not have been sent yet
+        // First escape — opens the 600ms window, no DELETE yet.
+        await store.handleEscapeKey()
+
         expect(vi.mocked(fetch)).not.toHaveBeenCalledWith(
           expect.stringContaining('/stream'),
           expect.objectContaining({ method: 'DELETE' }),
         )
 
-        // Simulate second escape press within 600ms
+        // Second escape within 600ms — fires DELETE.
         vi.advanceTimersByTime(300)
-        const escapeEvent2 = new KeyboardEvent('keydown', { key: 'Escape' })
-        document.dispatchEvent(escapeEvent2)
+        await store.handleEscapeKey()
+        // Microtask flush: handleEscapeKey awaits fetch internally.
+        await Promise.resolve()
         await Promise.resolve()
 
-        // Now the DELETE should have been called
         expect(vi.mocked(fetch)).toHaveBeenCalledWith(
           expect.stringContaining('/stream'),
           expect.objectContaining({ method: 'DELETE' }),
@@ -4909,16 +4932,17 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
         await Promise.resolve()
         await Promise.resolve()
 
-        // Single escape press
-        const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape' })
-        document.dispatchEvent(escapeEvent)
-        await Promise.resolve()
+        // Pass the isStreaming gate (see sibling spec for detail).
+        store.setSessionStreaming('session-1', { isStreaming: true })
 
-        // Wait beyond the 600ms window
+        // Single escape — opens the window then lets it lapse.
+        await store.handleEscapeKey()
+
+        // Wait beyond the 600ms window — counter resets, no second
+        // press, no DELETE.
         vi.advanceTimersByTime(700)
         await Promise.resolve()
 
-        // No DELETE should be sent
         expect(fetchSpy).not.toHaveBeenCalled()
 
         resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
@@ -4936,7 +4960,11 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
 
       vi.stubGlobal('fetch', vi.fn((url: string, opts: RequestInit) => {
         if (opts.method === 'DELETE' && url.includes('/stream')) {
-          return Promise.resolve({ status: 204 } as Response)
+          // handleEscapeKey checks `response.ok` before calling
+          // disconnectSessionStream. A bare `{ status: 204 }` literal
+          // omits the `ok` getter that real Response has, so the
+          // success branch is silently skipped — include `ok: true`.
+          return Promise.resolve({ ok: true, status: 204 } as Response)
         }
         return Promise.reject(new Error('unexpected request'))
       }))
@@ -4957,13 +4985,18 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
         const eventSource = FakeEventSource.instances[FakeEventSource.instances.length - 1]
         expect(eventSource.closed).toBe(false)
 
-        // Double press escape
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+        // Pass the isStreaming gate (see sibling spec for detail).
+        store.setSessionStreaming('session-1', { isStreaming: true })
+
+        // Double-tap escape (first press, then second within 600ms).
+        await store.handleEscapeKey()
         vi.advanceTimersByTime(300)
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+        await store.handleEscapeKey()
+        // Microtask flush: handleEscapeKey awaits fetch then calls
+        // disconnectSessionStream which closes the EventSource.
+        await Promise.resolve()
         await Promise.resolve()
 
-        // EventSource should be closed
         expect(eventSource.closed).toBe(true)
 
         resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
