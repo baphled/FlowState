@@ -116,7 +116,12 @@ var _ = Describe("RecallBroker", func() {
 		}
 	})
 
-	It("handles source errors gracefully", func() {
+	It("handles partial source errors gracefully (mixed success/failure)", func() {
+		// Pre-existing behaviour pin: one source failing must not poison
+		// the broker — callers that have other working sources still get
+		// observations and a nil error. The pre-M9 implementation
+		// extended this lenience to the *all-sources-failed* case too,
+		// which is what M9 fixes (see the dedicated spec below).
 		broker := recall.NewRecallBroker(
 			&fakeObservationSource{results: []recall.Observation{observation("session", "session", "agent-a", time.Date(2026, 4, 8, 10, 0, 0, 0, time.UTC))}},
 			&fakeObservationSource{err: errors.New("chain unavailable")},
@@ -133,6 +138,93 @@ var _ = Describe("RecallBroker", func() {
 			observation("hierarchy", "hierarchy", "agent-a", time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)),
 			observation("learning", "learning", "agent-a", time.Date(2026, 4, 8, 13, 0, 0, 0, time.UTC)),
 		))
+	})
+
+	// M9 — Bug Hunt Findings (May 2026). When every configured source
+	// fails the pre-M9 broker swallowed the errors, logged a warning,
+	// and returned (nil, nil). Recall failures (Qdrant down, embedding-
+	// model dimension mismatch, network timeout) were thereby
+	// indistinguishable from "no relevant data". Callers MUST be able
+	// to discriminate the two so the engine can surface the failure on
+	// the wire instead of silently degrading. The fix returns a typed
+	// sentinel error (recall.ErrAllSourcesFailed) and joins the per-
+	// source errors via errors.Join so callers can either react on the
+	// sentinel alone (cheap dashboards) or unwrap each underlying
+	// cause (operator triage).
+	Describe("M9: discriminating total recall failure from zero results", func() {
+		It("returns ErrAllSourcesFailed when every configured source errors", func() {
+			chainErr := errors.New("qdrant: connection refused")
+			hierarchyErr := errors.New("network: i/o timeout")
+			learningErr := errors.New("dimension mismatch")
+			broker := recall.NewRecallBroker(
+				&fakeObservationSource{err: errors.New("session unavailable")},
+				&fakeObservationSource{err: chainErr},
+				&fakeObservationSource{err: hierarchyErr},
+				&fakeObservationSource{err: learningErr},
+			)
+
+			results, err := broker.Query(context.WithValue(context.Background(), learning.AgentIDKey, "agent-a"), "needle", 10)
+
+			Expect(results).To(BeEmpty())
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, recall.ErrAllSourcesFailed)).To(BeTrue(),
+				"all-sources-failed must surface as recall.ErrAllSourcesFailed (got %v)", err)
+			// Underlying per-source errors are joined so operators can
+			// unwrap individual causes during triage.
+			Expect(errors.Is(err, chainErr)).To(BeTrue(),
+				"joined error must preserve underlying chain error for triage")
+			Expect(errors.Is(err, hierarchyErr)).To(BeTrue(),
+				"joined error must preserve underlying hierarchy error for triage")
+		})
+
+		It("does not return ErrAllSourcesFailed when at least one source succeeds with results", func() {
+			broker := recall.NewRecallBroker(
+				&fakeObservationSource{err: errors.New("chain unavailable")},
+				&fakeObservationSource{err: errors.New("hierarchy unavailable")},
+				&fakeObservationSource{err: errors.New("learning unavailable")},
+				&fakeObservationSource{results: []recall.Observation{observation("session", "session", "agent-a", time.Date(2026, 4, 8, 10, 0, 0, 0, time.UTC))}},
+			)
+
+			results, err := broker.Query(context.WithValue(context.Background(), learning.AgentIDKey, "agent-a"), "needle", 10)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+		})
+
+		It("does not return ErrAllSourcesFailed when sources return zero observations without error", func() {
+			// Regression guard: an empty corpus is NOT the same as a
+			// failure. The whole point of M9 is to keep this case
+			// distinct from "broker is broken".
+			broker := recall.NewRecallBroker(
+				&fakeObservationSource{},
+				&fakeObservationSource{},
+				&fakeObservationSource{},
+				&fakeObservationSource{},
+			)
+
+			results, err := broker.Query(context.WithValue(context.Background(), learning.AgentIDKey, "agent-a"), "needle", 10)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(results).To(BeEmpty())
+		})
+
+		It("ignores nil sources when counting failures (treats them as absent, not failed)", func() {
+			// nil sources are a supported configuration (broker accepts
+			// nil for every positional arg). They must not skew the
+			// all-failed determination.
+			broker := recall.NewRecallBroker(
+				nil,
+				nil,
+				nil,
+				&fakeObservationSource{err: errors.New("learning unavailable")},
+			)
+
+			results, err := broker.Query(context.WithValue(context.Background(), learning.AgentIDKey, "agent-a"), "needle", 10)
+
+			Expect(results).To(BeEmpty())
+			Expect(err).To(MatchError(recall.ErrAllSourcesFailed),
+				"the single configured source failed — that's all-sources-failed, nil sources don't count as successes")
+		})
 	})
 
 	It("calls sources in parallel", func() {
