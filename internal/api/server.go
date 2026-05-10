@@ -1372,9 +1372,27 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // This handler subscribes to the EventBus and projects tool execute,
 // delegation, and background task events into the SwarmEvent format that the
 // frontend expects.
+//
+// QA bughunt 2026-05-08, H5: this handler must be scoped to a single session.
+// Pre-fix it subscribed globally with no auth and no filter, leaking SessionID
+// + tool name + result body + delegation chains across tenants to any
+// anonymous client. Callers must pass ?session_id=<id>; events are filtered
+// such that only events whose underlying SessionID (tool/background) or
+// Parent/Child SessionID (delegation, where the chain spans two surfaces)
+// matches the requested session reach the wire.
 func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		// H5: anonymous global subscription is the leak. Until auth lands
+		// (see vault Bug Hunt Findings (May 2026) §"H5"), require an explicit
+		// session scope on every request. A future debug flag can re-enable
+		// global view for ops tooling.
+		http.Error(w, "session_id query parameter is required", http.StatusBadRequest)
 		return
 	}
 
@@ -1406,10 +1424,15 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 	// every session (QA bughunt 2026-05-08, C3) and leak goroutines under
 	// disconnect churn (H6, same root cause).
 	//
-	// The select+default pattern matches the prevailing approach in
+	// The session-scope filter (H5) runs BEFORE the channel send so that
+	// other tenants' events do not even consume eventCh capacity, and the
+	// select+default pattern matches the prevailing approach in
 	// event_bridge.go's WebSocket handlers: drop on full / on disconnect
 	// rather than block the bus dispatcher.
 	forward := func(msg any) {
+		if !eventBelongsToSession(msg, sessionID) {
+			return
+		}
 		select {
 		case eventCh <- msg:
 		case <-stopCh:
@@ -1463,6 +1486,44 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		}
+	}
+}
+
+// eventBelongsToSession reports whether the given bus event is in scope for
+// the supplied session id, used by handleSwarmEvents to enforce H5
+// (cross-tenant leak).
+//
+// Tool execute, background task, and tool start/end events all carry a single
+// SessionID field — match it directly. Delegation events span two sessions
+// (parent and child); both surfaces have a legitimate need to observe the
+// chain (the parent surface renders progress; the child surface renders the
+// upstream agent + chain id), so an event matches when EITHER endpoint is the
+// requested session.
+//
+// Unknown event types fall through to "no" rather than "yes" — the safer
+// default for a leak-fix predicate.
+func eventBelongsToSession(msg any, sessionID string) bool {
+	switch e := msg.(type) {
+	case *events.ToolExecuteResultEvent:
+		return e.Data.SessionID == sessionID
+	case *events.ToolExecuteErrorEvent:
+		return e.Data.SessionID == sessionID
+	case *events.ToolEvent:
+		return e.Data.SessionID == sessionID
+	case *events.BackgroundTaskStartedEvent:
+		return e.Data.SessionID == sessionID
+	case *events.BackgroundTaskCompletedEvent:
+		return e.Data.SessionID == sessionID
+	case *events.BackgroundTaskFailedEvent:
+		return e.Data.SessionID == sessionID
+	case *events.DelegationStartedEvent:
+		return e.Data.ParentSessionID == sessionID || e.Data.ChildSessionID == sessionID
+	case *events.DelegationCompletedEvent:
+		return e.Data.ParentSessionID == sessionID || e.Data.ChildSessionID == sessionID
+	case *events.DelegationFailedEvent:
+		return e.Data.ParentSessionID == sessionID || e.Data.ChildSessionID == sessionID
+	default:
+		return false
 	}
 }
 
