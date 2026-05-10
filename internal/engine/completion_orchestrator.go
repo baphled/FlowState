@@ -4,12 +4,28 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 )
+
+// defaultRePromptTimeout caps any single re-prompt SendMessage call so that a
+// wedged provider cannot hold the orchestrator's worker indefinitely. Mirrors
+// engine.defaultStreamTimeout — a re-prompt is essentially a stream and the
+// same upper bound applies.
+const defaultRePromptTimeout = 5 * time.Minute
+
+// defaultRePromptConcurrency bounds the number of concurrently-running
+// re-prompts across all sessions. A wedged provider for one session would
+// otherwise let the next 64 buffered completion events each spawn a
+// goroutine that piles up against the wedged backend. 8 is enough for normal
+// fan-out across sessions while leaving headroom; the drain goroutine
+// blocks on this semaphore (NOT on the re-prompt itself) once the bound is
+// hit, applying natural backpressure on the completion channel.
+const defaultRePromptConcurrency = 8
 
 // SessionMessageSender abstracts the session manager operations needed by
 // the CompletionOrchestrator. Satisfied by session.Manager.
@@ -57,6 +73,19 @@ type CompletionOrchestrator struct {
 	stopCh       chan struct{}
 	wg           sync.WaitGroup
 
+	// rePromptTimeout caps a single re-prompt SendMessage call. A wedged
+	// provider trips this deadline; the worker goroutine then exits via its
+	// defer, releases the CAS flag and the semaphore slot, and other
+	// sessions stay unblocked.
+	rePromptTimeout time.Duration
+
+	// rePromptSem bounds concurrent re-prompts. The drain goroutine acquires
+	// a slot (blocking ONLY on this acquire, never on the re-prompt itself)
+	// before spawning the worker goroutine that runs triggerRePrompt. This
+	// keeps the drain decoupled from any one wedged session while applying
+	// natural backpressure to the completion channel under load.
+	rePromptSem chan struct{}
+
 	mu          sync.Mutex
 	rePrompting map[string]bool
 	// rePromptPending flags sessions that received a completion event while a
@@ -100,6 +129,8 @@ func NewCompletionOrchestrator(
 		broker:          broker,
 		completionCh:    make(chan completionEvent, 64),
 		stopCh:          make(chan struct{}),
+		rePromptTimeout: defaultRePromptTimeout,
+		rePromptSem:     make(chan struct{}, defaultRePromptConcurrency),
 		rePrompting:     make(map[string]bool),
 		rePromptPending: make(map[string]bool),
 		rePromptCount:   make(map[string]int),
@@ -191,14 +222,20 @@ func (o *CompletionOrchestrator) drainLoop() {
 }
 
 // processCompletion handles a single completion event. It checks whether all
-// tasks for the session are done, acquires the CAS flag, and triggers a
-// re-prompt if conditions are met.
+// tasks for the session are done, acquires the CAS flag and a semaphore slot,
+// and dispatches a re-prompt onto a worker goroutine if conditions are met.
+//
+// The drain goroutine never executes triggerRePrompt itself: it only ever
+// blocks on (a) the stop signal, (b) reading the completion channel, and
+// (c) acquiring the bounded re-prompt semaphore. A wedged provider trapped
+// inside triggerRePrompt for one session therefore cannot stall the drain
+// or starve completion notifications for other sessions. (H4 — May 2026.)
 //
 // Expected:
 //   - evt contains a valid sessionID.
 //
 // Side effects:
-//   - May trigger a re-prompt stream via triggerRePrompt.
+//   - May spawn a worker goroutine running triggerRePrompt.
 func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
 	if o.backgroundMgr.ActiveCountForSession(evt.sessionID) > 0 {
 		return
@@ -224,7 +261,26 @@ func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
 	o.rePrompting[evt.sessionID] = true
 	o.mu.Unlock()
 
-	o.triggerRePrompt(evt.sessionID)
+	// Acquire a worker slot. We block here so that a flood of completions
+	// across many sessions doesn't fan out into unbounded goroutines, but we
+	// also abort cleanly on Stop so shutdown isn't held up by a saturated
+	// pool. If we abort, we MUST release the CAS flag we just took.
+	select {
+	case o.rePromptSem <- struct{}{}:
+	case <-o.stopCh:
+		o.mu.Lock()
+		o.rePrompting[evt.sessionID] = false
+		delete(o.rePromptPending, evt.sessionID)
+		o.mu.Unlock()
+		return
+	}
+
+	o.wg.Add(1)
+	go func(sessionID string) {
+		defer o.wg.Done()
+		defer func() { <-o.rePromptSem }()
+		o.triggerRePrompt(sessionID)
+	}(evt.sessionID)
 }
 
 // triggerRePrompt retrieves pending notifications, formats them, sends a
@@ -269,7 +325,17 @@ func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
 		return
 	}
 
-	ctx := context.Background()
+	// Per-call deadline ensures a wedged provider can't hold a worker slot
+	// or the per-session CAS flag indefinitely. The deadline is the upper
+	// bound for the SendMessage stream as a whole; chunk-level liveness
+	// is the engine's concern.
+	timeout := o.rePromptTimeout
+	if timeout <= 0 {
+		timeout = defaultRePromptTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	chunks, err := o.sessionMgr.SendMessage(ctx, sessionID, reminder)
 	if err != nil {
 		slog.Warn("completion orchestrator: re-prompt SendMessage failed",

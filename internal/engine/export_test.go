@@ -168,3 +168,17 @@ type DelegationParamsForTest struct {
 	Message      string
 	Handoff      *delegation.Handoff
 }
+
+// SetRePromptTimeout overrides the per-re-prompt deadline used by the
+// orchestrator's triggerRePrompt. Tests use this to drive H4-style hung-
+// provider scenarios without waiting on the production-grade timeout.
+func SetRePromptTimeout(o *CompletionOrchestrator, d time.Duration) {
+	o.rePromptTimeout = d
+}
+
+// SetRePromptConcurrency overrides the bound on concurrent re-prompts. Tests
+// use this to validate semaphore behaviour without waiting on production
+// settings.
+func SetRePromptConcurrency(o *CompletionOrchestrator, n int) {
+	o.rePromptSem = make(chan struct{}, n)
+}
