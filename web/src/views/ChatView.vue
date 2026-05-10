@@ -13,6 +13,7 @@ import MessageInput from '@/components/chat/MessageInput.vue'
 import QueuedPromptStrip from '@/components/chat/QueuedPromptStrip.vue'
 import TodoListPanel from '@/components/chat/TodoListPanel.vue'
 import DelegationStrip from '@/components/chat/DelegationStrip.vue'
+import ChildSessionsPanel from '@/components/chat/ChildSessionsPanel.vue'
 import AgentPicker from '@/components/agent-picker/AgentPicker.vue'
 import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
@@ -325,6 +326,13 @@ onBeforeUnmount(() => {
       </section>
 
       <DelegationStrip />
+      <!--
+        ChildSessionsPanel coexists with DelegationStrip: the strip shows
+        transient swarm-bus delegation pulses (vanish on reload), this panel
+        shows persistent children of the current session derived from
+        chatStore.sessions. Both auto-hide when their data source is empty.
+      -->
+      <ChildSessionsPanel />
 
       <!--
         The toolbar is rendered in the same DOM position for both parent and
