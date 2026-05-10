@@ -670,4 +670,136 @@ describe('MessageBubble', () => {
       expect(affordance.attributes('role')).toBe('status')
     })
   })
+
+  // Empty-content assistant turn — the May 10 2026 follow-up flagged by the
+  // user: "Are we outputting an agent response, along with a tool call? If
+  // so, this seems broken. We should just return the tool calls. Agent
+  // blocks are for when an agent *actually* has a response."
+  //
+  // Two store paths produce a sealed assistant message with empty content:
+  //
+  //   1. handleToolCallEvent at chatStore.ts:2509 seals any in-flight
+  //      assistant placeholder when a tool_call SSE event arrives. If no
+  //      content chunk had landed yet (the turn went straight to tool use),
+  //      the sealed placeholder carries content === ''. Adjacent tool_call /
+  //      tool_result rows in the message list ARE the response.
+  //
+  //   2. The Streaming Coherence Slice C "empty_turn" placeholder pushed at
+  //      chatStore.ts:2075 carries content === '' + stopReason === 'empty_turn'
+  //      and no thinkingBlocks. This is intentionally silent — the empty-turn
+  //      placeholder predates a render branch and the visible "no response"
+  //      surface is owned by other affordances (toast, watchdog).
+  //
+  // Both must NOT render the plain assistant chrome (role label, empty
+  // MarkdownRenderer, copy button on empty content). The user's outcome:
+  // tool cards stand alone; an empty assistant bubble is phantom UI.
+  //
+  // Distinct from the thinking-only-degraded branch — that branch handles
+  // the (empty content + thinkingBlocks + stopReason) shape with its own
+  // affordance and MUST keep firing.
+  describe('empty-content assistant suppression', () => {
+    it('does NOT render the plain assistant chrome when content is empty (mid-stream sealed placeholder)', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+          // status='completed' is what handleToolCallEvent leaves on the
+          // sealed placeholder — see chatStore.ts:2509-2511.
+          status: 'completed',
+        }),
+      )
+
+      // The role label and the assistant body must not appear — there
+      // is no actual response on this turn from the assistant; tool
+      // calls in adjacent rows carry the work.
+      expect(wrapper.find('.message-role').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
+    })
+
+    it('does NOT render the plain assistant chrome when content is whitespace-only', () => {
+      // Defensive: a whitespace-only assistant carries no visible
+      // response either, even if it slipped past the seal predicate.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '   \n  ',
+          status: 'completed',
+        }),
+      )
+
+      expect(wrapper.find('.message-role').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
+    })
+
+    it('does NOT render the plain assistant chrome for the empty_turn placeholder', () => {
+      // Streaming Coherence Slice C placeholder shape (see chatStore.ts:2075).
+      // No thinkingBlocks → not the thinking-only-degraded branch. No
+      // content → no agent block. The empty_turn signal has its own
+      // (separate) UX surface — the bubble is intentionally silent.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+          status: 'completed',
+          stopReason: 'empty_turn',
+        }),
+      )
+
+      expect(wrapper.find('.message-role').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="thinking-only-affordance"]').exists()).toBe(false)
+    })
+
+    it('still renders normally when an assistant message has actual content', () => {
+      // Regression cover: the suppression must be narrow. A real
+      // content-bearing assistant turn that happens to involve tool
+      // calls (assistant text BEFORE the tool, sealed normally) must
+      // still render its bubble.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: 'Let me plan this out.',
+          status: 'completed',
+        }),
+      )
+
+      expect(wrapper.find('.message-role').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Let me plan this out.')
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(true)
+    })
+
+    it('still renders the thinking-only-degraded affordance when its predicate matches (suppression must not collide)', () => {
+      // The thinking-only-degraded `v-else-if` branch must continue to
+      // win when its three signals are all present (empty content +
+      // thinkingBlocks + stopReason). Sanity check that the new
+      // empty-content gate did not accidentally swallow that branch.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+          stopReason: 'end_turn',
+          thinkingBlocks: [{ thinking: 'considering', signature: 'sig' }],
+        }),
+      )
+
+      const affordance = wrapper.find('[data-testid="thinking-only-affordance"]')
+      expect(affordance.exists()).toBe(true)
+    })
+
+    it('still renders an empty user bubble (the gate is assistant-specific)', () => {
+      // Defensive: an empty user message (e.g. accidental Enter on the
+      // composer) is a separate concern. The suppression here is
+      // assistant-only because the bug is about phantom AGENT
+      // responses; user-side empty bubbles already have failed-send
+      // affordances elsewhere.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'user',
+          content: '',
+        }),
+      )
+
+      // Role label still visible — user-bubble suppression is out of scope.
+      expect(wrapper.find('.message-role').exists()).toBe(true)
+    })
+  })
 })

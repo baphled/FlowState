@@ -131,6 +131,36 @@ const toolComponent = computed(() => {
   return getToolComponent(toolSpec.value.toolName) ?? GenericTool
 })
 
+// Empty-content assistant suppression — May 10 2026 follow-up to user
+// feedback: "Are we outputting an agent response, along with a tool call?
+// If so, this seems broken. We should just return the tool calls. Agent
+// blocks are for when an agent *actually* has a response."
+//
+// Two store paths leave a sealed assistant message with empty content:
+//
+//   1. handleToolCallEvent (chatStore.ts:2509-2511) seals any in-flight
+//      assistant placeholder when a tool_call SSE event arrives. If the
+//      turn went straight to tool use without first emitting any content
+//      chunks, the sealed placeholder carries content === '' and tool_call /
+//      tool_result rows in the message list ARE the response.
+//   2. The Streaming Coherence Slice C empty_turn placeholder pushed at
+//      chatStore.ts:2075 carries content === '' + stopReason === 'empty_turn'
+//      and no thinkingBlocks. The empty-turn signal predates a render branch
+//      and is intentionally silent here.
+//
+// Without this gate `isPlain` rendered the assistant chrome (role label,
+// empty MarkdownRenderer, copy-button-with-empty-text) for those messages,
+// producing a phantom agent block alongside the tool cards. The gate is
+// narrow: assistant role + content (after trim) is empty. The
+// thinking-only-degraded branch matches its own predicate (`v-else-if`
+// runs first) so empty content + thinkingBlocks + stopReason still
+// surfaces the soft-error affordance correctly.
+const hasVisibleAssistantContent = computed(
+  () =>
+    props.message.role !== 'assistant' ||
+    (props.message.content ?? '').trim().length > 0,
+)
+
 const isPlain = computed(
   () =>
     !isToolInvocation.value &&
@@ -138,7 +168,8 @@ const isPlain = computed(
     !isDelegationStarted.value &&
     !isDelegation.value &&
     !isThinking.value &&
-    !isThinkingOnlyDegraded.value,
+    !isThinkingOnlyDegraded.value &&
+    hasVisibleAssistantContent.value,
 )
 
 // Defensive backstop for the May 2026 chat-UI leak class (session
