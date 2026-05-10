@@ -218,6 +218,20 @@ watch(
 
 let teardownHierarchyNav: (() => void) | null = null
 
+// H9 — Bug Hunt Findings (May 2026). The Slice G escape-twice listener
+// was originally registered as an inline anonymous arrow inside
+// onMounted with no matching removeEventListener in onBeforeUnmount.
+// After N route round-trips (Chat → other → Chat → ...) N copies of
+// the handler stayed live, so a single Escape press fanned out into N
+// concurrent DELETE /v1/sessions/{id}/stream requests. Lifting the
+// handler into a setup-scope const captures a stable identity that
+// onBeforeUnmount can pass to removeEventListener for clean teardown.
+function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') {
+    void chatStore.handleEscapeKey()
+  }
+}
+
 onMounted(async () => {
   registerTools()
   teardownHierarchyNav = installSessionHierarchyNav()
@@ -250,17 +264,17 @@ onMounted(async () => {
   void swarmStore.connect()
 
   // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
-  // Register global keydown listener for escape-twice keybinding.
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      void chatStore.handleEscapeKey()
-    }
-  })
+  // Register global keydown listener for escape-twice keybinding. The
+  // handler is a setup-scope const (handleGlobalKeydown) so onBeforeUnmount
+  // can pass the same identity to removeEventListener and clean up
+  // properly across route round-trips. See H9 in Bug Hunt Findings.
+  document.addEventListener('keydown', handleGlobalKeydown)
 })
 
 onBeforeUnmount(() => {
   stopDragging()
   swarmStore.disconnect()
+  document.removeEventListener('keydown', handleGlobalKeydown)
   if (teardownHierarchyNav) {
     teardownHierarchyNav()
     teardownHierarchyNav = null

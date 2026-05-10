@@ -826,6 +826,107 @@ describe('ChatView message grouping', () => {
   })
 })
 
+describe('ChatView Escape keydown listener lifecycle (H9)', () => {
+  // H9 — Bug Hunt Findings (May 2026). Pre-fix the Slice G escape-twice
+  // handler was attached as an inline anonymous arrow inside onMounted
+  // with no matching removeEventListener in onBeforeUnmount. After N
+  // route round-trips (Chat → other → Chat → other → Chat) N copies of
+  // the handler were live, so a single Escape press fanned out into N
+  // calls into chatStore.handleEscapeKey — and after a double-tap, N
+  // concurrent DELETE /v1/sessions/{id}/stream requests against the
+  // API. The fix lifts the handler into a named const at setup scope
+  // and tears it down in onBeforeUnmount with the same identity. These
+  // specs pin the lifecycle directly so the fix can't silently regress.
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('removes its keydown listener on unmount', async () => {
+    const addSpy = vi.spyOn(document, 'addEventListener')
+    const removeSpy = vi.spyOn(document, 'removeEventListener')
+
+    const wrapper = mount(ChatView)
+    await flushPromises()
+
+    // Find the keydown listener registration that ChatView's onMounted
+    // installed (there's one in installSessionHierarchyNav too — accept
+    // both, we just need ChatView's to be torn down).
+    const addCalls = addSpy.mock.calls.filter(([type]) => type === 'keydown')
+    expect(addCalls.length).toBeGreaterThanOrEqual(1)
+
+    wrapper.unmount()
+    await flushPromises()
+
+    const removeCalls = removeSpy.mock.calls.filter(([type]) => type === 'keydown')
+    // Every keydown listener that was added during mount must be removed
+    // on unmount — same count, and ideally same handler references. The
+    // identity check is what catches the leak: an anonymous arrow added
+    // in onMounted but not captured at setup scope cannot be removed.
+    expect(removeCalls.length).toBeGreaterThanOrEqual(addCalls.length)
+
+    const addedHandlers = addCalls.map(([, fn]) => fn)
+    const removedHandlers = removeCalls.map(([, fn]) => fn)
+    for (const handler of addedHandlers) {
+      expect(removedHandlers).toContain(handler)
+    }
+
+    addSpy.mockRestore()
+    removeSpy.mockRestore()
+  })
+
+  it('does not leak the Escape handler across re-mounts (single Escape, single dispatch)', async () => {
+    // Simulate the Chat → other route → Chat round-trip three times,
+    // then send a single Escape. Pre-fix the store would observe three
+    // keydown events for one user keypress; post-fix it observes one.
+    const wrapper1 = mount(ChatView)
+    await flushPromises()
+    wrapper1.unmount()
+    await flushPromises()
+
+    const wrapper2 = mount(ChatView)
+    await flushPromises()
+    wrapper2.unmount()
+    await flushPromises()
+
+    const wrapper3 = mount(ChatView)
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    const handleEscapeSpy = vi.spyOn(chatStore, 'handleEscapeKey').mockResolvedValue()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+
+    // Only the still-mounted ChatView's listener should fire. Pre-fix
+    // there were three live handlers (one per mount), so three calls.
+    expect(handleEscapeSpy).toHaveBeenCalledTimes(1)
+
+    handleEscapeSpy.mockRestore()
+    wrapper3.unmount()
+  })
+
+  it('stops dispatching to handleEscapeKey after unmount', async () => {
+    const wrapper = mount(ChatView)
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    const handleEscapeSpy = vi.spyOn(chatStore, 'handleEscapeKey').mockResolvedValue()
+
+    wrapper.unmount()
+    await flushPromises()
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+
+    // No live ChatView → no listener → no store call. Pre-fix the
+    // anonymous handler outlived the component and continued firing.
+    expect(handleEscapeSpy).not.toHaveBeenCalled()
+
+    handleEscapeSpy.mockRestore()
+  })
+})
+
 describe('ChatView mount-time restore failure (Principal F7)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
