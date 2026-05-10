@@ -1037,6 +1037,77 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		// H7 — request-level errors (the request itself can never succeed,
+		// not the provider) must NOT mark the provider as unavailable. The
+		// canonical case is ErrorTypeContextWindowExceeded: an oversized
+		// prompt won't fit anywhere in the failover chain, so blackballing
+		// providers in turn just empties the chain on a 5-minute (Unknown)
+		// or 24-hour cooldown that doesn't recover until well after the
+		// request is gone. The failover hook still publishes the error
+		// event for observability and propagates the error to the caller —
+		// it just stops scribbling on health state.
+		Context("when sync error is a provider.Error with context_window_exceeded type (H7)", func() {
+			BeforeEach(func() {
+				ctxErr := &provider.Error{
+					ErrorType:   provider.ErrorTypeContextWindowExceeded,
+					Provider:    "anthropic",
+					Message:     "prompt is too long for context window",
+					IsRetriable: false,
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(ctxErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("does NOT mark the provider as unavailable on a request-level overflow", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred(),
+					"the error still surfaces to the caller — only the "+
+						"health-marking is skipped")
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
+					"request-level context-window overflow must not "+
+						"blackball the provider; otherwise an oversized "+
+						"prompt cascades through the chain and parks "+
+						"every provider on a long cooldown")
+			})
+		})
+
+		// H7 — same gate must apply when the error arrives async on the
+		// stream channel as a Done+Error chunk (the second markProviderHealth
+		// call site, post-peek of the first chunk).
+		Context("when async first chunk carries context_window_exceeded error (H7)", func() {
+			BeforeEach(func() {
+				ctxErr := &provider.Error{
+					ErrorType:   provider.ErrorTypeContextWindowExceeded,
+					Provider:    "anthropic",
+					Message:     "prompt is too long for context window",
+					IsRetriable: false,
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: asyncErrorStreamFn(ctxErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("does NOT mark the provider as unavailable", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
+					"request-level overflow on the async path must "+
+						"also skip health-marking — same contract as "+
+						"the sync sibling spec")
+			})
+		})
+
 		Context("when sync error is a plain string containing rate_limit keyword", func() {
 			BeforeEach(func() {
 				registry.Register(&mockStreamProvider{

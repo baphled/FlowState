@@ -516,6 +516,76 @@ var _ = Describe("parseAnthropicError", func() {
 			Expect(result.HTTPStatus).To(Equal(400))
 			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
 		})
+
+		// H7 — Anthropic 400 with a context-window-exceeded message must
+		// classify as ErrorTypeContextWindowExceeded, not Unknown. The
+		// previous mapping fell through to Unknown which the failover
+		// hook then treated as a per-provider problem and blackballed
+		// every candidate in the chain for 5 minutes — even though an
+		// oversized prompt cannot fit anywhere in the chain. The fix
+		// makes the classification request-level so the gating in
+		// markProviderHealth can skip the unhealthy mark.
+		Describe("H7 — context-window-exceeded classification on 400", func() {
+			DescribeTable(
+				"classifies known context-overflow phrasings as ContextWindowExceeded (non-retriable)",
+				func(body string) {
+					apiErr := newTestAPIErrorWithBody(400, body)
+					result := parseAnthropicError(apiErr)
+					Expect(result).To(HaveOccurred())
+					Expect(result.HTTPStatus).To(Equal(400))
+					Expect(result.ErrorType).To(
+						Equal(provider.ErrorTypeContextWindowExceeded),
+						"oversized-prompt 400s must be request-level, "+
+							"not per-provider Unknown",
+					)
+					Expect(result.IsRetriable).To(BeFalse(),
+						"context-window-exceeded is request-level — "+
+							"retrying anywhere will fail the same way")
+				},
+				Entry(
+					"OpenAI-style code keyword",
+					`{"message":"This model's maximum context length is 200000 tokens. context_length_exceeded"}`,
+				),
+				Entry(
+					"explicit 'context window' phrasing",
+					`{"message":"prompt is too long for this model's context window"}`,
+				),
+				Entry(
+					"'context length' phrasing",
+					`{"message":"input exceeds maximum context length of 200000 tokens"}`,
+				),
+				Entry(
+					"'prompt is too long' phrasing — Anthropic's documented wording",
+					`{"message":"prompt is too long: 250000 tokens > 200000 maximum"}`,
+				),
+			)
+
+			It("does NOT misclassify unrelated 400s as ContextWindowExceeded", func() {
+				apiErr := newTestAPIErrorWithBody(
+					400,
+					`{"message":"invalid request: unsupported parameter foo"}`,
+				)
+				result := parseAnthropicError(apiErr)
+				Expect(result).To(HaveOccurred())
+				Expect(result.HTTPStatus).To(Equal(400))
+				Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown),
+					"non-overflow 400s must still surface as Unknown — "+
+						"the keyword detector must not over-match")
+			})
+
+			It("billing keywords still win over context keywords on 400", func() {
+				// A billing-driven 400 happens to mention 'credit' which is
+				// the Billing keyword — even if the message also referenced
+				// context, billing is the actionable category for the user.
+				apiErr := newTestAPIErrorWithBody(
+					400,
+					`{"message":"Your credit balance is too low to fulfill the request"}`,
+				)
+				result := parseAnthropicError(apiErr)
+				Expect(result).To(HaveOccurred())
+				Expect(result.ErrorType).To(Equal(provider.ErrorTypeBilling))
+			})
+		})
 	})
 
 	Context("when error is nil", func() {

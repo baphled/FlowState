@@ -542,23 +542,67 @@ func mapAnthropicStatusCode(apiErr *anthropicAPI.Error) *provider.Error {
 	}
 }
 
-// mapBadRequestError classifies a 400 error as billing or unknown based on message content.
+// mapBadRequestError classifies a 400 error as billing, context-window-exceeded,
+// or unknown based on message content.
+//
+// Billing keywords win over context keywords because billing is the actionable
+// category for the user (top up credits) — even if the upstream message also
+// mentions context, the billing failure is what stops the request right now.
+//
+// Context-window keywords (H7) classify as ErrorTypeContextWindowExceeded which
+// is request-level: the failover hook deliberately does NOT mark the provider
+// as unavailable for this category, because an oversized prompt cannot succeed
+// on any provider in the chain. Without this classification the previous
+// fall-through to ErrorTypeUnknown caused every failover candidate to be
+// blackballed in turn for 5 minutes on a single oversized request.
 //
 // Expected:
 //   - apiErr is an Anthropic API error with StatusCode 400.
 //
 // Returns:
 //   - A *provider.Error with ErrorTypeBilling if the message contains billing keywords.
+//   - A *provider.Error with ErrorTypeContextWindowExceeded if the message
+//     contains context-overflow keywords.
 //   - A *provider.Error with ErrorTypeUnknown otherwise.
 //
 // Side effects:
 //   - None.
 func mapBadRequestError(apiErr *anthropicAPI.Error) *provider.Error {
-	if containsBillingKeyword(apiErr.Error()) {
+	msg := apiErr.Error()
+	if containsBillingKeyword(msg) {
 		return buildProviderError(apiErr, provider.ErrorTypeBilling, false)
+	}
+	if containsContextWindowKeyword(msg) {
+		return buildProviderError(apiErr, provider.ErrorTypeContextWindowExceeded, false)
 	}
 
 	return buildProviderError(apiErr, provider.ErrorTypeUnknown, false)
+}
+
+// containsContextWindowKeyword reports whether the message describes a
+// context-window overflow (oversized prompt) — a request-level failure that
+// will fail identically on every failover candidate.
+//
+// Expected:
+//   - msg is the error or response text to inspect.
+//
+// Returns:
+//   - true when msg contains a recognised context-overflow phrasing.
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func containsContextWindowKeyword(msg string) bool {
+	lower := strings.ToLower(msg)
+
+	// Phrasings observed across providers and the OpenAI-compat error code.
+	// Anthropic documents "prompt is too long"; OpenAI emits the explicit
+	// `context_length_exceeded` code; "context window" / "context length" are
+	// the natural English variants that appear in upstream error messages.
+	return strings.Contains(lower, "context_length_exceeded") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "context length") ||
+		strings.Contains(lower, "prompt is too long")
 }
 
 // buildProviderError creates a provider.Error from an Anthropic API error.
