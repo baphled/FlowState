@@ -69,6 +69,7 @@ async function selectChild(child: SessionSummary): Promise<void> {
           class="panel-entry"
           :class="{ 'is-streaming': isStreaming(child) }"
           :data-testid="`child-session-row-${child.id}`"
+          :title="rowTitle(child)"
           role="button"
           tabindex="0"
           @click="selectChild(child)"
@@ -84,6 +85,18 @@ async function selectChild(child: SessionSummary): Promise<void> {
             aria-label="Currently streaming"
             data-testid="child-session-streaming-dot"
           >●</span>
+          <!--
+            UX consolidation (May 2026) — redundant text label paired with
+            the green border + green dot so the streaming affordance is
+            robust to green colour-blindness. The dot alone fails for users
+            who cannot perceive the colour shift; the word "Live" is the
+            non-colour-dependent fallback.
+          -->
+          <span
+            v-if="isStreaming(child)"
+            class="panel-live-label"
+            :data-testid="`child-session-streaming-label-${child.id}`"
+          >Live</span>
           <span class="panel-time">{{ formatTime(child.createdAt) }}</span>
         </li>
       </ul>
@@ -153,15 +166,21 @@ async function selectChild(child: SessionSummary): Promise<void> {
   transition: background 0.15s;
 }
 
-.panel-entry:hover,
-.panel-entry:focus-visible {
+.panel-entry:hover {
   background: var(--bg-elevated);
-  outline: none;
 }
 
+/*
+ * UX consolidation (May 2026) — improved keyboard focus styling. The
+ * pre-fix outline-offset:-2px clipped against the border, making focus
+ * subtle. A positive offset lifts the ring clear of the row, a focus
+ * background change gives a non-outline cue, and the increased outline
+ * width makes the target obvious at the row's small visual height.
+ */
 .panel-entry:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline-offset: 2px;
+  background: var(--bg-elevated-hover, var(--bg-elevated));
 }
 
 .panel-entry.is-streaming {
@@ -189,6 +208,15 @@ async function selectChild(child: SessionSummary): Promise<void> {
   color: var(--accent-success, #4ade80);
   font-size: 0.6rem;
   animation: child-sessions-pulse 1.5s ease-in-out infinite;
+}
+
+.panel-live-label {
+  color: var(--accent-success, #4ade80);
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
 }
 
 .panel-time {

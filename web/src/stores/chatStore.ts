@@ -1371,7 +1371,7 @@ export const useChatStore = defineStore('chat', {
     // the persisted `delegation` / `delegation_started` message carries
     // only the target agent name (the streaming.DelegationEvent wire shape
     // has no ChildSessionID; the load-bearing child_session_id is on the
-    // separate SwarmEvent stream consumed by DelegationStrip, not on the
+    // separate SwarmEvent stream consumed by DelegationPanel, not on the
     // per-session SSE chat stream).
     //
     // Resolution order — load-bearing:

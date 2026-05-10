@@ -152,6 +152,58 @@ describe('ChildSessionsPanel', () => {
     expect(idleRow.classes()).not.toContain('is-streaming')
   })
 
+  // UX consolidation (May 2026) — accessibility hardening for streaming
+  // affordance. The pre-existing green border + green dot fail for users with
+  // green colour-blindness; pair the visual cue with a redundant text label
+  // so the affordance is robust to colour-vision deficiencies.
+  it('renders a redundant "Live" text label on streaming rows for colour-blind users', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      makeSession({ id: 'parent-1' }),
+      makeSession({ id: 'child-streaming', parentId: 'parent-1' }),
+      makeSession({ id: 'child-idle', parentId: 'parent-1' }),
+    ]
+    chatStore.currentSessionId = 'parent-1'
+    chatStore.sessionStreaming = {
+      'child-streaming': { isLoading: false, isStreaming: true },
+    }
+
+    const wrapper = mount(ChildSessionsPanel)
+    await flushPromises()
+
+    const streamingLabel = wrapper.find('[data-testid="child-session-streaming-label-child-streaming"]')
+    expect(streamingLabel.exists()).toBe(true)
+    expect(streamingLabel.text()).toBe('Live')
+
+    const idleLabel = wrapper.find('[data-testid="child-session-streaming-label-child-idle"]')
+    expect(idleLabel.exists()).toBe(false)
+  })
+
+  // UX consolidation — surface the full title on hover when the summary text
+  // is truncated by .panel-summary's ellipsis. Without this the only way to
+  // see a long title was to navigate into the child session.
+  it('exposes the full row title via a title attribute on the row entry for hover-revealed text', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      makeSession({ id: 'parent-1' }),
+      makeSession({
+        id: 'child-long-title',
+        parentId: 'parent-1',
+        title: 'This is a deliberately very long delegated-session title that the ellipsis will swallow',
+      }),
+    ]
+    chatStore.currentSessionId = 'parent-1'
+
+    const wrapper = mount(ChildSessionsPanel)
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="child-session-row-child-long-title"]')
+    expect(row.exists()).toBe(true)
+    expect(row.attributes('title')).toBe(
+      'This is a deliberately very long delegated-session title that the ellipsis will swallow',
+    )
+  })
+
   it('hides the panel container when there are no children', async () => {
     const chatStore = useChatStore()
     chatStore.sessions = [makeSession({ id: 'parent-1' })]

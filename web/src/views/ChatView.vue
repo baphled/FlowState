@@ -12,7 +12,6 @@ import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
 import QueuedPromptStrip from '@/components/chat/QueuedPromptStrip.vue'
 import TodoListPanel from '@/components/chat/TodoListPanel.vue'
-import DelegationStrip from '@/components/chat/DelegationStrip.vue'
 import ChildSessionsPanel from '@/components/chat/ChildSessionsPanel.vue'
 import AgentPicker from '@/components/agent-picker/AgentPicker.vue'
 import ModelPicker from '@/components/model-picker/ModelPicker.vue'
@@ -115,7 +114,14 @@ function onMessagePaneScroll(): void {
   const isContentReflow = heightDelta > 0 && Math.abs(topDelta) <= heightDelta + 4
 
   if (!isContentReflow) {
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+    // UX consolidation (May 2026) — tightened from 100px to 24px. The
+    // pre-consolidation 100px threshold meant the user had to scroll roughly
+    // five MessageBubble heights up before userScrolledUp latched and the
+    // floating scroll-to-bottom button appeared, leaving the affordance
+    // invisible during normal use. 24px is well under one bubble's height
+    // so scrolling 1-2 messages reveals the button while staying within
+    // smooth-scroll-animation slop tolerance.
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
     userScrolledUp.value = !atBottom
   }
 
@@ -343,8 +349,8 @@ onBeforeUnmount(() => {
           and smooth-scrolls to the latest message, re-arming auto-scroll
           for subsequent streaming chunks. Layered above the message pane
           via absolute positioning inside .message-pane-wrap so it doesn't
-          shift the existing flex layout (DelegationStrip / ChildSessionsPanel
-          / input-selector-bar all still flow normally below the wrap).
+          shift the existing flex layout (ChildSessionsPanel /
+          input-selector-bar all still flow normally below the wrap).
         -->
         <button
           v-if="userScrolledUp"
@@ -372,12 +378,14 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <DelegationStrip />
       <!--
-        ChildSessionsPanel coexists with DelegationStrip: the strip shows
-        transient swarm-bus delegation pulses (vanish on reload), this panel
-        shows persistent children of the current session derived from
-        chatStore.sessions. Both auto-hide when their data source is empty.
+        ChildSessionsPanel surfaces persistent children of the current
+        session derived from chatStore.sessions. Auto-hides when there are
+        no children. The legacy DelegationStrip (transient swarm-bus pulse
+        view) was removed in the UX consolidation (May 2026): its
+        in-thread delegation list duplicated this panel's job, the pulses
+        vanished on reload, and DelegationPanel still surfaces raw swarm
+        events in the swarm pane for users who want them.
       -->
       <ChildSessionsPanel />
 
@@ -536,9 +544,9 @@ onBeforeUnmount(() => {
 /*
  * QW-9 — Floating scroll-to-bottom button. Pinned to the bottom-right of
  * the message-pane wrap so it sits inside the chat thread region, above
- * the messages but below the DelegationStrip / ChildSessionsPanel /
- * composer (those are siblings of .message-pane-wrap, not children, so
- * they flow normally and the button never overlaps them). The 1.25rem
+ * the messages but below the ChildSessionsPanel / composer (those are
+ * siblings of .message-pane-wrap, not children, so they flow normally and
+ * the button never overlaps them). The 1.25rem
  * inset clears the typical scrollbar gutter without overlapping a
  * MessageBubble's right edge.
  */

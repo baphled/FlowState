@@ -28,6 +28,23 @@ const parentSessions = computed(() =>
   chatStore.sessions.filter((session) => !session.parentId)
 )
 
+// UX consolidation (May 2026) — per-session activity surface. The chat
+// header only surfaces the *current* session's streaming state; without
+// these helpers a parallel session running in the background was invisible
+// from the global navigation. Each row in the dropdown reads its own slot
+// via chatStore.streamingFor, and the trigger button lights up when ANY
+// non-current session is live so the user gets a peripheral cue even
+// before opening the dropdown.
+function isSessionStreaming(sessionId: string): boolean {
+  return chatStore.streamingFor(sessionId).isStreaming
+}
+
+const hasBackgroundActivity = computed(() =>
+  chatStore.sessions.some(
+    (session) => session.id !== chatStore.currentSessionId && isSessionStreaming(session.id),
+  ),
+)
+
 async function createNewSession(): Promise<void> {
   await chatStore.newSession()
   chatStore.clearMessages()
@@ -66,6 +83,21 @@ async function selectSession(sessionId: string): Promise<void> {
     >
       <span class="session-icon">💬</span>
       <span class="session-name">{{ currentSessionDisplay }}</span>
+      <!--
+        Background-activity hint — a small dot in a distinct hue from the
+        per-row streaming dot (orange, not green) so the user can
+        instantly tell "something else is running" without confusing it
+        for the active session. Hidden when only the current session is
+        live; that case is already conveyed by the chat header's existing
+        agent-activity indicator.
+      -->
+      <span
+        v-if="hasBackgroundActivity"
+        class="background-activity-dot"
+        data-testid="session-switcher-background-activity"
+        aria-label="Another session is currently active"
+        title="Another session is currently active"
+      />
       <span class="dropdown-arrow" :class="{ open: isOpen }">▾</span>
     </button>
     <ul
@@ -88,12 +120,26 @@ async function selectSession(sessionId: string): Promise<void> {
         v-for="session in parentSessions"
         :key="session.id"
         class="session-option"
-        :class="{ active: session.id === chatStore.currentSessionId }"
+        :class="{ active: session.id === chatStore.currentSessionId, 'is-streaming': isSessionStreaming(session.id) }"
         @click="selectSession(session.id)"
         role="option"
         :aria-selected="session.id === chatStore.currentSessionId"
       >
-        <span class="option-title">{{ session.title || session.id.slice(0, 8) }}</span>
+        <div class="option-title-row">
+          <span class="option-title">{{ session.title || session.id.slice(0, 8) }}</span>
+          <!--
+            Per-row pulsing green dot — same vocabulary as
+            ChildSessionsPanel.panel-live so users learn one symbol for
+            "this session is streaming" across every place a session is
+            listed.
+          -->
+          <span
+            v-if="isSessionStreaming(session.id)"
+            class="option-streaming-dot"
+            :data-testid="`session-switcher-streaming-${session.id}`"
+            aria-label="Currently streaming"
+          >●</span>
+        </div>
         <span class="option-meta">{{ session.messageCount }} messages</span>
       </li>
       <li v-if="chatStore.isLoadingSessions" class="session-loading">
@@ -140,6 +186,28 @@ async function selectSession(sessionId: string): Promise<void> {
   font-size: 0.7rem;
   color: var(--text-muted);
   transition: transform 0.15s;
+}
+
+/*
+ * UX consolidation (May 2026) — background-activity dot. Orange (rather
+ * than the green used for in-row streaming dots) so the user can
+ * distinguish "another session is doing something" from "this row is the
+ * one that's streaming". Pulses on the same cadence as the in-row dot to
+ * read as the same family of affordance.
+ */
+.background-activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-warning, #f59e0b);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+  animation: session-switcher-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes session-switcher-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .dropdown-arrow.open {
@@ -198,6 +266,24 @@ async function selectSession(sessionId: string): Promise<void> {
 .option-title {
   font-weight: 500;
   font-size: 0.9rem;
+}
+
+.option-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/*
+ * Per-row green streaming dot — matches ChildSessionsPanel's pattern so
+ * the "this session is live" affordance reads the same in every list of
+ * sessions.
+ */
+.option-streaming-dot {
+  color: var(--accent-success, #4ade80);
+  font-size: 0.6rem;
+  animation: session-switcher-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
 }
 
 .option-meta,
