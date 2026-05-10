@@ -565,17 +565,29 @@ func streamWithReplay(
 // the per-error-type cooldown so other providers and pre-Phase-3
 // callers see no change in behaviour.
 //
-// Request-level errors (H7): when the typed provider.Error classifies as
-// ErrorTypeContextWindowExceeded, this function deliberately does NOT mark
-// the provider as unavailable. The failure attribute is the request itself
-// (oversized prompt) — every provider in the failover chain would refuse
-// the same request the same way, so blackballing them in turn just empties
-// the chain on a long cooldown without any chance of recovery. The error
-// still surfaces to the caller and the per-call observability event still
-// fires; only the persistent health-state mutation is skipped. H8 will
-// extend this gate to other request-level / per-credential categories
-// (AuthFailure) — the named-category exception here keeps that change
-// additive rather than a rewrite.
+// User-correctable errors (H7+H8): when the typed provider.Error classifies
+// as a user-correctable category — currently ErrorTypeContextWindowExceeded
+// (H7) and ErrorTypeAuthFailure (H8) — this function deliberately does NOT
+// mark the provider as unavailable. In both cases the fault is attributed
+// to the caller's input (oversized prompt) or configuration (mistyped /
+// rotated API key), not to the provider, and a long persisted cooldown
+// produces a worse failure mode than surfacing the error:
+//
+//   - ContextWindowExceeded: every provider in the failover chain would
+//     refuse the same oversized prompt the same way, so blackballing them
+//     in turn just empties the chain on a long cooldown that doesn't
+//     recover until well after the request is gone.
+//   - AuthFailure: the next call with a fixed credential should succeed
+//     immediately. The previous 24h cooldown — persisted to disk — meant a
+//     single typo blackballed the provider for 24h across restarts with
+//     no admin reset path (see H8 follow-up for `flowstate health reset`).
+//
+// The error still surfaces to the caller and the per-call observability
+// event still fires; only the persistent health-state mutation is skipped.
+// The set is intentionally named rather than a blanket IsRetriable gate:
+// non-retriable categories like Billing/Quota/ModelNotFound are
+// per-credential exhaustion where the long cooldown IS the right signal,
+// and failing over to a different provider is meaningful.
 //
 // Expected:
 //   - health is non-nil.
@@ -589,7 +601,7 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 	}
 	var provErr *provider.Error
 	if errors.As(err, &provErr) {
-		if isRequestLevelErrorType(provErr.ErrorType) {
+		if isUserCorrectableError(provErr.ErrorType) {
 			return
 		}
 		cooldown := cooldownForProviderError(provErr)
@@ -599,30 +611,40 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 	CheckAndMarkRateLimited(health, providerName, model, err)
 }
 
-// isRequestLevelErrorType reports whether the error attributes the failure to
-// the request itself rather than to the provider — meaning a different
-// provider in the failover chain would fail the same request the same way.
-// Such errors must not mutate health state; the chain has nothing to switch
-// to and a long cooldown only delays the inevitable user-facing surface.
+// isUserCorrectableError reports whether the error attributes the failure to
+// something the user can fix locally (their prompt or their credentials)
+// rather than to the provider's availability. For these categories, marking
+// the provider as unhealthy is the wrong response: a long persisted cooldown
+// either delays the inevitable user-facing surface (the next request will
+// fail the same way until the user fixes the input) or punishes a fixable
+// mistake across restarts (a typo'd API key blackballs the provider for 24h
+// even after the user corrects it).
 //
-// Currently this is just ErrorTypeContextWindowExceeded (H7). H8 will revisit
-// AuthFailure / ModelNotFound / Billing / Quota — those are per-credential
-// rather than per-request, so they have a defensible reason to mark health
-// even though IsRetriable is false. The narrow named set here prevents the
-// fix from over-reaching into H8's design space.
+// Members:
+//   - ErrorTypeContextWindowExceeded (H7) — oversized prompt, every
+//     provider in the chain would refuse it the same way.
+//   - ErrorTypeAuthFailure (H8) — typo'd / rotated key; once fixed the
+//     next call must succeed without waiting on a 24h persisted cooldown.
+//
+// Deliberately NOT in the set: Billing, Quota, ModelNotFound — these are
+// per-credential exhaustion where the long cooldown is the right signal
+// and failing over to a different provider is meaningful. RateLimit /
+// Overload / NetworkError / ServerError stay outside the gate too — they
+// are genuinely the provider's fault and the cooldown table is the
+// appropriate response.
 //
 // Expected:
 //   - t is a provider error classification.
 //
 // Returns:
-//   - true when t describes a request-level failure.
+//   - true when t describes a user-correctable failure.
 //   - false otherwise.
 //
 // Side effects:
 //   - None.
-func isRequestLevelErrorType(t provider.ErrorType) bool {
-	switch t { //nolint:exhaustive // request-level subset by design; H8 will extend.
-	case provider.ErrorTypeContextWindowExceeded:
+func isUserCorrectableError(t provider.ErrorType) bool {
+	switch t { //nolint:exhaustive // user-correctable subset by design.
+	case provider.ErrorTypeContextWindowExceeded, provider.ErrorTypeAuthFailure:
 		return true
 	default:
 		return false

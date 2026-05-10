@@ -246,12 +246,22 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			Expect(err.Error()).To(ContainSubstring("all providers failed"))
 		})
 
-		It("marks both providers as unavailable", func() {
+		It("marks billing/quota providers but NOT auth-failure (H8)", func() {
 			handler := sh.Execute(baseHandler(registry))
 			_, _ = handler(context.Background(), &provider.ChatRequest{})
 
-			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
-			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue())
+			// H8: auth-failure is user-correctable (fix the key) and a 24h
+			// cooldown punishes a typo. The gate in markProviderHealth
+			// suppresses the health mark for this category only — billing
+			// stays as a per-credential cooldown signal.
+			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
+				"AuthFailure no longer marks health post-H8; the "+
+					"user fixes the key and the next request succeeds "+
+					"without waiting on a persisted 24h cooldown")
+			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue(),
+				"Billing remains per-credential and continues to mark "+
+					"health — the next call with the same key will "+
+					"fail the same way, so failing over is meaningful")
 		})
 	})
 

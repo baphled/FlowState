@@ -1108,6 +1108,114 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		// H8 — auth-failure 401/403 must NOT mark the provider as unavailable.
+		// The default cooldown for AuthFailure is 24h and the unhealthy state is
+		// persisted to disk, so a single typo or rotated key produced a 24-hour
+		// blackout that survived restarts. The fault attribute is the user's
+		// credential, not the provider — the cure is "fix the key", and the
+		// next request should immediately succeed once it's fixed. Blackballing
+		// the provider for a day on every keystroke mistake is the wrong
+		// trade-off. The error still surfaces and the per-call observability
+		// event still fires; only the persistent health-state mutation is
+		// skipped. Mirrors H7's request-level gate; extends the named-category
+		// set rather than rewriting it.
+		Context("when sync error is a provider.Error with auth_failure type (H8)", func() {
+			BeforeEach(func() {
+				authErr := &provider.Error{
+					ErrorType:   provider.ErrorTypeAuthFailure,
+					Provider:    "anthropic",
+					Message:     "invalid API key",
+					IsRetriable: false,
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(authErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("does NOT mark the provider as unavailable on a typo'd or rotated key", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred(),
+					"the auth error still surfaces to the caller — "+
+						"only the persistent 24h health-mark is skipped")
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
+					"a fixable credential mistake must not park the "+
+						"provider on a 24h cooldown that survives restart; "+
+						"the user fixes the key and the next request must "+
+						"succeed without waiting a day")
+			})
+		})
+
+		// H8 — same gate must apply when the auth error arrives async on the
+		// stream channel as a Done+Error chunk. Mirrors the H7 async sibling.
+		Context("when async first chunk carries auth_failure error (H8)", func() {
+			BeforeEach(func() {
+				authErr := &provider.Error{
+					ErrorType:   provider.ErrorTypeAuthFailure,
+					Provider:    "anthropic",
+					Message:     "invalid API key",
+					IsRetriable: false,
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: asyncErrorStreamFn(authErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("does NOT mark the provider as unavailable", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
+					"auth-failure on the async path must also skip "+
+						"health-marking — same contract as the sync "+
+						"sibling spec")
+			})
+		})
+
+		// H8 negative — the gate is intentionally narrow. Categories that are
+		// genuinely the provider's fault (rate-limit, server error) or
+		// per-credential billing/quota (where re-trying immediately is
+		// pointless) must continue to mark health. This guards against a
+		// future change collapsing the gate into a blanket `IsRetriable`
+		// check, which would silently disable failover for the categories
+		// it's actually useful for.
+		Context("when sync error is a provider.Error with billing type (H8 negative)", func() {
+			BeforeEach(func() {
+				billingErr := &provider.Error{
+					ErrorType:   provider.ErrorTypeBilling,
+					Provider:    "anthropic",
+					Message:     "insufficient balance",
+					IsRetriable: false,
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(billingErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("DOES mark the provider as unavailable on billing errors", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue(),
+					"billing/quota are per-credential exhaustion — the "+
+						"next call with the same key will fail the same way, "+
+						"so the long cooldown is the right behaviour and "+
+						"failover to a different provider is meaningful")
+			})
+		})
+
 		Context("when sync error is a plain string containing rate_limit keyword", func() {
 			BeforeEach(func() {
 				registry.Register(&mockStreamProvider{
