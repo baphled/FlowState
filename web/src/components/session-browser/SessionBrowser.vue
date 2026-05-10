@@ -72,6 +72,14 @@ function getAgentProvider(agentId: string): string {
   return agent?.provider || ''
 }
 
+// UX consolidation (May 2026) — every list of sessions shows live state
+// per-row. SessionBrowser is the modal-style picker; we use the same
+// vocabulary as ChildSessionsPanel and SessionSwitcher (green pulsing dot)
+// so the affordance is consistent across every session-list surface.
+function isSessionStreaming(sessionId: string): boolean {
+  return chatStore.streamingFor(sessionId).isStreaming
+}
+
 function handleSelectSession(sessionId: string): void {
   emit('select-session', sessionId)
   isOpen.value = false
@@ -178,6 +186,20 @@ onMounted(() => {
               <h3 class="session-title">
                 {{ session.title || `Session ${session.id.slice(0, 8)}...` }}
               </h3>
+              <!--
+                Pulsing green dot + "Live" text — matches ChildSessionsPanel
+                and SessionSwitcher per-row indicators. The redundant text
+                label is the colour-blind-safe fallback.
+              -->
+              <span
+                v-if="isSessionStreaming(session.id)"
+                class="streaming-badge"
+                :data-testid="`session-browser-streaming-${session.id}`"
+                aria-label="Currently streaming"
+              >
+                <span class="streaming-dot" aria-hidden="true">●</span>
+                <span class="streaming-label">Live</span>
+              </span>
               <span v-if="session.id === chatStore.currentSessionId" class="current-badge">
                 Current
               </span>
@@ -437,6 +459,37 @@ onMounted(() => {
   font-weight: 600;
   text-transform: uppercase;
   border-radius: 999px;
+}
+
+/*
+ * UX consolidation (May 2026) — streaming indicator. Pulsing green dot +
+ * "Live" text label so the affordance is robust to green
+ * colour-blindness. Vocabulary matches ChildSessionsPanel.panel-live and
+ * SessionSwitcher.option-streaming-dot.
+ */
+.streaming-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+  padding: 0.125rem 0.5rem;
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--accent-success, #4ade80);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 999px;
+}
+
+.streaming-dot {
+  font-size: 0.55rem;
+  animation: session-browser-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes session-browser-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .session-card-meta {

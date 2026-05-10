@@ -367,7 +367,13 @@ describe('ChatView auto-scroll', () => {
     expect(scrollToSpy).not.toHaveBeenCalled()
   })
 
-  it('resumes auto-scroll when the user returns within 100px of the bottom', async () => {
+  // UX consolidation (May 2026) — the at-bottom threshold tightened from
+  // 100px to 24px so the scroll-to-bottom button becomes discoverable after
+  // scrolling 1-2 messages worth of pixels rather than ~5. With
+  // scrollHeight=1000, clientHeight=500, scrollTop=480 leaves 20px of
+  // distance — within the 24px threshold so userScrolledUp stays false and
+  // auto-scroll continues to fire on new messages.
+  it('resumes auto-scroll when the user returns within 24px of the bottom', async () => {
     const wrapper = mount(ChatView, {
       global: {
         stubs: {
@@ -380,7 +386,7 @@ describe('ChatView auto-scroll', () => {
     await flushPromises()
 
     scrollToSpy.mockClear()
-    scrollMetrics.scrollTop = 450
+    scrollMetrics.scrollTop = 480
     await wrapper.find('[data-testid="chat-message-pane"]').trigger('scroll')
 
     const chatStore = useChatStore()
@@ -392,6 +398,39 @@ describe('ChatView auto-scroll', () => {
     await nextTick()
 
     expect(scrollToSpy).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
+  })
+
+  // Symmetry pin for the new threshold: when the user is 50px from the
+  // bottom (well outside the 24px tolerance), userScrolledUp must latch
+  // and auto-scroll must not fire. Pre-consolidation a 50px gap was
+  // considered "at bottom" under the 100px threshold, so this test guards
+  // against regression to the old, looser tolerance.
+  it('treats a 50px gap from the bottom as "scrolled up" under the 24px threshold', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    scrollToSpy.mockClear()
+    scrollMetrics.scrollTop = 450 // distance = 1000 - 450 - 500 = 50, > 24
+    await wrapper.find('[data-testid="chat-message-pane"]').trigger('scroll')
+
+    const chatStore = useChatStore()
+    chatStore.messages = [
+      { id: 'assistant-1', role: 'assistant', content: 'hello', timestamp: new Date().toISOString() },
+    ]
+
+    await nextTick()
+    await nextTick()
+
+    expect(scrollToSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="scroll-to-bottom-btn"]').exists()).toBe(true)
   })
 })
 
@@ -626,7 +665,13 @@ describe('ChatView side panel reorganisation', () => {
     expect(sidebar.find('[data-testid="plan-panel"]').exists()).toBe(false)
   })
 
-  it('mounts the DelegationStrip in the chat-main region (not in the side panel)', async () => {
+  // UX consolidation (May 2026) — DelegationStrip removed entirely. The
+  // transient swarm-bus pulse strip never shipped as a useful affordance:
+  // the persistent ChildSessionsPanel already surfaces every delegated
+  // child, and DelegationPanel still shows raw swarm events in the swarm
+  // pane. This pin guards the removal so a future refactor can't quietly
+  // re-mount the legacy strip.
+  it('does not mount the legacy DelegationStrip anywhere in the chat region', async () => {
     const wrapper = mount(ChatView, {
       global: {
         stubs: {
@@ -638,11 +683,7 @@ describe('ChatView side panel reorganisation', () => {
     })
     await flushPromises()
 
-    const main = wrapper.find('.chat-main')
-    expect(main.find('[data-testid="delegation-strip"]').exists()).toBe(true)
-
-    const sidebar = wrapper.find('[data-testid="swarm-pane"]')
-    expect(sidebar.find('[data-testid="delegation-strip"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="delegation-strip"]').exists()).toBe(false)
   })
 })
 
