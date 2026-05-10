@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -16,6 +18,8 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 )
@@ -272,5 +276,124 @@ var _ = Describe("WebSocket session handler — critical-stream-error gating", f
 		// a non-critical error still reach the client.
 		Expect(contents).To(ContainElement("after-transient-error"),
 			"after a transient chunk.Error the WS chunk forward must continue and subsequent chunks must reach the client")
+	})
+})
+
+// Bug C2 — handleSessionWebSocket panics on bus event after channel close.
+//
+// Pre-fix `internal/api/websocket.go` did `close(out)` then `stopBus()`. Bus
+// subscribe handlers (event_bridge.go) perform a non-blocking send via
+// `select { case out <- msg: default: }`. On a CLOSED channel `select` does
+// NOT take the default branch — it panics with "send on closed channel".
+// Between `close(out)` and Unsubscribe any of nine bus topics firing during
+// heavy tool / delegation activity crashes the publisher's goroutine.
+//
+// This spec drives the actual `handleSessionWebSocket` lifecycle: open many
+// WS connections in sequence while a bus-publish goroutine hammers the bus
+// in parallel. The race window between `close(out)` and `stopBus()` is
+// short but with continuous publish pressure pre-fix code reliably hits
+// the panic. Post-fix the cleanup ordering is reversed and the loop runs
+// to completion without panicking the test process.
+//
+// The fan-out runs synchronously inside the publisher's goroutine, so a
+// panic propagates back to the publish loop. We collect any recovered
+// panic via the publisher goroutine's recover() and assert no panic was
+// seen.
+var _ = Describe("WebSocket session handler — Bug C2 channel-close panic safety", func() {
+	It("does not panic when bus events fire during connection close cleanup", func() {
+		bus := eventbus.NewEventBus()
+		mgr := session.NewManager(&mockStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "ws-response"},
+				{Done: true},
+			},
+		})
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv := api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithEventBus(bus),
+		)
+		httpServer := httptest.NewServer(srv.Handler())
+		defer httpServer.Close()
+
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Hammer the bus with events from a goroutine. Each Publish
+		// runs handlers synchronously in this goroutine, so a
+		// send-on-closed-chan panic in the bridge handler propagates
+		// here. We recover() and record the panic so the test goroutine
+		// can assert on it deterministically.
+		var (
+			panicSeen   atomic.Value
+			stopHammer  = make(chan struct{})
+			hammerDone  sync.WaitGroup
+			publishedAt atomic.Int64
+		)
+		hammerDone.Add(1)
+		go func() {
+			defer hammerDone.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					panicSeen.Store(r)
+				}
+			}()
+			ev := events.NewToolEvent(events.ToolEventData{
+				SessionID: sess.ID,
+				ToolName:  "stress",
+			})
+			for {
+				select {
+				case <-stopHammer:
+					return
+				default:
+					bus.Publish(events.EventToolExecuteBefore, ev)
+					publishedAt.Add(1)
+				}
+			}
+		}()
+
+		wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/api/v1/sessions/" + sess.ID + "/ws"
+
+		// Open + close a batch of WS connections. Each connect/close
+		// cycle exercises the cleanup window in the WS handler. With
+		// the bus-hammer goroutine publishing continuously, pre-fix
+		// code reliably hits the close(out) → publish race within a
+		// few iterations; post-fix the loop runs to completion.
+		const iterations = 30
+		for i := 0; i < iterations; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			conn, _, dialErr := websocket.Dial(ctx, wsURL, nil)
+			Expect(dialErr).NotTo(HaveOccurred())
+			payload, _ := json.Marshal(map[string]string{"content": "hello"})
+			_ = conn.Write(ctx, websocket.MessageText, payload)
+			// Drain at least one frame to ensure the handler has
+			// completed initial setup and is in the read loop.
+			_, _, _ = conn.Read(ctx)
+			// Close abruptly — triggers the cleanup window.
+			_ = conn.CloseNow()
+			cancel()
+			// If the bus-hammer goroutine has already panicked, stop
+			// early; the assertion below will fail with the recovered
+			// panic value so the failure message identifies C2.
+			if panicSeen.Load() != nil {
+				break
+			}
+		}
+
+		close(stopHammer)
+		hammerDone.Wait()
+
+		Expect(panicSeen.Load()).To(BeNil(),
+			"bus publish must not panic during WS connection cleanup; pre-fix close(out) before stopBus() races with select{case out<-:default:} on a closed channel")
+		// Sanity check: the hammer ran enough publishes to actually
+		// exercise the race window.
+		Expect(publishedAt.Load()).To(BeNumerically(">", int64(iterations)),
+			"bus-hammer publish counter must exceed iteration count to confirm pressure was applied")
 	})
 })
