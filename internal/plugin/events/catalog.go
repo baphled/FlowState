@@ -149,7 +149,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "background.task.started",
 		Struct:      "BackgroundTaskStartedEvent",
 		Publishers:  []string{"engine/background.go"},
-		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -160,7 +160,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "background.task.completed",
 		Struct:      "BackgroundTaskCompletedEvent",
 		Publishers:  []string{"engine/background.go"},
-		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents", "engine/completion_orchestrator"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -171,7 +171,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "background.task.failed",
 		Struct:      "BackgroundTaskFailedEvent",
 		Publishers:  []string{"engine/background.go"},
-		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents", "engine/completion_orchestrator"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -277,7 +277,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "streaming.heartbeat",
 		Struct:      "StreamingHeartbeatEvent",
 		Publishers:  []string{"engine.go (streamFromProvider + tool-loop)", "provider/anthropic (forwarded ping)"},
-		Subscribers: []string{"api.subscribeSessionBus (default-bridge-to-sse)"},
+		Subscribers: []string{},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -288,7 +288,10 @@ var Catalog = []EventCatalogEntry{
 			" this heartbeat rather than silently dropped per the Engine Bus Event" +
 			" Taxonomy ADR's anti-pattern callout. The payload carries the turn-phase" +
 			" discriminant the frontend's adaptive watchdog reads to pick a per-phase" +
-			" threshold (generating 45s, thinking 120s, tool_executing 180s, queued 300s).",
+			" threshold (generating 45s, thinking 120s, tool_executing 180s, queued 300s)." +
+			" Bug Hunt #51 (May 2026): NO real subscriber today — the SSE bridge in" +
+			" api.subscribeSessionBus does NOT forward this topic; the catalog previously" +
+			" over-claimed the subscription. Surface flagged as dead pending wire-up.",
 	},
 	{
 		Topic:       EventContextWindowBuilt,
@@ -345,7 +348,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "provider",
 		Struct:      "ProviderEvent",
 		Publishers:  []string{"detector.go"},
-		Subscribers: []string{"app.go (rate-limit logger)", "eventlogger", "sessionrecorder", "tui/intents/chat/intent"},
+		Subscribers: []string{"app.go (rate-limit logger)", "eventlogger", "sessionrecorder", "tui/intents/chat/intent", "api.subscribeSessionBus"},
 		Scope:       ScopeInternal,
 		Status:      StatusTransitional,
 		Delivery:    "fire-and-forget",
@@ -407,7 +410,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "session",
 		Struct:      "SessionEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"eventlogger", "sessionrecorder"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "engine.handleSessionEnded", "app.go (session-ended)"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -433,7 +436,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "tool",
 		Struct:      "ToolEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"app.go (dispatcher)", "eventlogger", "sessionrecorder"},
+		Subscribers: []string{"app.go (dispatcher)", "eventlogger", "sessionrecorder", "api.subscribeSessionBus", "api.handleSwarmEvents", "tui/intents/chat/intent"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -461,7 +464,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "tool.execute.error",
 		Struct:      "ToolExecuteErrorEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge", "tui/intents/chat/intent"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge", "api.handleSwarmEvents", "tui/intents/chat/intent"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -473,7 +476,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "tool.execute.result",
 		Struct:      "ToolExecuteResultEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge"},
+		Subscribers: []string{"eventlogger", "sessionrecorder", "app.go (dispatcher)", "api.event_bridge", "api.handleSwarmEvents", "tui/intents/chat/intent"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -496,10 +499,14 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "recall.embedding.stored",
 		Struct:      "RecallEmbeddingStoredEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{"eventlogger"},
+		Subscribers: []string{},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
+			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
+			" topic, so the recall-embedding signal is currently dead surface area." +
+			" Flagged pending decision: wire eventlogger or remove the publisher.",
 	},
 	{
 		Topic:       EventRecallSearched,
@@ -507,10 +514,14 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "recall.searched",
 		Struct:      "RecallSearchEvent",
 		Publishers:  []string{"recall/query_tools.go"},
-		Subscribers: []string{"eventlogger"},
+		Subscribers: []string{},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
+			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
+			" topic, so the recall-search signal is currently dead surface area." +
+			" Flagged pending decision: wire eventlogger or remove the publisher.",
 	},
 	{
 		Topic:       EventRecallChainSearched,
@@ -518,10 +529,14 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "recall.chain.searched",
 		Struct:      "RecallChainSearchEvent",
 		Publishers:  []string{"recall/chain_search.go"},
-		Subscribers: []string{"eventlogger"},
+		Subscribers: []string{},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
+			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
+			" topic, so the recall-chain-search signal is currently dead surface area." +
+			" Flagged pending decision: wire eventlogger or remove the publisher.",
 	},
 	// EventRecallChainSearchFailed (M9, May 2026) was removed by F4
 	// (Bug Hunt Findings May 11 2026): the topic shipped with zero
@@ -535,10 +550,14 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "recall.summarized",
 		Struct:      "RecallSummarizedEvent",
 		Publishers:  []string{"recall/query_tools.go"},
-		Subscribers: []string{"eventlogger"},
+		Subscribers: []string{},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
+			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
+			" topic, so the recall-summarize signal is currently dead surface area." +
+			" Flagged pending decision: wire eventlogger or remove the publisher.",
 	},
 	{
 		Topic:       EventContextCompacted,
@@ -546,10 +565,15 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "context.compacted",
 		Struct:      "ContextCompactedEvent",
 		Publishers:  []string{"internal/engine/engine.go"},
-		Subscribers: []string{"eventlogger"},
+		Subscribers: []string{"api.subscribeSessionBus"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
+		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
+			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
+			" topic. The real subscriber is the SSE bridge (api.subscribeSessionBus's" +
+			" newContextCompactedHandler), which projects the compaction telemetry" +
+			" onto the wire for Vue's compaction-chip affordance.",
 	},
 	{
 		Topic:       EventDiscoveryPublished,

@@ -13,6 +13,19 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 )
 
+// SubscribedEventTypes returns the authoritative list of event topic strings
+// this plugin subscribes to. Exposed so the events.Catalog accuracy audit can
+// cross-check declared Subscribers against real subscription wiring without
+// resorting to source-level grep at test time.
+//
+// Returns: a fresh slice copy so callers cannot mutate the package-level list.
+// Side effects: none.
+func SubscribedEventTypes() []string {
+	out := make([]string, len(subscribedEventTypes))
+	copy(out, subscribedEventTypes)
+	return out
+}
+
 // subscribedEventTypes lists all event type strings the logger subscribes to.
 // These must match the exact event names published by the engine and plugin
 // subsystems (e.g. "session.created", not "session").
