@@ -547,4 +547,74 @@ var _ = Describe("CompletionOrchestrator", func() {
 				"after the per-re-prompt deadline trips, the CAS flag must clear so new completions can re-prompt")
 		})
 	})
+
+	// F1 (Bug Hunt Findings May 11 2026) — the H4 fix put
+	// `rePromptCount[sessionID]++` inside an unconditional defer.
+	// Three early-return paths in triggerRePrompt reach the defer
+	// without ever dispatching a re-prompt:
+	//   1. GetNotifications returns an error.
+	//   2. GetNotifications returns zero notifications (legitimate
+	//      race: another goroutine drained them first).
+	//   3. FormatCompletionReminders returns an empty string.
+	// On 3 racing-empty-notif completions the counter hits
+	// maxRePrompts=3 and the depth-limit gate at processCompletion
+	// silently rejects all subsequent re-prompts for that session
+	// until ResetRePromptCount is called by a new user message.
+	// The fix gates the increment on a re-prompt actually being
+	// attempted (i.e. a SendMessage call). This spec drives the
+	// smallest racing-empty-notif shape: completions fire without
+	// any pending notifications, then a real notification fires;
+	// under the bug the real one is silently dropped, under the
+	// fix it dispatches normally.
+	Describe("F1 — defer counter must not exhaust on no-op early-returns", func() {
+		It("does not consume the re-prompt budget when GetNotifications returns zero events", func() {
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "sess-f1")
+
+			// Drive 5 background-task completions with NO notifications
+			// queued. Each triggers a completion event into the
+			// orchestrator; triggerRePrompt's GetNotifications
+			// returns an empty slice, the function early-returns
+			// without calling SendMessage. Pre-F1 the deferred
+			// counter still increments on every one. We deliberately
+			// exceed maxRePrompts=3 to make the bug observable.
+			for i := range 5 {
+				taskID := "task-f1-noop-" + string(rune('a'+i))
+				bgMgr.Launch(ctx, taskID, "explorer", "noop", func(ctx context.Context) (string, error) {
+					return "done", nil
+				})
+
+				Eventually(func() string {
+					t, _ := bgMgr.Get(taskID)
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("completed"))
+
+				time.Sleep(50 * time.Millisecond)
+			}
+
+			// No SendMessage should have fired — there were no
+			// notifications to send. Sanity gate for the test set-up.
+			Consistently(func() []string {
+				return sender.getSendCalls()
+			}, "300ms", "50ms").ShouldNot(ContainElement("sess-f1"))
+
+			// Now queue a real notification and fire a 6th
+			// completion. Under the bug, the budget is exhausted
+			// (count >= 3 from the 5 racing-empty-notif defers)
+			// and processCompletion's depth-limit gate rejects the
+			// re-prompt. Under the fix, the counter never incremented
+			// (no SendMessage call was attempted) and this re-prompt
+			// dispatches normally.
+			sender.addNotification("sess-f1", streaming.CompletionNotificationEvent{
+				TaskID: "task-f1-real", Agent: "explorer", Duration: time.Second,
+			})
+			bgMgr.Launch(ctx, "task-f1-real", "explorer", "real", func(ctx context.Context) (string, error) {
+				return "done", nil
+			})
+
+			Eventually(func() []string {
+				return sender.getSendCalls()
+			}, "3s", "50ms").Should(ContainElement("sess-f1"),
+				"after 5 racing-empty-notif completions, a real notification must still dispatch — the no-op paths must not consume the re-prompt budget")
+		})
+	})
 })

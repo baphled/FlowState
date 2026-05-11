@@ -2,7 +2,6 @@ package recall
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -117,10 +116,12 @@ func (t *ChainSearchTool) Schema() tool.Schema {
 // Side effects:
 //   - Reads from the chain store.
 //   - Publishes a recall.chain.searched event for every call (success
-//     or zero-result) and additionally publishes
-//     recall.chain.search.failed when the Search call errors. The two
-//     topics are independently subscribable so existing observability
-//     keeps working and new subscribers can react to genuine failure.
+//     or zero-result). The dedicated `recall.chain.search.failed`
+//     event was removed in F4 (Bug Hunt Findings May 11 2026) — it
+//     had zero non-test subscribers, making it dead surface area.
+//     The typed ErrAllSourcesFailed sentinel and the engine's existing
+//     `tool.execute.error` propagation (via result.Error = err at
+//     engine.go:3825) remain the canonical failure signals.
 func (t *ChainSearchTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	query, ok := input.Arguments["query"].(string)
 	if !ok || query == "" {
@@ -152,26 +153,20 @@ func (t *ChainSearchTool) Execute(ctx context.Context, input tool.Input) (tool.R
 	}
 
 	// M9: genuine Search failure must be observable separately from
-	// "zero results". The pre-fix code branched on
+	// "zero results". The pre-M9 code branched on
 	// `err != nil || len(results) == 0` into the same silent
 	// recency fallback, masking Qdrant outages and dimension
 	// mismatches as benign empty queries.
+	//
+	// F4 (May 11 2026): the dedicated bus event was removed —
+	// nothing subscribed to it. The non-nil err return below
+	// reaches engine.go:3825 (`result.Error = err`) which the
+	// engine's tool.execute.error bus path forwards to all live
+	// observers.
 	if err != nil {
-		if t.bus != nil {
-			t.bus.Publish(events.EventRecallChainSearchFailed, events.NewRecallChainSearchFailedEvent(events.RecallChainSearchFailedEventData{
-				SessionID: sessionID,
-				AgentID:   agentID,
-				Query:     query,
-				Reason:    err.Error(),
-				ErrType:   classifyChainSearchErr(err),
-				LatencyMS: latencyMS,
-			}))
-		}
 		// Still hand the model recency-fallback output so the
 		// historical UX (no hard runtime error reaching the model)
-		// is preserved; the engine treats the non-nil err as a
-		// soft-fail at engine.go:3825 (`result.Error = err`) and
-		// surfaces it via tool.execute.error.
+		// is preserved.
 		fallback, _ := t.fallbackToRecent()
 		fallback.Error = err
 		return fallback, err
@@ -182,22 +177,6 @@ func (t *ChainSearchTool) Execute(ctx context.Context, input tool.Input) (tool.R
 	}
 
 	return tool.Result{Output: formatMessages(extractMessages(results))}, nil
-}
-
-// classifyChainSearchErr maps an underlying Search error to a coarse
-// classifier string for dashboards and structured logging. The
-// classifier vocabulary is open (subscribers must tolerate unknown
-// values) but stable for well-known categories so a Grafana panel can
-// group by ErrType without parsing message text. Currently best-effort:
-// we surface ErrAllSourcesFailed when the broker is the underlying
-// source, and "store.search" otherwise. Future contributors should
-// extend this as new well-known failure modes emerge (e.g.
-// "embedder.dim_mismatch" once M10 lands).
-func classifyChainSearchErr(err error) string {
-	if errors.Is(err, ErrAllSourcesFailed) {
-		return "broker.all_sources_failed"
-	}
-	return "store.search"
 }
 
 // fallbackToRecent returns recent chain messages when a query cannot be used.

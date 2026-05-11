@@ -40,7 +40,6 @@
 //   - recall.embedding.stored
 //   - recall.searched
 //   - recall.chain.searched
-//   - recall.chain.search.failed
 //   - recall.summarized
 //   - context.compacted
 //   - discovery.published
@@ -81,23 +80,17 @@ const (
 	EventRecallEmbeddingStored   = "recall.embedding.stored"
 	EventRecallSearched          = "recall.searched"
 	EventRecallChainSearched     = "recall.chain.searched"
-	// EventRecallChainSearchFailed surfaces a genuine recall chain-search
-	// failure (M9, Bug Hunt Findings May 2026). The pre-existing
-	// `recall.chain.searched` event fires on both success AND on the
-	// silent fallback-to-recency path that masked Qdrant / embedding /
-	// network failures as zero-result queries — a long conversation
-	// could silently degrade to recency-only retrieval with no
-	// observable signal on the wire. Subscribers that need to
-	// distinguish "no relevant data" from "recall is broken" (operator
-	// dashboards, the engine's diagnostic surface, future
-	// hallucination-rate trackers) MUST subscribe to this topic.
-	// Fire-and-forget; complements rather than replaces
-	// `recall.chain.searched`.
-	EventRecallChainSearchFailed = "recall.chain.search.failed"
-	EventRecallSummarized        = "recall.summarized"
-	EventContextCompacted        = "context.compacted"
-	EventDiscoveryPublished      = "discovery.published"
-	EventLearningRecorded        = "learning.recorded"
+	// EventRecallChainSearchFailed (M9, May 2026) was removed by F4
+	// (Bug Hunt Findings May 11 2026) — the dedicated bus event had
+	// zero non-test subscribers anywhere in the tree. The typed
+	// `recall.ErrAllSourcesFailed` sentinel and the engine's existing
+	// `tool.execute.error` propagation (via result.Error = err at
+	// engine.go:3825) remain the canonical signals for a genuine
+	// recall failure.
+	EventRecallSummarized   = "recall.summarized"
+	EventContextCompacted   = "context.compacted"
+	EventDiscoveryPublished = "discovery.published"
+	EventLearningRecorded   = "learning.recorded"
 	// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026): swarm
 	// gate lifecycle events. The engine publishes one batch-level
 	// `gate.evaluating` and one batch-level `gate.passed` per

@@ -292,11 +292,25 @@ func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
 // Side effects:
 //   - Calls SendMessage on the session manager.
 //   - Publishes the resulting stream to the broker (if configured).
-//   - Increments the re-prompt counter and clears the CAS flag.
+//   - Increments the re-prompt counter ONLY when SendMessage was actually
+//     attempted (F1, Bug Hunt Findings May 11 2026). Early-return no-op
+//     paths (zero notifications, empty reminder, GetNotifications error)
+//     must NOT consume the re-prompt budget.
+//   - Clears the CAS flag and re-enqueues pending completions on every
+//     return path so racing-empty-notif completions stay observable.
 func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
+	// F1: track whether a SendMessage was actually attempted in this
+	// invocation. The deferred closure only increments rePromptCount
+	// when attempted=true. Pre-F1, the unconditional increment exhausted
+	// the budget on 3 racing-empty-notif completions, permanently
+	// disabling auto-re-prompt for the session until ResetRePromptCount
+	// fired on a new user message.
+	var attempted bool
 	defer func() {
 		o.mu.Lock()
-		o.rePromptCount[sessionID]++
+		if attempted {
+			o.rePromptCount[sessionID]++
+		}
 		o.rePrompting[sessionID] = false
 		pending := o.rePromptPending[sessionID]
 		delete(o.rePromptPending, sessionID)
@@ -336,6 +350,12 @@ func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// F1: a re-prompt is now being attempted — flag the budget
+	// increment BEFORE the SendMessage call so an error path
+	// (deadline-exceeded, transport failure) still consumes a slot.
+	// Mirroring the pre-F1 semantics for the work-was-tried case:
+	// only the racing-empty-notif paths get the budget back.
+	attempted = true
 	chunks, err := o.sessionMgr.SendMessage(ctx, sessionID, reminder)
 	if err != nil {
 		slog.Warn("completion orchestrator: re-prompt SendMessage failed",

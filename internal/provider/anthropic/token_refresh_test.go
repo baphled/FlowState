@@ -386,6 +386,101 @@ var _ = Describe("TokenManager", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(token).To(Equal("no-persist"))
 		})
+
+		// F3 (Bug Hunt Findings May 11 2026) — the pre-F3 persistTokens
+		// used a direct `os.WriteFile` with `_ = ...` error swallow.
+		// SIGKILL or power loss mid-write truncated the auth file;
+		// a disk-full / EACCES failure was silently dropped. Both
+		// failure modes blackball OAuth refresh on the next launch.
+		// The fix mirrors the recall + session-fork persistence
+		// pattern: temp-then-rename + surface the error via slog and
+		// the return value.
+		Context("F3 — atomicity + error surfacing on persist", func() {
+			It("leaves no .tmp sibling on the filesystem after a successful write", func() {
+				tokenPath := filepath.Join(tmpDir, "anthropic.json")
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "atomic-access",
+						RefreshToken: "atomic-refresh",
+						ExpiresAt:    9999999,
+					},
+				}
+				tm := NewTokenManager("old", "old-r", 0, spy, tokenPath)
+				_, err := tm.EnsureToken(ctx)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, statErr := os.Stat(tokenPath + ".tmp")
+				Expect(os.IsNotExist(statErr)).To(BeTrue(),
+					"F3: temp file must be renamed over the target; no .tmp leftover on success")
+			})
+
+			It("preserves the existing token file when the write fails", func() {
+				// Pre-populate the file with a known-good token so we
+				// can assert atomicity: even when the persist call
+				// fails (we force this by making the directory
+				// read-only), the on-disk content must still parse as
+				// the OLD token, never a half-written or zero-byte
+				// file.
+				tokenPath := filepath.Join(tmpDir, "anthropic.json")
+				oldPayload := []byte(`{"type":"oauth","access":"old-access","refresh":"old-refresh","expires":1}`)
+				Expect(os.WriteFile(tokenPath, oldPayload, 0o600)).To(Succeed())
+
+				// Make the directory read-only so the temp file
+				// creation fails. (chmod must be restored in
+				// AfterEach via tmpDir cleanup — but RemoveAll on a
+				// read-only dir would fail, so restore it here too.)
+				Expect(os.Chmod(tmpDir, 0o500)).To(Succeed())
+				defer func() { _ = os.Chmod(tmpDir, 0o700) }()
+
+				spy := &spyRefresher{
+					result: RefreshResult{
+						AccessToken:  "new-access",
+						RefreshToken: "new-refresh",
+						ExpiresAt:    9999999,
+					},
+				}
+				tm := NewTokenManager("old-access", "old-refresh", 0, spy, tokenPath)
+				// EnsureToken refreshes successfully in memory but
+				// the persist call hits the read-only directory.
+				_, _ = tm.EnsureToken(ctx)
+
+				// On-disk content must be the old token, parseable,
+				// non-empty. The pre-F3 behaviour permitted a
+				// truncated/empty file on this failure mode.
+				saved, readErr := os.ReadFile(tokenPath)
+				Expect(readErr).NotTo(HaveOccurred(),
+					"F3: the on-disk file must still be readable after a failed persist (no truncation)")
+				Expect(saved).NotTo(BeEmpty(),
+					"F3: the on-disk file must not be truncated when the write fails")
+
+				var payload map[string]interface{}
+				Expect(json.Unmarshal(saved, &payload)).To(Succeed(),
+					"F3: the on-disk file must remain valid JSON when the write fails")
+				Expect(payload["access"]).To(Equal("old-access"),
+					"F3: the pre-existing token must survive a failed persist")
+			})
+
+			It("returns an error from persistTokens so callers can surface it (no silent swallow)", func() {
+				// The pre-F3 signature was `persistTokens()` with the
+				// write error silently discarded. The fix surfaces
+				// the error so the calling refresh path can log or
+				// propagate it. We exercise the test-only wrapper
+				// PersistTokensForTest which returns the error.
+				tokenPath := filepath.Join(tmpDir, "nested", "child", "anthropic.json")
+				// Parent dir of the deepest segment exists (tmpDir),
+				// so MkdirAll succeeds; but make the leaf parent
+				// read-only after creation to force WriteFile to
+				// fail.
+				Expect(os.MkdirAll(filepath.Dir(tokenPath), 0o700)).To(Succeed())
+				Expect(os.Chmod(filepath.Dir(tokenPath), 0o500)).To(Succeed())
+				defer func() { _ = os.Chmod(filepath.Dir(tokenPath), 0o700) }()
+
+				tm := NewTokenManager("acc", "ref", 0, nil, tokenPath)
+				err := tm.PersistTokensForTest()
+				Expect(err).To(HaveOccurred(),
+					"F3: persistTokens must surface write errors so the OAuth refresh path can log them (no silent _ = swallow)")
+			})
+		})
 	})
 
 	Describe("AccessToken", func() {

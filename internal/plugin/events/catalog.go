@@ -523,24 +523,12 @@ var Catalog = []EventCatalogEntry{
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
 	},
-	{
-		Topic:       EventRecallChainSearchFailed,
-		Constant:    "EventRecallChainSearchFailed",
-		EventType:   "recall.chain.search.failed",
-		Struct:      "RecallChainSearchFailedEvent",
-		Publishers:  []string{"recall/chain_search.go"},
-		Subscribers: []string{"eventlogger"},
-		Scope:       ScopeInternal,
-		Status:      StatusActive,
-		Delivery:    "fire-and-forget",
-		Notes: "M9 (Bug Hunt Findings May 2026). Distinguishes genuine recall failure" +
-			" (Qdrant down, dimension mismatch, network timeout, broker fan-out exhausted)" +
-			" from the silent-zero-results fallback that the pre-existing" +
-			" `recall.chain.searched` event masked. Subscribers that need to surface" +
-			" recall health on a dashboard or trigger user-visible warnings must" +
-			" subscribe to this topic. Fire-and-forget; complements rather than" +
-			" replaces `recall.chain.searched`.",
-	},
+	// EventRecallChainSearchFailed (M9, May 2026) was removed by F4
+	// (Bug Hunt Findings May 11 2026): the topic shipped with zero
+	// non-test subscribers anywhere in the tree, making it dead
+	// surface area. The typed `recall.ErrAllSourcesFailed` sentinel
+	// and the engine's existing `tool.execute.error` propagation
+	// remain the canonical recall-failure signals.
 	{
 		Topic:       EventRecallSummarized,
 		Constant:    "EventRecallSummarized",
