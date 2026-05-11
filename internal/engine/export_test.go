@@ -218,3 +218,11 @@ func SetRePromptTimeout(o *CompletionOrchestrator, d time.Duration) {
 func SetRePromptConcurrency(o *CompletionOrchestrator, n int) {
 	o.rePromptSem = make(chan struct{}, n)
 }
+
+// TeeToParentStreamForTest exposes teeToParentStream for white-box testing
+// of the goroutine lifecycle on ctx cancel. The production wrapper reads
+// streamOutputFromContext for parentOut; tests inject that via
+// WithStreamOutput before calling.
+func TeeToParentStreamForTest(ctx context.Context, agentID string, src <-chan provider.StreamChunk) <-chan provider.StreamChunk {
+	return teeToParentStream(ctx, agentID, src)
+}
