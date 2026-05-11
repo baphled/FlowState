@@ -76,9 +76,9 @@ type fakeOrchestratorEngine struct {
 	// trigger must run BEFORE the preference swings — otherwise the
 	// engine resolves limits against the new model and the
 	// estimated-vs-usable comparison becomes self-fulfilling.
-	maybeCompactCalls     []fakeMaybeCompactCall
-	maybeCompactReturn    string
-	orderTrace            []string
+	maybeCompactCalls  []fakeMaybeCompactCall
+	maybeCompactReturn string
+	orderTrace         []string
 }
 
 type fakeMaybeCompactCall struct {
@@ -139,13 +139,13 @@ func (f *fakeOrchestratorEngine) SetContextStore(store *recall.FileContextStore,
 // call so the parity-fan-out tests can assert both the engine and the
 // manager mutate together.
 type fakeSessionManager struct {
-	agentSessions   []string
-	agentIDs        []string
-	modelSessions   []string
-	modelProviders  []string
-	modelModels     []string
-	updateAgentErr  error
-	updateModelErr  error
+	agentSessions  []string
+	agentIDs       []string
+	modelSessions  []string
+	modelProviders []string
+	modelModels    []string
+	updateAgentErr error
+	updateModelErr error
 }
 
 func (f *fakeSessionManager) UpdateSessionAgent(sessionID, agentID string) error {
@@ -164,10 +164,10 @@ func (f *fakeSessionManager) UpdateSessionModel(sessionID, providerName, modelNa
 // fakeSessionStore satisfies the orchestrator's SessionStore edge
 // interface — Save / Load — and records inputs for assertion.
 type fakeSessionStore struct {
-	saved        []fakeSessionSaveCall
-	loadStore    *recall.FileContextStore
-	loadErr      error
-	saveErr      error
+	saved     []fakeSessionSaveCall
+	loadStore *recall.FileContextStore
+	loadErr   error
+	saveErr   error
 }
 
 type fakeSessionSaveCall struct {
@@ -194,11 +194,11 @@ func (f *fakeSessionStore) Load(_ string) (*recall.FileContextStore, error) {
 // event-persistence path.
 type fakeSessionStoreWithEvents struct {
 	fakeSessionStore
-	loadedEvents       []streaming.SwarmEvent
-	loadEventsErr      error
-	savedEventsBySess  map[string][]streaming.SwarmEvent
-	saveEventsErr      error
-	saveEventsCalls    int
+	loadedEvents      []streaming.SwarmEvent
+	loadEventsErr     error
+	savedEventsBySess map[string][]streaming.SwarmEvent
+	saveEventsErr     error
+	saveEventsCalls   int
 }
 
 func (f *fakeSessionStoreWithEvents) LoadEvents(_ string) ([]streaming.SwarmEvent, error) {
