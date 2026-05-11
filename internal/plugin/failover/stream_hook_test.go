@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -1630,6 +1631,238 @@ var _ = Describe("StreamHook model_active event", func() {
 			_, err := handler(context.Background(), &provider.ChatRequest{})
 			Expect(err).To(HaveOccurred(),
 				"all-failed must surface as an error; there is no actual model to announce")
+		})
+	})
+})
+
+// M2 — prependProviderChangedChunk and prependModelActiveChunk wrap the
+// upstream replay channel with a goroutine that forwards chunks to a new
+// (buffered, size 17) channel. Before this fix the inner forward loop used a
+// bare `out <- chunk` with no ctx-awareness:
+//
+//	go func() {
+//		defer close(out)
+//		out <- transition          // unguarded
+//		for chunk := range upstream {
+//			out <- chunk            // unguarded
+//		}
+//	}()
+//
+// Leak shape: when the SSE consumer disconnects mid-stream the chat handler
+// stops draining `out`. After at most 17 buffered chunks the wrapper
+// goroutine blocks on `out <- chunk`. Nothing in the wrapper observes the
+// parent ctx, so the wrapper holds the upstream alive (and itself blocked)
+// until `streamWithReplay`'s own per-attempt timeoutCtx fires (default
+// stream-timeout — tens of seconds to minutes). The wrapper goroutine is
+// pinned the whole time even though the consumer is long gone.
+//
+// Fix shape (pinned by these specs): each `out <- ...` send must be a
+// ctx-aware select. When the parent ctx cancels (consumer disconnect, user
+// Escape, navigation away), the wrapper exits promptly and closes `out`.
+//
+// Observable: with consumer-stopped-draining + parent-ctx-cancelled, the
+// `out` channel must close within a short window (well below the
+// per-attempt stream timeout). If the bug regressed the goroutine would
+// stay parked on the send and the channel would never close.
+var _ = Describe("StreamHook M2 — prepend* goroutines exit on ctx cancel", func() {
+	var (
+		manager  *failover.Manager
+		registry *provider.Registry
+		health   *failover.HealthManager
+		sh       *failover.StreamHook
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		manager = failover.NewManager(registry, health, 30*time.Second)
+		sh = failover.NewStreamHook(manager, nil, "")
+	})
+
+	// slowStreamFn produces a stream that emits chunks until ctx is done or
+	// `count` chunks have been emitted, whichever first. Chunks are emitted
+	// without artificial delay; capacity is 1 so producer naturally waits on
+	// consumer drain. This shape is enough to overflow the wrapper's 17-slot
+	// buffer when the consumer stops draining.
+	slowStreamFn := func(count int, sent *int64) func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+		return func(ctx context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			ch := make(chan provider.StreamChunk, 1)
+			go func() {
+				defer close(ch)
+				for i := 0; i < count; i++ {
+					select {
+					case <-ctx.Done():
+						return
+					case ch <- provider.StreamChunk{Content: fmt.Sprintf("chunk-%d", i)}:
+						atomic.AddInt64(sent, 1)
+					}
+				}
+			}()
+			return ch, nil
+		}
+	}
+
+	Context("first provider succeeds (only prependModelActiveChunk wraps)", func() {
+		var sent int64
+
+		BeforeEach(func() {
+			atomic.StoreInt64(&sent, 0)
+			registry.Register(&mockStreamProvider{
+				name:     "anthropic",
+				streamFn: slowStreamFn(200, &sent),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			})
+		})
+
+		It("closes the wrapper channel promptly after parent ctx cancels and consumer stops draining", func() {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(parent, &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Drain a small handful of chunks (enough to leave many more
+			// queued / in flight), then stop draining.
+			drained := 0
+			for drained < 3 {
+				select {
+				case _, ok := <-ch:
+					if !ok {
+						Fail("upstream closed before we could stage the leak")
+					}
+					drained++
+				case <-time.After(2 * time.Second):
+					Fail("timed out staging the leak — did not receive initial chunks")
+				}
+			}
+
+			// Cancel the parent ctx — this is what a real SSE disconnect /
+			// user Escape would do upstream.
+			cancel()
+
+			// After cancel + consumer-stopped-draining, the wrapper goroutine
+			// MUST exit and close `ch` within a short window. Before the fix
+			// the goroutine is blocked on `out <- chunk` and ignores ctx, so
+			// `ch` stays open until streamWithReplay's per-attempt timeoutCtx
+			// fires — orders of magnitude beyond this budget.
+			Eventually(func() bool {
+				select {
+				case _, ok := <-ch:
+					// Either we received a queued chunk (still alive,
+					// keep polling) or the channel closed (goroutine exited
+					// — the contract).
+					return !ok
+				default:
+					return false
+				}
+			}, 1*time.Second, 10*time.Millisecond).Should(BeTrue(),
+				"prependModelActiveChunk goroutine must exit on parent ctx cancel; otherwise it leaks for the per-attempt stream timeout")
+		})
+	})
+
+	Context("first candidate fails, second succeeds (BOTH prependProviderChangedChunk AND prependModelActiveChunk wrap)", func() {
+		var sent int64
+
+		BeforeEach(func() {
+			atomic.StoreInt64(&sent, 0)
+			registry.Register(&mockStreamProvider{
+				name: "anthropic",
+				streamFn: asyncErrorStreamFn(&provider.Error{
+					ErrorType: provider.ErrorTypeRateLimit,
+					Provider:  "anthropic",
+					Message:   "429 rate limited",
+				}),
+			})
+			registry.Register(&mockStreamProvider{
+				name:     "zai",
+				streamFn: slowStreamFn(200, &sent),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+		})
+
+		It("closes both wrapper channels promptly after parent ctx cancels and consumer stops draining", func() {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(parent, &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Drain a couple chunks (we expect provider_changed +
+			// model_active to land first, then real content).
+			drained := 0
+			for drained < 3 {
+				select {
+				case _, ok := <-ch:
+					if !ok {
+						Fail("upstream closed before we could stage the leak")
+					}
+					drained++
+				case <-time.After(2 * time.Second):
+					Fail("timed out staging the leak — did not receive initial chunks")
+				}
+			}
+
+			cancel()
+
+			Eventually(func() bool {
+				select {
+				case _, ok := <-ch:
+					return !ok
+				default:
+					return false
+				}
+			}, 1*time.Second, 10*time.Millisecond).Should(BeTrue(),
+				"the outermost wrapper goroutine (prependProviderChangedChunk wrapping prependModelActiveChunk wrapping streamWithReplay) must exit on parent ctx cancel; otherwise each wrapper layer leaks for the per-attempt stream timeout")
+		})
+
+		It("the outermost wrapper channel drains to close after ctx cancel (no parked sender)", func() {
+			// Belt-and-braces companion to the close-channel pin: instead
+			// of polling for a closed-receive, this test drains the
+			// channel to its terminus after cancelling. Before the fix
+			// the consumer drain would hang forever (wrapper goroutine
+			// parked on a full `out`); after the fix the wrapper exits
+			// promptly and the receiver loop terminates.
+			//
+			// We deliberately do NOT assert runtime.NumGoroutine here:
+			// streamWithReplay and the mock provider's emitter sit on a
+			// detached timeoutCtx (per the Bug #2 fix) and only release
+			// on per-attempt timeout, so the global goroutine count is
+			// not the right observable for M2. The wrapper-channel-close
+			// IS the M2 contract.
+			parent, cancel := context.WithCancel(context.Background())
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(parent, &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Stage the wedge: drain a few, then stop.
+			for i := 0; i < 3; i++ {
+				select {
+				case <-ch:
+				case <-time.After(2 * time.Second):
+					Fail("could not stage leak — stream stalled")
+				}
+			}
+
+			cancel()
+
+			drainDone := make(chan struct{})
+			go func() {
+				for range ch {
+				}
+				close(drainDone)
+			}()
+			select {
+			case <-drainDone:
+			case <-time.After(2 * time.Second):
+				Fail("wrapper-channel drain did not terminate within 2s of ctx cancel — goroutine leak (M2 regression)")
+			}
 		})
 	})
 })

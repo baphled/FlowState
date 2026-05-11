@@ -131,9 +131,9 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 			// content; the relative order between them is unspecified at
 			// the consumer (the frontend handles them as independent
 			// events).
-			replayCh = prependModelActiveChunk(replayCh, candidate)
+			replayCh = prependModelActiveChunk(ctx, replayCh, candidate)
 			if previousFailed != nil {
-				replayCh = prependProviderChangedChunk(replayCh, previousFailed, candidate)
+				replayCh = prependProviderChangedChunk(ctx, replayCh, previousFailed, candidate)
 			}
 			return replayCh, nil
 		}
@@ -235,6 +235,11 @@ func classifyFailoverReason(err error) string {
 // ok := <-liveCh; if !ok { writeSSEDone }`).
 //
 // Expected:
+//   - ctx is the parent context — when it cancels (SSE consumer disconnect,
+//     user Escape, navigation away), the wrapper goroutine MUST exit
+//     promptly and close `out`. Without ctx-awareness on the send the
+//     goroutine parked on a full `out` (consumer stopped draining) would
+//     leak for the full per-attempt stream timeout — see M2 fix.
 //   - upstream is the replay channel returned by streamWithReplay.
 //   - failed is the candidate that triggered the transition.
 //   - newCandidate is the candidate that succeeded.
@@ -246,9 +251,10 @@ func classifyFailoverReason(err error) string {
 // Side effects:
 //   - Spawns one goroutine that reads from upstream until it closes,
 //     then closes the wrapper channel. The goroutine cannot leak —
-//     when the SSE consumer disconnects, upstream's goroutine cancels
-//     and closes its channel, which terminates this loop.
+//     ctx-aware sends exit on parent cancel; upstream's own goroutine
+//     terminates on its per-attempt timeoutCtx.
 func prependProviderChangedChunk(
+	ctx context.Context,
 	upstream <-chan provider.StreamChunk,
 	failed *failedCandidate,
 	newCandidate provider.ModelPreference,
@@ -277,9 +283,17 @@ func prependProviderChangedChunk(
 	out := make(chan provider.StreamChunk, replayBufferSize+1)
 	go func() {
 		defer close(out)
-		out <- transition
+		select {
+		case out <- transition:
+		case <-ctx.Done():
+			return
+		}
 		for chunk := range upstream {
-			out <- chunk
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return out
@@ -321,6 +335,11 @@ type modelActivePayload struct {
 // the upstream channel, so we compose a new one and forward.
 //
 // Expected:
+//   - ctx is the parent context — when it cancels (SSE consumer disconnect,
+//     user Escape, navigation away), the wrapper goroutine MUST exit
+//     promptly and close `out`. Without ctx-awareness on the send the
+//     goroutine parked on a full `out` (consumer stopped draining) would
+//     leak for the full per-attempt stream timeout — see M2 fix.
 //   - upstream is the replay channel returned by streamWithReplay.
 //   - candidate is the candidate that succeeded; its Provider and Model
 //     are the values to surface to the consumer.
@@ -332,12 +351,13 @@ type modelActivePayload struct {
 // Side effects:
 //   - Spawns one goroutine that reads from upstream until it closes,
 //     then closes the wrapper channel. The goroutine cannot leak —
-//     when the SSE consumer disconnects, upstream's goroutine cancels
-//     and closes its channel, which terminates this loop.
+//     ctx-aware sends exit on parent cancel; upstream's own goroutine
+//     terminates on its per-attempt timeoutCtx.
 //   - On a marshal failure (unreachable in practice for a 2-string struct)
 //     returns the upstream verbatim — the chip stays on the optimistic
 //     selection rather than a malformed stream.
 func prependModelActiveChunk(
+	ctx context.Context,
 	upstream <-chan provider.StreamChunk,
 	candidate provider.ModelPreference,
 ) <-chan provider.StreamChunk {
@@ -358,9 +378,17 @@ func prependModelActiveChunk(
 	out := make(chan provider.StreamChunk, replayBufferSize+1)
 	go func() {
 		defer close(out)
-		out <- active
+		select {
+		case out <- active:
+		case <-ctx.Done():
+			return
+		}
 		for chunk := range upstream {
-			out <- chunk
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return out
