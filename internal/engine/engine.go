@@ -252,6 +252,21 @@ type Engine struct {
 	// regardless of compactionConfig.FactExtractionEnabled.
 	factService *factstore.Service
 
+	// Bug #36 — per-session double-emission guard for the tool-loop
+	// context_usage cadence. emitMidToolLoopRefresh writes one chunk
+	// between tool batches, and emitPostRetryContextUsage writes a
+	// second chunk after the retry stream is opened so the chip
+	// reflects the actual ChatRequest the provider sees. Without a
+	// guard, two emissions carrying identical bytes would cause the
+	// chip to re-render with the same number. The map keys are
+	// sessionIDs; values are the most-recent payload string emitted
+	// onto outChan for that session. A subsequent emit that produces
+	// the same string is suppressed. Per-session keying so the chip
+	// for session B never gets coalesced with session A's payload.
+	// Access is serialised by lastUsagePayloadMu.
+	lastUsagePayload   map[string]string
+	lastUsagePayloadMu sync.Mutex
+
 	mu sync.RWMutex
 }
 
@@ -657,6 +672,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:         make(map[string]struct{}),
 		seededSessions:            make(map[string]struct{}),
+		lastUsagePayload:          make(map[string]string),
 		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
 		swarmContext:              cfg.SwarmContext,
 		microCompactor:            resolveMicroCompactor(cfg),
@@ -3331,7 +3347,19 @@ func (e *Engine) streamWithToolLoop(
 		// hook the chip stays stale until terminal Done and
 		// maybeAutoCompact never fires from the tool-loop path
 		// (retryStreamForToolResult bypasses buildContextWindow).
-		e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+		//
+		// Bug #35 — when emitMidToolLoopRefresh reports compaction
+		// fired, reload `messages` from the post-compaction view so
+		// the next provider request sees the compressed slice rather
+		// than the swollen pre-compaction prefix. The no-fire branch
+		// returns false and we skip the reload — buildContextWindow
+		// is not free.
+		compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+		if compacted {
+			if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID); rebuilt != nil {
+				messages = rebuilt
+			}
+		}
 
 		attempt++
 		var streamErr error
@@ -3340,6 +3368,16 @@ func (e *Engine) streamWithToolLoop(
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
 		}
+
+		// Bug #36 — post-retry context_usage refresh. The next
+		// provider stream may take seconds to produce its first
+		// chunk. Without this emission the chip holds the stale
+		// figure across that gap because emitMidToolLoopRefresh wrote
+		// against a different message shape (no tools schema, no
+		// post-reload payload). tryEmitContextUsage coalesces when
+		// the resulting payload happens to be byte-identical to the
+		// last emission for this session.
+		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 	}
 }
 
@@ -4976,6 +5014,17 @@ func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage
 // fresh ChatRequest that bypasses buildContextWindow so
 // maybeAutoCompact never fires from the tool-loop path either.
 //
+// Bug #35 — returns compacted=true when the gate-proximity tier
+// fired so the caller (streamWithToolLoop) can swap its in-memory
+// messages slice for the freshly-rebuilt compacted view via
+// rebuildContextWindowAfterMidLoopCompaction. Returning false on
+// the no-op path lets the caller skip the (still cheap, but
+// pointless) message-reload.
+//
+// Bug #36 — writes the emitted payload into e.lastUsagePayload[sess]
+// so the post-retry hook can detect "nothing changed since the last
+// emission" and coalesce a duplicate chunk.
+//
 // Expected:
 //   - ctx carries cancellation/deadline for the (potential) summariser call.
 //   - sessionID identifies the active session; threaded through to
@@ -4984,15 +5033,20 @@ func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage
 //     one context_usage chunk to it when a usage figure can be
 //     computed.
 //
+// Returns:
+//   - compacted=true iff gateProximityForceCompact fired and
+//     maybeAutoCompact produced a non-empty summary on this call.
+//
 // Side effects:
 //   - Writes one context_usage StreamChunk to outChan (best-effort —
 //     suppressed when buildContextUsagePayload reports no figure).
+//   - Records the emitted payload in lastUsagePayload[sessionID].
 //   - On a positive gate-proximity verdict, fires maybeAutoCompact
 //     which can issue one summariser LLM call and publish one
 //     ContextCompactedEvent with Trigger="tool_result_wave".
-func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) {
+func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) bool {
 	if e == nil || e.store == nil || sessionID == "" {
-		return
+		return false
 	}
 	providerID := e.LastProvider()
 	modelID := e.LastModel()
@@ -5000,10 +5054,13 @@ func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, o
 	// Chip refresh — emit a fresh context_usage chunk reflecting the
 	// just-extended persisted store. Tool results were appended to
 	// e.store via storeToolResult before this hook runs, so
-	// AllMessages() carries the swollen wave.
+	// AllMessages() carries the swollen wave. Tools schema flows in
+	// so the figure matches the request the provider sees (Bug #36 —
+	// the previous nil-tools call under-counted the request size).
 	if outChan != nil {
-		if body, ok := e.buildContextUsagePayload(providerID, modelID, e.store.AllMessages(), nil, 0); ok {
-			outChan <- provider.StreamChunk{EventType: "context_usage", Content: body}
+		tools := e.ToolSchemas()
+		if body, ok := e.buildContextUsagePayload(providerID, modelID, e.store.AllMessages(), tools, 0); ok {
+			e.tryEmitContextUsage(sessionID, body, outChan)
 		}
 	}
 
@@ -5014,9 +5071,130 @@ func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, o
 	manifestCopy := e.Manifest()
 	tokenBudget := e.ModelContextLimit()
 	if !e.gateProximityForceCompact(&manifestCopy, "", tokenBudget) {
+		return false
+	}
+	summary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, "tool_result_wave")
+	return summary != ""
+}
+
+// tryEmitContextUsage writes a context_usage StreamChunk onto outChan
+// iff the supplied body differs from the most-recent payload emitted
+// for sessionID. The guard is the Bug #36 double-emission
+// coalescing: two emissions carrying identical bytes would cause the
+// chip to re-render with the same number, and the chip's "no figure
+// changed" optimisation papers over the issue only when the consumer
+// reads the same channel — SSE consumers re-dispatch every chunk
+// onto the client, so the wire would carry redundant updates.
+//
+// Per-session keying is mandatory: two sessions that coincidentally
+// share a payload (same provider, model, message count, hash) must
+// each still see their own emission. Cross-session leakage of the
+// coalescing state would mean session B's chip never updates when
+// session A happened to emit the same bytes first.
+//
+// Expected:
+//   - sessionID identifies the session. Empty sessionIDs are still
+//     allowed (the helper writes through without consulting the memo)
+//     so non-session callers stay functional.
+//   - body is the JSON payload to emit verbatim.
+//   - outChan is the engine's stream output channel. Nil is a no-op.
+//
+// Side effects:
+//   - Writes at most one context_usage StreamChunk to outChan.
+//   - Updates lastUsagePayload[sessionID] on a successful write.
+func (e *Engine) tryEmitContextUsage(sessionID, body string, outChan chan<- provider.StreamChunk) {
+	if outChan == nil || body == "" {
 		return
 	}
-	e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, "tool_result_wave")
+	if sessionID != "" {
+		e.lastUsagePayloadMu.Lock()
+		if e.lastUsagePayload[sessionID] == body {
+			e.lastUsagePayloadMu.Unlock()
+			return
+		}
+		e.lastUsagePayload[sessionID] = body
+		e.lastUsagePayloadMu.Unlock()
+	}
+	outChan <- provider.StreamChunk{EventType: "context_usage", Content: body}
+}
+
+// emitPostRetryContextUsage writes a fresh context_usage chunk after
+// retryStreamForToolResult has opened the next provider stream so the
+// chip reflects the actual ChatRequest the provider is about to
+// consume during the (potentially multi-second) gap before its first
+// content chunk lands. The emission is coalesced via tryEmitContextUsage:
+// if the post-retry payload is byte-identical to the most-recent
+// mid-loop emission, the chip already shows that figure and the
+// chunk is suppressed.
+//
+// Bug #36 — without this hook, the chip held a stale figure between
+// emitMidToolLoopRefresh and the next streamed content chunk because
+// the post-tool-result figure (no tools schema, pre-retry messages)
+// failed to capture what the provider was actually about to see.
+//
+// Expected:
+//   - ctx is the active stream context (currently unused; reserved
+//     for future cancellation honoring — provider.ToolSchemas does
+//     not take a context today).
+//   - sessionID identifies the session whose chip should tick.
+//   - messages is the assembled request slice
+//     retryStreamForToolResult sent to the provider; the figure must
+//     mirror what that request carries.
+//   - outChan is the engine's stream output channel. Nil is a no-op.
+//
+// Side effects:
+//   - Writes at most one context_usage StreamChunk to outChan.
+func (e *Engine) emitPostRetryContextUsage(_ context.Context, sessionID string, messages []provider.Message, outChan chan<- provider.StreamChunk) {
+	if e == nil || outChan == nil {
+		return
+	}
+	tools := e.ToolSchemas()
+	body, ok := e.buildContextUsagePayload(e.LastProvider(), e.LastModel(), messages, tools, 0)
+	if !ok {
+		return
+	}
+	e.tryEmitContextUsage(sessionID, body, outChan)
+}
+
+// rebuildContextWindowAfterMidLoopCompaction returns the rebuilt
+// message slice the next retryStreamForToolResult call should hand to
+// the provider after emitMidToolLoopRefresh fired the tool-result-wave
+// compaction trigger.
+//
+// Bug #35 — streamWithToolLoop previously kept its pre-compaction
+// in-memory messages slice and handed it straight to
+// retryStreamForToolResult. The store carried the persisted history
+// and the engine's per-session memo carried the fresh summary, but
+// the next provider request inherited the bloated pre-compaction
+// view. Calling this helper after a compacted=true signal swaps the
+// caller's slice for the compacted view (system prompt + summary +
+// recent history).
+//
+// The implementation routes through buildContextWindow with an empty
+// user message so the same assembly path that handles user turns
+// (recall, system prompt rebuild, micro-compaction) also covers the
+// mid-loop reload. maybeAutoCompact's H2 memo means the second call
+// reuses the cached summary instead of re-invoking the summariser.
+//
+// Expected:
+//   - ctx is the active stream context.
+//   - sessionID identifies the session whose history should be
+//     re-assembled.
+//
+// Returns:
+//   - The rebuilt message slice. Returns nil when the engine cannot
+//     reassemble (no store, no windowBuilder); the caller should fall
+//     back to its pre-fix slice rather than send nothing.
+//
+// Side effects:
+//   - Same as buildContextWindow (publishes context-window events,
+//     updates lastContextResult). Acceptable because mid-loop reload
+//     is a real assembly cycle the operator wants observability for.
+func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context, sessionID string) []provider.Message {
+	if e == nil || e.store == nil || sessionID == "" {
+		return nil
+	}
+	return e.buildContextWindow(ctx, sessionID, "")
 }
 
 // MaybeCompactForModel resolves the supplied (newProvider, newModel)

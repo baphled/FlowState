@@ -3,11 +3,13 @@ package mcpproxy_test
 import (
 	"context"
 	"errors"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/mcp"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
 )
@@ -166,6 +168,80 @@ var _ = Describe("Proxy", func() {
 				Expect(result.Output).To(Equal("tool failed"))
 				Expect(result.Error).To(HaveOccurred())
 				Expect(result.Error.Error()).To(ContainSubstring("tool failed"))
+			})
+		})
+
+		// Bug #34 — MCP tool output bypasses the shared truncation envelope.
+		// Native tools (bash, read, grep, ls) all route their Content
+		// through truncate.Apply so a runaway 300KB tool result spills
+		// to a session-scoped overflow file and the assistant sees a
+		// short recovery hint instead of a swollen JSON blob in the
+		// messages array. mcpproxy.Execute did NOT call truncate.Apply
+		// before this fix, so a single `read_graph` from the mem0 MCP
+		// returning a knowledge graph landed raw on the provider
+		// request and ate context-window budget on every subsequent
+		// turn. This Describe block pins the post-fix contract: every
+		// MCP tool output flows through the same envelope as native
+		// tools, by default, with no opt-in.
+		Describe("output truncation (Bug #34)", func() {
+			It("truncates over-cap MCP tool output and writes a spill file", func() {
+				// 60KB of newline-separated lines — comfortably over the
+				// 50KB default byte cap. The truncate envelope must
+				// slice this to fit and append a recovery hint.
+				bigPayload := strings.Repeat("knowledge-graph-line\n", 3000)
+				Expect(len(bigPayload)).To(BeNumerically(">", 50*1024))
+
+				client.callToolFn = func(_ context.Context, _, _ string, _ map[string]any) (*mcp.ToolResult, error) {
+					return &mcp.ToolResult{Content: bigPayload, IsError: false}, nil
+				}
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "sess-mcp-bug34")
+				input := tool.Input{Name: "read_graph", Arguments: map[string]any{}}
+				result, err := proxy.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result.Output)).To(BeNumerically("<", len(bigPayload)),
+					"MCP output above the truncation budget must be sliced, not delivered raw")
+				Expect(result.Output).To(ContainSubstring("truncated"),
+					"the truncate envelope appends a recovery hint mentioning the truncation")
+				Expect(result.Output).To(ContainSubstring("Full output saved to:"),
+					"the spill file path must be included in the hint so the agent can recover ranges")
+			})
+
+			It("leaves small MCP tool output unchanged", func() {
+				const small = "tiny mcp response payload"
+				client.callToolFn = func(_ context.Context, _, _ string, _ map[string]any) (*mcp.ToolResult, error) {
+					return &mcp.ToolResult{Content: small, IsError: false}, nil
+				}
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "sess-mcp-small")
+				input := tool.Input{Name: "echo", Arguments: map[string]any{}}
+				result, err := proxy.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(Equal(small),
+					"under-cap MCP output must pass through verbatim (no spurious hint)")
+			})
+
+			It("truncates over-cap MCP error output too", func() {
+				// IsError responses also flow through truncate so an
+				// MCP server that returns a stack trace dump does not
+				// blow the context window on the failure path either.
+				bigErr := strings.Repeat("ERR: traceback frame\n", 3000)
+				client.callToolFn = func(_ context.Context, _, _ string, _ map[string]any) (*mcp.ToolResult, error) {
+					return &mcp.ToolResult{Content: bigErr, IsError: true}, nil
+				}
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "sess-mcp-err")
+				input := tool.Input{Name: "broken_tool", Arguments: map[string]any{}}
+				result, err := proxy.Execute(ctx, input)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Error).To(HaveOccurred(),
+					"IsError must still surface as result.Error after truncation")
+				Expect(len(result.Output)).To(BeNumerically("<", len(bigErr)),
+					"oversized error output must also be sliced through the truncate envelope")
+				Expect(result.Output).To(ContainSubstring("truncated"))
 			})
 		})
 	})

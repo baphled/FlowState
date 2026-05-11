@@ -86,8 +86,44 @@ func SanitiseDelegationMessageForTest(msg string) string {
 // batch hook so the gate-proximity test suite can pin its two
 // affordances (context_usage emission + tool_result_wave force-fire)
 // without standing up a full multi-batch tool-loop end-to-end.
+//
+// Discards the compacted-bool return so the original cadence specs
+// keep their `(ctx, sessionID, outChan)` call shape. Bug #35's new
+// specs use EmitMidToolLoopRefreshReportForTest to read the signal.
 func (e *Engine) EmitMidToolLoopRefreshForTest(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) {
-	e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+	_ = e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+}
+
+// EmitMidToolLoopRefreshReportForTest exposes the same hook with the
+// compacted-bool return surfaced. Bug #35's reload-signal specs use
+// this variant to pin that the helper reports compaction status so
+// the streamWithToolLoop caller can decide whether to rebuild
+// messages from the post-compaction view.
+func (e *Engine) EmitMidToolLoopRefreshReportForTest(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) bool {
+	return e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+}
+
+// RebuildMessagesAfterCompactionForTest exposes the Bug #35
+// post-compaction message-reload helper so specs can pin the
+// post-fix invariant — the rebuilt slice carries the auto-compacted
+// summary marker — without driving a full multi-batch tool loop
+// end-to-end.
+func (e *Engine) RebuildMessagesAfterCompactionForTest(ctx context.Context, sessionID string) []provider.Message {
+	return e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID)
+}
+
+// EmitPostRetryContextUsageForTest exposes the Bug #36 post-retry
+// context_usage emission so specs can pin the cadence (one fresh
+// chunk per real change) and the per-session double-emission guard
+// (identical payload coalesces). The messages slice defaults to the
+// engine's persisted store; tests asserting payload-byte equality
+// pass the same slice the production callsite would.
+func (e *Engine) EmitPostRetryContextUsageForTest(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) {
+	var msgs []provider.Message
+	if e.store != nil {
+		msgs = e.store.AllMessages()
+	}
+	e.emitPostRetryContextUsage(ctx, sessionID, msgs, outChan)
 }
 
 // SetHeartbeatIntervalForTest overrides the default 15s streaming
