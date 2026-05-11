@@ -212,6 +212,17 @@ export interface Session {
   /** True when the backend broker has an active Publish in progress. Always emitted. */
   isStreaming: boolean
   /**
+   * Delegation coordination chain identifier — populated when this session
+   * was spawned via the engine's delegate tool. Empty for root sessions.
+   *
+   * Mirrors `Summary.ChainID` so consumers reading the single-session DTO
+   * (POST /messages, PATCH /agent, PATCH /model, future GET /sessions/{id})
+   * see the same chainId as the list endpoint. Without this, any UI surface
+   * that fetches a single session would lose chainId after the list-driven
+   * cold load and the sibling-confusion bug could re-appear on refresh.
+   */
+  chainId?: string
+  /**
    * Phase 3 — TUI-cadence parity. Carries the engine's current
    * context_usage shape on agent / model PATCH responses so the
    * chat UI's chip ticks up to reflect the new (provider, model,
