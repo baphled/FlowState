@@ -240,3 +240,103 @@ describe('swarmStore.connect — M8: generation-token isolation across reconnect
     await Promise.all([pA, pB])
   })
 })
+
+// Bug Hunt (May 2026) sibling-confusion fix — every delegation
+// SwarmEvent ingested by swarmStore must record the (chainId,
+// childSessionId) pair into chatStore.chainSessions so the in-thread
+// delegation-card click can disambiguate siblings.
+describe('swarmStore.ingestEventLine — delegation chain → session recording', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('records chainId → childSessionId on a `delegation` event with metadata', async () => {
+    // Drive a single delegation event through connect() and assert the
+    // chatStore.chainSessions map was populated.
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'parent-session'
+
+    const ctrl = controllableReader()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeFetchResponse(ctrl.reader)),
+    )
+
+    const swarm = useSwarmStore()
+    const p = swarm.connect()
+    await flushMicrotasks()
+
+    const event = {
+      id: 'chain-abc',
+      type: 'delegation',
+      status: 'started',
+      timestamp: '2026-05-11T09:00:00Z',
+      agent_id: 'executor',
+      metadata: {
+        child_session_id: 'child-session-abc',
+        parent_session_id: 'parent-session',
+      },
+      schema_version: 1,
+    }
+    ctrl.emit(`data: ${JSON.stringify(event)}\n`)
+    await flushMicrotasks()
+
+    expect(chatStore.chainSessions['chain-abc']).toBe('child-session-abc')
+
+    ctrl.close()
+    await flushMicrotasks()
+    await p
+  })
+
+  it('ignores non-delegation events and events missing child_session_id', async () => {
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'parent-session'
+
+    const ctrl = controllableReader()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(makeFetchResponse(ctrl.reader)),
+    )
+
+    const swarm = useSwarmStore()
+    const p = swarm.connect()
+    await flushMicrotasks()
+
+    // tool_call event — not a delegation, MUST NOT touch the map.
+    ctrl.emit(
+      `data: ${JSON.stringify({
+        id: 'tool-1',
+        type: 'tool_call',
+        timestamp: '2026-05-11T09:00:00Z',
+        agent_id: 'executor',
+        metadata: { child_session_id: 'should-not-record' },
+        schema_version: 1,
+      })}\n`,
+    )
+    // delegation event without child_session_id — MUST NOT record.
+    ctrl.emit(
+      `data: ${JSON.stringify({
+        id: 'chain-no-child',
+        type: 'delegation',
+        status: 'started',
+        timestamp: '2026-05-11T09:00:00Z',
+        agent_id: 'executor',
+        metadata: { parent_session_id: 'parent-session' },
+        schema_version: 1,
+      })}\n`,
+    )
+    await flushMicrotasks()
+
+    expect(chatStore.chainSessions['tool-1']).toBeUndefined()
+    expect(chatStore.chainSessions['chain-no-child']).toBeUndefined()
+
+    ctrl.close()
+    await flushMicrotasks()
+    await p
+  })
+})

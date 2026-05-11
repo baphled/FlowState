@@ -371,6 +371,38 @@ export const useChatStore = defineStore('chat', {
     currentSessionId: null as string | null,
     sessions: [] as SessionSummary[],
     messages: [] as Message[],
+    // chainSessions — Bug Hunt (May 2026) sibling-confusion fix for the
+    // in-thread delegation card.
+    //
+    // The persisted `delegation` / `delegation_started` Message carries
+    // `targetAgent` + `chainId` but NOT a child session id (see
+    // session.Message in internal/session/manager.go — the wire shape
+    // intentionally omits ChildSessionID because the DelegationEvent
+    // payload was originally TUI-only). MessageBubble's "click the agent
+    // name" affordance therefore could not resolve the click to a unique
+    // session when a parent delegated to the same agent more than once:
+    // both cards shared `targetAgent`, the resolver fell back to
+    // "most-recent child", and the EARLIER card silently opened the
+    // LATER sibling. Sibling confusion, click A see B.
+    //
+    // The SwarmEvent stream (consumed by swarmStore) does carry the
+    // child session id alongside the chain id — every `delegation`
+    // SwarmEvent fired by the engine has `metadata.child_session_id`
+    // and `id === chainId`. swarmStore.ingestEventLine records the
+    // (chainId → childSessionId) mapping into this map as events flow,
+    // and loadSessionForDelegation prefers it over the agent-id
+    // fallback. The resolver only falls back when the chainId is
+    // unknown to the map (e.g. on a hard reload before the live swarm
+    // stream has reconnected, since FlowState does not replay swarm
+    // events on reconnect).
+    //
+    // Latent surface (flagged): the reload-before-swarm-reconnect
+    // window still routes by agent-id and inherits the original
+    // most-recent-wins behaviour. Closing that requires either
+    // SwarmEvent replay on `/swarm/events` connect or carrying
+    // `target_session_id` on the persisted `delegation` Message. Both
+    // are backend changes; this commit closes the live-click path.
+    chainSessions: {} as Record<string, string>,
     // Per-session streaming state (Slice A — Streaming Coherence May 2026).
     //
     // Pre-slice the store carried flat global `isLoading` / `isStreaming`
@@ -1572,6 +1604,52 @@ export const useChatStore = defineStore('chat', {
 
       await this.loadSessionMessages(candidate.id)
       return true
+    },
+
+    // recordChainSession is the seam swarmStore.ingestEventLine writes
+    // to when a `delegation` SwarmEvent arrives carrying both the chain
+    // id (event.id) and the child session id (metadata.child_session_id).
+    // The map is consumed by loadSessionForDelegation to route the
+    // in-thread delegation card click to the correct sibling when a
+    // parent delegated to the same agent multiple times. Idempotent —
+    // re-recording the same pair is a no-op; the engine emits multiple
+    // updates per chain (started, in-flight, completed) and they all
+    // carry the same (chainId, childSessionId).
+    recordChainSession(chainId: string, childSessionId: string): void {
+      if (!chainId || !childSessionId) return
+      this.chainSessions[chainId] = childSessionId
+    },
+
+    // loadSessionForDelegation is the seam the in-thread MessageBubble
+    // delegation card click hangs on. It resolves the click in two
+    // steps:
+    //
+    //   1. If chainId is set AND we have observed a SwarmEvent for that
+    //      chain, jump directly to the recorded child session. This is
+    //      the load-bearing path: chain ids are unique per delegation,
+    //      so this disambiguates sibling delegations to the same agent
+    //      (the sibling-confusion bug class).
+    //   2. Otherwise fall back to loadSessionByAgentId(agentId), which
+    //      uses the "most-recent child of the active parent" heuristic.
+    //      This preserves correctness for the legacy cases — message
+    //      without a chainId, or a reload before the live swarm event
+    //      stream has reconnected.
+    //
+    // Returns true when a session was loaded, false when neither path
+    // resolved a candidate.
+    async loadSessionForDelegation(opts: {
+      chainId?: string
+      agentId: string
+    }): Promise<boolean> {
+      const { chainId, agentId } = opts
+      if (chainId) {
+        const recorded = this.chainSessions[chainId]
+        if (recorded) {
+          await this.loadSessionMessages(recorded)
+          return true
+        }
+      }
+      return this.loadSessionByAgentId(agentId)
     },
 
     async sendMessage(content: string): Promise<void> {

@@ -40,6 +40,20 @@ export const useSwarmStore = defineStore('swarm', () => {
         // Evict oldest entries to keep memory bounded.
         events.value = next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next
       }
+      // Bug Hunt (May 2026) sibling-confusion fix — every `delegation`
+      // SwarmEvent carries the chain id (event.id) plus the child
+      // session id in metadata.child_session_id. Record the pair into
+      // chatStore so the in-thread delegation-card click can resolve to
+      // the correct sibling when a parent has delegated to the same
+      // agent more than once. Idempotent — the engine emits multiple
+      // status updates per chain (started, completed, …) and they
+      // share the same pair.
+      if (event.type === 'delegation' && event.metadata) {
+        const childSessionId = event.metadata['child_session_id']
+        if (typeof childSessionId === 'string' && childSessionId !== '') {
+          useChatStore().recordChainSession(event.id, childSessionId)
+        }
+      }
     } catch {
       return
     }

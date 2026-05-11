@@ -4169,6 +4169,241 @@ describe('chatStore - loadSessionByAgentId (regression: prefer the active parent
   })
 })
 
+// loadSessionForDelegation closes the sibling-confusion bug class for
+// the in-thread MessageBubble delegation card. Pre-fix the click
+// resolved by `targetAgent` alone — when a parent delegated to the
+// same agent twice (or two sibling chains landed on the same agent),
+// the click on the EARLIER card silently opened the LATER sibling
+// (loadSessionByAgentId fell back to most-recent-wins). The fix wires
+// the persisted Message's `chainId` into the resolver: SwarmEvent
+// ingestion populates a (chainId → childSessionId) map in the store,
+// and the click routes through that map when chainId is known.
+describe("chatStore - loadSessionForDelegation (chainId-aware sibling disambiguation)", () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it("routes by chainId when the chain is in the chainSessions map, even if siblings share the agent id", async () => {
+    // Two siblings, same agentId, different chains. Pre-fix
+    // loadSessionByAgentId always picked child-new (the most-recent).
+    // Post-fix, clicking the card for chain-old routes to child-old
+    // because the SwarmEvent for chain-old recorded child-old's id.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'child-old',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'First run',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+      {
+        id: 'child-new',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'Second run',
+        createdAt: '2026-05-01T09:05:00Z',
+        updatedAt: '2026-05-01T09:05:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+    // Simulate swarmStore ingesting the two `delegation` events the
+    // engine fires when the parent delegates to executor twice.
+    store.recordChainSession('chain-old', 'child-old')
+    store.recordChainSession('chain-new', 'child-new')
+
+    // The user clicks the EARLIER delegation card — the one whose
+    // persisted message carries chainId: 'chain-old'.
+    const loaded = await store.loadSessionForDelegation({
+      chainId: 'chain-old',
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(true)
+    expect(store.currentSessionId).toBe('child-old')
+    // The most-recent-wins fallback would have landed on child-new.
+    // Confirm the chainId routing dominated.
+    expect(store.currentSessionId).not.toBe('child-new')
+  })
+
+  it("falls back to loadSessionByAgentId's most-recent-child resolver when chainId is unknown", async () => {
+    // No swarm event seen for this chain yet (e.g. hard reload before
+    // the live stream reconnected). The legacy resolver kicks in so
+    // the click still goes somewhere reasonable — preserving the
+    // pre-fix behaviour for the chainId-missing case.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'child-old',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'First run',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+      {
+        id: 'child-new',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'Second run',
+        createdAt: '2026-05-01T09:05:00Z',
+        updatedAt: '2026-05-01T09:05:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+    // chainSessions map empty — no recordChainSession() calls.
+
+    const loaded = await store.loadSessionForDelegation({
+      chainId: 'chain-not-yet-seen',
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(true)
+    // Legacy most-recent-wins behaviour — preserved as the fallback.
+    expect(store.currentSessionId).toBe('child-new')
+  })
+
+  it("falls back to the agent-id resolver when no chainId is provided at all", async () => {
+    // The persisted message shape may lack chainId on older history
+    // written before the chain-id-on-message field was added. The
+    // call-site passes chainId: undefined, the resolver must still
+    // route via the agent-id heuristic.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'child-of-active',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'Child',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    const loaded = await store.loadSessionForDelegation({
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(true)
+    expect(store.currentSessionId).toBe('child-of-active')
+  })
+
+  it("returns false when neither chainId nor agent-id resolves", async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    const loaded = await store.loadSessionForDelegation({
+      chainId: 'unknown-chain',
+      agentId: 'not-an-agent',
+    })
+
+    expect(loaded).toBe(false)
+    expect(store.currentSessionId).toBe('parent')
+  })
+
+  it("recordChainSession is idempotent and tolerates empty inputs", async () => {
+    const store = useChatStore()
+    // Empty pair — no-op, no throw.
+    store.recordChainSession('', 'some-session')
+    store.recordChainSession('some-chain', '')
+    expect(store.chainSessions).toEqual({})
+
+    // First recording lands.
+    store.recordChainSession('chain-1', 'session-1')
+    expect(store.chainSessions['chain-1']).toBe('session-1')
+
+    // Repeat is a no-op.
+    store.recordChainSession('chain-1', 'session-1')
+    expect(store.chainSessions['chain-1']).toBe('session-1')
+
+    // Different chain → different slot, doesn't clobber.
+    store.recordChainSession('chain-2', 'session-2')
+    expect(store.chainSessions['chain-1']).toBe('session-1')
+    expect(store.chainSessions['chain-2']).toBe('session-2')
+  })
+})
+
 describe('describeToolName (plain-language tool labels for non-technical users)', () => {
   // The user explicitly called out that "tool: bash" reads as too
   // technical — non-technical-user UX bar. The label map below is the
