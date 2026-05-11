@@ -54,11 +54,57 @@
         Show swarm activity pane in chat
       </label>
     </section>
+
+    <!--
+      Deliverable 2 of the May 2026 context-accuracy bundle —
+      runtime-tunable auto-compaction threshold. The section only
+      renders when the backend reports a configured threshold (i.e.
+      a CompactionController is wired); a 501 from
+      /api/v1/config/compression resolves to null and hides the
+      control entirely so operators don't see a slider that won't
+      function.
+    -->
+    <section
+      v-if="compressionConfig !== null"
+      class="settings-section"
+      data-testid="compression-section"
+    >
+      <h2>Context Compression</h2>
+      <label class="field-label" for="compression-threshold">
+        Auto-compaction threshold ({{ thresholdPercent }}%)
+      </label>
+      <input
+        id="compression-threshold"
+        class="field-input"
+        data-testid="compression-threshold-input"
+        type="range"
+        min="0.1"
+        max="1.0"
+        step="0.05"
+        :value="compressionConfig.threshold"
+        @change="onThresholdChange(($event.target as HTMLInputElement).value)"
+      />
+      <p class="field-hint">
+        Fire L2 auto-compaction when the persisted context window crosses this
+        fraction of the model's context limit. Lower values compact sooner
+        (more aggressive); higher values compact later (more headroom for
+        long sessions before summary). 0.75 is the historical default.
+      </p>
+      <p v-if="thresholdError" class="field-error" data-testid="compression-threshold-error">
+        {{ thresholdError }}
+      </p>
+    </section>
   </div>
 </template>
 
 <script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
 import { useSettingsStore } from '@/stores/settingsStore'
+import {
+  fetchCompressionConfig,
+  updateCompressionThreshold,
+  type CompressionConfig,
+} from '@/api'
 import type { Theme } from '@/types'
 
 const settingsStore = useSettingsStore()
@@ -68,6 +114,45 @@ const themeOptions: { value: Theme; label: string }[] = [
   { value: 'light', label: 'Light' },
   { value: 'terminal', label: 'Terminal' },
 ]
+
+// Deliverable 2 — compression threshold state. `null` means
+// "not yet fetched" OR "backend reported 501". The section's v-if
+// hides the control in both states; the hydrate-on-mount swap to a
+// concrete CompressionConfig is what triggers the render.
+const compressionConfig = ref<CompressionConfig | null>(null)
+const thresholdError = ref<string>('')
+
+const thresholdPercent = computed(() => {
+  const cfg = compressionConfig.value
+  if (cfg === null) return 0
+  return Math.round(cfg.threshold * 100)
+})
+
+onMounted(async () => {
+  try {
+    compressionConfig.value = await fetchCompressionConfig()
+  } catch {
+    // Defensive — a network failure on initial fetch hides the
+    // control rather than leaving it in a degraded state. Operators
+    // can refresh the page once the backend is back up.
+    compressionConfig.value = null
+  }
+})
+
+async function onThresholdChange(rawValue: string): Promise<void> {
+  const parsed = parseFloat(rawValue)
+  if (Number.isNaN(parsed)) {
+    thresholdError.value = 'Threshold must be a number.'
+    return
+  }
+  thresholdError.value = ''
+  try {
+    const updated = await updateCompressionThreshold(parsed)
+    compressionConfig.value = updated
+  } catch (err) {
+    thresholdError.value = err instanceof Error ? err.message : 'Update failed.'
+  }
+}
 </script>
 
 <style scoped>
@@ -170,6 +255,11 @@ h1 {
 .field-hint {
   font-size: 0.8rem;
   color: var(--text-secondary);
+}
+
+.field-error {
+  font-size: 0.8rem;
+  color: var(--error, #dc2626);
 }
 
 .toggle-label {

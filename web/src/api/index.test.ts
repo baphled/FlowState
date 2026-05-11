@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  compactSessionNow,
   deleteSession,
+  fetchCompressionConfig,
   fetchSessionMessages,
   fetchSessions,
   fetchSwarmEvents,
   fetchSwarms,
+  updateCompressionThreshold,
   updateSessionAgent,
 } from './index'
 
@@ -313,6 +316,166 @@ describe('deleteSession', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await deleteSession('a/b c')
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string
+    expect(calledUrl).toContain('a%2Fb%20c')
+  })
+})
+
+// Deliverable 2 (May 2026 context-accuracy bundle) —
+// fetchCompressionConfig hydrates the SettingsView slider to the
+// engine's current soft-trigger threshold so the operator sees what
+// they have configured rather than a guess at the default.
+describe('fetchCompressionConfig', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    installLocalStorageStub()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('issues a GET to /api/v1/config/compression and returns the threshold', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ threshold: 0.42 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const cfg = await fetchCompressionConfig()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toContain('/api/v1/config/compression')
+    expect(cfg.threshold).toBeCloseTo(0.42, 6)
+  })
+
+  it('returns null when the server has no controller wired (501)', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(new Response('{"error":"not configured"}', { status: 501 }))
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const cfg = await fetchCompressionConfig()
+
+    // The SettingsView treats null as "feature disabled, hide the
+    // slider" — distinct from "error fetching" which throws.
+    expect(cfg).toBeNull()
+  })
+})
+
+// Deliverable 2 — updateCompressionThreshold PATCHes the engine's
+// soft-trigger threshold. The Vue SettingsView slider calls this on
+// every commit (debounced upstream).
+describe('updateCompressionThreshold', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    installLocalStorageStub()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('issues a PATCH with a JSON body and returns the echoed threshold', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ threshold: 0.55 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const cfg = await updateCompressionThreshold(0.55)
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [calledUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(calledUrl).toContain('/api/v1/config/compression')
+    expect(init.method).toBe('PATCH')
+    expect(init.body).toContain('"threshold"')
+    expect(init.body).toContain('0.55')
+    expect(cfg.threshold).toBeCloseTo(0.55, 6)
+  })
+
+  it('throws on a non-OK response', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(new Response('out of range', { status: 400 }))
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(updateCompressionThreshold(2.0)).rejects.toThrow()
+  })
+})
+
+// Deliverable 3 — compactSessionNow is the /compress slash command's
+// HTTP seam. POSTs to /api/v1/sessions/{id}/compress and returns the
+// fire / no-fire discriminant the slash command branches on for its
+// toast copy ("compacted X→Y" vs "nothing to compact").
+describe('compactSessionNow', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    installLocalStorageStub()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('issues a POST to /api/v1/sessions/{id}/compress and returns the result', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ fired: true, summary: '[auto-compacted summary]: {}' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await compactSessionNow('sess-xyz')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [calledUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(calledUrl).toContain('/api/v1/sessions/sess-xyz/compress')
+    expect(init.method).toBe('POST')
+    expect(result.fired).toBe(true)
+    expect(result.summary).toContain('auto-compacted summary')
+  })
+
+  it('returns fired=false when the engine reports nothing to compact', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ fired: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await compactSessionNow('sess-empty')
+
+    expect(result.fired).toBe(false)
+  })
+
+  it('url-encodes the session id', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ fired: false }), { status: 200 })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await compactSessionNow('a/b c')
 
     const calledUrl = fetchMock.mock.calls[0][0] as string
     expect(calledUrl).toContain('a%2Fb%20c')

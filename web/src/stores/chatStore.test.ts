@@ -21,6 +21,7 @@ function installLocalStorageStub(): void {
   Object.defineProperty(window, 'localStorage', { value: stub, configurable: true })
 }
 import {
+  compactSessionNow,
   createSession,
   deleteSession,
   fetchAgents,
@@ -146,6 +147,14 @@ vi.mock('../api', () => ({
   // QW-11 — deleteSession backing the per-row trash button. Default mock
   // is "success"; per-test overrides can `vi.mocked(deleteSession).mockRejectedValueOnce(...)`.
   deleteSession: vi.fn((_sessionId: string) => Promise.resolve()),
+  // Deliverable 3 (May 2026 context-accuracy bundle) — /compress
+  // slash command's HTTP seam. Default mock reports "fired": tests
+  // override with mockResolvedValueOnce({fired:false}) for the
+  // empty-store branch.
+  compactSessionNow: vi.fn((_sessionId: string) => Promise.resolve({
+    fired: true,
+    summary: '[auto-compacted summary]: {"intent":"x"}',
+  })),
 }))
 
 // Toast composable is a module singleton — without a global teardown the
@@ -5330,5 +5339,108 @@ describe('chatStore.orderedSessions', () => {
     const ordered = store.orderedSessions
     expect(ordered[0].id).toBe('session-B')
     expect(store.sessions.map((s) => s.id)).toEqual(['session-A', 'session-B'])
+  })
+})
+
+// Deliverable 3 (May 2026 context-accuracy bundle) — /compress
+// slash command routes through chatStore.compressCurrentSession to
+// POST /api/v1/sessions/{id}/compress and surface fire / no-fire as
+// a toast.
+describe('chatStore - compressCurrentSession (/compress slash command)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('calls compactSessionNow with the active session id and shows a success toast on fire=true', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'sess-active'
+
+    vi.mocked(compactSessionNow).mockResolvedValueOnce({
+      fired: true,
+      summary: '[auto-compacted summary]: {"intent":"x"}',
+    })
+
+    await store.compressCurrentSession()
+
+    expect(vi.mocked(compactSessionNow)).toHaveBeenCalledWith('sess-active')
+    const { toasts } = useToast()
+    expect(toasts.value.some((t) => /compact/i.test(t.message))).toBe(true)
+  })
+
+  it('shows a "nothing to compact" toast on fire=false', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'sess-empty'
+
+    vi.mocked(compactSessionNow).mockResolvedValueOnce({ fired: false })
+
+    await store.compressCurrentSession()
+
+    const { toasts } = useToast()
+    expect(toasts.value.some((t) => /nothing to compact/i.test(t.message))).toBe(true)
+  })
+
+  it('is a no-op when no session is currently active', async () => {
+    const store = useChatStore()
+    store.currentSessionId = ''
+
+    await store.compressCurrentSession()
+
+    expect(vi.mocked(compactSessionNow)).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a backend error as a toast without throwing', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'sess-error'
+
+    vi.mocked(compactSessionNow).mockRejectedValueOnce(new Error('boom'))
+
+    await expect(store.compressCurrentSession()).resolves.toBeUndefined()
+
+    const { toasts } = useToast()
+    expect(toasts.value.some((t) => /compact.*fail|fail.*compact|boom/i.test(t.message))).toBe(true)
+  })
+})
+
+// Deliverable 3 — slash-command routing. The composer must
+// short-circuit /compress before treating it as a chat send so the
+// user does not append a "/compress" user message to the
+// transcript.
+describe('chatStore - sendMessage intercepts /compress', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('routes /compress through compactSessionNow without POSTing a chat message', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'sess-route'
+
+    vi.mocked(compactSessionNow).mockResolvedValueOnce({ fired: true, summary: 'x' })
+
+    await store.sendMessage('/compress')
+
+    expect(vi.mocked(compactSessionNow)).toHaveBeenCalledWith('sess-route')
+    expect(vi.mocked(sendSessionMessage)).not.toHaveBeenCalled()
+    // The slash command must not leave a "/compress" user bubble in
+    // the local transcript either.
+    expect(store.messages.some((m) => m.content === '/compress')).toBe(false)
+  })
+
+  it('lets ordinary text through unchanged', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'sess-route'
+
+    await store.sendMessage('hello not a slash command')
+
+    expect(vi.mocked(sendSessionMessage)).toHaveBeenCalledWith(
+      'sess-route',
+      'hello not a slash command',
+    )
+    expect(vi.mocked(compactSessionNow)).not.toHaveBeenCalled()
   })
 })

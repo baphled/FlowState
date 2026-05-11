@@ -54,6 +54,7 @@ type Server struct {
 	metricsHandler         http.Handler
 	modelLister            ModelLister
 	contextUsageProvider   ContextUsageProvider
+	compactionController   CompactionController
 	mux                    *http.ServeMux
 }
 
@@ -224,6 +225,42 @@ func WithContextUsageProvider(p ContextUsageProvider) ServerOption {
 	return func(s *Server) { s.contextUsageProvider = p }
 }
 
+// CompactionController is the engine-side surface the compression
+// config + manual-compact endpoints call into. Deliverable 2 + 3 of
+// the May 2026 context-accuracy bundle: operators want a runtime-
+// tunable soft threshold AND a /compress slash command that bypasses
+// every guard and force-fires the L2 compactor on the current session.
+//
+// Production wires (*engine.Engine) — see engine.SetAutoCompactionThreshold,
+// engine.AutoCompactionThreshold, engine.CompactNow. The api layer
+// neither reads nor writes engine fields directly; everything flows
+// through this interface so tests can substitute a fake and so the
+// engine's locking discipline (buildStateMu around compressionConfig
+// mutations) stays inside the engine package.
+//
+// Returns:
+//   - AutoCompactionThreshold: the current configured ratio (0, 1].
+//   - SetAutoCompactionThreshold: nil on success; a diagnostic error
+//     when the value fails the (NaN, range) validation. Callers
+//     surface the message verbatim to the operator.
+//   - CompactNow: (summary, true) on a successful fire,
+//     ("", false) when there is nothing to compact OR the layer is
+//     disabled. The Vue UI's "nothing to compact" toast hangs off
+//     the second return value.
+type CompactionController interface {
+	AutoCompactionThreshold() float64
+	SetAutoCompactionThreshold(threshold float64) error
+	CompactNow(ctx context.Context, sessionID string) (string, bool)
+}
+
+// WithCompactionController installs the engine-side controller for
+// the compression endpoints. Without this option the server returns
+// 501 on /api/v1/config/compression and /api/v1/sessions/{id}/compress
+// — operators see "wired but disabled" rather than a 404 confusion.
+func WithCompactionController(c CompactionController) ServerOption {
+	return func(s *Server) { s.compactionController = c }
+}
+
 // SetBackgroundManager sets the background manager after server construction.
 //
 // Expected:
@@ -388,6 +425,14 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/tasks", s.handleCancelAllTasks)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/swarm/events", s.handleSwarmEvents)
+	// Deliverable 2 / 3 of the May 2026 context-accuracy bundle —
+	// runtime-tunable compression threshold + manual /compress
+	// endpoint. Both flow through the CompactionController option;
+	// when not installed the handlers return 501 so callers see
+	// "wired but disabled" rather than a 404 confusion.
+	s.mux.HandleFunc("GET /api/v1/config/compression", s.handleGetCompressionConfig)
+	s.mux.HandleFunc("PATCH /api/v1/config/compression", s.handleUpdateCompressionConfig)
+	s.mux.HandleFunc("POST /api/v1/sessions/{id}/compress", s.handleCompactNow)
 	if s.metricsHandler != nil {
 		s.mux.Handle("GET /metrics", s.metricsHandler)
 	}
@@ -1930,6 +1975,117 @@ func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request
 	// limit immediately rather than waiting for the next pre-send.
 	usage := s.contextUsageForSnapshot(&snap)
 	writeJSON(w, NewSessionResponse(&snap, WithContextUsage(usage)))
+}
+
+// compressionConfigResponse is the wire shape for the GET / PATCH
+// /api/v1/config/compression endpoints. Mirrors the SettingsView
+// slider's data binding so the round-trip is symmetric: GET returns
+// the current threshold, PATCH writes a new threshold and echoes the
+// stored value back. Only the soft trigger's ratio is exposed for
+// runtime mutation — the other AutoCompaction knobs (Enabled flag,
+// MicroCompaction layer, SessionMemory layer) remain config-file-
+// only because flipping them at runtime has session-state
+// implications outside the scope of Deliverable 2.
+type compressionConfigResponse struct {
+	Threshold float64 `json:"threshold"`
+}
+
+// handleGetCompressionConfig surfaces the engine's current auto-
+// compaction soft-trigger threshold so the SettingsView slider can
+// hydrate to the correct value on page load rather than guessing the
+// default.
+//
+// Expected:
+//   - A CompactionController has been installed via
+//     WithCompactionController.
+//
+// Side effects:
+//   - Writes the current threshold as JSON.
+//   - Returns 501 when no controller is wired so callers can
+//     distinguish "feature not built" from "feature built but
+//     erroring".
+func (s *Server) handleGetCompressionConfig(w http.ResponseWriter, _ *http.Request) {
+	if s.compactionController == nil {
+		http.Error(w, `{"error":"compaction controller not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	writeJSON(w, compressionConfigResponse{
+		Threshold: s.compactionController.AutoCompactionThreshold(),
+	})
+}
+
+// handleUpdateCompressionConfig updates the engine's auto-compaction
+// threshold at runtime. The validation rules mirror
+// CompressionConfig.Validate so the runtime knob cannot land the
+// engine in a state the startup loader would have rejected.
+//
+// Expected:
+//   - A CompactionController has been installed.
+//   - Request body is JSON of the form {"threshold": 0.5}.
+//
+// Side effects:
+//   - Calls SetAutoCompactionThreshold; on success the next soft-
+//     trigger evaluation reads the new value.
+//   - Writes the (now-current) threshold as JSON on success, or a
+//     400 + diagnostic message on validation failure.
+func (s *Server) handleUpdateCompressionConfig(w http.ResponseWriter, r *http.Request) {
+	if s.compactionController == nil {
+		http.Error(w, `{"error":"compaction controller not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+	var req struct {
+		Threshold float64 `json:"threshold"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := s.compactionController.SetAutoCompactionThreshold(req.Threshold); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, compressionConfigResponse{
+		Threshold: s.compactionController.AutoCompactionThreshold(),
+	})
+}
+
+// compactNowResponse is the wire shape returned by POST
+// /api/v1/sessions/{id}/compress. Carries the fired discriminant
+// (true iff the compactor produced a non-empty summary) and the
+// summary text on a fire. The Vue UI's `/compress` slash command
+// branches on fired to choose between the "compacted X→Y" confirmation
+// toast and the "nothing to compact" empty-state toast.
+type compactNowResponse struct {
+	Fired   bool   `json:"fired"`
+	Summary string `json:"summary,omitempty"`
+}
+
+// handleCompactNow is the api seam for the /compress slash command
+// and the SettingsView's "compact now" button. Routes through the
+// CompactionController so the engine's locking discipline and the
+// ContextCompactedEvent bus emission stay on the engine side.
+//
+// Expected:
+//   - A CompactionController has been installed.
+//   - The URL path id identifies the session to force-compact.
+//
+// Side effects:
+//   - Invokes CompactNow on the controller, which may issue one
+//     summariser LLM call and one ContextCompactedEvent bus emission.
+//   - Writes the fired discriminant + optional summary as JSON.
+func (s *Server) handleCompactNow(w http.ResponseWriter, r *http.Request) {
+	if s.compactionController == nil {
+		http.Error(w, `{"error":"compaction controller not configured"}`, http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "session id is required", http.StatusBadRequest)
+		return
+	}
+	summary, fired := s.compactionController.CompactNow(r.Context(), id)
+	writeJSON(w, compactNowResponse{Fired: fired, Summary: summary})
 }
 
 // modelDescriptor is the wire shape for a single model entry in the

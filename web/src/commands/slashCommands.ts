@@ -27,4 +27,5 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: 'model', description: 'Switch the chat model' },
   { name: 'swarm', description: 'Create a new swarm manifest interactively' },
   { name: 'autoresearch', description: 'Launch an autoresearch optimisation run interactively' },
+  { name: 'compress', description: 'Force-compact the current session’s context now' },
 ]

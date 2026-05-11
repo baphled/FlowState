@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"strings"
 	"sync"
@@ -5318,6 +5319,131 @@ func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvide
 
 	manifest := e.Manifest()
 	return e.maybeAutoCompact(ctx, sessionID, &manifest, newLimit, "model_switch")
+}
+
+// CompactNow is the engine seam the /compress slash command and the
+// POST /api/v1/sessions/{id}/compress endpoint wire to. It
+// force-fires the L2 auto-compactor against the session's full
+// persisted history regardless of the configured ratio threshold or
+// the gate-proximity boundary — the operator is explicitly asking
+// for a buy-back of context budget right now.
+//
+// The AutoCompaction.Enabled flag is still honoured: a disabled layer
+// cannot be conjured back into life by a slash command. That keeps
+// the operator's deliberate opt-out sticky and avoids a confusing
+// "feature disabled but somehow fired" failure mode.
+//
+// On a successful fire the helper publishes a ContextCompactedEvent
+// with Trigger="manual" on the engine bus; the existing api SSE
+// bridge forwards it as a `context_compacted` chunk so the chip's
+// flash + tooltip pick up the manual trigger via the same path the
+// automatic tiers use.
+//
+// Expected:
+//   - ctx carries cancellation/deadline for the summariser LLM call.
+//   - sessionID identifies the active session; empty string is a
+//     no-op (no transcript to compact against).
+//
+// Returns:
+//   - (summary, true) on a successful fire — the summary text
+//     ("[auto-compacted summary]: <json>") is suitable for the
+//     chat UI's confirmation toast.
+//   - ("", false) when the layer is disabled, the store is empty,
+//     the engine has no AutoCompactor wired, or the summariser
+//     errored out.
+//
+// Side effects:
+//   - One summariser LLM call via the wired AutoCompactor on a fire.
+//   - One ContextCompactedEvent published on the engine bus on a fire.
+//   - Updates lastCompactionSummary / sessionCompactionMemo on success.
+func (e *Engine) CompactNow(ctx context.Context, sessionID string) (string, bool) {
+	if e == nil || sessionID == "" {
+		return "", false
+	}
+	if e.tokenCounter == nil || e.store == nil {
+		return "", false
+	}
+
+	manifest := e.Manifest()
+	tokenBudget := e.ModelContextLimit()
+	if tokenBudget <= 0 {
+		// No budget signal — refuse rather than feeding the summariser
+		// against garbage. Matches the MaybeCompactForModel guard.
+		return "", false
+	}
+
+	summary := e.maybeAutoCompact(ctx, sessionID, &manifest, tokenBudget, "manual")
+	return summary, summary != ""
+}
+
+// SetAutoCompactionThreshold updates the soft trigger's ratio
+// threshold at runtime. Deliverable 2 of the May 2026 context-
+// accuracy + manual-compaction bundle: pre-fix the threshold was
+// frozen at engine construction (read from cfg.Compression.AutoCompaction.Threshold)
+// and operators had to restart the process to retune it. The api
+// layer's PATCH /api/v1/config/compression/threshold endpoint and
+// the SettingsView's slider both flow through this method.
+//
+// Validation mirrors CompressionConfig.Validate's auto_compaction.threshold
+// rules so the runtime knob cannot land the engine in a state the
+// startup loader would have rejected:
+//   - finite (NaN rejected — never compares true, would silently
+//     disable the trigger),
+//   - in (0.0, 1.0] (values <= 0 never fire; values > 1 fire on
+//     every turn).
+//
+// Expected:
+//   - threshold is the new ratio. Must satisfy 0 < threshold <= 1.
+//
+// Returns:
+//   - nil on a successful mutation.
+//   - A diagnostic error when the input fails validation; the caller
+//     surfaces the message to the operator (api 400 / settings UI
+//     inline error).
+//
+// Side effects:
+//   - Updates e.compressionConfig.AutoCompaction.Threshold under
+//     buildStateMu so the next autoCompactionThreshold read sees the
+//     new value.
+func (e *Engine) SetAutoCompactionThreshold(threshold float64) error {
+	if math.IsNaN(threshold) {
+		return errors.New(
+			"compression: threshold must be a finite fraction in (0.0, 1.0]; " +
+				"got NaN, which never compares true and would silently disable the layer")
+	}
+	if threshold <= 0.0 || threshold > 1.0 {
+		return fmt.Errorf(
+			"compression: threshold must be in the (0.0, 1.0] interval (got %v); "+
+				"values <= 0 never trigger, values > 1 trigger every turn",
+			threshold,
+		)
+	}
+	e.buildStateMu.Lock()
+	e.compressionConfig.AutoCompaction.Threshold = threshold
+	e.buildStateMu.Unlock()
+	return nil
+}
+
+// AutoCompactionThreshold reports the engine's current soft trigger
+// threshold. Companion to SetAutoCompactionThreshold; the GET
+// /api/v1/config/compression endpoint surfaces this so the
+// SettingsView slider can hydrate to the current value on page
+// load rather than guessing the default.
+//
+// Returns:
+//   - The threshold as a fraction in (0.0, 1.0]. Returns the
+//     configured value verbatim — operators expect what they
+//     wrote in config.yaml to round-trip through readback.
+//
+// Side effects:
+//   - None.
+func (e *Engine) AutoCompactionThreshold() float64 {
+	if e == nil {
+		return 0
+	}
+	e.buildStateMu.Lock()
+	defer e.buildStateMu.Unlock()
+	return e.compressionConfig.AutoCompaction.Threshold
 }
 
 // preferredProviderModel returns the first PreferredModels entry on

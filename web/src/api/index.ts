@@ -293,4 +293,88 @@ export async function listModels(): Promise<ModelsResponse> {
   return { providers: data?.providers ?? [] }
 }
 
+// Deliverable 2 of the May 2026 context-accuracy bundle —
+// CompressionConfig is the wire shape returned by
+// GET / PATCH /api/v1/config/compression. The SettingsView slider
+// binds onto `threshold`.
+export interface CompressionConfig {
+  threshold: number
+}
+
+/**
+ * fetchCompressionConfig reads the engine's current auto-compaction
+ * soft-trigger threshold so the Settings slider can hydrate to the
+ * actual configured value rather than guessing the default.
+ *
+ * Returns:
+ *   - The current config on a 200 response.
+ *   - null when the server reports 501 (no CompactionController
+ *     wired — the feature is built but disabled in this deployment).
+ *     The SettingsView treats null as "hide the slider" so operators
+ *     don't see a control that won't function.
+ *   - Throws on any other non-OK status.
+ */
+export async function fetchCompressionConfig(): Promise<CompressionConfig | null> {
+  const res = await fetch(joinBaseURL('/v1/config/compression'))
+  if (res.status === 501) {
+    return null
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to fetch compression config: ${res.status} ${res.statusText}`)
+  }
+  const data = (await res.json()) as CompressionConfig
+  return data
+}
+
+/**
+ * updateCompressionThreshold PATCHes the engine's soft-trigger
+ * threshold. Returns the post-mutation config so callers can update
+ * their local copy from the source of truth rather than echoing the
+ * input optimistically.
+ *
+ * Server-side validation rejects values outside (0.0, 1.0]; the
+ * 400 response propagates as a thrown Error so the SettingsView
+ * can surface it inline.
+ */
+export async function updateCompressionThreshold(threshold: number): Promise<CompressionConfig> {
+  const res = await fetch(joinBaseURL('/v1/config/compression'), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ threshold }),
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  const data = (await res.json()) as CompressionConfig
+  return data
+}
+
+// Deliverable 3 — CompactNowResult is the wire shape returned by
+// POST /api/v1/sessions/{id}/compress. `fired` is the discriminant
+// the /compress slash command branches on for its toast copy:
+//   - fired=true  → "compacted (saved ~X tokens)"
+//   - fired=false → "nothing to compact"
+// Summary is the JSON-encoded summary text when fired=true; absent
+// otherwise.
+export interface CompactNowResult {
+  fired: boolean
+  summary?: string
+}
+
+/**
+ * compactSessionNow forces the L2 auto-compactor to fire against the
+ * given session, bypassing every soft / gate threshold. The engine
+ * still respects the AutoCompaction.Enabled flag — an opt-out is
+ * sticky and cannot be overridden by the slash command.
+ */
+export async function compactSessionNow(sessionId: string): Promise<CompactNowResult> {
+  const url = joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/compress`)
+  const res = await fetch(url, { method: 'POST' })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  const data = (await res.json()) as CompactNowResult
+  return data
+}
+
 
