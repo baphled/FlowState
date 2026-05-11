@@ -698,7 +698,7 @@ describe('MessageBubble', () => {
   // the (empty content + thinkingBlocks + stopReason) shape with its own
   // affordance and MUST keep firing.
   describe('empty-content assistant suppression', () => {
-    it('does NOT render the plain assistant chrome when content is empty (mid-stream sealed placeholder)', () => {
+    it('does NOT render the message-bubble wrapper when content is empty (mid-stream sealed placeholder)', () => {
       const wrapper = mountWithStubs(
         makeMessage({
           role: 'assistant',
@@ -709,14 +709,17 @@ describe('MessageBubble', () => {
         }),
       )
 
-      // The role label and the assistant body must not appear — there
-      // is no actual response on this turn from the assistant; tool
-      // calls in adjacent rows carry the work.
+      // The entire bubble wrapper must not appear — pre-fix the inner
+      // chrome was suppressed but the outer `<div class="message-bubble
+      // assistant">` still rendered as an empty styled box (padding,
+      // border, border-radius), surfacing as a visible blank card.
+      // The user's contract: no data → no DOM at all for this bubble.
+      expect(wrapper.find('.message-bubble').exists()).toBe(false)
       expect(wrapper.find('.message-role').exists()).toBe(false)
       expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
     })
 
-    it('does NOT render the plain assistant chrome when content is whitespace-only', () => {
+    it('does NOT render the message-bubble wrapper when content is whitespace-only', () => {
       // Defensive: a whitespace-only assistant carries no visible
       // response either, even if it slipped past the seal predicate.
       const wrapper = mountWithStubs(
@@ -727,15 +730,16 @@ describe('MessageBubble', () => {
         }),
       )
 
+      expect(wrapper.find('.message-bubble').exists()).toBe(false)
       expect(wrapper.find('.message-role').exists()).toBe(false)
       expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
     })
 
-    it('does NOT render the plain assistant chrome for the empty_turn placeholder', () => {
+    it('does NOT render the message-bubble wrapper for the empty_turn placeholder', () => {
       // Streaming Coherence Slice C placeholder shape (see chatStore.ts:2075).
       // No thinkingBlocks → not the thinking-only-degraded branch. No
       // content → no agent block. The empty_turn signal has its own
-      // (separate) UX surface — the bubble is intentionally silent.
+      // (separate) UX surface — the bubble must not render any DOM.
       const wrapper = mountWithStubs(
         makeMessage({
           role: 'assistant',
@@ -745,6 +749,7 @@ describe('MessageBubble', () => {
         }),
       )
 
+      expect(wrapper.find('.message-bubble').exists()).toBe(false)
       expect(wrapper.find('.message-role').exists()).toBe(false)
       expect(wrapper.find('[data-testid="thinking-only-affordance"]').exists()).toBe(false)
     })
