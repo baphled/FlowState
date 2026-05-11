@@ -530,12 +530,31 @@ func applyDelegationFields(m *Message, info *provider.DelegationInfo) {
 //
 // Side effects:
 //   - Appends a thinking message via appender.AppendMessage and resets s.thinkingBuf.
-//   - Does nothing when s.thinkingBuf is empty.
+//   - Does nothing when s.thinkingBuf is empty or whitespace-only.
+//
+// Whitespace gate (production bug 2026-05-11, req_011Cavnk52Fbsfes8zWumAcm):
+// Anthropic rejects HTTP 400 invalid_request_error "each thinking block
+// must contain non-whitespace thinking" for any thinking block whose
+// text is empty or whitespace-only on a replay turn. A whitespace-only
+// thinking buffer carries no information for the UI either — emitting
+// a blank thinking bubble is noise. The buffer is reset and the pending
+// signature is dropped so the (now-orphan) signature does not survive
+// onto a later block; the matching serialisation-layer gate in
+// anthropic.buildThinkingBlocks is the belt-and-braces backstop.
 func flushThinking(appender MessageAppender, s *streamAccumState) {
 	if s.thinkingBuf.Len() == 0 {
 		return
 	}
 	thinking := s.thinkingBuf.String()
+	if strings.TrimSpace(thinking) == "" {
+		// Reset state so the orphan signature does not bleed into a
+		// subsequent block. The block is discarded entirely — neither
+		// the visible "thinking" message nor the structured
+		// ThinkingBlock entry is written.
+		s.thinkingBuf.Reset()
+		s.pendingThinkingSignature = ""
+		return
+	}
 	signature := s.pendingThinkingSignature
 	appender.AppendMessage(s.sessionID, Message{
 		Role:    "thinking",
