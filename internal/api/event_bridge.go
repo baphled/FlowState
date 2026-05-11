@@ -219,6 +219,7 @@ func newBackgroundTaskHandler(sessionID string, out chan<- WSChunkMsg) eventbus.
 //   - Sends to out channel on matching events.
 //   - Drops the event on a full out channel rather than blocking the
 //     bus dispatcher (matches the existing pattern across this file).
+//
 // newGateFailedHandler creates an EventHandler that forwards a sanitised
 // gate.failed payload to the out channel when the session ID matches.
 //

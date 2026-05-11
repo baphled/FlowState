@@ -662,10 +662,10 @@ var _ = Describe("Events", func() {
 	Describe("GateEvaluatingEvent", func() {
 		It("implements Event interface and sets fields", func() {
 			data := events.GateEventData{
-				SwarmID:    "swarm-99",
-				SessionID:  "sess-99",
-				Lifecycle:  "pre",
-				GateCount:  2,
+				SwarmID:   "swarm-99",
+				SessionID: "sess-99",
+				Lifecycle: "pre",
+				GateCount: 2,
 			}
 			ts := time.Now().Add(-time.Minute)
 			evt := events.NewGateEvaluatingEvent(data, ts)
