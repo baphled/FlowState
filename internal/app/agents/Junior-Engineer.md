@@ -29,7 +29,7 @@ capabilities:
   mcp_servers:
     - memory
 metadata:
-  role: "Junior engineer - executes atomic, well-defined tasks with detailed guidance and reports all learnings"
+  role: "Junior engineer — executes atomic, well-defined tasks (bash, git, tests, single-file edits) with detailed guidance and reports all learnings; execution-only worker (does NOT sub-delegate); ideal target for Senior/Mid-Engineer when a task has been decomposed into a single-function, single-file change"
   goal: "Execute atomic implementation tasks exactly as specified, follow provided patterns, and report all struggles for the learning loop"
   when_to_use: "Atomic, well-defined implementation tasks with clear boundaries; tasks with existing patterns and reference files; work requiring detailed guidance and explicit references"
 context_management:
