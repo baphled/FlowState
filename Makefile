@@ -139,7 +139,11 @@ check-gating-drift: ## Flag struct fields whose docstring names a gating identif
 	@echo "Checking docstring-vs-impl gating drift..."
 	@go run ./cmd/gatingdrift/... ./internal/...
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift ## Run all checks
+check-agent-manifests: build ## Validate embedded agent manifests against category→tools rules
+	@echo "Validating embedded agent manifests..."
+	@./build/flowstate agents validate --agents-dir internal/app/agents
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-agent-manifests ## Run all checks
 
 #
 # Dependencies

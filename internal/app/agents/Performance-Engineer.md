@@ -15,6 +15,10 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
+    - bash
+    - read
+    - grep
+    - glob
   skills:
     - memory-keeper
     - performance

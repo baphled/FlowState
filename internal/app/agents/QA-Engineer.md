@@ -17,6 +17,9 @@ capabilities:
     - todowrite
     - coordination_store
     - read
+    - bash
+    - grep
+    - glob
   skills:
     - memory-keeper
     - bdd-workflow
