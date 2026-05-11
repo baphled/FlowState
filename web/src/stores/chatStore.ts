@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import type { Agent, Message, Model, Session, SessionSummary, Swarm } from '@/types'
 import {
+  compactSessionNow,
   createSession,
   deleteSession as apiDeleteSession,
   fetchAgents,
@@ -1578,6 +1579,16 @@ export const useChatStore = defineStore('chat', {
       if (!text) {
         return
       }
+      // Deliverable 3 (May 2026 context-accuracy bundle) — slash
+      // commands that are handled entirely client-side must
+      // short-circuit BEFORE the optimistic-bubble push so the
+      // composer does not leak a "/compress" user message into the
+      // transcript. Only /compress currently uses this path; future
+      // client-handled commands would join the if-chain here.
+      if (text === '/compress') {
+        await this.compressCurrentSession()
+        return
+      }
       // Pre-fix this branch silently early-returned when isLoading was true.
       // Combined with a stuck stream (no [DONE] from the backend), the user
       // saw the chat appear frozen with no surfacing of any kind. The gate
@@ -2856,6 +2867,63 @@ export const useChatStore = defineStore('chat', {
       }
       // Clear the gate so a stray subsequent tool_result doesn't double-route.
       this.lastToolName = null
+    },
+
+    /**
+     * compressCurrentSession is the action behind the /compress slash
+     * command (Deliverable 3 of the May 2026 context-accuracy
+     * bundle). Force-fires the engine's L2 auto-compactor against the
+     * current session via POST /api/v1/sessions/{id}/compress.
+     *
+     * Branches on the server's `fired` discriminant for the toast
+     * copy:
+     *   - fired=true  → "Context compacted." (the chip's existing
+     *     flash + tooltip path picks up the ContextCompactedEvent
+     *     forwarded over SSE — no need to duplicate the saved-tokens
+     *     figure in the toast).
+     *   - fired=false → "Nothing to compact." (the session is empty,
+     *     the layer is disabled, or the summariser declined; the
+     *     toast keeps the slash command's outcome visible rather
+     *     than appearing to do nothing).
+     *
+     * Errors are caught and surfaced as a toast so the slash command
+     * never propagates a rejection back into the composer — a /compress
+     * failure should not put the chat input into an error state.
+     *
+     * No-op when no session is currently active (the user has not
+     * created or selected one yet); silent rather than toast-warning
+     * because the precondition is obvious in the UI.
+     */
+    async compressCurrentSession(): Promise<void> {
+      const sessionId = this.currentSessionId
+      if (!sessionId) {
+        return
+      }
+      try {
+        const result = await compactSessionNow(sessionId)
+        if (result.fired) {
+          showToast({
+            title: 'Compressed',
+            message: 'Context compacted.',
+            variant: 'default',
+            duration: 4000,
+          })
+        } else {
+          showToast({
+            title: 'Nothing to compact',
+            message: 'Nothing to compact yet — try again after more turns.',
+            variant: 'default',
+            duration: 4000,
+          })
+        }
+      } catch (err) {
+        showToast({
+          title: 'Compaction failed',
+          message: err instanceof Error ? err.message : 'Compact request failed.',
+          variant: 'error',
+          duration: 5000,
+        })
+      }
     },
   },
 })

@@ -768,6 +768,13 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		// after agent / model PATCH so the chat UI's usage chip reflects
 		// current state without waiting for the next pre-send.
 		api.WithContextUsageProvider(eng),
+		// Deliverable 2 + 3 of the May 2026 context-accuracy bundle —
+		// the engine implements CompactionController via
+		// AutoCompactionThreshold / SetAutoCompactionThreshold /
+		// CompactNow. The api server's GET/PATCH /api/v1/config/compression
+		// and POST /api/v1/sessions/{id}/compress endpoints route
+		// through this surface.
+		api.WithCompactionController(eng),
 	)
 	return &runtimeComponents{
 		engine:          eng,
