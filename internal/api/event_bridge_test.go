@@ -261,6 +261,53 @@ var _ = Describe("subscribeSessionBus", func() {
 			}, 200*time.Millisecond).Should(BeFalse(),
 				"context.compacted events for other sessions must not reach this subscriber")
 		})
+
+		It("forwards streaming.heartbeat events for the matching session", func() {
+			// Streaming Coherence Slice F follow-up (Bug Fix #62, May 2026):
+			// the engine's runStreamingHeartbeat ticker + the Anthropic
+			// ping forwarder publish EventStreamingHeartbeat on the bus.
+			// Prior to this fix the typed event had zero subscribers; the
+			// frontend's adaptive stall watchdog (chatStore.ts /
+			// useSessionStream.ts) consumes the wire frame but had no path
+			// from the bus to the SSE/WS pipe. The session bus bridge MUST
+			// forward the sanitised payload onto the out channel so both
+			// transports project the heartbeat as `streaming.heartbeat`
+			// frames.
+			bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+				SessionID: "sess-1",
+				AgentID:   "Tech-Lead",
+				Phase:     "thinking",
+			}))
+
+			var msg api.WSChunkMsg
+			Eventually(out, 2*time.Second).Should(Receive(&msg))
+			Expect(msg.EventType).To(Equal("streaming.heartbeat"))
+			data, ok := msg.EventData.(map[string]any)
+			Expect(ok).To(BeTrue(), "streaming.heartbeat EventData must be map[string]any for SSE marshalling")
+			Expect(data["event_type"]).To(Equal("streaming.heartbeat"))
+			Expect(data["session_id"]).To(Equal("sess-1"))
+			Expect(data["agent_id"]).To(Equal("Tech-Lead"))
+			Expect(data["phase"]).To(Equal("thinking"),
+				"phase discriminant lets the frontend's adaptive watchdog pick a per-phase stall threshold")
+		})
+
+		It("drops streaming.heartbeat events for other sessions", func() {
+			bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+				SessionID: "sess-other",
+				AgentID:   "Tech-Lead",
+				Phase:     "thinking",
+			}))
+
+			Consistently(func() bool {
+				select {
+				case msg := <-out:
+					return msg.EventType == "streaming.heartbeat"
+				default:
+					return false
+				}
+			}, 200*time.Millisecond).Should(BeFalse(),
+				"streaming.heartbeat events for other sessions must not reach this subscriber")
+		})
 	})
 
 	Describe("with non-matching session ID", func() {
@@ -328,6 +375,31 @@ var _ = Describe("subscribeSessionBus", func() {
 				OriginalTokens: 50_000,
 				SummaryTokens:  5_000,
 				LatencyMS:      420,
+			}))
+
+			Consistently(out, 200*time.Millisecond).ShouldNot(Receive())
+		})
+
+		It("stops forwarding streaming.heartbeat events after unsubscribe is called", func() {
+			bus := eventbus.NewEventBus()
+			srv := api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+			out := make(chan api.WSChunkMsg, 16)
+			stop := srv.SubscribeSessionBus("sess-1", out)
+
+			bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+				SessionID: "sess-1",
+				AgentID:   "Tech-Lead",
+				Phase:     "thinking",
+			}))
+
+			Eventually(out, 2*time.Second).Should(Receive())
+
+			stop()
+
+			bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+				SessionID: "sess-1",
+				AgentID:   "Tech-Lead",
+				Phase:     "thinking",
 			}))
 
 			Consistently(out, 200*time.Millisecond).ShouldNot(Receive())

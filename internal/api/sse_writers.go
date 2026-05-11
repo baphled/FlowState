@@ -190,6 +190,32 @@ type sseGateFailed struct {
 	CoordStoreKeys []string `json:"coord_store_keys,omitempty"`
 }
 
+// sseStreamingHeartbeat is the wire shape for the SSE event emitted
+// when the engine publishes EventStreamingHeartbeat on the bus
+// (Streaming Coherence Slice F follow-up, Bug Fix #62, May 2026).
+// Mirrors the wire-shape contract of sseContextCompacted: untyped JSON
+// arriving from the bridge handler is re-marshalled here with the
+// canonical `"type":"streaming.heartbeat"` discriminant injected so
+// the frontend's discriminated union (web/src/lib/sseEvent.ts) routes
+// correctly.
+//
+// Field semantics:
+//   - SessionID — the session the heartbeat is bound to; the frontend
+//     ignores events that don't match the active session.
+//   - AgentID — the manifest id that owned the active turn; included
+//     for symmetry with the bus payload and future per-agent telemetry.
+//   - Phase — one of "generating" | "thinking" | "tool_executing" |
+//     "queued" (closed vocabulary per StreamingHeartbeatEventData);
+//     the adaptive stall watchdog uses this to pick the next timeout
+//     window. Empty is tolerated so historical wire payloads remain
+//     decodable; the frontend falls back to the legacy 60s threshold.
+type sseStreamingHeartbeat struct {
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+	AgentID   string `json:"agent_id"`
+	Phase     string `json:"phase"`
+}
+
 // sseHarnessRetry represents a harness retry event in a server-sent event stream.
 type sseHarnessRetry struct {
 	Type    string `json:"type"`
@@ -577,6 +603,50 @@ func writeSSEGateFailed(w http.ResponseWriter, flusher http.Flusher, data map[st
 		Reason:         reason,
 		Cause:          cause,
 		CoordStoreKeys: coordKeys,
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// writeSSEStreamingHeartbeat emits a typed streaming.heartbeat SSE event
+// by marshalling the supplied bus payload with the canonical
+// `"type":"streaming.heartbeat"` discriminant injected.
+//
+// Same pattern as writeSSEContextCompacted: the bridge handler in
+// event_bridge.go (newStreamingHeartbeatHandler) produces a sanitised
+// payload from events.StreamingHeartbeatEventData; this writer adds the
+// type field. Streaming Coherence Slice F follow-up (Bug Fix #62, May
+// 2026): closes the gap where the engine published
+// EventStreamingHeartbeat on the bus but no subscriber forwarded it
+// onto the wire, leaving the frontend's adaptive stall watchdog
+// without the live signal it documents.
+//
+// Expected:
+//   - data is the sanitised payload from newStreamingHeartbeatHandler:
+//     `{event_type, session_id, agent_id, phase}`.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes one SSE data line carrying the JSON-encoded
+//     streaming.heartbeat event.
+//   - Flushes response buffer.
+//   - On a payload that fails to marshal (defence in depth — the
+//     bridge handler produces a struct of primitives), drops the
+//     event silently rather than emitting a malformed event the
+//     frontend's parser would classify as "unknown" and discard.
+func writeSSEStreamingHeartbeat(w http.ResponseWriter, flusher http.Flusher, data map[string]any) {
+	sessionID, _ := data["session_id"].(string)
+	agentID, _ := data["agent_id"].(string)
+	phase, _ := data["phase"].(string)
+
+	payload := sseStreamingHeartbeat{
+		Type:      "streaming.heartbeat",
+		SessionID: sessionID,
+		AgentID:   agentID,
+		Phase:     phase,
 	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {

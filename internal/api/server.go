@@ -2263,6 +2263,21 @@ func (s *Server) dispatchSessionBusEventSSE(w http.ResponseWriter, flusher http.
 			return
 		}
 		writeSSEGateFailed(w, flusher, data)
+	case events.EventStreamingHeartbeat:
+		// Streaming Coherence Slice F follow-up (Bug Fix #62, May
+		// 2026): project the engine's streaming.heartbeat bus event
+		// onto the SSE wire as `"type":"streaming.heartbeat"` so the
+		// Vue chat surface's adaptive stall watchdog re-arms on
+		// every tick. Before this case the engine published the
+		// typed event with zero subscribers — the catalog claim that
+		// api.subscribeSessionBus bridged it onto the wire was a
+		// documentation lie (corrected at fe071507); this case wires
+		// the bridge for real.
+		data, ok := ev.EventData.(map[string]any)
+		if !ok {
+			return
+		}
+		writeSSEStreamingHeartbeat(w, flusher, data)
 	default:
 		// Bus event without an SSE binding — safely no-op. WebSocket
 		// clients still receive it via the same bridge.
