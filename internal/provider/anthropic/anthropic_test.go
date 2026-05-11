@@ -76,6 +76,7 @@ var _ = Describe("buildToolResultMessage", func() {
 		m := provider.Message{
 			Role:      "tool",
 			Content:   "Error: failed to compute",
+			IsError:   true,
 			ToolCalls: []provider.ToolCall{{ID: "toolu_01tool2"}},
 		}
 		msg := buildToolResultMessage(m)
@@ -96,6 +97,56 @@ var _ = Describe("buildToolResultMessage", func() {
 		m := provider.Message{Role: "tool", Content: "foo"}
 		msg := buildToolResultMessage(m)
 		Expect(msg).To(BeNil())
+	})
+
+	// Bug M4 (May 2026): the prior implementation derived is_error via
+	// strings.HasPrefix(m.Content, "Error:"), which mis-flagged two
+	// real-world shapes. The seam fix lifts the truth onto
+	// provider.Message.IsError, populated by the engine from
+	// tool.Result.Error at the tool-result construction site. These
+	// specs pin the new contract.
+	Context("M4: is_error reads from Message.IsError, not Content prefix", func() {
+		It("a success result whose Content starts with 'Error:' is NOT flagged as error", func() {
+			// Tool legitimately returns "Error: 0 results found" as its
+			// happy-path output (search miss). IsError on Message stays
+			// false; the wire flag must follow.
+			m := provider.Message{
+				Role:      "tool",
+				Content:   "Error: 0 results found",
+				IsError:   false,
+				ToolCalls: []provider.ToolCall{{ID: "toolu_01fp"}},
+			}
+			msg := buildToolResultMessage(m)
+			Expect(msg).NotTo(BeNil())
+			tr := msg.Content[0].OfToolResult
+			Expect(tr).NotTo(BeNil())
+			Expect(tr.IsError.Valid()).To(BeTrue())
+			Expect(tr.IsError.Value).To(BeFalse(),
+				"is_error must follow Message.IsError, not the 'Error:' content prefix")
+			Expect(tr.Content[0].OfText.Text).To(Equal("Error: 0 results found"))
+		})
+
+		It("a failure result whose Content does NOT start with 'Error:' IS flagged as error", func() {
+			// Tool failed with executor.Error != nil but the message
+			// content the engine surfaced does not begin with the
+			// "Error:" prefix (e.g. "failed: timeout exceeded",
+			// "panic: runtime nil deref"). IsError on Message is true;
+			// the wire flag must follow.
+			m := provider.Message{
+				Role:      "tool",
+				Content:   "failed: timeout exceeded after 30s",
+				IsError:   true,
+				ToolCalls: []provider.ToolCall{{ID: "toolu_01fn"}},
+			}
+			msg := buildToolResultMessage(m)
+			Expect(msg).NotTo(BeNil())
+			tr := msg.Content[0].OfToolResult
+			Expect(tr).NotTo(BeNil())
+			Expect(tr.IsError.Valid()).To(BeTrue())
+			Expect(tr.IsError.Value).To(BeTrue(),
+				"is_error must follow Message.IsError, not the 'Error:' content prefix")
+			Expect(tr.Content[0].OfText.Text).To(Equal("failed: timeout exceeded after 30s"))
+		})
 	})
 })
 

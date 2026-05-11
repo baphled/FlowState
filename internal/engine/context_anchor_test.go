@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"errors"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -173,6 +174,90 @@ var _ = Describe("Context anchoring after tool-result waves", func() {
 			// No reminder when the function cannot identify a user-role message to quote.
 			Expect(out).To(HaveLen(len(messages) + 2))
 		})
+	})
+})
+
+// Bug M4 (May 2026): appendToolResultsBatchToMessages must stamp
+// provider.Message.IsError from tool.Result.Error so downstream
+// providers (Anthropic) do not re-derive via a content-prefix
+// heuristic. The previous shape mis-flagged "Error: 0 results found"
+// success outputs and missed "failed: ..." real failures.
+var _ = Describe("appendToolResultsBatchToMessages: IsError propagation (M4)", func() {
+	var (
+		eng      *engine.Engine
+		manifest agent.Manifest
+		baseSys  provider.Message
+		userMsg  provider.Message
+	)
+
+	BeforeEach(func() {
+		manifest = agent.Manifest{
+			ID:                "test-agent",
+			Name:              "Test Agent",
+			Instructions:      agent.Instructions{SystemPrompt: "You are a helpful assistant."},
+			ContextManagement: agent.DefaultContextManagement(),
+		}
+		eng = engine.New(engine.Config{Manifest: manifest})
+		baseSys = provider.Message{Role: "system", Content: "system prompt"}
+		userMsg = provider.Message{Role: "user", Content: "user prompt"}
+	})
+
+	It("stamps IsError=true when tool.Result.Error is non-nil", func() {
+		messages := []provider.Message{baseSys, userMsg}
+		calls := []*provider.ToolCall{{ID: "call_fail", Name: "search"}}
+		results := []tool.Result{{Error: errors.New("timeout exceeded after 30s")}}
+
+		out := eng.AppendToolResultsBatchToMessagesForTest(messages, calls, results)
+
+		// Trailing tool message is the failure result.
+		toolMsg := out[len(out)-1]
+		Expect(toolMsg.Role).To(Equal("tool"))
+		Expect(toolMsg.IsError).To(BeTrue(),
+			"IsError must follow result.Error != nil from the executor")
+	})
+
+	It("stamps IsError=false when tool.Result.Error is nil even if Output starts with 'Error:'", func() {
+		// The classic false-positive: a search tool reports "no hits"
+		// using natural-language framing that begins with "Error:". The
+		// executor has no error, so IsError must stay false.
+		messages := []provider.Message{baseSys, userMsg}
+		calls := []*provider.ToolCall{{ID: "call_search_miss", Name: "search"}}
+		results := []tool.Result{{Output: "Error: 0 results found"}}
+
+		out := eng.AppendToolResultsBatchToMessagesForTest(messages, calls, results)
+
+		toolMsg := out[len(out)-1]
+		Expect(toolMsg.Role).To(Equal("tool"))
+		Expect(toolMsg.IsError).To(BeFalse(),
+			"IsError must NOT be inferred from a content prefix; the executor is the source of truth")
+		Expect(toolMsg.Content).To(Equal("Error: 0 results found"),
+			"Content must round-trip the tool's natural-language framing verbatim")
+	})
+
+	It("stamps IsError per-call across a parallel batch", func() {
+		messages := []provider.Message{baseSys, userMsg}
+		calls := []*provider.ToolCall{
+			{ID: "ok", Name: "read"},
+			{ID: "fail", Name: "read"},
+			{ID: "miss", Name: "search"},
+		}
+		results := []tool.Result{
+			{Output: "ok contents"},
+			{Error: errors.New("permission denied")},
+			{Output: "Error: 0 results found"},
+		}
+
+		out := eng.AppendToolResultsBatchToMessagesForTest(messages, calls, results)
+
+		// 1 assistant + 3 tool messages appended; no anchor (batch is small).
+		toolMsgs := out[len(out)-3:]
+		Expect(toolMsgs).To(HaveLen(3))
+		Expect(toolMsgs[0].Role).To(Equal("tool"))
+		Expect(toolMsgs[0].IsError).To(BeFalse())
+		Expect(toolMsgs[1].IsError).To(BeTrue(),
+			"a real error must be flagged")
+		Expect(toolMsgs[2].IsError).To(BeFalse(),
+			"a success result whose Content begins with 'Error:' must not be flagged")
 	})
 })
 

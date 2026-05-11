@@ -35,6 +35,25 @@ type Message struct {
 	// produced this message (e.g. "end_turn", "tool_use", "max_tokens",
 	// "refusal", "model_context_window_exceeded"). Empty when unknown.
 	StopReason string
+	// IsError is the explicit error signal for a Role:"tool" message —
+	// true when the upstream tool execution failed (tool.Result.Error
+	// non-nil). Set by the engine at the tool-result construction site
+	// from the executor's truth, NOT inferred from message content.
+	//
+	// Bug M4 fix (May 2026): the Anthropic provider previously derived
+	// is_error via `strings.HasPrefix(Content, "Error:")`, which
+	// false-positived on legitimate "Error: 0 results found" success
+	// outputs and false-negatived on "failed: timeout" failures. Anthropic
+	// uses the wire-level is_error flag for its reasoning chain, so a
+	// mis-flagged tool result biased the model. The engine now stamps
+	// this field explicitly; the provider reads it verbatim.
+	//
+	// Zero value (false) for non-tool messages and for sessions reloaded
+	// from pre-fix persisted state preserves prior behaviour — the legacy
+	// success-path was correctly inferred as non-error, and the regression
+	// surface is only the error-path miscount which is bounded by the
+	// session's in-flight turn lifetime.
+	IsError bool
 }
 
 // ThinkingBlock is a single thinking-content block as produced by the
