@@ -101,8 +101,6 @@ func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool
 		return t.fallbackToRecent()
 	}
 
-	start := time.Now()
-
 	vector, err := t.embedder.Embed(ctx, provider.EmbedRequest{
 		Input: query,
 		Model: t.store.model,
@@ -113,18 +111,12 @@ func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool
 
 	results := t.store.Search(vector, t.topK)
 
-	if t.bus != nil {
-		sid, ok := ctx.Value(session.IDKey{}).(string)
-		if !ok {
-			sid = ""
-		}
-		t.bus.Publish(events.EventRecallSearched, events.NewRecallSearchEvent(events.RecallSearchEventData{
-			SessionID: sid,
-			Query:     query,
-			Results:   len(results),
-			LatencyMS: time.Since(start).Milliseconds(),
-		}))
-	}
+	// Bug Hunt #63 (May 11 2026): the recall.searched bus event was
+	// retired here — high-frequency (every tool call) with zero
+	// non-test subscribers anywhere in the tree. The engine's
+	// existing tool.execute.result event already carries the
+	// tool-level latency / args / result count for SearchContextTool
+	// invocations and IS subscribed by eventlogger.
 
 	if len(results) == 0 {
 		return tool.Result{Output: ""}, nil

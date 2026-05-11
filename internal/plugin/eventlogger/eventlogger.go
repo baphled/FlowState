@@ -29,6 +29,17 @@ func SubscribedEventTypes() []string {
 // subscribedEventTypes lists all event type strings the logger subscribes to.
 // These must match the exact event names published by the engine and plugin
 // subsystems (e.g. "session.created", not "session").
+//
+// Bug Hunt #63 (May 11 2026): two low-frequency recall events were
+// added back after the F4 audit found four recall topics with zero
+// non-test subscribers. EventRecallEmbeddingStored (per-store
+// diagnostic — dimensions / latency, complements the silent
+// dimension-mismatch failure mode) and EventRecallSummarized (per
+// compaction, rare, token-before/after signal) carry diagnostic
+// value worth the log volume. The high-frequency
+// EventRecallSearched and EventRecallChainSearched were retired
+// instead — tool-level latency / args / result count are already
+// captured by EventToolExecuteResult which is subscribed.
 var subscribedEventTypes = []string{
 	events.EventSessionCreated,
 	events.EventSessionEnded,
@@ -51,6 +62,8 @@ var subscribedEventTypes = []string{
 	events.EventBackgroundTaskCancelled,
 	events.EventDiscoveryPublished,
 	events.EventLearningRecorded,
+	events.EventRecallEmbeddingStored,
+	events.EventRecallSummarized,
 }
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.
@@ -246,6 +259,9 @@ func extractEventData(ev events.Event) any {
 	if data, ok := extractProviderEventData(ev); ok {
 		return data
 	}
+	if data, ok := extractRecallEventData(ev); ok {
+		return data
+	}
 	switch e := ev.(type) {
 	case *events.SessionEvent:
 		return e.Data
@@ -269,6 +285,27 @@ func extractEventData(ev events.Event) any {
 		return e.Data
 	default:
 		return ev
+	}
+}
+
+// extractRecallEventData returns the data payload from kept recall
+// events (Bug Hunt #63, May 11 2026), returning (data, true) when
+// matched and (nil, false) otherwise. Only the two re-added topics
+// (recall.embedding.stored and recall.summarized) are handled here —
+// recall.searched and recall.chain.searched were retired as dead
+// surface area.
+//
+// Expected: ev is a non-nil events.Event.
+// Returns: data payload and whether the event was a recognised recall type.
+// Side effects: none.
+func extractRecallEventData(ev events.Event) (any, bool) {
+	switch e := ev.(type) {
+	case *events.RecallEmbeddingStoredEvent:
+		return e.Data, true
+	case *events.RecallSummarizedEvent:
+		return e.Data, true
+	default:
+		return nil, false
 	}
 }
 

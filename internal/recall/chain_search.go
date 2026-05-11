@@ -2,12 +2,9 @@ package recall
 
 import (
 	"context"
-	"time"
 
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
-	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
-	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -128,29 +125,15 @@ func (t *ChainSearchTool) Execute(ctx context.Context, input tool.Input) (tool.R
 		return t.fallbackToRecent()
 	}
 
-	start := time.Now()
-	agentID, ok := input.Arguments["agent_id"].(string)
-	if !ok {
-		agentID = ""
-	}
-
 	results, err := t.chainStore.Search(ctx, query, t.topK)
-	latencyMS := time.Since(start).Milliseconds()
 
-	sessionID := ""
-	if sid, ok := ctx.Value(session.IDKey{}).(string); ok {
-		sessionID = sid
-	}
-
-	if t.bus != nil {
-		t.bus.Publish(events.EventRecallChainSearched, events.NewRecallChainSearchEvent(events.RecallChainSearchEventData{
-			SessionID: sessionID,
-			AgentID:   agentID,
-			Query:     query,
-			Results:   len(results),
-			LatencyMS: latencyMS,
-		}))
-	}
+	// Bug Hunt #63 (May 11 2026): the recall.chain.searched bus
+	// event was retired here — high-frequency (every chain search)
+	// with zero non-test subscribers anywhere in the tree. The
+	// engine's existing tool.execute.result event already carries
+	// the tool-level latency / args / result count for
+	// chain_search tool invocations and IS subscribed by
+	// eventlogger.
 
 	// M9: genuine Search failure must be observable separately from
 	// "zero results". The pre-M9 code branched on

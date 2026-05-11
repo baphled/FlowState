@@ -337,6 +337,64 @@ var _ = Describe("EventLogger", func() {
 			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
 			Expect(entry["type"]).To(Equal("background.task.failed"))
 		})
+
+		// Bug Hunt #63 (May 2026): observability decision.
+		// recall.embedding.stored is low-frequency (once per stored
+		// message embedding) and carries diagnostic signal worth
+		// preserving in postmortems — dimensions, latency, the silent
+		// dimension-mismatch failure mode flagged in
+		// project_flowstate_recall_silent_zero_failure. Re-added to
+		// eventlogger.subscribedEventTypes.
+		It("writes a recall.embedding.stored event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+			bus.Publish("recall.embedding.stored", events.NewRecallEmbeddingStoredEvent(events.RecallEmbeddingStoredEventData{
+				SessionID:  "s1",
+				MessageID:  "m1",
+				Dimensions: 1536,
+				LatencyMS:  42,
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("recall.embedding.stored"))
+		})
+
+		// Bug Hunt #63 (May 2026): observability decision.
+		// recall.summarized is low-frequency (per compaction, rare)
+		// and carries token-before/after + latency signal. Compaction
+		// is the slowest recall operation; observability worth the
+		// per-summarisation log line. Re-added to eventlogger.
+		It("writes a recall.summarized event as a JSONL line", func() {
+			logger = eventlogger.New(logPath, 10*1024*1024)
+			Expect(logger.Start(bus)).To(Succeed())
+
+			ts := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+			bus.Publish("recall.summarized", events.NewRecallSummarizedEvent(events.RecallSummarizedEventData{
+				SessionID:      "s1",
+				OriginalTokens: 4096,
+				SummaryTokens:  512,
+				LatencyMS:      1800,
+			}, ts))
+
+			data, err := os.ReadFile(logPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			lines := nonEmptyLines(data)
+			Expect(lines).To(HaveLen(1))
+
+			var entry map[string]any
+			Expect(json.Unmarshal([]byte(lines[0]), &entry)).To(Succeed())
+			Expect(entry["type"]).To(Equal("recall.summarized"))
+		})
 	})
 
 	Describe("unsubscribed event types", func() {

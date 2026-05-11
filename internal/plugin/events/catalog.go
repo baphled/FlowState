@@ -499,45 +499,33 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "recall.embedding.stored",
 		Struct:      "RecallEmbeddingStoredEvent",
 		Publishers:  []string{"engine.go"},
-		Subscribers: []string{},
+		Subscribers: []string{"eventlogger"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
-		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
-			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
-			" topic, so the recall-embedding signal is currently dead surface area." +
-			" Flagged pending decision: wire eventlogger or remove the publisher.",
+		Notes: "Bug Hunt #63 (May 11 2026) decision: re-added to" +
+			" eventlogger.subscribedEventTypes. Low-frequency" +
+			" (once per stored message embedding) with diagnostic" +
+			" value — dimensions / latency, complements the silent" +
+			" dimension-mismatch failure mode captured in" +
+			" project_flowstate_recall_silent_zero_failure. Bug" +
+			" Hunt #51 (May 2026) previously flagged the over-claim;" +
+			" #63 resolves the open decision in favour of observability.",
 	},
-	{
-		Topic:       EventRecallSearched,
-		Constant:    "EventRecallSearched",
-		EventType:   "recall.searched",
-		Struct:      "RecallSearchEvent",
-		Publishers:  []string{"recall/query_tools.go"},
-		Subscribers: []string{},
-		Scope:       ScopeInternal,
-		Status:      StatusActive,
-		Delivery:    "fire-and-forget",
-		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
-			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
-			" topic, so the recall-search signal is currently dead surface area." +
-			" Flagged pending decision: wire eventlogger or remove the publisher.",
-	},
-	{
-		Topic:       EventRecallChainSearched,
-		Constant:    "EventRecallChainSearched",
-		EventType:   "recall.chain.searched",
-		Struct:      "RecallChainSearchEvent",
-		Publishers:  []string{"recall/chain_search.go"},
-		Subscribers: []string{},
-		Scope:       ScopeInternal,
-		Status:      StatusActive,
-		Delivery:    "fire-and-forget",
-		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
-			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
-			" topic, so the recall-chain-search signal is currently dead surface area." +
-			" Flagged pending decision: wire eventlogger or remove the publisher.",
-	},
+	// EventRecallSearched (recall.searched) was removed by Bug Hunt
+	// #63 (May 11 2026): the topic fired on every SearchContextTool
+	// invocation (high frequency) with zero non-test subscribers
+	// anywhere in the tree. The engine's existing
+	// `tool.execute.result` event already carries the tool-level
+	// latency / args / result count for search_context invocations
+	// and IS subscribed by eventlogger, so the recall-specific
+	// topic was pure log volume with no signal not already covered.
+	//
+	// EventRecallChainSearched (recall.chain.searched) was removed
+	// by Bug Hunt #63 (May 11 2026) for the same reasons applied to
+	// chain_search invocations — high-frequency, zero non-test
+	// subscribers, redundant with `tool.execute.result`.
+	//
 	// EventRecallChainSearchFailed (M9, May 2026) was removed by F4
 	// (Bug Hunt Findings May 11 2026): the topic shipped with zero
 	// non-test subscribers anywhere in the tree, making it dead
@@ -550,14 +538,16 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "recall.summarized",
 		Struct:      "RecallSummarizedEvent",
 		Publishers:  []string{"recall/query_tools.go"},
-		Subscribers: []string{},
+		Subscribers: []string{"eventlogger"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
-		Notes: "Bug Hunt #51 (May 2026): catalog previously over-claimed eventlogger" +
-			" subscription. eventlogger.subscribedEventTypes does NOT include this" +
-			" topic, so the recall-summarize signal is currently dead surface area." +
-			" Flagged pending decision: wire eventlogger or remove the publisher.",
+		Notes: "Bug Hunt #63 (May 11 2026) decision: re-added to" +
+			" eventlogger.subscribedEventTypes. Low-frequency (per" +
+			" compaction, rare) with token-before/after + latency" +
+			" signal worth the per-summarisation log line. Bug Hunt" +
+			" #51 (May 2026) previously flagged the over-claim;" +
+			" #63 resolves the open decision in favour of observability.",
 	},
 	{
 		Topic:       EventContextCompacted,
