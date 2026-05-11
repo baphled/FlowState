@@ -1121,15 +1121,33 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	// session.Message.ThinkingBlocks, but the wire payload sent to the
 	// model is built from the slice projected here. Empty inputs project
 	// to empty (nil) outputs, preserving the no-thinking fall-through.
+	//
+	// Bug M4-adjacent (May 2026): session.Message persists tool-result
+	// errors with Role:"tool_error" (see accumulator.applyToolResult).
+	// The Anthropic provider's buildMessages switch only matches
+	// Role:"tool" — a raw "tool_error" falls through and the message is
+	// silently dropped from the model request payload on reload. The
+	// projection seam canonicalises here to Role:"tool" + IsError:true so
+	// the wire shape is uniform with the live-stream path stamped by the
+	// M4 engine seam. Already-canonical Role:"tool" rows are forwarded
+	// unchanged so a future writer that persists IsError directly is not
+	// double-flipped.
 	var providerMsgs []provider.Message
 	if len(priorMessages) > 0 {
 		providerMsgs = make([]provider.Message, 0, len(priorMessages))
 		for _, msg := range priorMessages {
+			role := msg.Role
+			isError := false
+			if role == "tool_error" {
+				role = "tool"
+				isError = true
+			}
 			providerMsgs = append(providerMsgs, provider.Message{
-				Role:           msg.Role,
+				Role:           role,
 				Content:        msg.Content,
 				ThinkingBlocks: msg.ThinkingBlocks,
 				StopReason:     msg.StopReason,
+				IsError:        isError,
 			})
 		}
 	}

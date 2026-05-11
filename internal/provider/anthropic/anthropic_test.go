@@ -236,6 +236,41 @@ var _ = Describe("buildMessages", func() {
 		Expect(tr1.Content[0].OfText.Text).To(Equal("result1"))
 		Expect(tr2.Content[0].OfText.Text).To(Equal("result1"))
 	})
+
+	// M4-adjacent (May 2026): when the session manager reloads a persisted
+	// "tool_error" row it canonicalises to Role:"tool" + IsError:true at
+	// the projection seam. From buildMessages' perspective the input is the
+	// canonical shape; the assertion here is that the canonicalised input
+	// reaches the wire encoded with is_error:true. The companion projection
+	// spec lives in `internal/session` (SendMessage context seeding).
+	It("round-trips a canonicalised reloaded tool error onto a tool_result block with is_error:true", func() {
+		// Shape produced by the manager's projection on reload of a
+		// session.Message{Role:"tool_error"} row.
+		msgs := []provider.Message{
+			{Role: "user", Content: "Run the tool."},
+			{
+				Role:      "tool",
+				Content:   "failed: timeout exceeded after 30s",
+				IsError:   true,
+				ToolCalls: []provider.ToolCall{{ID: "toolu_01reload"}},
+			},
+		}
+		result := buildMessages(msgs)
+		Expect(result).To(HaveLen(2),
+			"a canonicalised tool error MUST survive the role switch — "+
+				"buildMessages drops any role other than 'tool', so a raw "+
+				"'tool_error' would have produced HaveLen(1) and the model "+
+				"would never see the failure")
+		Expect(string(result[1].Role)).To(Equal("user"))
+		tr := result[1].Content[0].OfToolResult
+		Expect(tr).NotTo(BeNil())
+		Expect(tr.ToolUseID).To(Equal("toolu_01reload"))
+		Expect(tr.Content[0].OfText.Text).To(Equal("failed: timeout exceeded after 30s"))
+		Expect(tr.IsError.Valid()).To(BeTrue())
+		Expect(tr.IsError.Value).To(BeTrue(),
+			"is_error on the wire must follow the canonicalised "+
+				"provider.Message.IsError stamped at the reload projection seam")
+	})
 })
 
 var _ = Describe("Phase 3 multi-turn thinking round-trip", func() {
