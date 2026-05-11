@@ -36,6 +36,14 @@ func (s *Server) subscribeSessionBus(sessionID string, out chan<- WSChunkMsg) fu
 		// and gate.passed are TUI-only affordances per the pass-event
 		// policy (failures only on the chat surface).
 		{eventType: events.EventGateFailed, handler: newGateFailedHandler(sessionID, out)},
+		// Streaming Coherence Slice F follow-up (Bug Fix #62, May 2026):
+		// the engine's runStreamingHeartbeat ticker + Anthropic-ping
+		// forwarder publish EventStreamingHeartbeat on the bus during a
+		// turn. Forward the typed event onto the bridge channel so both
+		// SSE (dispatchSessionBusEventSSE) and WS clients project it as
+		// `streaming.heartbeat` frames; the frontend's adaptive stall
+		// watchdog re-arms on every tick.
+		{eventType: events.EventStreamingHeartbeat, handler: newStreamingHeartbeatHandler(sessionID, out)},
 	}
 
 	for _, h := range handlers {
@@ -271,6 +279,49 @@ func newGateFailedHandler(sessionID string, out chan<- WSChunkMsg) eventbus.Even
 		}
 		select {
 		case out <- WSChunkMsg{EventType: events.EventGateFailed, EventData: sanitised}:
+		default:
+		}
+	}
+}
+
+// newStreamingHeartbeatHandler creates an EventHandler that forwards
+// streaming.heartbeat events to the out channel when the session ID
+// matches. Streaming Coherence Slice F follow-up (Bug Fix #62, May
+// 2026): the engine's runStreamingHeartbeat ticker + Anthropic-ping
+// forwarder publish EventStreamingHeartbeat on the bus during a turn
+// so the frontend's adaptive stall watchdog can pick a per-phase
+// timeout. Prior to this handler the typed event had zero subscribers
+// and never reached the wire.
+//
+// The sanitised payload mirrors events.StreamingHeartbeatEventData
+// (session_id, agent_id, phase) plus the canonical `event_type`
+// discriminant the SSE writer emits as `"type":"streaming.heartbeat"`.
+//
+// Expected:
+//   - sessionID is the connection's session.
+//   - out accepts WSChunkMsg values.
+//
+// Returns:
+//   - An eventbus.EventHandler for streaming.heartbeat events.
+//
+// Side effects:
+//   - Sends to out channel on matching events.
+//   - Drops the event on a full out channel rather than blocking the
+//     bus dispatcher (matches the existing pattern across this file).
+func newStreamingHeartbeatHandler(sessionID string, out chan<- WSChunkMsg) eventbus.EventHandler {
+	return func(msg any) {
+		hb, ok := msg.(*events.StreamingHeartbeatEvent)
+		if !ok || hb.Data.SessionID != sessionID {
+			return
+		}
+		sanitised := map[string]any{
+			"event_type": events.EventStreamingHeartbeat,
+			"session_id": hb.Data.SessionID,
+			"agent_id":   hb.Data.AgentID,
+			"phase":      hb.Data.Phase,
+		}
+		select {
+		case out <- WSChunkMsg{EventType: events.EventStreamingHeartbeat, EventData: sanitised}:
 		default:
 		}
 	}
