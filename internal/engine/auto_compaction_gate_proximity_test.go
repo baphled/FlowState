@@ -391,14 +391,14 @@ var _ = Describe("Engine auto-compaction gate-proximity force-trigger", func() {
 //
 // The new hook (emitMidToolLoopRefresh, exposed via
 // EmitMidToolLoopRefreshForTest) plugs both gaps:
-//   1. Emits a fresh context_usage chunk reflecting the just-extended
-//      messages slice so the chip tracks the swelling tool-result
-//      wave between batches.
-//   2. Consults gateProximityForceCompact against the persisted
-//      store; on a positive verdict, force-fires maybeAutoCompact
-//      with trigger="tool_result_wave" so the next user turn's
-//      buildContextWindow injects the freshly-computed summary
-//      rather than running the cold path against a swollen prefix.
+//  1. Emits a fresh context_usage chunk reflecting the just-extended
+//     messages slice so the chip tracks the swelling tool-result
+//     wave between batches.
+//  2. Consults gateProximityForceCompact against the persisted
+//     store; on a positive verdict, force-fires maybeAutoCompact
+//     with trigger="tool_result_wave" so the next user turn's
+//     buildContextWindow injects the freshly-computed summary
+//     rather than running the cold path against a swollen prefix.
 //
 // Pinned at the helper level: the engine seam is the source of
 // truth for both affordances. The streamWithToolLoop call site
@@ -497,6 +497,175 @@ var _ = Describe("Engine mid-tool-loop refresh hook", func() {
 
 		Expect(summariser.calls.Load()).To(Equal(int32(1)),
 			"H2 memoisation must coalesce duplicate fires when the cold range is unchanged")
+	})
+
+	// Bug #35 — post-compaction message reload. emitMidToolLoopRefresh
+	// fires maybeAutoCompact against the persisted store on a positive
+	// gate-proximity verdict. Before this fix, streamWithToolLoop then
+	// handed the in-memory pre-compaction messages slice straight to
+	// retryStreamForToolResult — so the next provider request inherited
+	// the bloated pre-compaction history even though the engine's
+	// session memo carried a fresh summary. Callers now learn from the
+	// helper whether compaction fired, AND get a rebuilt-from-store
+	// message slice (compacted view) when it did.
+	Context("Bug #35 — post-compaction reload signal", func() {
+		It("reports compacted=true when the gate-proximity tier fires", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newGateProxEngine(summariser, true, 0.99)
+			seedGateProxMessages(store, 95)
+
+			outChan := make(chan provider.StreamChunk, 4)
+			compacted := eng.EmitMidToolLoopRefreshReportForTest(context.Background(), "sess-reload-fire", outChan)
+			close(outChan)
+			for range outChan {
+			}
+
+			Expect(compacted).To(BeTrue(),
+				"a positive gate-proximity verdict must signal compacted=true so streamWithToolLoop can reload messages")
+			Expect(summariser.calls.Load()).To(Equal(int32(1)))
+		})
+
+		It("reports compacted=false when no compaction fires (no-op case)", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newGateProxEngine(summariser, true, 0.99)
+			// Small persisted history — well below the gate boundary.
+			seedGateProxMessages(store, 5)
+
+			outChan := make(chan provider.StreamChunk, 4)
+			compacted := eng.EmitMidToolLoopRefreshReportForTest(context.Background(), "sess-reload-quiet", outChan)
+			close(outChan)
+			for range outChan {
+			}
+
+			Expect(compacted).To(BeFalse(),
+				"no-fire case must signal compacted=false so the caller skips the (expensive) message-reload path")
+			Expect(summariser.calls.Load()).To(Equal(int32(0)))
+		})
+
+		It("produces a compacted message slice carrying the summary on reload", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newGateProxEngine(summariser, true, 0.99)
+			seedGateProxMessages(store, 95)
+
+			outChan := make(chan provider.StreamChunk, 4)
+			compacted := eng.EmitMidToolLoopRefreshReportForTest(context.Background(), "sess-reload-rebuilt", outChan)
+			close(outChan)
+			for range outChan {
+			}
+			Expect(compacted).To(BeTrue())
+
+			// After compaction fires, rebuilding messages must yield a
+			// slice that includes the summary marker. The pre-fix
+			// behaviour was: streamWithToolLoop kept handing the
+			// uncompacted slice to retryStreamForToolResult so the next
+			// provider request still carried 95K tokens of swelled
+			// history. The fix exposes RebuildMessagesAfterCompactionForTest
+			// so the caller can swap the in-memory slice for the
+			// compacted view.
+			rebuilt := eng.RebuildMessagesAfterCompactionForTest(context.Background(), "sess-reload-rebuilt")
+			Expect(rebuilt).NotTo(BeEmpty(),
+				"the rebuilt slice must contain at least the system prompt + summary block")
+
+			var summaryFound bool
+			for _, m := range rebuilt {
+				if strings.Contains(m.Content, "[auto-compacted summary]") {
+					summaryFound = true
+					break
+				}
+			}
+			Expect(summaryFound).To(BeTrue(),
+				"the rebuilt slice must carry the compacted summary so the next retry request sees the compressed view")
+
+			Expect(summariser.calls.Load()).To(Equal(int32(1)),
+				"reload must reuse the H2 memo, not re-invoke the summariser")
+		})
+	})
+
+	// Bug #36 — context_usage emission cadence stale between
+	// tool-result and the next provider chunk. The chip displays the
+	// figure carried by the most-recent context_usage chunk. Before
+	// this fix, emitMidToolLoopRefresh wrote one context_usage chunk
+	// against e.store.AllMessages() (no tools schema attached), then
+	// retryStreamForToolResult opened the next stream which may take
+	// seconds to produce its first chunk. The chip held the stale
+	// post-tool figure during that gap. The fix emits a second
+	// context_usage chunk immediately after the retry stream is
+	// opened, reflecting the full ChatRequest the provider is about
+	// to consume (messages + tools schema). A double-emission guard
+	// (last-emitted payload hash) coalesces identical payloads so the
+	// chip doesn't re-render with the same number.
+	Context("Bug #36 — post-retry context_usage refresh", func() {
+		It("emits a second context_usage chunk after the retry stream is opened", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newGateProxEngine(summariser, true, 0.99)
+			seedGateProxMessages(store, 5)
+
+			outChan := make(chan provider.StreamChunk, 8)
+			// First call seeds the helper's "last emitted" state.
+			eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-refresh-cadence", outChan)
+			// Second emission with a freshly-extended store — chip
+			// must tick forward.
+			seedGateProxMessages(store, 10)
+			eng.EmitPostRetryContextUsageForTest(context.Background(), "sess-refresh-cadence", outChan)
+			close(outChan)
+
+			var contextUsage []provider.StreamChunk
+			for chunk := range outChan {
+				if chunk.EventType == "context_usage" {
+					contextUsage = append(contextUsage, chunk)
+				}
+			}
+			Expect(contextUsage).To(HaveLen(2),
+				"one context_usage chunk per emit (mid-loop + post-retry); the post-retry hook must emit a fresh figure")
+			Expect(contextUsage[0].Content).NotTo(Equal(contextUsage[1].Content),
+				"the post-retry payload must reflect the extended messages slice; identical content means the hook didn't fire")
+		})
+
+		It("suppresses a duplicate context_usage chunk when nothing changed since the last emission", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newGateProxEngine(summariser, true, 0.99)
+			seedGateProxMessages(store, 5)
+
+			outChan := make(chan provider.StreamChunk, 8)
+			// First emission writes the payload.
+			eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-no-double-emit", outChan)
+			// Second emission against an unchanged store should
+			// coalesce: same payload as last write, no fresh chunk.
+			eng.EmitPostRetryContextUsageForTest(context.Background(), "sess-no-double-emit", outChan)
+			close(outChan)
+
+			var contextUsage []provider.StreamChunk
+			for chunk := range outChan {
+				if chunk.EventType == "context_usage" {
+					contextUsage = append(contextUsage, chunk)
+				}
+			}
+			Expect(contextUsage).To(HaveLen(1),
+				"identical payload must be coalesced; the chip already shows that figure")
+		})
+
+		It("re-emits when the session identity changes even if the payload bytes match", func() {
+			// Cadence parity: the per-session memo must NOT leak across
+			// sessions. Two sessions with identical store content still
+			// each see their own chip update.
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			eng, store := newGateProxEngine(summariser, true, 0.99)
+			seedGateProxMessages(store, 5)
+
+			outChan := make(chan provider.StreamChunk, 8)
+			eng.EmitMidToolLoopRefreshForTest(context.Background(), "sess-A", outChan)
+			eng.EmitPostRetryContextUsageForTest(context.Background(), "sess-B", outChan)
+			close(outChan)
+
+			var contextUsage []provider.StreamChunk
+			for chunk := range outChan {
+				if chunk.EventType == "context_usage" {
+					contextUsage = append(contextUsage, chunk)
+				}
+			}
+			Expect(contextUsage).To(HaveLen(2),
+				"distinct sessions must each get their own emission even when the payload coincides")
+		})
 	})
 })
 
