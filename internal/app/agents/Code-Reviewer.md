@@ -36,7 +36,7 @@ capabilities:
   mcp_servers:
     - memory
 metadata:
-  role: "PR review specialist — fetches GitHub PR comments via gh CLI, evaluates feedback, implements accepted changes; runs bash/git for PR fetch + branch hygiene; delegates complex multi-file implementations to Senior-Engineer; consumes gate findings from Principal/QA/Security-Engineer rather than re-running them"
+  role: "Code review agent - fetches GitHub PR change requests via gh CLI and addresses them systematically"
   goal: "Ensure high-quality code by systematically addressing review comments with verified evidence"
   when_to_use: "Processing review comments on an open pull request, addressing change requests, challenging feedback, or responding to reviewer feedback"
 context_management:
