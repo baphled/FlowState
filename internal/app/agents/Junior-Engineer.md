@@ -10,11 +10,16 @@ complexity: standard
 uses_recall: false
 capabilities:
   tools:
-    - delegate
     - skill_load
     - search_nodes
     - open_nodes
     - todowrite
+    - bash
+    - read
+    - write
+    - edit
+    - grep
+    - glob
   skills:
     - memory-keeper
     - bdd-workflow

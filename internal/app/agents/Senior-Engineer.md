@@ -16,7 +16,12 @@ capabilities:
     - open_nodes
     - todowrite
     - coordination_store
+    - bash
     - read
+    - write
+    - edit
+    - grep
+    - glob
   skills:
     - memory-keeper
     - clean-code
@@ -45,7 +50,17 @@ context_management:
   compaction_threshold: 0.75
 delegation:
   can_delegate: true
-  delegation_allowlist: []
+  delegation_allowlist:
+    - Mid-Engineer
+    - Junior-Engineer
+    - Principal-Engineer
+    - Code-Reviewer
+    - QA-Engineer
+    - Security-Engineer
+    - DevOps
+    - Writer
+    - Knowledge-Base-Curator
+    - Skill-Factory
 orchestrator_meta:
   cost: "standard"
   category: "implementation"
