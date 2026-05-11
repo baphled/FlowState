@@ -2955,6 +2955,60 @@ describe('chatStore - applyContentEvent dispatch', () => {
     expect(store.currentModelId).toBe('')
   })
 
+  it('prefers split to_provider/to_model fields over the joined "to" when both are on the wire', () => {
+    // M3-adjacent — mirror sseModelActive's split shape on
+    // sseProviderChanged. The Go SSE writer ships BOTH the legacy joined
+    // fields (from / to) AND the new split fields (from_provider /
+    // from_model / to_provider / to_model) during the migration. The
+    // handler MUST prefer the split fields when present so the chip
+    // skips the "+" parse hop and the off-by-one bugs around model ids
+    // that themselves contain "+" (rare; openrouter).
+    //
+    // The "to" joined string is deliberately corrupt here ("BAD") to
+    // prove the handler reads the split fields, not the joined one.
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: 'BAD',
+        from_provider: 'anthropic',
+        from_model: 'claude-sonnet-4-6',
+        to_provider: 'zai',
+        to_model: 'glm-4.6',
+        reason: 'rate_limited',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('zai')
+    expect(store.currentModelId).toBe('glm-4.6')
+  })
+
+  it('falls back to splitting the joined "to" on "+" when split fields are absent (legacy emitter)', () => {
+    // Forward-compat: an older Go emitter still on the joined-only
+    // shape must keep working through the migration. When the split
+    // fields are absent, the handler falls back to the historical
+    // "+"-split behaviour.
+    const store = useChatStore()
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-sonnet-4-6'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'provider_changed',
+        from: 'anthropic+claude-sonnet-4-6',
+        to: 'zai+glm-4.6',
+        reason: 'rate_limited',
+      }),
+    )
+
+    expect(store.currentProviderId).toBe('zai')
+    expect(store.currentModelId).toBe('glm-4.6')
+  })
+
   it('handles a model id that contains a "+" (split on FIRST separator only)', () => {
     // Edge: model ids like "openrouter+anthropic/claude-3.5-sonnet+beta"
     // can in principle contain "+". The split is on the FIRST "+" so the

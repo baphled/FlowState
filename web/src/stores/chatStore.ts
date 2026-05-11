@@ -2196,6 +2196,10 @@ export const useChatStore = defineStore('chat', {
           this.handleProviderChangedEvent({
             from: event.from,
             to: event.to,
+            fromProvider: event.fromProvider,
+            fromModel: event.fromModel,
+            toProvider: event.toProvider,
+            toModel: event.toModel,
             reason: event.reason,
           })
           return
@@ -2715,14 +2719,38 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    handleProviderChangedEvent(info: { from?: unknown; to?: unknown; reason?: unknown }): void {
+    handleProviderChangedEvent(info: {
+      from?: unknown
+      to?: unknown
+      fromProvider?: unknown
+      fromModel?: unknown
+      toProvider?: unknown
+      toModel?: unknown
+      reason?: unknown
+    }): void {
       const to = typeof info.to === 'string' ? info.to : ''
       const from = typeof info.from === 'string' ? info.from : ''
+      const fromProviderField =
+        typeof info.fromProvider === 'string' ? info.fromProvider : ''
+      const fromModelField = typeof info.fromModel === 'string' ? info.fromModel : ''
+      const toProviderField = typeof info.toProvider === 'string' ? info.toProvider : ''
+      const toModelField = typeof info.toModel === 'string' ? info.toModel : ''
       const reason = typeof info.reason === 'string' ? info.reason : ''
 
+      // Prefer the split fields when the wire carries them — they skip
+      // the "+" parse hop and the off-by-one bugs around model ids that
+      // themselves contain "+" (rare; openrouter). Fall back to
+      // splitting the joined `to` on "+" for legacy emitters that
+      // haven't migrated yet.
       let newProvider = ''
       let newModel = ''
-      if (to.length > 0) {
+      if (toProviderField !== '' || toModelField !== '') {
+        newProvider = toProviderField
+        newModel = toModelField
+        this.currentProviderId = newProvider
+        this.currentModelId = newModel
+        this.lastProviderChangeKey = `${newProvider}+${newModel}`
+      } else if (to.length > 0) {
         const sep = to.indexOf('+')
         if (sep === -1) {
           newProvider = to
@@ -2748,6 +2776,10 @@ export const useChatStore = defineStore('chat', {
       const newModelLabel = newModel || newProvider || 'a different model'
       const reasonLabel = describeFailoverReason(reason)
       const fromModelLabel = (() => {
+        // Prefer the split `fromModel` field; fall back to splitting
+        // the joined `from` on "+" for legacy emitters.
+        if (fromModelField !== '') return fromModelField
+        if (fromProviderField !== '') return fromProviderField
         if (!from) return ''
         const sep = from.indexOf('+')
         return sep === -1 ? from : from.slice(sep + 1)

@@ -53,16 +53,27 @@ type sseThinking struct {
 // model/provider chip in the input toolbar.
 //
 // Field semantics:
-//   - From / To are "<provider>+<model>" strings (e.g. "anthropic+claude-sonnet-4-6").
-//     The frontend splits on "+" to extract the model for the toast copy.
+//   - From / To are "<provider>+<model>" joined strings (the legacy
+//     shape, e.g. "anthropic+claude-sonnet-4-6"). They remain on the
+//     wire for consumers still parsing the joined form.
+//   - FromProvider / FromModel / ToProvider / ToModel are the new
+//     split shape mirroring sseModelActive's (provider, model) pair.
+//     The chip prefers these to skip the "+" parse hop and the
+//     off-by-one bugs around model ids that themselves contain "+"
+//     (rare; openrouter). Backend ships both shapes simultaneously so
+//     consumers can migrate gracefully.
 //   - Reason is a stable machine-readable token from a closed set; see
 //     classifyFailoverReason in internal/plugin/failover/stream_hook.go for
 //     the full vocabulary. The frontend maps it to plain English.
 type sseProviderChanged struct {
-	Type   string `json:"type"`
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Reason string `json:"reason"`
+	Type         string `json:"type"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	FromProvider string `json:"from_provider"`
+	FromModel    string `json:"from_model"`
+	ToProvider   string `json:"to_provider"`
+	ToModel      string `json:"to_model"`
+	Reason       string `json:"reason"`
 }
 
 // sseModelActive represents the always-on "actual model is now streaming"
@@ -386,18 +397,26 @@ func writeSSEThinking(w http.ResponseWriter, flusher http.Flusher, content strin
 //     toast: a corrupt failover signal is worse than no signal.
 func writeSSEProviderChanged(w http.ResponseWriter, flusher http.Flusher, payload string) {
 	var parsed struct {
-		From   string `json:"from"`
-		To     string `json:"to"`
-		Reason string `json:"reason"`
+		From         string `json:"from"`
+		To           string `json:"to"`
+		FromProvider string `json:"from_provider"`
+		FromModel    string `json:"from_model"`
+		ToProvider   string `json:"to_provider"`
+		ToModel      string `json:"to_model"`
+		Reason       string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return
 	}
 	data := sseProviderChanged{
-		Type:   "provider_changed",
-		From:   parsed.From,
-		To:     parsed.To,
-		Reason: parsed.Reason,
+		Type:         "provider_changed",
+		From:         parsed.From,
+		To:           parsed.To,
+		FromProvider: parsed.FromProvider,
+		FromModel:    parsed.FromModel,
+		ToProvider:   parsed.ToProvider,
+		ToModel:      parsed.ToModel,
+		Reason:       parsed.Reason,
 	}
 	jsonData, err := json.Marshal(data)
 	if err != nil {

@@ -155,21 +155,30 @@ type failedCandidate struct {
 // transition event. The fields are JSON-marshalled into chunk.Content
 // of a provider.StreamChunk{EventType: "provider_changed"}; the SSE
 // dispatcher in internal/api/server.go forwards the bytes verbatim into
-// a {"type":"provider_changed","from":...,"to":...,"reason":...} SSE
-// event.
+// a {"type":"provider_changed",...} SSE event.
 //
 // Format choices:
-//   - From / To are "<provider>+<model>" strings so the chat UI can show
-//     the previous and current model in one toast line. The frontend
-//     splits on "+" to extract model for friendly display.
+//   - From / To are "<provider>+<model>" joined strings (the legacy
+//     shape). They are retained on the wire for backwards-compat with
+//     consumers still parsing the joined form.
+//   - FromProvider / FromModel / ToProvider / ToModel are the new
+//     split shape that mirrors sseModelActive's (provider, model)
+//     pair. The chat UI's chip prefers these — splitting on "+"
+//     re-introduced a parse step and off-by-one bugs around model ids
+//     that themselves contain "+" (rare; openrouter). All four are
+//     populated on every emit so consumers can migrate gracefully.
 //   - Reason is a stable machine-readable string ("rate_limited",
 //     "model_not_found", "auth_failure", "timeout", "unknown") that the
 //     frontend maps to plain English. Keeping the mapping on the
 //     frontend side decouples copy-changes from the Go release cycle.
 type providerChangedPayload struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Reason string `json:"reason"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	FromProvider string `json:"from_provider"`
+	FromModel    string `json:"from_model"`
+	ToProvider   string `json:"to_provider"`
+	ToModel      string `json:"to_model"`
+	Reason       string `json:"reason"`
 }
 
 // classifyFailoverReason maps an error from a failed failover candidate
@@ -263,9 +272,13 @@ func prependProviderChangedChunk(
 		return upstream
 	}
 	payload := providerChangedPayload{
-		From:   failed.provider + "+" + failed.model,
-		To:     newCandidate.Provider + "+" + newCandidate.Model,
-		Reason: failed.reason,
+		From:         failed.provider + "+" + failed.model,
+		To:           newCandidate.Provider + "+" + newCandidate.Model,
+		FromProvider: failed.provider,
+		FromModel:    failed.model,
+		ToProvider:   newCandidate.Provider,
+		ToModel:      newCandidate.Model,
+		Reason:       failed.reason,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
