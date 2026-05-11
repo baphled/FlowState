@@ -50,7 +50,10 @@ describe('MessageBubble — single card chrome per tool call', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     registerTools()
-    vi.mocked(useChatStore).mockReturnValue({ loadSessionByAgentId: vi.fn() } as never)
+    vi.mocked(useChatStore).mockReturnValue({
+      loadSessionByAgentId: vi.fn(),
+      loadSessionForDelegation: vi.fn(),
+    } as never)
   })
 
   const cases: Array<{ tool: string; toolInput?: string; body: string }> = [

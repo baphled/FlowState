@@ -20,7 +20,15 @@ const elapsedTimer = ref<ReturnType<typeof setInterval> | null>(null)
 
 async function loadDelegatedSession(): Promise<void> {
   if (!props.message.targetAgent) return
-  await chatStore.loadSessionByAgentId(props.message.targetAgent)
+  // Bug Hunt (May 2026) sibling-confusion fix — pass the message's
+  // chainId alongside the targetAgent so the store can disambiguate
+  // sibling delegations to the same agent. Pre-fix the resolver was
+  // agent-id-only and silently routed clicks on an earlier delegation
+  // card to the most-recent sibling for the same agent.
+  await chatStore.loadSessionForDelegation({
+    chainId: props.message.chainId,
+    agentId: props.message.targetAgent,
+  })
 }
 
 function startTimer(): void {

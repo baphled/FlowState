@@ -95,6 +95,11 @@ describe('MessageBubble', () => {
 
     mockChatStore = {
       loadSessionByAgentId: vi.fn(),
+      // Bug Hunt (May 2026) sibling-confusion fix — MessageBubble's
+      // delegation-card click now routes through loadSessionForDelegation
+      // so the chainId disambiguates same-agent siblings. The agent-id
+      // resolver is still mounted as the fallback path.
+      loadSessionForDelegation: vi.fn(),
     }
     vi.mocked(useChatStore).mockReturnValue(mockChatStore)
   })
@@ -285,7 +290,12 @@ describe('MessageBubble', () => {
       expect(link.attributes('href')).toBeUndefined()
     })
 
-    it('calls loadSessionByAgentId when clicking the delegation agent link', async () => {
+    it('calls loadSessionForDelegation with chainId + targetAgent when clicking the delegation agent link', async () => {
+      // Sibling-confusion fix — the resolver routes via chainId so a
+      // parent with two delegations to the same agent doesn't collapse
+      // both cards onto the most-recent sibling. Both fields are
+      // load-bearing: chainId routes when known, agentId is the
+      // fallback for the chainId-missing case.
       const wrapper = mountWithRouter(
         makeMessage({
           role: 'delegation_started',
@@ -299,7 +309,14 @@ describe('MessageBubble', () => {
       const link = wrapper.find('[data-testid="delegation-agent-link"]')
       await link.trigger('click')
 
-      expect(mockChatStore.loadSessionByAgentId).toHaveBeenCalledWith('planner')
+      expect(mockChatStore.loadSessionForDelegation).toHaveBeenCalledWith({
+        chainId: 'chain-1',
+        agentId: 'planner',
+      })
+      // The agent-id-only resolver must NOT be the entry point any
+      // more — going through loadSessionForDelegation is what makes
+      // chainId routing possible.
+      expect(mockChatStore.loadSessionByAgentId).not.toHaveBeenCalled()
     })
 
     // Regression cover for the bug where clicking a delegation card navigated
@@ -332,7 +349,10 @@ describe('MessageBubble', () => {
       const link = wrapper.find('[data-testid="delegation-agent-link"]')
       await link.trigger('click')
 
-      expect(mockChatStore.loadSessionByAgentId).toHaveBeenCalledWith('planner')
+      expect(mockChatStore.loadSessionForDelegation).toHaveBeenCalledWith({
+        chainId: 'chain-1',
+        agentId: 'planner',
+      })
       // The route MUST stay where the user was — clicking a delegation card
       // is a session-load action, not navigation. AgentInfoView is reached
       // from the agents picker, never from this affordance.
@@ -373,7 +393,10 @@ describe('MessageBubble', () => {
       const link = wrapper.find('[data-testid="delegation-agent-link"]')
       await link.trigger('click')
 
-      expect(mockChatStore.loadSessionByAgentId).toHaveBeenCalledWith('planner')
+      expect(mockChatStore.loadSessionForDelegation).toHaveBeenCalledWith({
+        chainId: 'chain-1',
+        agentId: 'planner',
+      })
       const pushedToAgents = pushSpy.mock.calls.some((call) => {
         const target = call[0]
         if (typeof target === 'string') return target.startsWith('/agents/')
