@@ -245,6 +245,18 @@ export interface SessionSummary {
   status: string
   /** Depth in the delegation tree (0 = root). */
   depth: number
+  /**
+   * Delegation coordination chain identifier — populated when this session
+   * was spawned via the engine's delegate tool. Empty for root sessions.
+   *
+   * Carries the chainID stamped on the persisted Session via the engine's
+   * spawn path so the Vue chatStore can rebuild its runtime
+   * (chainId → childSessionId) map on cold load. Without this the
+   * sibling-confusion bug (parent delegates to the same agent twice; both
+   * inline cards share targetAgent; click A opens B) re-appears every
+   * page reload, because SwarmEvents do not replay on reconnect.
+   */
+  chainId?: string
   title: string
   createdAt: string
   updatedAt: string

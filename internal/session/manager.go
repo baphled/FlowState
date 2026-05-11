@@ -115,6 +115,27 @@ type Session struct {
 	// in the FlowState vault and memory entry
 	// `project_flowstate_recall_silent_zero_failure`.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// ChainID stamps the delegation coordination chain identifier on a
+	// child session at spawn time. Empty for top-level (non-delegated)
+	// sessions, populated for any session created via
+	// CreateWithParentAndChain (the engine spawn path).
+	//
+	// Today's commit a488b858 closed the live-click sibling-confusion bug
+	// on the Vue inline delegation card by carrying a runtime
+	// (chainId → childSessionId) map populated from SwarmEvents in the
+	// chatStore. That map is empty after a hard reload — FlowState does
+	// not replay swarm events on reconnect — so a click on a historical
+	// delegation card fell back to the agent-id "most-recent child"
+	// resolver and the sibling-confusion bug re-appeared.
+	//
+	// Persisting ChainID on Session closes the cold-reload hole: the
+	// frontend rebuilds the runtime map from GET /api/v1/sessions on
+	// load, using the chain_id field on each summary. Omitted from the
+	// JSON when empty so legacy sidecars stay byte-identical and the
+	// field's presence remains a positive signal of "this session was
+	// spawned via a chain". See Bug Fixes/Chat Sibling Confusion
+	// (May 2026) in the FlowState vault for the full chain of fixes.
+	ChainID string `json:"chain_id,omitempty"`
 }
 
 // Summary provides a lightweight view of a session for listing.
@@ -138,11 +159,17 @@ type Summary struct {
 	CurrentModelID    string    `json:"currentModelId,omitempty"`
 	CurrentProviderID string    `json:"currentProviderId,omitempty"`
 	ParentID          string    `json:"parentId,omitempty"`
-	Title             string    `json:"title"`
-	IsStreaming       bool      `json:"isStreaming"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
-	MessageCount      int       `json:"messageCount"`
+	// ChainID surfaces the delegation coordination chain identifier so the
+	// Vue chatStore can rebuild its (chainId → childSessionId) map from
+	// the session list on cold load — closing the reload-hole left by
+	// a488b858 where SwarmEvents do not replay on reconnect. Omitted when
+	// empty so root sessions stay byte-identical to their pre-field shape.
+	ChainID      string    `json:"chainId,omitempty"`
+	Title        string    `json:"title"`
+	IsStreaming  bool      `json:"isStreaming"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	MessageCount int       `json:"messageCount"`
 }
 
 // Recorder captures stream chunks for session recording.
@@ -497,7 +524,44 @@ func (m *Manager) CreateSessionWithDefaults(agentID, providerID, modelID string)
 // Side effects:
 //   - Generates a new session identifier.
 //   - Stores the session in memory.
+//
+// CreateWithParent is preserved for callers that have no coordination chain
+// in scope; it routes through CreateWithParentAndChain with an empty chainID
+// so the in-memory and on-disk shape is identical to a sibling created via
+// the chain-aware path. New call sites that DO have a chainID (the engine
+// spawn path) should call CreateWithParentAndChain directly so the chainID
+// is stamped on the child session for cold-reload reconstruction.
 func (m *Manager) CreateWithParent(parentID string, agentID string) (*Session, error) {
+	return m.CreateWithParentAndChain(parentID, agentID, "")
+}
+
+// CreateWithParentAndChain creates a new child session under parentID and
+// stamps chainID on the resulting Session.
+//
+// The engine delegation spawn path (executeSync → resolveOrCreateSession →
+// createChildSession) calls this with the authoritative chainID in flight
+// so the persisted child session can be linked back to its delegation
+// event after a cold reload. The Vue chatStore reads chain_id from the
+// session list (GET /api/v1/sessions) on load to rebuild the runtime
+// (chainId → childSessionId) map that disambiguates sibling delegations
+// on inline-card click.
+//
+// Expected:
+//   - parentID identifies an existing parent session.
+//   - agentID identifies the agent for the new session.
+//   - chainID is the delegation coordination chain identifier (may be empty
+//     for callers that have no chain in scope; the legacy
+//     CreateWithParent path routes through here with chainID="").
+//
+// Returns:
+//   - The newly created child session with ParentID, ChainID, and incremented
+//     Depth.
+//   - ErrSessionNotFound if the parent is not registered.
+//
+// Side effects:
+//   - Generates a new session identifier.
+//   - Stores the session in memory.
+func (m *Manager) CreateWithParentAndChain(parentID, agentID, chainID string) (*Session, error) {
 	m.mu.RLock()
 	parent, ok := m.sessions[parentID]
 	m.mu.RUnlock()
@@ -518,6 +582,7 @@ func (m *Manager) CreateWithParent(parentID string, agentID string) (*Session, e
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		EmbeddingModel:    embeddingModel,
+		ChainID:           chainID,
 	}
 	m.sessions[sess.ID] = sess
 	m.mu.Unlock()
@@ -706,6 +771,7 @@ func (m *Manager) ListSessions() []*Summary {
 			CurrentModelID:    sess.CurrentModelID,
 			CurrentProviderID: sess.CurrentProviderID,
 			ParentID:          parentID,
+			ChainID:           sess.ChainID,
 			Title:             deriveSummaryTitle(sess),
 			CreatedAt:         sess.CreatedAt,
 			UpdatedAt:         updatedAt,

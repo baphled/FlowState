@@ -33,8 +33,14 @@ type Metadata struct {
 	// their previous shape and a missing key on load is interpreted as
 	// the legacy "no diagnostic available" condition. See
 	// Session.EmbeddingModel for the full rationale.
-	EmbeddingModel string    `json:"embedding_model,omitempty"`
-	Messages       []Message `json:"messages,omitempty"`
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// ChainID mirrors Session.ChainID and surfaces in the .meta.json
+	// sidecar as "chain_id". Omitted when empty so root (non-delegated)
+	// sessions stay byte-identical to their pre-field sidecar shape and a
+	// missing key on load is interpreted as the legacy "no chain in
+	// scope" condition. See Session.ChainID for the full rationale.
+	ChainID  string    `json:"chain_id,omitempty"`
+	Messages []Message `json:"messages,omitempty"`
 }
 
 // PersistSession writes session metadata to a .meta.json file in sessionsDir.
@@ -60,6 +66,7 @@ func PersistSession(sessionsDir string, sess *Session) error {
 		Status:            sess.Status,
 		CreatedAt:         sess.CreatedAt,
 		EmbeddingModel:    sess.EmbeddingModel,
+		ChainID:           sess.ChainID,
 		Messages:          sess.Messages,
 	}
 
@@ -156,6 +163,7 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		Status:            meta.Status,
 		CreatedAt:         meta.CreatedAt,
 		EmbeddingModel:    meta.EmbeddingModel,
+		ChainID:           meta.ChainID,
 		Messages:          meta.Messages,
 	}, nil
 }
@@ -191,6 +199,7 @@ func loadMetaFile(path string) *Session {
 		Status:            meta.Status,
 		CreatedAt:         meta.CreatedAt,
 		EmbeddingModel:    meta.EmbeddingModel,
+		ChainID:           meta.ChainID,
 		Messages:          meta.Messages,
 	}
 }

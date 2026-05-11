@@ -185,6 +185,109 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// ChainID stamp — Bug Hunt (May 2026) sibling-confusion fix, cold-reload
+	// hole closure. Today's commit a488b858 closed the live-click sibling-
+	// confusion path on the inline delegation card by carrying the runtime
+	// (chainId → childSessionId) map populated from SwarmEvents in the Vue
+	// chatStore. That map is empty after a hard reload because FlowState
+	// does not replay swarm events on reconnect.
+	//
+	// The persisted Session needs to carry ChainID so the frontend can
+	// rebuild the map from `GET /api/v1/sessions` on cold load. This block
+	// pins three invariants:
+	//   1. CreateWithParentAndChain stamps the supplied chainID on the
+	//      child session.
+	//   2. The chainID survives a round trip through the .meta.json sidecar
+	//      (PersistSession → LoadSessionMetadata).
+	//   3. The Summary projection from ListSessions exposes ChainID so the
+	//      frontend (which calls fetchSessions, not session-by-id) can read
+	//      it without an extra round trip.
+	//
+	// Without this the sibling-confusion bug re-appears every page reload.
+	Describe("ChainID stamp", func() {
+		Context("CreateWithParentAndChain", func() {
+			It("stamps the supplied chainID on the new child session", func() {
+				parent, err := mgr.CreateSession("coordinator")
+				Expect(err).NotTo(HaveOccurred())
+
+				child, err := mgr.CreateWithParentAndChain(parent.ID, "worker", "chain-abc")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(child.ChainID).To(Equal("chain-abc"),
+					"the supplied chainID must survive on the child Session so the frontend can resolve inline-card clicks after a reload")
+				Expect(child.ParentID).To(Equal(parent.ID),
+					"the parent link must still be established — chainID stamping does not displace the existing ParentID contract")
+			})
+
+			It("leaves ChainID empty when an empty chainID is supplied (backwards-compatible with CreateWithParent)", func() {
+				parent, err := mgr.CreateSession("coordinator")
+				Expect(err).NotTo(HaveOccurred())
+
+				child, err := mgr.CreateWithParentAndChain(parent.ID, "worker", "")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(child.ChainID).To(BeEmpty())
+			})
+		})
+
+		Context("persistence round-trip", func() {
+			It("persists ChainID via PersistSession and restores it via LoadSessionMetadata", func() {
+				tmpDir := GinkgoT().TempDir()
+				mgr.SetSessionsDir(tmpDir)
+
+				parent, err := mgr.CreateSessionWithDefaults("coordinator", "anthropic", "claude-sonnet-4-6")
+				Expect(err).NotTo(HaveOccurred())
+
+				child, err := mgr.CreateWithParentAndChain(parent.ID, "worker", "chain-persist")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(session.PersistSession(tmpDir, child)).To(Succeed())
+
+				loaded, err := session.LoadSessionMetadata(tmpDir, child.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil())
+				Expect(loaded.ChainID).To(Equal("chain-persist"),
+					"ChainID must round-trip through the .meta.json sidecar — without this, cold reload re-introduces the sibling-confusion bug")
+			})
+
+			It("omits chain_id from the on-disk JSON when empty (legacy sidecar shape preserved)", func() {
+				tmpDir := GinkgoT().TempDir()
+				mgr.SetSessionsDir(tmpDir)
+
+				parent, err := mgr.CreateSessionWithDefaults("coordinator", "anthropic", "claude-sonnet-4-6")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(session.PersistSession(tmpDir, parent)).To(Succeed())
+
+				loaded, err := session.LoadSessionMetadata(tmpDir, parent.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil())
+				Expect(loaded.ChainID).To(BeEmpty(),
+					"sessions without a chainID must round-trip with the field empty so legacy sidecars stay readable")
+			})
+		})
+
+		Context("Summary projection", func() {
+			It("exposes ChainID on the Summary returned by ListSessions", func() {
+				parent, err := mgr.CreateSession("coordinator")
+				Expect(err).NotTo(HaveOccurred())
+
+				child, err := mgr.CreateWithParentAndChain(parent.ID, "worker", "chain-list")
+				Expect(err).NotTo(HaveOccurred())
+
+				var found *session.Summary
+				for _, s := range mgr.ListSessions() {
+					if s.ID == child.ID {
+						found = s
+						break
+					}
+				}
+				Expect(found).NotTo(BeNil(),
+					"the child session must appear in ListSessions")
+				Expect(found.ChainID).To(Equal("chain-list"),
+					"the frontend reads GET /api/v1/sessions (the summary projection); ChainID MUST appear there for the cold-reload rebuild path to work")
+			})
+		})
+	})
+
 	Describe("appendSessionMessage promotes assistant model+provider", func() {
 		// When the engine streams an assistant turn carrying a (model,
 		// provider) pair stamped by the engine — the typical hot path —

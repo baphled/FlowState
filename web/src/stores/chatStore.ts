@@ -1257,6 +1257,24 @@ export const useChatStore = defineStore('chat', {
           : false
       try {
         this.sessions = await fetchSessions()
+        // Rebuild the (chainId → childSessionId) map from the persisted
+        // session list so the inline-card click resolver works on cold
+        // reload — without this the runtime map is empty (FlowState does
+        // not replay swarm events on reconnect) and the sibling-confusion
+        // bug a488b858 closed for live clicks re-appears on every page
+        // reload. Each delegated session carries its chainId in the wire
+        // shape (Summary.chainId, stamped on the backend by
+        // CreateWithParentAndChain). We do NOT clear the existing map
+        // first — live SwarmEvent ingestion may have populated entries
+        // not yet present in the loaded list (e.g. a delegation that
+        // hasn't been persisted yet), and clobbering them would re-open
+        // the bug for the very window the backfill is supposed to
+        // protect. Empty chainId is skipped (root sessions).
+        for (const summary of this.sessions) {
+          if (summary.chainId && summary.id) {
+            this.chainSessions[summary.chainId] = summary.id
+          }
+        }
       } finally {
         this.isLoadingSessions = false
       }

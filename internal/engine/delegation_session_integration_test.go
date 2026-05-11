@@ -730,4 +730,44 @@ var _ = Describe("DelegateTool session registration", Label("integration"), func
 			Expect(sessions).NotTo(BeEmpty())
 		})
 	})
+
+	// ChainID stamp on the spawn path — Bug Hunt (May 2026) cold-reload
+	// hole closure following a488b858.
+	//
+	// The persisted Session must carry ChainID so the Vue frontend can
+	// rebuild its (chainId → childSessionId) map from GET /api/v1/sessions
+	// after a hard reload. This block pins the engine-seam invariant:
+	// when the delegate tool spawns a child session it stamps the
+	// authoritative chainID (caller-supplied OR engine-generated) on the
+	// child via CreateWithParentAndChain.
+	Context("when a chainID is in flight on the delegation", func() {
+		It("stamps the caller-supplied chainID on the spawned child session", func() {
+			mgr.RegisterSession("parent-with-chain", "coordinator")
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"target-agent": targetEngine},
+				agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+				"coordinator",
+			)
+			delegateTool.WithSessionCreator(mgr)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-with-chain")
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "target-agent",
+					"message":       "do work",
+					"chainID":       "chain-stamped-on-spawn",
+				},
+			}
+			_, err := delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			children, err := mgr.ChildSessions("parent-with-chain")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).NotTo(BeEmpty())
+			Expect(children[0].ChainID).To(Equal("chain-stamped-on-spawn"),
+				"the spawn path must forward the authoritative chainID to CreateWithParentAndChain so the persisted child can be linked back to its delegation event after a cold reload")
+		})
+	})
 })

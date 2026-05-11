@@ -4402,6 +4402,136 @@ describe("chatStore - loadSessionForDelegation (chainId-aware sibling disambigua
     expect(store.chainSessions['chain-1']).toBe('session-1')
     expect(store.chainSessions['chain-2']).toBe('session-2')
   })
+
+  // Cold-reload hole closure for the sibling-confusion bug class.
+  //
+  // a488b858 closed the LIVE-CLICK path by populating the
+  // (chainId → childSessionId) map from SwarmEvents as they stream. The
+  // map is empty after a hard reload because FlowState does not replay
+  // swarm events on reconnect, so the click-through fell back to
+  // agent-id "most-recent" and the sibling-confusion bug re-appeared.
+  //
+  // The persisted Session now carries chainId on the wire shape
+  // (SessionSummary.chainId, stamped on the backend by
+  // CreateWithParentAndChain). loadSessions rebuilds the runtime map
+  // from this list on cold load so the click-through resolves correctly
+  // without waiting for a swarm event.
+  it("loadSessions rebuilds chainSessions from the persisted session list (cold-reload hole closure)", async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'child-old',
+        agentId: 'executor',
+        parentId: 'parent',
+        chainId: 'chain-old',
+        title: 'First run',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+      {
+        id: 'child-new',
+        agentId: 'executor',
+        parentId: 'parent',
+        chainId: 'chain-new',
+        title: 'Second run',
+        createdAt: '2026-05-01T09:05:00Z',
+        updatedAt: '2026-05-01T09:05:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+
+    const store = useChatStore()
+    // Pre-condition: simulated cold reload — runtime map is empty.
+    expect(store.chainSessions).toEqual({})
+
+    await store.loadSessions()
+
+    expect(store.chainSessions['chain-old']).toBe('child-old')
+    expect(store.chainSessions['chain-new']).toBe('child-new')
+  })
+
+  it("loadSessions skips summaries without a chainId so root sessions don't pollute the map", async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'root-1',
+        agentId: 'planner',
+        title: 'Root',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        // chainId omitted — root session
+      },
+      {
+        id: 'delegated',
+        agentId: 'executor',
+        parentId: 'root-1',
+        chainId: 'chain-real',
+        title: 'Child',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+
+    expect(store.chainSessions).toEqual({ 'chain-real': 'delegated' })
+  })
+
+  it("loadSessions does NOT clobber existing chainSessions entries that were populated live before the refetch", async () => {
+    // Live SwarmEvent ingestion may populate the map for a delegation
+    // whose persisted Session hasn't been written to disk yet. The
+    // refetch on the polling path (active-session reconcile) must NOT
+    // wipe those entries — clobbering them re-opens the bug for the
+    // very window the backfill is meant to protect.
+    const store = useChatStore()
+    store.recordChainSession('chain-live', 'session-live')
+
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'persisted-child',
+        agentId: 'executor',
+        parentId: 'parent',
+        chainId: 'chain-persisted',
+        title: 'Persisted',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+
+    await store.loadSessions()
+
+    expect(store.chainSessions['chain-live']).toBe('session-live')
+    expect(store.chainSessions['chain-persisted']).toBe('persisted-child')
+  })
 })
 
 describe('describeToolName (plain-language tool labels for non-technical users)', () => {
