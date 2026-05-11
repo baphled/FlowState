@@ -42,10 +42,18 @@ delegation:
   can_delegate: true
   delegation_allowlist:
     - Senior-Engineer
+    - Mid-Engineer
+    - Junior-Engineer
+    - Principal-Engineer
     - Code-Reviewer
+    - Code-Hygiene-Engineer
     - QA-Engineer
     - Security-Engineer
+    - DevOps
     - Writer
+    - Researcher
+    - Knowledge-Base-Curator
+    - Skill-Factory
 orchestrator_meta:
   cost: "high"
   category: "orchestration"
