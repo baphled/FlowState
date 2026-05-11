@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"filippo.io/age"
+
+	"github.com/baphled/flowstate/internal/atomicwrite"
 )
 
 var (
@@ -89,7 +91,7 @@ func loadOrCreateKey(tokensDir string) (string, error) {
 	}
 
 	passphrase := generatePassphrase()
-	if err := os.WriteFile(keyPath, []byte(passphrase), 0o600); err != nil {
+	if err := atomicwrite.File(keyPath, []byte(passphrase), 0o600); err != nil {
 		return "", err
 	}
 
@@ -139,7 +141,7 @@ func (s *EncryptedStore) Store(provider string, token *TokenResponse) error {
 		return fmt.Errorf("finalizing encryption: %w", err)
 	}
 
-	return os.WriteFile(tokenPath, buf.Bytes(), 0o600)
+	return atomicwrite.File(tokenPath, buf.Bytes(), 0o600)
 }
 
 // Retrieve loads and decrypts a token for the given provider.

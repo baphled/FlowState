@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/baphled/flowstate/internal/atomicwrite"
 )
 
 const (
@@ -406,19 +408,10 @@ func (tm *TokenManager) persistTokens() error {
 			"path", tm.authFilePath, "error", err)
 		return fmt.Errorf("marshal token payload: %w", err)
 	}
-	tmpPath := tm.authFilePath + ".tmp"
-	if werr := os.WriteFile(tmpPath, out, authFilePermissions); werr != nil {
-		slog.Warn("anthropic token refresh: write temp token file failed",
-			"path", tmpPath, "error", werr)
-		return fmt.Errorf("write temp token file: %w", werr)
-	}
-	if rerr := os.Rename(tmpPath, tm.authFilePath); rerr != nil {
-		// Best-effort cleanup so a half-rename does not leak a
-		// stale `.tmp` next to the live token file.
-		_ = os.Remove(tmpPath)
-		slog.Warn("anthropic token refresh: rename temp token file failed",
-			"tmp", tmpPath, "target", tm.authFilePath, "error", rerr)
-		return fmt.Errorf("rename temp token file: %w", rerr)
+	if werr := atomicwrite.File(tm.authFilePath, out, authFilePermissions); werr != nil {
+		slog.Warn("anthropic token refresh: atomic write failed",
+			"path", tm.authFilePath, "error", werr)
+		return fmt.Errorf("persist token file: %w", werr)
 	}
 	return nil
 }

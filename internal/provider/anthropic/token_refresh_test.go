@@ -371,6 +371,52 @@ var _ = Describe("TokenManager", func() {
 			)
 		})
 
+		It("never produces a zero-byte auth file when overwriting", func() {
+			// Regression for non-atomic os.WriteFile: a crash mid-write
+			// would zero out anthropic.json and silently log the user out
+			// on next start. atomicwrite.File guarantees the file is
+			// either the previous payload or the new payload.
+			tokenPath := filepath.Join(tmpDir, "anthropic.json")
+			Expect(os.WriteFile(tokenPath, []byte(`{"type":"oauth","access":"old"}`), 0o600)).To(Succeed())
+
+			spy := &spyRefresher{
+				result: RefreshResult{
+					AccessToken:  "new-after-refresh",
+					RefreshToken: "new-refresh",
+					ExpiresAt:    1234,
+				},
+			}
+			tm := NewTokenManager("old", "old-refresh", 0, spy, tokenPath)
+			_, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			info, err := os.Stat(tokenPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Size()).To(BeNumerically(">", int64(0)))
+
+			saved, readErr := os.ReadFile(tokenPath)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(saved)).To(ContainSubstring("new-after-refresh"))
+		})
+
+		It("leaves no atomicwrite temp file in the token directory", func() {
+			tokenPath := filepath.Join(tmpDir, "anthropic.json")
+			spy := &spyRefresher{
+				result: RefreshResult{
+					AccessToken: "x", RefreshToken: "y", ExpiresAt: 1,
+				},
+			}
+			tm := NewTokenManager("old", "old-r", 0, spy, tokenPath)
+			_, err := tm.EnsureToken(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, readErr := os.ReadDir(tmpDir)
+			Expect(readErr).NotTo(HaveOccurred())
+			for _, e := range entries {
+				Expect(e.Name()).NotTo(ContainSubstring(".atomicwrite-"))
+			}
+		})
+
 		It("skips persistence when the token file path is empty", func() {
 			spy := &spyRefresher{
 				result: RefreshResult{
