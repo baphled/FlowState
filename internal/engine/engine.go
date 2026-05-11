@@ -4880,7 +4880,43 @@ func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget 
 	if forceFire {
 		return recent, recentTokens, true
 	}
-	ratio := float64(recentTokens) / float64(tokenBudget)
+	// Bug Hunt (May 2026) — soft trigger measures the FULL persisted
+	// window, not the sliding-window subset. Pre-fix the ratio
+	// compared `recentTokens` (sliding window — default 10 messages)
+	// against `tokenBudget` (the model context limit). That was a
+	// category error: the ContextUsageChip displays the full-request
+	// estimate (via buildContextUsagePayload → estimateRequestTokens
+	// over e.store.AllMessages()) and the proactive overflow gate
+	// uses the same full-request scope. So a 50-message session
+	// sitting at 90% on the chip stayed silent because the recent 10
+	// messages alone were comfortably under the 0.75 threshold; the
+	// configured ratio knob never matched what the user was looking
+	// at. Slice 6a's gate-proximity tier masked the divergence by
+	// force-firing near the saturation boundary, but operators tuning
+	// the soft threshold expect it to fire against the figure on the
+	// chip — not against an arbitrary 10-message subset.
+	//
+	// The fix: count tokens across e.store.AllMessages() for the
+	// threshold compare. The summariser still consumes `recent`
+	// (sliding-window slice) — that's a separate decision about what
+	// content to summarise — but the trigger decision now uses the
+	// same scope the chip and gate use.
+	all := e.store.AllMessages()
+	var fullWindowTokens int
+	for i := range all {
+		fullWindowTokens += e.tokenCounter.Count(all[i].Content)
+		fullWindowTokens += e.tokenCounter.Count(all[i].Thinking)
+		for _, tc := range all[i].ToolCalls {
+			fullWindowTokens += e.tokenCounter.Count(tc.Name)
+			for k, v := range tc.Arguments {
+				fullWindowTokens += e.tokenCounter.Count(k)
+				if s, ok := v.(string); ok {
+					fullWindowTokens += e.tokenCounter.Count(s)
+				}
+			}
+		}
+	}
+	ratio := float64(fullWindowTokens) / float64(tokenBudget)
 	if ratio <= threshold {
 		return nil, 0, false
 	}
