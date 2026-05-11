@@ -352,7 +352,8 @@ describe('fetchCompressionConfig', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][0]).toContain('/api/v1/config/compression')
-    expect(cfg.threshold).toBeCloseTo(0.42, 6)
+    expect(cfg).not.toBeNull()
+    expect(cfg!.threshold).toBeCloseTo(0.42, 6)
   })
 
   it('returns null when the server has no controller wired (501)', async () => {
