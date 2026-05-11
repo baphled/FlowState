@@ -31,7 +31,7 @@ capabilities:
   mcp_servers:
     - memory
 metadata:
-  role: "Independent standards gatekeeper - enforces TDD, architecture, clean code, and technical debt discipline"
+  role: "Independent standards gatekeeper — enforces TDD, architecture, clean code, technical-debt discipline; runs bash/git/tests for verification; reviews Mid/Junior-Engineer output before completion; delegates capture work to KB Curator and pattern extraction to Skill-Factory; reports findings back to delegating agent (does not own implementation)"
   goal: "Issue explicit gate verdicts (PASS/FAIL/SKIP-with-reason) for code changes, validating TDD evidence, architecture boundaries, clean code, and tech debt"
   when_to_use: "Before merging non-trivial code changes, validating TDD discipline, checking architecture boundaries, reviewing Mid/Junior-Engineer work, or providing learning loop feedback"
 context_management:

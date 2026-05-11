@@ -35,7 +35,7 @@ capabilities:
   mcp_servers:
     - memory
 metadata:
-  role: "Senior software engineer - implements features, fixes bugs, and refactors code as directed by Tech-Lead or the orchestrator"
+  role: "Senior software engineer — implements features, fixes bugs, refactors code; executes bash/git/tests/edits and dispatches sub-agents via delegate; sub-delegates moderate work to Mid-Engineer and atomic tasks to Junior-Engineer; preferred for bash-heavy or git-heavy work directed by Tech-Lead or the orchestrator"
   goal: "Deliver high-quality, well-tested code that follows project conventions and architecture guidelines"
   when_to_use: "Writing new code features, fixing bugs, refactoring code, or any development workflow"
 context_management:
