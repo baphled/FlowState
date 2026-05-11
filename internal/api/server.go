@@ -377,6 +377,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
 	s.mux.HandleFunc("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
+	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
 	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}/messages/from/{messageId}", s.handleTruncateMessages)
 	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
 	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/model", s.handleUpdateSessionModel)
@@ -1720,8 +1721,6 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 	}
 }
 
-
-
 // handleSessionMessages returns the messages for the given session as JSON.
 //
 // Expected:
@@ -1750,6 +1749,36 @@ func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 		messages = []session.Message{}
 	}
 	writeJSON(w, messages)
+}
+
+// handleDeleteSession removes a session entirely (in-memory + on-disk).
+//
+// Expected:
+//   - Request path parameter "id" identifies a session.
+//
+// Returns:
+//   - 204 No Content on success.
+//   - 404 Not Found when the session does not exist.
+//   - 501 Not Implemented when no session manager is configured.
+//
+// Side effects:
+//   - Removes the session from the manager's in-memory map.
+//   - Removes the session's .meta.json sidecar and .events.jsonl WAL from disk
+//     when sessionsDir is configured.
+//
+// Backs the Vue UI's per-row trash button in SessionBrowser /
+// SessionSwitcher. Closes Quick-wins QW-11.
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.sessionManager.DeleteSession(id); err != nil {
+		writeJSONError(w, err, "session_not_found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleTruncateMessages truncates a session's message history at (and including)

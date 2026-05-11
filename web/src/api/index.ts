@@ -260,6 +260,22 @@ export async function fetchModels(): Promise<Model[]> {
   return models
 }
 
+/**
+ * deleteSession removes a session entirely from the backend (in-memory map
+ * + on-disk .meta.json sidecar + .events.jsonl WAL). Backs the per-row
+ * trash button in SessionBrowser / SessionSwitcher. The backend returns
+ * 204 on success and 404 for an unknown id; non-OK statuses surface as a
+ * thrown Error so callers can show a toast and rewind their optimistic
+ * remove.
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  const url = joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}`)
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(`Failed to delete session: ${res.status} ${res.statusText}`)
+  }
+}
+
 export async function truncateSessionMessages(sessionId: string, fromMessageId: string): Promise<void> {
   const url = joinBaseURL(
     `/v1/sessions/${encodeURIComponent(sessionId)}/messages/from/${encodeURIComponent(fromMessageId)}`,

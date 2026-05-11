@@ -866,6 +866,74 @@ describe('ChatView read-only toolbar in child sessions', () => {
     const modelPicker = wrapper.find('[data-testid="model-picker"]')
     expect(modelPicker.text()).toContain('claude-sonnet-4-6')
   })
+
+  // QW-11 — Delegated sessions are read-only. MessageInput is hidden and a
+  // slim banner takes its place so the user knows the session was spawned
+  // by another agent and is replaying its work, not awaiting a prompt.
+  it('hides MessageInput when the active session has a parentId (delegated child)', async () => {
+    const wrapper = mountWithChildSession()
+    await flushPromises()
+    await activateChildSession()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="message-input-stub"]').exists()).toBe(false)
+  })
+
+  it('renders the read-only banner with a parent backlink when the active session is delegated', async () => {
+    const wrapper = mountWithChildSession()
+    await flushPromises()
+    await activateChildSession()
+    await wrapper.vm.$nextTick()
+
+    const banner = wrapper.find('[data-testid="child-session-readonly-banner"]')
+    expect(banner.exists()).toBe(true)
+    // Banner copy references the parent title so the user knows where they
+    // came from, and exposes a backlink button to return.
+    expect(banner.text()).toContain('parent')
+    expect(banner.text().toLowerCase()).toContain('read-only')
+    expect(wrapper.find('[data-testid="child-session-readonly-parent-link"]').exists()).toBe(true)
+  })
+})
+
+// QW-11 — Parent sessions remain composable: MessageInput is mounted and
+// the read-only banner is absent.
+describe('ChatView composer in parent sessions', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('mounts MessageInput when the active session has no parentId', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+          MessageBubble: { template: '<div data-testid="message-bubble-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      {
+        id: 'parent-1',
+        agentId: 'a',
+        title: 'parent',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ]
+    chatStore.currentSessionId = 'parent-1'
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="message-input-stub"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="child-session-readonly-banner"]').exists()).toBe(false)
+  })
 })
 
 describe('ChatView agent-activity indicator', () => {

@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
+import { showToast } from '@/composables/useToast'
 
 defineOptions({ name: 'SessionSwitcher' })
 
 const chatStore = useChatStore()
 const isOpen = ref(false)
+// QW-11 — Inline-confirm delete UX. Same vocabulary as SessionBrowser: a
+// single row id at a time enters confirm state; clicking the trash icon on
+// a different row implicitly cancels the previous.
+const pendingDeleteId = ref<string | null>(null)
 
 const currentSession = computed(() =>
   chatStore.sessions.find((session) => session.id === chatStore.currentSessionId)
@@ -24,8 +29,13 @@ const currentSessionDisplay = computed(() => {
 
 const hasSessions = computed(() => chatStore.sessions.length > 0)
 
+// QW-11 — Read from orderedSessions (streaming-first, then updatedAt desc)
+// rather than the raw state.sessions array so the switcher matches the
+// canonical ordering used everywhere else. Children are still filtered out:
+// the switcher surfaces root sessions only; children are reachable via the
+// ChildSessionsPanel under the chat thread.
 const parentSessions = computed(() =>
-  chatStore.sessions.filter((session) => !session.parentId)
+  chatStore.orderedSessions.filter((session) => !session.parentId),
 )
 
 // UX consolidation (May 2026) — per-session activity surface. The chat
@@ -70,6 +80,30 @@ async function selectSession(sessionId: string): Promise<void> {
   chatStore.currentSessionId = sessionId
   await chatStore.loadSessionMessages(sessionId)
   isOpen.value = false
+}
+
+// QW-11 — Delete handlers. All three are .stop on the row's @click so the
+// confirm/cancel toggles don't accidentally also pick the session.
+function handleDeleteClick(sessionId: string, event?: Event): void {
+  event?.stopPropagation()
+  pendingDeleteId.value = sessionId
+}
+
+function handleCancelDelete(event?: Event): void {
+  event?.stopPropagation()
+  pendingDeleteId.value = null
+}
+
+async function handleConfirmDelete(sessionId: string, event?: Event): Promise<void> {
+  event?.stopPropagation()
+  try {
+    await chatStore.deleteSession(sessionId)
+    pendingDeleteId.value = null
+  } catch (err) {
+    pendingDeleteId.value = null
+    const message = err instanceof Error ? err.message : 'Failed to delete session'
+    showToast({ message, variant: 'error' })
+  }
 }
 </script>
 
@@ -139,6 +173,44 @@ async function selectSession(sessionId: string): Promise<void> {
             :data-testid="`session-switcher-streaming-${session.id}`"
             aria-label="Currently streaming"
           >●</span>
+          <!--
+            QW-11 — Per-row delete. Hover-revealed trash icon + inline
+            confirm strip, same vocabulary as SessionBrowser. The buttons
+            are .stop so toggling them does not also pick the session.
+          -->
+          <div
+            v-if="pendingDeleteId === session.id"
+            class="option-delete-confirm"
+            :data-testid="`session-switcher-delete-confirm-${session.id}`"
+            @click.stop
+          >
+            <button
+              type="button"
+              class="option-delete-cancel"
+              :data-testid="`session-switcher-cancel-delete-${session.id}`"
+              @click.stop="handleCancelDelete($event)"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="option-delete-confirm-btn"
+              :data-testid="`session-switcher-confirm-delete-${session.id}`"
+              @click.stop="handleConfirmDelete(session.id, $event)"
+            >
+              Delete
+            </button>
+          </div>
+          <button
+            v-else
+            type="button"
+            class="option-delete-button"
+            :data-testid="`session-switcher-delete-${session.id}`"
+            :aria-label="`Delete session ${session.title || session.id.slice(0, 8)}`"
+            @click.stop="handleDeleteClick(session.id, $event)"
+          >
+            <span aria-hidden="true">🗑️</span>
+          </button>
         </div>
         <span class="option-meta">{{ session.messageCount }} messages</span>
       </li>
@@ -284,6 +356,75 @@ async function selectSession(sessionId: string): Promise<void> {
   font-size: 0.6rem;
   animation: session-switcher-pulse 1.5s ease-in-out infinite;
   flex-shrink: 0;
+}
+
+/*
+ * QW-11 — Per-row delete UI. Mirrors SessionBrowser's vocabulary so users
+ * learn one affordance for the whole "session list" family. Trash icon is
+ * hover-revealed; confirm strip swaps in destructive red for the Delete
+ * action.
+ */
+.option-delete-button {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 0.05rem 0.35rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.session-option:hover .option-delete-button,
+.option-delete-button:focus-visible {
+  opacity: 1;
+}
+
+.option-delete-button:hover {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: var(--accent-danger, #f87171);
+}
+
+.option-delete-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.option-delete-cancel,
+.option-delete-confirm-btn {
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 0.05rem 0.4rem;
+  cursor: pointer;
+}
+
+.option-delete-cancel {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.option-delete-cancel:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.option-delete-confirm-btn {
+  background: var(--accent-danger, #f87171);
+  border-color: var(--accent-danger, #f87171);
+  color: white;
+}
+
+.option-delete-confirm-btn:hover {
+  filter: brightness(1.1);
 }
 
 .option-meta,

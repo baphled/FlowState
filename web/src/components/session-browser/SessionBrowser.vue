@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
+import { showToast } from '@/composables/useToast'
 import type { Agent } from '@/types'
 
 defineOptions({ name: 'SessionBrowser' })
@@ -16,6 +17,12 @@ const chatStore = useChatStore()
 const searchQuery = ref('')
 const selectedAgentFilter = ref<string>('all')
 const isOpen = ref(false)
+// QW-11 — Inline-confirm delete UX. Track which row is currently in the
+// "confirming delete" state so only one row at a time shows the
+// confirmation strip; clicking the trash icon on a different row implicitly
+// cancels the previous one (Set semantics here would also work but a
+// single string keeps the markup minimal).
+const pendingDeleteId = ref<string | null>(null)
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString)
@@ -31,7 +38,10 @@ function formatRelativeTime(dateString: string): string {
 }
 
 const filteredSessions = computed(() => {
-  let sessions = chatStore.sessions
+  // QW-11 — canonical ordering source. Read from the store getter
+  // (streaming-first, then updatedAt desc) and layer search + agent
+  // filtering on top. Never mutate state.sessions.
+  let sessions = chatStore.orderedSessions
 
   if (selectedAgentFilter.value !== 'all') {
     sessions = sessions.filter(s => s.agentId === selectedAgentFilter.value)
@@ -39,15 +49,13 @@ const filteredSessions = computed(() => {
 
   if (searchQuery.value.trim()) {
     const query = searchQuery.value.toLowerCase()
-    sessions = sessions.filter(s => 
+    sessions = sessions.filter(s =>
       s.title.toLowerCase().includes(query) ||
       s.id.toLowerCase().includes(query)
     )
   }
 
-  return sessions.sort((a, b) => 
-    new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-  )
+  return sessions
 })
 
 const availableAgents = computed(() => {
@@ -78,6 +86,36 @@ function getAgentProvider(agentId: string): string {
 // so the affordance is consistent across every session-list surface.
 function isSessionStreaming(sessionId: string): boolean {
   return chatStore.streamingFor(sessionId).isStreaming
+}
+
+// QW-11 — Delete handlers. The trash icon arms the confirmation strip on
+// that row; Confirm fires the store action; Cancel restores the icon. All
+// three are .stop on the row's @click so toggling delete-confirm doesn't
+// accidentally also pick the session.
+function handleDeleteClick(sessionId: string, event?: Event): void {
+  event?.stopPropagation()
+  pendingDeleteId.value = sessionId
+}
+
+function handleCancelDelete(event?: Event): void {
+  event?.stopPropagation()
+  pendingDeleteId.value = null
+}
+
+async function handleConfirmDelete(sessionId: string, event?: Event): Promise<void> {
+  event?.stopPropagation()
+  try {
+    await chatStore.deleteSession(sessionId)
+    pendingDeleteId.value = null
+  } catch (err) {
+    // Local state stays untouched on failure (deleteSession leaves the
+    // sessions array intact when the API rejects). Surface a toast so the
+    // user knows the click did something — the inline confirm closes so
+    // they can retry.
+    pendingDeleteId.value = null
+    const message = err instanceof Error ? err.message : 'Failed to delete session'
+    showToast({ message, variant: 'error' })
+  }
 }
 
 function handleSelectSession(sessionId: string): void {
@@ -203,6 +241,50 @@ onMounted(() => {
               <span v-if="session.id === chatStore.currentSessionId" class="current-badge">
                 Current
               </span>
+              <!--
+                QW-11 — Per-row delete affordance. The trash icon stays
+                hover-revealed to keep the list visually quiet; clicking it
+                arms an inline confirmation strip on this row only. The
+                strip's buttons are .stop so toggling them does not also
+                pick the session (the card is the select target). Cancel
+                returns to the idle icon; Delete fires
+                chatStore.deleteSession with optimistic local-state pruning
+                and rolls currentSessionId forward when needed.
+              -->
+              <div
+                v-if="pendingDeleteId === session.id"
+                class="row-delete-confirm"
+                :data-testid="`session-browser-delete-confirm-${session.id}`"
+                @click.stop
+              >
+                <span class="row-delete-confirm-label">Delete this session?</span>
+                <button
+                  type="button"
+                  class="row-delete-confirm-cancel"
+                  :data-testid="`session-browser-cancel-delete-${session.id}`"
+                  @click.stop="handleCancelDelete($event)"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="row-delete-confirm-confirm"
+                  :data-testid="`session-browser-confirm-delete-${session.id}`"
+                  @click.stop="handleConfirmDelete(session.id, $event)"
+                >
+                  Delete
+                </button>
+              </div>
+              <button
+                v-else
+                type="button"
+                class="row-delete-button"
+                :data-testid="`session-browser-delete-${session.id}`"
+                :aria-label="`Delete session ${session.title || session.id.slice(0, 8)}`"
+                @click.stop="handleDeleteClick(session.id, $event)"
+              >
+                <span aria-hidden="true">🗑️</span>
+              </button>
             </div>
 
             <div class="session-card-meta">
@@ -490,6 +572,83 @@ onMounted(() => {
 @keyframes session-browser-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+
+/*
+ * QW-11 — Per-row delete UI. The trash icon stays hover-revealed (opacity:
+ * 0 by default, opacity: 1 when the parent .session-card is hovered or the
+ * button is keyboard-focused) so the row list stays visually quiet. The
+ * inline-confirm strip uses the destructive red accent for the Delete
+ * button so the action is unmistakable.
+ */
+.row-delete-button {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 0.125rem 0.4rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.session-card:hover .row-delete-button,
+.row-delete-button:focus-visible {
+  opacity: 1;
+}
+
+.row-delete-button:hover {
+  background: rgba(248, 113, 113, 0.15);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: var(--accent-danger, #f87171);
+}
+
+.row-delete-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  padding: 0.125rem 0.5rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.row-delete-confirm-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.row-delete-confirm-cancel,
+.row-delete-confirm-confirm {
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+
+.row-delete-confirm-cancel {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+
+.row-delete-confirm-cancel:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.row-delete-confirm-confirm {
+  background: var(--accent-danger, #f87171);
+  color: white;
+}
+
+.row-delete-confirm-confirm:hover {
+  filter: brightness(1.1);
 }
 
 .session-card-meta {

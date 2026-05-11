@@ -768,6 +768,72 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// DeleteSession is the destructive counterpart to CloseSession. Where Close
+	// flips the status to "completed" (the session sticks around for forensics
+	// and replay), Delete removes the session entirely — both from the in-
+	// memory map and from disk. This backs the Vue UI's per-row trash button
+	// in SessionBrowser / SessionSwitcher. Closes Quick-wins QW-11.
+	Describe("DeleteSession", func() {
+		Context("when the session exists", func() {
+			It("removes the session from the in-memory map", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				err = mgr.DeleteSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = mgr.GetSession(sess.ID)
+				Expect(err).To(MatchError(session.ErrSessionNotFound))
+			})
+
+			It("drops the session from ListSessions", func() {
+				sess, err := mgr.CreateSession("test-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mgr.DeleteSession(sess.ID)).To(Succeed())
+
+				for _, sum := range mgr.ListSessions() {
+					Expect(sum.ID).NotTo(Equal(sess.ID),
+						"deleted session must not appear in the summary projection")
+				}
+			})
+		})
+
+		Context("when the session does not exist", func() {
+			It("returns ErrSessionNotFound", func() {
+				err := mgr.DeleteSession("nonexistent-id")
+				Expect(err).To(MatchError(session.ErrSessionNotFound))
+			})
+		})
+
+		Context("when sessionsDir is configured", func() {
+			It("removes the on-disk .meta.json sidecar so the session does not re-appear after restart", func() {
+				tmpDir := GinkgoT().TempDir()
+				mgr.SetSessionsDir(tmpDir)
+
+				// Use CreateSessionWithDefaults so the sidecar is written on
+				// create (CreateSession with empty defaults skips persistence;
+				// the first message would normally flush it, but we want a
+				// minimal fixture here that exercises Delete against a real
+				// on-disk artefact).
+				sess, err := mgr.CreateSessionWithDefaults("worker", "anthropic", "claude-sonnet-4-6")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Sanity check: the sidecar exists before Delete.
+				loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil(), "precondition: sidecar must exist before delete")
+
+				Expect(mgr.DeleteSession(sess.ID)).To(Succeed())
+
+				loaded, err = session.LoadSessionMetadata(tmpDir, sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).To(BeNil(),
+					"DeleteSession must remove the .meta.json sidecar — otherwise the deleted session re-appears after restart")
+			})
+		})
+	})
+
 	Describe("Concurrent access", func() {
 		It("handles concurrent CreateSession without races", func() {
 			var wg sync.WaitGroup

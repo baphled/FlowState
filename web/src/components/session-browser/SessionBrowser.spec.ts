@@ -86,3 +86,105 @@ describe('SessionBrowser activity indicators', () => {
     expect(wrapper.findAll('[data-testid^="session-browser-streaming-"]')).toHaveLength(0)
   })
 })
+
+// QW-11 — Per-row delete affordance, inline confirmation, ordering.
+//
+// Contract:
+//   - Every row exposes a `[data-testid="session-browser-delete-<id>"]`
+//     button. Clicking it reveals an inline confirmation strip (Cancel +
+//     Delete) on that row only. Confirming calls `chatStore.deleteSession`
+//     with the row id; cancelling restores the idle button. On failure the
+//     row stays in place (no optimistic remove on error).
+//   - Row order follows `chatStore.orderedSessions`: streaming first, then
+//     updatedAt descending. SessionBrowser composes its own filter on top
+//     (search + agent filter) but never mutates the store-ordered list.
+describe('SessionBrowser per-row delete', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  async function openWithSessions(): Promise<{ wrapper: ReturnType<typeof mount>, chatStore: ReturnType<typeof useChatStore> }> {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionBrowser)
+    ;(wrapper.vm as unknown as { open: () => void }).open()
+    await flushPromises()
+    chatStore.sessions = [
+      makeSession({ id: 'session-A', title: 'Alpha', updatedAt: '2026-05-10T09:00:00Z' }),
+      makeSession({ id: 'session-B', title: 'Beta', updatedAt: '2026-05-11T09:00:00Z' }),
+    ]
+    await nextTick()
+    return { wrapper, chatStore }
+  }
+
+  it('renders a per-row delete button on every session card', async () => {
+    const { wrapper } = await openWithSessions()
+
+    expect(wrapper.find('[data-testid="session-browser-delete-session-A"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="session-browser-delete-session-B"]').exists()).toBe(true)
+  })
+
+  it('shows an inline confirmation on the row when the delete button is clicked', async () => {
+    const { wrapper } = await openWithSessions()
+
+    await wrapper.find('[data-testid="session-browser-delete-session-A"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="session-browser-delete-confirm-session-A"]').exists()).toBe(true)
+    // Other rows are unaffected — only the clicked row enters confirm state.
+    expect(wrapper.find('[data-testid="session-browser-delete-confirm-session-B"]').exists()).toBe(false)
+  })
+
+  it('cancels back to the idle delete button when the user clicks Cancel', async () => {
+    const { wrapper } = await openWithSessions()
+
+    await wrapper.find('[data-testid="session-browser-delete-session-A"]').trigger('click')
+    await wrapper.find('[data-testid="session-browser-cancel-delete-session-A"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="session-browser-delete-confirm-session-A"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="session-browser-delete-session-A"]').exists()).toBe(true)
+  })
+
+  it('invokes chatStore.deleteSession with the row id when the user confirms', async () => {
+    const { wrapper, chatStore } = await openWithSessions()
+    const spy = vi.spyOn(chatStore, 'deleteSession').mockResolvedValue(undefined)
+
+    await wrapper.find('[data-testid="session-browser-delete-session-A"]').trigger('click')
+    await wrapper.find('[data-testid="session-browser-confirm-delete-session-A"]').trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledWith('session-A')
+  })
+
+  it('does not call chatStore.deleteSession when the card body is clicked (delete button click stays scoped)', async () => {
+    const { wrapper, chatStore } = await openWithSessions()
+    const spy = vi.spyOn(chatStore, 'deleteSession').mockResolvedValue(undefined)
+
+    await wrapper.find('[data-testid="session-browser-delete-session-A"]').trigger('click')
+
+    // Toggling confirm state must NOT have invoked delete yet.
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('orders rows by chatStore.orderedSessions (streaming first, then updatedAt desc)', async () => {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionBrowser)
+    ;(wrapper.vm as unknown as { open: () => void }).open()
+    await flushPromises()
+    chatStore.sessions = [
+      makeSession({ id: 'idle-recent', title: 'Recent', updatedAt: '2026-05-11T10:00:00Z' }),
+      makeSession({ id: 'streaming-old', title: 'Streaming', updatedAt: '2026-05-09T09:00:00Z' }),
+      makeSession({ id: 'idle-mid', title: 'Mid', updatedAt: '2026-05-10T09:00:00Z' }),
+    ]
+    chatStore.sessionStreaming = {
+      'streaming-old': { isLoading: false, isStreaming: true },
+    }
+    await nextTick()
+
+    const titles = wrapper.findAll('.session-title').map((el) => el.text())
+    expect(titles).toEqual(['Streaming', 'Recent', 'Mid'])
+  })
+})
