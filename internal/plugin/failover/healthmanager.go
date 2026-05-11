@@ -10,9 +10,18 @@ import (
 )
 
 // HealthManager manages provider/model rate-limit health with concurrency safety.
+//
+// The in-memory state is keyed by the comparable ProviderModel struct
+// (NOT a "<provider>+<model>" joined string). Bug Hunt May 2026 / M3
+// closed the previous string-key collision: provider="a+b"/model="c"
+// shared a map key with provider="a"/model="b+c", and the
+// GetHealthyAlternatives re-parse split on the first "+" mis-attributed
+// the boundary. Struct keys eliminate both halves and keep the public
+// IsRateLimited / MarkRateLimited / RateLimitedUntil string-string
+// signatures intact.
 type HealthManager struct {
 	mu          sync.RWMutex
-	data        map[string]time.Time
+	data        map[ProviderModel]time.Time
 	persistPath string
 }
 
@@ -27,7 +36,7 @@ func NewHealthManager() *HealthManager {
 		persistPath = filepath.Join(os.TempDir(), "flowstate", "provider-health.json")
 	}
 	return &HealthManager{
-		data:        make(map[string]time.Time),
+		data:        make(map[ProviderModel]time.Time),
 		persistPath: persistPath,
 	}
 }
@@ -50,9 +59,9 @@ func (hm *HealthManager) SetPersistPath(path string) {
 // Side effects: updates internal rate-limit state and persists to ~/.cache/flowstate/provider-health.json.
 func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time.Time) {
 	hm.mu.Lock()
-	key := provider + "+" + model
+	key := ProviderModel{Provider: provider, Model: model}
 	hm.data[key] = retryAfter
-	snapshot := make(map[string]time.Time, len(hm.data))
+	snapshot := make(map[ProviderModel]time.Time, len(hm.data))
 	for k, v := range hm.data {
 		snapshot[k] = v
 	}
@@ -82,7 +91,7 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 func (hm *HealthManager) RateLimitedUntil(provider, model string) (time.Time, bool) {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
-	expiry, ok := hm.data[provider+"+"+model]
+	expiry, ok := hm.data[ProviderModel{Provider: provider, Model: model}]
 	if !ok || !expiry.After(time.Now()) {
 		return time.Time{}, false
 	}
@@ -96,7 +105,7 @@ func (hm *HealthManager) RateLimitedUntil(provider, model string) (time.Time, bo
 // Side effects: cleans up expired rate-limit entries when checking.
 func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 	hm.mu.RLock()
-	key := provider + "+" + model
+	key := ProviderModel{Provider: provider, Model: model}
 	expiry, ok := hm.data[key]
 	hm.mu.RUnlock()
 	if !ok {
@@ -118,7 +127,7 @@ func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 // Side effects: none (read-only operation).
 func (hm *HealthManager) GetHealthyAlternatives(_, _ string) []ProviderModel {
 	hm.mu.RLock()
-	snapshot := make(map[string]time.Time, len(hm.data))
+	snapshot := make(map[ProviderModel]time.Time, len(hm.data))
 	for k, v := range hm.data {
 		snapshot[k] = v
 	}
@@ -127,39 +136,47 @@ func (hm *HealthManager) GetHealthyAlternatives(_, _ string) []ProviderModel {
 	var result []ProviderModel
 	now := time.Now()
 	for k, expiry := range snapshot {
-		if !expiry.After(now) {
-			sep := -1
-			for i := range len(k) {
-				if k[i] == '+' {
-					sep = i
-					break
-				}
-			}
-			if sep > 0 && sep < len(k)-1 {
-				prov := k[:sep]
-				mod := k[sep+1:]
-				result = append(result, ProviderModel{Provider: prov, Model: mod})
-			}
+		if !expiry.After(now) && k.Provider != "" && k.Model != "" {
+			result = append(result, k)
 		}
 	}
 	return result
 }
 
+// persistedEntry is the on-disk representation of one rate-limit
+// record. M3 introduced the array-of-records format to replace the
+// previous "<provider>+<model>" joined-string map keys, which lost the
+// boundary between fields whenever either contained a "+" (e.g.
+// openrouter model ids like "mistral/mistral-7b+free").
+type persistedEntry struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	ExpiresAt string `json:"expires_at"`
+}
+
 // PersistState writes the health state to disk atomically.
 //
-// Expected: path is a valid file path, snapshot is a map of provider+model keys to expiry times.
+// Expected: path is a valid file path, snapshot is a map of ProviderModel keys to expiry times.
 // Returns: an error if directory creation, marshalling, or file operations fail.
 // Side effects: creates directories and writes JSON file atomically via temp+rename to path.
-func (hm *HealthManager) PersistState(path string, snapshot map[string]time.Time) error {
+//
+// Wire format: a JSON array of {provider, model, expires_at} objects.
+// The structured shape is unambiguous regardless of "+" characters in
+// either id, closing the M3 collision (Bug Hunt May 2026).
+func (hm *HealthManager) PersistState(path string, snapshot map[ProviderModel]time.Time) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	m := make(map[string]string, len(snapshot))
+	entries := make([]persistedEntry, 0, len(snapshot))
 	for k, v := range snapshot {
-		m[k] = v.UTC().Format(time.RFC3339)
+		entries = append(entries, persistedEntry{
+			Provider:  k.Provider,
+			Model:     k.Model,
+			ExpiresAt: v.UTC().Format(time.RFC3339),
+		})
 	}
-	b, err := json.MarshalIndent(m, "", "  ")
+	b, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
@@ -180,7 +197,7 @@ func (hm *HealthManager) PersistState(path string, snapshot map[string]time.Time
 // Side effects: reads current rate-limit state and writes to disk atomically.
 func (hm *HealthManager) PersistStateInternal(path string) error {
 	hm.mu.RLock()
-	snapshot := make(map[string]time.Time, len(hm.data))
+	snapshot := make(map[ProviderModel]time.Time, len(hm.data))
 	for k, v := range hm.data {
 		snapshot[k] = v
 	}
@@ -190,7 +207,14 @@ func (hm *HealthManager) PersistStateInternal(path string) error {
 
 // LoadState loads the health state from disk, cleaning expired entries.
 //
-// Expected: path points to a valid JSON file containing provider+model keys.
+// Expected: path points to a JSON file written by PersistState. The
+// post-M3 format is a JSON array of {provider, model, expires_at}
+// records; for backwards compatibility, a pre-M3 JSON object with
+// "<provider>+<model>" keys is also accepted and parsed using the same
+// first-"+" split semantics as the legacy code so behaviour is
+// unchanged for already-persisted state (the bug is closed for any
+// newly written state).
+//
 // Returns: an error if reading or unmarshalling the file fails.
 // Side effects: populates internal rate-limit state, discarding any expired entries.
 func (hm *HealthManager) LoadState(path string) error {
@@ -200,19 +224,51 @@ func (hm *HealthManager) LoadState(path string) error {
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}
-	m := make(map[string]string)
-	if err := json.Unmarshal(b, &m); err != nil {
-		return fmt.Errorf("unmarshal: %w", err)
-	}
 	now := time.Now()
-	for k, v := range m {
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
+
+	// Post-M3: array of records.
+	var entries []persistedEntry
+	if jerr := json.Unmarshal(b, &entries); jerr == nil {
+		for _, e := range entries {
+			if e.Provider == "" || e.Model == "" {
+				continue
+			}
+			t, perr := time.Parse(time.RFC3339, e.ExpiresAt)
+			if perr != nil {
+				continue
+			}
+			if t.After(now) {
+				hm.data[ProviderModel{Provider: e.Provider, Model: e.Model}] = t
+			}
+		}
+		return nil
+	}
+
+	// Pre-M3 fallback: object map with "<provider>+<model>" string keys.
+	// Parsed using first-"+" split to match legacy semantics.
+	legacy := make(map[string]string)
+	if jerr := json.Unmarshal(b, &legacy); jerr != nil {
+		return fmt.Errorf("unmarshal: %w", jerr)
+	}
+	for k, v := range legacy {
+		t, perr := time.Parse(time.RFC3339, v)
+		if perr != nil {
 			continue
 		}
-		if t.After(now) {
-			hm.data[k] = t
+		if !t.After(now) {
+			continue
 		}
+		sep := -1
+		for i := range len(k) {
+			if k[i] == '+' {
+				sep = i
+				break
+			}
+		}
+		if sep <= 0 || sep >= len(k)-1 {
+			continue
+		}
+		hm.data[ProviderModel{Provider: k[:sep], Model: k[sep+1:]}] = t
 	}
 	return nil
 }
