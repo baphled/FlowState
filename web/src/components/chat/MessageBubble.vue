@@ -172,6 +172,24 @@ const isPlain = computed(
     hasVisibleAssistantContent.value,
 )
 
+// Outer wrapper gate — May 11 2026 follow-up. User: "We should not see
+// `<div class="message-bubble assistant" ...><!--v-if--></div>` if there
+// is no data." Pre-fix the `<div class="message-bubble">` rendered
+// unconditionally; when every inner `v-if`/`v-else-if` branch was false
+// the result was an empty styled box (padding + border + border-radius)
+// visible as a blank card. The wrapper itself must now gate on at least
+// one render branch matching.
+const hasRenderableContent = computed(
+  () =>
+    isToolInvocation.value ||
+    isToolError.value ||
+    isDelegationStarted.value ||
+    isDelegation.value ||
+    isThinking.value ||
+    isThinkingOnlyDegraded.value ||
+    isPlain.value,
+)
+
 // Defensive backstop for the May 2026 chat-UI leak class (session
 // 2d8dc0ac). The backend is the primary fix surface — see
 // internal/streaming.IsControlEvent, internal/engine.UnwrapTaskResult,
@@ -228,6 +246,7 @@ async function handleRevert(): Promise<void> {
 
 <template>
   <div
+    v-if="hasRenderableContent"
     class="message-bubble"
     :class="[props.message.role, { 'message-bubble--failed': isFailedSend }]"
     :data-testid="`message-${props.message.role}`"
