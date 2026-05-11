@@ -150,3 +150,80 @@ var _ = Describe("agents refresh command", func() {
 		})
 	})
 })
+
+var _ = Describe("agents validate command", func() {
+	// The validate command walks the on-disk agents directory and
+	// applies the rules in internal/agent/validate.go. The CLI wrapper
+	// is thin: it reuses the agent.ValidateManifestSet pure function,
+	// renders a human-readable report, and exits non-zero on any
+	// violation so a Makefile / CI gate can pin the contract.
+	var (
+		out       *bytes.Buffer
+		testApp   *app.App
+		agentsDir string
+		runCmd    func(args ...string) error
+	)
+
+	BeforeEach(func() {
+		out = &bytes.Buffer{}
+		agentsDir = filepath.Join(GinkgoT().TempDir(), "agents")
+		Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+
+		var err error
+		testApp, err = app.NewForTest(app.TestConfig{AgentsDir: agentsDir})
+		Expect(err).NotTo(HaveOccurred())
+
+		runCmd = func(args ...string) error {
+			root := cli.NewRootCmd(testApp)
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs(args)
+			return root.Execute()
+		}
+	})
+
+	Context("when every manifest on disk passes the rules", func() {
+		BeforeEach(func() {
+			good := "---\n" +
+				"id: Good\n" +
+				"name: Good\n" +
+				"orchestrator_meta:\n" +
+				"  category: implementation\n" +
+				"capabilities:\n" +
+				"  tools: [bash, read, write, edit, grep, glob]\n" +
+				"---\n"
+			Expect(os.WriteFile(filepath.Join(agentsDir, "Good.md"), []byte(good), 0o600)).To(Succeed())
+		})
+
+		It("exits zero and reports the directory was clean", func() {
+			out.Reset()
+			err := runCmd("agents", "validate")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out.String()).To(ContainSubstring("0 violations"))
+		})
+	})
+
+	Context("when a manifest violates a rule", func() {
+		BeforeEach(func() {
+			bad := "---\n" +
+				"id: Half-Engineer\n" +
+				"name: Half Engineer\n" +
+				"orchestrator_meta:\n" +
+				"  category: implementation\n" +
+				"capabilities:\n" +
+				"  tools: [read, grep, glob]\n" +
+				"---\n"
+			Expect(os.WriteFile(filepath.Join(agentsDir, "Half-Engineer.md"), []byte(bad), 0o600)).To(Succeed())
+		})
+
+		It("exits non-zero and names the manifest and the rule in the report", func() {
+			out.Reset()
+			err := runCmd("agents", "validate")
+			Expect(err).To(HaveOccurred(),
+				"validator must surface a non-nil error so cobra exits non-zero for CI gates")
+			output := out.String()
+			Expect(output).To(ContainSubstring("Half-Engineer.md"))
+			Expect(output).To(ContainSubstring("category-required-tool"))
+		})
+	})
+})
