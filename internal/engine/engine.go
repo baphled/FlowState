@@ -1958,8 +1958,8 @@ func (e *Engine) appendSwarmLeadSectionFor(base string, manifest agent.Manifest)
 	b.WriteString("\n\n# Swarm Leadership\n\n")
 	b.WriteString("You are leading swarm `")
 	b.WriteString(swarmCtx.SwarmID)
-	b.WriteString("`. The user's request is owned by this swarm; you coordinate the members below rather than answering alone.\n\n")
-	b.WriteString("You have already been dispatched as the lead — the user does NOT need to confirm anything. Do not write \"Action Required: confirm dispatch\", \"Proceed?\", \"Should I continue?\" or any other prompt that asks the user to approve starting the swarm. Begin by delegating to a member immediately. If the user's scope is too vague to act on, delegate the scoping work itself (e.g. to an explorer or analyst member) rather than blocking on the user. Only return to the user with the synthesised final report.\n\n")
+	b.WriteString("`. The user's request is owned by this swarm; coordinate the members below when their work is needed, and perform any lead-owned interactive steps directly.\n\n")
+	b.WriteString("You have already been dispatched as the lead; the user does NOT need to confirm anything. Do not write \"Action Required: confirm dispatch\", \"Proceed?\", \"Should I continue?\" or any other prompt that asks the user to approve starting the swarm. If the swarm's workflow includes live intake, triage, or other lead-owned conversation, continue that conversation yourself until member work is required. If the user's scope is too vague for the swarm to act on, either ask one concise clarifying question or delegate the scoping work to an appropriate member.\n\n")
 	b.WriteString("Do NOT call `suggest_delegate` for this swarm or its members; the dispatch is already in flight, and the tool will refuse a self-dispatch suggestion. Use `delegate` for member calls.\n\n")
 
 	b.WriteString("## Members\n\n")
@@ -2431,10 +2431,11 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	}
 
 	req := provider.ChatRequest{
-		Provider: e.LastProvider(),
-		Model:    e.LastModel(),
-		Messages: messages,
-		Tools:    e.buildToolSchemasCtx(streamCtx),
+		Provider:           e.LastProvider(),
+		Model:              e.LastModel(),
+		Messages:           messages,
+		Tools:              e.buildToolSchemasCtx(streamCtx),
+		FailoverCandidates: strictFailoverCandidates(streamManifest),
 	}
 	e.applyCategoryParams(&req)
 
@@ -3335,6 +3336,7 @@ func (e *Engine) retryStreamForToolResult(
 		Reason:       "tool_loop_retry",
 		Attempt:      attempt,
 	}))
+	boundManifest, _ := manifestFromContext(ctx)
 	toolReq := provider.ChatRequest{
 		Provider: e.LastProvider(),
 		Model:    e.LastModel(),
@@ -3344,7 +3346,8 @@ func (e *Engine) retryStreamForToolResult(
 		// the manifest the in-flight call was dispatched with —
 		// not whatever lives on e.manifest after a concurrent
 		// SetManifest swap.
-		Tools: e.buildToolSchemasCtx(ctx),
+		Tools:              e.buildToolSchemasCtx(ctx),
+		FailoverCandidates: strictFailoverCandidates(boundManifest),
 	}
 	chunks, streamErr := e.streamFromProvider(ctx, &toolReq)
 	e.publishProviderRequestEventCtx(ctx, sessionID, toolReq)
@@ -4821,6 +4824,20 @@ func preferredProviderModel(manifest *agent.Manifest) (string, string) {
 		return "", ""
 	}
 	return manifest.PreferredModels[0].Provider, manifest.PreferredModels[0].Model
+}
+
+func strictFailoverCandidates(manifest agent.Manifest) []provider.ModelPreference {
+	if manifest.ModelPolicy != agent.ModelPolicyStrict || len(manifest.PreferredModels) == 0 {
+		return nil
+	}
+	out := make([]provider.ModelPreference, 0, len(manifest.PreferredModels))
+	for _, pref := range manifest.PreferredModels {
+		out = append(out, provider.ModelPreference{
+			Provider: pref.Provider,
+			Model:    pref.Model,
+		})
+	}
+	return out
 }
 
 // publishContextCompactedEvent emits the T10b ContextCompactedEvent on

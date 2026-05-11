@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -550,6 +551,7 @@ log_level: debug
 			It("includes default tier mappings", func() {
 				cfg := config.DefaultConfig()
 
+				Expect(cfg.Plugins.Failover.AttemptTimeout).To(Equal("45s"))
 				Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(6))
 				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("claude-sonnet-4-20250514", "tier-0"))
 				Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("claude-3-5-sonnet-20241022", "tier-0"))
@@ -575,6 +577,7 @@ log_level: info
 					Expect(err).NotTo(HaveOccurred())
 					Expect(cfg.Plugins.Failover.Tiers).To(HaveLen(6))
 					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("claude-sonnet-4-20250514", "tier-0"))
+					Expect(cfg.Plugins.Failover.AttemptTimeout).To(Equal("45s"))
 				})
 			})
 
@@ -596,6 +599,23 @@ plugins:
 					Expect(err).NotTo(HaveOccurred())
 					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("anthropic", "tier-0"))
 					Expect(cfg.Plugins.Failover.Tiers).To(HaveKeyWithValue("ollama", "tier-1"))
+				})
+
+				It("preserves a custom attempt timeout", func() {
+					configContent := `
+plugins:
+  failover:
+    attempt_timeout: 20s
+`
+					configPath := filepath.Join(tempDir, "config.yaml")
+					err := os.WriteFile(configPath, []byte(configContent), 0o600)
+					Expect(err).NotTo(HaveOccurred())
+
+					cfg, err := config.LoadConfigFromPath(configPath)
+
+					Expect(err).NotTo(HaveOccurred())
+					Expect(cfg.Plugins.Failover.AttemptTimeout).To(Equal("20s"))
+					Expect(cfg.ParsedFailoverAttemptTimeout()).To(Equal(20 * time.Second))
 				})
 			})
 		})

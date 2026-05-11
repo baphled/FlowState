@@ -87,6 +87,11 @@ type ChatRequest struct {
 	Model    string
 	Messages []Message
 	Tools    []Tool
+	// FailoverCandidates, when non-empty, constrains the failover hook to
+	// these provider/model pairs for this single request. Strict agent
+	// manifests use this to keep a session on their declared models instead
+	// of falling through to global fallback providers.
+	FailoverCandidates []ModelPreference
 	// MaxTokens is the caller-requested upper bound on generated tokens.
 	// Zero means "use provider/model default". Providers may clamp this
 	// to a per-model ceiling.

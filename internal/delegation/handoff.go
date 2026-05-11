@@ -1,6 +1,9 @@
 package delegation
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // Handoff carries typed metadata for delegation chains.
 type Handoff struct {
@@ -53,6 +56,7 @@ func NewHandoff(h Handoff) *Handoff {
 // Side effects:
 //   - None.
 func (h Handoff) Validate() error {
+	fmt.Println("Am checking if can handover to agent")
 	if h.SourceAgent == "" {
 		return errors.New("source agent must not be empty")
 	}

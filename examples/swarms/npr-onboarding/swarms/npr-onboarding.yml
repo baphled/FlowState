@@ -1,0 +1,25 @@
+schema_version: "1.0.0"
+id: npr-onboarding
+description: >
+  Interactive Neuropsychographic Registry onboarding swarm. A lead agent runs a
+  six-stage conversational intake, synthesises the transcript into an
+  NPRProfile JSON object, and validates the final profile against the
+  npr-profile-v01 schema.
+swarm_type: orchestration
+lead: npr-onboarding-lead
+members:
+  - npr-profile-synthesizer
+  - npr-quality-reviewer
+
+harness:
+  parallel: false
+  gates:
+    - name: npr-profile-schema
+      kind: builtin:result-schema
+      when: post-member
+      target: npr-profile-synthesizer
+      output_key: npr-profile
+      schema_ref: npr-profile-v01
+
+context:
+  chain_prefix: npr-onboarding

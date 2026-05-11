@@ -22,6 +22,11 @@ const activeSessionStorageKey = 'chat.currentSessionId'
 const activeAgentStorageKey = 'chat.agentId'
 const activeModelStorageKey = 'chat.selectedModel'
 const activeProviderStorageKey = 'chat.selectedProvider'
+const streamStallErrorMessage = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
+
+function isStreamStallError(error: string | null): boolean {
+  return error?.startsWith('Response stalled') ?? false
+}
 
 // default-assistant is the friendly general-purpose chat agent — it answers
 // directly when it can and delegates to specialists when the request needs
@@ -1085,6 +1090,12 @@ export const useChatStore = defineStore('chat', {
       )
 
       this.messages = [...sealedBackend, ...optimisticOrphans]
+      if (
+        isStreamStallError(this.error) &&
+        sealedBackend.some((m) => m.role === 'assistant' && m.status === 'completed')
+      ) {
+        this.error = null
+      }
 
       // Refresh the session-level model+provider from the most recent
       // assistant message. The backend's appendSessionMessage promotes
@@ -1380,7 +1391,7 @@ export const useChatStore = defineStore('chat', {
     // argument, the call site is legacy and reconcile is skipped — the
     // gate-clearing behaviour remains unchanged.
     handleStreamStall(sessionId?: string): void {
-      this.error = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
+      this.error = streamStallErrorMessage
       this.isLoading = false
       this.isStreaming = false
       if (sessionId) {

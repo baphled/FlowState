@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"mime"
 	"net/http"
+	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -54,6 +58,7 @@ type Server struct {
 	metricsHandler         http.Handler
 	modelLister            ModelLister
 	contextUsageProvider   ContextUsageProvider
+	webDistDir             string
 	mux                    *http.ServeMux
 }
 
@@ -224,6 +229,14 @@ func WithContextUsageProvider(p ContextUsageProvider) ServerOption {
 	return func(s *Server) { s.contextUsageProvider = p }
 }
 
+// WithWebDistDir configures the built Vue SPA directory served by GET /
+// and extensionless browser routes. When unset or missing, the API keeps
+// the historical lightweight / -> /chat redirect used by local API-only
+// runs.
+func WithWebDistDir(dir string) ServerOption {
+	return func(s *Server) { s.webDistDir = strings.TrimSpace(dir) }
+}
+
 // SetBackgroundManager sets the background manager after server construction.
 //
 // Expected:
@@ -345,7 +358,16 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'self'; "+
+				"script-src 'self'; "+
+				"style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data:; "+
+				"font-src 'self' data:; "+
+				"connect-src 'self'; "+
+				"frame-ancestors 'none'; "+
+				"base-uri 'self'; "+
+				"form-action 'self'")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		next.ServeHTTP(w, r)
 	})
@@ -385,6 +407,7 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
 	s.mux.HandleFunc("DELETE /api/v1/tasks", s.handleCancelAllTasks)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.mux.HandleFunc("GET /api/health", s.handleHealth)
 	s.mux.HandleFunc("GET /api/swarm/events", s.handleSwarmEvents)
 	if s.metricsHandler != nil {
 		s.mux.Handle("GET /metrics", s.metricsHandler)
@@ -802,6 +825,12 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	if swarmID := s.firstMentionedSwarmID(req.Content); swarmID != "" {
+		if err := s.sessionManager.UpdateSessionAgent(id, swarmID); err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+	}
 	if s.completionOrchestrator != nil {
 		s.completionOrchestrator.ResetRePromptCount(id)
 	}
@@ -831,6 +860,19 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, NewSessionResponse(&snap))
+}
+
+func (s *Server) firstMentionedSwarmID(message string) string {
+	if s == nil || s.swarmRegistry == nil {
+		return ""
+	}
+	for _, mention := range swarm.ExtractAtMentions(message) {
+		_, swarmCtx, err := s.resolveDispatchTarget(mention)
+		if err == nil && swarmCtx != nil {
+			return swarmCtx.SwarmID
+		}
+	}
+	return ""
 }
 
 // handleSessionTodos returns the todo list for the given session as JSON.
@@ -1144,18 +1186,99 @@ func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, sessions)
 }
 
-// handleIndex redirects requests to the Vue SPA /chat route.
+// handleIndex serves the built Vue SPA when webDistDir is configured,
+// falling back to the historical / -> /chat redirect for local API-only
+// runs where no production web build exists.
 //
 // Expected:
 //   - None.
 //
 // Returns:
-//   - 302 redirect to /chat for SPA routing.
+//   - The requested static asset, the SPA index fallback, or a 302
+//     redirect to /chat when no web build is available.
 //
 // Side effects:
-//   - Writes redirect response.
+//   - Writes the HTTP response.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "/chat", http.StatusFound)
+	if isReservedNonSPAPath(r.URL.Path) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	indexPath, ok := s.webIndexPath()
+	if !ok {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/chat", http.StatusFound)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
+
+	relPath := cleanStaticPath(r.URL.Path)
+	if relPath == "" {
+		serveStaticFile(w, r, indexPath)
+		return
+	}
+
+	candidate := filepath.Join(s.webDistDir, filepath.FromSlash(relPath))
+	if isPathInsideDir(candidate, s.webDistDir) {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			serveStaticFile(w, r, candidate)
+			return
+		}
+	}
+
+	if path.Ext(relPath) != "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	serveStaticFile(w, r, indexPath)
+}
+
+func (s *Server) webIndexPath() (string, bool) {
+	if s.webDistDir == "" {
+		return "", false
+	}
+	indexPath := filepath.Join(s.webDistDir, "index.html")
+	info, err := os.Stat(indexPath)
+	if err != nil || info.IsDir() {
+		return "", false
+	}
+	return indexPath, true
+}
+
+func isAPIPath(requestPath string) bool {
+	return requestPath == "/api" || strings.HasPrefix(requestPath, "/api/")
+}
+
+func isReservedNonSPAPath(requestPath string) bool {
+	return isAPIPath(requestPath) || requestPath == "/metrics"
+}
+
+func cleanStaticPath(requestPath string) string {
+	cleaned := path.Clean("/" + requestPath)
+	if cleaned == "/" || cleaned == "." {
+		return ""
+	}
+	return strings.TrimPrefix(cleaned, "/")
+}
+
+func isPathInsideDir(candidate, dir string) bool {
+	cleanCandidate := filepath.Clean(candidate)
+	cleanDir := filepath.Clean(dir)
+	if cleanCandidate == cleanDir {
+		return true
+	}
+	return strings.HasPrefix(cleanCandidate, cleanDir+string(os.PathSeparator))
+}
+
+func serveStaticFile(w http.ResponseWriter, r *http.Request, filePath string) {
+	if contentType := mime.TypeByExtension(filepath.Ext(filePath)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	http.ServeFile(w, r, filePath)
 }
 
 // handleSessionChildren returns the direct child sessions of the given session.

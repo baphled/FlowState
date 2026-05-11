@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 
@@ -22,6 +24,27 @@ type ExtGateRequest struct {
 	When     string         `json:"when"`
 	Payload  []byte         `json:"payload"`
 	Policy   map[string]any `json:"policy,omitempty"`
+}
+
+// MarshalJSON preserves the semantic shape of Payload on the external
+// gate wire. Valid JSON payloads are emitted as JSON values; non-JSON
+// payloads fall back to plain strings rather than Go's default base64
+// encoding for []byte.
+func (r ExtGateRequest) MarshalJSON() ([]byte, error) {
+	type wireRequest struct {
+		Kind     string         `json:"kind"`
+		MemberID string         `json:"member_id"`
+		When     string         `json:"when"`
+		Payload  any            `json:"payload"`
+		Policy   map[string]any `json:"policy,omitempty"`
+	}
+	return json.Marshal(wireRequest{
+		Kind:     r.Kind,
+		MemberID: r.MemberID,
+		When:     r.When,
+		Payload:  wirePayloadValue(r.Payload),
+		Policy:   r.Policy,
+	})
 }
 
 // ExtGateResponse is the host-side output shape parsed from the gate's
@@ -223,6 +246,7 @@ func (s *subprocessRunner) Evaluate(ctx context.Context, req ExtGateRequest) (Ex
 	defer cancel()
 
 	req.Policy = mergePolicy(s.manifest.Policy, req.Policy)
+	logExtGateRequest(s.manifest.Name, req)
 
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -263,6 +287,86 @@ func mergePolicy(manifest, request map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func wirePayloadValue(payload []byte) any {
+	if payload == nil {
+		return nil
+	}
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return ""
+	}
+	if json.Valid(trimmed) {
+		var decoded any
+		if err := json.Unmarshal(trimmed, &decoded); err == nil {
+			return decoded
+		}
+	}
+	return string(payload)
+}
+
+func logExtGateRequest(name string, req ExtGateRequest) {
+	if !slog.Default().Enabled(context.Background(), slog.LevelDebug) {
+		return
+	}
+	slog.Debug("external gate request",
+		"gate", name,
+		"kind", req.Kind,
+		"member_id", req.MemberID,
+		"when", req.When,
+		"payload_bytes", len(req.Payload),
+		"payload_shape", payloadShape(req.Payload),
+		"payload_preview", payloadPreview(req.Payload),
+		"policy_keys", policyKeys(req.Policy),
+	)
+}
+
+func payloadShape(payload []byte) string {
+	if payload == nil {
+		return "nil"
+	}
+	trimmed := bytes.TrimSpace(payload)
+	if len(trimmed) == 0 {
+		return "empty"
+	}
+	if !json.Valid(trimmed) {
+		return "text"
+	}
+	switch trimmed[0] {
+	case '{':
+		return "json-object"
+	case '[':
+		return "json-array"
+	case '"':
+		return "json-string"
+	case 't', 'f':
+		return "json-bool"
+	case 'n':
+		return "json-null"
+	default:
+		return "json-number"
+	}
+}
+
+func payloadPreview(payload []byte) string {
+	const limit = 512
+	if len(payload) <= limit {
+		return string(payload)
+	}
+	return string(payload[:limit]) + "...(truncated)"
+}
+
+func policyKeys(policy map[string]any) []string {
+	if len(policy) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(policy))
+	for key := range policy {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 const stderrLimitBytes = 8 * 1024

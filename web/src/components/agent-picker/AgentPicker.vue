@@ -23,7 +23,19 @@ const currentAgent = computed(() =>
   chatStore.availableAgentDetails.find((a) => a.id === chatStore.agentId),
 )
 
-const label = computed(() => currentAgent.value?.name ?? 'Select agent')
+const currentSwarm = computed(() =>
+  chatStore.swarms.find((s) => s.id === chatStore.agentId),
+)
+
+const label = computed(() => {
+  if (currentAgent.value) {
+    return currentAgent.value.name
+  }
+  if (currentSwarm.value) {
+    return `@${currentSwarm.value.id}`
+  }
+  return 'Select agent'
+})
 
 const agentItems = computed<FuzzySearchItem[]>(() =>
   chatStore.availableAgentDetails.map((agent) => ({

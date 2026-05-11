@@ -375,13 +375,13 @@ web-test: ## Run Playwright E2E tests
 web-test-ui: ## Run Playwright tests with interactive UI
 	cd $(WEB_DIR) && npx playwright test --ui
 
-web-server: ## Start the Go web API server (cmd/flowstate-web)
-	go run ./cmd/flowstate-web
+web-server: ## Start the Go web API server on :8080
+	go run ./cmd/flowstate serve --port 8080
 
 web-start: ## Start both the Go API server and Vite dev server concurrently
 	@echo "Starting FlowState web stack (Go API on :8080, Vite on :5173)…"
 	@trap 'kill 0' INT; \
-	  go run ./cmd/flowstate-web & \
+	  go run ./cmd/flowstate serve --port 8080 & \
 	  cd $(WEB_DIR) && npm run dev; \
 	  wait
 

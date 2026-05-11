@@ -115,6 +115,39 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 
 			Expect(err).To(MatchError(cause))
 		})
+
+		It("enriches ext gate failures with the manifest gate and swarm context", func() {
+			swarm.ResetExtGateRegistryForTest()
+			DeferCleanup(swarm.ResetExtGateRegistryForTest)
+			Expect(swarm.RegisterExtGateFunc("blocker", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				return swarm.ExtGateResponse{Pass: false, Reason: "blocked"}, nil
+			})).To(Succeed())
+
+			multi := swarm.NewMultiRunner()
+			gate := swarm.GateSpec{
+				Name:   "post-researcher-relevance",
+				Kind:   "ext:blocker",
+				When:   swarm.LifecyclePostMember,
+				Target: "researcher",
+			}
+			args := swarm.GateArgs{
+				SwarmID:     "a-team",
+				ChainPrefix: "a-team",
+				MemberID:    "researcher",
+				CoordStore: newGateStore(map[string][]byte{
+					"a-team/researcher/output": []byte(`{"research":"ok"}`),
+				}),
+			}
+
+			err := multi.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.GateName).To(Equal("post-researcher-relevance"))
+			Expect(gateErr.SwarmID).To(Equal("a-team"))
+			Expect(gateErr.MemberID).To(Equal("researcher"))
+			Expect(gateErr.Reason).To(Equal("blocked"))
+		})
 	})
 
 	Describe("RegisterSchema / LookupSchema", func() {

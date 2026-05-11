@@ -58,7 +58,7 @@ func NewStreamHook(manager *Manager, bus *eventbus.EventBus, agentID string) *St
 //   - Calls manager.SetLast on success.
 func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
-		candidates := sh.manager.Candidates()
+		candidates := sh.candidatesForRequest(req)
 		if len(candidates) == 0 {
 			return nil, errors.New("no healthy providers available")
 		}
@@ -139,6 +139,19 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		}
 		return nil, fmt.Errorf("all providers failed: %w", lastErr)
 	}
+}
+
+func (sh *StreamHook) candidatesForRequest(req *provider.ChatRequest) []provider.ModelPreference {
+	if req == nil || len(req.FailoverCandidates) == 0 {
+		return sh.manager.Candidates()
+	}
+	out := make([]provider.ModelPreference, 0, len(req.FailoverCandidates))
+	for _, candidate := range req.FailoverCandidates {
+		if !sh.manager.Health().IsRateLimited(candidate.Provider, candidate.Model) {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
 // failedCandidate captures the provider/model pair of a candidate that was

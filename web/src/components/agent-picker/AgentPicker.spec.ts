@@ -3,7 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import AgentPicker from './AgentPicker.vue'
 import { useChatStore } from '@/stores/chatStore'
-import type { Agent } from '@/types'
+import type { Agent, Swarm } from '@/types'
 
 function makeAgents(): Agent[] {
   return [
@@ -16,6 +16,17 @@ function makeAgents(): Agent[] {
       id: 'coder',
       name: 'Coder Agent',
       description: 'Writes code',
+    },
+  ]
+}
+
+function makeSwarms(): Swarm[] {
+  return [
+    {
+      id: 'npr-onboarding',
+      description: 'NPR onboarding',
+      lead: 'npr-onboarding-lead',
+      members: ['npr-profile-synthesizer', 'npr-quality-reviewer'],
     },
   ]
 }
@@ -48,6 +59,18 @@ describe('AgentPicker', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="agent-picker"]').text()).toContain('Planner Agent')
+  })
+
+  it('renders the current swarm id when the active chat target is a swarm', async () => {
+    const store = useChatStore()
+    store.availableAgentDetails = makeAgents()
+    store.swarms = makeSwarms()
+    store.agentId = 'npr-onboarding'
+
+    const wrapper = mount(AgentPicker)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="agent-picker"]').text()).toContain('@npr-onboarding')
   })
 
   it('opens the fuzzy search modal on click', async () => {

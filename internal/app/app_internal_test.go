@@ -1,6 +1,8 @@
 package app
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -193,6 +195,32 @@ var _ = Describe("agentToProviderPreferences", func() {
 
 		Expect(result[0].Provider).To(Equal("zai"),
 			"first manifest preference must remain first — failover uses list order")
+	})
+})
+
+var _ = Describe("resolvedFailoverAttemptTimeout", func() {
+	It("defaults below the web stall watchdog", func() {
+		Expect(resolvedFailoverAttemptTimeout(&config.AppConfig{})).To(Equal(45 * time.Second))
+	})
+
+	It("uses plugins.failover.attempt_timeout when configured", func() {
+		cfg := &config.AppConfig{
+			Plugins: config.PluginsConfig{
+				Failover: config.FailoverConfig{AttemptTimeout: "20s"},
+			},
+		}
+
+		Expect(resolvedFailoverAttemptTimeout(cfg)).To(Equal(20 * time.Second))
+	})
+
+	It("falls back to the default when configured timeout is invalid", func() {
+		cfg := &config.AppConfig{
+			Plugins: config.PluginsConfig{
+				Failover: config.FailoverConfig{AttemptTimeout: "not-a-duration"},
+			},
+		}
+
+		Expect(resolvedFailoverAttemptTimeout(cfg)).To(Equal(45 * time.Second))
 	})
 })
 

@@ -238,6 +238,21 @@ func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 	return parseDurationField(c.BackgroundOutputTimeout, "background_output_timeout")
 }
 
+// ParsedFailoverAttemptTimeout returns the parsed per-provider failover
+// attempt timeout (see ParsedStreamTimeout for nil/invalid semantics).
+//
+// Returns:
+//   - The parsed failover attempt timeout, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+func (c *AppConfig) ParsedFailoverAttemptTimeout() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.Plugins.Failover.AttemptTimeout, "plugins.failover.attempt_timeout")
+}
+
 // SystemPromptBudgetEnv is the environment variable operators set to
 // override AppConfig.SystemPromptBudget without editing config.yaml.
 // The env wins over the YAML field (matching the existing OPENAI_API_KEY
@@ -596,9 +611,10 @@ type PluginsConfig struct {
 	Failover FailoverConfig `json:"failover" yaml:"failover,omitempty"`
 }
 
-// FailoverConfig holds configurable tier mappings for provider failover.
+// FailoverConfig holds configurable provider failover behavior.
 type FailoverConfig struct {
-	Tiers map[string]string `json:"tiers" yaml:"tiers,omitempty"`
+	Tiers          map[string]string `json:"tiers" yaml:"tiers,omitempty"`
+	AttemptTimeout string            `json:"attempt_timeout" yaml:"attempt_timeout,omitempty"`
 }
 
 // Dir returns the configuration directory path.
@@ -708,6 +724,7 @@ func DefaultConfig() *AppConfig {
 		},
 		Plugins: PluginsConfig{
 			Failover: FailoverConfig{
+				AttemptTimeout: "45s",
 				Tiers: map[string]string{
 					"claude-sonnet-4-20250514":   "tier-0",
 					"claude-3-5-sonnet-20241022": "tier-0",
@@ -992,6 +1009,9 @@ func applyDefaults(cfg *AppConfig) {
 
 	if len(cfg.Plugins.Failover.Tiers) == 0 {
 		cfg.Plugins.Failover.Tiers = defaults.Plugins.Failover.Tiers
+	}
+	if cfg.Plugins.Failover.AttemptTimeout == "" {
+		cfg.Plugins.Failover.AttemptTimeout = defaults.Plugins.Failover.AttemptTimeout
 	}
 
 	if len(cfg.ToolCapableModels) == 0 {

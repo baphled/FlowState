@@ -94,5 +94,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterStreamingErrorSteps(ctx)
 	RegisterAdultingMemorySteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
+	RegisterExternalGatePayloadSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)
 }

@@ -229,6 +229,14 @@ INFO  swarm schema dir absent         dir="/home/user/.config/flowstate/swarms"
 Watch for `WARN` entries mentioning swarm validation, gate registration, or
 coordination store issues at startup.
 
+For external gate payload debugging, set `log_level: debug` in
+`~/.config/flowstate/config.yaml`. Gate dispatch then records:
+
+- `swarm gate payload unavailable` when FlowState cannot find the target
+  member's coordination-store payload.
+- `external gate request` with `payload_bytes`, `payload_shape`, and a
+  bounded `payload_preview` immediately before the executable is invoked.
+
 ### Coordination Store Inspection
 
 The coordination store is a single JSON file at

@@ -44,6 +44,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -400,6 +401,7 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 //   - Reads at most one coord-store key per declared input (multi-key
 //     mode) or one key total (single-key mode). No writes.
 func gateInputFromArgs(gate GateSpec, args GateArgs) (GateInput, error) {
+	slog.Info("About to read Input Args")
 	in := GateInput{MemberID: args.MemberID}
 	if args.CoordStore == nil {
 		return in, nil
@@ -412,6 +414,18 @@ func gateInputFromArgs(gate GateSpec, args GateArgs) (GateInput, error) {
 	}
 	if payload, err := readMemberOutput(gate, args); err == nil {
 		in.Payload = payload
+	} else {
+		slog.Debug("swarm gate payload unavailable",
+			"gate", gate.Name,
+			"kind", gate.Kind,
+			"swarm", args.SwarmID,
+			"member", args.MemberID,
+			"when", gate.When,
+			"chain_prefix", args.ChainPrefix,
+			"target", gate.Target,
+			"output_key", gate.OutputKey,
+			"error", err,
+		)
 	}
 	return in, nil
 }
@@ -753,15 +767,42 @@ func RunGate(ctx context.Context, spec GateSpec, in GateInput) error {
 	case strings.HasPrefix(spec.Kind, gateKindBuiltinPrefix):
 		return runBuiltinGate(ctx, spec, in)
 	case strings.HasPrefix(spec.Kind, gateKindExtPrefix):
-		return DispatchExt(ctx, spec.Kind, ExtGateRequest{
+		err := DispatchExt(ctx, spec.Kind, ExtGateRequest{
 			MemberID: in.MemberID,
 			When:     spec.When,
 			Payload:  in.Payload,
 			Policy:   in.Policy,
 		})
+		return enrichGateError(err, spec, GateArgs{MemberID: in.MemberID})
 	default:
 		return fmt.Errorf("gate %q: unknown kind family %q", spec.Name, spec.Kind)
 	}
+}
+
+func enrichGateError(err error, gate GateSpec, args GateArgs) error {
+	if err == nil {
+		return nil
+	}
+	var gateErr *GateError
+	if !errors.As(err, &gateErr) || gateErr == nil {
+		return err
+	}
+	if gateErr.GateName == "" {
+		gateErr.GateName = gate.Name
+	}
+	if gateErr.GateKind == "" {
+		gateErr.GateKind = gate.Kind
+	}
+	if gateErr.When == "" {
+		gateErr.When = gate.When
+	}
+	if gateErr.SwarmID == "" {
+		gateErr.SwarmID = args.SwarmID
+	}
+	if gateErr.MemberID == "" {
+		gateErr.MemberID = args.MemberID
+	}
+	return err
 }
 
 // runBuiltinGate handles the builtin:result-schema family. It

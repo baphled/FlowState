@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NPRProfile schema v0.1",
+  "description": "FlowState schema for the Fsonealphabaseas src/lib/types/npr.ts NPRProfile contract.",
+  "type": "object",
+  "required": [
+    "userId",
+    "version",
+    "traits",
+    "goals",
+    "constraints",
+    "narrative",
+    "createdAt",
+    "updatedAt"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "userId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "NPR profile version, for example 1.1."
+    },
+    "traits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NPRTrait"
+      }
+    },
+    "goals": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Goal"
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Constraint"
+      }
+    },
+    "narrative": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Auto-generated summary."
+    },
+    "createdAt": {
+      "$ref": "#/$defs/DateString"
+    },
+    "updatedAt": {
+      "$ref": "#/$defs/DateString"
+    },
+    "revertedFrom": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "DateString": {
+      "type": "string",
+      "minLength": 1,
+      "description": "JSON representation of Date|string from the TypeScript type."
+    },
+    "ProvenanceSource": {
+      "type": "object",
+      "required": [
+        "label"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "href": {
+          "type": "string"
+        },
+        "nprId": {
+          "type": "string"
+        },
+        "timestamp": {
+          "$ref": "#/$defs/DateString"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      }
+    },
+    "AuditEntry": {
+      "type": "object",
+      "required": [
+        "action",
+        "timestamp"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "created",
+            "updated",
+            "challenged",
+            "accepted",
+            "rejected",
+            "reverted"
+          ]
+        },
+        "timestamp": {
+          "$ref": "#/$defs/DateString"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "changes": true,
+        "correction": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        }
+      }
+    },
+    "NPRTrait": {
+      "type": "object",
+      "required": [
+        "id",
+        "category",
+        "label",
+        "value",
+        "confidence",
+        "sources",
+        "extractedAt",
+        "updatedAt",
+        "version",
+        "auditTrail"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "cognitive",
+            "behavioral",
+            "environmental",
+            "goal"
+          ]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ProvenanceSource"
+          }
+        },
+        "extractedAt": {
+          "$ref": "#/$defs/DateString"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/DateString"
+        },
+        "version": {
+          "type": "number"
+        },
+        "auditTrail": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AuditEntry"
+          }
+        }
+      }
+    },
+    "Goal": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "description",
+        "priority",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "timeWindow": {
+          "type": "object",
+          "required": [
+            "start",
+            "end"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "start": {
+              "$ref": "#/$defs/DateString"
+            },
+            "end": {
+              "$ref": "#/$defs/DateString"
+            }
+          }
+        },
+        "energyBudget": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "in_progress",
+            "completed",
+            "blocked"
+          ]
+        },
+        "createdAt": {
+          "$ref": "#/$defs/DateString"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/DateString"
+        }
+      }
+    },
+    "Constraint": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "description",
+        "severity",
+        "createdAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "time",
+            "energy",
+            "resource",
+            "environmental"
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "workarounds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "createdAt": {
+          "$ref": "#/$defs/DateString"
+        }
+      }
+    }
+  }
+}

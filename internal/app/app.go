@@ -161,6 +161,8 @@ type App struct {
 	vaultHandler toolsvault.Handler
 }
 
+const defaultFailoverAttemptTimeout = 45 * time.Second
+
 // pluginRuntime groups the plugin wiring created during application startup.
 type pluginRuntime struct {
 	config          config.PluginsConfig
@@ -230,6 +232,12 @@ func New(cfg *config.AppConfig) (*App, error) {
 		log.Printf("info: swarms seeded to %q", swarmDir)
 	}
 
+	if err := SeedSchemasDir(EmbeddedSchemasFS(), cfg.SchemaDir); err != nil {
+		log.Printf("warning: seeding schemas to %q: %v", cfg.SchemaDir, err)
+	} else {
+		log.Printf("info: schemas seeded to %q", cfg.SchemaDir)
+	}
+
 	// Seed the bundled gate bundles into cfg.GatesDir so the swarm
 	// runner's `ext:*` kinds resolve to a registered runner on a fresh
 	// install. Without this seed step the user has to manually
@@ -273,7 +281,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 	vaultHandler := buildVaultQueryHandler(cfg, ollamaProvider)
 	runOrphanEventTmpScan(filepath.Join(cfg.DataDir, "sessions"))
 	pluginRT := setupPluginRuntime(cfg)
-	wireFailoverManager(pluginRT, providerRegistry)
+	wireFailoverManager(pluginRT, providerRegistry, cfg)
 	runtime, err := setupEngine(setupEngineParams{
 		cfg:                cfg,
 		providerRegistry:   providerRegistry,
@@ -740,7 +748,8 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel(), createCoordinationStore(params.cfg))
-	sessionMgr := session.NewManager(streamer)
+	sessionStreamer := orchestrator.NewMentionRoutingStreamer(eng, params.agentRegistry, params.swarmRegistry, streamer)
+	sessionMgr := session.NewManager(sessionStreamer)
 	sessionMgr.SetSessionsDir(sessionsDirFromCfg(params.cfg))
 	// Stamp the configured embedding model on every newly-created
 	// session so a Recall silent-zero failure (empty results from a
@@ -769,6 +778,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		api.WithMetricsHandler(promhttp.HandlerFor(traced.metrics, promhttp.HandlerOpts{})),
 		api.WithEventBus(eng.EventBus()),
 		api.WithModelLister(modelListerFromRegistry(params.providerRegistry)),
+		api.WithWebDistDir(resolveWebDistDir()),
 		// Phase 3 — TUI-cadence parity. The engine implements the
 		// ContextUsageProvider interface via ContextUsageJSONForSession;
 		// the api server calls it on session-load (SSE-connect) and
@@ -1871,7 +1881,7 @@ func (a *App) createDelegateEngine(
 	// Engines (May 2026)".
 	var childFailoverMgr *failover.Manager
 	if a.plugins != nil && a.plugins.healthManager != nil {
-		childFailoverMgr = failover.NewManager(a.providerRegistry, a.plugins.healthManager, 5*time.Minute)
+		childFailoverMgr = failover.NewManager(a.providerRegistry, a.plugins.healthManager, resolvedFailoverAttemptTimeout(a.Config))
 		if len(manifest.PreferredModels) > 0 {
 			prefs := agentToProviderPreferences(manifest.PreferredModels)
 			// For permissive/empty policy, append parent preferences as fallback so
@@ -2845,11 +2855,18 @@ func buildHookChain(params hookChainConfig) *hook.Chain {
 //
 // Side effects:
 //   - Sets rt.failoverManager when rt is non-nil.
-func wireFailoverManager(rt *pluginRuntime, providerRegistry *provider.Registry) {
+func wireFailoverManager(rt *pluginRuntime, providerRegistry *provider.Registry, cfg *config.AppConfig) {
 	if rt == nil || rt.healthManager == nil {
 		return
 	}
-	rt.failoverManager = failover.NewManager(providerRegistry, rt.healthManager, 5*time.Minute)
+	rt.failoverManager = failover.NewManager(providerRegistry, rt.healthManager, resolvedFailoverAttemptTimeout(cfg))
+}
+
+func resolvedFailoverAttemptTimeout(cfg *config.AppConfig) time.Duration {
+	if d := cfg.ParsedFailoverAttemptTimeout(); d > 0 {
+		return d
+	}
+	return defaultFailoverAttemptTimeout
 }
 
 // pluginFailoverManager returns the failover manager from the plugin runtime, or nil
@@ -4064,6 +4081,28 @@ func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agen
 func resolveSwarmDir(cfg *config.AppConfig) string {
 	_ = cfg // reserved for a future cfg.SwarmDir override field.
 	return filepath.Join(config.Dir(), "swarms")
+}
+
+const webDistDirEnv = "FLOWSTATE_WEB_DIST_DIR"
+
+// resolveWebDistDir returns the Vue production build directory used by
+// the API server's same-origin SPA handler. Render/Docker deployments
+// set FLOWSTATE_WEB_DIST_DIR explicitly; local source-tree runs fall
+// back to web/dist when it exists.
+func resolveWebDistDir() string {
+	if dir := strings.TrimSpace(os.Getenv(webDistDirEnv)); dir != "" {
+		return dir
+	}
+	candidates := []string{"web/dist"}
+	if exePath, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exePath), "web", "dist"))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(filepath.Join(candidate, "index.html")); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "web/dist"
 }
 
 // swarmAgentRegistryAdapter wraps an *agent.Registry so the swarm

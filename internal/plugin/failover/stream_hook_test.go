@@ -225,6 +225,37 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		Context("when request-level failover candidates are supplied", func() {
+			It("does not fall through to global fallback providers outside the request candidates", func() {
+				zaiCalled := false
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(errors.New("anthropic unavailable")),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "zai",
+					streamFn: func(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						zaiCalled = true
+						return successStreamFn(provider.StreamChunk{Content: "should not run", Done: true})(ctx, req)
+					},
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+					{Provider: "zai", Model: "glm-4.6"},
+				})
+
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{
+					FailoverCandidates: []provider.ModelPreference{
+						{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+					},
+				})
+
+				Expect(err).To(HaveOccurred())
+				Expect(zaiCalled).To(BeFalse())
+			})
+		})
+
 		Context("when first provider returns async error and second succeeds", func() {
 			BeforeEach(func() {
 				registry.Register(&mockStreamProvider{

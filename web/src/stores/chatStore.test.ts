@@ -2349,6 +2349,7 @@ describe('chatStore - watchdog trip recovers via reconcile (stall recovery)', ()
       // backend state, not the frozen partial.
       const assistant = store.messages.find((m) => m.id === 'srv-a1')
       expect(assistant?.content).toBe('completed despite stall')
+      expect(store.error).toBeNull()
 
       // Tidy.
       resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })

@@ -2,6 +2,7 @@ package swarm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"runtime"
@@ -41,6 +42,36 @@ var _ = Describe("ExtGateRunner registry", func() {
 		})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resp.Pass).To(BeTrue())
+	})
+
+	It("marshals JSON payloads as JSON values instead of base64 byte strings", func() {
+		body, err := json.Marshal(swarm.ExtGateRequest{
+			Kind:     "relevance-gate",
+			MemberID: "researcher",
+			When:     "post-member",
+			Payload:  []byte(`{"task_plan":"kubernetes autoscaling","research":"autoscaling research"}`),
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		var decoded map[string]any
+		Expect(json.Unmarshal(body, &decoded)).To(Succeed())
+		Expect(decoded["payload"]).To(Equal(map[string]any{
+			"task_plan": "kubernetes autoscaling",
+			"research":  "autoscaling research",
+		}))
+		Expect(string(body)).NotTo(ContainSubstring(`eyJ0YXNrX3BsYW4i`))
+	})
+
+	It("marshals plain text payloads as strings", func() {
+		body, err := json.Marshal(swarm.ExtGateRequest{
+			Kind:     "text-gate",
+			MemberID: "writer",
+			When:     "post-member",
+			Payload:  []byte("plain text output"),
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(body)).To(ContainSubstring(`"payload":"plain text output"`))
 	})
 
 	It("DispatchExt routes pass:false to a *GateError with Reason", func() {
@@ -129,6 +160,7 @@ var _ = Describe("Gate runner — ext: routing", func() {
 		Expect(err).To(HaveOccurred())
 		var gateErr *swarm.GateError
 		Expect(errors.As(err, &gateErr)).To(BeTrue())
+		Expect(gateErr.GateName).To(Equal("g"))
 		Expect(gateErr.Reason).To(Equal("blocked"))
 	})
 

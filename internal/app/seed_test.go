@@ -138,6 +138,49 @@ var _ = Describe("SeedAgentsDir", func() {
 	})
 })
 
+var _ = Describe("SeedSchemasDir", func() {
+	var (
+		destDir string
+		srcFS   fs.FS
+	)
+
+	BeforeEach(func() {
+		var err error
+		destDir, err = os.MkdirTemp("", "schema-seed-test")
+		Expect(err).NotTo(HaveOccurred())
+
+		srcFS = fstest.MapFS{
+			"schemas/example-v1.json": &fstest.MapFile{Data: []byte(`{"type":"object"}`)},
+		}
+	})
+
+	AfterEach(func() {
+		os.RemoveAll(destDir)
+	})
+
+	It("copies JSON schema files from the embedded schemas directory", func() {
+		schemasDest := filepath.Join(destDir, "schemas")
+
+		Expect(app.SeedSchemasDir(srcFS, schemasDest)).To(Succeed())
+
+		content, err := os.ReadFile(filepath.Join(schemasDest, "example-v1.json"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(content)).To(Equal(`{"type":"object"}`))
+	})
+
+	It("preserves an operator schema override", func() {
+		schemasDest := filepath.Join(destDir, "schemas")
+		Expect(os.MkdirAll(schemasDest, 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(schemasDest, "example-v1.json"), []byte(`{"type":"array"}`), 0o600)).To(Succeed())
+
+		Expect(app.SeedSchemasDir(srcFS, schemasDest)).To(Succeed())
+
+		content, err := os.ReadFile(filepath.Join(schemasDest, "example-v1.json"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(content)).To(Equal(`{"type":"array"}`))
+	})
+})
+
 var _ = Describe("RefreshAgentManifests", func() {
 	var (
 		destDir string

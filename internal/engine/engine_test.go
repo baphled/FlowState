@@ -689,6 +689,30 @@ var _ = Describe("Engine", func() {
 			Expect(chatProvider.capturedRequest.Tools[0].Schema.Required).To(ContainElement("query"))
 		})
 
+		It("constrains failover candidates to preferred models for strict manifests", func() {
+			strictManifest := manifest
+			strictManifest.ModelPolicy = agent.ModelPolicyStrict
+			strictManifest.PreferredModels = []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     strictManifest,
+			})
+
+			chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+			Expect(err).NotTo(HaveOccurred())
+			for v := range chunks {
+				_ = v
+			}
+
+			Expect(chatProvider.capturedRequest).NotTo(BeNil())
+			Expect(chatProvider.capturedRequest.FailoverCandidates).To(Equal([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			}))
+		})
+
 		It("respects context cancellation", func() {
 			slowProvider := &mockProvider{
 				name: "slow-provider",

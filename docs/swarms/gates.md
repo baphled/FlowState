@@ -40,19 +40,24 @@ When FlowState invokes a gate, it sends a JSON object via stdin:
 
 ```json
 {
-  "kind": "ci-gate",
-  "member_id": "engineering-implementation",
+  "kind": "relevance-gate",
+  "member_id": "researcher",
   "when": "post-member",
-  "payload": "{\"swarm_id\":\"engineering\",\"chain_id\":\"abc123\",\"output_key\":\"output\",\"member_output\":\"...\"}",
+  "payload": {
+    "task_plan": "kubernetes deployment autoscaling",
+    "research": "Kubernetes horizontal pod autoscaling scales deployment replicas..."
+  },
   "policy": {
-    "test_cmd": "make test"
+    "threshold": 0.4
   }
 }
 ```
 
 Key details:
 - `member_id` and `when` are top-level fields (not nested inside `payload`)
-- `payload` is a raw JSON-encoded byte string containing the member output and context
+- `payload` is read from the target member's coordination-store output key
+- `payload` preserves the stored value's JSON shape when it is valid JSON
+- non-JSON member output is forwarded as a plain string
 - `policy` is merged from the gate's `manifest.yml` `policy:` block with per-request overrides
 
 ## Gate Response Format
@@ -203,8 +208,8 @@ TEST_CMD="go test ./internal/..." flowstate run --agent engineering "fix the par
 ## Testing Gates Locally
 
 Gates can be tested directly without running a full swarm. When piping
-JSON manually, `payload` is a JSON object (FlowState sends it as a
-JSON-encoded string at runtime; reference gates handle both forms):
+JSON manually, `payload` may be the same JSON object FlowState sends at
+runtime:
 
 ```bash
 echo '{"kind":"ci-gate","policy":{"test_cmd":"echo ok"}}' \
@@ -230,6 +235,22 @@ Expected output:
 ```json
 {"pass": false, "reason": "research relevance score 0.00 below threshold 0.40", "missing_topics": [...], "redirect": "Research should cover: ..."}
 ```
+
+## Debugging Gate Payloads
+
+Set `log_level: debug` in `~/.config/flowstate/config.yaml`, then reproduce
+the swarm run and inspect `~/.local/share/flowstate/flowstate.log`.
+
+External gate dispatch writes compact diagnostics before invoking the gate:
+
+```text
+level=DEBUG msg="swarm gate payload unavailable" gate=post-researcher-relevance kind=ext:relevance-gate swarm=a-team member=researcher chain_prefix=a-team target=researcher output_key="" error="no member output found at [a-team/researcher/output]"
+level=DEBUG msg="external gate request" gate=relevance-gate kind=relevance-gate member_id=researcher when=post-member payload_bytes=126 payload_shape=json-object payload_preview="{...}" policy_keys=[threshold]
+```
+
+Those two lines answer the common questions separately: whether FlowState
+found the coordination-store payload, and what shape the gate executable
+received on stdin.
 
 ## Built-in Gate Reference
 

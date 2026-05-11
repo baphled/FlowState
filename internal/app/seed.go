@@ -433,8 +433,28 @@ func SeedSwarmsDir(srcFS fs.FS, destDir string) error {
 	return seedSubdir(srcFS, "swarms", ".yml", destDir)
 }
 
-// seedSubdir is the shared implementation behind SeedAgentsDir and
-// SeedSwarmsDir. Pulled out so the two callers stay byte-equivalent
+// SeedSchemasDir copies all *.json files from the source filesystem's
+// "schemas" subdirectory into destDir. Existing schema files are
+// preserved so operator overrides in XDG_CONFIG win over bundled
+// defaults.
+//
+// Expected:
+//   - srcFS is a valid fs.FS containing a "schemas" subdirectory with .json files.
+//   - destDir is the directory where JSON Schemas should be copied.
+//
+// Returns:
+//   - nil on success.
+//   - An error if the source has no schemas directory or file operations fail.
+//
+// Side effects:
+//   - Creates destDir when missing.
+//   - Copies missing bundled schema files into destDir.
+func SeedSchemasDir(srcFS fs.FS, destDir string) error {
+	return seedSubdir(srcFS, "schemas", ".json", destDir)
+}
+
+// seedSubdir is the shared implementation behind SeedAgentsDir,
+// SeedSwarmsDir, and SeedSchemasDir. Pulled out so the callers stay byte-equivalent
 // in their semantics: skip-on-existing, log-friendly error wrapping,
 // and matching directory-creation behaviour.
 //

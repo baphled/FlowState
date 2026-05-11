@@ -32,16 +32,29 @@ var _ = Describe("AppConfig timeout helpers", func() {
 		Expect(cfg.ParsedBackgroundOutputTimeout()).To(Equal(5 * time.Minute))
 	})
 
+	It("ParsedFailoverAttemptTimeout parses a valid duration string", func() {
+		cfg := &config.AppConfig{
+			Plugins: config.PluginsConfig{
+				Failover: config.FailoverConfig{AttemptTimeout: "45s"},
+			},
+		}
+		Expect(cfg.ParsedFailoverAttemptTimeout()).To(Equal(45 * time.Second))
+	})
+
 	It("returns zero when the field is empty", func() {
 		cfg := &config.AppConfig{}
 		Expect(cfg.ParsedStreamTimeout()).To(BeZero())
 		Expect(cfg.ParsedToolTimeout()).To(BeZero())
 		Expect(cfg.ParsedBackgroundOutputTimeout()).To(BeZero())
+		Expect(cfg.ParsedFailoverAttemptTimeout()).To(BeZero())
 	})
 
 	It("returns zero (and does not panic) for an invalid duration string", func() {
 		cfg := &config.AppConfig{StreamTimeout: "not-a-duration"}
 		Expect(cfg.ParsedStreamTimeout()).To(BeZero())
+
+		cfg.Plugins.Failover.AttemptTimeout = "not-a-duration"
+		Expect(cfg.ParsedFailoverAttemptTimeout()).To(BeZero())
 	})
 
 	It("returns zero on a nil receiver", func() {
@@ -49,5 +62,6 @@ var _ = Describe("AppConfig timeout helpers", func() {
 		Expect(cfg.ParsedStreamTimeout()).To(BeZero())
 		Expect(cfg.ParsedToolTimeout()).To(BeZero())
 		Expect(cfg.ParsedBackgroundOutputTimeout()).To(BeZero())
+		Expect(cfg.ParsedFailoverAttemptTimeout()).To(BeZero())
 	})
 })

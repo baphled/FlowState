@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
@@ -505,6 +508,64 @@ var _ = Describe("Server", func() {
 
 			Expect(recorder.Code).To(Equal(http.StatusFound))
 			Expect(recorder.Header().Get("Location")).To(Equal("/chat"))
+		})
+
+		Context("when a production web build directory is configured", func() {
+			var webDistDir string
+
+			BeforeEach(func() {
+				var err error
+				webDistDir, err = os.MkdirTemp("", "flowstate-web-dist-*")
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(func() { _ = os.RemoveAll(webDistDir) })
+
+				Expect(os.MkdirAll(filepath.Join(webDistDir, "assets"), 0o755)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(webDistDir, "index.html"), []byte("<!doctype html><div id=\"app\"></div>"), 0o644)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(webDistDir, "assets", "app.js"), []byte("console.log('flowstate')"), 0o644)).To(Succeed())
+
+				server = api.NewServer(streamer, registry, disc, skills, api.WithWebDistDir(webDistDir))
+			})
+
+			It("serves index.html at the root", func() {
+				req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				Expect(recorder.Body.String()).To(ContainSubstring(`<div id="app"></div>`))
+				Expect(recorder.Header().Get("Content-Security-Policy")).To(ContainSubstring("style-src 'self' 'unsafe-inline'"))
+			})
+
+			It("falls back to index.html for extensionless SPA routes", func() {
+				req := httptest.NewRequest(http.MethodGet, "/chat", http.NoBody)
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				Expect(recorder.Body.String()).To(ContainSubstring(`<div id="app"></div>`))
+			})
+
+			It("serves built static assets directly", func() {
+				req := httptest.NewRequest(http.MethodGet, "/assets/app.js", http.NoBody)
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				Expect(recorder.Body.String()).To(Equal("console.log('flowstate')"))
+			})
+
+			It("does not rewrite missing asset files to the SPA", func() {
+				req := httptest.NewRequest(http.MethodGet, "/assets/missing.js", http.NoBody)
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusNotFound))
+				Expect(recorder.Body.String()).NotTo(ContainSubstring(`<div id="app"></div>`))
+			})
+
+			It("does not rewrite unknown API paths to the SPA", func() {
+				req := httptest.NewRequest(http.MethodGet, "/api/unknown", http.NoBody)
+				server.Handler().ServeHTTP(recorder, req)
+
+				Expect(recorder.Code).To(Equal(http.StatusNotFound))
+				Expect(recorder.Body.String()).NotTo(ContainSubstring(`<div id="app"></div>`))
+			})
 		})
 	})
 })
@@ -2317,6 +2378,15 @@ var _ = Describe("GET /health", func() {
 		Expect(json.Unmarshal(w.Body.Bytes(), &resp)).To(Succeed())
 		Expect(resp["status"]).To(Equal("ok"))
 	})
+
+	It("also returns 200 on /api/health for the Vite dev proxy", func() {
+		req := httptest.NewRequest("GET", "/api/health", http.NoBody)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusOK))
+		Expect(w.Header().Get("Content-Type")).To(Equal("application/json"))
+	})
 })
 
 var _ = Describe("GET /metrics", func() {
@@ -3363,6 +3433,7 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 		registry = agent.NewRegistry()
 		registry.Register(&agent.Manifest{ID: "lead-one", Name: "Lead One"})
 		registry.Register(&agent.Manifest{ID: "lead-two", Name: "Lead Two"})
+		registry.Register(&agent.Manifest{ID: "coordinator", Name: "Coordinator"})
 		registry.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
 
 		swarmReg = swarm.NewRegistry()
@@ -3497,6 +3568,37 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 			Expect(streamer.capturedAgentID).To(Equal("default-assistant"),
 				"agent @-mentions don't redirect — only swarm mentions do (orchestrator parity contract)")
 			Expect(engStub.installedContext).To(BeNil())
+		})
+	})
+
+	Describe("POST /api/v1/sessions/{id}/messages with @<swarm-id> in the body", func() {
+		It("routes through the mentioned swarm and pins the session to that swarm", func() {
+			sessionStreamer := orchestrator.NewMentionRoutingStreamer(engStub, registry, swarmReg, streamer)
+			mgr := session.NewManager(sessionStreamer)
+			sessionServer := api.NewServer(streamer, registry, nil, nil,
+				api.WithSwarmRegistry(swarmReg),
+				api.WithDispatchEngine(engStub),
+				api.WithSessionManager(mgr),
+			)
+			sess, err := mgr.CreateSession("coordinator")
+			Expect(err).NotTo(HaveOccurred())
+
+			body := `{"content":"@alpha-team please run this from the alpha swarm"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			sessionServer.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+			Expect(streamer.capturedAgentID).To(Equal("lead-one"),
+				"persistent web sessions must honour @swarm mentions instead of keeping the prior coordinator agent")
+			Expect(engStub.installedContext).NotTo(BeNil())
+			Expect(engStub.installedContext.SwarmID).To(Equal("alpha-team"))
+			Expect(engStub.installedContext.LeadAgent).To(Equal("lead-one"))
+
+			stored, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(stored.CurrentAgentID).To(Equal("alpha-team"),
+				"after a swarm mention, future turns in the same session should keep using the swarm")
 		})
 	})
 })

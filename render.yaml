@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: flowstate-npr-onboarding
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: FLOWSTATE_WEB_DIST_DIR
+        value: /app/web/dist
+      - key: XDG_CONFIG_HOME
+        value: /tmp/.config
+      - key: XDG_DATA_HOME
+        value: /tmp/.local/share
+      - key: ANTHROPIC_API_KEY
+        sync: false
