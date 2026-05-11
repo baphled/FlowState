@@ -38,8 +38,6 @@
 //   - delegation.completed
 //   - delegation.failed
 //   - recall.embedding.stored
-//   - recall.searched
-//   - recall.chain.searched
 //   - recall.summarized
 //   - context.compacted
 //   - discovery.published
@@ -77,9 +75,16 @@ const (
 	EventDelegationStarted       = "delegation.started"
 	EventDelegationCompleted     = "delegation.completed"
 	EventDelegationFailed        = "delegation.failed"
-	EventRecallEmbeddingStored   = "recall.embedding.stored"
-	EventRecallSearched          = "recall.searched"
-	EventRecallChainSearched     = "recall.chain.searched"
+	EventRecallEmbeddingStored = "recall.embedding.stored"
+	// EventRecallSearched and EventRecallChainSearched (May 2026)
+	// were removed by Bug Hunt #63 (May 11 2026) — both fired on
+	// every tool call (high frequency) with zero non-test
+	// subscribers. The engine's tool.execute.result event already
+	// carries the tool-level latency / args / result count for
+	// search_context and chain_search invocations and IS subscribed
+	// by eventlogger, so the recall-specific topics were pure log
+	// volume with no signal not already covered.
+	//
 	// EventRecallChainSearchFailed (M9, May 2026) was removed by F4
 	// (Bug Hunt Findings May 11 2026) — the dedicated bus event had
 	// zero non-test subscribers anywhere in the tree. The typed

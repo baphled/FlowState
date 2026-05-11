@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/tool"
@@ -254,6 +256,80 @@ var _ = Describe("ContextTools", func() {
 			Expect(tools.Search).NotTo(BeNil())
 			Expect(tools.GetMsgs).NotTo(BeNil())
 			Expect(tools.Summarize).NotTo(BeNil())
+		})
+	})
+
+	// Bug Hunt #63 (May 11 2026): retire dead-surface-area
+	// high-frequency events. recall.searched fired on every
+	// SearchContextTool.Execute but had zero non-test subscribers —
+	// tool-level latency / args / result count are already captured
+	// by the engine's tool.execute.result event. Adding the topic
+	// back into eventlogger would produce log bloat with no signal
+	// not already covered by tool.execute.result.
+	Describe("retired bus topics (Bug Hunt #63)", func() {
+		It("SearchContextTool does not publish recall.searched on success", func() {
+			bus := eventbus.NewEventBus()
+			var (
+				mu      sync.Mutex
+				emitted []string
+			)
+			bus.Subscribe("recall.searched", func(_ any) {
+				mu.Lock()
+				defer mu.Unlock()
+				emitted = append(emitted, "recall.searched")
+			})
+
+			mockProv := &mockProvider{embedResult: []float64{0.1, 0.2, 0.3}}
+			searchTool := recall.NewSearchContextTool(store, mockProv, 5, bus)
+			store.Append(provider.Message{Role: "user", Content: "Hello world"})
+			msgID := store.GetMessageID(0)
+			store.StoreEmbedding(msgID, []float64{0.1, 0.2, 0.3}, "test-model", 3)
+
+			_, err := searchTool.Execute(context.Background(), tool.Input{
+				Arguments: map[string]interface{}{"query": "hello"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(emitted).To(BeEmpty(),
+				"Bug Hunt #63: recall.searched is retired — tool.execute.result is the canonical observability signal for search activity")
+		})
+
+		It("SummarizeContextTool still publishes recall.summarized on success (keep)", func() {
+			// Counter-pin: this event is KEPT (low-frequency, per
+			// compaction). The retire guard above must not
+			// over-rotate and accidentally retire it.
+			bus := eventbus.NewEventBus()
+			var (
+				mu      sync.Mutex
+				emitted []string
+			)
+			bus.Subscribe("recall.summarized", func(_ any) {
+				mu.Lock()
+				defer mu.Unlock()
+				emitted = append(emitted, "recall.summarized")
+			})
+
+			mockProv := &mockProvider{
+				chatResult: provider.ChatResponse{
+					Message: provider.Message{Role: "assistant", Content: "Summary"},
+				},
+			}
+			mockCounter := &mockTokenCounter{countResult: 10}
+			summarizeTool := recall.NewSummarizeContextTool(store, mockProv, 2, mockCounter, "test-model")
+			summarizeTool.SetEventBus(bus)
+			store.Append(provider.Message{Role: "user", Content: "Hello"})
+
+			_, err := summarizeTool.Execute(context.Background(), tool.Input{
+				Arguments: map[string]interface{}{},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(emitted).To(ContainElement("recall.summarized"),
+				"Bug Hunt #63 keep-decision: recall.summarized must continue firing on per-compaction success")
 		})
 	})
 })

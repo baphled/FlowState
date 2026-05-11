@@ -9,7 +9,6 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
-	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
@@ -39,25 +38,34 @@ func (f *failingSearchChainStore) GetByAgent(_ string, last int) ([]provider.Mes
 }
 func (f *failingSearchChainStore) ChainID() string { return "test-chain" }
 
-// captureBus subscribes to the success recall chain search event and
-// installs a wildcard recorder that catches every published topic so a
-// single spec can assert what fired AND assert that the F4-removed
-// `recall.chain.search.failed` topic stays unpublished.
+// captureBus subscribes to the (now-retired) recall chain search
+// topic and installs a recorder that catches the F4-removed
+// `recall.chain.search.failed` topic plus the Bug Hunt #63-removed
+// `recall.chain.searched` topic. Both lists MUST stay empty.
+//
+// Bug Hunt #63 (May 11 2026): recall.chain.searched was retired
+// because it fired on every chain search (high frequency, tool-level
+// latency already covered by tool.execute.result). The bus event had
+// zero non-test subscribers after the eventlogger gate-cleanup. The
+// success-side publish was removed entirely; subscribers must observe
+// chain-search activity via tool.execute.result instead.
 type captureBus struct {
 	bus      *eventbus.EventBus
 	mu       sync.Mutex
-	searched []events.RecallChainSearchEventData
-	failed   []string // captured topic strings for the (removed) failure event — must stay empty (F4)
+	searched []string // captured topic strings for the (Bug Hunt #63-removed) success event — must stay empty
+	failed   []string // captured topic strings for the (F4-removed) failure event — must stay empty
 }
 
 func newCaptureBus() *captureBus {
 	c := &captureBus{bus: eventbus.NewEventBus()}
-	c.bus.Subscribe(events.EventRecallChainSearched, func(ev any) {
-		if e, ok := ev.(*events.RecallChainSearchEvent); ok {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			c.searched = append(c.searched, e.Data)
-		}
+	// Bug Hunt #63: subscribe to the legacy topic string directly so
+	// the regression assertion survives the removal of the typed
+	// event constant + struct. If anything re-publishes to
+	// "recall.chain.searched", this recorder captures it.
+	c.bus.Subscribe("recall.chain.searched", func(_ any) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.searched = append(c.searched, "recall.chain.searched")
 	})
 	// F4: subscribe to the legacy topic string directly so the
 	// regression assertion survives the removal of the typed event
@@ -70,6 +78,14 @@ func newCaptureBus() *captureBus {
 		c.failed = append(c.failed, "recall.chain.search.failed")
 	})
 	return c
+}
+
+func (c *captureBus) snapshotSearched() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.searched))
+	copy(out, c.searched)
+	return out
 }
 
 func (c *captureBus) snapshotFailed() []string {
@@ -210,6 +226,33 @@ var _ = Describe("ChainSearchTool — M9 failure discrimination", func() {
 			})
 
 			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	// Bug Hunt #63 (May 11 2026): retire dead-surface-area success
+	// event. recall.chain.searched fired on every chain search but
+	// had zero non-test subscribers — tool-level latency / args /
+	// result count are already captured by the engine's
+	// tool.execute.result event which IS subscribed. Re-publishing
+	// here would re-introduce log-bloat-without-signal dead surface.
+	Context("when chain search succeeds (Bug Hunt #63 retire guard)", func() {
+		It("does not publish a recall.chain.searched bus event", func() {
+			cb := newCaptureBus()
+			store := &failingSearchChainStore{
+				searchErr: nil,
+				recent:    []provider.Message{{Role: "assistant", Content: "recent msg"}},
+			}
+			t := recall.NewChainSearchTool(store, nil, nil, cb.bus)
+
+			_, err := t.Execute(context.Background(), tool.Input{
+				Name:      "chain_search",
+				Arguments: map[string]any{"query": "needle", "agent_id": "agent-a"},
+			})
+
+			Expect(err).NotTo(HaveOccurred(),
+				"zero-result is the historical fallback path — must keep returning nil error")
+			Expect(cb.snapshotSearched()).To(BeEmpty(),
+				"Bug Hunt #63: recall.chain.searched is retired — tool.execute.result is the canonical observability signal for chain search activity")
 		})
 	})
 })

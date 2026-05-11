@@ -1362,79 +1362,16 @@ func NewRecallEmbeddingStoredEvent(data RecallEmbeddingStoredEventData, ts ...ti
 	}
 }
 
-// RecallSearchEventData describes the data for a recall search event.
-type RecallSearchEventData struct {
-	SessionID string
-	Query     string
-	Results   int
-	LatencyMS int64
-}
-
-// RecallSearchEvent represents an event when a recall search is performed.
-type RecallSearchEvent struct {
-	BaseEvent
-	Data RecallSearchEventData
-}
-
-// NewRecallSearchEvent creates a new RecallSearchEvent.
+// RecallSearchEvent and RecallChainSearchEvent (May 2026) were
+// removed by Bug Hunt #63 (May 11 2026). Both event types and their
+// `EventRecallSearched` / `EventRecallChainSearched` constants had
+// zero non-test subscribers anywhere in the tree. The engine's
+// existing `tool.execute.result` event already carries the
+// tool-level latency / args / result count for the search_context
+// and chain_search tool invocations that previously emitted these
+// recall-specific topics, so the dedicated events were pure log
+// volume.
 //
-// Expected:
-//   - data contains the recall search metadata.
-//   - ts is optional and, when provided, uses the first non-zero timestamp.
-//
-// Returns:
-//   - A RecallSearchEvent configured with the supplied data.
-//
-// Side effects:
-//   - Uses the current time when no timestamp override is supplied.
-func NewRecallSearchEvent(data RecallSearchEventData, ts ...time.Time) *RecallSearchEvent {
-	t := time.Now()
-	if len(ts) > 0 && !ts[0].IsZero() {
-		t = ts[0]
-	}
-	return &RecallSearchEvent{
-		BaseEvent: BaseEvent{eventType: EventRecallSearched, timestamp: t},
-		Data:      data,
-	}
-}
-
-// RecallChainSearchEventData describes the data for a recall chain search event.
-type RecallChainSearchEventData struct {
-	SessionID string
-	AgentID   string
-	Query     string
-	Results   int
-	LatencyMS int64
-}
-
-// RecallChainSearchEvent represents an event when a recall chain search is performed.
-type RecallChainSearchEvent struct {
-	BaseEvent
-	Data RecallChainSearchEventData
-}
-
-// NewRecallChainSearchEvent creates a new RecallChainSearchEvent.
-//
-// Expected:
-//   - data contains the chain search metadata to include in the event.
-//   - ts is optional and, when provided, uses the first non-zero timestamp.
-//
-// Returns:
-//   - A RecallChainSearchEvent configured with the supplied data.
-//
-// Side effects:
-//   - Uses the current time when no timestamp override is supplied.
-func NewRecallChainSearchEvent(data RecallChainSearchEventData, ts ...time.Time) *RecallChainSearchEvent {
-	t := time.Now()
-	if len(ts) > 0 && !ts[0].IsZero() {
-		t = ts[0]
-	}
-	return &RecallChainSearchEvent{
-		BaseEvent: BaseEvent{eventType: EventRecallChainSearched, timestamp: t},
-		Data:      data,
-	}
-}
-
 // RecallChainSearchFailedEvent (M9, May 2026) was removed by F4
 // (Bug Hunt Findings May 11 2026). The dedicated event type and
 // `EventRecallChainSearchFailed` constant had zero non-test
@@ -1639,9 +1576,9 @@ var (
 	_ Event = (*ToolExecuteResultEvent)(nil)
 	_ Event = (*ProviderRequestRetryEvent)(nil)
 	_ Event = (*RecallEmbeddingStoredEvent)(nil)
-	_ Event = (*RecallSearchEvent)(nil)
-	_ Event = (*RecallChainSearchEvent)(nil)
-	// RecallChainSearchFailedEvent removed by F4 (Bug Hunt May 11 2026).
+	// RecallSearchEvent + RecallChainSearchEvent removed by Bug Hunt
+	// #63 (May 11 2026). RecallChainSearchFailedEvent removed by F4
+	// (Bug Hunt May 11 2026).
 	_ Event = (*RecallSummarizedEvent)(nil)
 	_ Event = (*ContextCompactedEvent)(nil)
 	_ Event = (*DiscoveryPublishedEvent)(nil)
