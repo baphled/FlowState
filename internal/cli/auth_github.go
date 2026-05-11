@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/baphled/flowstate/internal/app"
+	"github.com/baphled/flowstate/internal/atomicwrite"
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/spf13/cobra"
@@ -239,5 +239,5 @@ func writeConfig(cfg *config.AppConfig) error {
 		return fmt.Errorf("marshalling config: %w", err)
 	}
 	path := filepath.Join(config.Dir(), "config.yaml")
-	return os.WriteFile(path, data, 0o600)
+	return atomicwrite.File(path, data, 0o600)
 }

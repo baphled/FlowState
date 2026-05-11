@@ -243,6 +243,65 @@ var _ = Describe("EncryptedStore", func() {
 		})
 	})
 
+	Describe("atomic persistence (regression)", func() {
+		It("writes the encrypted token file with 0o600 perms", func() {
+			// Regression for non-atomic os.WriteFile: ensures the helper
+			// preserves the credential-file permission bits when writing.
+			store, err := oauth.NewEncryptedStore(tempDir)
+			Expect(err).ToNot(HaveOccurred())
+
+			token := &oauth.TokenResponse{
+				AccessToken: "perm-token",
+				TokenType:   "Bearer",
+				ExpiresIn:   3600,
+			}
+			Expect(store.Store("perm-provider", token)).To(Succeed())
+
+			tokenFile := filepath.Join(tempDir, "tokens", "perm-provider_oauth_tokens.age")
+			info, err := os.Stat(tokenFile)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(info.Mode().Perm()).To(Equal(os.FileMode(0o600)))
+		})
+
+		It("never produces a zero-byte token file when overwriting", func() {
+			// The hazard: os.WriteFile truncates then writes. A crash
+			// between those two steps yielded an empty token file and a
+			// silent logout. atomicwrite.File rules that out.
+			store, err := oauth.NewEncryptedStore(tempDir)
+			Expect(err).ToNot(HaveOccurred())
+
+			first := &oauth.TokenResponse{AccessToken: "first", TokenType: "Bearer", ExpiresIn: 3600}
+			Expect(store.Store("github", first)).To(Succeed())
+
+			second := &oauth.TokenResponse{AccessToken: "second", TokenType: "Bearer", ExpiresIn: 3600}
+			Expect(store.Store("github", second)).To(Succeed())
+
+			tokenFile := filepath.Join(tempDir, "tokens", "github_oauth_tokens.age")
+			info, err := os.Stat(tokenFile)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(info.Size()).To(BeNumerically(">", int64(0)))
+
+			retrieved, err := store.Retrieve("github")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(retrieved.AccessToken).To(Equal("second"))
+		})
+
+		It("leaves no atomicwrite temp file in the tokens directory", func() {
+			store, err := oauth.NewEncryptedStore(tempDir)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(store.Store("clean", &oauth.TokenResponse{
+				AccessToken: "x", TokenType: "Bearer", ExpiresIn: 1,
+			})).To(Succeed())
+
+			entries, err := os.ReadDir(filepath.Join(tempDir, "tokens"))
+			Expect(err).ToNot(HaveOccurred())
+			for _, e := range entries {
+				Expect(e.Name()).ToNot(ContainSubstring(".atomicwrite-"))
+			}
+		})
+	})
+
 	Describe("concurrent access", func() {
 		It("should handle concurrent store and retrieve operations", func() {
 			store, err := oauth.NewEncryptedStore(tempDir)
