@@ -1928,28 +1928,36 @@ func (d *DelegateTool) runHarnessEventLoop(
 
 // createChildSession registers a child session for the delegation and returns its ID.
 // When a sessionCreator is configured and a parent session ID is present in ctx,
-// it calls CreateWithParent to produce a traceable child session.
+// it calls CreateWithParentAndChain to produce a traceable child session that
+// carries the delegation chainID for cold-reload reconstruction (closes the hole
+// left by a488b858 — Vue's runtime (chainId → childSessionId) map is empty after
+// a hard reload because SwarmEvents do not replay on reconnect, so the persisted
+// child session must self-describe its chain membership).
 // On any error (including parent not found) it falls back to a synthetic ID.
 //
 // Expected:
 //   - ctx may carry a parent session ID via session.IDKey{}.
 //   - agentID identifies the delegated agent.
+//   - chainID is the authoritative delegation chainID (may be empty when no
+//     coordination chain is in flight; the chainID stamped on the child
+//     session matches the value carried on the DelegationInfo event so the
+//     frontend can correlate the two).
 //
 // Returns:
 //   - The child session ID to use as the delegation context value.
 //
 // Side effects:
-//   - May call sessionCreator.CreateWithParent, storing a new session in memory.
-func (d *DelegateTool) createChildSession(ctx context.Context, agentID string) string {
+//   - May call sessionCreator.CreateWithParentAndChain, storing a new session in memory.
+func (d *DelegateTool) createChildSession(ctx context.Context, agentID, chainID string) string {
 	parentID := sessionIDFromContext(ctx)
 	if d.sessionCreator != nil && parentID != "" {
-		if child, err := d.sessionCreator.CreateWithParent(parentID, agentID); err == nil {
+		if child, err := d.sessionCreator.CreateWithParentAndChain(parentID, agentID, chainID); err == nil {
 			d.persistSessionMetadata(child)
 			return child.ID
 		}
 	}
 	if d.sessionManager != nil && parentID != "" {
-		if child, err := d.sessionManager.CreateWithParent(parentID, agentID); err == nil {
+		if child, err := d.sessionManager.CreateWithParentAndChain(parentID, agentID, chainID); err == nil {
 			d.persistSessionMetadata(child)
 			return child.ID
 		}
@@ -1968,19 +1976,23 @@ func (d *DelegateTool) createChildSession(ctx context.Context, agentID string) s
 //   - ctx may carry a parent session ID for new child session creation.
 //   - agentID identifies the agent for the delegation.
 //   - sessionID is the optional caller-supplied session to resume; empty means create new.
+//   - chainID is the authoritative delegation chainID; stamped on a newly
+//     created child session so cold-reload can rebuild the (chainId →
+//     childSessionId) map without replaying SwarmEvents. Ignored when
+//     resuming an existing session.
 //
 // Returns:
 //   - The session ID to use for the delegation context.
 //
 // Side effects:
 //   - May call sessionManager.GetSession or createChildSession.
-func (d *DelegateTool) resolveOrCreateSession(ctx context.Context, agentID, sessionID string) string {
+func (d *DelegateTool) resolveOrCreateSession(ctx context.Context, agentID, sessionID, chainID string) string {
 	if sessionID != "" && d.sessionManager != nil {
 		if sess, err := d.sessionManager.GetSession(sessionID); err == nil {
 			return sess.ID
 		}
 	}
-	return d.createChildSession(ctx, agentID)
+	return d.createChildSession(ctx, agentID, chainID)
 }
 
 // agentHasToolPermission reports whether the named agent is permitted to use toolName.
@@ -2174,7 +2186,13 @@ func (d *DelegateTool) executeSync(
 		return tool.Result{}, gateErr
 	}
 
-	delegateSessionID := d.resolveOrCreateSession(ctx, target.agentID, target.requestedSession)
+	// Forward the authoritative chainID from the DelegationInfo so the
+	// spawned child session is stamped with the same chain identifier that
+	// downstream SwarmEvents / DelegationInfo wire events carry. This lets
+	// the Vue chatStore rebuild its (chainId → childSessionId) map from
+	// the persisted session list after a hard reload (closes the cold-
+	// reload hole left by a488b858).
+	delegateSessionID := d.resolveOrCreateSession(ctx, target.agentID, target.requestedSession, baseInfo.ChainID)
 	// Persist the parent's brief as a user-role message on the child
 	// session before the stream begins, so the child's session record is
 	// replayable in isolation. Without this the child session contains
@@ -2908,7 +2926,12 @@ func (d *DelegateTool) executeAsync(
 	}
 
 	parentSessionID := sessionIDFromContext(ctx)
-	taskID := d.createChildSession(ctx, target.agentID)
+	// Forward the authoritative chainID so the async-spawned child session
+	// is stamped with the chain identifier carried on the DelegationInfo
+	// event. Same rationale as the executeSync path — cold-reload
+	// reconstruction needs chain_id on the persisted Session to rebuild
+	// the (chainId → childSessionId) map.
+	taskID := d.createChildSession(ctx, target.agentID, baseInfo.ChainID)
 	if taskID == "" {
 		taskID = fmt.Sprintf("task-%s-%d", target.agentID, time.Now().UTC().UnixNano())
 	}
