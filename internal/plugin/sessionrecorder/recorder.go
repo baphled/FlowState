@@ -15,6 +15,19 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// SubscribedEventTypes returns the authoritative list of event topic strings
+// this recorder subscribes to. Exposed so the events.Catalog accuracy audit
+// can cross-check declared Subscribers against real subscription wiring
+// without resorting to source-level grep at test time.
+//
+// Returns: a fresh slice copy so callers cannot mutate the package-level list.
+// Side effects: none.
+func SubscribedEventTypes() []string {
+	out := make([]string, len(subscribedEventTypes))
+	copy(out, subscribedEventTypes)
+	return out
+}
+
 // subscribedEventTypes lists all event type strings the recorder subscribes to.
 var subscribedEventTypes = []string{
 	events.EventSessionCreated,
