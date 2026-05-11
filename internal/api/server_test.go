@@ -4720,6 +4720,229 @@ var _ = Describe("Slice 6a — SSE bridge for EventContextCompacted", func() {
 				"compaction events from a different session must not reach this SSE subscriber")
 		}
 	})
+
+	// M1 — SSE [DONE] race (May 2026 bug-hunt). The SSE main loop
+	// multiplexes liveCh (provider chunks) with busCh (session-scoped
+	// bus events). When a bus event sits in busCh AND chunk.Done lands
+	// on liveCh in the same iteration, Go's select picks one branch
+	// non-deterministically. Pre-fix the Done branch wrote [DONE] and
+	// returned immediately — discarding the pending bus event. Post-fix
+	// the terminal branches (Done, channel-close, critical-error) MUST
+	// drain busCh of every already-enqueued event onto the wire BEFORE
+	// emitting [DONE], so a heartbeat / context_compacted / gate_failed
+	// published moments before Done is never silently dropped.
+	//
+	// Repro: publish the bus event, wait for the bridge handler to
+	// enqueue it on busCh, then drive Done from the same goroutine.
+	// Both branches are now ready at the same loop iteration; the spec
+	// asserts the bus event reaches the wire BEFORE [DONE].
+	It("drains pending bus events before emitting [DONE] when chunk.Done arrives concurrently (M1)", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		// Wait for the SSE handler to subscribe to the bus.
+		time.Sleep(50 * time.Millisecond)
+
+		// Force the race deterministically by interleaving the bus
+		// publishes WITHIN the broker.Publish lifecycle, using a
+		// goroutine that holds the producer channel open. Sequence:
+		//   1. Launch broker.Publish in a goroutine driven by a source
+		//      channel we control. The SSE handler subscribes to liveCh
+		//      and parks in its select.
+		//   2. Publish N bus events synchronously — bridge handlers
+		//      enqueue each onto busCh. busCh now holds N pending
+		//      events.
+		//   3. Push Done into source and close it. broker.Publish fans
+		//      Done into liveCh and runs the terminal close.
+		// At this point, on the SSE handler's next select iteration,
+		// BOTH liveCh (Done) and busCh (N events) are ready —  this
+		// is the M1 race window. Pre-fix the Done branch returned
+		// without draining busCh, dropping every queued bus event.
+		source := make(chan provider.StreamChunk, 1)
+		publishDone := make(chan struct{})
+		go func() {
+			broker.Publish(sess.ID, source)
+			close(publishDone)
+		}()
+		// Wait briefly for broker.Publish to register on liveCh.
+		time.Sleep(10 * time.Millisecond)
+		for i := 0; i < 8; i++ {
+			bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
+				SessionID:      sess.ID,
+				AgentID:        "Tech-Lead",
+				OriginalTokens: 12345 + i,
+				SummaryTokens:  6789,
+				LatencyMS:      111,
+			}))
+		}
+		// NOW push Done so liveCh AND busCh are both ready in the same
+		// select iteration.
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		<-publishDone
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		// Read events to EOF (not just up to first [DONE]) so the
+		// assertions can see the FULL wire sequence — pre-fix the bus
+		// events were silently dropped, post-fix all appear BEFORE [DONE].
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "data: ") {
+						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		// Count compacted events and locate [DONE]. ALL 8 published
+		// events MUST land BEFORE [DONE] — pre-fix any that lost the
+		// select race to Done were dropped, so the count would be < 8
+		// and any that did land would interleave non-deterministically.
+		doneIdx := -1
+		compactedCount := 0
+		lastCompactedIdx := -1
+		for i, e := range evts {
+			if e == "[DONE]" {
+				doneIdx = i
+			}
+			if strings.Contains(e, `"type":"context_compacted"`) {
+				compactedCount++
+				lastCompactedIdx = i
+			}
+		}
+		Expect(doneIdx).To(BeNumerically(">=", 0), "the SSE stream must terminate with [DONE]")
+		Expect(compactedCount).To(Equal(8),
+			"all 8 bus events enqueued before chunk.Done must reach the SSE wire — pre-fix the Done branch dropped any that lost the select race")
+		Expect(lastCompactedIdx).To(BeNumerically("<", doneIdx),
+			"every pending bus event MUST be flushed BEFORE [DONE] so the client receives it; [DONE] is the terminal frame and any event written after it is unreachable")
+	})
+
+	// M1 — channel-close terminal branch (defensive twin of the Done
+	// branch). When the broker closes liveCh without a Done:true chunk
+	// (recovery / abnormal-exit path) and a bus event is queued, the
+	// same drain-before-terminate invariant applies. Pre-fix the close
+	// branch wrote [DONE] and returned immediately; post-fix it drains
+	// busCh first.
+	It("drains pending bus events before emitting [DONE] when liveCh closes without a Done chunk (M1)", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		// Force the race deterministically. Sequence:
+		//   1. broker.Publish runs synchronously over an empty closed
+		//      source channel; the terminal close fires and closes the
+		//      SSE handler's liveCh subscriber channel. liveCh's `ok`
+		//      receive in the SSE select now returns false on next
+		//      iteration — the close-terminal branch is armed.
+		//   2. We immediately publish a burst of bus events. Bridge
+		//      handlers enqueue them on busCh.
+		// On the next select iteration BOTH busCh and (closed)liveCh are
+		// ready; pre-fix the close-branch returned without draining
+		// busCh, dropping every queued bus event.
+		source := make(chan provider.StreamChunk)
+		close(source)
+		broker.Publish(sess.ID, source)
+		for i := 0; i < 8; i++ {
+			bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
+				SessionID:      sess.ID,
+				AgentID:        "Tech-Lead",
+				OriginalTokens: 22222 + i,
+				SummaryTokens:  3333,
+				LatencyMS:      77,
+			}))
+		}
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					trimmed := strings.TrimSpace(line)
+					if strings.HasPrefix(trimmed, "data: ") {
+						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		doneIdx := -1
+		compactedCount := 0
+		lastCompactedIdx := -1
+		for i, e := range evts {
+			if e == "[DONE]" {
+				doneIdx = i
+			}
+			if strings.Contains(e, `"type":"context_compacted"`) {
+				compactedCount++
+				lastCompactedIdx = i
+			}
+		}
+		Expect(doneIdx).To(BeNumerically(">=", 0))
+		Expect(compactedCount).To(Equal(8),
+			"all 8 bus events enqueued before liveCh close must reach the SSE wire — the close branch must drain busCh before [DONE]")
+		Expect(lastCompactedIdx).To(BeNumerically("<", doneIdx),
+			"every pending bus event MUST be flushed BEFORE [DONE] on the channel-close terminal branch too")
+	})
 })
 
 // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):

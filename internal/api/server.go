@@ -1019,6 +1019,20 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 			continue
 		case chunk, ok := <-liveCh:
 			if !ok {
+				// M1 — SSE [DONE] race (May 2026 bug-hunt). The
+				// select-loop multiplexes liveCh with busCh; when
+				// both are ready in the same iteration Go picks one
+				// branch non-deterministically. Pre-fix the terminal
+				// branches (liveCh close, chunk.Done, critical
+				// chunk.Error) wrote [DONE] and returned immediately,
+				// silently dropping any already-enqueued bus event
+				// (context_compacted, gate_failed, streaming.heartbeat)
+				// that lost the race. Draining busCh of all
+				// already-enqueued events onto the wire BEFORE
+				// emitting [DONE] removes the timing dependency:
+				// [DONE] is the terminal frame, so anything written
+				// after it would be unreachable.
+				s.drainPendingBusEventsSSE(w, flusher, busCh)
 				writeSSEDone(w, flusher)
 				return
 			}
@@ -1052,6 +1066,11 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 						category = "stream_critical_context_exceeded"
 					}
 					writeSSEClientError(w, flusher, chunk.Error, category)
+					// M1 — drain queued bus events before terminating
+					// the stream so a heartbeat / context_compacted
+					// published moments before the critical error is
+					// never lost to the [DONE] race.
+					s.drainPendingBusEventsSSE(w, flusher, busCh)
 					writeSSEDone(w, flusher)
 					return
 				}
@@ -1059,6 +1078,11 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if chunk.Done {
+				// M1 — drain queued bus events before terminating
+				// the stream so a heartbeat / context_compacted /
+				// gate_failed published moments before chunk.Done
+				// is never silently dropped to the select race.
+				s.drainPendingBusEventsSSE(w, flusher, busCh)
 				writeSSEDone(w, flusher)
 				return
 			}
@@ -2220,6 +2244,51 @@ func (s *Server) emitSessionLoadContextUsage(w http.ResponseWriter, flusher http
 		return
 	}
 	writeSSEContextUsage(w, flusher, string(payload))
+}
+
+// drainPendingBusEventsSSE non-blockingly drains every event already
+// enqueued on the bus channel and dispatches each onto the SSE wire.
+//
+// M1 — SSE [DONE] race (May 2026 bug-hunt). The SSE main loop's
+// select multiplexes liveCh (provider chunks) and busCh (session-
+// scoped bus events). When both are ready in the same iteration Go's
+// select picks one non-deterministically. Pre-fix, the terminal
+// branches (liveCh close, chunk.Done, critical chunk.Error) wrote
+// [DONE] and returned immediately — silently discarding any pending
+// bus event that lost the race. Bus events enqueued AFTER [DONE] are
+// unreachable because [DONE] is the terminal frame, so the only safe
+// place to surface a "queued at termination" event is BEFORE [DONE].
+//
+// The drain is non-blocking by design: it reads only what is already
+// in the buffer at the moment of the terminal branch firing. It does
+// NOT wait for in-flight publishers; the goal is "do not lose what
+// the bus already delivered" not "wait for late publishers to land".
+// Late publishers (publishing after the terminal branch fires) hit
+// the buffered channel which is then orphaned when the handler
+// returns — the same drop-on-close-window the WebSocket path
+// accepts (see C2 fix documentation).
+//
+// Expected:
+//   - busCh has been allocated by the SSE handler; the handler is
+//     the sole receiver so no other goroutine competes for receives.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - For each event already buffered on busCh, calls
+//     dispatchSessionBusEventSSE which writes one SSE frame and
+//     flushes. Stops at the first non-ready receive (default branch).
+func (s *Server) drainPendingBusEventsSSE(w http.ResponseWriter, flusher http.Flusher, busCh <-chan WSChunkMsg) {
+	for {
+		select {
+		case ev, ok := <-busCh:
+			if !ok {
+				return
+			}
+			s.dispatchSessionBusEventSSE(w, flusher, ev)
+		default:
+			return
+		}
+	}
 }
 
 // dispatchSessionBusEventSSE routes a session-scoped bus event from
