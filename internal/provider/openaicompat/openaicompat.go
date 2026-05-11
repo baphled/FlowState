@@ -189,6 +189,16 @@ func RunStream(
 	params openaiAPI.ChatCompletionNewParams,
 	providerName string,
 ) <-chan provider.StreamChunk {
+	// Opt in to OpenAI's stream_options.include_usage so the upstream
+	// emits a terminal chunk carrying request-level token totals (per
+	// OpenAI streaming spec — the chunk has empty choices and a
+	// populated `usage` block). Without this flag the accumulator's
+	// Usage stays zero and the engine cannot track streaming spend for
+	// any provider that wraps openaicompat (openai, openzen, zai,
+	// ollamacloud, github-copilot). The Bool() helper produces a typed
+	// param.Opt[bool] which marshals correctly under the SDK's
+	// omitzero contract.
+	params.StreamOptions.IncludeUsage = openaiAPI.Bool(true)
 	ch := make(chan provider.StreamChunk, 16)
 	go func() {
 		defer close(ch)
@@ -204,6 +214,11 @@ func RunStream(
 		// the SDK already produced.
 		var inlineExtractor inlineToolCallExtractor
 		var recoveredCalls []provider.ToolCall
+		// sawFinish tracks whether the upstream signalled an in-stream
+		// finish_reason. When true the post-loop epilogue is responsible
+		// for emitting usage + Done so the usage chunk arrives before
+		// downstream consumers see Done and stop reading.
+		var sawFinish bool
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
@@ -250,7 +265,12 @@ func RunStream(
 				flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
 				flushInlineExtractor(ctx, ch, &inlineExtractor, recoveredCalls, emitted)
 				recoveredCalls = nil
-				shared.SendChunk(ctx, ch, provider.StreamChunk{Done: true})
+				sawFinish = true
+				// Deliberately DO NOT emit Done here. The terminal
+				// `stream_options.include_usage` chunk arrives AFTER
+				// this finish-reason chunk and carries the request-level
+				// token totals; we must keep the loop alive to consume
+				// it and emit a usage chunk before Done.
 			}
 		}
 		if err := stream.Err(); err != nil {
@@ -259,8 +279,54 @@ func RunStream(
 		}
 		flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
 		flushInlineExtractor(ctx, ch, &inlineExtractor, recoveredCalls, emitted)
+		if sawFinish {
+			emitStreamUsage(ctx, ch, &acc)
+			shared.SendChunk(ctx, ch, provider.StreamChunk{Done: true})
+		}
 	}()
 	return ch
+}
+
+// emitStreamUsage reads cumulative token totals from the accumulator and
+// sends a `provider.StreamChunk{EventType:"usage"}` carrying a
+// `provider.UsageDelta` so downstream consumers (session accumulator at
+// internal/session/accumulator.go:333; engine spend tracking) can record
+// streaming spend for openaicompat-backed providers. The chunk is
+// suppressed when the accumulator captured no tokens — that happens
+// when the upstream did not honour `stream_options.include_usage`
+// (older mocks, partial SDK forks) and avoids synthesising zero-value
+// usage events for unaffected callers.
+//
+// Expected:
+//   - ctx is the caller context used to honour cancellation when sending.
+//   - ch is the downstream StreamChunk channel.
+//   - acc is the accumulator populated by stream.AddChunk calls; the SDK
+//     sums chunk.Usage.* into acc.Usage on every chunk so a single
+//     read after the loop captures the request-level total.
+//
+// Side effects:
+//   - Sends at most one StreamChunk on ch.
+func emitStreamUsage(
+	ctx context.Context,
+	ch chan<- provider.StreamChunk,
+	acc *openaiAPI.ChatCompletionAccumulator,
+) {
+	if acc == nil {
+		return
+	}
+	prompt := acc.Usage.PromptTokens
+	completion := acc.Usage.CompletionTokens
+	total := acc.Usage.TotalTokens
+	if prompt == 0 && completion == 0 && total == 0 {
+		return
+	}
+	shared.SendChunk(ctx, ch, provider.StreamChunk{
+		EventType: "usage",
+		Usage: &provider.UsageDelta{
+			InputTokens:  prompt,
+			OutputTokens: completion,
+		},
+	})
 }
 
 // flushInlineExtractor drains any remaining buffered reasoning text
