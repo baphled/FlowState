@@ -2308,6 +2308,87 @@ var _ = Describe("Manager", func() {
 			Expect(err).NotTo(HaveOccurred())
 			// No panic, no error — graceful no-op for non-seeder streamers.
 		})
+
+		// M4-adjacent (May 2026): session.Message persists tool-result errors
+		// with Role:"tool_error" (see accumulator.applyToolResult). The
+		// Anthropic provider's buildMessages switch only matches Role:"tool"
+		// — a raw "tool_error" falls through and the message is silently
+		// dropped from the model request payload on reload. The projection
+		// site (manager.go SendMessage, providerMsgs construction) MUST
+		// canonicalise "tool_error" to Role:"tool" + IsError:true so the
+		// wire shape is uniform with the live-stream path stamped by M4.
+		Context("M4-adjacent: reload canonicalises tool_error to tool+IsError", func() {
+			It("projects a persisted tool_error message as Role:tool with IsError:true", func() {
+				restored := &session.Session{
+					ID:      "sess-tool-error-reload",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Run the tool.", AgentID: "planner"},
+						{
+							ID:       "m2",
+							Role:     "tool_error",
+							Content:  "failed: timeout exceeded after 30s",
+							ToolName: "search",
+							AgentID:  "planner",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-tool-error-reload", "Try again.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				Expect(seederMock.seededMessages[0].Role).To(Equal("user"))
+
+				toolMsg := seederMock.seededMessages[1]
+				Expect(toolMsg.Role).To(Equal("tool"),
+					"reloaded tool_error must canonicalise to Role:'tool' — "+
+						"Anthropic buildMessages drops any other role and the "+
+						"message vanishes from the request payload")
+				Expect(toolMsg.IsError).To(BeTrue(),
+					"the error signal must move onto provider.Message.IsError "+
+						"so the wire-level is_error flag is set; the M4 seam "+
+						"is the canonical source")
+				Expect(toolMsg.Content).To(Equal("failed: timeout exceeded after 30s"),
+					"the content must round-trip verbatim — the canonicalisation "+
+						"renames the role only, not the payload")
+			})
+
+			It("preserves an already-canonical tool message with IsError stamp untouched", func() {
+				// Forward-compat: a future writer that already persists Role:"tool"
+				// + an IsError signal (or any session row whose Role is "tool")
+				// keeps its existing shape and is not double-flipped.
+				restored := &session.Session{
+					ID:      "sess-tool-canonical",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Run the tool.", AgentID: "planner"},
+						{
+							ID:       "m2",
+							Role:     "tool",
+							Content:  "ok: 42",
+							ToolName: "compute",
+							AgentID:  "planner",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-tool-canonical", "Continue.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				toolMsg := seederMock.seededMessages[1]
+				Expect(toolMsg.Role).To(Equal("tool"))
+				Expect(toolMsg.IsError).To(BeFalse(),
+					"a Role:'tool' row without an explicit error marker stays "+
+						"non-error; the canonicalisation only fires on 'tool_error'")
+				Expect(toolMsg.Content).To(Equal("ok: 42"))
+			})
+		})
 	})
 
 	Describe("CancelInflight", func() {
