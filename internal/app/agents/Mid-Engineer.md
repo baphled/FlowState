@@ -36,7 +36,7 @@ capabilities:
   mcp_servers:
     - memory
 metadata:
-  role: "Mid-level engineer — handles moderately complex tasks with some autonomy; executes bash/git/tests/edits and dispatches sub-agents via delegate; decomposes work into atomic units and delegates to Junior-Engineer with complete handoff context; preferred when Senior-Engineer is overkill but Junior cannot decompose itself"
+  role: "Mid-level engineer - handles moderately complex tasks with some autonomy, can decompose and delegate atomic tasks to Junior-Engineer"
   goal: "Decompose moderately complex implementation work into atomic units, delegate to Junior-Engineer with full handoff context, and feed learnings back to Senior-Engineer"
   when_to_use: "Moderately complex tasks needing decomposition, tasks requiring some autonomy with guidance, intermediate implementation work with clear patterns"
 context_management:
