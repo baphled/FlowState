@@ -1395,6 +1395,55 @@ var _ = Describe("StreamHook provider_changed event", func() {
 				"reason is a stable machine-readable string the frontend maps to plain language ('primary model rate-limited')")
 		})
 
+		// M3-adjacent — mirror sseModelActive's split provider/model shape.
+		//
+		// The legacy {from, to} pair uses "<provider>+<model>" joined
+		// strings. The sibling model_active payload split provider/model
+		// into separate fields specifically to avoid the "+" parse-hop
+		// (rare model ids contain "+"; openrouter). The migration ships
+		// both shapes simultaneously so consumers can switch over
+		// gracefully — the joined fields stay for backwards-compat, the
+		// split fields become the preferred read path.
+		It("carries split from_provider/from_model/to_provider/to_model alongside the legacy joined fields", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+
+			var transition *provider.StreamChunk
+			for chunk := range ch {
+				c := chunk
+				if c.EventType == "provider_changed" {
+					transition = &c
+					break
+				}
+			}
+			Expect(transition).NotTo(BeNil(),
+				"a transition chunk must be present when failover happens")
+
+			var payload struct {
+				From         string `json:"from"`
+				To           string `json:"to"`
+				FromProvider string `json:"from_provider"`
+				FromModel    string `json:"from_model"`
+				ToProvider   string `json:"to_provider"`
+				ToModel      string `json:"to_model"`
+				Reason       string `json:"reason"`
+			}
+			Expect(json.Unmarshal([]byte(transition.Content), &payload)).To(Succeed(),
+				"chunk.Content must be parseable JSON; got: %q", transition.Content)
+
+			// Legacy joined fields stay populated — backwards-compat.
+			Expect(payload.From).To(Equal("anthropic+claude-sonnet-4-6"))
+			Expect(payload.To).To(Equal("zai+glm-4.6"))
+
+			// Split fields populated identically to sseModelActive's
+			// (provider, model) pair so the chip skips the "+" parse hop.
+			Expect(payload.FromProvider).To(Equal("anthropic"))
+			Expect(payload.FromModel).To(Equal("claude-sonnet-4-6"))
+			Expect(payload.ToProvider).To(Equal("zai"))
+			Expect(payload.ToModel).To(Equal("glm-4.6"))
+		})
+
 		It("forwards the real content from the new provider AFTER the transition", func() {
 			handler := sh.Execute(baseHandler(registry))
 			ch, err := handler(context.Background(), &provider.ChatRequest{})

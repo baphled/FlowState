@@ -1097,6 +1097,107 @@ var _ = Describe("Session stream live events", func() {
 		Expect(evts).To(ContainElement("[DONE]"))
 	})
 
+	// M3-adjacent — provider_changed wire shape mirrors model_active.
+	//
+	// The legacy provider_changed payload ships {from, to} as
+	// "<provider>+<model>" joined strings, mirrored on the SSE wire. The
+	// sibling sseModelActive event already split provider/model into
+	// separate JSON fields exactly to avoid the "+" parse-hop and the
+	// off-by-one bugs around model ids that themselves contain "+"
+	// (rare; openrouter).
+	//
+	// This contract pins the migrated shape: the SSE writer MUST ship
+	// BOTH the legacy joined fields (from/to) AND the new split fields
+	// (from_provider/from_model/to_provider/to_model) on every emit.
+	// Backward compat is preserved — any consumer still on the joined
+	// shape keeps working — while new consumers can read the split
+	// fields directly and skip the "+" parse-hop.
+	It("emits provider_changed with split provider/model fields alongside the legacy joined fields", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		// The failover hook's marshalled payload — both joined and split
+		// fields. The SSE writer re-marshals and ships both on the wire.
+		source <- provider.StreamChunk{
+			EventType: "provider_changed",
+			Content: `{` +
+				`"from":"anthropic+claude-sonnet-4-6",` +
+				`"to":"zai+glm-4.6",` +
+				`"from_provider":"anthropic",` +
+				`"from_model":"claude-sonnet-4-6",` +
+				`"to_provider":"zai",` +
+				`"to_model":"glm-4.6",` +
+				`"reason":"rate_limited"}`,
+		}
+		source <- provider.StreamChunk{Content: "answer"}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		// Legacy joined fields MUST still be on the wire — the migration
+		// is purely additive, no consumer of the old shape regresses.
+		Expect(evts).To(ContainElement(ContainSubstring(`"from":"anthropic+claude-sonnet-4-6"`)))
+		Expect(evts).To(ContainElement(ContainSubstring(`"to":"zai+glm-4.6"`)))
+		Expect(evts).To(ContainElement(ContainSubstring(`"reason":"rate_limited"`)))
+
+		// New split fields MUST appear on the wire — the migration target.
+		Expect(evts).To(ContainElement(ContainSubstring(`"from_provider":"anthropic"`)),
+			"split from_provider must appear so the chip skips the '+' parse hop")
+		Expect(evts).To(ContainElement(ContainSubstring(`"from_model":"claude-sonnet-4-6"`)),
+			"split from_model must appear so the toast skips the '+' parse hop")
+		Expect(evts).To(ContainElement(ContainSubstring(`"to_provider":"zai"`)),
+			"split to_provider must appear so the chip skips the '+' parse hop")
+		Expect(evts).To(ContainElement(ContainSubstring(`"to_model":"glm-4.6"`)),
+			"split to_model must appear so the chip skips the '+' parse hop")
+	})
+
 	// model_active SSE round-trip.
 	//
 	// The user reported (May 2026) that the persistent toolbar chip

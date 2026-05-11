@@ -160,6 +160,61 @@ describe('parseSSEPayload', () => {
     }
   })
 
+  it('unpacks split fromProvider/fromModel/toProvider/toModel when the Go wire ships them', () => {
+    // M3-adjacent — mirror sseModelActive's split shape on
+    // sseProviderChanged. The Go SSE writer ships BOTH the legacy joined
+    // fields (from / to == "<provider>+<model>") AND the new split
+    // fields (from_provider / from_model / to_provider / to_model) on
+    // every emit. The parser MUST surface the split fields so the
+    // chatStore can skip the "+" parse hop and the off-by-one bugs
+    // around model ids that themselves contain "+" (rare; openrouter).
+    const payload = JSON.stringify({
+      type: 'provider_changed',
+      from: 'anthropic+claude-sonnet-4-6',
+      to: 'zai+glm-4.6',
+      from_provider: 'anthropic',
+      from_model: 'claude-sonnet-4-6',
+      to_provider: 'zai',
+      to_model: 'glm-4.6',
+      reason: 'rate_limited',
+    })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('provider_changed')
+    if (ev.kind === 'provider_changed') {
+      expect(ev.from).toBe('anthropic+claude-sonnet-4-6')
+      expect(ev.to).toBe('zai+glm-4.6')
+      expect(ev.fromProvider).toBe('anthropic')
+      expect(ev.fromModel).toBe('claude-sonnet-4-6')
+      expect(ev.toProvider).toBe('zai')
+      expect(ev.toModel).toBe('glm-4.6')
+      expect(ev.reason).toBe('rate_limited')
+    }
+  })
+
+  it('defaults split fields to empty strings when the wire omits them (legacy emitter still works)', () => {
+    // Forward-compat: an older Go emitter (or a future scenario where
+    // the joined fields drop and only the split fields ship, or the
+    // reverse) MUST keep the union shape intact. Empty defaults let
+    // the chatStore fall back to splitting "+" on the joined fields
+    // when the split fields are absent.
+    const payload = JSON.stringify({
+      type: 'provider_changed',
+      from: 'anthropic+claude-sonnet-4-6',
+      to: 'zai+glm-4.6',
+      reason: 'rate_limited',
+    })
+    const ev = parseSSEPayload(payload)
+    expect(ev.kind).toBe('provider_changed')
+    if (ev.kind === 'provider_changed') {
+      expect(ev.from).toBe('anthropic+claude-sonnet-4-6')
+      expect(ev.to).toBe('zai+glm-4.6')
+      expect(ev.fromProvider).toBe('')
+      expect(ev.fromModel).toBe('')
+      expect(ev.toProvider).toBe('')
+      expect(ev.toModel).toBe('')
+    }
+  })
+
   it('treats a provider_changed event with missing fields as malformed (defaults to empty strings)', () => {
     // Defensive: a future emitter that ships only `type` without the
     // metadata must NOT crash the union — the parser fills the missing

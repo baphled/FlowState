@@ -182,15 +182,22 @@ export interface SSEThinkingEvent {
  *     toolbar chip reflects the new active model going forward.
  *
  * Field semantics:
- *   - `from` / `to` are "<provider>+<model>" strings (e.g.
- *     "anthropic+claude-sonnet-4-6"). The store splits on "+" to
- *     reconstruct the toolbar pair. The format is opaque to the parser.
+ *   - `from` / `to` are "<provider>+<model>" joined strings (the legacy
+ *     shape, e.g. "anthropic+claude-sonnet-4-6"). The store splits on
+ *     "+" to reconstruct the pair when the split fields are absent.
+ *   - `fromProvider` / `fromModel` / `toProvider` / `toModel` are the
+ *     new split shape mirroring SSEModelActiveEvent's (provider, model)
+ *     pair. The store prefers these to skip the "+" parse hop and the
+ *     off-by-one bugs around model ids that themselves contain "+"
+ *     (rare; openrouter). All four default to empty strings when the
+ *     wire omits them (older Go emitter still on joined-only shape) so
+ *     the store falls back to splitting `to` on "+".
  *   - `reason` is a stable closed-set token (rate_limited, billing,
  *     quota, overload, auth_failure, model_not_found, unavailable,
  *     timeout, unknown) the store maps to plain English. Keeping the
  *     mapping client-side decouples toast copy from Go release cadence.
  *
- * All three fields default to empty strings if missing — a future
+ * All fields default to empty strings if missing — a future
  * emitter that ships only `type` doesn't crash the dispatch, and the
  * store renders generic copy ("Switched to a different model") in
  * that degraded case.
@@ -199,6 +206,10 @@ export interface SSEProviderChangedEvent {
   kind: 'provider_changed'
   from: string
   to: string
+  fromProvider: string
+  fromModel: string
+  toProvider: string
+  toModel: string
   reason: string
 }
 
@@ -543,6 +554,11 @@ export function parseSSEPayload(payload: string): SSEEvent {
       kind: 'provider_changed',
       from: typeof obj['from'] === 'string' ? (obj['from'] as string) : '',
       to: typeof obj['to'] === 'string' ? (obj['to'] as string) : '',
+      fromProvider:
+        typeof obj['from_provider'] === 'string' ? (obj['from_provider'] as string) : '',
+      fromModel: typeof obj['from_model'] === 'string' ? (obj['from_model'] as string) : '',
+      toProvider: typeof obj['to_provider'] === 'string' ? (obj['to_provider'] as string) : '',
+      toModel: typeof obj['to_model'] === 'string' ? (obj['to_model'] as string) : '',
       reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
     }
   }
