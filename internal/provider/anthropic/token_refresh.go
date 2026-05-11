@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -286,7 +287,17 @@ func (tm *TokenManager) EnsureToken(
 	tm.refreshToken = result.RefreshToken
 	tm.expiresAt = result.ExpiresAt
 
-	tm.persistTokens()
+	// F3: persistTokens now surfaces errors. Log-and-continue here so
+	// the in-memory refresh succeeds even when disk persistence fails
+	// (the operator still gets the slog warning emitted from inside
+	// persistTokens). This is the smallest-scope change: the hot
+	// refresh path keeps its existing "in-memory state is the source
+	// of truth for this process" contract; only the next-process
+	// recovery story improves.
+	if perr := tm.persistTokens(); perr != nil {
+		slog.Warn("anthropic token refresh: persist failed; in-memory tokens still valid for this process",
+			"error", perr)
+	}
 	return tm.accessToken, nil
 }
 
@@ -344,7 +355,11 @@ func (tm *TokenManager) SetExpiresAt(ms int64) {
 	tm.expiresAt = ms
 }
 
-// persistTokens writes updated OAuth tokens to the configured token file.
+// persistTokens writes updated OAuth tokens to the configured token file
+// atomically: it serialises the payload, writes to a `.tmp` sibling,
+// then renames it over the target. Rename is atomic on POSIX so the
+// reader never sees a half-written file even if the process is killed
+// or the host loses power mid-write.
 //
 // The file format is a flat JSON object:
 //
@@ -354,15 +369,30 @@ func (tm *TokenManager) SetExpiresAt(ms int64) {
 // FlowState data dir (typically <dataDir>/tokens/anthropic.json) and is not
 // shared with any other tool.
 //
+// F3 (Bug Hunt Findings May 11 2026): the pre-F3 implementation used a
+// direct `os.WriteFile` with `_ = ...` error swallow. A SIGKILL or
+// power loss mid-write truncated the file; a disk-full / EACCES /
+// EROFS error was silently dropped. Both modes blackballed the
+// OAuth refresh on the next process restart. The fix mirrors the
+// recall + session-fork persistence pattern (temp+rename) and surfaces
+// the error via slog and the return value so the calling refresh path
+// can react. Same shape as recall/store.go:201 (persist).
+//
+// Returns:
+//   - nil on success or when authFilePath is empty (intentional no-op).
+//   - An error when marshalling, mkdir, temp-write, or rename fails.
+//
 // Side effects:
-//   - Writes the token file at authFilePath when set.
-//   - Silently ignores errors to avoid disrupting the main flow.
-func (tm *TokenManager) persistTokens() {
+//   - Writes <authFilePath>.tmp and renames it over <authFilePath>.
+//   - Logs failures via slog.Warn before returning the error.
+func (tm *TokenManager) persistTokens() error {
 	if tm.authFilePath == "" {
-		return
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(tm.authFilePath), 0o700); err != nil {
-		return
+		slog.Warn("anthropic token refresh: mkdir on token dir failed",
+			"path", tm.authFilePath, "error", err)
+		return fmt.Errorf("mkdir token dir: %w", err)
 	}
 	payload := map[string]interface{}{
 		"type":    "oauth",
@@ -372,7 +402,30 @@ func (tm *TokenManager) persistTokens() {
 	}
 	out, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		return
+		slog.Warn("anthropic token refresh: marshal payload failed",
+			"path", tm.authFilePath, "error", err)
+		return fmt.Errorf("marshal token payload: %w", err)
 	}
-	_ = os.WriteFile(tm.authFilePath, out, authFilePermissions)
+	tmpPath := tm.authFilePath + ".tmp"
+	if werr := os.WriteFile(tmpPath, out, authFilePermissions); werr != nil {
+		slog.Warn("anthropic token refresh: write temp token file failed",
+			"path", tmpPath, "error", werr)
+		return fmt.Errorf("write temp token file: %w", werr)
+	}
+	if rerr := os.Rename(tmpPath, tm.authFilePath); rerr != nil {
+		// Best-effort cleanup so a half-rename does not leak a
+		// stale `.tmp` next to the live token file.
+		_ = os.Remove(tmpPath)
+		slog.Warn("anthropic token refresh: rename temp token file failed",
+			"tmp", tmpPath, "target", tm.authFilePath, "error", rerr)
+		return fmt.Errorf("rename temp token file: %w", rerr)
+	}
+	return nil
+}
+
+// PersistTokensForTest exposes persistTokens to the package's test
+// suite so the F3 atomicity + error-surfacing specs can drive the
+// persist path without standing up a full EnsureToken flow.
+func (tm *TokenManager) PersistTokensForTest() error {
+	return tm.persistTokens()
 }

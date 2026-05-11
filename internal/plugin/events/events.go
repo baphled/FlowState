@@ -1435,58 +1435,12 @@ func NewRecallChainSearchEvent(data RecallChainSearchEventData, ts ...time.Time)
 	}
 }
 
-// RecallChainSearchFailedEventData describes a genuine recall
-// chain-search failure (M9, Bug Hunt Findings May 2026). It surfaces
-// the underlying error (Qdrant unavailable, embedding-model dimension
-// mismatch, network timeout, broker fan-out exhaustion) that the
-// pre-existing `recall.chain.searched` event masked because the tool
-// silently fell back to recency ordering on err.
-//
-// Reason carries the error message string so subscribers that bridge
-// to non-Go surfaces (Vue Activity Timeline, structured slog) don't
-// need to import an error type. ErrType, when non-empty, names the
-// classifier — "broker.all_sources_failed", "store.search",
-// "embedder", "qdrant.unavailable" — for dashboards that want to
-// aggregate by failure mode without parsing message text.
-type RecallChainSearchFailedEventData struct {
-	SessionID string
-	AgentID   string
-	Query     string
-	Reason    string
-	ErrType   string
-	LatencyMS int64
-}
-
-// RecallChainSearchFailedEvent represents a genuine recall chain-search
-// failure. Emitted alongside (not instead of) `recall.chain.searched`
-// so existing observability and the new error surface stay
-// independently subscribable.
-type RecallChainSearchFailedEvent struct {
-	BaseEvent
-	Data RecallChainSearchFailedEventData
-}
-
-// NewRecallChainSearchFailedEvent creates a new RecallChainSearchFailedEvent.
-//
-// Expected:
-//   - data contains the failure metadata to include in the event.
-//   - ts is optional and, when provided, uses the first non-zero timestamp.
-//
-// Returns:
-//   - A RecallChainSearchFailedEvent configured with the supplied data.
-//
-// Side effects:
-//   - Uses the current time when no timestamp override is supplied.
-func NewRecallChainSearchFailedEvent(data RecallChainSearchFailedEventData, ts ...time.Time) *RecallChainSearchFailedEvent {
-	t := time.Now()
-	if len(ts) > 0 && !ts[0].IsZero() {
-		t = ts[0]
-	}
-	return &RecallChainSearchFailedEvent{
-		BaseEvent: BaseEvent{eventType: EventRecallChainSearchFailed, timestamp: t},
-		Data:      data,
-	}
-}
+// RecallChainSearchFailedEvent (M9, May 2026) was removed by F4
+// (Bug Hunt Findings May 11 2026). The dedicated event type and
+// `EventRecallChainSearchFailed` constant had zero non-test
+// subscribers. The typed `recall.ErrAllSourcesFailed` sentinel and
+// the engine's existing `tool.execute.error` propagation remain the
+// canonical signals for a genuine recall chain-search failure.
 
 // RecallSummarizedEventData describes the data for a recall summarized event.
 type RecallSummarizedEventData struct {
@@ -1687,7 +1641,7 @@ var (
 	_ Event = (*RecallEmbeddingStoredEvent)(nil)
 	_ Event = (*RecallSearchEvent)(nil)
 	_ Event = (*RecallChainSearchEvent)(nil)
-	_ Event = (*RecallChainSearchFailedEvent)(nil)
+	// RecallChainSearchFailedEvent removed by F4 (Bug Hunt May 11 2026).
 	_ Event = (*RecallSummarizedEvent)(nil)
 	_ Event = (*ContextCompactedEvent)(nil)
 	_ Event = (*DiscoveryPublishedEvent)(nil)
