@@ -1027,6 +1027,21 @@ func buildAssistantWithTools(
 // The Signature must be sent back UNCHANGED — without it the server
 // rejects thinking continuity and silently re-disables thinking on
 // the response, defeating per-model thinking opt-in.
+//
+// Defensive filter (production bug 2026-05-11,
+// req_011Cavnk52Fbsfes8zWumAcm): signed thinking is only emitted when
+// the visible thinking text contains non-whitespace characters.
+// Anthropic returns HTTP 400 invalid_request_error
+// "messages.N.content.0.thinking: each thinking block must contain
+// non-whitespace thinking" for any block whose text is empty or
+// whitespace-only — including signature-only records. A signature
+// without thinking is meaningless on the wire (continuity is verified
+// by the API against the original thinking content), so dropping
+// these records is the only correct behaviour. The storage layer
+// (session/accumulator.go flushThinking) prevents these blocks from
+// being persisted in the first place; this filter is the
+// belt-and-braces gate against any future regression that lets one
+// slip through into a session's history.
 func buildThinkingBlocks(
 	blocks []provider.ThinkingBlock,
 ) []anthropicAPI.ContentBlockParamUnion {
@@ -1038,7 +1053,7 @@ func buildThinkingBlocks(
 		switch {
 		case b.Redacted && b.Data != "":
 			out = append(out, anthropicAPI.NewRedactedThinkingBlock(b.Data))
-		case b.Thinking != "" || b.Signature != "":
+		case strings.TrimSpace(b.Thinking) != "":
 			out = append(out, anthropicAPI.NewThinkingBlock(b.Signature, b.Thinking))
 		}
 	}

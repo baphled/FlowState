@@ -415,6 +415,75 @@ var _ = Describe("buildAssistantMessage thinking round-trip", func() {
 				"providers and turns that produced no thinking")
 		Expect(msg.Content[0].OfText).NotTo(BeNil())
 	})
+
+	// Production bug 2026-05-11 (req_011Cavnk52Fbsfes8zWumAcm):
+	// Anthropic rejects any thinking block whose text is empty or
+	// whitespace-only with HTTP 400 invalid_request_error
+	// "messages.N.content.0.thinking: each thinking block must contain
+	// non-whitespace thinking". The serialisation layer must filter these
+	// records out before the request is built — even if a valid signature
+	// is present, a signature without thinking is meaningless and the
+	// API rejects it.
+	It("skips a signature-only thinking-block record (empty thinking, non-empty signature)", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "hello",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Thinking: "", Signature: "sig-orphan-xyz"},
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(1),
+			"signature-without-thinking records must not synthesise blocks — "+
+				"Anthropic rejects them with HTTP 400 invalid_request_error "+
+				"(production bug req_011Cavnk52Fbsfes8zWumAcm)")
+		Expect(msg.Content[0].OfText).NotTo(BeNil())
+		Expect(msg.Content[0].OfText.Text).To(Equal("hello"))
+	})
+
+	It("skips a whitespace-only thinking-block record (signature valid, thinking is whitespace)", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "hello",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Thinking: "   \n\t  ", Signature: "sig-whitespace-xyz"},
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(1),
+			"whitespace-only thinking must not synthesise blocks — Anthropic "+
+				"explicitly rejects them: 'each thinking block must contain "+
+				"non-whitespace thinking' (production bug "+
+				"req_011Cavnk52Fbsfes8zWumAcm)")
+		Expect(msg.Content[0].OfText).NotTo(BeNil())
+	})
+
+	It("preserves a valid thinking record adjacent to an empty one (filter is per-record, not all-or-nothing)", func() {
+		m := provider.Message{
+			Role:    "assistant",
+			Content: "hello",
+			ThinkingBlocks: []provider.ThinkingBlock{
+				{Thinking: "", Signature: "sig-orphan"},
+				{Thinking: "real thinking", Signature: "sig-real"},
+			},
+		}
+
+		msg := buildAssistantMessage(m)
+
+		Expect(msg).NotTo(BeNil())
+		Expect(msg.Content).To(HaveLen(2),
+			"the valid thinking block must survive; only the empty one is filtered")
+		Expect(msg.Content[0].OfThinking).NotTo(BeNil())
+		Expect(msg.Content[0].OfThinking.Thinking).To(Equal("real thinking"))
+		Expect(msg.Content[0].OfThinking.Signature).To(Equal("sig-real"))
+		Expect(msg.Content[1].OfText).NotTo(BeNil())
+	})
 })
 
 var _ = Describe("mergeConsecutiveUserMessages", func() {

@@ -514,6 +514,61 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].ThinkingBlocks[2].Thinking).To(Equal("third"))
 			Expect(assistantMsgs[0].ThinkingBlocks[2].Signature).To(Equal("sig-C"))
 		})
+
+		// Production bug 2026-05-11 (req_011Cavnk52Fbsfes8zWumAcm):
+		// Whitespace-only thinking from the streaming layer was persisted
+		// verbatim onto the assistant message's ThinkingBlocks. On the
+		// next turn this fed back into the Anthropic request and the API
+		// rejected it with HTTP 400 invalid_request_error. The storage
+		// layer must drop whitespace-only thinking at the flushThinking
+		// gate so the bad block never becomes part of session history.
+		It("does NOT persist a whitespace-only thinking block from the stream", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "   \n\t  ", Signature: "sig-whitespace"}
+			rawCh <- provider.StreamChunk{Content: "real answer"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(BeEmpty(),
+				"whitespace-only thinking must not be persisted — round-tripping "+
+					"it on the next turn produces HTTP 400 invalid_request_error "+
+					"(production bug req_011Cavnk52Fbsfes8zWumAcm)")
+			Expect(assistantMsgs[0].Content).To(Equal("real answer"),
+				"the assistant content must still be persisted; only the empty "+
+					"thinking block is dropped")
+		})
+
+		It("does NOT emit a thinking message for whitespace-only thinking content", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "  \n  ", Signature: "sig-blank"}
+			rawCh <- provider.StreamChunk{Content: "answer"}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var thinkingMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "thinking" {
+					thinkingMsgs = append(thinkingMsgs, m)
+				}
+			}
+			Expect(thinkingMsgs).To(BeEmpty(),
+				"whitespace-only thinking carries no information — emitting a blank "+
+					"thinking bubble in the UI is noise, and persisting it feeds the "+
+					"Anthropic 400 bug on the next turn")
+		})
 	})
 
 	Context("when an assistant turn produces only thinking with no content", func() {
