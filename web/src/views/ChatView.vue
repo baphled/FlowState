@@ -66,6 +66,23 @@ async function goToParentSession(): Promise<void> {
 const groupedMessages = computed<GroupedMessageEntry[]>(() =>
   groupContextTools(collapseToolPairs(chatStore.messages)),
 )
+
+// Bug Hunt (May 2026) — session-return streaming visibility. The
+// activity-indicator + loading-pulse must reflect the CURRENT
+// session's streaming state, not the legacy global isStreaming /
+// isLoading flags. The globals are only mirrored from
+// setSessionStreaming when sessionId === currentSessionId at the
+// moment of the call; navigating A → B → A leaves the globals
+// holding whatever B last reported, so a session that is still
+// streaming after the user returns shows no indicator.
+//
+// `streamingFor(currentSessionId)` reads the per-session record
+// (Slice A — Streaming Coherence May 2026) which IS updated
+// independently of the active view. When currentSessionId is null
+// the getter falls back to the legacy globals (e.g. for unit-test
+// mounts that set chatStore.isStreaming = true directly without
+// wiring a session id), preserving backwards compatibility.
+const activeStreamingState = computed(() => chatStore.streamingFor(chatStore.currentSessionId))
 const lastMessage = computed(() => {
   const messages = chatStore.messages
   return messages.length > 0 ? messages[messages.length - 1] : null
@@ -240,7 +257,7 @@ watch(
 )
 
 watch(
-  () => chatStore.isLoading,
+  () => activeStreamingState.value.isLoading,
   (loading) => {
     if (loading) {
       userScrolledUp.value = false
@@ -446,7 +463,7 @@ onBeforeUnmount(() => {
         Missing Streaming Affordance (May 2026)".
       -->
       <div
-        v-if="chatStore.isLoading && !chatStore.isStreaming"
+        v-if="activeStreamingState.isLoading && !activeStreamingState.isStreaming"
         class="loading-pulse"
         data-testid="loading-pulse"
         aria-hidden="true"
@@ -463,7 +480,7 @@ onBeforeUnmount(() => {
         transient toast that announces the switch.
       -->
       <div
-        v-if="chatStore.isStreaming || chatStore.isLoading"
+        v-if="activeStreamingState.isStreaming || activeStreamingState.isLoading"
         class="agent-activity-indicator"
         data-testid="agent-activity-indicator"
         role="status"

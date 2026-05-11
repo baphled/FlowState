@@ -3287,6 +3287,136 @@ describe('chatStore - applyContentEvent dispatch', () => {
     })
   })
 
+  it('routes context_usage events to a per-session map keyed by the chunk-captured session id', () => {
+    // Bug Hunt (May 2026) — context-calculation per-session isolation.
+    //
+    // Pre-fix `currentContextUsage` was a flat slot. When session A
+    // continued to stream while the user viewed B the SSE chunk
+    // handler dropped A's `context_usage` events at the C-3 guard,
+    // and returning to A blanked the chip until the next emission —
+    // a stale display while A was still actively producing.
+    //
+    // The fix lifts context_usage state into a per-session map
+    // (`contextUsageBySession`) so the chip can hydrate from
+    // whichever session the user is currently viewing. The slot
+    // keyed by capturedSessionId carries the wire figure verbatim.
+    const store = useChatStore()
+    store.currentSessionId = 'session-A'
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_usage',
+        input_tokens: 5000,
+        output_reserve: 4096,
+        limit: 200000,
+        percentage: 2,
+      }),
+      'session-A',
+    )
+
+    expect(store.contextUsageBySession['session-A']).toEqual({
+      inputTokens: 5000,
+      outputReserve: 4096,
+      limit: 200000,
+      percentage: 2,
+    })
+  })
+
+  it('hydrates currentContextUsage from the per-session map on loadSessionMessages so returning to a streaming session shows its last figure', async () => {
+    // Bug Hunt (May 2026) — companion to the per-session map.
+    //
+    // Pre-fix `loadSessionMessages` cleared `currentContextUsage` to
+    // null unconditionally. Returning to a session that had a figure
+    // (the SSE stream had emitted while the user was elsewhere, or
+    // the session summary cache held one) left the chip showing
+    // `—/—` until the next emission — a meaningless display for a
+    // session the user knows is still working.
+    //
+    // The fix reads the per-session map on session change: if a slot
+    // exists it becomes the active chip figure; only sessions with no
+    // record fall back to null.
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([] as never)
+
+    const store = useChatStore()
+    store.sessions = [
+      {
+        id: 'session-A',
+        agentId: 'test-agent',
+        currentAgentId: 'test-agent',
+        createdAt: '2026-05-08T00:00:00Z',
+        updatedAt: '2026-05-08T00:00:00Z',
+        messageCount: 0,
+      },
+    ] as never
+    // Pre-seed the per-session slot — simulating an earlier
+    // emission that landed while user was on a different session.
+    store.contextUsageBySession = {
+      'session-A': {
+        inputTokens: 42000,
+        outputReserve: 4096,
+        limit: 100000,
+        percentage: 42,
+      },
+    }
+
+    await store.loadSessionMessages('session-A')
+
+    expect(store.currentContextUsage).toEqual({
+      inputTokens: 42000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 42,
+    })
+  })
+
+  it('accepts context_usage events for inactive sessions and stores them under the captured session id (no chunk discard for usage)', () => {
+    // Bug Hunt (May 2026) — the SSE chunk handler's C-3 guard drops
+    // chunks whose captured session id no longer matches the active
+    // currentSessionId. That guard is correct for content / tool /
+    // delegation chunks (the user must not see another session's
+    // bubbles), but context_usage is metadata — its figure is bound
+    // to its session via the slot key, not the active view.
+    //
+    // applyContentEvent must route a context_usage event into the
+    // per-session map even when its captured session id differs from
+    // the active session. The active chip's currentContextUsage stays
+    // unchanged in this case.
+    const store = useChatStore()
+    store.currentSessionId = 'session-B'
+    store.currentContextUsage = {
+      inputTokens: 1000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 1,
+    }
+
+    store.applyContentEvent(
+      JSON.stringify({
+        type: 'context_usage',
+        input_tokens: 75000,
+        output_reserve: 4096,
+        limit: 100000,
+        percentage: 75,
+      }),
+      'session-A',
+    )
+
+    // Inactive session's slot updates with the wire figure.
+    expect(store.contextUsageBySession['session-A']).toEqual({
+      inputTokens: 75000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 75,
+    })
+    // Active session's chip is unchanged.
+    expect(store.currentContextUsage).toEqual({
+      inputTokens: 1000,
+      outputReserve: 4096,
+      limit: 100000,
+      percentage: 1,
+    })
+  })
+
   it('does NOT fire a model_active toast when a provider_changed just toasted the same transition', async () => {
     // Failover sequence on the wire: provider_changed (rich copy with
     // failure reason) → model_active (target same provider+model).

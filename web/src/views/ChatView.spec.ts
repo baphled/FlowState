@@ -1054,6 +1054,78 @@ describe('ChatView agent-activity indicator', () => {
 
     expect(wrapper.find('[data-testid="agent-activity-model"]').exists()).toBe(false)
   })
+
+  it('shows the agent-activity-indicator for the active session when its per-session streamingFor reports isStreaming=true (no global flag)', async () => {
+    // Bug Hunt (May 2026) — session-return streaming visibility.
+    //
+    // Pre-fix the ChatView template was gated on the legacy GLOBAL
+    // chatStore.isStreaming. When the user navigated A (streaming) →
+    // B → back to A, the global flag was whatever loadSessionMessages
+    // had observed for B, NOT the currently-active A. The fix routes
+    // the gate through chatStore.streamingFor(currentSessionId) so
+    // returning to a still-streaming session re-surfaces the "agent
+    // is working…" affordance.
+    //
+    // This spec exercises the per-session getter directly: we wire a
+    // session slot via setSessionStreaming, leave the legacy flat
+    // flags FALSE, and assert the indicator is visible.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'session-A'
+    chatStore.agentId = 'planner'
+    // Per-session slot reports streaming for session-A but the legacy
+    // globals stay false (which is exactly what happens after a
+    // navigation A → B → A: setSessionStreaming on B's slot leaves
+    // A's slot intact, and the global is whatever B last reported).
+    chatStore.sessionStreaming = {
+      'session-A': { isLoading: false, isStreaming: true },
+    }
+    chatStore.isStreaming = false
+    chatStore.isLoading = false
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="agent-activity-indicator"]').exists()).toBe(true)
+  })
+
+  it('hides the agent-activity-indicator for the active session when another session is streaming (cross-session isolation)', async () => {
+    // Companion to the per-session-on case. When session B is the
+    // ACTIVE view and session A is streaming in the background, the
+    // ChatView's indicator must show B's state — NOT A's. Pre-fix
+    // the legacy global isStreaming bled A's "true" onto B's view.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'session-B'
+    chatStore.agentId = 'team-lead'
+    chatStore.sessionStreaming = {
+      'session-A': { isLoading: false, isStreaming: true },
+      'session-B': { isLoading: false, isStreaming: false },
+    }
+    // Legacy global flags carry stale A-state — the fix must ignore
+    // them in favour of streamingFor(currentSessionId).
+    chatStore.isStreaming = true
+    chatStore.isLoading = false
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="agent-activity-indicator"]').exists()).toBe(false)
+  })
 })
 
 describe('ChatView message grouping', () => {

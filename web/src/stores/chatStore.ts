@@ -221,6 +221,23 @@ function disconnectAllSessionStreams(): void {
 }
 
 /**
+ * isContextUsagePayload — Bug Hunt (May 2026) lightweight discriminator
+ * for SSE payloads that carry a `context_usage` event. Used in the
+ * stream-onMessage C-3 guard to let context_usage chunks through for
+ * inactive sessions (they are session-bound metadata that hydrates
+ * `contextUsageBySession`, not view-bound content). All other event
+ * types remain gated by the C-3 active-session check.
+ *
+ * Cheap string-scan rather than a full JSON parse: hot path, called
+ * on every SSE chunk. parseSSEPayload (the dispatcher's actual
+ * classifier) runs only after this gate lets the payload through.
+ */
+function isContextUsagePayload(payload: string): boolean {
+  if (!payload || payload === '[DONE]') return false
+  return payload.includes('"type":"context_usage"')
+}
+
+/**
  * __resetSessionStreams — test-only export so suites that exercise
  * cross-test session-stream isolation can drop all stream references
  * between cases. Vitest does not reset module-scoped state between
@@ -458,6 +475,28 @@ export const useChatStore = defineStore('chat', {
       limit: number
       percentage: number
     } | null,
+    // contextUsageBySession — Bug Hunt (May 2026) per-session context-
+    // usage isolation. Pre-fix `currentContextUsage` was a single flat
+    // slot; an SSE `context_usage` event landing for session A while
+    // the user viewed B either bled A's figure onto B's chip (if the
+    // C-3 chunk guard let it through) or was silently dropped, and
+    // returning to A blanked the chip until the next emission.
+    //
+    // The map is keyed by the chunk's capturedSessionId so each
+    // session keeps its own most-recent figure. applyContentEvent
+    // routes context_usage into the map regardless of whether the
+    // session is currently active (the figure is metadata bound to
+    // its session, not the active view); loadSessionMessages reads
+    // the map on session change so returning to a session shows its
+    // last figure rather than `—/—`. `currentContextUsage` continues
+    // to track the ACTIVE session's view for the chip to read
+    // directly without subscribing to the map.
+    contextUsageBySession: {} as Record<string, {
+      inputTokens: number
+      outputReserve: number
+      limit: number
+      percentage: number
+    }>,
     // ---- auto-compaction telemetry (Slice 6b — Phase 4 follow-up) -------
     //
     // The Go SSE pipeline emits a `context_compacted` event when the L2
@@ -984,7 +1023,21 @@ export const useChatStore = defineStore('chat', {
           // stream was about to be torn down; in Slice B the stream
           // keeps running and chunks for the inactive session land
           // through reconcile when the user returns.
-          if (this.currentSessionId !== capturedSessionId) return
+          //
+          // Bug Hunt (May 2026) — context_usage chunks are an
+          // exception: they are session-bound metadata, NOT view-
+          // bound content. Letting them through to applyContentEvent
+          // updates contextUsageBySession[capturedSessionId] so when
+          // the user returns to this session the chip already shows
+          // the latest figure rather than a stale `—/—`.
+          // applyContentEvent's own per-event handlers gate on the
+          // captured id (the context_usage handler routes into the
+          // per-session map without touching the active chip), so the
+          // active view stays untouched.
+          if (this.currentSessionId !== capturedSessionId) {
+            const isContextUsage = isContextUsagePayload(payload)
+            if (!isContextUsage) return
+          }
           // M7 — thread capturedSessionId so phase + watchdog re-arm
           // scope to this stream's session even if the user navigates
           // between the C-3 guard above and applyContentEvent below.
@@ -1295,10 +1348,14 @@ export const useChatStore = defineStore('chat', {
       // to the failing session — the new one starts clean. A fresh
       // critical event on the new session will repopulate this.
       this.criticalError = null
-      // Same rationale for the usage chip — it tracks the live stream
-      // on the prior session and is meaningless on a different one.
-      // The next stream's first context_usage event repopulates it.
-      this.currentContextUsage = null
+      // Bug Hunt (May 2026) — per-session usage isolation. The chip
+      // tracks the active session, so re-hydrate currentContextUsage
+      // from the per-session map. A session with a prior emission
+      // (its stream may be running in the background, or its summary
+      // was populated by a previous emit) shows its last figure;
+      // sessions with no record fall back to null and the chip
+      // renders its empty state until the next emission.
+      this.currentContextUsage = this.contextUsageBySession[sessionId] ?? null
       // Slice 6b — auto-compaction telemetry is per-session. A stale
       // "compacted ×3" counter or "saved 45K tokens" tooltip from a
       // prior session must NOT bleed into the new one's chip. The
@@ -1632,7 +1689,17 @@ export const useChatStore = defineStore('chat', {
             // not the now-active session. The stream itself remains
             // open (Slice B per-session singleton); chunks are dropped
             // at this guard until the user returns or [DONE] arrives.
-            if (this.currentSessionId !== capturedSessionId) return
+            //
+            // Bug Hunt (May 2026) — context_usage chunks are an
+            // exception: they are session-bound metadata, NOT view-
+            // bound content. See maybeReattachStream for the full
+            // rationale; the per-session map needs to keep ticking
+            // even when the view is elsewhere so returning to a
+            // streaming session shows the latest figure.
+            if (this.currentSessionId !== capturedSessionId) {
+              const isContextUsage = isContextUsagePayload(payload)
+              if (!isContextUsage) return
+            }
             // M7 — thread capturedSessionId so phase + watchdog re-arm
             // scope to this stream's session even if the user navigates
             // between the C-3 guard above and applyContentEvent below.
@@ -2032,12 +2099,16 @@ export const useChatStore = defineStore('chat', {
           })
           return
         case 'context_usage':
+          // Bug Hunt (May 2026) — thread the chunk's captured session
+          // id so the per-session map records the figure under its own
+          // key. An emission for an inactive session lands in
+          // contextUsageBySession but does not touch the active chip.
           this.handleContextUsageEvent({
             inputTokens: event.inputTokens,
             outputReserve: event.outputReserve,
             limit: event.limit,
             percentage: event.percentage,
-          })
+          }, targetSessionId)
           return
         case 'context_compacted':
           this.handleContextCompactedEvent({
@@ -2425,7 +2496,7 @@ export const useChatStore = defineStore('chat', {
       outputReserve: number
       limit: number
       percentage: number
-    }): void {
+    }, capturedSessionId?: string): void {
       // Defensive guard — an all-zero payload (limit=0 in particular
       // would render `1234/0` in the chip, which is meaningless). The
       // engine suppresses the chunk when limit<=0 so a zero-limit
@@ -2440,11 +2511,32 @@ export const useChatStore = defineStore('chat', {
         return
       }
 
-      this.currentContextUsage = {
+      const figure = {
         inputTokens: info.inputTokens,
         outputReserve: info.outputReserve,
         limit: info.limit,
         percentage: info.percentage,
+      }
+
+      // Bug Hunt (May 2026) — record under the chunk's captured
+      // session id so cross-session navigation can read each session's
+      // own most-recent figure. capturedSessionId is the canonical
+      // key; fall back to currentSessionId for legacy / PATCH callers
+      // (applyContextUsageFromSession) that don't thread the id.
+      const sessionKey = capturedSessionId ?? this.currentSessionId
+      if (sessionKey) {
+        this.contextUsageBySession[sessionKey] = figure
+      }
+
+      // The active chip slot mirrors the figure only when this
+      // emission is for the currently-viewed session. An emission for
+      // an inactive session updates the per-session map (above) so
+      // returning to that session re-hydrates the chip via
+      // loadSessionMessages, but it does NOT clobber the active
+      // session's chip with a foreign figure.
+      const isForActiveSession = !capturedSessionId || capturedSessionId === this.currentSessionId
+      if (isForActiveSession) {
+        this.currentContextUsage = figure
       }
     },
 
