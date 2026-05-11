@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import type { Agent, Message, Model, Session, SessionSummary, Swarm } from '@/types'
 import {
   createSession,
+  deleteSession as apiDeleteSession,
   fetchAgents,
   fetchModels,
   fetchSessionMessages,
@@ -599,6 +600,30 @@ export const useChatStore = defineStore('chat', {
       return state.sessions.find((s) => s.id === state.currentSessionId)
     },
 
+    // orderedSessions: the canonical list ordering used by every session-list
+    // surface (SessionBrowser cards, SessionSwitcher dropdown rows). The
+    // contract is two-tier:
+    //   1. Actively-streaming sessions float to the top — the
+    //      streamingFor(id).isStreaming slot is the source of truth (the
+    //      same field every per-row "Live" affordance already reads).
+    //   2. Within each tier, sort by updatedAt descending so the
+    //      most-recent activity surfaces first.
+    //
+    // Returns a NEW array — never mutates state.sessions. Computed-style
+    // derivation so per-row reactivity tracks both the membership and the
+    // streaming map.
+    orderedSessions(state): SessionSummary[] {
+      const streamingMap = state.sessionStreaming
+      const isStreaming = (id: string): boolean =>
+        streamingMap[id]?.isStreaming === true
+      return [...state.sessions].sort((a, b) => {
+        const aStream = isStreaming(a.id) ? 1 : 0
+        const bStream = isStreaming(b.id) ? 1 : 0
+        if (aStream !== bStream) return bStream - aStream
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      })
+    },
+
     // parentSessionId: parent of the active *child* session, or null when the
     // active session has no parentId or no session is active.
     parentSessionId(state): string | null {
@@ -1157,6 +1182,72 @@ export const useChatStore = defineStore('chat', {
           // before and after its await, so a session switch concurrent with
           // this background reconcile is safe.
           void this.reconcileFromBackend(activeId)
+        }
+      }
+    },
+
+    /**
+     * deleteSession removes a session via DELETE /api/v1/sessions/{id} and
+     * applies an optimistic local-state update so the UI reflects the change
+     * immediately. Backs SessionBrowser / SessionSwitcher trash buttons.
+     *
+     * Behaviour:
+     *  - On success: drop the session from `sessions`, clear per-session
+     *    streaming slot, prune queuedPrompts/streamingPhase entries.
+     *  - When the deleted session is the current one: roll the active
+     *    session forward to the most-recently-updated remaining session,
+     *    or null when the list is empty (callers route to an empty state).
+     *  - On HTTP failure: rethrow so the caller can show a toast / rewind
+     *    its optimistic UI. We do NOT mutate local state until the server
+     *    confirms — a stale 404 (concurrent delete from another tab) is
+     *    handled by the caller falling through to a `loadSessions()`
+     *    reconcile.
+     *
+     * Closes Quick-wins QW-11.
+     */
+    async deleteSession(sessionId: string): Promise<void> {
+      await apiDeleteSession(sessionId)
+
+      // Local prune AFTER the server confirms — avoids torn state on
+      // network failure / 404.
+      const wasCurrent = this.currentSessionId === sessionId
+      this.sessions = this.sessions.filter((s) => s.id !== sessionId)
+      // Use Pinia-reactive patches so the QueuedPromptStrip watcher /
+      // streaming watchers re-run when their per-session slots disappear.
+      if (this.sessionStreaming[sessionId]) {
+        const next = { ...this.sessionStreaming }
+        delete next[sessionId]
+        this.sessionStreaming = next
+      }
+      if (this.queuedPrompts[sessionId]) {
+        const next = { ...this.queuedPrompts }
+        delete next[sessionId]
+        this.queuedPrompts = next
+      }
+      if (this.streamingPhase[sessionId]) {
+        const next = { ...this.streamingPhase }
+        delete next[sessionId]
+        this.streamingPhase = next
+      }
+      if (wasCurrent) {
+        // Roll forward to the most-recently-updated remaining ROOT session
+        // (children are unreachable without a parent in the UI). Empty
+        // list → leave currentSessionId null; ChatView handles the empty
+        // state.
+        const candidates = this.sessions.filter((s) => !s.parentId)
+        if (candidates.length === 0) {
+          this.currentSessionId = null
+        } else {
+          const next = [...candidates].sort(
+            (a, b) =>
+              new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+          )[0]
+          this.currentSessionId = next.id
+          // Best-effort hydrate of the new active session's messages —
+          // fire-and-forget; the user is already looking at the empty
+          // composer state by this point and the message pane fills in
+          // as the request resolves.
+          void this.loadSessionMessages(next.id)
         }
       }
     },

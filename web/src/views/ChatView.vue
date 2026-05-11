@@ -41,6 +41,28 @@ const currentSessionSummary = computed(() =>
 // the chat/swarm/session-selection chrome.
 const isChildSession = computed(() => Boolean(currentSessionSummary.value?.parentId))
 
+// QW-11 — Delegated-session read-only banner. A child session is a replay
+// of work another agent did on the user's behalf; injecting prompts there
+// is not a supported flow, so we hide MessageInput and show a slim banner
+// in its place. The banner exposes a backlink to the parent so the user
+// can navigate back to a composable thread.
+const parentSessionForBanner = computed(() => {
+  const parentId = currentSessionSummary.value?.parentId
+  if (!parentId) return null
+  return chatStore.sessions.find((s) => s.id === parentId) ?? null
+})
+const parentSessionTitle = computed(() => {
+  const parent = parentSessionForBanner.value
+  if (!parent) return 'parent session'
+  return parent.title || `Session ${parent.id.slice(0, 8)}`
+})
+async function goToParentSession(): Promise<void> {
+  const parentId = currentSessionSummary.value?.parentId
+  if (!parentId) return
+  chatStore.currentSessionId = parentId
+  await chatStore.loadSessionMessages(parentId)
+}
+
 const groupedMessages = computed<GroupedMessageEntry[]>(() =>
   groupContextTools(collapseToolPairs(chatStore.messages)),
 )
@@ -468,7 +490,34 @@ onBeforeUnmount(() => {
       -->
       <QueuedPromptStrip />
 
-      <MessageInput />
+      <!--
+        QW-11 — Delegated child sessions are read-only. The composer is
+        hidden so the user cannot inject prompts into a replayed thread;
+        in its place a slim banner surfaces "this session was delegated
+        from <parent>" with a backlink to the parent so the user can
+        return to a composable thread without hunting for it in the
+        switcher.
+      -->
+      <MessageInput v-if="!isChildSession" />
+      <div
+        v-else
+        class="child-session-readonly-banner"
+        data-testid="child-session-readonly-banner"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="readonly-banner-icon" aria-hidden="true">📩</span>
+        <span class="readonly-banner-text">
+          This session was delegated from
+          <button
+            type="button"
+            class="readonly-banner-parent-link"
+            data-testid="child-session-readonly-parent-link"
+            @click="goToParentSession"
+          >{{ parentSessionTitle }}</button>
+          · read-only.
+        </span>
+      </div>
     </div>
 
     <aside v-if="showSwarmPane" class="chat-sidebar" :style="{ width: `${settingsStore.chatSidebarWidth}px` }" data-testid="swarm-pane">
@@ -619,6 +668,46 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%);
   background-size: 200% 100%;
   animation: pulse-shimmer 1.5s ease-in-out infinite;
+}
+
+/*
+ * QW-11 — Delegated-session read-only banner. Takes the place of
+ * MessageInput on child sessions so the layout doesn't shift between
+ * parent and child navigation. Muted background to distinguish from the
+ * primary composer; backlink rendered as a button-styled inline link.
+ */
+.child-session-readonly-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1rem;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.readonly-banner-icon {
+  font-size: 1rem;
+}
+
+.readonly-banner-text {
+  line-height: 1.4;
+}
+
+.readonly-banner-parent-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.readonly-banner-parent-link:hover {
+  filter: brightness(1.15);
 }
 
 .agent-activity-indicator {

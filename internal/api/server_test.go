@@ -2132,6 +2132,36 @@ var _ = Describe("Session hierarchy endpoints", func() {
 			Expect(w.Code).To(Equal(http.StatusNotFound))
 		})
 	})
+
+	// DELETE /api/v1/sessions/{id} is the destructive route backing the Vue
+	// UI's per-row trash button (SessionBrowser / SessionSwitcher). The
+	// contract mirrors DELETE /api/v1/tasks/{id}: 204 on success, 404 for an
+	// unknown id, 501 when the session manager is not configured. Closes
+	// Quick-wins QW-11.
+	Describe("DELETE /api/v1/sessions/{id}", func() {
+		It("returns 204 and removes the session for an existing id", func() {
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := httptest.NewRequest("DELETE", "/api/v1/sessions/"+sess.ID, http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNoContent))
+
+			// Behavioural assertion: GET /children for the deleted id now
+			// returns empty (session is gone from the in-memory map).
+			_, err = mgr.GetSession(sess.ID)
+			Expect(err).To(MatchError(session.ErrSessionNotFound),
+				"the route must call into Manager.DeleteSession — otherwise the in-memory record survives")
+		})
+
+		It("returns 404 for a non-existent session", func() {
+			req := httptest.NewRequest("DELETE", "/api/v1/sessions/nonexistent-id", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotFound))
+		})
+	})
 })
 
 var _ = Describe("Background task endpoints", func() {
@@ -2331,6 +2361,15 @@ var _ = Describe("Session manager nil-safety", func() {
 	Describe("GET /api/v1/sessions/{id}/ws", func() {
 		It("returns 501 when session manager is nil", func() {
 			req := httptest.NewRequest("GET", "/api/v1/sessions/sess-1/ws", http.NoBody)
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			Expect(w.Code).To(Equal(http.StatusNotImplemented))
+		})
+	})
+
+	Describe("DELETE /api/v1/sessions/{id}", func() {
+		It("returns 501 when session manager is nil", func() {
+			req := httptest.NewRequest("DELETE", "/api/v1/sessions/sess-1", http.NoBody)
 			w := httptest.NewRecorder()
 			server.Handler().ServeHTTP(w, req)
 			Expect(w.Code).To(Equal(http.StatusNotImplemented))

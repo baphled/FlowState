@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  deleteSession,
   fetchSessionMessages,
   fetchSessions,
   fetchSwarmEvents,
@@ -259,5 +260,61 @@ describe('updateSessionAgent', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(updateSessionAgent('missing', 'plan-writer')).rejects.toThrow(/session not found/i)
+  })
+})
+
+// QW-11 — Per-row session delete. The Vue UI's SessionBrowser /
+// SessionSwitcher trash buttons issue a DELETE to /api/v1/sessions/{id};
+// the backend returns 204 on success, 404 for an unknown id. The helper
+// returns void on success and throws on non-OK.
+describe('deleteSession', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    installLocalStorageStub()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('issues a DELETE to /api/v1/sessions/{id}', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 204 }))
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await deleteSession('sess-1')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [calledUrl, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(calledUrl).toContain('/api/v1/sessions/sess-1')
+    expect(init.method).toBe('DELETE')
+  })
+
+  it('throws when the backend responds with a non-OK status', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ error: 'session not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deleteSession('missing')).rejects.toThrow(/delete|not found/i)
+  })
+
+  it('url-encodes the session id', async () => {
+    fetchMock = vi.fn(() =>
+      Promise.resolve(new Response(null, { status: 204 }))
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await deleteSession('a/b c')
+
+    const calledUrl = fetchMock.mock.calls[0][0] as string
+    expect(calledUrl).toContain('a%2Fb%20c')
   })
 })

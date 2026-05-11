@@ -266,6 +266,28 @@ func eventsPath(sessionsDir string, sessionID string) string {
 	return filepath.Join(sessionsDir, sessionID+eventsFileSuffix)
 }
 
+// removeSessionFiles deletes both the .meta.json sidecar and the
+// .events.jsonl WAL for a session. Missing files are tolerated (so a never-
+// persisted session in tests still deletes cleanly). Used by
+// Manager.DeleteSession to leave no residue on disk.
+//
+// Expected:
+//   - sessionsDir is the directory containing session files.
+//   - sessionID is a non-empty string identifying the session.
+//
+// Side effects:
+//   - Deletes <sessionsDir>/<sessionID>.meta.json and
+//     <sessionsDir>/<sessionID>.events.jsonl(.tmp) from disk if they exist.
+func removeSessionFiles(sessionsDir, sessionID string) {
+	if sessionsDir == "" || sessionID == "" {
+		return
+	}
+	metaPath := filepath.Join(sessionsDir, sessionID+metaFileSuffix)
+	_ = os.Remove(metaPath)
+	// Reuse the events-removal helper so the .tmp sibling is also cleaned up.
+	_ = RemoveSwarmEventsForSession(sessionsDir, sessionID)
+}
+
 // RemoveSwarmEventsForSession deletes the session's JSONL events file and
 // any leftover .tmp sibling. Missing files are not an error. The helper
 // exists so a future session-delete code path can call a single function

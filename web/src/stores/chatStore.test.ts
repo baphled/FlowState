@@ -22,6 +22,7 @@ function installLocalStorageStub(): void {
 }
 import {
   createSession,
+  deleteSession,
   fetchAgents,
   fetchModels,
   fetchSessionMessages,
@@ -142,6 +143,9 @@ vi.mock('../api', () => ({
   ])),
   subscribeSessionStream: vi.fn((sessionId: string) => new FakeEventSource(`/api/v1/sessions/${sessionId}/stream`)),
   truncateSessionMessages: vi.fn((_sessionId: string, _messageId: string) => Promise.resolve()),
+  // QW-11 — deleteSession backing the per-row trash button. Default mock
+  // is "success"; per-test overrides can `vi.mocked(deleteSession).mockRejectedValueOnce(...)`.
+  deleteSession: vi.fn((_sessionId: string) => Promise.resolve()),
 }))
 
 // Toast composable is a module singleton — without a global teardown the
@@ -5006,5 +5010,195 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
         vi.unstubAllGlobals()
       }
     })
+  })
+})
+
+// QW-11 — Per-row session delete.
+//
+// Contract:
+//   - chatStore.deleteSession(id) calls the api deleteSession helper, and on
+//     success drops the session from the local `sessions` array, prunes
+//     per-session streaming / queue / phase slots, and rolls forward
+//     `currentSessionId` if the deleted session was active.
+//   - On HTTP failure the action rethrows and leaves local state untouched
+//     (the caller decides whether to toast / retry / reconcile via
+//     loadSessions).
+//
+// These pins back the SessionBrowser / SessionSwitcher trash buttons.
+describe('chatStore.deleteSession', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    setActivePinia(createPinia())
+    vi.mocked(deleteSession).mockReset()
+    vi.mocked(deleteSession).mockResolvedValue(undefined)
+    vi.mocked(fetchSessionMessages).mockReset()
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+  })
+
+  function makeSummary(overrides: Record<string, unknown> = {}): import('@/types').SessionSummary {
+    return {
+      id: 'session-x',
+      agentId: 'agent-1',
+      title: 'Untitled',
+      status: 'active',
+      depth: 0,
+      createdAt: '2026-05-10T09:00:00Z',
+      updatedAt: '2026-05-10T09:00:00Z',
+      messageCount: 0,
+      isStreaming: false,
+      ...overrides,
+    } as import('@/types').SessionSummary
+  }
+
+  it('issues a DELETE through the api helper for the given session id', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSummary({ id: 'session-A' }), makeSummary({ id: 'session-B' })]
+    store.currentSessionId = 'session-A'
+
+    await store.deleteSession('session-B')
+
+    expect(deleteSession).toHaveBeenCalledTimes(1)
+    expect(deleteSession).toHaveBeenCalledWith('session-B')
+  })
+
+  it('removes the session from chatStore.sessions on success', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSummary({ id: 'session-A' }), makeSummary({ id: 'session-B' })]
+    store.currentSessionId = 'session-A'
+
+    await store.deleteSession('session-B')
+
+    expect(store.sessions.map((s) => s.id)).toEqual(['session-A'])
+  })
+
+  it('rolls currentSessionId forward to the most-recently-updated remaining root session when the deleted session was current', async () => {
+    const store = useChatStore()
+    store.sessions = [
+      makeSummary({ id: 'session-A', updatedAt: '2026-05-09T09:00:00Z' }),
+      makeSummary({ id: 'session-B', updatedAt: '2026-05-10T09:00:00Z' }),
+      makeSummary({ id: 'session-C', updatedAt: '2026-05-08T09:00:00Z' }),
+    ]
+    store.currentSessionId = 'session-B'
+
+    await store.deleteSession('session-B')
+
+    expect(store.currentSessionId).toBe('session-A')
+  })
+
+  it('clears currentSessionId when the last remaining session is deleted', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSummary({ id: 'session-A' })]
+    store.currentSessionId = 'session-A'
+
+    await store.deleteSession('session-A')
+
+    expect(store.currentSessionId).toBeNull()
+  })
+
+  it('prunes per-session streaming, queued-prompts, and phase slots for the deleted session', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSummary({ id: 'session-A' }), makeSummary({ id: 'session-B' })]
+    store.currentSessionId = 'session-A'
+    store.sessionStreaming = {
+      'session-A': { isLoading: false, isStreaming: false },
+      'session-B': { isLoading: false, isStreaming: true },
+    }
+    store.queuedPrompts = {
+      'session-B': ['queued-1'],
+    }
+    store.streamingPhase = {
+      'session-B': 'generating',
+    }
+
+    await store.deleteSession('session-B')
+
+    expect(store.sessionStreaming['session-B']).toBeUndefined()
+    expect(store.queuedPrompts['session-B']).toBeUndefined()
+    expect(store.streamingPhase['session-B']).toBeUndefined()
+    // Untouched slots for surviving sessions stay put.
+    expect(store.sessionStreaming['session-A']).toEqual({ isLoading: false, isStreaming: false })
+  })
+
+  it('rethrows on api failure and leaves the local sessions array untouched', async () => {
+    const store = useChatStore()
+    store.sessions = [makeSummary({ id: 'session-A' }), makeSummary({ id: 'session-B' })]
+    store.currentSessionId = 'session-A'
+    vi.mocked(deleteSession).mockRejectedValueOnce(new Error('boom'))
+
+    await expect(store.deleteSession('session-B')).rejects.toThrow(/boom/i)
+    expect(store.sessions.map((s) => s.id)).toEqual(['session-A', 'session-B'])
+    expect(store.currentSessionId).toBe('session-A')
+  })
+})
+
+// QW-11 — Session ordering. Every list-of-sessions surface reads the
+// `orderedSessions` getter: actively-streaming first, then by updatedAt
+// descending. Sort is non-mutating — `state.sessions` is untouched.
+describe('chatStore.orderedSessions', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    setActivePinia(createPinia())
+  })
+
+  function makeSummary(overrides: Record<string, unknown> = {}): import('@/types').SessionSummary {
+    return {
+      id: 'session-x',
+      agentId: 'agent-1',
+      title: 'Untitled',
+      status: 'active',
+      depth: 0,
+      createdAt: '2026-05-10T09:00:00Z',
+      updatedAt: '2026-05-10T09:00:00Z',
+      messageCount: 0,
+      isStreaming: false,
+      ...overrides,
+    } as import('@/types').SessionSummary
+  }
+
+  it('places actively-streaming sessions at the top regardless of updatedAt', async () => {
+    const store = useChatStore()
+    store.sessions = [
+      makeSummary({ id: 'idle-recent', updatedAt: '2026-05-11T10:00:00Z' }),
+      makeSummary({ id: 'streaming-old', updatedAt: '2026-05-09T09:00:00Z' }),
+      makeSummary({ id: 'idle-mid', updatedAt: '2026-05-10T09:00:00Z' }),
+    ]
+    store.sessionStreaming = {
+      'streaming-old': { isLoading: false, isStreaming: true },
+    }
+
+    expect(store.orderedSessions.map((s) => s.id)).toEqual([
+      'streaming-old',
+      'idle-recent',
+      'idle-mid',
+    ])
+  })
+
+  it('sorts idle sessions by updatedAt descending', async () => {
+    const store = useChatStore()
+    store.sessions = [
+      makeSummary({ id: 'oldest', updatedAt: '2026-05-01T09:00:00Z' }),
+      makeSummary({ id: 'newest', updatedAt: '2026-05-11T09:00:00Z' }),
+      makeSummary({ id: 'middle', updatedAt: '2026-05-05T09:00:00Z' }),
+    ]
+
+    expect(store.orderedSessions.map((s) => s.id)).toEqual([
+      'newest',
+      'middle',
+      'oldest',
+    ])
+  })
+
+  it('does not mutate the source sessions array', async () => {
+    const store = useChatStore()
+    const seed = [
+      makeSummary({ id: 'session-A', updatedAt: '2026-05-01T09:00:00Z' }),
+      makeSummary({ id: 'session-B', updatedAt: '2026-05-11T09:00:00Z' }),
+    ]
+    store.sessions = seed
+
+    // Trigger the getter; ordering should NOT bleed back into `sessions`.
+    const ordered = store.orderedSessions
+    expect(ordered[0].id).toBe('session-B')
+    expect(store.sessions.map((s) => s.id)).toEqual(['session-A', 'session-B'])
   })
 })

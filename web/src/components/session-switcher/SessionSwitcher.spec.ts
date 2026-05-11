@@ -150,3 +150,77 @@ describe('SessionSwitcher activity indicators', () => {
     expect(wrapper.find('[data-testid="session-switcher-background-activity"]').exists()).toBe(false)
   })
 })
+
+// QW-11 — Per-row delete + ordering in the switcher dropdown.
+describe('SessionSwitcher per-row delete and ordering', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('renders a per-row delete button next to each session row', async () => {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionSwitcher)
+    await flushPromises()
+    await wrapper.find('[aria-haspopup="listbox"]').trigger('click')
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'parent-A', title: 'Alpha' }),
+      makeSession({ id: 'parent-B', title: 'Beta' }),
+    ]
+    chatStore.currentSessionId = 'parent-A'
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="session-switcher-delete-parent-A"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="session-switcher-delete-parent-B"]').exists()).toBe(true)
+  })
+
+  it('invokes chatStore.deleteSession with the row id when the user confirms via the inline strip', async () => {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionSwitcher)
+    await flushPromises()
+    await wrapper.find('[aria-haspopup="listbox"]').trigger('click')
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'parent-A', title: 'Alpha' }),
+      makeSession({ id: 'parent-B', title: 'Beta' }),
+    ]
+    chatStore.currentSessionId = 'parent-A'
+    await nextTick()
+
+    const spy = vi.spyOn(chatStore, 'deleteSession').mockResolvedValue(undefined)
+
+    await wrapper.find('[data-testid="session-switcher-delete-parent-B"]').trigger('click')
+    await wrapper.find('[data-testid="session-switcher-confirm-delete-parent-B"]').trigger('click')
+    await flushPromises()
+
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledWith('parent-B')
+  })
+
+  it('orders rows by orderedSessions (streaming first, then updatedAt desc)', async () => {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionSwitcher)
+    await flushPromises()
+    await wrapper.find('[aria-haspopup="listbox"]').trigger('click')
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'idle-recent', title: 'Recent', updatedAt: '2026-05-11T10:00:00Z' }),
+      makeSession({ id: 'streaming-old', title: 'Streaming', updatedAt: '2026-05-09T09:00:00Z' }),
+      makeSession({ id: 'idle-mid', title: 'Mid', updatedAt: '2026-05-10T09:00:00Z' }),
+    ]
+    chatStore.sessionStreaming = {
+      'streaming-old': { isLoading: false, isStreaming: true },
+    }
+    await nextTick()
+
+    const titles = wrapper.findAll('.option-title').map((el) => el.text())
+    expect(titles).toEqual(['Streaming', 'Recent', 'Mid'])
+  })
+})

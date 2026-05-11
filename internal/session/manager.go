@@ -1272,6 +1272,52 @@ func (m *Manager) CloseSession(sessionID string) error {
 	return nil
 }
 
+// DeleteSession removes a session entirely — both from the in-memory map and
+// from disk (when sessionsDir is configured). This is the destructive
+// counterpart to CloseSession: where Close flips the lifecycle status to
+// "completed" (the session sticks around for forensics, replay, and
+// child-history navigation), Delete is for "I never want to see this
+// session again" — backs the Vue UI's per-row trash button in
+// SessionBrowser / SessionSwitcher.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//
+// Returns:
+//   - nil when the session was removed.
+//   - ErrSessionNotFound when no session matches sessionID.
+//
+// Side effects:
+//   - Deletes the session from the in-memory map.
+//   - Deletes the session's .meta.json sidecar from disk when sessionsDir is
+//     configured (a missing sidecar is tolerated — a not-yet-persisted session
+//     is still deletable). The events.jsonl WAL is also removed so the
+//     session leaves no residue on disk.
+//   - Does NOT cascade to child sessions: child sessions are independent
+//     records on disk and the caller is expected to delete them too if
+//     desired. A future cascade option can be layered on top.
+func (m *Manager) DeleteSession(sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.sessions[sessionID]; !ok {
+		return ErrSessionNotFound
+	}
+
+	delete(m.sessions, sessionID)
+
+	if m.sessionsDir != "" {
+		// removeSessionFiles is split out so the persistence symbols stay in
+		// persistence.go and the manager keeps a single I/O choke-point. The
+		// helper tolerates missing files so a never-persisted session
+		// (e.g. one created in tests without SetSessionsDir before the call)
+		// still deletes cleanly.
+		removeSessionFiles(m.sessionsDir, sessionID)
+	}
+
+	return nil
+}
+
 // InjectNotification stores a completion notification for the given session.
 // Expected:
 //   - sessionID is non-empty.
