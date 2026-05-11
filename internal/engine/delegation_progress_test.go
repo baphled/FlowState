@@ -367,4 +367,149 @@ var _ = Describe("DelegationProgress", func() {
 			Expect(progressEvents).NotTo(BeEmpty(), "expected at least one progress event from 15 tool calls")
 		})
 	})
+
+	// M2-adjacent — teeToParentStream's forwarder goroutine has the same
+	// ctx-unaware-send shape that the failover plugin's prepend* wrappers
+	// fixed in 38fc705f. The inner loop forwards each chunk to the returned
+	// `out` channel via a bare `out <- chunk` (delegation.go:1751) before
+	// the ctx-aware send to the parent stream. When a downstream collector
+	// (accumulator, harness-events, response builder) stops draining `out`
+	// — for example because the delegation turn was cancelled mid-stream —
+	// after at most `cap(src)+1` queued chunks the forwarder goroutine
+	// parks on `out <- chunk`. The subsequent ctx-aware `parentOut` send
+	// never gets a chance to run, so the goroutine leaks for the full life
+	// of the source channel (driven by the per-attempt stream timeout in
+	// production).
+	//
+	// Fix shape (pinned by these specs): the inner `out <- chunk` becomes
+	// a ctx-aware select alongside the existing parent-send select. When
+	// the parent ctx cancels (consumer disconnect, user Escape, navigation
+	// away, parent turn cancel cascade), the forwarder exits promptly and
+	// closes `out`.
+	//
+	// Observable: with consumer-stopped-draining + parent-ctx-cancelled,
+	// the `out` channel must close within a short window. Pre-fix the
+	// forwarder stays parked and the channel never closes.
+	Context("ctx-cancel on a wedged tee forwarder (M2-adjacent)", func() {
+		// Helper: pre-fill src with enough chunks to fill out's buffer
+		// twice over, then leave src open. The forwarder will read until
+		// it parks on a bare `out <- chunk` (out full, consumer not
+		// draining). We deliberately do NOT close src on ctx-cancel so
+		// that the buggy `for chunk := range src` cannot exit by the
+		// channel-close route — the ONLY way the forwarder can leave is
+		// the ctx-aware select we're pinning.
+		pumpSrc := func(src chan provider.StreamChunk, n int) {
+			// Run the pump in a goroutine that ignores ctx — it does not
+			// matter to the contract whether more chunks arrive after
+			// cancel; what matters is that the in-flight bare `out <-`
+			// observes ctx.Done.
+			//
+			// Use EventType="tool_call" + empty Content/Thinking so the
+			// forwarder takes the "continue" branch (skips the ctx-aware
+			// parent-send) and parks on the BARE `out <- chunk` instead
+			// — that's the M2-adjacent leak surface we're pinning. With
+			// content-bearing chunks the forwarder would park on the
+			// already-ctx-aware parent-send and the bug below would be
+			// masked.
+			go func() {
+				for i := 0; i < n; i++ {
+					src <- provider.StreamChunk{EventType: "tool_call"}
+				}
+				// Intentionally do not close src. In production src is
+				// closed when the upstream provider finishes its turn;
+				// the leak window is the time between consumer
+				// disconnect and src close.
+			}()
+		}
+
+		It("closes the returned channel promptly after ctx cancels and the downstream collector has stopped draining", func() {
+			// Stand up a small src so cap(src)+1 buffer is easy to overflow.
+			src := make(chan provider.StreamChunk, 2)
+			parentOut := make(chan provider.StreamChunk, 2)
+			ctx, cancel := context.WithCancel(engine.WithStreamOutput(context.Background(), parentOut))
+			defer cancel()
+
+			out := engine.TeeToParentStreamForTest(ctx, "child-agent", src)
+
+			// Pump more chunks than out + parentOut can buffer combined,
+			// so the forwarder parks on a send somewhere.
+			pumpSrc(src, 32)
+
+			// Drain one chunk from out to confirm liveness, then stop.
+			select {
+			case _, ok := <-out:
+				if !ok {
+					Fail("returned channel closed before we could stage the wedge")
+				}
+			case <-time.After(2 * time.Second):
+				Fail("forwarder never produced a chunk — pre-conditions broken")
+			}
+
+			// Give the forwarder a moment to pump more chunks and park.
+			// At this point: out is full (cap 3, 2 buffered post-drain
+			// plus the bare-send-target), parentOut is full or about to
+			// be. The forwarder is parked either on `out <- chunk` (the
+			// bug we're pinning) or on the ctx-aware `parentOut <-`. In
+			// either case, ctx cancel MUST release it.
+			time.Sleep(50 * time.Millisecond)
+
+			cancel()
+
+			// After cancel + consumer-stopped-draining-out, the
+			// forwarder MUST exit and close `out` within a short window.
+			// Pre-fix the goroutine is blocked on the bare `out <- chunk`
+			// and ignores ctx, so `out` stays open indefinitely (src is
+			// never closed in this test, mirroring the production leak
+			// window where src stays alive until per-attempt timeout
+			// fires).
+			Eventually(func() bool {
+				select {
+				case _, ok := <-out:
+					// Either we received a queued chunk (still alive,
+					// keep polling) or the channel closed (goroutine
+					// exited — the contract).
+					return !ok
+				default:
+					return false
+				}
+			}, 1*time.Second, 10*time.Millisecond).Should(BeTrue(),
+				"teeToParentStream forwarder goroutine must exit on parent ctx cancel; otherwise it leaks until src closes (per-attempt stream timeout in production) — M2-adjacent to failover stream_hook fix 38fc705f")
+		})
+
+		It("the returned channel drains to close after ctx cancel (no parked forwarder)", func() {
+			// Belt-and-braces companion: drive the receiver loop after
+			// cancel and assert termination. Pre-fix the drain loop
+			// would hang forever (forwarder parked on `out <- chunk`,
+			// src never closes).
+			src := make(chan provider.StreamChunk, 2)
+			parentOut := make(chan provider.StreamChunk, 2)
+			ctx, cancel := context.WithCancel(engine.WithStreamOutput(context.Background(), parentOut))
+
+			out := engine.TeeToParentStreamForTest(ctx, "child-agent", src)
+
+			pumpSrc(src, 32)
+
+			// Stage the wedge.
+			select {
+			case <-out:
+			case <-time.After(2 * time.Second):
+				Fail("could not stage wedge — forwarder stalled")
+			}
+			time.Sleep(50 * time.Millisecond)
+
+			cancel()
+
+			drainDone := make(chan struct{})
+			go func() {
+				for range out {
+				}
+				close(drainDone)
+			}()
+			select {
+			case <-drainDone:
+			case <-time.After(2 * time.Second):
+				Fail("returned channel drain did not terminate within 2s of ctx cancel — teeToParentStream forwarder leak (M2-adjacent regression)")
+			}
+		})
+	})
 })

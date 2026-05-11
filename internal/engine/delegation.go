@@ -1748,7 +1748,20 @@ func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.
 			// downstream collector / accumulator depends on every chunk
 			// flowing through). This must always happen, even if we
 			// later choose not to mirror the chunk to the parent.
-			out <- chunk
+			//
+			// ctx-aware: if the downstream collector has stopped
+			// draining `out` (delegation turn cancel cascade, SSE
+			// consumer disconnect, parent ctx done), the bare `out <-`
+			// would park for the full life of src — which in
+			// production stays alive until the per-attempt stream
+			// timeout fires. Mirrors the M2 fix on
+			// internal/plugin/failover/stream_hook.go's prepend*
+			// wrappers (commit 38fc705f).
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				return
+			}
 
 			// Decide whether this chunk should also flow to the parent
 			// stream (the user-visible SSE wire). The skip rules are
