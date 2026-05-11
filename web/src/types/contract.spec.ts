@@ -34,6 +34,7 @@ describe('SessionResponse contract — Go ↔ TS hand-mirror', () => {
     'messages',
     'messageCount',
     'isStreaming',
+    'chainId',
     'createdAt',
     'updatedAt',
   ] as const
@@ -56,6 +57,7 @@ describe('SessionResponse contract — Go ↔ TS hand-mirror', () => {
       messages: [],
       messageCount: 0,
       isStreaming: false,
+      chainId: undefined,
       createdAt: '2026-05-04T00:00:00Z',
       updatedAt: '2026-05-04T00:00:00Z',
     }
@@ -78,6 +80,7 @@ describe('SessionResponse contract — Go ↔ TS hand-mirror', () => {
       parentSessionId: undefined,
       status: 'active',
       depth: 0,
+      chainId: undefined,
       title: 'demo',
       createdAt: '2026-05-04T00:00:00Z',
       updatedAt: '2026-05-04T00:00:00Z',

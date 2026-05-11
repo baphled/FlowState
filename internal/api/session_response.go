@@ -39,9 +39,18 @@ type SessionResponse struct {
 	Messages          []session.Message `json:"messages"`
 	MessageCount      int               `json:"messageCount"`
 	IsStreaming       bool              `json:"isStreaming"`
-	ContextUsage      json.RawMessage   `json:"contextUsage,omitempty"`
-	CreatedAt         time.Time         `json:"createdAt"`
-	UpdatedAt         time.Time         `json:"updatedAt"`
+	// ChainID mirrors Session.ChainID (manager.go:138) and Summary.ChainID
+	// (manager.go:167). Persisted on the Session by the engine's spawn path
+	// to close the cold-reload sibling-confusion hole; surfaced here so any
+	// caller that reads the single-session DTO (POST /messages, PATCH /agent,
+	// PATCH /model, future GET /sessions/{id}) sees the same chainId as the
+	// list endpoint. Omitted for root sessions so legacy payloads stay
+	// byte-identical to their pre-field shape. See 40ad53d2 and the
+	// `Chat Sibling Confusion (May 2026)` vault note for context.
+	ChainID      string          `json:"chainId,omitempty"`
+	ContextUsage json.RawMessage `json:"contextUsage,omitempty"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	UpdatedAt    time.Time       `json:"updatedAt"`
 }
 
 // sessionResponseOptions holds functional-option state for NewSessionResponse.
@@ -103,6 +112,7 @@ func NewSessionResponse(sess *session.Session, opts ...SessionResponseOption) *S
 		Messages:          messages,
 		MessageCount:      len(messages),
 		IsStreaming:       o.isStreaming,
+		ChainID:           sess.ChainID,
 		ContextUsage:      o.contextUsage,
 		CreatedAt:         sess.CreatedAt,
 		UpdatedAt:         sess.UpdatedAt,

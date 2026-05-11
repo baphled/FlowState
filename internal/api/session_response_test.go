@@ -82,3 +82,43 @@ var _ = Describe("NewSessionResponse model+provider projection", func() {
 		Expect(out).NotTo(HaveKey("currentProviderId"))
 	})
 })
+
+var _ = Describe("NewSessionResponse chainId projection", func() {
+	// Parity with Summary.ChainID (manager.go:167). Persisted as
+	// Session.ChainID by 40ad53d2 to close the cold-reload hole on the
+	// list endpoint; the single-session DTO surfaces the same field so
+	// any caller that reads SessionResponse (POST /messages, PATCH /agent,
+	// PATCH /model, future GET /sessions/{id}) sees the same data.
+	It("projects ChainID into the chainId JSON key", func() {
+		sess := &session.Session{
+			ID:      "sess-chain",
+			AgentID: "agent-a",
+			ChainID: "chain-xyz",
+		}
+
+		resp := api.NewSessionResponse(sess)
+		Expect(resp).NotTo(BeNil())
+		Expect(resp.ChainID).To(Equal("chain-xyz"))
+
+		raw, err := json.Marshal(resp)
+		Expect(err).NotTo(HaveOccurred())
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(raw, &out)).To(Succeed())
+		Expect(out).To(HaveKeyWithValue("chainId", "chain-xyz"))
+		Expect(out).NotTo(HaveKey("chain_id"),
+			"snake_case is the persistence shape; wire is camelCase")
+	})
+
+	It("omits chainId when the session has no chain (root session)", func() {
+		sess := &session.Session{ID: "sess-root", AgentID: "agent-a"}
+
+		raw, err := json.Marshal(api.NewSessionResponse(sess))
+		Expect(err).NotTo(HaveOccurred())
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(raw, &out)).To(Succeed())
+		Expect(out).NotTo(HaveKey("chainId"),
+			"root sessions must stay byte-identical to their pre-field shape")
+	})
+})
