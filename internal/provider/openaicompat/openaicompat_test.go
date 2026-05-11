@@ -1250,6 +1250,123 @@ var _ = Describe("RunStream", func() {
 		Expect(chunks).To(BeEmpty())
 	})
 
+	// Streaming spend tracking: per OpenAI's stream_options.include_usage
+	// contract, the upstream emits a terminal chunk (empty choices,
+	// populated `usage` block) carrying the request-level token totals.
+	// The openai-go ChatCompletionAccumulator sums these into acc.Usage,
+	// and RunStream must surface them as a `StreamChunk{EventType:"usage"}`
+	// carrying a `provider.UsageDelta` BEFORE the terminal `Done` chunk.
+	// Without this, every provider that wraps openaicompat (openai,
+	// openzen, zai, ollamacloud, github-copilot) has zero streaming
+	// spend visibility — the non-stream `ParseChatResponse` path
+	// already populates `provider.Usage` correctly, the stream path
+	// silently dropped it.
+	It("emits a UsageDelta chunk with cumulative tokens before Done", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-usage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-usage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				// Terminal usage chunk per OpenAI streaming spec —
+				// empty choices, populated `usage` block. Only sent
+				// when the request set `stream_options.include_usage`.
+				`{"id":"chatcmpl-usage","object":"chat.completion.chunk","model":"gpt-4o","choices":[],"usage":{"prompt_tokens":42,"completion_tokens":17,"total_tokens":59}}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+
+		// Locate the usage chunk and the Done chunk by inspection so
+		// the assertion does not depend on the exact ordering of any
+		// intervening content chunks.
+		var usageIdx, doneIdx int
+		usageIdx, doneIdx = -1, -1
+		for i, c := range collected {
+			if c.EventType == "usage" && usageIdx == -1 {
+				usageIdx = i
+			}
+			if c.Done && doneIdx == -1 {
+				doneIdx = i
+			}
+		}
+
+		Expect(usageIdx).To(BeNumerically(">=", 0),
+			"RunStream must emit a UsageDelta chunk when the upstream "+
+				"includes a terminal usage block (stream_options.include_usage). "+
+				"Without it every openaicompat-backed provider has zero "+
+				"streaming spend visibility.")
+		Expect(doneIdx).To(BeNumerically(">=", 0), "RunStream must emit a Done chunk")
+		Expect(usageIdx).To(BeNumerically("<", doneIdx),
+			"the usage chunk must precede Done so downstream consumers "+
+				"that stop reading on Done still observe the token totals")
+
+		usage := collected[usageIdx].Usage
+		Expect(usage).NotTo(BeNil(),
+			"the usage chunk must carry a populated *provider.UsageDelta")
+		Expect(usage.InputTokens).To(Equal(int64(42)),
+			"InputTokens must reflect the upstream's prompt_tokens")
+		Expect(usage.OutputTokens).To(Equal(int64(17)),
+			"OutputTokens must reflect the upstream's completion_tokens")
+	})
+
+	// Sister-spec: streams that finish without a trailing usage block
+	// (older mocks, providers that do not honour the include_usage flag)
+	// must NOT synthesise a zero-value usage chunk. The contract is
+	// "carry tokens when known, stay quiet otherwise" so downstream
+	// telemetry does not get poisoned with bogus zeros.
+	It("does not emit a UsageDelta chunk when the upstream omits usage data", func() {
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			chunks := []string{
+				`{"id":"chatcmpl-nousage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}`,
+				`{"id":"chatcmpl-nousage","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			}
+			for _, chunk := range chunks {
+				fmt.Fprintf(w, "data: %s\n\n", chunk)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+		ctx := context.Background()
+		params := openaicompat.BuildParams(provider.ChatRequest{
+			Model:    "gpt-4o",
+			Messages: []provider.Message{{Role: "user", Content: "hi"}},
+		})
+		ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+		var collected []provider.StreamChunk
+		for chunk := range ch {
+			collected = append(collected, chunk)
+		}
+		for _, c := range collected {
+			Expect(c.EventType).NotTo(Equal("usage"),
+				"no usage chunk must be emitted when the upstream "+
+					"sent no usage data")
+		}
+	})
+
 	// Error classification specs. These exercise the fix for the silent
 	// retry-classification degrade on non-anthropic providers: `stream.Err()`
 	// was previously emitted raw as the `Error` field on a `StreamChunk`,
