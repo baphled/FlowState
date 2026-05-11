@@ -108,6 +108,40 @@ const isThinkingOnlyDegraded = computed(() => {
   return true
 })
 
+// Empty-turn placeholder render branch — bug fix #27 (May 11 2026).
+//
+// Slice C (commit a3486538) added `handleStreamDone` logic that pushes an
+// empty_turn placeholder into chatStore.messages when [DONE] arrives with
+// no running assistant — the engine's synthesizePlaceholderAssistant did
+// not emit one and the user prompt would otherwise sit there with no
+// follow-up artefact at all. The store-side push shipped but no
+// MessageBubble v-else-if consumed the new shape, so true empty turns
+// (no content, no thinking, no tool_calls — Anthropic / OpenAI return
+// this occasionally) were silently swallowed. The agent-block-render-gate
+// follow-up (commit 4c0cee54) added hasRenderableContent which then
+// suppressed the wrapper entirely for this shape — making the silent
+// swallow load-bearing.
+//
+// The fix: a dedicated v-else-if branch that surfaces the SAME soft-error
+// affordance copy the thinking-only-degraded branch uses ("Reply didn't
+// come through" — commit 87c114c8 wording). The user-facing UX is the
+// same: the model stopped before replying, try again. The two cases
+// stay logically distinct (thinking-only carries reasoning tokens, empty
+// turn carries nothing) but the user doesn't need to disambiguate.
+//
+// The predicate is narrow: assistant role + empty content + empty
+// thinkingBlocks + stopReason === 'empty_turn'. The empty-thinkingBlocks
+// guard prevents collision with isThinkingOnlyDegraded — if both
+// branches matched, the v-else-if order would silently decide which
+// fires, masking future state-machine bugs.
+const isEmptyTurn = computed(() => {
+  if (props.message.role !== 'assistant') return false
+  if ((props.message.content ?? '') !== '') return false
+  const thinkingBlocks = props.message.thinkingBlocks ?? []
+  if (thinkingBlocks.length > 0) return false
+  return props.message.stopReason === 'empty_turn'
+})
+
 // Both tool_result and an unmatched tool_call (one without a paired
 // tool_result — collapseToolPairs leaves it intact) render through the
 // same per-tool component. The collapsable card chrome already signals
@@ -143,18 +177,19 @@ const toolComponent = computed(() => {
 //      turn went straight to tool use without first emitting any content
 //      chunks, the sealed placeholder carries content === '' and tool_call /
 //      tool_result rows in the message list ARE the response.
-//   2. The Streaming Coherence Slice C empty_turn placeholder pushed at
-//      chatStore.ts:2075 carries content === '' + stopReason === 'empty_turn'
-//      and no thinkingBlocks. The empty-turn signal predates a render branch
-//      and is intentionally silent here.
+//   2. The Streaming Coherence Slice C empty_turn placeholder pushed by
+//      handleStreamDone carries content === '' + stopReason === 'empty_turn'
+//      and no thinkingBlocks. This shape is now consumed by the
+//      isEmptyTurn render branch above (bug fix #27, May 11 2026) — the
+//      v-else-if ordering routes it there before this suppression matters.
 //
 // Without this gate `isPlain` rendered the assistant chrome (role label,
-// empty MarkdownRenderer, copy-button-with-empty-text) for those messages,
+// empty MarkdownRenderer, copy-button-with-empty-text) for case 1,
 // producing a phantom agent block alongside the tool cards. The gate is
 // narrow: assistant role + content (after trim) is empty. The
-// thinking-only-degraded branch matches its own predicate (`v-else-if`
-// runs first) so empty content + thinkingBlocks + stopReason still
-// surfaces the soft-error affordance correctly.
+// thinking-only-degraded and empty-turn branches match their own
+// predicates first (`v-else-if` runs in order) so their affordances
+// surface correctly.
 const hasVisibleAssistantContent = computed(
   () =>
     props.message.role !== 'assistant' ||
@@ -169,6 +204,7 @@ const isPlain = computed(
     !isDelegation.value &&
     !isThinking.value &&
     !isThinkingOnlyDegraded.value &&
+    !isEmptyTurn.value &&
     hasVisibleAssistantContent.value,
 )
 
@@ -187,6 +223,7 @@ const hasRenderableContent = computed(
     isDelegation.value ||
     isThinking.value ||
     isThinkingOnlyDegraded.value ||
+    isEmptyTurn.value ||
     isPlain.value,
 )
 
@@ -337,6 +374,33 @@ async function handleRevert(): Promise<void> {
         <span class="thinking-only-title">Reply didn't come through</span>
         <span class="thinking-only-message">
           The model worked through this turn but stopped before replying. Try sending the prompt again.
+        </span>
+      </div>
+    </div>
+
+    <!--
+      Empty-turn placeholder affordance — bug fix #27 (May 11 2026).
+      Pre-fix the empty_turn placeholder pushed by handleStreamDone
+      (chatStore.ts) reached this template with no matching v-else-if
+      and was silently swallowed by the hasRenderableContent gate (commit
+      4c0cee54). Reuses the same UX vocabulary as the thinking-only
+      branch above ("Reply didn't come through" — commit 87c114c8) since
+      from the user's perspective both states are "the model didn't
+      reply, try again". The two paths stay separate at the predicate
+      level so future divergence (e.g. distinct retry affordance) is a
+      narrow edit, not an unwind.
+    -->
+    <div
+      v-else-if="isEmptyTurn"
+      class="thinking-only-affordance"
+      role="status"
+      data-testid="empty-turn-affordance"
+    >
+      <span class="thinking-only-icon" aria-hidden="true">!</span>
+      <div class="thinking-only-content">
+        <span class="thinking-only-title">Reply didn't come through</span>
+        <span class="thinking-only-message">
+          The model finished without producing a reply. Try sending the prompt again.
         </span>
       </div>
     </div>

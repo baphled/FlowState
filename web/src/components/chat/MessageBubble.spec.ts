@@ -684,19 +684,26 @@ describe('MessageBubble', () => {
   //      the sealed placeholder carries content === ''. Adjacent tool_call /
   //      tool_result rows in the message list ARE the response.
   //
-  //   2. The Streaming Coherence Slice C "empty_turn" placeholder pushed at
-  //      chatStore.ts:2075 carries content === '' + stopReason === 'empty_turn'
-  //      and no thinkingBlocks. This is intentionally silent — the empty-turn
-  //      placeholder predates a render branch and the visible "no response"
-  //      surface is owned by other affordances (toast, watchdog).
+  //   2. The Streaming Coherence Slice C "empty_turn" placeholder pushed by
+  //      handleStreamDone (chatStore.ts) carries content === '' +
+  //      stopReason === 'empty_turn' and no thinkingBlocks. This DOES render
+  //      a soft-error affordance — see bug fix #27 (May 11 2026). Pre-fix the
+  //      placeholder was pushed into the store but no MessageBubble v-else-if
+  //      consumed it, so true empty turns (no content, no thinking, no
+  //      tool_calls — Anthropic / OpenAI occasionally return this shape) were
+  //      silently swallowed. The new branch reuses the thinking-only-degraded
+  //      copy ("Reply didn't come through") so the user gets the same
+  //      affordance the thinking-only case already provides.
   //
-  // Both must NOT render the plain assistant chrome (role label, empty
-  // MarkdownRenderer, copy button on empty content). The user's outcome:
-  // tool cards stand alone; an empty assistant bubble is phantom UI.
+  // The mid-stream sealed placeholder (case 1) must NOT render the plain
+  // assistant chrome (role label, empty MarkdownRenderer, copy button on
+  // empty content). The user's outcome: tool cards stand alone; an empty
+  // assistant bubble alongside them is phantom UI.
   //
   // Distinct from the thinking-only-degraded branch — that branch handles
-  // the (empty content + thinkingBlocks + stopReason) shape with its own
-  // affordance and MUST keep firing.
+  // the (empty content + thinkingBlocks + stopReason) shape and MUST keep
+  // firing. The empty_turn branch fires when content + thinkingBlocks are
+  // BOTH empty and stopReason === 'empty_turn' specifically.
   describe('empty-content assistant suppression', () => {
     it('does NOT render the message-bubble wrapper when content is empty (mid-stream sealed placeholder)', () => {
       const wrapper = mountWithStubs(
@@ -735,11 +742,17 @@ describe('MessageBubble', () => {
       expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
     })
 
-    it('does NOT render the message-bubble wrapper for the empty_turn placeholder', () => {
-      // Streaming Coherence Slice C placeholder shape (see chatStore.ts:2075).
-      // No thinkingBlocks → not the thinking-only-degraded branch. No
-      // content → no agent block. The empty_turn signal has its own
-      // (separate) UX surface — the bubble must not render any DOM.
+    it('renders the empty-turn soft-error affordance for the empty_turn placeholder (bug fix #27)', () => {
+      // Streaming Coherence Slice C placeholder shape (see chatStore.ts
+      // handleStreamDone). No content, no thinkingBlocks, stopReason
+      // === 'empty_turn'. Pre-fix #27 (May 11 2026) the placeholder was
+      // pushed into the store but no MessageBubble v-else-if consumed it,
+      // so true empty turns were silently swallowed — the user saw their
+      // prompt sit there with no follow-up artefact at all. The new
+      // branch reuses the "Reply didn't come through" copy from the
+      // thinking-only-degraded affordance (commit 87c114c8 wording) —
+      // the UX vocabulary is the same: "the model didn't reply, try
+      // again". role='status' (informational, not alert) matches.
       const wrapper = mountWithStubs(
         makeMessage({
           role: 'assistant',
@@ -749,9 +762,65 @@ describe('MessageBubble', () => {
         }),
       )
 
-      expect(wrapper.find('.message-bubble').exists()).toBe(false)
+      // The wrapper renders (no longer suppressed by hasRenderableContent).
+      expect(wrapper.find('.message-bubble').exists()).toBe(true)
+      // The empty-turn branch surfaces its own affordance with a distinct
+      // testid so the thinking-only assertions stay independent.
+      const affordance = wrapper.find('[data-testid="empty-turn-affordance"]')
+      expect(affordance.exists()).toBe(true)
+      expect(affordance.attributes('role')).toBe('status')
+      // Same copy as the thinking-only-degraded affordance (commit
+      // 87c114c8 — "Reply didn't come through"). The two cases share
+      // the user-facing message intentionally; the underlying state
+      // (empty placeholder vs thinking-only) is invisible to the user.
+      expect(wrapper.text()).toContain("Reply didn't come through")
+      expect(wrapper.text()).toContain('Try sending the prompt again')
+      // Negative checks: the plain assistant chrome (role label,
+      // MarkdownRenderer, copy button) must NOT appear — this is an
+      // affordance, not a content bubble.
       expect(wrapper.find('.message-role').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(false)
+      // And it must not collide with the thinking-only affordance —
+      // that one fires only when thinkingBlocks are present.
       expect(wrapper.find('[data-testid="thinking-only-affordance"]').exists()).toBe(false)
+    })
+
+    it('does NOT render the empty-turn affordance for a plain empty assistant (no stopReason)', () => {
+      // Defensive: the new branch must be narrow. A sealed mid-stream
+      // empty placeholder (case 1 above, no stopReason set) still goes
+      // through the existing hasVisibleAssistantContent gate and stays
+      // suppressed. Only the explicit stopReason='empty_turn' shape
+      // pushed by handleStreamDone gets the affordance.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: '',
+          status: 'completed',
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="empty-turn-affordance"]').exists()).toBe(false)
+      expect(wrapper.find('.message-bubble').exists()).toBe(false)
+    })
+
+    it('does NOT render the empty-turn affordance when content-bearing turn has stopReason="empty_turn"', () => {
+      // Defensive: if a future code path sets stopReason='empty_turn' on
+      // a content-bearing assistant message (shouldn't happen, but
+      // belt-and-braces), the content takes precedence and the
+      // affordance does not collide with the plain render.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'assistant',
+          content: 'real content',
+          status: 'completed',
+          stopReason: 'empty_turn',
+        }),
+      )
+
+      expect(wrapper.find('[data-testid="empty-turn-affordance"]').exists()).toBe(false)
+      // Plain render path takes over.
+      expect(wrapper.find('.message-role').exists()).toBe(true)
+      expect(wrapper.text()).toContain('real content')
     })
 
     it('still renders normally when an assistant message has actual content', () => {
