@@ -4004,9 +4004,16 @@ func (e *Engine) storeToolResult(toolCall *provider.ToolCall, result tool.Result
 		content = result.Error.Error()
 	}
 
+	// Stamp IsError from the executor's truth (result.Error != nil) so the
+	// provider does not have to re-derive from message content. Bug M4
+	// (May 2026): the Anthropic provider previously inferred via
+	// strings.HasPrefix(content, "Error:") — false positives on legitimate
+	// "Error: 0 results found" success outputs, false negatives on
+	// "failed: ..." real failures.
 	e.store.Append(provider.Message{
 		Role:    "tool",
 		Content: content,
+		IsError: result.Error != nil,
 		ToolCalls: []provider.ToolCall{
 			{ID: toolCall.ID, Name: toolCall.Name},
 		},
@@ -4048,16 +4055,25 @@ func (e *Engine) appendToolResultsBatchToMessages(
 	})
 
 	// One tool-result message per call, in the same order.
+	//
+	// IsError is stamped explicitly from results[i].Error != nil so the
+	// provider does not have to re-derive from content. Bug M4 (May 2026)
+	// — see provider.Message.IsError and anthropic.buildToolResultMessage.
+	// The "Error: " content prefix is retained for the model's text-level
+	// reading of the failure: it has been there since pre-fix and pruning
+	// it would change the visible payload in passing.
 	totalContentBytes := 0
 	for i, tc := range toolCalls {
 		content := results[i].Output
-		if results[i].Error != nil {
+		isError := results[i].Error != nil
+		if isError {
 			content = "Error: " + results[i].Error.Error()
 		}
 		totalContentBytes += len(content)
 		messages = append(messages, provider.Message{
 			Role:    "tool",
 			Content: content,
+			IsError: isError,
 			ToolCalls: []provider.ToolCall{
 				{ID: tc.ID, Name: tc.Name},
 			},

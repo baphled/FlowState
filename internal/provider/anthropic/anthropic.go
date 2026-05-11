@@ -1077,8 +1077,15 @@ func buildToolResultMessage(
 	blocks := make(
 		[]anthropicAPI.ContentBlockParamUnion, 0, len(m.ToolCalls),
 	)
+	// is_error is the wire-level flag Anthropic uses for tool-result
+	// reasoning. The engine stamps provider.Message.IsError from
+	// tool.Result.Error at construction time (engine.go) — bug M4
+	// (May 2026) replaced the prior content-prefix heuristic
+	// (strings.HasPrefix(m.Content, "Error:")) which false-positived
+	// on legitimate "Error: 0 results found" success outputs and
+	// false-negatived on "failed: ..." actual errors.
+	isError := m.IsError
 	for _, tc := range m.ToolCalls {
-		isError := strings.HasPrefix(m.Content, "Error:")
 		blocks = append(blocks, anthropicAPI.NewToolResultBlock(
 			shared.TranslateToolCallID(tc.ID, shared.ToolIDTargetAnthropic),
 			m.Content,
