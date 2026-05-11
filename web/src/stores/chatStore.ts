@@ -2225,9 +2225,13 @@ export const useChatStore = defineStore('chat', {
       // [DONE] arrives without any running assistant having been
       // created (engine-side `synthesizePlaceholderAssistant` did not
       // emit a placeholder for whatever reason — degraded provider,
-      // legacy session, race), still render a soft-error bubble so
-      // the user sees the silence rather than waiting for the
-      // 60s watchdog to trip.
+      // legacy session, race), push an empty_turn placeholder so the
+      // user sees the silence rather than waiting for the 60s
+      // watchdog to trip. Bug fix #27 (May 11 2026) wired the matching
+      // MessageBubble v-else-if branch (isEmptyTurn) so the placeholder
+      // now surfaces the "Reply didn't come through" soft-error
+      // affordance — pre-fix the placeholder was pushed but no render
+      // branch consumed it, so true empty turns were silently swallowed.
       if (!sealedAny) {
         const lastMsg = this.messages[this.messages.length - 1]
         const lastIsUser = lastMsg && lastMsg.role === 'user'
