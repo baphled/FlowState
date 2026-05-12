@@ -202,6 +202,13 @@ type Manager struct {
 	// rather than a silent fallback. The field is read under m.mu.
 	embeddingModel string
 
+	// attachments is the per-manager content-hashed file store for
+	// user-uploaded chat attachments. Lazily constructed via
+	// EnsureAttachmentStore on first access (typically the API server's
+	// upload-endpoint handler). Nil until first access; callers should
+	// route through AttachmentStore() so the lazy-init synchronises.
+	attachments *AttachmentStore
+
 	// persistFn overrides the default PersistSession implementation.
 	// Nil means use PersistSession. Only set in tests via export_test.go.
 	persistFn func(dir string, sess *Session) error
@@ -307,6 +314,29 @@ func (m *Manager) SetSessionsDir(dir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sessionsDir = dir
+	// Re-construct the attachment store so it rebinds to the new
+	// rootDir; the lazy-init below will rebuild on next access. A
+	// previously-loaded in-memory index is dropped — callers that
+	// flip SetSessionsDir mid-life are signalling "discard prior
+	// state". The on-disk subtree under the old dir is left in place.
+	m.attachments = nil
+}
+
+// AttachmentStore returns the manager's per-session attachment store,
+// lazily constructing it on first access against the manager's
+// configured sessionsDir. When sessionsDir is empty, the store is
+// still returned with persistence disabled (Put will fail with a
+// clear error) so callers can hold a nil-safe reference.
+//
+// Goroutine-safe via the manager's write lock during init; subsequent
+// reads are lock-free since the store's mutex guards its own state.
+func (m *Manager) AttachmentStore() *AttachmentStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.attachments == nil {
+		m.attachments = NewAttachmentStore(m.sessionsDir)
+	}
+	return m.attachments
 }
 
 // SetEmbeddingModel records the embedding-model name the manager
@@ -1397,6 +1427,14 @@ func (m *Manager) DeleteSession(sessionID string) error {
 		// (e.g. one created in tests without SetSessionsDir before the call)
 		// still deletes cleanly.
 		removeSessionFiles(m.sessionsDir, sessionID)
+	}
+
+	// Attachment subtree cleanup (plan §6 task-02 AC: session delete
+	// removes the entire <sessionID>/attachments/ directory). The
+	// store is goroutine-safe; calling under m.mu is acceptable
+	// because RemoveSession does not call back into Manager.
+	if m.attachments != nil {
+		m.attachments.RemoveSession(sessionID)
 	}
 
 	return nil
