@@ -87,6 +87,13 @@ func (p *Provider) Name() string {
 // Side effects:
 //   - Spawns a goroutine to read from the OpenAI streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	// Attachment-size pre-flight gate (plan §6 task-11 — shared 25 MB
+	// ceiling at the engine seam, mirroring the Anthropic provider's
+	// gate). Surfaces the typed error to the caller before any
+	// network round-trip.
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return nil, err
+	}
 	params := openaicompat.BuildParams(req)
 	return openaicompat.RunStream(ctx, p.client, params, p.Name()), nil
 }
@@ -104,6 +111,12 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - Makes an HTTP request to the OpenAI API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	// Attachment-size pre-flight gate (plan §6 task-11) — same shared
+	// ceiling as Stream so multipart-image requests fail loudly before
+	// hitting the wire.
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return provider.ChatResponse{}, err
+	}
 	params := openaicompat.BuildParams(req)
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {

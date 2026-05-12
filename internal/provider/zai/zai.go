@@ -152,6 +152,14 @@ func (p *Provider) Name() string {
 // Side effects:
 //   - Starts a goroutine and performs network I/O against the Z.AI API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	// Attachment-size pre-flight gate (plan §6 task-13 — Zai inherits
+	// the openaicompat image-threading path, so it rides the same
+	// 25 MB ceiling as OpenAI / Copilot). Model support for vision
+	// is the upstream model's responsibility; the gate is purely a
+	// transport-level size check.
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return nil, err
+	}
 	params := openaicompat.BuildParams(req)
 	rawCh := openaicompat.RunStream(ctx, p.client, params, p.Name())
 	return classifyStreamErrors(ctx, rawCh), nil
@@ -170,6 +178,10 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - Performs network I/O against the Z.AI API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	// Attachment-size pre-flight gate (plan §6 task-13).
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return provider.ChatResponse{}, err
+	}
 	params := openaicompat.BuildParams(req)
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {

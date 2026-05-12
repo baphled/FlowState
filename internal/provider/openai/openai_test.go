@@ -821,3 +821,152 @@ var _ = Describe("OpenAI Provider", func() {
 		})
 	})
 })
+
+// Plan "Chat Attachments Backend (May 2026)" §6 task-11 — image
+// attachment threading + AC-12-UsageDelta-No-Regress (the OpenAI
+// provider's Chat path uses openaicompat.ParseChatResponse, whose
+// usage block is the same one PR1's Anthropic path uses; threading
+// images alongside text must NOT regress the non-streaming usage
+// totals).
+var _ = Describe("OpenAI Provider image attachments (PR3 task-11)", func() {
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+
+	Describe("Chat path threads image attachments and preserves usage", func() {
+		var (
+			server     *httptest.Server
+			capturedBody map[string]interface{}
+			prov       *openai.Provider
+		)
+
+		BeforeEach(func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(json.Unmarshal(body, &capturedBody)).To(Succeed())
+
+				resp := map[string]interface{}{
+					"id":      "chatcmpl-img",
+					"object":  "chat.completion",
+					"created": 1677652288,
+					"model":   "gpt-4o",
+					"choices": []map[string]interface{}{
+						{
+							"index": 0,
+							"message": map[string]interface{}{
+								"role":    "assistant",
+								"content": "I see a small image.",
+							},
+							"finish_reason": "stop",
+						},
+					},
+					// AC-12-UsageDelta-No-Regress: usage block must
+					// land untouched on the response, exactly as
+					// PR1's Anthropic path requires.
+					"usage": map[string]interface{}{
+						"prompt_tokens":     42,
+						"completion_tokens": 8,
+						"total_tokens":      50,
+					},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				Expect(json.NewEncoder(w).Encode(resp)).To(Succeed())
+			}))
+
+			var err error
+			prov, err = openai.NewWithOptions("test-api-key", option.WithBaseURL(server.URL))
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
+			}
+		})
+
+		It("emits the user message as an [image_url, text] content-part array on the wire", func() {
+			ctx := context.Background()
+			_, err := prov.Chat(ctx, providerPkg.ChatRequest{
+				Model: "gpt-4o",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "describe this", Attachments: []providerPkg.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+					}},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Inspect the wire payload — the first message's content
+			// must be an array of parts, not a bare string.
+			msgs, ok := capturedBody["messages"].([]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(msgs).To(HaveLen(1))
+			first, ok := msgs[0].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			content, ok := first["content"].([]interface{})
+			Expect(ok).To(BeTrue(), "user message content must be an array of parts when attachments are present")
+			Expect(content).To(HaveLen(2))
+			// Image part first.
+			img, ok := content[0].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(img["type"]).To(Equal("image_url"))
+			imgURL, ok := img["image_url"].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(imgURL["url"]).To(HavePrefix("data:image/png;base64,"))
+			// Text part second.
+			txt, ok := content[1].(map[string]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(txt["type"]).To(Equal("text"))
+			Expect(txt["text"]).To(Equal("describe this"))
+		})
+
+		It("preserves usage totals on the response (AC-12-UsageDelta-No-Regress)", func() {
+			ctx := context.Background()
+			resp, err := prov.Chat(ctx, providerPkg.ChatRequest{
+				Model: "gpt-4o",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "x", Attachments: []providerPkg.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+					}},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.Usage.PromptTokens).To(Equal(42))
+			Expect(resp.Usage.CompletionTokens).To(Equal(8))
+			Expect(resp.Usage.TotalTokens).To(Equal(50))
+		})
+	})
+
+	Describe("attachment-size pre-flight gate", func() {
+		It("rejects requests whose attachments exceed the shared 25 MB ceiling", func() {
+			prov, err := openai.New("test-api-key")
+			Expect(err).NotTo(HaveOccurred())
+
+			// 26 MB total — one byte over the ceiling.
+			big := make([]byte, providerPkg.MaxAttachmentRequestBytes()+1)
+			copy(big, pngBytes)
+
+			ctx := context.Background()
+			_, streamErr := prov.Stream(ctx, providerPkg.ChatRequest{
+				Model: "gpt-4o",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "too big", Attachments: []providerPkg.Attachment{
+						{ID: "x", MediaType: "image/png", Data: big},
+					}},
+				},
+			})
+			Expect(streamErr).To(HaveOccurred())
+			Expect(errors.Is(streamErr, providerPkg.ErrAttachmentRequestTooLarge)).To(BeTrue())
+
+			_, chatErr := prov.Chat(ctx, providerPkg.ChatRequest{
+				Model: "gpt-4o",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "too big", Attachments: []providerPkg.Attachment{
+						{ID: "x", MediaType: "image/png", Data: big},
+					}},
+				},
+			})
+			Expect(chatErr).To(HaveOccurred())
+			Expect(errors.Is(chatErr, providerPkg.ErrAttachmentRequestTooLarge)).To(BeTrue())
+		})
+	})
+})
