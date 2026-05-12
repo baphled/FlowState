@@ -18,18 +18,16 @@ import (
 	shared "github.com/baphled/flowstate/internal/provider/shared"
 )
 
-// maxAttachmentRequestBytes is the per-request ceiling for the total
-// base64-decoded attachment payload threaded onto a single Anthropic
-// turn. Anthropic's published hard cap on request body is ~32 MB; the
-// 25 MB target ceiling here gives headroom for system prompt + text
-// content + tool schemas. Plan §6 task-04 acceptance criteria.
-const maxAttachmentRequestBytes = int64(25 * 1024 * 1024)
-
-// ErrAttachmentRequestTooLarge fires when the sum of attachment byte
-// counts on a single turn exceeds maxAttachmentRequestBytes. Bubbled
-// out of the request-build path so the engine surfaces a typed error
-// to the UI (the existing classifier maps it to a 413-equivalent).
-var ErrAttachmentRequestTooLarge = errors.New("anthropic: attachments exceed per-request size ceiling")
+// ErrAttachmentRequestTooLarge is the package-local alias for the
+// agnostic sentinel exposed by internal/provider so existing callers
+// (engine error classifier, tests) keep their `errors.Is` references
+// stable while the ceiling itself lives at the shared seam.
+//
+// Plan "Chat Attachments Backend (May 2026)" §6 task-10 lifted the
+// ceiling and helpers from this package to internal/provider so OpenAI /
+// openaicompat / Copilot translators share the same budget without
+// pulling in the Anthropic SDK.
+var ErrAttachmentRequestTooLarge = provider.ErrAttachmentRequestTooLarge
 
 // ErrNotSupported is returned when an unsupported operation is attempted.
 var ErrNotSupported = errors.New("anthropic does not support embeddings")
@@ -1115,23 +1113,19 @@ func attachmentsToBlocks(atts []provider.Attachment) []anthropicAPI.ContentBlock
 	return out
 }
 
-// TotalAttachmentBytes reports the sum of Data byte counts across a
-// slice of attachments. Exposed so the engine-side request-size gate
-// can pre-check against the 25 MB ceiling before any base64 encoding
-// happens (base64 inflates by ~33%, so a 25 MB raw budget translates
-// to ~33 MB on the wire — still under Anthropic's 32 MB hard cap with
-// headroom for surrounding payload).
+// TotalAttachmentBytes is the package-local alias for the agnostic
+// helper exposed by internal/provider. Retained for back-compat with
+// callers and tests inside this package; new code should call
+// provider.TotalAttachmentBytes directly.
 func TotalAttachmentBytes(atts []provider.Attachment) int64 {
-	var total int64
-	for _, a := range atts {
-		total += int64(len(a.Data))
-	}
-	return total
+	return provider.TotalAttachmentBytes(atts)
 }
 
-// MaxAttachmentRequestBytes returns the per-request raw byte ceiling.
-// Exposed for the engine-side gate and for tests.
-func MaxAttachmentRequestBytes() int64 { return maxAttachmentRequestBytes }
+// MaxAttachmentRequestBytes is the package-local alias for the agnostic
+// ceiling exposed by internal/provider. Retained for back-compat with
+// callers and tests inside this package; new code should call
+// provider.MaxAttachmentRequestBytes directly.
+func MaxAttachmentRequestBytes() int64 { return provider.MaxAttachmentRequestBytes() }
 
 // buildThinkingBlocks converts captured ThinkingBlock records into
 // Anthropic ContentBlockParamUnion values suitable for replay on a
@@ -1433,15 +1427,18 @@ func (p *Provider) buildRequestParams(
 	// Sum across every message's attachments — typically only the
 	// final user message carries any, but the budget applies to the
 	// whole conversation prefix replayed on this turn.
+	//
+	// The ceiling is the shared seam value (plan §6 task-10) so OpenAI /
+	// openaicompat / Copilot translators apply the same budget.
 	var attachmentBytes int64
 	for _, m := range req.Messages {
-		attachmentBytes += TotalAttachmentBytes(m.Attachments)
+		attachmentBytes += provider.TotalAttachmentBytes(m.Attachments)
 	}
-	if attachmentBytes > maxAttachmentRequestBytes {
+	if attachmentBytes > provider.MaxAttachmentRequestBytes() {
 		return anthropicAPI.MessageNewParams{}, nil,
 			fmt.Errorf("%w (got %d bytes, limit %d)",
-				ErrAttachmentRequestTooLarge,
-				attachmentBytes, maxAttachmentRequestBytes)
+				provider.ErrAttachmentRequestTooLarge,
+				attachmentBytes, provider.MaxAttachmentRequestBytes())
 	}
 
 	params := anthropicAPI.MessageNewParams{
