@@ -2,8 +2,10 @@ package openaicompat
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -33,6 +35,23 @@ func BuildMessages(messages []provider.Message) []openaiAPI.ChatCompletionMessag
 		m := messages[i]
 		switch pair.Role {
 		case "user":
+			// Plan "Chat Attachments Backend (May 2026)" §6 task-11 /
+			// task-12 — when the user message carries image
+			// attachments, lift them into the OpenAI multimodal
+			// content-block shape ({type: image_url, image_url: {
+			// url: data:<media>;base64,<encoded>}}) ahead of the
+			// text block. Empty / partial entries are skipped so
+			// the request stays well-formed.
+			//
+			// Inherits Anthropic's image-first ordering convention
+			// (the vision-prompt convention is "image then
+			// instruction"). When no attachments are present, the
+			// existing string-shaped UserMessage is preserved
+			// unchanged for back-compat with every pre-PR3 test.
+			if blocks := buildUserAttachmentParts(m); len(blocks) > 0 {
+				result = append(result, openaiAPI.UserMessage(blocks))
+				continue
+			}
 			result = append(result, openaiAPI.UserMessage(pair.Content))
 		case "assistant":
 			if len(m.ToolCalls) > 0 {
@@ -99,6 +118,99 @@ func buildAssistantMessageWithToolCalls(m provider.Message) openaiAPI.ChatComple
 		}
 	}
 	return openaiAPI.ChatCompletionMessageParamUnion{OfAssistant: &msg}
+}
+
+// buildUserAttachmentParts lifts a user message's Attachments into the
+// OpenAI multimodal content-part shape. Returns nil when the message
+// carries no attachments OR when every attachment is incomplete (empty
+// MediaType or empty Data) — the caller falls back to the string-shaped
+// UserMessage in that case, preserving the pre-PR3 behaviour.
+//
+// Plan "Chat Attachments Backend (May 2026)" §6 task-11 / task-12. The
+// helper consumes only the agnostic provider.Attachment slice and never
+// returns the SDK type across the engine boundary (the SDK union is the
+// caller's concern). Image-first ordering follows the vision-prompt
+// convention ("image then instruction").
+//
+// Expected:
+//   - m is a user-role message; Attachments may be nil or empty.
+//   - Each Attachment.Data carries the raw image bytes (NOT
+//     base64-encoded); this function does the base64 encoding into
+//     a data-URL for the image_url part.
+//
+// Returns:
+//   - A slice of content-part unions in [image_1, image_2, ..., text]
+//     order, or nil when no usable attachments are present.
+//
+// Side effects:
+//   - None.
+func buildUserAttachmentParts(m provider.Message) []openaiAPI.ChatCompletionContentPartUnionParam {
+	if len(m.Attachments) == 0 {
+		return nil
+	}
+	parts := make([]openaiAPI.ChatCompletionContentPartUnionParam, 0, len(m.Attachments)+1)
+	for _, a := range m.Attachments {
+		if a.MediaType == "" || len(a.Data) == 0 {
+			// Defence-in-depth: skip incomplete entries rather than
+			// emit a malformed block. The upstream resolver should
+			// surface the missing-bytes case as an error before
+			// reaching here.
+			continue
+		}
+		dataURL := fmt.Sprintf("data:%s;base64,%s",
+			a.MediaType,
+			base64.StdEncoding.EncodeToString(a.Data))
+		parts = append(parts, openaiAPI.ImageContentPart(
+			openaiAPI.ChatCompletionContentPartImageImageURLParam{
+				URL: dataURL,
+			},
+		))
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	// Append a text part for the message body — OpenAI's multimodal
+	// payload accepts a mixed [image, ..., text] sequence per the
+	// Chat Completions vision API. Always emit a text part (possibly
+	// empty) so the wire payload is well-formed alongside the images.
+	parts = append(parts, openaiAPI.TextContentPart(m.Content))
+	return parts
+}
+
+// GateAttachmentRequestSize is the openaicompat-side pre-flight gate
+// that mirrors the Anthropic provider's 25 MB ceiling check (plan §6
+// task-04, lifted to the shared seam in PR3 task-10). Every provider
+// that wraps openaicompat (openai, copilot, openzen, zai, ollamacloud)
+// calls this before BuildParams so the size error surfaces on the
+// existing Stream / Chat error return path rather than failing on the
+// wire after a partial encode.
+//
+// The agnostic provider.ErrAttachmentRequestTooLarge sentinel is
+// wrapped with %w so callers can errors.Is against it without coupling
+// to this package.
+//
+// Expected:
+//   - req carries zero or more messages each possibly with
+//     Attachments populated. Empty / nil slices return nil.
+//
+// Returns:
+//   - nil when the total attachment-byte sum across every message is
+//     within the ceiling.
+//   - A wrapped provider.ErrAttachmentRequestTooLarge when over.
+//
+// Side effects:
+//   - None.
+func GateAttachmentRequestSize(req provider.ChatRequest) error {
+	var total int64
+	for _, m := range req.Messages {
+		total += provider.TotalAttachmentBytes(m.Attachments)
+	}
+	if total > provider.MaxAttachmentRequestBytes() {
+		return fmt.Errorf("openaicompat: %w (got %d bytes, limit %d)",
+			provider.ErrAttachmentRequestTooLarge,
+			total, provider.MaxAttachmentRequestBytes())
+	}
+	return nil
 }
 
 // BuildTools converts provider tools to OpenAI-compatible tool parameters.

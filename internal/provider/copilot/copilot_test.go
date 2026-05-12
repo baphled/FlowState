@@ -873,3 +873,57 @@ func filterDone(chunks []provider.StreamChunk) []provider.StreamChunk {
 	}
 	return result
 }
+
+// Plan "Chat Attachments Backend (May 2026)" §6 task-12 — Copilot
+// inherits the openaicompat image-threading path. The two pre-flight
+// gates are exercised here so the Copilot-specific Chat/Stream paths
+// reject oversize requests before the OAuth token exchange fires.
+//
+// Note: a positive end-to-end Chat-with-image spec would need the
+// full token-exchange dance; the openai_test.go suite already
+// asserts the wire shape of the openaicompat-built payload (image_url
+// part ahead of text), and Copilot uses the identical builder. The
+// gate spec here closes the Copilot-side AC.
+var _ = Describe("Copilot image attachments (PR3 task-12)", func() {
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+
+	It("Stream rejects requests whose attachments exceed the shared ceiling", func() {
+		p, err := copilot.New("gho_attachment_oversize")
+		Expect(err).NotTo(HaveOccurred())
+
+		big := make([]byte, provider.MaxAttachmentRequestBytes()+1)
+		copy(big, pngBytes)
+
+		ctx := context.Background()
+		_, streamErr := p.Stream(ctx, provider.ChatRequest{
+			Model: "gpt-4o",
+			Messages: []provider.Message{
+				{Role: "user", Content: "too big", Attachments: []provider.Attachment{
+					{ID: "x", MediaType: "image/png", Data: big},
+				}},
+			},
+		})
+		Expect(streamErr).To(HaveOccurred())
+		Expect(errors.Is(streamErr, provider.ErrAttachmentRequestTooLarge)).To(BeTrue())
+	})
+
+	It("Chat rejects requests whose attachments exceed the shared ceiling", func() {
+		p, err := copilot.New("gho_attachment_oversize")
+		Expect(err).NotTo(HaveOccurred())
+
+		big := make([]byte, provider.MaxAttachmentRequestBytes()+1)
+		copy(big, pngBytes)
+
+		ctx := context.Background()
+		_, chatErr := p.Chat(ctx, provider.ChatRequest{
+			Model: "gpt-4o",
+			Messages: []provider.Message{
+				{Role: "user", Content: "too big", Attachments: []provider.Attachment{
+					{ID: "x", MediaType: "image/png", Data: big},
+				}},
+			},
+		})
+		Expect(chatErr).To(HaveOccurred())
+		Expect(errors.Is(chatErr, provider.ErrAttachmentRequestTooLarge)).To(BeTrue())
+	})
+})

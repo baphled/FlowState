@@ -3,6 +3,7 @@ package openaicompat_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -195,6 +196,165 @@ var _ = Describe("OpenAI Compat", func() {
 			}
 			result := openaicompat.BuildMessages(msgs)
 			Expect(result).To(HaveLen(3))
+		})
+
+		// Plan "Chat Attachments Backend (May 2026)" §6 task-11 / task-12 —
+		// when a user message carries image Attachments, BuildMessages
+		// lifts them into the OpenAI multimodal content-part shape ahead
+		// of the text part. Anthropic-supported types (jpeg/png/gif/webp)
+		// are passed through verbatim — model-level support is the
+		// upstream model's responsibility, not the translator's.
+		Context("image attachment threading (PR3 task-11 / task-12)", func() {
+			pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+			jpgBytes := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
+
+			It("preserves the legacy string UserMessage shape when no attachments are present", func() {
+				msgs := []provider.Message{{Role: "user", Content: "hello"}}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfUser).NotTo(BeNil())
+				// Back-compat: with no attachments the union still
+				// carries the simple string content, not an array.
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("hello"))
+				Expect(result[0].OfUser.Content.OfArrayOfContentParts).To(BeNil())
+			})
+
+			It("converts a single PNG attachment to an image_url content part ahead of the text part", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "describe this", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes, SizeBytes: int64(len(pngBytes))},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				Expect(result[0].OfUser).NotTo(BeNil())
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				Expect(parts).To(HaveLen(2))
+				// Image part first.
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[0].OfImageURL.ImageURL.URL).To(HavePrefix("data:image/png;base64,"))
+				// Text part second.
+				Expect(parts[1].OfText).NotTo(BeNil())
+				Expect(parts[1].OfText.Text).To(Equal("describe this"))
+			})
+
+			It("preserves order across multiple image attachments", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "look at these", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+						{ID: "b", MediaType: "image/jpeg", Data: jpgBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				Expect(parts).To(HaveLen(3))
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[0].OfImageURL.ImageURL.URL).To(HavePrefix("data:image/png;base64,"))
+				Expect(parts[1].OfImageURL).NotTo(BeNil())
+				Expect(parts[1].OfImageURL.ImageURL.URL).To(HavePrefix("data:image/jpeg;base64,"))
+				Expect(parts[2].OfText.Text).To(Equal("look at these"))
+			})
+
+			It("skips incomplete entries (empty MediaType or empty Data) and falls back to string when none remain", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "fallback", Attachments: []provider.Attachment{
+						{ID: "empty-type", MediaType: "", Data: pngBytes},
+						{ID: "empty-data", MediaType: "image/png", Data: nil},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				// With every attachment skipped the helper returns nil
+				// parts, so the caller emits the legacy string union.
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("fallback"))
+				Expect(result[0].OfUser.Content.OfArrayOfContentParts).To(BeNil())
+			})
+
+			It("preserves an empty text part when content is empty but attachments exist", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				Expect(parts).To(HaveLen(2))
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[1].OfText).NotTo(BeNil())
+				Expect(parts[1].OfText.Text).To(Equal(""))
+			})
+
+			It("encodes the image bytes via base64 in the data: URL", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "x", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: pngBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				url := parts[0].OfImageURL.ImageURL.URL
+				// data:image/png;base64,<encoded>
+				Expect(url).To(HavePrefix("data:image/png;base64,"))
+				encoded := strings.TrimPrefix(url, "data:image/png;base64,")
+				decoded, decErr := base64.StdEncoding.DecodeString(encoded)
+				Expect(decErr).NotTo(HaveOccurred())
+				Expect(decoded).To(Equal(pngBytes))
+			})
+		})
+	})
+
+	Describe("GateAttachmentRequestSize", func() {
+		// Plan "Chat Attachments Backend (May 2026)" §6 task-11 / task-12
+		// — pre-flight gate that mirrors the Anthropic provider's 25 MB
+		// ceiling check (lifted to the shared seam in PR3 task-10).
+		// Returns nil when within ceiling, wrapped sentinel when over.
+		pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+
+		It("returns nil for an empty request", func() {
+			req := provider.ChatRequest{}
+			Expect(openaicompat.GateAttachmentRequestSize(req)).To(BeNil())
+		})
+
+		It("returns nil for messages without attachments", func() {
+			req := provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "hello"},
+					{Role: "assistant", Content: "hi"},
+				},
+			}
+			Expect(openaicompat.GateAttachmentRequestSize(req)).To(BeNil())
+		})
+
+		It("returns nil when attachments are under the ceiling", func() {
+			under := make([]byte, 1024*1024) // 1 MB
+			copy(under, pngBytes)
+			req := provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "ok", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: under},
+					}},
+				},
+			}
+			Expect(openaicompat.GateAttachmentRequestSize(req)).To(BeNil())
+		})
+
+		It("returns ErrAttachmentRequestTooLarge when attachments exceed the ceiling", func() {
+			big := make([]byte, provider.MaxAttachmentRequestBytes())
+			copy(big, pngBytes)
+			extra := make([]byte, 1024*1024) // 1 MB over the 25 MB cap
+			req := provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "user", Content: "first", Attachments: []provider.Attachment{
+						{ID: "a", MediaType: "image/png", Data: big},
+					}},
+					{Role: "user", Content: "second", Attachments: []provider.Attachment{
+						{ID: "b", MediaType: "image/png", Data: extra},
+					}},
+				},
+			}
+			err := openaicompat.GateAttachmentRequestSize(req)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, provider.ErrAttachmentRequestTooLarge)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("openaicompat"))
 		})
 	})
 

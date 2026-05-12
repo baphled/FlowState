@@ -248,6 +248,12 @@ func fallbackModels() []provider.Model {
 // Side effects:
 //   - Makes an HTTP POST request to the Copilot chat completions endpoint.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	// Attachment-size pre-flight gate (plan §6 task-12) — shared
+	// 25 MB ceiling. Copilot rides the openaicompat thread, so this
+	// gate is the same one OpenAI uses.
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return provider.ChatResponse{}, err
+	}
 	token, err := p.tokenManager.EnsureToken(ctx)
 	if err != nil {
 		return provider.ChatResponse{}, err
@@ -273,6 +279,11 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 // Side effects:
 //   - Spawns a goroutine that makes an HTTP POST request and sends chunks to the channel.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	// Attachment-size pre-flight gate (plan §6 task-12) — shared
+	// 25 MB ceiling, same as Chat.
+	if err := openaicompat.GateAttachmentRequestSize(req); err != nil {
+		return nil, err
+	}
 	token, err := p.tokenManager.EnsureToken(ctx)
 	if err != nil {
 		return nil, err
