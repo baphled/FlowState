@@ -56,6 +56,14 @@ type Server struct {
 	contextUsageProvider   ContextUsageProvider
 	compactionController   CompactionController
 	mux                    *http.ServeMux
+	// originPatterns is the glob allowlist applied to the WebSocket
+	// handshake (passed through to websocket.AcceptOptions.OriginPatterns)
+	// and to PR3's RequireOrigin HTTP middleware. Centralised in PR1/C1
+	// per the API Auth Track plan §"Session Store Interface" → "Rollout
+	// Plan" — see internal/auth.OriginConfig.AllowedOrigins for the type
+	// the auth package consumes. Empty defaults to ["localhost:*"] to
+	// preserve the pre-lift behaviour (websocket.go:106).
+	originPatterns []string
 }
 
 // ServerOption configures an optional Server dependency.
@@ -259,6 +267,18 @@ type CompactionController interface {
 // — operators see "wired but disabled" rather than a 404 confusion.
 func WithCompactionController(c CompactionController) ServerOption {
 	return func(s *Server) { s.compactionController = c }
+}
+
+// WithOriginPatterns installs the glob allowlist used by the WebSocket
+// handshake (via websocket.AcceptOptions.OriginPatterns) and — once PR3
+// lands — by the HTTP RequireOrigin middleware. Empty/unset is treated
+// as ["localhost:*"] via originAllowlist(), preserving the pre-PR1
+// behaviour at internal/api/websocket.go:106 (handleSessionWebSocket).
+//
+// Production wires this from cfg.Auth.AllowedOrigins (TOML); tests may
+// pass an explicit list or omit the option entirely.
+func WithOriginPatterns(patterns []string) ServerOption {
+	return func(s *Server) { s.originPatterns = patterns }
 }
 
 // SetBackgroundManager sets the background manager after server construction.
