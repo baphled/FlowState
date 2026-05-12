@@ -5825,6 +5825,51 @@ describe('chatStore.deleteSession', () => {
     expect(store.sessions.map((s) => s.id)).toEqual(['session-A', 'session-B'])
     expect(store.currentSessionId).toBe('session-A')
   })
+
+  // User bug (May 2026 — "delete cascade"): the backend cascades delete
+  // to every delegated descendant. The local cache must mirror that so
+  // stale child summaries don't linger in `this.sessions` where
+  // `lastDelegatedSessionId` / ChildSessionsPanel would still find them.
+  it('cascade-prunes delegated descendants from the local sessions cache when the parent is deleted', async () => {
+    const store = useChatStore()
+    store.sessions = [
+      makeSummary({ id: 'root' }),
+      makeSummary({ id: 'child-1', parentId: 'root' }),
+      makeSummary({ id: 'grandchild', parentId: 'child-1' }),
+      makeSummary({ id: 'untouched-root' }),
+    ]
+    store.currentSessionId = 'untouched-root'
+
+    await store.deleteSession('root')
+
+    expect(store.sessions.map((s) => s.id).sort()).toEqual(['untouched-root'])
+  })
+
+  it('cascade-prunes descendant streaming / queued-prompts / phase slots too', async () => {
+    const store = useChatStore()
+    store.sessions = [
+      makeSummary({ id: 'root' }),
+      makeSummary({ id: 'child-1', parentId: 'root' }),
+      makeSummary({ id: 'sibling' }),
+    ]
+    store.currentSessionId = 'sibling'
+    store.sessionStreaming = {
+      'root': { isLoading: false, isStreaming: false },
+      'child-1': { isLoading: false, isStreaming: true },
+      'sibling': { isLoading: false, isStreaming: false },
+    }
+    store.queuedPrompts = { 'child-1': ['queued-c1'] }
+    store.streamingPhase = { 'child-1': 'generating' }
+
+    await store.deleteSession('root')
+
+    expect(store.sessionStreaming['root']).toBeUndefined()
+    expect(store.sessionStreaming['child-1']).toBeUndefined()
+    expect(store.queuedPrompts['child-1']).toBeUndefined()
+    expect(store.streamingPhase['child-1']).toBeUndefined()
+    // Sibling untouched.
+    expect(store.sessionStreaming['sibling']).toEqual({ isLoading: false, isStreaming: false })
+  })
 })
 
 // QW-11 — Session ordering. Every list-of-sessions surface reads the

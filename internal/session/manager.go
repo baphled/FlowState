@@ -1489,47 +1489,97 @@ func (m *Manager) CloseSession(sessionID string) error {
 // session again" — backs the Vue UI's per-row trash button in
 // SessionBrowser / SessionSwitcher.
 //
+// Cascade semantics (user bug May 2026 — "delete cascade"): deleting a
+// session also removes every delegated descendant (children, grandchildren,
+// transitively). Cascade order is children-first then root (post-order DFS)
+// so a partial failure on disk cleanup leaves orphan children invisible to
+// the FE (which filters root sessions by !parentId) rather than orphan
+// parents that would persist in the session list. Cycle protection is
+// inherited from sessionTree's visited-map walk — no separate guard.
+//
+// Atomicity: the in-memory delete sweep is atomic under m.mu. On-disk
+// artefacts (sidecar, WAL, attachment subtree) are best-effort and a
+// failure on a descendant does not roll back the in-memory removal —
+// any disk residue becomes an orphan that future tooling can sweep.
+// This mirrors the original single-session policy (removeSessionFiles
+// already ignores errors).
+//
 // Expected:
 //   - sessionID identifies an existing session.
 //
 // Returns:
-//   - nil when the session was removed.
+//   - nil when the session (and any descendants) were removed.
 //   - ErrSessionNotFound when no session matches sessionID.
 //
 // Side effects:
-//   - Deletes the session from the in-memory map.
-//   - Deletes the session's .meta.json sidecar from disk when sessionsDir is
-//     configured (a missing sidecar is tolerated — a not-yet-persisted session
-//     is still deletable). The events.jsonl WAL is also removed so the
-//     session leaves no residue on disk.
-//   - Does NOT cascade to child sessions: child sessions are independent
-//     records on disk and the caller is expected to delete them too if
-//     desired. A future cascade option can be layered on top.
+//   - Deletes the session and all descendants from the in-memory map.
+//   - Deletes each removed session's .meta.json sidecar and .events.jsonl WAL
+//     from disk when sessionsDir is configured (missing files are tolerated).
+//   - Removes each removed session's attachment subtree via AttachmentStore.
+//   - Drops each removed session's pending notification queue and any
+//     registered inflight cancel (clears latent in-memory state — the
+//     turn goroutine's own defer-driven dereg is a no-op once the entry
+//     is gone).
 func (m *Manager) DeleteSession(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, ok := m.sessions[sessionID]; !ok {
+	root, ok := m.sessions[sessionID]
+	if !ok {
 		return ErrSessionNotFound
 	}
 
-	delete(m.sessions, sessionID)
-
-	if m.sessionsDir != "" {
-		// removeSessionFiles is split out so the persistence symbols stay in
-		// persistence.go and the manager keeps a single I/O choke-point. The
-		// helper tolerates missing files so a never-persisted session
-		// (e.g. one created in tests without SetSessionsDir before the call)
-		// still deletes cleanly.
-		removeSessionFiles(m.sessionsDir, sessionID)
+	// Walk the descendant set first under the same lock so callers see
+	// an atomic before/after in the in-memory map. sessionTree handles
+	// cycles via its internal visited map.
+	tree := sessionTree(m.sessions, root, make(map[string]bool))
+	// Post-order: descendants first, then root last. If on-disk cleanup
+	// fails partway, an orphan descendant is invisible to the FE
+	// (root-only filter); an orphan root is not.
+	ids := make([]string, 0, len(tree))
+	for i := len(tree) - 1; i >= 0; i-- {
+		ids = append(ids, tree[i].ID)
 	}
 
-	// Attachment subtree cleanup (plan §6 task-02 AC: session delete
-	// removes the entire <sessionID>/attachments/ directory). The
-	// store is goroutine-safe; calling under m.mu is acceptable
-	// because RemoveSession does not call back into Manager.
-	if m.attachments != nil {
-		m.attachments.RemoveSession(sessionID)
+	for _, id := range ids {
+		delete(m.sessions, id)
+
+		if m.sessionsDir != "" {
+			// removeSessionFiles tolerates missing files so a
+			// never-persisted descendant (e.g. CreateWithParent that
+			// has not yet flushed) still cleans up the parent's
+			// sidecar without erroring.
+			removeSessionFiles(m.sessionsDir, id)
+		}
+
+		// Attachment subtree cleanup (plan §6 task-02 AC: session delete
+		// removes the entire <sessionID>/attachments/ directory). The
+		// store is goroutine-safe; calling under m.mu is acceptable
+		// because RemoveSession does not call back into Manager.
+		if m.attachments != nil {
+			m.attachments.RemoveSession(id)
+		}
+
+		// Backstop adjacent latent surfaces (memory
+		// feedback_close_latent_surfaces_too): per-session in-memory
+		// state (pending notifications, inflight cancels) is not part
+		// of the session record but is keyed by session id. Without
+		// cleanup these entries leak per delete and a future re-created
+		// session reusing the id would inherit stale state.
+		m.notifMu.Lock()
+		delete(m.notifications, id)
+		m.notifMu.Unlock()
+
+		m.inflightMu.Lock()
+		if cancel, ok := m.inflight[id]; ok {
+			// Cancel any in-flight turn before pulling the session
+			// out from under it. Best-effort: the turn goroutine's
+			// own defer will try to re-deregister but the missing
+			// entry is a no-op.
+			cancel()
+			delete(m.inflight, id)
+		}
+		m.inflightMu.Unlock()
 	}
 
 	return nil
