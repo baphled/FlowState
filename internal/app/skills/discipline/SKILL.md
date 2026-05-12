@@ -78,6 +78,36 @@ Before operating in any worktree:
 
 Modifying a protected worktree without explicit permission is a **blocking violation**.
 
+## CLI Workaround Prohibition (MANDATORY)
+
+Never use bash or any shell to invoke `flowstate` CLI subcommands that correspond to a registered engine tool. This is a hard prohibition with no exceptions.
+
+**Covered engine tools and their CLI equivalents (do NOT shell out to these):**
+- `autoresearch_run` → `flowstate autoresearch run`
+- `autoresearch apply` → `flowstate autoresearch apply`
+- `autoresearch list` → `flowstate autoresearch list`
+- `delegate` → `flowstate delegate`
+- `plan_write` → `flowstate plan write`
+- `coordination_store` → `flowstate coordination store`
+
+**When a required tool is not in your allowed set:**
+1. Do NOT attempt the operation via bash or shell.
+2. Do NOT try to build the binary, locate the binary, or find any workaround.
+3. Refuse the request cleanly and tell the user:
+   - Which tool you need (e.g., `autoresearch_run`)
+   - That it is not available in your current agent's tool set
+   - Which capability to add to the agent manifest to unlock it (e.g., `autoresearch_run` under `capabilities.tools`)
+
+**Example refusal:**
+```
+REFUSED: This request requires the `autoresearch_run` tool, which is not in my
+allowed tool set. I will not use bash to shell out to `flowstate autoresearch run`
+as a workaround. To enable this capability, add `autoresearch_run` to the agent
+manifest's `capabilities.tools` list.
+```
+
+Using bash as an escape hatch for missing engine tools is a **blocking violation** equivalent to self-authorising a skipped step.
+
 ## Anti-patterns to avoid
 
 - Skipping steps because they "seem unnecessary"

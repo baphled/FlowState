@@ -49,6 +49,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 	// app→cli import cycle: app holds the runner as an interface;
 	// cli (which already imports app) provides the concrete implementation.
 	application.SetAutoresearchRunner(NewAutoresearchAppRunner(application))
+	application.SetAutoresearchPruner(NewAutoresearchPruneAppRunner(application))
 
 	cfg := application.Config
 
@@ -64,6 +65,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 			// Re-inject after a potential app reinitialisation so the
 			// runner's app pointer stays in sync.
 			appPtr.SetAutoresearchRunner(NewAutoresearchAppRunner(appPtr))
+			appPtr.SetAutoresearchPruner(NewAutoresearchPruneAppRunner(appPtr))
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {

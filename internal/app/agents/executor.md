@@ -19,6 +19,8 @@ capabilities:
     - skill_load
     - plan_list
     - plan_read
+    - autoresearch_run
+    - autoresearch_prune
   skills:
     - task-tracker
     - parallel-execution
