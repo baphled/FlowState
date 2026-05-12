@@ -1,9 +1,20 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { setActivePinia, createPinia } from 'pinia'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import { ensureHighlighterLoaded } from '@/lib/markdownHighlighter'
+import { useChatStore } from '@/stores/chatStore'
 
 describe('MarkdownRenderer', () => {
+  beforeEach(() => {
+    // The image allow-list (N9 / task-08) reaches into the chat store
+    // for `currentSessionId` to constrain `<img src="/api/v1/sessions/.../">`
+    // URLs to the active session. Activate a fresh Pinia per test so the
+    // store starts in its default null-currentSessionId shape and individual
+    // It blocks can seed the field where the cross-session check matters.
+    setActivePinia(createPinia())
+  })
+
   it('renders plain text as a paragraph', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: { content: 'Hello world' },
@@ -260,7 +271,20 @@ describe('MarkdownRenderer', () => {
     expect(wrapper.find('hr').exists()).toBe(true)
   })
 
-  it('does not render raw HTML (html option is false)', () => {
+  // N9 (Vue UI Parity vs OpenCode, May 2026) flipped the markdown-it
+  // `html` option from `false` to `true` so the renderer can surface
+  // a strict allow-list of `<img>` tags. Every OTHER raw-HTML tag
+  // (script, iframe, object, …) still drops out of the rendered DOM
+  // via the post-render allow-list filter — the threat model the
+  // original `html: false` posture closed remains closed.
+  //
+  // Pre-N9 this test was titled "does not render raw HTML (html
+  // option is false)"; the assertion (no `<script>` survives) was
+  // load-bearing on the underlying `html: false` config. The flip
+  // preserves the assertion at a different layer of the pipeline
+  // (allow-list filter, not parser-level strip) — so the same
+  // contract still holds.
+  it('does not render raw HTML script tags (allow-list strips non-<img>)', () => {
     const wrapper = mount(MarkdownRenderer, {
       props: { content: '<script>alert("xss")</script>' },
     })
@@ -468,6 +492,192 @@ describe('MarkdownRenderer', () => {
       const link = wrapper.find('a')
       expect(link.exists()).toBe(true)
       expect(link.attributes('href')).toBe('/dashboard')
+    })
+  })
+
+  // N9 (Vue UI Parity vs OpenCode, May 2026) — plan "Chat Attachments
+  // Backend (May 2026)" §6 task-08. The markdown-it `html` option is
+  // now `true` so the renderer can surface raw `<img>` tags that the
+  // assistant emits, but a strict allow-list filter constrains the
+  // `src` attribute to two shapes:
+  //
+  //   1. base64 data URLs in PNG / JPEG / GIF / WEBP (NOT svg+xml —
+  //      AC-08-SVG-Excluded, SVG can carry inline <script>/event
+  //      handlers and the four Anthropic-supported types are
+  //      sufficient).
+  //   2. Same-origin attachment URLs under the active session id only
+  //      (cross-session injection defence — plan R9).
+  //
+  // Every other tag is stripped from the rendered DOM. Every other
+  // `<img>` src shape (http(s), javascript:, file:, blob:, cross-session
+  // attachment URL, …) is dropped.
+  describe('image allow-list (N9 / task-08)', () => {
+    const TINY_PNG_B64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkAAIAAAoAAv/lxKUAAAAASUVORK5CYII='
+
+    it('preserves <img src="data:image/png;base64,..."> in rendered output', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: `<img src="data:image/png;base64,${TINY_PNG_B64}" alt="cat">` },
+      })
+
+      const img = wrapper.find('img')
+      expect(img.exists()).toBe(true)
+      expect(img.attributes('src')).toBe(`data:image/png;base64,${TINY_PNG_B64}`)
+    })
+
+    it('preserves <img src="data:image/jpeg;base64,..."> in rendered output', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '<img src="data:image/jpeg;base64,AAAA">' },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(true)
+    })
+
+    it('preserves <img src="data:image/gif;base64,..."> in rendered output', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '<img src="data:image/gif;base64,AAAA">' },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(true)
+    })
+
+    it('preserves <img src="data:image/webp;base64,..."> in rendered output', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '<img src="data:image/webp;base64,AAAA">' },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(true)
+    })
+
+    // AC-08-SVG-Excluded — load-bearing acceptance criterion. SVG must
+    // be rejected because SVG can carry inline <script> tags and event
+    // handlers (onload="…", onmouseover="…", …) that execute in the
+    // page's origin. The four Anthropic-supported image types are
+    // sufficient for the round-trip render path; SVG buys us no
+    // additional surface and ships a known attack vector.
+    it('drops <img src="data:image/svg+xml;base64,..."> (AC-08-SVG-Excluded)', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          // Minimal SVG carrying an onload script handler.
+          content:
+            '<img src="data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9ImFsZXJ0KDEpIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==">',
+        },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(false)
+      // Defence in depth: no `src="data:image/svg` anywhere in raw HTML.
+      expect(wrapper.html().toLowerCase()).not.toContain('data:image/svg')
+    })
+
+    it('preserves <img> with a same-session attachment URL (active session match)', () => {
+      const chat = useChatStore()
+      chat.currentSessionId = 'session-abc'
+
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          content: '<img src="/api/v1/sessions/session-abc/attachments/aid-1">',
+        },
+      })
+
+      const img = wrapper.find('img')
+      expect(img.exists()).toBe(true)
+      expect(img.attributes('src')).toBe(
+        '/api/v1/sessions/session-abc/attachments/aid-1',
+      )
+    })
+
+    // R9 — cross-session injection defence. An assistant-rendered
+    // `<img>` referencing another session's attachment must be dropped
+    // AND the block must surface an observable signal so a test (or an
+    // operator listening on `window`) can confirm the defence fired.
+    // The plan permits "console.warn or a typed event" — we choose a
+    // typed `window` event because it survives jsdom, doesn't need a
+    // console spy, and gives the test a precise hook.
+    it('drops <img> pointing at another session AND fires attachment_blocked.cross_session (R9)', async () => {
+      const chat = useChatStore()
+      chat.currentSessionId = 'session-abc'
+
+      const events: Event[] = []
+      const listener = (e: Event): void => {
+        events.push(e)
+      }
+      window.addEventListener('attachment_blocked.cross_session', listener)
+
+      try {
+        const wrapper = mount(MarkdownRenderer, {
+          props: {
+            content:
+              '<img src="/api/v1/sessions/session-OTHER/attachments/aid-1">',
+          },
+        })
+        await flushPromises()
+
+        expect(wrapper.find('img').exists()).toBe(false)
+        // Defence in depth: no cross-session URL remains anywhere in HTML.
+        expect(wrapper.html()).not.toContain('session-OTHER')
+
+        // Observable: one block event fired for the dropped <img>.
+        expect(events.length).toBeGreaterThanOrEqual(1)
+      } finally {
+        window.removeEventListener('attachment_blocked.cross_session', listener)
+      }
+    })
+
+    it('drops <img src="http://evil.example/x.png"> (external URL)', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '<img src="http://evil.example/x.png">' },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(false)
+    })
+
+    it('drops <img src="https://evil.example/x.png"> (external URL, https)', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '<img src="https://evil.example/x.png">' },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(false)
+    })
+
+    it('drops <img src="javascript:alert(1)">', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '<img src="javascript:alert(1)">' },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(false)
+      expect(wrapper.html().toLowerCase()).not.toContain('javascript:')
+    })
+
+    it('drops <img src="data:text/html,..."> (data: but not image)', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          content:
+            '<img src="data:text/html,<script>alert(1)</script>">',
+        },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(false)
+    })
+
+    it('drops <img> with no src attribute', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '<img alt="no src">' },
+      })
+
+      expect(wrapper.find('img').exists()).toBe(false)
+    })
+
+    it('still strips non-<img> raw HTML tags (script, iframe, object)', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          content:
+            '<script>alert(1)</script><iframe src="https://x"></iframe><object data="x"></object>',
+        },
+      })
+
+      expect(wrapper.find('script').exists()).toBe(false)
+      expect(wrapper.find('iframe').exists()).toBe(false)
+      expect(wrapper.find('object').exists()).toBe(false)
     })
   })
 })
