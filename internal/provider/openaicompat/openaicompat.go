@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -49,6 +50,15 @@ func BuildMessages(messages []provider.Message) []openaiAPI.ChatCompletionMessag
 				wireID := shared.TranslateToolCallID(tc.ID, shared.ToolIDTargetOpenAI)
 				result = append(result, openaiAPI.ToolMessage(pair.Content, wireID))
 			}
+		default:
+			// M4-adjacent observability (May 2026): the manager seam
+			// canonicalises every Role to {user, assistant, system, tool}.
+			// Silent-drop behaviour is preserved — adding a Warn surfaces
+			// any future canonicalisation regression at runtime instead of
+			// vanishing into the void.
+			slog.Warn("openaicompat: dropped message with unknown role",
+				"role", pair.Role,
+			)
 		}
 	}
 	return result

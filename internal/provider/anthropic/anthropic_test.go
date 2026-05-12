@@ -1,10 +1,12 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -270,6 +272,38 @@ var _ = Describe("buildMessages", func() {
 		Expect(tr.IsError.Value).To(BeTrue(),
 			"is_error on the wire must follow the canonicalised "+
 				"provider.Message.IsError stamped at the reload projection seam")
+	})
+
+	// M4-adjacent hardening (May 2026): the manager seam canonicalises
+	// every provider.Message.Role to one of {user, assistant, tool} (system
+	// messages are extracted by extractSystemPrompt before they reach this
+	// switch). The wire layer continues to silently skip anything else
+	// (intentional, preserves existing behaviour) but MUST log a Warn
+	// naming the role so any future canonicalisation regression is visible
+	// at runtime instead of vanishing into the void.
+	It("logs a Warn naming the unknown role when one slips past the manager seam", func() {
+		prev := slog.Default()
+		DeferCleanup(func() { slog.SetDefault(prev) })
+
+		var buf bytes.Buffer
+		handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+		slog.SetDefault(slog.New(handler))
+
+		msgs := []provider.Message{
+			{Role: "user", Content: "hello"},
+			{Role: "tool_error", Content: "uncanonicalised legacy"},
+		}
+		result := buildMessages(msgs)
+		Expect(result).To(HaveLen(1),
+			"silent-drop behaviour must be preserved — the log is observability, not a behaviour change")
+
+		out := buf.String()
+		Expect(out).To(ContainSubstring("anthropic"),
+			"log must name the package so operators can grep by provider — log was: %s", out)
+		Expect(out).To(ContainSubstring("unknown role"),
+			"log must declare the condition with a single greppable phrase — log was: %s", out)
+		Expect(out).To(ContainSubstring("role=tool_error"),
+			"log must name the rogue role string so the regression site is identifiable — log was: %s", out)
 	})
 })
 

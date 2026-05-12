@@ -93,11 +93,20 @@ describe('Notifications evidence harness (writes /tmp/notifications-evidence/*.h
     const store = useChatStore()
     store.currentProviderId = 'anthropic'
     store.currentModelId = 'claude-sonnet-4-6'
+    // M3-adjacent canonical wire shape (May 2026, 881276c7): the Go SSE
+    // writer ships BOTH the legacy joined fields (from / to) AND the new
+    // split fields (from_provider / from_model / to_provider / to_model)
+    // simultaneously. Evidence fixtures mirror that shape so future
+    // readers see what an operator actually receives on the wire.
     store.applyContentEvent(
       JSON.stringify({
         type: 'provider_changed',
         from: 'anthropic+claude-sonnet-4-6',
         to: 'zai+glm-4.6',
+        from_provider: 'anthropic',
+        from_model: 'claude-sonnet-4-6',
+        to_provider: 'zai',
+        to_model: 'glm-4.6',
         reason: 'rate_limited',
       }),
     )
@@ -145,11 +154,16 @@ describe('Notifications evidence harness (writes /tmp/notifications-evidence/*.h
     store.currentModelId = 'claude-sonnet-4-6'
 
     // Failover sequence on the wire: provider_changed → model_active.
+    // Canonical split-field shape (M3-adjacent, 881276c7): both forms.
     store.applyContentEvent(
       JSON.stringify({
         type: 'provider_changed',
         from: 'anthropic+claude-sonnet-4-6',
         to: 'zai+glm-4.6',
+        from_provider: 'anthropic',
+        from_model: 'claude-sonnet-4-6',
+        to_provider: 'zai',
+        to_model: 'glm-4.6',
         reason: 'rate_limited',
       }),
     )
