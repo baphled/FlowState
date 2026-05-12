@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { showToast } from '@/composables/useToast'
 import Icon from '@/components/common/Icon.vue'
+import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
+import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
 
 defineOptions({ name: 'SessionSwitcher' })
 
@@ -56,6 +58,68 @@ const hasBackgroundActivity = computed(() =>
   ),
 )
 
+// UI Parity I3 (May 2026) — Cmd+K / Ctrl+K fuzzy session palette.
+//
+// A `FuzzySearchModal` consumer that surfaces all root sessions for
+// fast switching. Children are still filtered out (they remain
+// reachable via ChildSessionsPanel under the chat thread). The existing
+// dropdown remains the home of the activity-indicator + delete UX; the
+// palette is purely an overlay shortcut for jump-to-session.
+//
+// Cross-platform binding: Cmd+K covers macOS, Ctrl+K covers everywhere
+// else. We treat both as equivalent rather than sniffing the user-agent
+// — either modifier-key combination opens the palette, which matches
+// the OpenCode and VS Code precedent. Guarded against firing inside
+// inputs/textareas so the user can still type "k" into the composer
+// with the meta key bound to a system shortcut.
+const isPaletteOpen = ref(false)
+
+const sessionPaletteItems = computed<FuzzySearchItem[]>(() =>
+  parentSessions.value.map((session) => ({
+    id: session.id,
+    label: session.title || `Session ${session.id.slice(0, 8)}`,
+    meta: `${session.messageCount} messages`,
+  })),
+)
+
+function openPalette(): void {
+  void chatStore.loadSessions()
+  isPaletteOpen.value = true
+}
+
+function closePalette(): void {
+  isPaletteOpen.value = false
+}
+
+async function handlePaletteSelect(item: FuzzySearchItem): Promise<void> {
+  chatStore.currentSessionId = item.id
+  await chatStore.loadSessionMessages(item.id)
+  isPaletteOpen.value = false
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return true
+  if (target.isContentEditable) return true
+  return false
+}
+
+function handleGlobalKeydown(event: KeyboardEvent): void {
+  // event.repeat — held-key spam must not re-trigger.
+  if (event.repeat) return
+  // Cmd+K (mac) or Ctrl+K (everywhere else). Lowercase compare so the
+  // binding still fires when CapsLock is on (event.key === 'K').
+  if (event.key.toLowerCase() !== 'k') return
+  if (!event.metaKey && !event.ctrlKey) return
+  // Don't fight the user mid-prompt — meta+k inside a textarea / input
+  // / contenteditable might be a legitimate browser/system shortcut
+  // (Firefox Cmd+K focuses the address bar's search field, etc.).
+  if (isEditableTarget(event.target)) return
+  event.preventDefault()
+  openPalette()
+}
+
 async function createNewSession(): Promise<void> {
   await chatStore.newSession()
   chatStore.clearMessages()
@@ -75,6 +139,11 @@ function closeDropdown(): void {
 
 onMounted(() => {
   void chatStore.loadSessions()
+  window.addEventListener('keydown', handleGlobalKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
 async function selectSession(sessionId: string): Promise<void> {
@@ -220,6 +289,24 @@ async function handleConfirmDelete(sessionId: string, event?: Event): Promise<vo
       </li>
     </ul>
     <div v-if="isOpen" class="dropdown-backdrop" @click="closeDropdown" />
+
+    <!--
+      UI Parity I3 (May 2026) — Cmd+K / Ctrl+K fuzzy session palette.
+      Reuses FuzzySearchModal so the chrome matches every other picker
+      (slash, mention, agent, model). The dropdown above remains the
+      home for per-row activity / delete affordances; the palette is a
+      keyboard-first overlay for fast jump-to-session.
+    -->
+    <div data-testid="session-palette-modal" v-if="isPaletteOpen">
+      <FuzzySearchModal
+        :items="sessionPaletteItems"
+        :open="isPaletteOpen"
+        placeholder="Jump to session..."
+        empty-message="No sessions found"
+        @select="handlePaletteSelect"
+        @close="closePalette"
+      />
+    </div>
   </div>
 </template>
 
