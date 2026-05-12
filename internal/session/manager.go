@@ -1100,6 +1100,101 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 //   - Accumulates assistant and tool messages from the stream into session history.
 //   - Updates the session timestamp.
 //   - Delegates streaming to the configured provider.
+// SendMessageWithAttachments is SendMessage augmented with per-turn
+// attachment ids. The ids are resolved against the manager's
+// AttachmentStore and the materialised slice is threaded onto the
+// context via session.WithAttachments so the engine can stamp it on
+// the user message inside Stream.
+//
+// Two-phase reference (plan §6 task-06): each id is MarkReserved'd
+// BEFORE the streamer Stream call fires; on success the new user
+// message id is MarkReferenced'd; on failure all reservations are
+// ReleaseReservation'd. The atomic counter on the storage layer makes
+// MarkReserved → MarkReferenced safe under concurrent uploads.
+//
+// Empty `attachmentIDs` falls through to the same code path as
+// SendMessage with no behaviour change.
+//
+// Expected:
+//   - ctx is valid for the lifetime of the streaming request.
+//   - sessionID identifies an existing session.
+//   - message is the user's message content.
+//   - attachmentIDs is the slice of ids the caller wants threaded onto
+//     this turn (already validated as existing in the session store
+//     by the upload + reference flow). Empty means text-only.
+//
+// Returns:
+//   - A stream of provider chunks when the session exists and
+//     attachments resolve.
+//   - ErrSessionNotFound when no session matches the identifier.
+//   - session.ErrAttachmentNotFound when any id is not present in
+//     the session's attachment index.
+func (m *Manager) SendMessageWithAttachments(
+	ctx context.Context, sessionID, message string, attachmentIDs []string,
+) (<-chan provider.StreamChunk, error) {
+	if len(attachmentIDs) == 0 {
+		return m.SendMessage(ctx, sessionID, message)
+	}
+	store := m.AttachmentStore()
+	materialised, err := store.Resolve(sessionID, attachmentIDs)
+	if err != nil {
+		return nil, err
+	}
+	atts := make([]provider.Attachment, 0, len(materialised))
+	for _, mat := range materialised {
+		atts = append(atts, provider.Attachment{
+			ID:               mat.Record.ID,
+			MediaType:        mat.Record.MediaType,
+			OriginalFilename: mat.Record.OriginalFilename,
+			SizeBytes:        mat.Record.SizeBytes,
+			Data:             mat.Data,
+		})
+		// Two-phase reference: reserve BEFORE dispatch so a sweeper
+		// firing mid-flight skips the entry. Released on the failure
+		// path below; promoted to a permanent MarkReferenced on the
+		// success path after we have the new message id.
+		store.MarkReserved(sessionID, mat.Record.ID)
+	}
+
+	ctx = WithAttachments(ctx, atts)
+
+	// Capture the prior message count so we can identify the freshly-
+	// appended user message id after SendMessage returns. SendMessage
+	// appends inside its critical section, so we can snapshot after.
+	priorCount := 0
+	if snap, err := m.SnapshotSession(sessionID); err == nil {
+		priorCount = len(snap.Messages)
+	}
+
+	ch, err := m.SendMessage(ctx, sessionID, message)
+	if err != nil {
+		for _, id := range attachmentIDs {
+			store.ReleaseReservation(sessionID, id)
+		}
+		return nil, err
+	}
+
+	// Promote reservations to permanent references on the new user
+	// message. The user message is the most recently appended entry.
+	if snap, snapErr := m.SnapshotSession(sessionID); snapErr == nil && len(snap.Messages) > priorCount {
+		msgID := snap.Messages[len(snap.Messages)-1].ID
+		for _, id := range attachmentIDs {
+			store.MarkReferenced(sessionID, id, msgID)
+		}
+	} else {
+		// Fallback: we could not find the new message id; release the
+		// reservations so the sweeper can reclaim. The provider call
+		// is still in flight on the returned channel — the attachment
+		// bytes have already been read into the in-memory slice on
+		// the engine side, so the request payload is safe.
+		for _, id := range attachmentIDs {
+			store.ReleaseReservation(sessionID, id)
+		}
+	}
+
+	return ch, nil
+}
+
 func (m *Manager) SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error) {
 	m.mu.Lock()
 	sess, ok := m.sessions[sessionID]

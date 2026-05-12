@@ -2525,3 +2525,155 @@ var _ = Describe("buildRequestParams cache breakpoint budget", func() {
 				"definitions prefix and is the existing correct behaviour")
 	})
 })
+
+// Image attachment threading — plan "Chat Attachments Backend
+// (May 2026)" §6 task-04. Extends the existing anthropic_test.go seam
+// per memory feedback_extend_existing_specs.
+var _ = Describe("attachmentsToBlocks and buildUserMessage", func() {
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	jpgBytes := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
+
+	It("returns an empty slice for no attachments", func() {
+		blocks := attachmentsToBlocks(nil)
+		Expect(blocks).To(BeNil())
+		blocks = attachmentsToBlocks([]provider.Attachment{})
+		Expect(blocks).To(BeNil())
+	})
+
+	It("converts a PNG attachment to NewImageBlockBase64", func() {
+		blocks := attachmentsToBlocks([]provider.Attachment{
+			{ID: "abc", MediaType: "image/png", Data: pngBytes, SizeBytes: int64(len(pngBytes))},
+		})
+		Expect(blocks).To(HaveLen(1))
+		// The SDK exposes the image block via ContentBlockParamUnion.OfImage.
+		Expect(blocks[0].OfImage).NotTo(BeNil())
+		Expect(blocks[0].OfImage.Source.OfBase64).NotTo(BeNil())
+		Expect(string(blocks[0].OfImage.Source.OfBase64.MediaType)).To(Equal("image/png"))
+		// The Data field is base64-encoded by the constructor.
+		Expect(blocks[0].OfImage.Source.OfBase64.Data).NotTo(BeEmpty())
+	})
+
+	It("skips incomplete entries (empty MediaType or Data)", func() {
+		blocks := attachmentsToBlocks([]provider.Attachment{
+			{ID: "ok", MediaType: "image/png", Data: pngBytes},
+			{ID: "empty-data", MediaType: "image/png", Data: nil},
+			{ID: "empty-type", MediaType: "", Data: pngBytes},
+		})
+		Expect(blocks).To(HaveLen(1))
+	})
+
+	It("buildUserMessage prepends image blocks ahead of the text block", func() {
+		msg := provider.Message{
+			Role:    "user",
+			Content: "describe this image",
+			Attachments: []provider.Attachment{
+				{ID: "a", MediaType: "image/png", Data: pngBytes},
+			},
+		}
+		out := buildUserMessage(msg)
+		Expect(out.Content).To(HaveLen(2))
+		// Image block first.
+		Expect(out.Content[0].OfImage).NotTo(BeNil())
+		// Text block second.
+		Expect(out.Content[1].OfText).NotTo(BeNil())
+		Expect(out.Content[1].OfText.Text).To(Equal("describe this image"))
+	})
+
+	It("buildUserMessage handles multiple images in order", func() {
+		msg := provider.Message{
+			Role:    "user",
+			Content: "describe these",
+			Attachments: []provider.Attachment{
+				{ID: "a", MediaType: "image/png", Data: pngBytes},
+				{ID: "b", MediaType: "image/jpeg", Data: jpgBytes},
+			},
+		}
+		out := buildUserMessage(msg)
+		Expect(out.Content).To(HaveLen(3))
+		Expect(out.Content[0].OfImage).NotTo(BeNil())
+		Expect(string(out.Content[0].OfImage.Source.OfBase64.MediaType)).To(Equal("image/png"))
+		Expect(out.Content[1].OfImage).NotTo(BeNil())
+		Expect(string(out.Content[1].OfImage.Source.OfBase64.MediaType)).To(Equal("image/jpeg"))
+		Expect(out.Content[2].OfText.Text).To(Equal("describe these"))
+	})
+
+	It("buildUserMessage with no attachments produces a single text block (unchanged from pre-fix behaviour)", func() {
+		out := buildUserMessage(provider.Message{Role: "user", Content: "hello"})
+		Expect(out.Content).To(HaveLen(1))
+		Expect(out.Content[0].OfText.Text).To(Equal("hello"))
+	})
+
+	It("buildUserMessage with empty content and no attachments emits a single empty text block", func() {
+		out := buildUserMessage(provider.Message{Role: "user"})
+		Expect(out.Content).To(HaveLen(1))
+		Expect(out.Content[0].OfText).NotTo(BeNil())
+	})
+
+	It("buildMessages routes user-role messages through buildUserMessage", func() {
+		msgs := []provider.Message{
+			{Role: "user", Content: "look", Attachments: []provider.Attachment{
+				{ID: "a", MediaType: "image/png", Data: pngBytes},
+			}},
+		}
+		result := buildMessages(msgs)
+		Expect(result).To(HaveLen(1))
+		Expect(string(result[0].Role)).To(Equal("user"))
+		Expect(result[0].Content).To(HaveLen(2)) // image + text
+		Expect(result[0].Content[0].OfImage).NotTo(BeNil())
+	})
+
+	It("TotalAttachmentBytes sums Data byte counts", func() {
+		atts := []provider.Attachment{
+			{Data: make([]byte, 100)},
+			{Data: make([]byte, 250)},
+			{Data: nil},
+		}
+		Expect(TotalAttachmentBytes(atts)).To(Equal(int64(350)))
+	})
+})
+
+var _ = Describe("buildRequestParams attachment-size gate", func() {
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+
+	It("returns ErrAttachmentRequestTooLarge when total attachment bytes exceed the ceiling", func() {
+		p, providerErr := New("test-key")
+		Expect(providerErr).NotTo(HaveOccurred())
+		// Construct a synthetic 26 MB payload split across two messages.
+		big := make([]byte, MaxAttachmentRequestBytes())
+		copy(big, pngBytes)
+		extra := make([]byte, 1024*1024) // 1 MB extra → over the 25 MB cap
+
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-6",
+			Messages: []provider.Message{
+				{Role: "user", Content: "first", Attachments: []provider.Attachment{
+					{ID: "a", MediaType: "image/png", Data: big},
+				}},
+				{Role: "user", Content: "second", Attachments: []provider.Attachment{
+					{ID: "b", MediaType: "image/png", Data: extra},
+				}},
+			},
+		}
+		_, _, err := p.buildRequestParams(req)
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, ErrAttachmentRequestTooLarge)).To(BeTrue())
+	})
+
+	It("accepts attachments under the ceiling", func() {
+		p, providerErr := New("test-key")
+		Expect(providerErr).NotTo(HaveOccurred())
+		under := make([]byte, 1024*1024) // 1 MB — well under
+		copy(under, pngBytes)
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-6",
+			Messages: []provider.Message{
+				{Role: "user", Content: "ok", Attachments: []provider.Attachment{
+					{ID: "a", MediaType: "image/png", Data: under},
+				}},
+			},
+		}
+		params, _, err := p.buildRequestParams(req)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(params.Messages).To(HaveLen(1))
+	})
+})

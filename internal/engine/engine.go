@@ -2480,6 +2480,21 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	messages := e.buildContextWindow(streamCtx, sessionID, message)
 
+	// Thread per-turn attachments onto the final user message in the
+	// request payload. Plan "Chat Attachments Backend (May 2026)" §6
+	// task-04 — attachments arrive via session.AttachmentsFromContext
+	// (the manager populates the key just before calling Stream). The
+	// engine seam stays pure-Go-data; per-provider translators lift
+	// the slice into native content blocks inside their request-builder.
+	if atts := session.AttachmentsFromContext(streamCtx); len(atts) > 0 {
+		// The buildContextWindow paths above all append the user message
+		// at the tail. Stamp the attachments slice onto that final
+		// message so the provider sees them on the current turn only.
+		if len(messages) > 0 && messages[len(messages)-1].Role == "user" {
+			messages[len(messages)-1].Attachments = atts
+		}
+	}
+
 	userMsg := provider.Message{Role: "user", Content: message}
 	if e.store != nil {
 		msgID := e.store.AppendReturningID(userMsg)
