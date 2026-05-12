@@ -117,6 +117,10 @@ func (t *AutoresearchRunTool) Schema() tool.Schema {
 				Type:        "string",
 				Description: "Agent ID for the driver to use. Sets FLOWSTATE_AUTORESEARCH_DRIVER_AGENT. Empty = driver default.",
 			},
+			"no_improve_window": {
+				Type:        "integer",
+				Description: "Stop after this many consecutive no-improve trials. Default 5.",
+			},
 		},
 		Required: []string{"surface", "driver_script", "evaluator_script"},
 	}
@@ -190,6 +194,18 @@ func (t *AutoresearchRunTool) Execute(ctx context.Context, input tool.Input) (to
 
 	if driverAgent, ok := input.Arguments["driver_agent"].(string); ok && driverAgent != "" {
 		opts.DriverAgent = driverAgent
+	}
+
+	if niw, ok := input.Arguments["no_improve_window"]; ok {
+		switch v := niw.(type) {
+		case float64:
+			opts.NoImproveWindow = int(v)
+		case int:
+			opts.NoImproveWindow = v
+		}
+	}
+	if opts.NoImproveWindow <= 0 {
+		opts.NoImproveWindow = 5
 	}
 
 	taskID := opts.RunID

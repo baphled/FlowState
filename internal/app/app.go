@@ -143,6 +143,10 @@ type App struct {
 	// kept as an interface so the app package does not import the cli package
 	// (which would create an import cycle: app → cli → app).
 	autoresearchRunner runner.AutoresearchRunner
+	// autoresearchPruner is the runner.AutoresearchPruner implementation
+	// injected by the CLI layer at startup. When non-nil, wireDelegateToolIfEnabled
+	// registers the AutoresearchPruneTool with the engine.
+	autoresearchPruner runner.AutoresearchPruner
 	// memoryClient is the native Qdrant-backed MemoryClient used by the
 	// mcp_memory_search_nodes and mcp_memory_open_nodes tools. Nil when
 	// Qdrant is not configured; tools are silently omitted in that case.
@@ -1491,6 +1495,10 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 
 	if !eng.HasTool("autoresearch_run") && a.autoresearchRunner != nil {
 		eng.AddTool(engine.NewAutoresearchRunTool(bgManager, a.autoresearchRunner))
+	}
+
+	if !eng.HasTool("autoresearch_prune") && a.autoresearchPruner != nil {
+		eng.AddTool(engine.NewAutoresearchPruneTool(a.autoresearchPruner))
 	}
 
 	a.wireCoordinationToolIfDeclared(eng, manifest, coordinationStore)
@@ -4423,6 +4431,23 @@ func (a *App) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 //   - Stores the runner for later use by wireDelegateToolIfEnabled.
 func (a *App) SetAutoresearchRunner(r runner.AutoresearchRunner) {
 	a.autoresearchRunner = r
+}
+
+// SetAutoresearchPruner injects the AutoresearchPruner implementation used
+// by wireDelegateToolIfEnabled to register the autoresearch_prune engine tool.
+// Called by the CLI layer at startup to break the app→cli import cycle.
+//
+// Expected:
+//   - p implements runner.AutoresearchPruner; may be nil to disable
+//     the autoresearch_prune tool registration.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Stores the pruner for later use by wireDelegateToolIfEnabled.
+func (a *App) SetAutoresearchPruner(p runner.AutoresearchPruner) {
+	a.autoresearchPruner = p
 }
 
 // agentToProviderPreferences converts an agent manifest's preferred model

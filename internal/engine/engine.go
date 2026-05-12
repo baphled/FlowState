@@ -2205,6 +2205,13 @@ func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool
 			allowed["background_output"] = true
 			allowed["background_cancel"] = true
 			allowed["autoresearch_run"] = true
+			allowed["autoresearch_prune"] = true
+		case "autoresearch_run":
+			allowed["autoresearch_run"] = true
+			allowed["background_output"] = true
+			allowed["background_cancel"] = true
+		case "autoresearch_prune":
+			allowed["autoresearch_prune"] = true
 		default:
 			allowed[mt] = true
 		}

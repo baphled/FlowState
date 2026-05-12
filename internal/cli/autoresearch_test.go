@@ -19,6 +19,7 @@ import (
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/runner"
 	"github.com/baphled/flowstate/internal/tool"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -4063,6 +4064,395 @@ updated body
 		Expect(runCmd("autoresearch", "list")).To(Succeed())
 		Expect(out.String()).To(ContainSubstring("legacydt"))
 		Expect(out.String()).To(ContainSubstring("legacy-detached"))
+	})
+})
+
+// autoresearch prune specs — cover prune-by-age, prune --all, dry-run, and
+// --yes skipping the confirmation prompt.
+var _ = Describe("autoresearch prune command", func() {
+	var (
+		out     *bytes.Buffer
+		testApp *app.App
+		dataDir string
+		repoDir string
+		surface string
+		runCmd  func(args ...string) error
+	)
+
+	defaultManifestBodyPrune := `---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: planner role
+capabilities:
+  tools: [read, plan]
+---
+planner body
+`
+	initRepoPrune := func(repo string) {
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "agents", "planner.md"),
+			[]byte(defaultManifestBodyPrune), 0o600)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
+
+		run := func(args ...string) {
+			gc := exec.Command("git", args...)
+			gc.Dir = repo
+			gc.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+			)
+			combined, err := gc.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+		}
+		run("init", "--initial-branch=main", repo)
+		run("config", "user.email", "test@example.com")
+		run("config", "user.name", "test")
+		run("add", ".")
+		run("commit", "--no-verify", "-m", "initial")
+	}
+
+	BeforeEach(func() {
+		out = &bytes.Buffer{}
+		dataDir = GinkgoT().TempDir()
+		repoDir = GinkgoT().TempDir()
+		initRepoPrune(repoDir)
+		surface = filepath.Join(repoDir, "internal", "app", "agents", "planner.md")
+
+		var err error
+		testApp, err = app.NewForTest(app.TestConfig{
+			DataDir:   dataDir,
+			AgentsDir: filepath.Join(repoDir, "internal", "app", "agents"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		runCmd = func(args ...string) error {
+			root := cli.NewRootCmd(testApp)
+			root.SetOut(out)
+			root.SetErr(out)
+			root.SetArgs(args)
+			return root.Execute()
+		}
+	})
+
+	// seedPruneRun writes a minimal autoresearch manifest entry directly
+	// into the coordination.json file so prune tests are independent of
+	// the run command. startedAt controls the age of the run.
+	seedPruneRun := func(runID string, startedAt time.Time, extraKeys ...string) {
+		coordPath := filepath.Join(dataDir, "coordination.json")
+		entries := map[string]string{}
+		if raw, err := os.ReadFile(coordPath); err == nil {
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+		}
+
+		manifest := fmt.Sprintf(
+			`{"surface":%q,"surface_type":"manifest","metric_direction":"min","max_trials":1,"started_at":%q,"worktree_path":"","commit_trials":true}`,
+			surface, startedAt.UTC().Format(time.RFC3339),
+		)
+		entries["autoresearch/"+runID+"/manifest"] = manifest
+
+		// Always include a result key so we can verify deletion.
+		entries["autoresearch/"+runID+"/result"] = `{"termination_reason":"max-trials","total_trials":1}`
+
+		for _, k := range extraKeys {
+			entries["autoresearch/"+runID+"/"+k] = `{}`
+		}
+
+		body, err := json.Marshal(entries)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(coordPath, body, 0o600)).To(Succeed())
+	}
+
+	// coordKeys reads all keys from coordination.json and returns them.
+	coordKeys := func() map[string]string {
+		raw, err := os.ReadFile(filepath.Join(dataDir, "coordination.json"))
+		if err != nil {
+			return map[string]string{}
+		}
+		var entries map[string]string
+		Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+		return entries
+	}
+
+	Describe("prune by age (default --older-than 168h)", func() {
+		It("returns a no-runs notice when the coord-store is empty", func() {
+			Expect(runCmd("autoresearch", "prune", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("No autoresearch runs"))
+		})
+
+		It("prunes a run older than the cutoff", func() {
+			old := time.Now().UTC().Add(-200 * time.Hour)
+			seedPruneRun("prune-old-run", old)
+
+			Expect(runCmd("autoresearch", "prune", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("Pruned 1 run(s)"))
+
+			remaining := coordKeys()
+			Expect(remaining).NotTo(HaveKey("autoresearch/prune-old-run/manifest"))
+			Expect(remaining).NotTo(HaveKey("autoresearch/prune-old-run/result"))
+		})
+
+		It("does not prune a run younger than the cutoff", func() {
+			fresh := time.Now().UTC().Add(-24 * time.Hour)
+			seedPruneRun("prune-fresh-run", fresh)
+
+			Expect(runCmd("autoresearch", "prune", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("No runs match"))
+
+			remaining := coordKeys()
+			Expect(remaining).To(HaveKey("autoresearch/prune-fresh-run/manifest"))
+		})
+
+		It("prunes only old runs when mix of old and fresh exist", func() {
+			old := time.Now().UTC().Add(-200 * time.Hour)
+			fresh := time.Now().UTC().Add(-24 * time.Hour)
+			seedPruneRun("prune-mix-old", old)
+			seedPruneRun("prune-mix-fresh", fresh)
+
+			Expect(runCmd("autoresearch", "prune", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("Pruned 1 run(s)"))
+
+			remaining := coordKeys()
+			Expect(remaining).NotTo(HaveKey("autoresearch/prune-mix-old/manifest"))
+			Expect(remaining).To(HaveKey("autoresearch/prune-mix-fresh/manifest"))
+		})
+
+		It("prunes all matching keys for a run (manifest, result, trial keys)", func() {
+			old := time.Now().UTC().Add(-200 * time.Hour)
+			seedPruneRun("prune-keys-run", old, "trial-1", "trial-2", "best", "seen-candidates")
+
+			Expect(runCmd("autoresearch", "prune", "--yes")).To(Succeed())
+
+			remaining := coordKeys()
+			for _, suffix := range []string{"manifest", "result", "trial-1", "trial-2", "best", "seen-candidates"} {
+				Expect(remaining).NotTo(HaveKey("autoresearch/prune-keys-run/"+suffix),
+					"key should be deleted: autoresearch/prune-keys-run/%s", suffix)
+			}
+		})
+
+		It("honours --older-than 0s to prune all runs regardless of age", func() {
+			fresh := time.Now().UTC().Add(-1 * time.Hour)
+			seedPruneRun("prune-zero-run", fresh)
+
+			Expect(runCmd("autoresearch", "prune", "--older-than", "0s", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("Pruned 1 run(s)"))
+
+			remaining := coordKeys()
+			Expect(remaining).NotTo(HaveKey("autoresearch/prune-zero-run/manifest"))
+		})
+	})
+
+	Describe("--all flag", func() {
+		It("prunes all runs regardless of age when --all --yes is passed", func() {
+			recent := time.Now().UTC().Add(-1 * time.Hour)
+			seedPruneRun("prune-all-a", recent)
+			seedPruneRun("prune-all-b", recent)
+
+			Expect(runCmd("autoresearch", "prune", "--all", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("Pruned 2 run(s)"))
+
+			remaining := coordKeys()
+			Expect(remaining).NotTo(HaveKey("autoresearch/prune-all-a/manifest"))
+			Expect(remaining).NotTo(HaveKey("autoresearch/prune-all-b/manifest"))
+		})
+
+		It("prints a no-runs notice when the coord-store is empty even with --all", func() {
+			Expect(runCmd("autoresearch", "prune", "--all", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("No autoresearch runs"))
+		})
+	})
+
+	Describe("--dry-run flag", func() {
+		It("shows what would be deleted without modifying the store", func() {
+			old := time.Now().UTC().Add(-200 * time.Hour)
+			seedPruneRun("prune-dry-run", old, "trial-1")
+
+			Expect(runCmd("autoresearch", "prune", "--dry-run")).To(Succeed())
+			output := out.String()
+			Expect(output).To(ContainSubstring("Dry run"))
+			Expect(output).To(ContainSubstring("prune-dr")) // shortened run ID
+
+			// Store must be untouched.
+			remaining := coordKeys()
+			Expect(remaining).To(HaveKey("autoresearch/prune-dry-run/manifest"))
+			Expect(remaining).To(HaveKey("autoresearch/prune-dry-run/trial-1"))
+		})
+
+		It("dry-run with --all shows all runs without deleting", func() {
+			recent := time.Now().UTC().Add(-1 * time.Hour)
+			seedPruneRun("prune-dry-all", recent)
+
+			Expect(runCmd("autoresearch", "prune", "--all", "--dry-run")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("Dry run"))
+
+			remaining := coordKeys()
+			Expect(remaining).To(HaveKey("autoresearch/prune-dry-all/manifest"))
+		})
+	})
+
+	Describe("--yes flag skips confirmation", func() {
+		It("skips confirmation when --all --yes is passed", func() {
+			recent := time.Now().UTC().Add(-1 * time.Hour)
+			seedPruneRun("prune-yes-run", recent)
+
+			// No stdin provided — would hang if confirmation were required.
+			Expect(runCmd("autoresearch", "prune", "--all", "--yes")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("Pruned 1 run(s)"))
+		})
+	})
+
+	Describe("command help", func() {
+		It("registers the prune subcommand under autoresearch", func() {
+			Expect(runCmd("autoresearch", "--help")).To(Succeed())
+			Expect(out.String()).To(ContainSubstring("prune"))
+		})
+
+		It("registers the documented flags", func() {
+			Expect(runCmd("autoresearch", "prune", "--help")).To(Succeed())
+			output := out.String()
+			Expect(output).To(ContainSubstring("--older-than"))
+			Expect(output).To(ContainSubstring("--all"))
+			Expect(output).To(ContainSubstring("--dry-run"))
+			Expect(output).To(ContainSubstring("--yes"))
+		})
+	})
+})
+
+// autoresearchPruneAppRunner bridge specs — verify the runner.AutoresearchPruner
+// implementation in autoresearch_prune_runner.go calls the underlying prune
+// logic and returns accurate structured counts.
+var _ = Describe("AutoresearchPruneAppRunner (bridge)", func() {
+	var (
+		testApp  *app.App
+		dataDir  string
+		surface  string
+		repoDir2 string
+		pruner   runner.AutoresearchPruner
+	)
+
+	defaultManifestBodyPruneBridge := `---
+schema_version: "1"
+id: planner
+name: Planner
+complexity: standard
+metadata:
+  role: planner role
+capabilities:
+  tools: [read, plan]
+---
+planner body
+`
+	initRepoPruneBridge := func(repo string) {
+		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "agents", "planner.md"),
+			[]byte(defaultManifestBodyPruneBridge), 0o600)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(repo, "skills", "autoresearch"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(repo, "skills", "autoresearch", "SKILL.md"),
+			[]byte("default autoresearch skill body\n"), 0o600)).To(Succeed())
+
+		run := func(args ...string) {
+			gc := exec.Command("git", args...)
+			gc.Dir = repo
+			gc.Env = append(os.Environ(),
+				"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+				"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+			)
+			combined, err := gc.CombinedOutput()
+			Expect(err).NotTo(HaveOccurred(), "git %s: %s", strings.Join(args, " "), string(combined))
+		}
+		run("init", "--initial-branch=main", repo)
+		run("config", "user.email", "test@example.com")
+		run("config", "user.name", "test")
+		run("add", ".")
+		run("commit", "--no-verify", "-m", "initial")
+	}
+
+	BeforeEach(func() {
+		dataDir = GinkgoT().TempDir()
+		repoDir2 = GinkgoT().TempDir()
+		initRepoPruneBridge(repoDir2)
+		surface = filepath.Join(repoDir2, "internal", "app", "agents", "planner.md")
+
+		var err error
+		testApp, err = app.NewForTest(app.TestConfig{
+			DataDir:   dataDir,
+			AgentsDir: filepath.Join(repoDir2, "internal", "app", "agents"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		pruner = cli.NewAutoresearchPruneAppRunner(testApp)
+	})
+
+	// seedRun writes a minimal autoresearch manifest entry so bridge tests
+	// are independent of the run subcommand.
+	seedRun := func(runID string, startedAt time.Time) {
+		coordPath := filepath.Join(dataDir, "coordination.json")
+		entries := map[string]string{}
+		if raw, err := os.ReadFile(coordPath); err == nil {
+			Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+		}
+		manifest := fmt.Sprintf(
+			`{"surface":%q,"surface_type":"manifest","metric_direction":"min","max_trials":1,"started_at":%q,"worktree_path":"","commit_trials":true}`,
+			surface, startedAt.UTC().Format(time.RFC3339),
+		)
+		entries["autoresearch/"+runID+"/manifest"] = manifest
+		entries["autoresearch/"+runID+"/result"] = `{"termination_reason":"max-trials","total_trials":1}`
+		body, err := json.Marshal(entries)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(coordPath, body, 0o600)).To(Succeed())
+	}
+
+	It("returns zero counts when the coord-store is empty", func() {
+		res, err := pruner.PruneAutoresearch(context.Background(), runner.AutoresearchPruneOpts{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RunsPruned).To(Equal(0))
+		Expect(res.KeysDeleted).To(Equal(0))
+	})
+
+	It("prunes an old run and returns correct counts", func() {
+		old := time.Now().UTC().Add(-200 * time.Hour)
+		seedRun("bridge-old-run", old)
+
+		res, err := pruner.PruneAutoresearch(context.Background(), runner.AutoresearchPruneOpts{OlderThan: 168 * time.Hour})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RunsPruned).To(Equal(1))
+		Expect(res.KeysDeleted).To(BeNumerically(">=", 1))
+		Expect(res.Runs).To(ContainElement("bridge-old-run"))
+	})
+
+	It("dry-run returns counts without deleting", func() {
+		old := time.Now().UTC().Add(-200 * time.Hour)
+		seedRun("bridge-dry-run", old)
+
+		res, err := pruner.PruneAutoresearch(context.Background(), runner.AutoresearchPruneOpts{
+			OlderThan: 168 * time.Hour,
+			DryRun:    true,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.DryRun).To(BeTrue())
+		Expect(res.RunsPruned).To(Equal(1))
+
+		// Store must be untouched.
+		raw, err := os.ReadFile(filepath.Join(dataDir, "coordination.json"))
+		Expect(err).NotTo(HaveOccurred())
+		var entries map[string]string
+		Expect(json.Unmarshal(raw, &entries)).To(Succeed())
+		Expect(entries).To(HaveKey("autoresearch/bridge-dry-run/manifest"))
+	})
+
+	It("all=true prunes every run regardless of age", func() {
+		recent := time.Now().UTC().Add(-1 * time.Hour)
+		seedRun("bridge-all-a", recent)
+		seedRun("bridge-all-b", recent)
+
+		res, err := pruner.PruneAutoresearch(context.Background(), runner.AutoresearchPruneOpts{All: true})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.RunsPruned).To(Equal(2))
+		Expect(res.Runs).To(ConsistOf("bridge-all-a", "bridge-all-b"))
 	})
 })
 
