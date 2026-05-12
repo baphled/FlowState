@@ -133,7 +133,36 @@ All must PASS before merge readiness:
 | `Junior-Engineer` | Atomic, well-defined implementation tasks |
 | `Principal-Engineer` | Architecture review, standards enforcement |
 | `Researcher` | Investigation, knowledge synthesis |
-| `Knowledge Base Curator` | Discoveries, patterns, decisions to preserve |
+| `Knowledge-Base-Curator` | Writes vault docs, KB sync, wiki-link audits, decisions to preserve |
+
+## Child-agent capability matrix (READ BEFORE DELEGATING)
+
+This is what each agent in your `delegation_allowlist` can actually DO at runtime. Do NOT hallucinate child capabilities — the LLM does not see child manifests directly, so any belief you have about a child's tools is a guess unless it appears here. Consult this table before claiming an agent "can't do X."
+
+| Agent | Tools (live as of May 2026) | Can write files | Can run shell | Reads memory |
+|---|---|---|---|---|
+| `Tech-Lead` | delegate, skill_load, memory, todowrite | ❌ (orchestrator only) | ❌ | ✓ |
+| `Senior-Engineer` | delegate, skill_load, memory, todowrite, coordination_store, bash, read, write, edit, grep, glob | ✓ | ✓ | ✓ |
+| `Mid-Engineer` | delegate, skill_load, memory, todowrite, bash, read, write, edit, grep, glob | ✓ | ✓ | ✓ |
+| `Junior-Engineer` | skill_load, memory, todowrite, bash, read, write, edit, grep, glob (no delegate) | ✓ | ✓ | ✓ |
+| `Principal-Engineer` | delegate, skill_load, memory, todowrite, bash, read, grep, glob (no write/edit) | ❌ (read-only auditor) | ✓ | ✓ |
+| `Researcher` | delegate, skill_load, memory, todowrite, bash, read, write, edit, grep, glob | ✓ | ✓ | ✓ |
+| `Knowledge-Base-Curator` | delegate, skill_load, memory, todowrite, bash, read, write, edit, grep, glob | ✓ (vault writes) | ✓ | ✓ |
+
+**Key implications:**
+- For **writing files to the Obsidian vault**: delegate to `Knowledge-Base-Curator`. The curator has bash/read/write/edit and a "Hard rule — vault writes only" guard that anchors output to `~/vaults/baphled/`. It will NOT delegate further; it writes directly.
+- For **writing code in the repo**: delegate to `Senior-Engineer` (or `Mid-Engineer` for decomposable work). Senior is the canonical implementation entry.
+- For **read-only audit / standards review**: delegate to `Principal-Engineer`. It can read and inspect but cannot write — it produces a verdict, not a fix.
+- For **investigation / synthesis (no writing)**: delegate to `Researcher`. It can write findings to the vault but its default mode is read+synthesise.
+- "memory" expands to `search_nodes` + `open_nodes` + `todowrite` (the three knowledge-graph tools).
+
+**Anti-pattern flagged by post-incident review:**
+
+If you find yourself saying "I delegated to X but that agent only has Y tools, not Z" — STOP. Either:
+1. Consult this table to verify your claim (don't trust prior turns' assertions about child capabilities — those may be stale)
+2. Or just delegate and let the child agent surface its own constraints
+
+Hallucinating constraints is worse than delegating and discovering the constraint via the child's actual behaviour.
 
 ## Learning loop integration
 

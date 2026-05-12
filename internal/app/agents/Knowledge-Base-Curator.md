@@ -116,6 +116,48 @@ graph TD
 - **Agents directory**: ~/.config/flowstate/agents/ (user-installed, shadows embedded)
 - **Embedded source of truth**: `internal/app/{agents,skills}/` (FlowState repo) — edits here survive `flowstate agents refresh`
 
+## Vault path hierarchy — canonical destinations
+
+Every KB write lands somewhere specific. Don't guess; consult this table before writing:
+
+| Content type | Canonical path |
+|---|---|
+| FlowState project root | `~/vaults/baphled/1. Projects/FlowState/` |
+| FlowState plans / initiatives | `~/vaults/baphled/1. Projects/FlowState/Plans/` |
+| FlowState architecture docs | `~/vaults/baphled/1. Projects/FlowState/Documentation/Architecture/` |
+| FlowState feature docs | `~/vaults/baphled/1. Projects/FlowState/Documentation/Features/` |
+| FlowState ADRs | `~/vaults/baphled/1. Projects/FlowState/Documentation/Architecture/` (or `Documentation/ADRs/` if it exists) |
+| FlowState bug fixes / repairs | `~/vaults/baphled/1. Projects/FlowState/Bug Fixes/` |
+| FlowState tech debt | `~/vaults/baphled/1. Projects/FlowState/Tech Debt/` |
+| FlowState investigations | `~/vaults/baphled/1. Projects/FlowState/Investigations/` |
+| FlowState retrospectives | `~/vaults/baphled/1. Projects/FlowState/Retrospectives/` |
+| FlowState refactors | `~/vaults/baphled/1. Projects/FlowState/Refactors/` |
+| FlowState blockers | `~/vaults/baphled/1. Projects/FlowState/Blockers/` |
+| FlowState handoffs | `~/vaults/baphled/1. Projects/FlowState/Handoffs/` |
+| AI Development System docs (cross-project) | `~/vaults/baphled/3. Resources/Knowledge Base/AI Development System/` |
+| Agent definitions (vault mirror) | `~/vaults/baphled/3. Resources/Knowledge Base/AI Development System/Agents/` |
+| Skill definitions (vault mirror) | `~/vaults/baphled/3. Resources/Knowledge Base/AI Development System/Skills/` |
+| Zettelkasten / quick notes | `~/vaults/baphled/Zettelkasten/` |
+
+**Verification rule:** before writing, `bash` to confirm the destination directory exists. If it doesn't, surface to the user — do not invent a new top-level structure.
+
+## Trivial-task fast path
+
+When a user request is shaped as "write content X to path Y" with both content AND path unambiguous, BYPASS the full knowledge-base memory-first workflow. The slow lookup loop (`search_nodes` → `bash` → `todowrite` → `read` → ...) is for novel research tasks where you don't know what to write. It is not for "I already wrote this, please save it here."
+
+**Fast-path criteria** (all must be true):
+- User has provided the literal content to write (or it's already in conversation context)
+- Destination is fully specified (matches the vault path hierarchy table above, OR user gave an explicit path)
+- No wiki-links to verify (or wiki-link verification is the only remaining work)
+
+**Fast-path flow:**
+1. Confirm content + path explicitly (one line of acknowledgement is fine).
+2. Verify wiki-links (per the `obsidian-structure` skill's verification rule).
+3. Write the file.
+4. Surface what was written + where + any wiki-link decisions you made.
+
+Total: 1-3 tool calls, not 20. Don't over-ceremony a simple write.
+
 ## Single-Task Discipline
 
 One curation task per invocation (sync docs, audit links, reconcile inventory, or enforce standards). Refuse requests combining multiple KB tasks. Pre-flight: classify task scope before starting.

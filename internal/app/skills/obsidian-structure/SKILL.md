@@ -55,6 +55,23 @@ Hierarchical tags for multi-dimensional organisation.
 - \`#topic/git/workflow\`
 - \`#type/permanent-note\`
 
+## Wiki-link verification (MANDATORY before writing)
+
+Every `[[Wiki-Link]]` you emit in a vault file MUST point to a file that exists. Broken wiki-links rot the graph view, cause Dataview queries to silently miss entries, and waste user time chasing dead references. Before committing any markdown with wiki-links:
+
+1. **Enumerate** every `[[Target]]` and `[[Target|Alias]]` in the content you're about to write.
+2. **Verify** each target exists. Use `bash` to check:
+   ```bash
+   find ~/vaults/baphled -name "Target.md" -type f 2>/dev/null | head
+   ```
+   Targets are resolved by filename (without `.md`) across the entire vault, not by relative path.
+3. **For every missing target**, pick one of three actions and pick deliberately:
+   - **Stub it** — Write a placeholder file for the missing doc in the same turn (one-line frontmatter + a stub heading is enough). Prefer this when the target is part of the same conceptual area as the doc you're writing.
+   - **Plain-text the title** — Drop the `[[ ]]` and write the title as plain text. Prefer this when the target is genuinely external and unlikely to ever be a vault doc.
+   - **Surface to user** — If the user expects the target to exist and you can't tell, ask one clarifying question before committing the link.
+
+Never ship a wiki-link to a non-existent target silently. The user will catch it, and you've wasted a turn.
+
 ## Anti-patterns to avoid
 
 - ❌ **Folder Overload** — Creating a new folder for every minor sub-topic instead of using links or tags.
