@@ -38,9 +38,18 @@ const liveDraft = ref<string>('')
 // staged here until the user hits Send. The backend chat-attachment
 // endpoint does not yet exist on `feature/vue-ui-rebase`; the upload
 // path below stubs the POST and flags the gap.
+// Chat Attachments Backend (May 2026) PR4 task-15 — extend the inline
+// PendingAttachment shape with a kind discriminant. The frontend
+// branches on this for the staged-attachment chip render (image
+// thumbnail vs document file-icon) and for the picker `accept`
+// attribute. The backend's per-file Kind discrimination (image vs
+// document) is the authoritative source — this client-side flag is
+// only for chip rendering. Default 'image' for backwards-compat with
+// any historical caller staging an image without setting kind.
 interface PendingAttachment {
   id: string
   file: File
+  kind: 'image' | 'document'
   previewUrl: string | null
 }
 const pendingAttachments = ref<PendingAttachment[]>([])
@@ -333,24 +342,46 @@ function newAttachmentId(): string {
   return `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+// PR4 task-15: document chip displays a human-readable size next to
+// the filename. Small files report KB, larger files MB; matches the
+// shorthand format the rest of the app uses for file-byte reports.
+function humanReadableSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 function stageFiles(files: FileList | File[] | null | undefined): void {
   if (!files) return
   const list = Array.from(files)
   if (list.length === 0) return
   for (const file of list) {
-    // Image-only filter for the v1 surface — the TUI's attachment flow
-    // accepts arbitrary file types but the v1 web composer mirrors the
-    // brief's "image/*" scope. Non-image files are silently skipped.
-    if (!file.type.startsWith('image/')) continue
+    // Chat Attachments Backend (May 2026) PR4 task-15 — staged file
+    // types: image/* (jpeg/png/gif/webp) and application/pdf only.
+    // Anything else is silently skipped. The backend allow-list is
+    // the authoritative gate — this client-side filter is a
+    // friendly-UI nicety so the user never sees a 415 toast for an
+    // obviously-wrong file (e.g. dropping a .docx onto the
+    // composer).
+    const isImage = file.type.startsWith('image/')
+    const isPDF = file.type === 'application/pdf'
+    if (!isImage && !isPDF) continue
     let previewUrl: string | null = null
-    try {
-      previewUrl = URL.createObjectURL(file)
-    } catch {
-      previewUrl = null
+    if (isImage) {
+      // PDFs do not render a thumbnail — the chip uses a file-icon
+      // badge instead. createObjectURL is reserved for image previews
+      // so we never leak a blob: URL for PDFs (which would carry the
+      // full byte payload in memory until revoke).
+      try {
+        previewUrl = URL.createObjectURL(file)
+      } catch {
+        previewUrl = null
+      }
     }
     pendingAttachments.value.push({
       id: newAttachmentId(),
       file,
+      kind: isPDF ? 'document' : 'image',
       previewUrl,
     })
   }
@@ -399,7 +430,10 @@ function handlePaste(event: ClipboardEvent): void {
     const item = items[i]
     if (item.kind === 'file') {
       const file = item.getAsFile()
-      if (file && file.type.startsWith('image/')) {
+      // PR4 task-15: paste accepts the same shape as the file picker —
+      // image/* and application/pdf. stageFiles enforces the same
+      // filter so the gate stays single-source-of-truth.
+      if (file && (file.type.startsWith('image/') || file.type === 'application/pdf')) {
         files.push(file)
       }
     }
@@ -571,7 +605,7 @@ watch(
       aria-hidden="true"
     >
       <Icon name="attach" :size="32" />
-      <span>Drop image to attach</span>
+      <span>Drop image or PDF to attach</span>
     </div>
 
     <!--
@@ -588,15 +622,37 @@ watch(
         v-for="att in pendingAttachments"
         :key="att.id"
         class="message-input-attachment"
+        :class="{ 'is-document': att.kind === 'document' }"
         :data-testid="`message-input-attachment-${att.id}`"
       >
+        <!--
+          PR4 task-15: branch on kind. Images keep the existing
+          thumbnail; PDFs render a file-icon badge instead of an
+          <img> (no thumbnail in v1 — preview rendering of PDF first
+          page is a future PR). Filename + human-readable size flank
+          the icon for documents so the user can confirm they staged
+          the right file before sending.
+        -->
         <img
-          v-if="att.previewUrl"
+          v-if="att.kind === 'image' && att.previewUrl"
           :src="att.previewUrl"
           :alt="att.file.name"
           class="message-input-attachment-thumb"
         />
+        <span
+          v-else-if="att.kind === 'document'"
+          class="message-input-attachment-doc-icon"
+          data-testid="message-input-attachment-doc-icon"
+          aria-hidden="true"
+        >
+          <Icon name="attach" :size="24" />
+        </span>
         <span class="message-input-attachment-name">{{ att.file.name }}</span>
+        <span
+          v-if="att.kind === 'document'"
+          class="message-input-attachment-size"
+          data-testid="message-input-attachment-size"
+        >{{ humanReadableSize(att.file.size) }}</span>
         <button
           type="button"
           class="message-input-attachment-remove"
@@ -629,7 +685,7 @@ watch(
       <input
         ref="fileInputRef"
         type="file"
-        accept="image/*"
+        accept="image/*,application/pdf"
         multiple
         class="file-input"
         data-testid="file-input"
