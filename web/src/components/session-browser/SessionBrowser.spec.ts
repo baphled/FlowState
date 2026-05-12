@@ -214,3 +214,97 @@ describe('SessionBrowser close button (I1 residual — ✕ → Icon)', () => {
     expect(closeBtn.text()).not.toContain('✕')
   })
 })
+
+// UI Parity I9 (May 2026) — agent filter swap from native <select> to
+// FuzzySearchModal.
+//
+// Pre-fix the agent filter was a `<select>` (`SessionBrowser.vue:175-184`)
+// which renders inconsistently across OS chrome and has no typeahead. The
+// modal is replaced with a button → `FuzzySearchModal` consumer so the
+// experience matches the slash/mention/agent/model pickers used everywhere
+// else.
+//
+// Contract:
+//   - The `<select.agent-filter>` element MUST NOT exist.
+//   - A trigger button `[data-testid="agent-filter-trigger"]` is rendered.
+//   - Clicking it opens a FuzzySearchModal listing one entry per agent
+//     present in `chatStore.sessions`, plus an explicit "All Agents" entry.
+//   - Selecting an agent sets the filter to that agent's id; the session
+//     list re-filters accordingly. Selecting "All Agents" clears the filter.
+describe('SessionBrowser agent filter — fuzzy modal (I9)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  async function openWithAgents(): Promise<{ wrapper: ReturnType<typeof mount>, chatStore: ReturnType<typeof useChatStore> }> {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionBrowser)
+    ;(wrapper.vm as unknown as { open: () => void }).open()
+    await flushPromises()
+    chatStore.sessions = [
+      makeSession({ id: 'session-A', title: 'Alpha', agentId: 'planner' }),
+      makeSession({ id: 'session-B', title: 'Beta', agentId: 'researcher' }),
+    ]
+    chatStore.availableAgentDetails = [
+      { id: 'planner', name: 'Planner', description: 'Plans things', model: 'sonnet-4-5', provider: 'anthropic' },
+      { id: 'researcher', name: 'Researcher', description: 'Researches things', model: 'sonnet-4-5', provider: 'anthropic' },
+    ]
+    await nextTick()
+    return { wrapper, chatStore }
+  }
+
+  it('does not render a native <select.agent-filter>', async () => {
+    const { wrapper } = await openWithAgents()
+    expect(wrapper.find('select.agent-filter').exists()).toBe(false)
+  })
+
+  it('renders an agent-filter trigger button', async () => {
+    const { wrapper } = await openWithAgents()
+    expect(wrapper.find('[data-testid="agent-filter-trigger"]').exists()).toBe(true)
+  })
+
+  it('opens a FuzzySearchModal listing each agent on trigger click', async () => {
+    const { wrapper } = await openWithAgents()
+
+    await wrapper.find('[data-testid="agent-filter-trigger"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="agent-filter-modal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="fuzzy-search-item-all"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="fuzzy-search-item-planner"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="fuzzy-search-item-researcher"]').exists()).toBe(true)
+  })
+
+  it('filters the session list by the chosen agent id', async () => {
+    const { wrapper } = await openWithAgents()
+
+    await wrapper.find('[data-testid="agent-filter-trigger"]').trigger('click')
+    await nextTick()
+    await wrapper.find('[data-testid="fuzzy-search-item-planner"]').trigger('click')
+    await nextTick()
+
+    const titles = wrapper.findAll('.session-title').map((el) => el.text())
+    expect(titles).toEqual(['Alpha'])
+  })
+
+  it('resets the filter back to all agents when the "All Agents" entry is chosen', async () => {
+    const { wrapper } = await openWithAgents()
+
+    await wrapper.find('[data-testid="agent-filter-trigger"]').trigger('click')
+    await nextTick()
+    await wrapper.find('[data-testid="fuzzy-search-item-planner"]').trigger('click')
+    await nextTick()
+
+    await wrapper.find('[data-testid="agent-filter-trigger"]').trigger('click')
+    await nextTick()
+    await wrapper.find('[data-testid="fuzzy-search-item-all"]').trigger('click')
+    await nextTick()
+
+    const titles = wrapper.findAll('.session-title').map((el) => el.text())
+    expect(titles.sort()).toEqual(['Alpha', 'Beta'])
+  })
+})

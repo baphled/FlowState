@@ -3,6 +3,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { showToast } from '@/composables/useToast'
 import Icon from '@/components/common/Icon.vue'
+import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
+import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
 import type { Agent } from '@/types'
 
 defineOptions({ name: 'SessionBrowser' })
@@ -61,10 +63,54 @@ const filteredSessions = computed(() => {
 
 const availableAgents = computed(() => {
   const agents = new Set(chatStore.sessions.map(s => s.agentId))
-  return Array.from(agents).map(agentId => 
+  return Array.from(agents).map(agentId =>
     chatStore.availableAgentDetails.find(a => a.id === agentId)
   ).filter(Boolean) as Agent[]
 })
+
+// UI Parity I9 (May 2026) — swap native <select> for FuzzySearchModal.
+//
+// The previous filter was a `<select>` (rendered inconsistently across
+// OS/font stacks, no typeahead). The replacement is a trigger button
+// that opens a FuzzySearchModal consumer, matching every other picker
+// in the app (slash, mention, agent, model). An explicit "All Agents"
+// entry sits at the top of the item list so the user can clear the
+// filter without a separate affordance.
+const isAgentFilterOpen = ref(false)
+
+const AGENT_FILTER_ALL_ID = 'all'
+
+const agentFilterItems = computed<FuzzySearchItem[]>(() => {
+  const all: FuzzySearchItem = {
+    id: AGENT_FILTER_ALL_ID,
+    label: 'All Agents',
+  }
+  const agents = availableAgents.value.map((agent) => ({
+    id: agent.id,
+    label: agent.name,
+    meta: agent.model || undefined,
+  }))
+  return [all, ...agents]
+})
+
+const currentAgentFilterLabel = computed(() => {
+  if (selectedAgentFilter.value === AGENT_FILTER_ALL_ID) return 'All Agents'
+  const match = availableAgents.value.find((a) => a.id === selectedAgentFilter.value)
+  return match?.name ?? 'All Agents'
+})
+
+function openAgentFilter(): void {
+  isAgentFilterOpen.value = true
+}
+
+function closeAgentFilter(): void {
+  isAgentFilterOpen.value = false
+}
+
+function handleAgentFilterSelect(item: FuzzySearchItem): void {
+  selectedAgentFilter.value = item.id
+  isAgentFilterOpen.value = false
+}
 
 function getAgentName(agentId: string): string {
   const agent = chatStore.availableAgentDetails.find(a => a.id === agentId)
@@ -173,16 +219,24 @@ onMounted(() => {
         </div>
 
         <div class="filter-container">
-          <select
-            v-model="selectedAgentFilter"
-            class="agent-filter"
+          <!--
+            UI Parity I9 (May 2026) — fuzzy-modal trigger button.
+            Replaces the native `<select>` so the chrome matches every
+            other picker in the app and gains typeahead for free.
+          -->
+          <button
+            type="button"
+            class="agent-filter-trigger"
+            data-testid="agent-filter-trigger"
             aria-label="Filter by agent"
+            @click="openAgentFilter"
           >
-            <option value="all">All Agents</option>
-            <option v-for="agent in availableAgents" :key="agent.id" :value="agent.id">
-              {{ agent.name }} ({{ agent.model }})
-            </option>
-          </select>
+            <span class="agent-filter-trigger-icon" aria-hidden="true">
+              <Icon name="bot" :size="14" />
+            </span>
+            <span class="agent-filter-trigger-label">{{ currentAgentFilterLabel }}</span>
+            <span class="agent-filter-trigger-arrow" aria-hidden="true">▾</span>
+          </button>
         </div>
 
         <button 
@@ -314,6 +368,23 @@ onMounted(() => {
           </div>
         </div>
       </div>
+
+      <!--
+        UI Parity I9 (May 2026) — fuzzy agent-filter modal. Mounted
+        inside the session-browser content so the focus trap inherits
+        the same z-index stack and Esc routes back to dismissing only
+        the agent picker (not the whole session browser).
+      -->
+      <div data-testid="agent-filter-modal" v-if="isAgentFilterOpen">
+        <FuzzySearchModal
+          :items="agentFilterItems"
+          :open="isAgentFilterOpen"
+          placeholder="Filter by agent..."
+          empty-message="No agents found"
+          @select="handleAgentFilterSelect"
+          @close="closeAgentFilter"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -429,8 +500,16 @@ onMounted(() => {
   min-width: 150px;
 }
 
-.agent-filter {
+/*
+ * UI Parity I9 (May 2026) — fuzzy-modal trigger button. Replaces the
+ * native `<select>` while preserving the same width/height envelope so
+ * the controls row layout stays put.
+ */
+.agent-filter-trigger {
   width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   padding: 0.5rem 0.75rem;
   background: var(--bg-primary);
   border: 1px solid var(--border);
@@ -439,11 +518,31 @@ onMounted(() => {
   font-size: 0.9rem;
   cursor: pointer;
   transition: border-color 0.15s;
+  text-align: left;
 }
 
-.agent-filter:focus {
+.agent-filter-trigger:hover,
+.agent-filter-trigger:focus-visible {
   outline: none;
   border-color: var(--accent);
+}
+
+.agent-filter-trigger-icon {
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+}
+
+.agent-filter-trigger-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-filter-trigger-arrow {
+  color: var(--text-muted);
+  font-size: 0.7rem;
 }
 
 .new-session-button {
