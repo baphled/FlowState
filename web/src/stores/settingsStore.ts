@@ -33,10 +33,25 @@ function writeLocalStorage(key: string, value: string): void {
   }
 }
 
+// N2 (May 2026 UI Parity PR4) — additional community palettes. The
+// store gate-keeps localStorage reads against this allowlist so a
+// stale value left by a previous build (or a hostile entry) cannot
+// apply an arbitrary `data-theme`; an unrecognised stored value falls
+// back to 'dark'.
+const VALID_THEMES: ReadonlySet<Theme> = new Set<Theme>([
+  'dark',
+  'light',
+  'terminal',
+  'tokyo-night',
+  'catppuccin-mocha',
+  'dracula',
+  'nord',
+])
+
 function readTheme(): Theme {
   const value = readLocalStorage(THEME_STORAGE_KEY)
-  if (value === 'light' || value === 'terminal') {
-    return value
+  if (value !== null && VALID_THEMES.has(value as Theme)) {
+    return value as Theme
   }
   return 'dark'
 }

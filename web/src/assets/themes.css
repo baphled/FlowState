@@ -1,4 +1,18 @@
-/* FlowState themes — applied via data-theme on <html> */
+/* FlowState themes — applied via data-theme on <html>.
+ *
+ * N2 + N3 (Vue UI Parity vs OpenCode, May 2026 UI Parity PR4): each
+ * theme block ships FULL var coverage (bg / text / border / accent /
+ * muted / severity) so no fallback gaps surface in any FlowState UI
+ * surface. The set is the baseline trio (dark / light / terminal) plus
+ * four community-flavoured palettes (tokyo-night, catppuccin-mocha,
+ * dracula, nord).
+ *
+ * Each FlowState theme key MUST exist as a Shiki theme in
+ * `markdownHighlighter.ts` so Shiki's multi-theme mode can ship a
+ * `--shiki-<key>:#xxxxxx` CSS variable per token. The per-theme
+ * Shiki binding lives in the `Shiki theme bindings` block at the
+ * bottom — one selector per theme picks the right `--shiki-<key>`.
+ */
 
 :root,
 [data-theme="dark"] {
@@ -73,7 +87,114 @@
   --shadow: none;
 }
 
-/* Base reset */
+/* ---------------------------------------------------------------- */
+/* N2 — Community palettes                                          */
+/* ---------------------------------------------------------------- */
+
+[data-theme="tokyo-night"] {
+  --bg-primary: #1a1b26;
+  --bg-secondary: #16161e;
+  --bg-elevated: #24283b;
+  --border: #2a2d3e;
+  --text-primary: #a9b1d6;
+  --text-secondary: #7aa2f7;
+  --text-muted: #565f89;
+  --accent: #bb9af7;
+  --accent-hover: #c8b3ff;
+  --success: #9ece6a;
+  --warning: #e0af68;
+  --error: #f7768e;
+  --user-bubble: #2a2d3e;
+  --assistant-bubble: #1f2335;
+  --event-delegation: #7aa2f7;
+  --event-tool-call: #9ece6a;
+  --event-plan: #e0af68;
+  --event-review: #bb9af7;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --radius: 6px;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="catppuccin-mocha"] {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #181825;
+  --bg-elevated: #313244;
+  --border: #45475a;
+  --text-primary: #cdd6f4;
+  --text-secondary: #89b4fa;
+  --text-muted: #6c7086;
+  --accent: #cba6f7;
+  --accent-hover: #d8bcff;
+  --success: #a6e3a1;
+  --warning: #f9e2af;
+  --error: #f38ba8;
+  --user-bubble: #313244;
+  --assistant-bubble: #1e1e2e;
+  --event-delegation: #89b4fa;
+  --event-tool-call: #a6e3a1;
+  --event-plan: #f9e2af;
+  --event-review: #cba6f7;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --radius: 6px;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="dracula"] {
+  --bg-primary: #282a36;
+  --bg-secondary: #21222c;
+  --bg-elevated: #44475a;
+  --border: #44475a;
+  --text-primary: #f8f8f2;
+  --text-secondary: #8be9fd;
+  --text-muted: #6272a4;
+  --accent: #bd93f9;
+  --accent-hover: #d6b3ff;
+  --success: #50fa7b;
+  --warning: #f1fa8c;
+  --error: #ff5555;
+  --user-bubble: #44475a;
+  --assistant-bubble: #282a36;
+  --event-delegation: #8be9fd;
+  --event-tool-call: #50fa7b;
+  --event-plan: #f1fa8c;
+  --event-review: #bd93f9;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --radius: 6px;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="nord"] {
+  --bg-primary: #2e3440;
+  --bg-secondary: #242933;
+  --bg-elevated: #3b4252;
+  --border: #434c5e;
+  --text-primary: #eceff4;
+  --text-secondary: #88c0d0;
+  --text-muted: #7b88a1;
+  --accent: #88c0d0;
+  --accent-hover: #a3d4e0;
+  --success: #a3be8c;
+  --warning: #ebcb8b;
+  --error: #bf616a;
+  --user-bubble: #3b4252;
+  --assistant-bubble: #2e3440;
+  --event-delegation: #88c0d0;
+  --event-tool-call: #a3be8c;
+  --event-plan: #ebcb8b;
+  --event-review: #b48ead;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --radius: 6px;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* ---------------------------------------------------------------- */
+/* Base reset                                                       */
+/* ---------------------------------------------------------------- */
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body, #app {
@@ -93,3 +214,64 @@ html, body, #app {
 
 /* Utility */
 .mono { font-family: var(--font-mono); }
+
+/* ---------------------------------------------------------------- */
+/* N3 — Shiki theme bindings                                        */
+/*                                                                  */
+/* The highlighter (`web/src/lib/markdownHighlighter.ts`) loads     */
+/* every FlowState theme under a Shiki theme key matching the      */
+/* `data-theme` value. Multi-theme mode emits tokens carrying       */
+/* `--shiki-<key>:#xxxxxx` for the foreground and                   */
+/* `--shiki-<key>-bg:#xxxxxx` for the background. The rules below   */
+/* pick the active variable per theme — toggling `<html             */
+/* data-theme>` re-paints existing code blocks without re-running   */
+/* Shiki.                                                           */
+/* ---------------------------------------------------------------- */
+
+:root[data-theme="dark"] .shiki,
+:root[data-theme="dark"] .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: var(--shiki-dark-bg) !important;
+}
+
+:root[data-theme="light"] .shiki,
+:root[data-theme="light"] .shiki span {
+  color: var(--shiki-light) !important;
+  background-color: var(--shiki-light-bg) !important;
+}
+
+:root[data-theme="terminal"] .shiki,
+:root[data-theme="terminal"] .shiki span {
+  color: var(--shiki-terminal) !important;
+  background-color: var(--shiki-terminal-bg) !important;
+}
+
+:root[data-theme="tokyo-night"] .shiki,
+:root[data-theme="tokyo-night"] .shiki span {
+  color: var(--shiki-tokyo-night) !important;
+  background-color: var(--shiki-tokyo-night-bg) !important;
+}
+
+:root[data-theme="catppuccin-mocha"] .shiki,
+:root[data-theme="catppuccin-mocha"] .shiki span {
+  color: var(--shiki-catppuccin-mocha) !important;
+  background-color: var(--shiki-catppuccin-mocha-bg) !important;
+}
+
+:root[data-theme="dracula"] .shiki,
+:root[data-theme="dracula"] .shiki span {
+  color: var(--shiki-dracula) !important;
+  background-color: var(--shiki-dracula-bg) !important;
+}
+
+:root[data-theme="nord"] .shiki,
+:root[data-theme="nord"] .shiki span {
+  color: var(--shiki-nord) !important;
+  background-color: var(--shiki-nord-bg) !important;
+}
+
+/* Span backgrounds (per-token) inherit from the parent <pre>; only
+   carry the foreground per span to avoid over-painting the bg. */
+.shiki span {
+  background-color: transparent !important;
+}

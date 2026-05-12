@@ -120,7 +120,24 @@ export interface HealthResponse {
   status: 'ok' | 'degraded'
 }
 
-export type Theme = 'dark' | 'light' | 'terminal'
+// N2 (Vue UI Parity vs OpenCode, May 2026) — community-flavoured
+// palettes alongside the baseline trio. Each value must appear in:
+//   - `web/src/assets/themes.css` (`:root[data-theme="X"]` block with
+//     a full set of CSS custom properties — text/bg/border/accent/
+//     muted/severity/--shiki-X token colour);
+//   - the Shiki theme map in `web/src/lib/markdownHighlighter.ts`
+//     (`themes` arg + theme rename block);
+//   - the picker option list in `web/src/views/SettingsView.vue`.
+// Missing any of those three sites leaves a gap that surfaces as
+// either uncoloured code blocks or a half-applied theme.
+export type Theme =
+  | 'dark'
+  | 'light'
+  | 'terminal'
+  | 'tokyo-night'
+  | 'catppuccin-mocha'
+  | 'dracula'
+  | 'nord'
 
 export interface ModelPreference {
   provider: string

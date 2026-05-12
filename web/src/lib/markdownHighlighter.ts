@@ -6,6 +6,17 @@
  * backed by Shiki, lazy-loaded so the initial JS bundle stays under
  * the 300 KB cap from the PR brief.
  *
+ * N3 (May 2026 UI Parity PR4 — theme polish). Pre-fix the highlighter
+ * hardcoded `vitesse-dark` as the single theme; tokens carried
+ * `style="color:#xxxxxx"` and code blocks could not re-skin under a
+ * `data-theme` swap on <html>. Post-fix we load the full set of
+ * shipped FlowState themes and pass them to Shiki's multi-theme
+ * mode with `defaultColor: false`. Shiki then emits each token as
+ * `<span style="--shiki-dark:#fff;--shiki-light:#000;…">…</span>`,
+ * and `themes.css` picks which `--shiki-<key>` is active per theme via
+ * `[data-theme="X"] .shiki span { color: var(--shiki-X); }`. Toggling
+ * the theme re-paints existing code without re-tokenisation.
+ *
  * Lazy-loading strategy
  * ---------------------
  * - The grammars + theme + engine + Shiki core are dynamically
@@ -102,10 +113,31 @@ export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
   if (loadPromise !== null) return loadPromise
 
   loadPromise = (async (): Promise<HighlighterCore> => {
+    // N3 — multi-theme palette. One Shiki theme per FlowState
+    // `data-theme` value. Each theme key here MUST match a
+    // `[data-theme="<key>"]` selector in `themes.css` so the CSS rule
+    // `[data-theme="X"] .shiki span { color: var(--shiki-X); }` can
+    // pick the right per-token variable.
+    //
+    // Mapping rationale:
+    //   - dark:             vitesse-dark    (FlowState's original mark)
+    //   - light:            vitesse-light   (sibling palette, same family)
+    //   - terminal:         solarized-dark  (warm-toned amber/green that
+    //                                        reads on a CRT-style chassis)
+    //   - tokyo-night:      tokyo-night     (canonical mapping)
+    //   - catppuccin-mocha: catppuccin-mocha (canonical mapping)
+    //   - dracula:          dracula         (canonical mapping)
+    //   - nord:             nord            (canonical mapping)
     const [
       { createHighlighterCoreSync },
       { createJavaScriptRegexEngine },
       vitesseDark,
+      vitesseLight,
+      solarizedDark,
+      tokyoNight,
+      catppuccinMocha,
+      dracula,
+      nord,
       bash,
       javascript,
       typescript,
@@ -119,6 +151,12 @@ export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
       import('@shikijs/core'),
       import('@shikijs/engine-javascript'),
       import('@shikijs/themes/vitesse-dark'),
+      import('@shikijs/themes/vitesse-light'),
+      import('@shikijs/themes/solarized-dark'),
+      import('@shikijs/themes/tokyo-night'),
+      import('@shikijs/themes/catppuccin-mocha'),
+      import('@shikijs/themes/dracula'),
+      import('@shikijs/themes/nord'),
       import('@shikijs/langs/bash'),
       import('@shikijs/langs/javascript'),
       import('@shikijs/langs/typescript'),
@@ -130,8 +168,23 @@ export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
       import('@shikijs/langs/python'),
     ])
 
+    // Re-name the underlying Shiki themes to match FlowState's
+    // data-theme keys so the CSS variable shape is `--shiki-dark`,
+    // `--shiki-light`, `--shiki-terminal`, etc. The original Shiki name
+    // would otherwise leak through (`--shiki-vitesse-dark`) and the
+    // CSS rules would have to mirror an external naming convention.
+    const themed = [
+      { ...(vitesseDark.default as Record<string, unknown>), name: 'dark' },
+      { ...(vitesseLight.default as Record<string, unknown>), name: 'light' },
+      { ...(solarizedDark.default as Record<string, unknown>), name: 'terminal' },
+      { ...(tokyoNight.default as Record<string, unknown>), name: 'tokyo-night' },
+      { ...(catppuccinMocha.default as Record<string, unknown>), name: 'catppuccin-mocha' },
+      { ...(dracula.default as Record<string, unknown>), name: 'dracula' },
+      { ...(nord.default as Record<string, unknown>), name: 'nord' },
+    ]
+
     const created = createHighlighterCoreSync({
-      themes: [vitesseDark.default],
+      themes: themed,
       langs: [
         bash.default,
         javascript.default,
@@ -199,9 +252,23 @@ export function highlightCode(code: string, lang: string): string | null {
   const grammar = resolveLang(lang)
   if (grammar === null) return null
   try {
+    // N3 — multi-theme mode. `defaultColor: false` tells Shiki NOT to
+    // pick one theme as the inline `color:` value; instead each token
+    // ships a bundle of `--shiki-<key>` CSS variables, and the active
+    // value is resolved via `themes.css`. Theme keys here MUST match
+    // the `data-theme` values FlowState ships.
     return highlighter.codeToHtml(code, {
       lang: grammar,
-      theme: 'vitesse-dark',
+      themes: {
+        dark: 'dark',
+        light: 'light',
+        terminal: 'terminal',
+        'tokyo-night': 'tokyo-night',
+        'catppuccin-mocha': 'catppuccin-mocha',
+        dracula: 'dracula',
+        nord: 'nord',
+      },
+      defaultColor: false,
     })
   } catch {
     return null
