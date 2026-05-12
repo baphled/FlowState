@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { showToast } from '@/composables/useToast'
+import Icon from '@/components/common/Icon.vue'
 import type { Agent } from '@/types'
 
 defineOptions({ name: 'SessionBrowser' })
@@ -168,7 +169,7 @@ onMounted(() => {
             class="search-input"
             aria-label="Search sessions"
           />
-          <span class="search-icon">🔍</span>
+          <span class="search-icon"><Icon name="search" :size="14" /></span>
         </div>
 
         <div class="filter-container">
@@ -189,7 +190,7 @@ onMounted(() => {
           @click="handleCreateSession"
           aria-label="Create new session"
         >
-          <span class="button-icon">➕</span>
+          <span class="button-icon"><Icon name="plus" :size="14" /></span>
           New Session
         </button>
       </div>
@@ -283,21 +284,21 @@ onMounted(() => {
                 :aria-label="`Delete session ${session.title || session.id.slice(0, 8)}`"
                 @click.stop="handleDeleteClick(session.id, $event)"
               >
-                <span aria-hidden="true">🗑️</span>
+                <Icon name="trash" :size="14" aria-label="Delete" />
               </button>
             </div>
 
             <div class="session-card-meta">
               <div class="meta-item">
-                <span class="meta-icon">🤖</span>
+                <span class="meta-icon"><Icon name="bot" :size="12" /></span>
                 <span class="meta-text">{{ getAgentName(session.agentId) }}</span>
               </div>
               <div class="meta-item">
-                <span class="meta-icon">📝</span>
+                <span class="meta-icon"><Icon name="document" :size="12" /></span>
                 <span class="meta-text">{{ session.messageCount }} messages</span>
               </div>
               <div class="meta-item">
-                <span class="meta-icon">🕐</span>
+                <span class="meta-icon"><Icon name="clock" :size="12" /></span>
                 <span class="meta-text">{{ formatRelativeTime(session.updatedAt) }}</span>
               </div>
             </div>

@@ -16,6 +16,8 @@ import ChildSessionsPanel from '@/components/chat/ChildSessionsPanel.vue'
 import AgentPicker from '@/components/agent-picker/AgentPicker.vue'
 import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
+import Icon from '@/components/common/Icon.vue'
+import KeyboardHelpModal from '@/components/common/KeyboardHelpModal.vue'
 import { registerTools } from '@/tools/registerTools'
 import { installSessionHierarchyNav } from '@/composables/useSessionHierarchyNav'
 import { showToast } from '@/composables/useToast'
@@ -276,6 +278,30 @@ watch(
 
 let teardownHierarchyNav: (() => void) | null = null
 
+// UI Parity PR2 I2 (May 2026) — keyboard-help modal open state.
+// Triggered by global `?` (when no input is focused) or `Ctrl+/` (works
+// everywhere). The handler logic lives below in handleGlobalKeydown
+// so it lives next to the Escape handler and shares a single keydown
+// listener registration.
+const keyboardHelpOpen = ref(false)
+
+function closeKeyboardHelp(): void {
+  keyboardHelpOpen.value = false
+}
+
+// Discriminator used by the `?` trigger: opening the modal must NOT
+// fight the user mid-prompt. Anything inside a textarea / input /
+// contenteditable suppresses the trigger.
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return true
+  if (target.isContentEditable) return true
+  const attr = target.getAttribute('contenteditable')
+  if (attr !== null && attr !== 'false') return true
+  return false
+}
+
 // H9 — Bug Hunt Findings (May 2026). The Slice G escape-twice listener
 // was originally registered as an inline anonymous arrow inside
 // onMounted with no matching removeEventListener in onBeforeUnmount.
@@ -287,6 +313,21 @@ let teardownHierarchyNav: (() => void) | null = null
 function handleGlobalKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     void chatStore.handleEscapeKey()
+    return
+  }
+  // UI Parity PR2 I2 — keyboard-help triggers. `?` is unshifted from
+  // `/` on most layouts; treat both forms identically. Ctrl+/ works
+  // anywhere (mirrors the OpenCode chord), the bare `?` is suppressed
+  // inside editables so the user can still type questions into the
+  // composer.
+  if (event.ctrlKey && event.key === '/') {
+    event.preventDefault()
+    keyboardHelpOpen.value = true
+    return
+  }
+  if (event.key === '?' && !isEditableTarget(event.target)) {
+    event.preventDefault()
+    keyboardHelpOpen.value = true
   }
 }
 
@@ -523,7 +564,9 @@ onBeforeUnmount(() => {
         role="status"
         aria-live="polite"
       >
-        <span class="readonly-banner-icon" aria-hidden="true">📩</span>
+        <span class="readonly-banner-icon" aria-hidden="true">
+          <Icon name="inbox" :size="16" />
+        </span>
         <span class="readonly-banner-text">
           This session was delegated from
           <button
@@ -552,6 +595,13 @@ onBeforeUnmount(() => {
         <span class="resize-grip" />
       </button>
     </aside>
+
+    <!--
+      UI Parity PR2 I2 (May 2026) — discoverable keyboard-shortcut list.
+      Triggered by `?` (no-input-focus) or `Ctrl+/` (always). The modal
+      is mounted at the view root so it overlays the entire chat shell.
+    -->
+    <KeyboardHelpModal :open="keyboardHelpOpen" @close="closeKeyboardHelp" />
   </div>
 </template>
 
