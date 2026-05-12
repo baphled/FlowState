@@ -554,10 +554,31 @@ async function handleRegenerate(): Promise<void> {
 
     <template v-else-if="isPlain">
       <span class="message-role">{{ displayRole }}</span>
+      <!--
+        User-message markdown rendering (May 2026 — UI Parity follow-up to
+        PR1 commit c07132a7). Pre-fix, user messages rendered as a bare
+        `<p class="message-content">` text node, so a fenced code block
+        typed by the user looked like plain text where the same block in
+        an assistant reply looked like an IDE. We now route user AND
+        assistant content through MarkdownRenderer — same Shiki-powered
+        path, same html:false posture, same M6 link allowlist. System
+        messages keep the legacy `<p>` rendering: their content is
+        engine-synthesised (banners, timestamps) and shouldn't be
+        markdown-interpreted. The sanitiseMessageContent backstop runs
+        on both branches.
+      -->
       <MarkdownRenderer
-        v-if="props.message.role === 'assistant'"
-        :content="sanitisedAssistantContent.content"
-        :data-leak-backstop="sanitisedAssistantContent.appliedFilter || undefined"
+        v-if="props.message.role === 'assistant' || props.message.role === 'user'"
+        :content="
+          props.message.role === 'assistant'
+            ? sanitisedAssistantContent.content
+            : sanitisedPlainContent.content
+        "
+        :data-leak-backstop="
+          (props.message.role === 'assistant'
+            ? sanitisedAssistantContent.appliedFilter
+            : sanitisedPlainContent.appliedFilter) || undefined
+        "
       />
       <p
         v-else
