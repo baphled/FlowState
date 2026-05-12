@@ -492,6 +492,34 @@ describe('ContextUsageChip', () => {
     }
   })
 
+  // N8 (Vue UI Parity vs OpenCode, May 2026): severity colours via
+  // theme variables, not hardcoded rgb(). The chip's scoped CSS used
+  // `rgb(220, 38, 38)` (danger) and `rgb(217, 119, 6)` (warning) inline
+  // which prevents the colours from re-skinning under `[data-theme]`
+  // swaps. The fix swaps to `var(--error)` / `var(--warning)` so the
+  // chip palette tracks the active theme.
+  //
+  // The scoped CSS lives in <style scoped> — testing it via the
+  // component's CSS text rather than computed-style (jsdom does not
+  // resolve CSS variables to colours; computed style returns the raw
+  // var() expression).
+  it('declares severity colours via CSS theme variables (var(--error) / var(--warning)) — N8', async () => {
+    // Component CSS ships as part of the source file; we read it from
+    // the scoped SFC to pin the post-fix state. The pre-fix CSS held
+    // the literal hex/rgb strings — that's the regression we're
+    // guarding against.
+    const componentSource = await import(
+      './ContextUsageChip.vue?raw'
+    )
+    const css = componentSource.default
+    // Post-fix: theme vars present.
+    expect(css).toMatch(/var\(--error\b/)
+    expect(css).toMatch(/var\(--warning\b/)
+    // Pre-fix: hardcoded literal rgb() colours absent.
+    expect(css).not.toMatch(/rgb\(\s*220\s*,\s*38\s*,\s*38\s*\)/)
+    expect(css).not.toMatch(/rgb\(\s*217\s*,\s*119\s*,\s*6\s*\)/)
+  })
+
   it('reactively updates the rendered figure when the store slice changes', async () => {
     // The chip subscribes to the store's reactive slice so successive
     // turns update the figure in place. A new context_usage event for

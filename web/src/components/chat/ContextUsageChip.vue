@@ -46,9 +46,9 @@ import { useChatStore } from '@/stores/chatStore'
  *     user already conditioned to recognise the red severity in the
  *     banner sees the same severity escalating in the chip:
  *       <75%   → neutral (default toolbar text colour)
- *       >=75%  → warning (rgb(217, 119, 6) — amber severity)
- *       >=90%  → danger  (rgb(220, 38, 38) — red severity, same as
- *                CriticalErrorBanner.vue)
+ *       >=75%  → warning (var(--warning) — amber severity per theme)
+ *       >=90%  → danger  (var(--error) — red severity per theme,
+ *                same theme variable as CriticalErrorBanner.vue)
  *   - role="status" + aria-live="polite" so screen readers announce
  *     the figure on update without interrupting the user's flow (the
  *     critical banner uses assertive; the chip is informational).
@@ -328,29 +328,36 @@ const tooltipTitle = computed(() => {
 }
 
 /*
- * Severity palettes match CriticalErrorBanner.vue's red so the visual
- * escalation across the chat surface is consistent. The 75% warning
- * is amber (a colour the banner does not use, reserved for the
- * "approaching" state distinct from the "danger" red).
+ * Severity palettes ride on the theme variables defined in themes.css
+ * (--warning, --error). Each theme owns its own concrete colour so a
+ * dark→light→tokyo-night switch repaints the chip without touching
+ * this stylesheet. Background and border use a partially-opaque hue
+ * via `color-mix(in srgb, …)` so the same single variable drives the
+ * full chip palette — see CriticalErrorBanner.vue for the same idiom.
+ *
+ * N8 (Vue UI Parity vs OpenCode, May 2026) — previously the chip used
+ * a hardcoded rgb() literal for warning (amber) and danger (red)
+ * inline, which prevented the colours from re-skinning under a
+ * `data-theme` swap on <html>.
  */
 .context-usage-chip--warning {
-  background: rgba(217, 119, 6, 0.15);
-  border-color: rgba(217, 119, 6, 0.5);
-  color: rgb(217, 119, 6);
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 50%, transparent);
+  color: var(--warning);
 }
 
 .context-usage-chip--warning .context-usage-chip__counts {
-  color: rgb(217, 119, 6);
+  color: var(--warning);
 }
 
 .context-usage-chip--danger {
-  background: rgba(220, 38, 38, 0.18);
-  border-color: rgba(220, 38, 38, 0.55);
-  color: rgb(220, 38, 38);
+  background: color-mix(in srgb, var(--error) 18%, transparent);
+  border-color: color-mix(in srgb, var(--error) 55%, transparent);
+  color: var(--error);
 }
 
 .context-usage-chip--danger .context-usage-chip__counts {
-  color: rgb(220, 38, 38);
+  color: var(--error);
   font-weight: 600;
 }
 </style>

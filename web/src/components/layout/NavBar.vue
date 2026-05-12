@@ -3,6 +3,11 @@ import { computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import SessionSwitcher from '@/components/session-switcher/SessionSwitcher.vue'
 import { useChatStore } from '@/stores/chatStore'
+// N7 (Vue UI Parity vs OpenCode, May 2026): the marketing mark in
+// `src/assets/logo.svg` carries the FlowState wordmark + ribbon glyph.
+// Vite resolves the import to a hashed asset URL at build time so the
+// `<img>` src is cache-friendly and the SVG is HTTP-cached.
+import logoUrl from '@/assets/logo.svg'
 
 defineOptions({ name: 'NavBar' })
 
@@ -32,7 +37,12 @@ const navItems = [
 
 <template>
   <nav v-if="!isChildSession" class="nav-bar" data-testid="nav-bar">
-    <span class="nav-logo">FlowState</span>
+    <img
+      class="nav-logo"
+      :src="logoUrl"
+      alt="FlowState"
+      data-testid="nav-logo"
+    />
     <div class="nav-switchers">
       <SessionSwitcher />
     </div>
@@ -63,11 +73,16 @@ const navItems = [
 }
 
 .nav-logo {
-  font-family: var(--font-mono);
-  font-weight: 700;
+  /*
+   * N7 — the SVG mark renders ~1.2rem high so it sits on the same
+   * baseline as the nav items without dominating the bar. `currentColor`
+   * inside the SVG inherits this element's `color`, so the glyph reads
+   * the active theme's accent.
+   */
+  display: block;
+  height: 1.2rem;
+  width: auto;
   color: var(--accent);
-  font-size: 1.1rem;
-  letter-spacing: 0.05em;
 }
 
 .nav-switchers {

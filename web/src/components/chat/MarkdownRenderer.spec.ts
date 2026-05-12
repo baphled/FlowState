@@ -129,6 +129,40 @@ describe('MarkdownRenderer', () => {
     })
   })
 
+  // N3 (Vue UI Parity vs OpenCode, May 2026): Shiki theme parity with
+  // FlowState themes. The highlighter MUST emit CSS-variable token
+  // colours rather than hardcoded vitesse-dark hex so that
+  // `themes.css` palettes can swap code-block colours by toggling
+  // `data-theme` on <html>. Shiki's idiomatic shape for this is the
+  // multi-theme mode with `defaultColor: false`, which produces
+  // `<span style="--shiki-dark:#xxx;--shiki-light:#yyy;…">` tokens.
+  describe('N3 — CSS-variable token colours', () => {
+    it('emits --shiki-<themeKey> CSS variables on tokens, not raw hex colour', async () => {
+      // Pin the post-fix shape explicitly: each token carries at least
+      // one `--shiki-<key>:` declaration. The bare `color:#xxxxxx` form
+      // is the pre-fix hardcoded-vitesse-dark contract — the spec must
+      // FAIL when that form sneaks back in alongside, since CSS
+      // specificity would let it win over our `--shiki-<key>` rule.
+      await ensureHighlighterLoaded()
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          content: '```typescript\nconst answer: number = 42;\n```',
+        },
+      })
+      await flushPromises()
+
+      const html = wrapper.html()
+      // CSS-variable form present.
+      expect(html).toMatch(/--shiki-[a-zA-Z0-9_-]+:\s*#?[a-zA-Z0-9]+/)
+      // The hardcoded "style=\"color:#xxxxxx\"" form must be absent —
+      // multi-theme mode replaces it with --shiki-<key> declarations.
+      // (We only forbid the per-token inline `color:#xxxxxx` form;
+      // background/foreground on the wrapper <pre> uses a `color:`
+      // declaration that references a `var(...)` and is fine.)
+      expect(html).not.toMatch(/<span[^>]*style="[^"]*\bcolor:\s*#[0-9a-fA-F]/)
+    })
+  })
+
   // N4 (Vue UI Parity vs OpenCode, May 2026): per-code-block copy
   // affordance. The whole-message copy lives on MessageBubble — this
   // contract scopes the per-fence copy button to MarkdownRenderer

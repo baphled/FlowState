@@ -94,3 +94,99 @@ describe('SettingsView - compression threshold control', () => {
     expect(wrapper.find('[data-testid="compression-section"]').exists()).toBe(false)
   })
 })
+
+// N2 + N1 (Vue UI Parity vs OpenCode, May 2026) — additional theme
+// palettes + hover preview on theme picker.
+describe('SettingsView - theme picker (N2 + N1)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorageMock.clear()
+    // Reset <html data-theme> so each spec asserts a clean baseline.
+    document.documentElement.removeAttribute('data-theme')
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+    document.documentElement.removeAttribute('data-theme')
+  })
+
+  // N2 — ship additional community-flavoured palettes. Each option in
+  // the picker must (a) render, (b) be clickable, (c) commit the value
+  // to the settings store.
+  it('renders all additional theme options (N2)', async () => {
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+
+    // Pre-existing baseline themes.
+    expect(wrapper.find('[data-testid="theme-option-dark"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="theme-option-light"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="theme-option-terminal"]').exists()).toBe(true)
+
+    // N2 additions.
+    expect(wrapper.find('[data-testid="theme-option-tokyo-night"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="theme-option-catppuccin-mocha"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="theme-option-dracula"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="theme-option-nord"]').exists()).toBe(true)
+  })
+
+  it('applies <html data-theme> when a new theme is selected (N2)', async () => {
+    const wrapper = mount(SettingsView)
+    await flushPromises()
+
+    const radio = wrapper.find(
+      '[data-testid="theme-option-tokyo-night"] input[type="radio"]',
+    )
+    expect(radio.exists()).toBe(true)
+    await radio.setValue(true)
+    await flushPromises()
+
+    expect(document.documentElement.getAttribute('data-theme')).toBe('tokyo-night')
+  })
+
+  // N1 — live preview on hover. The user mouse-enters a theme option
+  // and the document gets `data-theme=<that-option>` while pointing;
+  // mouse-leave reverts to the currently-selected theme.
+  it('previews a theme on pointer enter and reverts on leave (N1)', async () => {
+    const wrapper = mount(SettingsView, { attachTo: document.body })
+    await flushPromises()
+    // Baseline: settings store sits at 'dark' (the readTheme default
+    // when localStorage is empty). The store applies it via
+    // applyTheme() inside setTheme — but the constructor does NOT
+    // call applyTheme. Seed the baseline explicitly so the revert
+    // target is unambiguous.
+    document.documentElement.setAttribute('data-theme', 'dark')
+
+    const option = wrapper.find('[data-testid="theme-option-tokyo-night"]')
+    await option.trigger('mouseenter')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('tokyo-night')
+
+    await option.trigger('mouseleave')
+    // Revert to the active selection — 'dark' baseline.
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+
+    wrapper.unmount()
+  })
+
+  it('does not override an explicit selection on mouseleave (N1)', async () => {
+    const wrapper = mount(SettingsView, { attachTo: document.body })
+    await flushPromises()
+    document.documentElement.setAttribute('data-theme', 'dark')
+
+    // User commits to Nord.
+    const nordRadio = wrapper.find('[data-testid="theme-option-nord"] input[type="radio"]')
+    await nordRadio.setValue(true)
+    await flushPromises()
+    expect(document.documentElement.getAttribute('data-theme')).toBe('nord')
+
+    // Then hovers Dracula, leaves.
+    const dracula = wrapper.find('[data-testid="theme-option-dracula"]')
+    await dracula.trigger('mouseenter')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dracula')
+
+    await dracula.trigger('mouseleave')
+    // Revert to the active selection — Nord, not the pre-Nord 'dark'.
+    expect(document.documentElement.getAttribute('data-theme')).toBe('nord')
+
+    wrapper.unmount()
+  })
+})

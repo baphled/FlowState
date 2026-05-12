@@ -4,6 +4,14 @@
 
     <section class="settings-section" data-testid="theme-section">
       <h2>Theme</h2>
+      <!--
+        N1 (Vue UI Parity vs OpenCode, May 2026 UI Parity PR4) — live
+        preview on hover. Pointer-enter on a theme option toggles
+        <html data-theme> to that option so the user sees the full
+        chrome re-skinning in place. Pointer-leave reverts to the
+        committed selection. The original selection is the source of
+        truth — hover never persists.
+      -->
       <div class="theme-options">
         <label
           v-for="option in themeOptions"
@@ -11,6 +19,8 @@
           class="theme-option"
           :class="{ active: settingsStore.theme === option.value }"
           :data-testid="`theme-option-${option.value}`"
+          @mouseenter="previewTheme(option.value)"
+          @mouseleave="endPreview()"
         >
           <input
             type="radio"
@@ -109,11 +119,34 @@ import type { Theme } from '@/types'
 
 const settingsStore = useSettingsStore()
 
+// N2 (May 2026 UI Parity PR4) — additional community palettes. The
+// label values are the human-readable names; the `value` MUST match
+// the corresponding `[data-theme="X"]` block in `themes.css` AND the
+// Shiki theme key in `markdownHighlighter.ts`.
 const themeOptions: { value: Theme; label: string }[] = [
   { value: 'dark', label: 'Dark' },
   { value: 'light', label: 'Light' },
   { value: 'terminal', label: 'Terminal' },
+  { value: 'tokyo-night', label: 'Tokyo Night' },
+  { value: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
+  { value: 'dracula', label: 'Dracula' },
+  { value: 'nord', label: 'Nord' },
 ]
+
+// N1 — live preview helpers. The preview mutates <html data-theme>
+// directly (not through the settings store) so leaving the option
+// reverts to the persisted selection without touching localStorage.
+// `previewTheme` is fire-and-forget — there is no async work and no
+// race with `setTheme`.
+function previewTheme(value: Theme): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.setAttribute('data-theme', value)
+}
+
+function endPreview(): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.setAttribute('data-theme', settingsStore.theme)
+}
 
 // Deliverable 2 — compression threshold state. `null` means
 // "not yet fetched" OR "backend reported 501". The section's v-if
@@ -225,15 +258,33 @@ h1 {
 }
 
 .theme-preview[data-theme='dark'] {
-  background: #1a1a2e;
+  background: #1a1b26;
 }
 
 .theme-preview[data-theme='light'] {
-  background: #f8f9fa;
+  background: #f8f8f8;
 }
 
 .theme-preview[data-theme='terminal'] {
   background: #0d0d0d;
+}
+
+/* N2 — community palettes. Swatch is a single colour because the
+   preview chip is 48×28; pick the theme's primary background. */
+.theme-preview[data-theme='tokyo-night'] {
+  background: #1a1b26;
+}
+
+.theme-preview[data-theme='catppuccin-mocha'] {
+  background: #1e1e2e;
+}
+
+.theme-preview[data-theme='dracula'] {
+  background: #282a36;
+}
+
+.theme-preview[data-theme='nord'] {
+  background: #2e3440;
 }
 
 .field-label {
