@@ -946,10 +946,21 @@ func NewGateFailedEvent(data GateEventData, ts ...time.Time) *GateFailedEvent {
 // SessionID identifies the session the heartbeat is bound to;
 // downstream consumers (api/SSE bridge) project it onto the SSE wire
 // for that session only.
+//
+// TokenCount carries the in-flight turn's cumulative output_tokens as
+// reported by the provider's most recent UsageDelta (Anthropic
+// message_delta, openaicompat trailing-chunk usage). The chat UI's
+// streaming chrome reads this to render "1,247 tokens · 42 t/s"
+// next to the working-on label and compute tokens-per-second from
+// the delta-vs-prev-tick at the documented 15s cadence (UI Parity
+// PR5, May 2026). Zero is the legitimate pre-first-UsageDelta value;
+// the frontend gates the counter render on >0 so a fresh turn does
+// not flash a misleading "0 tokens".
 type StreamingHeartbeatEventData struct {
-	SessionID string
-	AgentID   string
-	Phase     string
+	SessionID  string
+	AgentID    string
+	Phase      string
+	TokenCount int64
 }
 
 // StreamingHeartbeatEvent represents a one-tick liveness signal from

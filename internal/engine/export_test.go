@@ -142,6 +142,16 @@ func (e *Engine) PublishStreamingHeartbeatForTest(sessionID, agentID, phase stri
 	e.publishStreamingHeartbeat(sessionID, agentID, phase)
 }
 
+// RecordSessionOutputTokensForTest exposes the in-flight UsageDelta
+// hook for UI Parity PR5 (Live token counter, May 2026). Production
+// callsite is processStreamChunks every time chunk.Usage.OutputTokens
+// surfaces; specs use this helper to prime the per-session tracker so
+// the next heartbeat tick threads the recorded figure onto the bus
+// payload without standing up a full streaming turn.
+func (e *Engine) RecordSessionOutputTokensForTest(sessionID string, tokens int64) {
+	e.recordSessionOutputTokens(sessionID, tokens)
+}
+
 // AppendToolResultsBatchToMessagesForTest exposes appendToolResultsBatchToMessages
 // for the context-anchoring spec. The fix injects a system-role re-anchor
 // reminder after non-trivial tool-result batches so the model does not drift

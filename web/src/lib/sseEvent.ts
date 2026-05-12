@@ -435,10 +435,22 @@ export interface SSEGateFailedEvent {
  *   - "queued" — 300s (rate-limit backoff, sandbox queue).
  *
  * Empty / unrecognised phase falls back to the legacy 60s flat threshold.
+ *
+ * UI Parity PR5 — Live token counter (May 2026). The engine threads the
+ * in-flight turn's cumulative output_tokens (Anthropic message_delta,
+ * openaicompat trailing-chunk usage) onto every heartbeat tick under
+ * the wire key `token_count`. The chat store records the value per
+ * session AND computes tokens-per-second from the delta-vs-prev-tick
+ * so the streaming chrome renders "1,247 tokens · 42 t/s" next to
+ * the working-on label. Zero is the legitimate pre-first-UsageDelta
+ * value the chat UI uses to gate the counter render (zero = "no
+ * information yet, hide chip"). Forward compatibility: a heartbeat
+ * from a pre-PR5 server omits the field; the parser defaults to 0.
  */
 export interface SSEStreamingHeartbeatEvent {
   kind: 'streaming_heartbeat'
   phase: string
+  tokenCount: number
 }
 
 /** Catch-all for unrecognised events — preserves forward compatibility. */
@@ -609,9 +621,17 @@ export function parseSSEPayload(payload: string): SSEEvent {
     // underscore-only variant some SSE bridges normalise to. Phase is
     // optional; an empty value tells the frontend's adaptive watchdog
     // to fall back to the legacy 60s flat threshold.
+    //
+    // UI Parity PR5 (May 2026) — token_count carries the in-flight
+    // turn's cumulative output_tokens. Default to 0 when the field is
+    // absent (pre-PR5 server compat) or non-numeric (degraded
+    // emitter). The chat UI gates the counter render on >0 so a
+    // missing / zero value renders nothing rather than a misleading
+    // "0 tokens".
     return {
       kind: 'streaming_heartbeat',
       phase: typeof obj['phase'] === 'string' ? (obj['phase'] as string) : '',
+      tokenCount: typeof obj['token_count'] === 'number' ? (obj['token_count'] as number) : 0,
     }
   }
 

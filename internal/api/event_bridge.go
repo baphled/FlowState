@@ -294,8 +294,14 @@ func newGateFailedHandler(sessionID string, out chan<- WSChunkMsg) eventbus.Even
 // and never reached the wire.
 //
 // The sanitised payload mirrors events.StreamingHeartbeatEventData
-// (session_id, agent_id, phase) plus the canonical `event_type`
-// discriminant the SSE writer emits as `"type":"streaming.heartbeat"`.
+// (session_id, agent_id, phase, token_count) plus the canonical
+// `event_type` discriminant the SSE writer emits as
+// `"type":"streaming.heartbeat"`.
+//
+// UI Parity PR5 — Live token counter (May 2026). TokenCount carries
+// the in-flight turn's cumulative output_tokens; the bridge surfaces
+// it under the snake_case `token_count` wire key so the SSE writer
+// and Vue parser can thread it onto the chat UI's live counter chrome.
 //
 // Expected:
 //   - sessionID is the connection's session.
@@ -315,10 +321,11 @@ func newStreamingHeartbeatHandler(sessionID string, out chan<- WSChunkMsg) event
 			return
 		}
 		sanitised := map[string]any{
-			"event_type": events.EventStreamingHeartbeat,
-			"session_id": hb.Data.SessionID,
-			"agent_id":   hb.Data.AgentID,
-			"phase":      hb.Data.Phase,
+			"event_type":  events.EventStreamingHeartbeat,
+			"session_id":  hb.Data.SessionID,
+			"agent_id":    hb.Data.AgentID,
+			"phase":       hb.Data.Phase,
+			"token_count": hb.Data.TokenCount,
 		}
 		select {
 		case out <- WSChunkMsg{EventType: events.EventStreamingHeartbeat, EventData: sanitised}:

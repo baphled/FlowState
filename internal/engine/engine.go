@@ -268,6 +268,20 @@ type Engine struct {
 	lastUsagePayload   map[string]string
 	lastUsagePayloadMu sync.Mutex
 
+	// sessionOutputTokens tracks the in-flight turn's cumulative
+	// output_tokens per session as reported by the provider's most
+	// recent UsageDelta (Anthropic message_delta, openaicompat
+	// trailing-chunk usage). The streaming heartbeat ticker reads
+	// this and threads it onto the bus payload so the chat UI's
+	// streaming chrome can render a live counter and compute
+	// tokens-per-second from the delta-vs-prev-tick at the 15s
+	// cadence (UI Parity PR5, May 2026). Keyed by sessionID so
+	// concurrent streams stay isolated. Zero for sessions without
+	// a recorded UsageDelta — the frontend gates the render on >0.
+	// Access serialised by sessionOutputTokensMu.
+	sessionOutputTokens   map[string]int64
+	sessionOutputTokensMu sync.RWMutex
+
 	mu sync.RWMutex
 }
 
@@ -674,6 +688,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionRehydrated:         make(map[string]struct{}),
 		seededSessions:            make(map[string]struct{}),
 		lastUsagePayload:          make(map[string]string),
+		sessionOutputTokens:       make(map[string]int64),
 		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
 		swarmContext:              cfg.SwarmContext,
 		microCompactor:            resolveMicroCompactor(cfg),
@@ -2567,6 +2582,15 @@ func (e *Engine) runStreamingHeartbeat(ctx context.Context, sessionID, agentID s
 // the engine bus. Nil-safe on e.bus so providers / tests without a
 // wired bus don't crash.
 //
+// Reads the per-session in-flight cumulative output_tokens off
+// e.sessionOutputTokens and threads it onto the bus payload as
+// TokenCount so the chat UI's streaming chrome (UI Parity PR5, May
+// 2026) can render a live counter next to the working-on label and
+// compute tokens-per-second from the delta-vs-prev-tick at the 15s
+// cadence. Zero for sessions without a recorded UsageDelta — the
+// frontend gates the counter render on >0 so the pre-first-tick
+// state stays hidden.
+//
 // Side effects:
 //   - Publishes EventStreamingHeartbeat when e.bus is non-nil.
 func (e *Engine) publishStreamingHeartbeat(sessionID, agentID, phase string) {
@@ -2574,10 +2598,65 @@ func (e *Engine) publishStreamingHeartbeat(sessionID, agentID, phase string) {
 		return
 	}
 	e.bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
-		SessionID: sessionID,
-		AgentID:   agentID,
-		Phase:     phase,
+		SessionID:  sessionID,
+		AgentID:    agentID,
+		Phase:      phase,
+		TokenCount: e.sessionOutputTokensSnapshot(sessionID),
 	}))
+}
+
+// recordSessionOutputTokens stores the latest cumulative output_tokens
+// for an in-flight session so the next streaming.heartbeat tick can
+// thread it onto the bus payload. The value is monotonic per-turn (a
+// later UsageDelta carries the latest cumulative figure, not an
+// increment), so the store overwrites unconditionally. Concurrent
+// writes are serialised by sessionOutputTokensMu (sub-microsecond
+// critical section on a single map write — never on the chunk-processing
+// hot path's request stack).
+//
+// Called from processStreamChunks each time a chunk's
+// provider.UsageDelta carries OutputTokens >0.
+//
+// Expected:
+//   - sessionID is the in-flight session.
+//   - tokens is the cumulative output_tokens from the most recent
+//     UsageDelta. Zero is tolerated (the chunk did not carry usage data
+//     — but processStreamChunks gates on >0 before calling this so the
+//     call is a no-op in that case anyway).
+//
+// Side effects:
+//   - Writes to e.sessionOutputTokens under e.sessionOutputTokensMu.
+func (e *Engine) recordSessionOutputTokens(sessionID string, tokens int64) {
+	if sessionID == "" {
+		return
+	}
+	e.sessionOutputTokensMu.Lock()
+	defer e.sessionOutputTokensMu.Unlock()
+	if e.sessionOutputTokens == nil {
+		e.sessionOutputTokens = make(map[string]int64)
+	}
+	e.sessionOutputTokens[sessionID] = tokens
+}
+
+// sessionOutputTokensSnapshot returns the most-recently-recorded
+// cumulative output_tokens for a session. Zero for sessions with no
+// recorded UsageDelta. Read-only fast path under
+// sessionOutputTokensMu.RLock so the heartbeat ticker's lookup is
+// uncontended with concurrent writes from processStreamChunks.
+//
+// Returns:
+//   - The cumulative output_tokens; zero when the session has no
+//     recorded UsageDelta.
+//
+// Side effects:
+//   - None.
+func (e *Engine) sessionOutputTokensSnapshot(sessionID string) int64 {
+	if sessionID == "" {
+		return 0
+	}
+	e.sessionOutputTokensMu.RLock()
+	defer e.sessionOutputTokensMu.RUnlock()
+	return e.sessionOutputTokens[sessionID]
 }
 
 // makePostTurnUsageEmitter returns a postTurnUsageEmitter closure
@@ -3610,6 +3689,19 @@ func (e *Engine) processStreamChunks(
 
 			chunk.ModelID = e.LastModel()
 			chunk.ProviderID = e.LastProvider()
+
+			// UI Parity PR5 — Live token counter (May 2026).
+			// Record the in-flight cumulative output_tokens off
+			// chunk.Usage so the next streaming.heartbeat tick can
+			// thread the figure onto the bus payload. UsageDelta is a
+			// snapshot (cumulative, not incremental) so unconditional
+			// overwrite is the correct semantics. Gate on >0 so a
+			// usage-less chunk (the common case for content/tool/
+			// thinking chunks that carry no Usage) does not zero out
+			// a prior recorded figure mid-turn.
+			if chunk.Usage != nil && chunk.Usage.OutputTokens > 0 {
+				e.recordSessionOutputTokens(sessionID, chunk.Usage.OutputTokens)
+			}
 
 			// Dispatch by chunk shape rather than EventType so the loop
 			// matches the session accumulator (internal/session/accumulator.go:98)

@@ -291,6 +291,31 @@ var _ = Describe("subscribeSessionBus", func() {
 				"phase discriminant lets the frontend's adaptive watchdog pick a per-phase stall threshold")
 		})
 
+		// UI Parity PR5 — Live token counter (May 2026).
+		//
+		// The bus payload's TokenCount must flow through the bridge
+		// onto the sanitised SSE map under the snake_case `token_count`
+		// key so the SSE writer can emit it on the wire and the Vue
+		// parser can read it back. Pre-fix the bridge dropped the
+		// field because the handler only copied {event_type,
+		// session_id, agent_id, phase} — the heartbeat reached the
+		// frontend stripped of its progress dimension.
+		It("forwards streaming.heartbeat TokenCount onto the SSE payload as token_count", func() {
+			bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+				SessionID:  "sess-1",
+				AgentID:    "Tech-Lead",
+				Phase:      "generating",
+				TokenCount: 1247,
+			}))
+
+			var msg api.WSChunkMsg
+			Eventually(out, 2*time.Second).Should(Receive(&msg))
+			data, ok := msg.EventData.(map[string]any)
+			Expect(ok).To(BeTrue())
+			Expect(data["token_count"]).To(Equal(int64(1247)),
+				"the bridge MUST surface TokenCount under the snake_case wire key so the SSE writer and Vue parser can thread it onto the chat UI's live counter")
+		})
+
 		It("drops streaming.heartbeat events for other sessions", func() {
 			bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
 				SessionID: "sess-other",

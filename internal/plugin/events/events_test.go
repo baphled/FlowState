@@ -876,4 +876,47 @@ var _ = Describe("Events", func() {
 				"the Go field name flows verbatim through json.Marshal — the bridge handler re-keys to snake_case for the SSE wire")
 		})
 	})
+
+	// UI Parity PR5 — Live token counter (May 2026).
+	//
+	// StreamingHeartbeatEventData grows a TokenCount field so the chat UI's
+	// streaming-affordance chrome can render "1,247 tokens · 42 t/s" next to
+	// the working-on label. The engine populates the field from the in-flight
+	// turn's UsageDelta accumulator (latest cumulative output_tokens reported
+	// by the provider on message_delta), and the SSE bridge forwards it onto
+	// the wire so the Vue store can compute tokens-per-second from the
+	// delta-vs-prev-tick at the documented heartbeat interval.
+	Describe("StreamingHeartbeatEvent", func() {
+		It("implements Event interface and sets fields including TokenCount", func() {
+			data := events.StreamingHeartbeatEventData{
+				SessionID:  "sess-hb-1",
+				AgentID:    "Tech-Lead",
+				Phase:      "generating",
+				TokenCount: 1247,
+			}
+			evt := events.NewStreamingHeartbeatEvent(data)
+			Expect(evt.EventType()).To(Equal(events.EventStreamingHeartbeat))
+			Expect(evt.Data.SessionID).To(Equal("sess-hb-1"))
+			Expect(evt.Data.AgentID).To(Equal("Tech-Lead"))
+			Expect(evt.Data.Phase).To(Equal("generating"))
+			Expect(evt.Data.TokenCount).To(Equal(int64(1247)),
+				"engine populates TokenCount from the in-flight turn's cumulative output_tokens so the chat UI can render a live counter next to the working-on label")
+		})
+
+		It("defaults TokenCount to zero when the heartbeat fires before the first UsageDelta arrives", func() {
+			// The first heartbeat of a turn typically fires while the
+			// provider is still reasoning — no message_delta yet, no
+			// cumulative output_tokens to thread. Zero is the legitimate
+			// pre-fire value and the chat UI suppresses the counter
+			// until the value transitions positive.
+			data := events.StreamingHeartbeatEventData{
+				SessionID: "sess-hb-2",
+				AgentID:   "planner",
+				Phase:     "thinking",
+			}
+			evt := events.NewStreamingHeartbeatEvent(data)
+			Expect(evt.Data.TokenCount).To(BeZero(),
+				"zero TokenCount is the legitimate pre-first-UsageDelta value")
+		})
+	})
 })
