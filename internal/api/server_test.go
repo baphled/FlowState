@@ -5716,6 +5716,161 @@ type multipartPart struct {
 	data        []byte
 }
 
+// GET /api/v1/sessions/{id}/attachments/{aid} — plan "Chat Attachments
+// Backend (May 2026)" §6 task-07. Binary retrieval endpoint backing
+// the inbound `<img src="/api/v1/sessions/.../attachments/...">`
+// surface from task-08. Rides the same path-param session-scope gate
+// as `internal/api/server.go:832-888 (handleSessionMessage)` until
+// Auth Track v1's RequireSession middleware lands (plan R3).
+//
+// Cross-session probe MUST return 404 with NO media-type leak — the
+// handler must not even check whether the id exists in the other
+// session, since that would surface a length / timing side-channel
+// confirming or denying the id (R9: cross-session injection via
+// prompt-poisoned `<img src>`).
+//
+// Extends the existing server_test.go seam per memory
+// feedback_extend_existing_specs.
+var _ = Describe("GET /api/v1/sessions/{id}/attachments/{aid}", func() {
+	var (
+		mgr *session.Manager
+		srv *api.Server
+		dir string
+	)
+
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00}
+
+	BeforeEach(func() {
+		dir = GinkgoT().TempDir()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
+		mgr.SetSessionsDir(dir)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	// putAttachment uploads a fixture image and returns the assigned id.
+	// Routes through the production upload handler so the on-disk state
+	// matches what the GET endpoint reads on the other side.
+	putAttachment := func(sessionID string, data []byte, filename string) string {
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+		h := make(textproto.MIMEHeader)
+		h.Set("Content-Disposition", `form-data; name="files"; filename="`+filename+`"`)
+		h.Set("Content-Type", "image/png")
+		pw, err := mw.CreatePart(h)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = pw.Write(data)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mw.Close()).To(Succeed())
+		req := httptest.NewRequest(http.MethodPost,
+			"/api/v1/sessions/"+sessionID+"/attachments", body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var out struct {
+			Attachments []struct {
+				ID string `json:"id"`
+			} `json:"attachments"`
+		}
+		Expect(json.Unmarshal(rec.Body.Bytes(), &out)).To(Succeed())
+		Expect(out.Attachments).To(HaveLen(1))
+		return out.Attachments[0].ID
+	}
+
+	It("returns the raw bytes with the stored Content-Type", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+		aid := putAttachment(sess.ID, pngBytes, "cat.png")
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/sessions/"+sess.ID+"/attachments/"+aid, http.NoBody)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Header().Get("Content-Type")).To(Equal("image/png"))
+		Expect(rec.Body.Bytes()).To(Equal(pngBytes),
+			"the served body must be the exact uploaded bytes")
+	})
+
+	It("sets Cache-Control: private, max-age=300 (content-hash names are stable)", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+		aid := putAttachment(sess.ID, pngBytes, "cat.png")
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/sessions/"+sess.ID+"/attachments/"+aid, http.NoBody)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		Expect(rec.Header().Get("Cache-Control")).To(Equal("private, max-age=300"))
+	})
+
+	It("returns 404 for an unknown attachment id inside a valid session", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/sessions/"+sess.ID+"/attachments/ghost-id", http.NoBody)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("returns 404 for an unknown session id", func() {
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/sessions/ghost-session/attachments/some-id", http.NoBody)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
+
+	// R9: cross-session injection. A real-but-other session id MUST
+	// return 404 with NO leak of the real attachment's media type or
+	// any other metadata. The handler must not even consult the other
+	// session's store — the path-param IS the auth scope.
+	It("returns 404 when an attachment id exists in another session (no media-type leak)", func() {
+		sessA, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+		sessB, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Put the attachment in sessA — sessB MUST NOT see it via its
+		// own path scope.
+		aid := putAttachment(sessA.ID, pngBytes, "cat.png")
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/sessions/"+sessB.ID+"/attachments/"+aid, http.NoBody)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusNotFound),
+			"cross-session probe must return 404")
+		// CRITICAL: no Content-Type leak. The 404 response must not
+		// carry the real attachment's media type (would confirm the id
+		// exists in some other session). http.Error sets Content-Type
+		// to text/plain for the error body, which is fine — we only
+		// forbid image/* leakage.
+		ct := rec.Header().Get("Content-Type")
+		Expect(ct).NotTo(HavePrefix("image/"),
+			"cross-session 404 must not leak the real attachment's image media type")
+		// And the body must not contain the bytes either.
+		Expect(rec.Body.Bytes()).NotTo(Equal(pngBytes),
+			"cross-session 404 must not leak the real attachment bytes")
+	})
+})
+
 // Content-Security-Policy header — plan "Chat Attachments Backend
 // (May 2026)" §6 task-09. Extends the existing securityHeaders
 // middleware (internal/api/server.go:381-389 (securityHeaders)) to

@@ -194,6 +194,80 @@ func (s *Server) handleUploadAttachments(w http.ResponseWriter, r *http.Request)
 	_ = json.NewEncoder(w).Encode(attachmentsUploadResponse{Attachments: results})
 }
 
+// handleGetAttachment streams the raw bytes for a single attachment
+// inside a session. PR2 task-07 (plan "Chat Attachments Backend
+// (May 2026)" §6 task-07). Rides the same path-param session-scope
+// gate as `internal/api/server.go:832-888 (handleSessionMessage)`
+// until Auth Track v1 lands; the `{id}` path param is the auth scope.
+//
+// Status codes:
+//   - 200 OK: bytes streamed; Content-Type from stored media type;
+//     Cache-Control private, max-age=300 (content-hash names are
+//     stable per id, so this is safe).
+//   - 404 Not Found: either the session does not exist, the
+//     attachment id is unknown in that session, OR the id exists in
+//     a DIFFERENT session. The handler must not even probe the other
+//     session — surfacing "exists somewhere else" would leak side-
+//     channel evidence of cross-session attachment names and confirm
+//     the cross-session injection vector that task-08's MarkdownRenderer
+//     allow-list closes (plan R9).
+//   - 501 Not Implemented: session manager not configured.
+//
+// Expected:
+//   - Request path parameters `id` (session) and `aid` (attachment).
+//
+// Side effects:
+//   - Reads the attachment bytes from disk via the session's
+//     AttachmentStore. No write paths.
+func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+
+	sessionID := r.PathValue("id")
+	attachmentID := r.PathValue("aid")
+	if sessionID == "" || attachmentID == "" {
+		// Treat empty path params as 404 rather than 400 — the route
+		// shape guarantees both are present in production; an empty
+		// value here means a malformed test or a path-traversal probe.
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify the session exists. Mirrors the upload handler's 404
+	// shape so a probe for a non-existent session looks identical to
+	// a probe for an unknown attachment id inside an existing
+	// session — no enumeration side channel.
+	if _, err := s.sessionManager.SnapshotSession(sessionID); err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// CRITICAL (plan R9, AC §6 task-07): only the path-scoped
+	// session's store is consulted. We do NOT fall through to a
+	// global lookup — the `{id}` path is the auth scope until Auth
+	// Track v1 lands. A cross-session probe sees only "not found",
+	// not "exists elsewhere".
+	store := s.sessionManager.AttachmentStore()
+	rec, data, err := store.Get(sessionID, attachmentID)
+	if err != nil {
+		// Any error path (ErrAttachmentNotFound, transient FS error,
+		// permission issue) collapses to 404. Leaks neither media
+		// type nor existence-elsewhere.
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// Cache: content-hashed names make bytes-per-id immutable, so a
+	// 5-minute browser cache is safe and reduces re-renders on
+	// session reload. `private` because the attachment is bound to a
+	// single user's session — no shared proxy caching.
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("Content-Type", rec.MediaType)
+	_, _ = w.Write(data)
+}
+
 // writeAttachmentParseError maps multipart parse failures to HTTP codes.
 func writeAttachmentParseError(w http.ResponseWriter, err error) {
 	var maxErr *http.MaxBytesError

@@ -447,6 +447,11 @@ func (s *Server) setupRoutes() {
 	// session-scope gate as handleSessionMessage. Image-only PR1
 	// (jpeg/png/gif/webp). Caps: 5 MB/file, 10/request, 50 MB/session.
 	s.mux.HandleFunc("POST /api/v1/sessions/{id}/attachments", s.handleUploadAttachments)
+	// PR2 task-07: binary retrieval endpoint for the inbound `<img>`
+	// render surface that task-08 closes (N9). Same path-param
+	// session-scope gate; cross-session probes return 404 with no
+	// media-type leak (plan R9).
+	s.mux.HandleFunc("GET /api/v1/sessions/{id}/attachments/{aid}", s.handleGetAttachment)
 	if s.metricsHandler != nil {
 		s.mux.Handle("GET /metrics", s.metricsHandler)
 	}
