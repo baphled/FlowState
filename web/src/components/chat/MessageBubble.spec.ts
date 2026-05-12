@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { defineComponent, h } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
@@ -7,6 +7,7 @@ import MessageBubble from './MessageBubble.vue'
 import type { Message } from '@/types'
 import { registerTool } from '@/tools/toolRegistry'
 import { useChatStore } from '@/stores/chatStore'
+import { ensureHighlighterLoaded } from '@/lib/markdownHighlighter'
 
 // Mock chat store
 vi.mock('@/stores/chatStore', () => ({
@@ -135,6 +136,105 @@ describe('MessageBubble', () => {
       const wrapper = mountWithStubs(makeMessage({ role: 'assistant', content: 'hi' }))
 
       expect(wrapper.find('.message-role').text()).toBe('assistant')
+    })
+  })
+
+  // User-message markdown rendering (May 2026 — UI Parity follow-up to PR1).
+  //
+  // PR1 (commit c07132a7) wired Shiki syntax highlighting into MarkdownRenderer
+  // for ASSISTANT messages. User messages still rendered as
+  // `<p class="message-content">{{ content }}</p>` — a code block typed by
+  // the user looked like plain text where the same code block in an assistant
+  // reply looked like an IDE. The asymmetry was the user-flagged regression.
+  //
+  // The fix routes user content through MarkdownRenderer (same path as
+  // assistant) so fenced code blocks pick up Shiki highlighting, inline code
+  // becomes monospaced, and lists/headings/links render as markdown. The
+  // tradeoff (a user typing `# foo` literally now gets a heading) is
+  // acceptable: chat parity targets (Claude, ChatGPT, OpenCode) all render
+  // user markdown.
+  //
+  // XSS posture is preserved — MarkdownRenderer already runs with
+  // `html: false` and the M6 link allowlist; user content flows through the
+  // same sanitiseMessageContent backstop assistant content uses, and
+  // ultimately through the same MarkdownIt instance.
+  describe('user-message markdown rendering', () => {
+    it('routes user message content through MarkdownRenderer', () => {
+      // Pin the wiring: a user bubble should mount a MarkdownRenderer
+      // sub-component rather than emitting a bare `<p class="message-content">`.
+      // The `.markdown-body` div is MarkdownRenderer's outer template wrapper.
+      const wrapper = mountWithStubs(makeMessage({ role: 'user', content: 'plain text' }))
+
+      expect(wrapper.find('.markdown-body').exists()).toBe(true)
+      // The legacy bare `<p class="message-content">` shape must be gone — if
+      // a future change reintroduces it the syntax highlighting and inline
+      // code styling silently break again.
+      expect(wrapper.find('p.message-content').exists()).toBe(false)
+    })
+
+    it('renders a user-typed fenced code block as a Shiki-highlighted pre', async () => {
+      // The headline parity bug — user types ```typescript ... ``` in the
+      // composer and currently sees plain text. Post-fix the same content
+      // produces a Shiki-tokenised `<pre class="shiki …">` block, matching
+      // the contract pinned by MarkdownRenderer.spec.ts for assistants.
+      await ensureHighlighterLoaded()
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'user',
+          content: '```typescript\nconst answer: number = 42;\n```',
+        }),
+      )
+      await flushPromises()
+
+      const html = wrapper.html()
+      expect(html).toContain('shiki')
+      // The original source text survives the tokenisation — Shiki wraps
+      // each token in a span, the characters are unchanged.
+      expect(wrapper.text()).toContain('const')
+      expect(wrapper.text()).toContain('42')
+    })
+
+    it('renders user inline code with a <code> element', () => {
+      // Mirrors MarkdownRenderer.spec.ts's inline-code contract — backticks
+      // in a user message must produce a styled `<code>` element rather
+      // than literal backticks in plain text.
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'user', content: 'Use `console.log()` for debugging' }),
+      )
+
+      const code = wrapper.find('code')
+      expect(code.exists()).toBe(true)
+      expect(code.text()).toBe('console.log()')
+    })
+
+    it('does not execute raw HTML in a user message (html: false posture preserved)', () => {
+      // XSS posture: MarkdownRenderer runs with `html: false`. Routing user
+      // content through it must NOT open a script-execution surface. The
+      // `<script>` tag should be HTML-escaped (rendered as visible text)
+      // rather than inserted into the DOM as a real element.
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'user', content: '<script>alert("xss")</script>' }),
+      )
+
+      expect(wrapper.find('script').exists()).toBe(false)
+    })
+
+    it('preserves the copy button affordance on user messages routed through markdown', () => {
+      // The bubble-level copy button must still appear and still copy the
+      // raw content (not the rendered markdown HTML). Pinned because the
+      // copy affordance pre-date this change and we don't want a render
+      // refactor to silently change what gets copied.
+      const wrapper = mountWithStubs(makeMessage({ role: 'user', content: 'ping' }))
+
+      expect(wrapper.find('[data-testid="message-copy-btn"]').exists()).toBe(true)
+    })
+
+    it('preserves the revert button on user messages routed through markdown', () => {
+      // Revert was specifically called out in the PR3 brief — it must
+      // survive the render-path swap.
+      const wrapper = mountWithStubs(makeMessage({ role: 'user', content: 'ping' }))
+
+      expect(wrapper.find('[data-testid="message-revert-btn"]').exists()).toBe(true)
     })
   })
 
