@@ -433,6 +433,11 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /api/v1/config/compression", s.handleGetCompressionConfig)
 	s.mux.HandleFunc("PATCH /api/v1/config/compression", s.handleUpdateCompressionConfig)
 	s.mux.HandleFunc("POST /api/v1/sessions/{id}/compress", s.handleCompactNow)
+	// Chat Attachments Backend PR1 — plan "Chat Attachments Backend
+	// (May 2026)" §6 task-03. Upload endpoint rides the same path-param
+	// session-scope gate as handleSessionMessage. Image-only PR1
+	// (jpeg/png/gif/webp). Caps: 5 MB/file, 10/request, 50 MB/session.
+	s.mux.HandleFunc("POST /api/v1/sessions/{id}/attachments", s.handleUploadAttachments)
 	if s.metricsHandler != nil {
 		s.mux.Handle("GET /metrics", s.metricsHandler)
 	}
