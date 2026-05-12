@@ -445,12 +445,94 @@ describe('MessageBubble', () => {
     })
   })
 
-  describe('thinking role', () => {
-    it('renders thinking content in a dimmed italic block', () => {
-      const wrapper = mountWithStubs(makeMessage({ role: 'thinking', content: 'considering options' }))
+  // B2 (Vue UI Parity vs OpenCode, May 2026): ThinkingPanel.
+  // Pre-fix MessageBubble rendered a bare `<p class="thinking">{{
+  // props.message.content }}</p>` — italic and dimmed but flat
+  // (markdown rendered as raw source). OpenCode ships a collapsible
+  // `<details>` panel that runs the thinking content through the
+  // markdown pipeline so embedded code in reasoning blocks gets the
+  // same Shiki highlighting as the visible reply (depends on B1).
+  // The panel is collapsed by default — reasoning is opt-in.
+  describe('thinking role (B2 — ThinkingPanel)', () => {
+    it('renders thinking content inside a collapsible <details> panel', () => {
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'thinking', content: 'considering options' }),
+      )
 
       expect(wrapper.attributes('data-role')).toBe('thinking')
+      // The new panel uses native <details> for keyboard-/screen-reader
+      // accessibility and zero-JS collapse behaviour. The previous
+      // <p class="thinking"> bare paragraph is replaced.
+      const details = wrapper.find('details[data-testid="thinking-panel"]')
+      expect(details.exists()).toBe(true)
+      // Collapsed by default — the `open` attribute is absent on
+      // first render.
+      expect(details.attributes('open')).toBeUndefined()
+      // The body content still has to be reachable in the DOM (even
+      // though visually hidden by the collapsed state) so search and
+      // copy operations work on the underlying text.
       expect(wrapper.text()).toContain('considering options')
+    })
+
+    it('routes thinking content through MarkdownRenderer (markdown rendered, not raw)', () => {
+      // The legacy implementation rendered content as a flat string —
+      // any markdown (especially fenced code, which the user does see
+      // in real reasoning blocks) showed as literal source text. The
+      // new panel routes through MarkdownRenderer so a fenced code
+      // block inside thinking content tokenises the same as the
+      // visible reply. Asserts the MarkdownRenderer body class is
+      // present inside the panel and a `<pre>` rendered for the
+      // fence.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'thinking',
+          content:
+            'Step one. Try this:\n```bash\necho hello\n```\nThen verify.',
+        }),
+      )
+
+      const panel = wrapper.find('[data-testid="thinking-panel"]')
+      expect(panel.exists()).toBe(true)
+      // MarkdownRenderer wraps its output in a `.markdown-body` div.
+      expect(panel.find('.markdown-body').exists()).toBe(true)
+      // The fenced block must produce a `<pre>` element inside the
+      // panel, confirming the markdown pipeline ran on the content.
+      expect(panel.find('pre').exists()).toBe(true)
+    })
+
+    it('renders one ThinkingPanel section for each thinkingBlock when the message carries thinkingBlocks', () => {
+      // Per the brief, `thinkingBlocks[]` is the better data source —
+      // the engine persists per-block thinking with signatures. The
+      // panel renders one collapsible section per block so the user
+      // can disclose them independently.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: 'thinking',
+          content: 'joined fallback content',
+          thinkingBlocks: [
+            { thinking: 'first reasoning step' },
+            { thinking: 'second reasoning step' },
+          ],
+        }),
+      )
+
+      const panels = wrapper.findAll('[data-testid="thinking-panel"]')
+      expect(panels.length).toBe(2)
+      expect(wrapper.text()).toContain('first reasoning step')
+      expect(wrapper.text()).toContain('second reasoning step')
+    })
+
+    it('falls back to the joined content string when thinkingBlocks is absent', () => {
+      // Legacy shape — older sessions on disk carry thinking-role
+      // messages with `content` populated but no `thinkingBlocks`
+      // array. The panel must keep rendering those.
+      const wrapper = mountWithStubs(
+        makeMessage({ role: 'thinking', content: 'legacy thinking text' }),
+      )
+
+      const panels = wrapper.findAll('[data-testid="thinking-panel"]')
+      expect(panels.length).toBe(1)
+      expect(wrapper.text()).toContain('legacy thinking text')
     })
   })
 

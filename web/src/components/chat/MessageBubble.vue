@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Message } from '@/types'
 import { useChatStore } from '@/stores/chatStore'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import ThinkingPanel from './ThinkingPanel.vue'
 import CopyButton from '@/components/tools/CopyButton.vue'
 import ToolErrorCard from '@/components/tools/ToolErrorCard.vue'
 import GenericTool from '@/components/tools/GenericTool.vue'
@@ -80,7 +81,44 @@ const hasProgress = computed(
 
 const isDelegationStarted = computed(() => props.message.role === 'delegation_started')
 const isDelegation = computed(() => props.message.role === 'delegation')
-const isThinking = computed(() => props.message.role === 'thinking')
+// B2 (May 2026). isThinking gates the new ThinkingPanel render path
+// only when there is something to show — either thinkingBlocks with
+// at least one non-empty thinking field, or non-empty content. A
+// thinking-role message with neither falls through to the wrapper
+// gate and is suppressed (matches the May 2026 blank-bubble gate
+// from commit 4c0cee54).
+const isThinking = computed(() => {
+  if (props.message.role !== 'thinking') return false
+  const blocks = props.message.thinkingBlocks ?? []
+  if (blocks.some((b) => (b.thinking ?? '').trim().length > 0)) return true
+  return (props.message.content ?? '').trim().length > 0
+})
+
+// B2 (Vue UI Parity vs OpenCode, May 2026). Thinking content sections.
+//
+// Per the brief, `thinkingBlocks[]` is the better data source —
+// the engine persists per-block thinking with optional signatures
+// (Anthropic extended-thinking signed blocks, etc). One ThinkingPanel
+// per block lets the user disclose them independently.
+//
+// Legacy thinking-role messages on disk carry `content` populated
+// but no `thinkingBlocks` array. The fallback path uses the joined
+// content string so older sessions keep rendering.
+//
+// Each section's text is filtered to non-empty — a thinking block
+// with both `thinking` and (e.g.) `redacted` fields is rare on the
+// wire but the filter keeps the panel array stable.
+const thinkingSections = computed<string[]>(() => {
+  if (!isThinking.value) return []
+  const blocks = props.message.thinkingBlocks ?? []
+  if (blocks.length > 0) {
+    return blocks
+      .map((b) => (b.thinking ?? '').trim())
+      .filter((t) => t.length > 0)
+  }
+  const content = (props.message.content ?? '').trim()
+  return content.length > 0 ? [content] : []
+})
 
 // Thinking-only degraded turn — closes the UI follow-up flagged by
 // `Empty-Content Thinking-Only Assistant Turn (May 2026)` in the
@@ -358,7 +396,19 @@ async function handleRevert(): Promise<void> {
       </div>
     </div>
 
-    <p v-else-if="isThinking" class="thinking">{{ props.message.content }}</p>
+    <!--
+      B2 (Vue UI Parity vs OpenCode, May 2026). Replace the flat
+      `<p class="thinking">` with one ThinkingPanel per reasoning
+      block. Collapsible by default, content routed through
+      MarkdownRenderer so embedded code highlights via Shiki (B1).
+    -->
+    <template v-else-if="isThinking">
+      <ThinkingPanel
+        v-for="(section, idx) in thinkingSections"
+        :key="idx"
+        :content="section"
+      />
+    </template>
 
     <!--
       Soft-error affordance copy reword (May 7 2026, follow-up to commit
