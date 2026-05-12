@@ -224,7 +224,15 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   line-height: 1.6;
   font-size: 0.9rem;
-  word-break: break-word;
+  /*
+   * UI Parity I6 (May 2026): align with MessageBubble — use
+   * overflow-wrap: anywhere so URL-heavy / ID-heavy markdown content
+   * wraps cleanly inside the bubble rather than spilling off the
+   * right edge. min-width: 0 prevents the rendered HTML from forcing
+   * its flex/grid parent to overflow before the wrap kicks in.
+   */
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 .markdown-body :deep(h1),

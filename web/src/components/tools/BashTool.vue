@@ -18,6 +18,14 @@ const props = withDefaults(defineProps<ToolRendererProps>(), {
   status: 'completed',
 })
 
+// UI Parity I4 (May 2026): bash is a "silent-success" category — a busy
+// thread fills with `bash · git status` cards whose stdout is rarely the
+// thing the user is reading the reply for. Start collapsed; the trigger
+// row shows the command preview via the subtitle plumbed below (I5).
+// Force open on error so the user sees the failure stdout without an
+// extra click.
+const cardDefaultOpen = computed(() => props.status === 'error')
+
 const showFull = ref(false)
 
 interface SliceResult {
@@ -71,8 +79,9 @@ function toggle() {
   <ToolBubble
     :tool-name="props.toolName"
     :title="props.toolName"
+    :subtitle="props.heading"
     :status="props.status"
-    :default-open="true"
+    :default-open="cardDefaultOpen"
   >
     <div class="tool-renderer" data-component="bash-tool">
       <section class="tool-section">

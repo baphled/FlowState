@@ -7,9 +7,9 @@ const CopyButton = {
 }
 
 const ToolBubble = {
-  props: ['toolName', 'title', 'subtitle', 'status'],
+  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
   template: `
-    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status">
+    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status" :data-default-open="defaultOpen ? 'true' : 'false'">
       <span data-testid="tool-title">{{ title }}</span>
       <span v-if="subtitle" data-testid="tool-subtitle">{{ subtitle }}</span>
       <slot />
@@ -18,6 +18,23 @@ const ToolBubble = {
 }
 
 describe('GrepTool', () => {
+  // I4: Grep tool output is a long match list. Start collapsed; the
+  // subtitle still surfaces the pattern so the user knows what was searched.
+  it('starts collapsed by default (long-match-list category)', () => {
+    const wrapper = mount(GrepTool, {
+      props: { toolName: 'grep', heading: 'TODO', body: 'a:1\nb:1', status: 'completed' },
+      global: { stubs: { CopyButton, ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('false')
+  })
+
+  it('forces open when status is error', () => {
+    const wrapper = mount(GrepTool, {
+      props: { toolName: 'grep', heading: 'TODO', body: 'syntax error', status: 'error' },
+      global: { stubs: { CopyButton, ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('true')
+  })
   it('renders grep results and bubble metadata', () => {
     const wrapper = mount(GrepTool, {
       props: {

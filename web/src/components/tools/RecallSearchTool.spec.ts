@@ -3,15 +3,32 @@ import { mount } from '@vue/test-utils'
 import RecallSearchTool from './RecallSearchTool.vue'
 
 const ToolBubble = {
-  props: ['toolName', 'title', 'subtitle', 'status'],
+  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
   template: `
-    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status">
+    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status" :data-default-open="defaultOpen ? 'true' : 'false'">
       <slot />
     </div>
   `,
 }
 
 describe('RecallSearchTool', () => {
+  // I4: Recall search results are long. Start collapsed; the subtitle
+  // already surfaces the result count so the user can decide to open.
+  it('starts collapsed by default (search-results category)', () => {
+    const wrapper = mount(RecallSearchTool, {
+      props: { toolName: 'search_context', heading: 'q', body: '', status: 'completed' },
+      global: { stubs: { ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('false')
+  })
+
+  it('forces open when status is error', () => {
+    const wrapper = mount(RecallSearchTool, {
+      props: { toolName: 'search_context', heading: 'q', body: '', status: 'error' },
+      global: { stubs: { ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('true')
+  })
   it('renders the query and parsed result entries', () => {
     const body = [
       'user: how do I fix the bubble nesting?',

@@ -7,9 +7,9 @@ const CopyButton = {
 }
 
 const ToolBubble = {
-  props: ['toolName', 'title', 'subtitle', 'status'],
+  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
   template: `
-    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status">
+    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status" :data-default-open="defaultOpen ? 'true' : 'false'">
       <span data-testid="tool-title">{{ title }}</span>
       <span v-if="subtitle" data-testid="tool-subtitle">{{ subtitle }}</span>
       <slot />
@@ -18,6 +18,22 @@ const ToolBubble = {
 }
 
 describe('GlobTool', () => {
+  // I4: Glob results are noisy. Start collapsed; subtitle surfaces pattern.
+  it('starts collapsed by default (long-match-list category)', () => {
+    const wrapper = mount(GlobTool, {
+      props: { toolName: 'glob', heading: 'src/**/*.ts', body: 'a.ts\nb.ts', status: 'completed' },
+      global: { stubs: { CopyButton, ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('false')
+  })
+
+  it('forces open when status is error', () => {
+    const wrapper = mount(GlobTool, {
+      props: { toolName: 'glob', heading: 'src/**/*.ts', body: 'failed', status: 'error' },
+      global: { stubs: { CopyButton, ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('true')
+  })
   it('renders matched files and bubble metadata', () => {
     const wrapper = mount(GlobTool, {
       props: {

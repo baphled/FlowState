@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import CopyButton from './CopyButton.vue'
 import ToolBubble from './ToolBubble.vue'
 import type { ToolRendererProps } from './toolRendererProps'
@@ -6,6 +7,10 @@ import type { ToolRendererProps } from './toolRendererProps'
 const props = withDefaults(defineProps<ToolRendererProps>(), {
   status: 'completed',
 })
+
+// UI Parity I4 (May 2026): glob results are long. Start collapsed;
+// subtitle surfaces the pattern. Force open on error.
+const cardDefaultOpen = computed(() => props.status === 'error')
 </script>
 
 <template>
@@ -14,7 +19,7 @@ const props = withDefaults(defineProps<ToolRendererProps>(), {
     :title="props.toolName"
     :subtitle="props.heading"
     :status="props.status"
-    :default-open="true"
+    :default-open="cardDefaultOpen"
   >
     <div class="tool-renderer" data-component="glob-tool">
       <div class="tool-renderer__header">

@@ -7,9 +7,9 @@ const CopyButton = {
 }
 
 const ToolBubble = {
-  props: ['toolName', 'title', 'subtitle', 'status'],
+  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
   template: `
-    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status">
+    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status" :data-default-open="defaultOpen ? 'true' : 'false'">
       <span data-testid="tool-title">{{ title }}</span>
       <span v-if="subtitle" data-testid="tool-subtitle">{{ subtitle }}</span>
       <slot />
@@ -18,6 +18,38 @@ const ToolBubble = {
 }
 
 describe('ReadTool', () => {
+  // I4: Read tool dumps full file content. Start collapsed so a chain of
+  // reads doesn't bury the assistant reply; the subtitle still surfaces
+  // the file path so the user knows what was read.
+  it('starts collapsed by default (file-content category)', () => {
+    const wrapper = mount(ReadTool, {
+      props: {
+        toolName: 'read',
+        heading: '/tmp/example.txt',
+        body: 'hello',
+        status: 'completed',
+      },
+      global: {
+        stubs: { CopyButton, ToolBubble },
+      },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('false')
+  })
+
+  it('forces open when status is error', () => {
+    const wrapper = mount(ReadTool, {
+      props: {
+        toolName: 'read',
+        heading: '/tmp/missing.txt',
+        body: 'ENOENT',
+        status: 'error',
+      },
+      global: {
+        stubs: { CopyButton, ToolBubble },
+      },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('true')
+  })
   it('renders the tool bubble, subtitle, and file content', () => {
     const wrapper = mount(ReadTool, {
       props: {

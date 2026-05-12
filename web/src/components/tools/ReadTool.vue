@@ -8,6 +8,11 @@ const props = withDefaults(defineProps<ToolRendererProps>(), {
   status: 'completed',
 })
 
+// UI Parity I4 (May 2026): file content is rarely what the user wants to
+// re-read inline. Start collapsed; subtitle still surfaces the file path.
+// Force open on error so missing-file / permission failures are visible.
+const cardDefaultOpen = computed(() => props.status === 'error')
+
 function parseToolInput(raw: string | undefined): Record<string, unknown> {
   if (!raw) return {}
   try {
@@ -40,7 +45,7 @@ const lineRange = computed(() => {
     :title="props.toolName"
     :subtitle="props.heading"
     :status="props.status"
-    :default-open="true"
+    :default-open="cardDefaultOpen"
   >
     <div class="tool-renderer" data-component="read-tool">
       <div class="tool-renderer__header">
