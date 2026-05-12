@@ -157,6 +157,31 @@ func buildUserAttachmentParts(m provider.Message) []openaiAPI.ChatCompletionCont
 			// reaching here.
 			continue
 		}
+		// Plan §6 task-15 — defence-in-depth document-skip. PDFs are
+		// only supported by the Anthropic translator in PR4; OpenAI
+		// Chat Completions (and every provider wrapping openaicompat:
+		// openai, copilot, openzen, zai, ollamacloud) has no native
+		// document surface. The upload-time gate is the primary
+		// defence (handleUploadAttachments rejects PDFs on non-
+		// Anthropic sessions at 415). This skip closes the model-
+		// switch-mid-staging window (R13) — a PDF uploaded while on
+		// Anthropic, then a model switch to Ollama before Send, still
+		// ships a well-formed text-only request rather than a 400
+		// from the upstream API.
+		//
+		// Schema pinned by AC-15-LogShape-Pinned: every key
+		// (provider, attachment_id, kind, media_type) and the
+		// message string are stable for log-parsers / dashboards.
+		if a.Kind == "document" {
+			slog.Warn(
+				"attachment_dropped: provider does not support documents",
+				"provider", "openaicompat",
+				"attachment_id", a.ID,
+				"kind", a.Kind,
+				"media_type", a.MediaType,
+			)
+			continue
+		}
 		dataURL := fmt.Sprintf("data:%s;base64,%s",
 			a.MediaType,
 			base64.StdEncoding.EncodeToString(a.Data))

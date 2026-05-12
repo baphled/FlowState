@@ -1,10 +1,12 @@
 package ollama_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -1546,6 +1548,67 @@ var _ = Describe("Ollama Provider", func() {
 				_, err := provider.Models()
 				Expect(err).To(HaveOccurred())
 			})
+		})
+	})
+
+	// Plan §6 task-15 — defence-in-depth document-skip. PDFs reaching
+	// the Ollama translator are dropped with a structured slog.Warn
+	// (the Ollama SDK has no Documents field). The upload-time gate
+	// is the primary defence; this closes R13's
+	// model-switch-mid-staging window.
+	Describe("Defence-in-depth document-skip (PR4 task-15, AC-15-LogShape-Pinned)", func() {
+		var server *httptest.Server
+		var provider *ollama.Provider
+
+		BeforeEach(func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				resp := map[string]any{
+					"model":             "llama3.2",
+					"message":           map[string]any{"role": "assistant", "content": "ok"},
+					"done":              true,
+					"prompt_eval_count": 1,
+					"eval_count":        1,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			var err error
+			provider, err = ollama.NewWithClient(server.URL, server.Client())
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
+			}
+		})
+
+		It("emits slog.Warn with the AC-15-LogShape-Pinned 4-field schema for a Kind=document attachment", func() {
+			var buf bytes.Buffer
+			handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+			prev := slog.Default()
+			slog.SetDefault(slog.New(handler))
+			defer slog.SetDefault(prev)
+
+			_, err := provider.Chat(context.Background(), providerPkg.ChatRequest{
+				Model: "llama3.2",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "x", Attachments: []providerPkg.Attachment{
+						{ID: "doc-abc", Kind: "document", MediaType: "application/pdf"},
+					}},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var entry map[string]any
+			Expect(json.Unmarshal(buf.Bytes(), &entry)).To(Succeed())
+			Expect(entry).To(HaveKeyWithValue("msg",
+				"attachment_dropped: provider does not support documents"))
+			Expect(entry).To(HaveKeyWithValue("provider", "ollama"))
+			Expect(entry).To(HaveKeyWithValue("attachment_id", "doc-abc"))
+			Expect(entry).To(HaveKeyWithValue("kind", "document"))
+			Expect(entry).To(HaveKeyWithValue("media_type", "application/pdf"))
+			Expect(entry).To(HaveKeyWithValue("level", "WARN"))
 		})
 	})
 })

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -503,6 +504,24 @@ func convertMessages(msgs []provider.Message) []ollamaAPI.Message {
 	pairs := shared.ConvertMessagesToRolePairs(msgs)
 	result := make([]ollamaAPI.Message, 0, len(pairs))
 	for i, p := range pairs {
+		// Plan §6 task-15 — defence-in-depth document-skip. The Ollama
+		// SDK has no Documents field, so any provider.Attachment with
+		// Kind=="document" reaching this translator is dropped with a
+		// structured slog.Warn (closes R13's model-switch-mid-staging
+		// window). Image attachments are not yet threaded into Ollama
+		// in PR4 — the absence of a wire-up for images is an
+		// orthogonal gap; see task-13 (Ollama survey).
+		for _, a := range msgs[i].Attachments {
+			if a.Kind == "document" {
+				slog.Warn(
+					"attachment_dropped: provider does not support documents",
+					"provider", "ollama",
+					"attachment_id", a.ID,
+					"kind", a.Kind,
+					"media_type", a.MediaType,
+				)
+			}
+		}
 		ollamaMsg := ollamaAPI.Message{
 			Role:    p.Role,
 			Content: p.Content,
