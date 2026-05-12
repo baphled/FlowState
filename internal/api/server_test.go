@@ -5715,3 +5715,54 @@ type multipartPart struct {
 	contentType string
 	data        []byte
 }
+
+// Content-Security-Policy header — plan "Chat Attachments Backend
+// (May 2026)" §6 task-09. Extends the existing securityHeaders
+// middleware (internal/api/server.go:381-389 (securityHeaders)) to
+// permit `data:` and `'self'` `<img>` sources so (a) base64 data
+// URLs from assistant responses and (b) same-origin GETs to
+// `/api/v1/sessions/{id}/attachments/{aid}` render without CSP
+// violations. Extends the existing server_test.go seam per memory
+// feedback_extend_existing_specs.
+var _ = Describe("Content-Security-Policy header (task-09)", func() {
+	var srv *api.Server
+
+	BeforeEach(func() {
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+		)
+	})
+
+	It("includes img-src 'self' data: alongside default-src 'self'", func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/skills", http.NoBody)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		csp := rec.Header().Get("Content-Security-Policy")
+		Expect(csp).NotTo(BeEmpty(), "CSP header must be set on every response")
+		Expect(csp).To(ContainSubstring("default-src 'self'"),
+			"default-src must remain 'self' — task-09 must not widen non-image directives")
+		Expect(csp).To(ContainSubstring("img-src 'self' data:"),
+			"img-src must permit 'self' and data: so attachments + base64 data URLs render")
+	})
+
+	It("does not widen script-src or style-src as a side effect of the img-src extension", func() {
+		req := httptest.NewRequest(http.MethodGet, "/api/skills", http.NoBody)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		csp := rec.Header().Get("Content-Security-Policy")
+		// The PR2 extension is image-only. Script and style remain
+		// constrained to 'self' via default-src; no explicit widening
+		// (and no `unsafe-inline` / `unsafe-eval` slips in).
+		Expect(csp).NotTo(ContainSubstring("unsafe-inline"))
+		Expect(csp).NotTo(ContainSubstring("unsafe-eval"))
+		Expect(csp).NotTo(ContainSubstring("script-src"))
+		Expect(csp).NotTo(ContainSubstring("style-src"))
+	})
+})

@@ -382,7 +382,16 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+		// Plan "Chat Attachments Backend (May 2026)" §6 task-09: extend
+		// `img-src` to permit `'self'` (so the same-origin
+		// `/api/v1/sessions/{id}/attachments/{aid}` GETs render) and
+		// `data:` (so base64 image data-URLs in assistant responses
+		// render). All other directives stay constrained via
+		// `default-src 'self'`. No `unsafe-inline` / `unsafe-eval`;
+		// no script/style widening. Single source of truth — the
+		// existing only Content-Security-Policy Set site in this repo
+		// (grep `Set("Content-Security-Policy"` in /internal/).
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		next.ServeHTTP(w, r)
 	})
