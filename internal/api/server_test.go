@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"net/url"
 	"runtime"
 	"strings"
@@ -5488,3 +5490,228 @@ var _ = Describe("Gate Bus Bridge — SSE bridge for EventGateFailed", func() {
 		}
 	})
 })
+
+// POST /api/v1/sessions/{id}/attachments — plan "Chat Attachments
+// Backend (May 2026)" §6 task-03. Extends the existing server_test.go
+// seam per memory feedback_extend_existing_specs.
+var _ = Describe("POST /api/v1/sessions/{id}/attachments", func() {
+	var (
+		mgr *session.Manager
+		srv *api.Server
+		dir string
+	)
+
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00}
+	jpgBytes := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
+
+	BeforeEach(func() {
+		dir = GinkgoT().TempDir()
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
+		mgr.SetSessionsDir(dir)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	// uploadRequest builds a multipart POST for the upload endpoint.
+	// Field name is `files`, matching the handler contract; each part
+	// carries an explicit Content-Type header (advisory only — the
+	// handler content-sniffs the bytes for the authoritative type).
+	uploadRequest := func(sessionID string, parts []multipartPart) *http.Request {
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+		for _, p := range parts {
+			h := make(textproto.MIMEHeader)
+			h.Set("Content-Disposition", `form-data; name="files"; filename="`+p.filename+`"`)
+			if p.contentType != "" {
+				h.Set("Content-Type", p.contentType)
+			}
+			pw, err := mw.CreatePart(h)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = pw.Write(p.data)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(mw.Close()).To(Succeed())
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sessionID+"/attachments", body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		return req
+	}
+
+	It("uploads a single image and returns its id and metadata", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		req := uploadRequest(sess.ID, []multipartPart{
+			{filename: "cat.png", contentType: "image/png", data: pngBytes},
+		})
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var out struct {
+			Attachments []struct {
+				ID               string `json:"id"`
+				MediaType        string `json:"mediaType"`
+				SizeBytes        int64  `json:"sizeBytes"`
+				OriginalFilename string `json:"originalFilename"`
+			} `json:"attachments"`
+		}
+		Expect(json.Unmarshal(rec.Body.Bytes(), &out)).To(Succeed())
+		Expect(out.Attachments).To(HaveLen(1))
+		Expect(out.Attachments[0].ID).NotTo(BeEmpty())
+		Expect(out.Attachments[0].MediaType).To(Equal("image/png"))
+		Expect(out.Attachments[0].SizeBytes).To(Equal(int64(len(pngBytes))))
+		Expect(out.Attachments[0].OriginalFilename).To(Equal("cat.png"))
+	})
+
+	It("uploads multiple images in one request", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		req := uploadRequest(sess.ID, []multipartPart{
+			{filename: "cat.png", contentType: "image/png", data: pngBytes},
+			{filename: "dog.jpg", contentType: "image/jpeg", data: jpgBytes},
+		})
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+
+		Expect(rec.Code).To(Equal(http.StatusOK))
+		var out struct {
+			Attachments []map[string]any `json:"attachments"`
+		}
+		Expect(json.Unmarshal(rec.Body.Bytes(), &out)).To(Succeed())
+		Expect(out.Attachments).To(HaveLen(2))
+	})
+
+	It("returns 404 for an unknown session id", func() {
+		req := uploadRequest("ghost-session", []multipartPart{
+			{filename: "cat.png", contentType: "image/png", data: pngBytes},
+		})
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("rejects an unsupported media type with 415 (content sniff)", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Plain text payload — bytes do not sniff to an allowed image.
+		req := uploadRequest(sess.ID, []multipartPart{
+			{filename: "evil.png", contentType: "image/png", data: []byte("not an image")},
+		})
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusUnsupportedMediaType))
+	})
+
+	It("rejects a SVG payload with 415 (PR1 excludes svg)", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>`)
+		req := uploadRequest(sess.ID, []multipartPart{
+			{filename: "vec.svg", contentType: "image/svg+xml", data: svg},
+		})
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusUnsupportedMediaType))
+	})
+
+	It("rejects a file over the per-file cap with 413", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		big := make([]byte, session.MaxAttachmentFileBytes+10)
+		// PNG magic so the sniff would pass — but the size check fires first.
+		copy(big, pngBytes)
+		req := uploadRequest(sess.ID, []multipartPart{
+			{filename: "huge.png", contentType: "image/png", data: big},
+		})
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusRequestEntityTooLarge))
+	})
+
+	It("rejects >10 files in one request with 400", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		parts := make([]multipartPart, 11)
+		for i := range parts {
+			// Make each unique so dedup doesn't collapse them in the
+			// store (we never reach storage on this path, but defensive).
+			b := make([]byte, len(pngBytes)+1)
+			copy(b, pngBytes)
+			b[len(pngBytes)] = byte(i)
+			parts[i] = multipartPart{
+				filename:    "p.png",
+				contentType: "image/png",
+				data:        b,
+			}
+		}
+		req := uploadRequest(sess.ID, parts)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("dedups a re-upload of the same content and returns the same id", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		// First upload.
+		req1 := uploadRequest(sess.ID, []multipartPart{
+			{filename: "cat.png", contentType: "image/png", data: pngBytes},
+		})
+		rec1 := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec1, req1)
+		Expect(rec1.Code).To(Equal(http.StatusOK))
+		var out1 struct {
+			Attachments []struct {
+				ID string `json:"id"`
+			} `json:"attachments"`
+		}
+		Expect(json.Unmarshal(rec1.Body.Bytes(), &out1)).To(Succeed())
+
+		// Second upload — identical bytes.
+		req2 := uploadRequest(sess.ID, []multipartPart{
+			{filename: "cat-renamed.png", contentType: "image/png", data: pngBytes},
+		})
+		rec2 := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec2, req2)
+		Expect(rec2.Code).To(Equal(http.StatusOK))
+		var out2 struct {
+			Attachments []struct {
+				ID string `json:"id"`
+			} `json:"attachments"`
+		}
+		Expect(json.Unmarshal(rec2.Body.Bytes(), &out2)).To(Succeed())
+
+		Expect(out2.Attachments[0].ID).To(Equal(out1.Attachments[0].ID))
+	})
+
+	It("returns 400 for an empty multipart form (no files)", func() {
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		req := uploadRequest(sess.ID, nil)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+})
+
+// multipartPart is a small helper struct for building multipart parts
+// in the upload-endpoint specs above.
+type multipartPart struct {
+	filename    string
+	contentType string
+	data        []byte
+}
