@@ -79,6 +79,19 @@ type WSChunkMsg struct {
 	EventData     interface{}              `json:"event_data,omitempty"`
 }
 
+// originAllowlist returns the configured WebSocket / HTTP Origin allowlist,
+// defaulting to ["localhost:*"] when none was provided via WithOriginPatterns.
+// This preserves the pre-PR1 behaviour (literal "localhost:*" at websocket.go:106)
+// while letting deployers override via cfg.Auth.AllowedOrigins. The same list
+// feeds PR3's internal/auth.RequireOrigin HTTP middleware so the WebSocket and
+// HTTP surfaces never drift.
+func (s *Server) originAllowlist() []string {
+	if len(s.originPatterns) == 0 {
+		return []string{"localhost:*"}
+	}
+	return s.originPatterns
+}
+
 // handleSessionWebSocket upgrades the connection to WebSocket, validates the session,
 // then forwards incoming messages to the session engine and streams engine responses back.
 //
@@ -103,7 +116,7 @@ func (s *Server) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) 
 	}
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns: []string{"localhost:*"},
+		OriginPatterns: s.originAllowlist(),
 	})
 	if err != nil {
 		return
