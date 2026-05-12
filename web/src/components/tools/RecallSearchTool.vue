@@ -23,6 +23,15 @@ const maxVisible = 10
 interface RecallResult {
   source: string
   snippet: string
+  // UI Parity PR6 N6 — optional provenance carried by chain-search results.
+  // The backend formatter (internal/recall/query_tools.go) does NOT yet
+  // emit these; this is the UI-side scaffold pinning the wire shape so the
+  // backend lift can land without touching the Vue tree. The chunk format
+  // when present is:
+  //   `[time=<iso>] [depth=<n>] <role>: <snippet>`
+  // Either prefix is independent; both are optional.
+  timestamp?: string
+  chainDepth?: number
 }
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
@@ -44,6 +53,33 @@ function parseQuery(raw: string | undefined): string | null {
   return null
 }
 
+// UI Parity PR6 N6 — strip optional `[time=...]` and `[depth=...]` prefixes
+// from a result chunk so the snippet itself is free of metadata. Returns the
+// extracted metadata plus the remaining body for the role-colon parser to
+// consume.
+function extractMetadata(chunk: string): { timestamp?: string; chainDepth?: number; rest: string } {
+  let rest = chunk
+  let timestamp: string | undefined
+  let chainDepth: number | undefined
+  // Match one prefix at a time so order does not matter and so the parser
+  // is tolerant of either-or-both. The regex anchors to the start, with a
+  // single token before the trailing `] `.
+  for (;;) {
+    const m = rest.match(/^\[(time|depth)=([^\]]+)\]\s*/)
+    if (!m) break
+    const key = m[1]
+    const value = m[2]
+    if (key === 'time') {
+      timestamp = value
+    } else if (key === 'depth') {
+      const n = Number.parseInt(value, 10)
+      if (Number.isFinite(n) && n >= 0) chainDepth = n
+    }
+    rest = rest.slice(m[0].length)
+  }
+  return { timestamp, chainDepth, rest }
+}
+
 function parseResults(body: string): RecallResult[] {
   if (!body || body.trim().length === 0) return []
   return body
@@ -51,16 +87,32 @@ function parseResults(body: string): RecallResult[] {
     .map((chunk) => chunk.trim())
     .filter((chunk) => chunk.length > 0)
     .map((chunk) => {
-      const colon = chunk.indexOf(':')
+      const { timestamp, chainDepth, rest } = extractMetadata(chunk)
+      const stripped = rest.trim()
+      const colon = stripped.indexOf(':')
       if (colon > 0 && colon < 32) {
-        const source = chunk.slice(0, colon).trim()
-        const snippet = chunk.slice(colon + 1).trim()
+        const source = stripped.slice(0, colon).trim()
+        const snippet = stripped.slice(colon + 1).trim()
         if (source && snippet) {
-          return { source, snippet }
+          return { source, snippet, timestamp, chainDepth }
         }
       }
-      return { source: 'context', snippet: chunk }
+      return { source: 'context', snippet: stripped, timestamp, chainDepth }
     })
+}
+
+// UI Parity PR6 N6 — relative-time formatter. Mirrors SessionBrowser's
+// formatRelativeTime contract ("just now", "Nm ago", "Nh ago", "Nd ago")
+// so the recall surface speaks the same vocabulary as the session list.
+function formatRelativeTime(iso: string): string {
+  const parsed = new Date(iso).getTime()
+  if (!Number.isFinite(parsed)) return iso
+  const seconds = Math.floor((Date.now() - parsed) / 1000)
+  if (seconds < 60) return 'just now'
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`
+  return new Date(iso).toLocaleDateString()
 }
 
 const queryText = computed<string | null>(() => {
@@ -120,7 +172,27 @@ const cardDefaultOpen = computed(() => props.status === 'error')
           class="recall-result"
           data-testid="recall-result"
         >
-          <span class="recall-source">{{ result.source }}</span>
+          <span class="recall-result-header">
+            <span class="recall-source">{{ result.source }}</span>
+            <!--
+              UI Parity PR6 N6 — optional provenance: relative timestamp +
+              chain-hop indicator. Both render only when the chunk carried
+              the corresponding metadata prefix, so the current backend
+              format (plain `role: content`) is untouched.
+            -->
+            <span
+              v-if="result.timestamp"
+              class="recall-timestamp"
+              data-testid="recall-timestamp"
+              :title="result.timestamp"
+            >{{ formatRelativeTime(result.timestamp) }}</span>
+            <span
+              v-if="result.chainDepth !== undefined"
+              class="recall-chain-depth"
+              data-testid="recall-chain-depth"
+              :title="`Chain depth: ${result.chainDepth}`"
+            >↑{{ result.chainDepth }}</span>
+          </span>
           <span class="recall-snippet">{{ result.snippet }}</span>
         </li>
       </ol>
@@ -180,12 +252,35 @@ const cardDefaultOpen = computed(() => props.status === 'error')
   line-height: 1.5;
 }
 
+.recall-result-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
 .recall-source {
   color: var(--text-secondary, #a9b1d6);
   font-weight: 600;
   font-size: 0.7rem;
   text-transform: lowercase;
   letter-spacing: 0.02em;
+}
+
+/*
+ * UI Parity PR6 N6 — relative-time + chain-hop badges. Both render in muted
+ * tone to keep the snippet itself dominant; the chain depth carries an
+ * arrow glyph (↑) so it reads as "this came from N hops back".
+ */
+.recall-timestamp,
+.recall-chain-depth {
+  font-size: 0.7rem;
+  color: var(--text-muted, #565f89);
+  font-weight: 500;
+}
+
+.recall-chain-depth {
+  color: var(--accent, #7aa2f7);
 }
 
 .recall-snippet {

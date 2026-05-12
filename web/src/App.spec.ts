@@ -74,22 +74,31 @@ describe('App loading overlay', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders the loading overlay on initial mount', async () => {
+  it('renders the loading overlay on initial mount (after the 200ms min-duration gate)', async () => {
     // Hold bootstrap in flight indefinitely so we can observe the
-    // pre-ready state of the DOM.
+    // pre-ready state of the DOM. UI Parity PR6 N10: the overlay is now
+    // gated by a 200ms min-duration so fast backends don't flash it;
+    // advance fake timers past the gate before asserting visibility.
+    vi.useFakeTimers()
     const chatStore = useChatStore()
     vi.spyOn(chatStore, 'bootstrap').mockReturnValue(new Promise(() => {}))
 
     const wrapper = mount(App, mountOptions)
+    vi.advanceTimersByTime(250)
+    await flushPromises()
 
     expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(true)
+    vi.useRealTimers()
   })
 
   it('hides the router view (page content) while the overlay is visible', async () => {
+    vi.useFakeTimers()
     const chatStore = useChatStore()
     vi.spyOn(chatStore, 'bootstrap').mockReturnValue(new Promise(() => {}))
 
     const wrapper = mount(App, mountOptions)
+    vi.advanceTimersByTime(250)
+    await flushPromises()
 
     // The page underneath must NOT be visible during loading. We assert
     // both that the RouterView host is absent from the rendered DOM AND
@@ -97,6 +106,7 @@ describe('App loading overlay', () => {
     // page leaks under the overlay.
     expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(true)
+    vi.useRealTimers()
   })
 
   it('dismisses the overlay and renders the router view once bootstrap resolves', async () => {
@@ -134,6 +144,75 @@ describe('App loading overlay', () => {
 
     expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
+  })
+
+  // UI Parity PR6 N10 (May 2026) — min-duration gate.
+  //
+  // A fast local backend resolves bootstrap in ~50ms, which makes the
+  // overlay flash visibly on every page load — worse than no overlay.
+  // The gate: schedule a 200ms timeout when bootstrap starts; if
+  // bootstrap settles before the timeout fires, never show the overlay;
+  // if the timeout fires first, show the overlay and clear it only when
+  // bootstrap resolves. Tests use vitest's fake timers to drive both
+  // sides deterministically.
+  describe('min-duration gate (N10)', () => {
+    it('never shows the overlay when bootstrap resolves before the 200ms gate fires', async () => {
+      vi.useFakeTimers()
+      const chatStore = useChatStore()
+      // 50ms simulated bootstrap — well under the 200ms gate.
+      let resolveBootstrap!: () => void
+      vi.spyOn(chatStore, 'bootstrap').mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveBootstrap = resolve
+        }),
+      )
+
+      const wrapper = mount(App, mountOptions)
+
+      // Advance to 50ms — bootstrap resolves, the gate timer has NOT fired.
+      vi.advanceTimersByTime(50)
+      resolveBootstrap()
+      await flushPromises()
+      // Drain the remaining gate timer.
+      vi.advanceTimersByTime(200)
+      await flushPromises()
+
+      // The overlay must never have rendered.
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
+      vi.useRealTimers()
+    })
+
+    it('shows the overlay once the 200ms gate fires and bootstrap is still in flight', async () => {
+      vi.useFakeTimers()
+      const chatStore = useChatStore()
+      let resolveBootstrap!: () => void
+      vi.spyOn(chatStore, 'bootstrap').mockReturnValue(
+        new Promise<void>((resolve) => {
+          resolveBootstrap = resolve
+        }),
+      )
+
+      const wrapper = mount(App, mountOptions)
+
+      // Before the gate fires, overlay should NOT yet be visible.
+      vi.advanceTimersByTime(150)
+      await flushPromises()
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
+
+      // Cross the gate. Overlay should now be visible because bootstrap is
+      // still in flight (500ms total simulated).
+      vi.advanceTimersByTime(100)
+      await flushPromises()
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(true)
+
+      // Resolve bootstrap; overlay must disappear.
+      resolveBootstrap()
+      await flushPromises()
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
+      vi.useRealTimers()
+    })
   })
 
   it('removes the index.html splash element on mount so the Vue overlay can take over without double-stacking', async () => {

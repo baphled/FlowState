@@ -2,6 +2,7 @@
 import type { Agent } from '@/types'
 import { ref, onMounted, computed } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
+import Icon from '@/components/common/Icon.vue'
 
 defineOptions({ name: 'AgentSwitcher' })
 
@@ -54,7 +55,7 @@ onMounted(() => {
       aria-haspopup="listbox"
       :aria-expanded="isOpen"
     >
-      <span class="agent-icon">🤖</span>
+      <span class="agent-icon"><Icon name="bot" :size="14" /></span>
       <span class="agent-labels">
         <span class="agent-name">{{ currentAgentName }}</span>
         <span class="agent-summary" data-testid="current-agent-summary">{{ currentAgentSummary }}</span>

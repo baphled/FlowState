@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useChatStore } from '@/stores/chatStore'
 
 interface Props {
   toolName: string
@@ -14,7 +15,23 @@ const props = withDefaults(defineProps<Props>(), {
   defaultOpen: false
 })
 
+const chatStore = useChatStore()
+
 const isOpen = ref(props.defaultOpen)
+
+// UI Parity PR6 — Collapse all / Expand all override.
+//
+// The store-level toolCardOpenOverride lets the ChatView toolbar bulk-flip
+// every ToolBubble. The local isOpen ref is the canonical per-card state;
+// the override only short-circuits the render output. Resolving the
+// effective state via a computed keeps the watcher contract (P0-3 sticky
+// open semantics) untouched.
+const effectiveOpen = computed(() => {
+  const override = chatStore.toolCardOpenOverride
+  if (override === 'expanded') return true
+  if (override === 'collapsed') return false
+  return isOpen.value
+})
 
 // UI Parity bug-fix bundle (May 2026). P0-3: pre-fix isOpen was seeded
 // once at mount from defaultOpen, so a card mounted with
@@ -48,13 +65,13 @@ const statusIcon = computed(() => {
 </script>
 
 <template>
-  <div 
-    class="tool-bubble" 
+  <div
+    class="tool-bubble"
     data-testid="tool-bubble"
     data-component="tool"
     :data-tool="toolName"
     :data-status="status"
-    :data-open="isOpen"
+    :data-open="effectiveOpen"
   >
     <div class="tool-bubble__trigger" @click="toggleOpen">
       <span class="tool-bubble__chevron" aria-hidden="true">▸</span>
@@ -66,8 +83,8 @@ const statusIcon = computed(() => {
         {{ statusIcon }}
       </span>
     </div>
-    
-    <div class="tool-bubble__body" :style="{ maxHeight: isOpen ? 'none' : '0', opacity: isOpen ? '1' : '0' }">
+
+    <div class="tool-bubble__body" :style="{ maxHeight: effectiveOpen ? 'none' : '0', opacity: effectiveOpen ? '1' : '0' }">
       <div class="tool-bubble__content">
         <slot />
       </div>
