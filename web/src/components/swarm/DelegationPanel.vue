@@ -41,6 +41,24 @@ function childSessionIdFor(event: SwarmEvent): string | null {
   return null
 }
 
+// loadedSkillsFor extracts the `load_skills` argument from the
+// delegation event metadata. The backend currently does NOT
+// populate this field on the SwarmEvent stream (only the engine
+// reads it from the delegate tool arguments to inject the
+// matching skill prompts into the child manifest) — see
+// internal/plugin/events/events.go DelegationEventData and
+// projectDelegationEvent in internal/api/server.go. Surfacing the
+// loaded skills on the delegation card requires wiring that field
+// through. Until then this function returns [] and the chip row
+// stays absent; once the backend lands the field, the existing
+// chip row in this component lights up without further frontend
+// changes.
+function loadedSkillsFor(event: SwarmEvent): string[] {
+  const raw = event.metadata?.load_skills
+  if (!Array.isArray(raw)) return []
+  return raw.filter((s): s is string => typeof s === 'string' && s.length > 0)
+}
+
 function isClickable(event: SwarmEvent): boolean {
   return childSessionIdFor(event) !== null
 }
@@ -83,6 +101,21 @@ async function selectDelegationSession(event: SwarmEvent): Promise<void> {
           <span class="delegation-time">{{ formatTime(event.timestamp) }}</span>
         </div>
         <p class="delegation-summary">{{ delegationSummary(event) }}</p>
+        <div
+          v-if="loadedSkillsFor(event).length > 0"
+          class="delegation-skills-row"
+          data-testid="delegation-skills-row"
+        >
+          <span class="delegation-skills-label">Skills</span>
+          <span
+            v-for="skill in loadedSkillsFor(event)"
+            :key="skill"
+            class="delegation-skill-chip"
+            data-testid="delegation-skill-chip"
+          >
+            {{ skill }}
+          </span>
+        </div>
       </div>
 
       <div
@@ -211,6 +244,32 @@ async function selectDelegationSession(event: SwarmEvent): Promise<void> {
 .delegation-summary {
   font-size: 0.75rem;
   color: var(--text-secondary);
+}
+
+.delegation-skills-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+
+.delegation-skills-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.delegation-skill-chip {
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  padding: 0.1rem 0.4rem;
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
 }
 
 .harness-type-badge {

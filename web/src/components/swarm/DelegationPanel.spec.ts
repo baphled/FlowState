@@ -89,4 +89,76 @@ describe('DelegationPanel', () => {
 
     expect(loadSpy).not.toHaveBeenCalled()
   })
+
+  // load_skills surfacing (May 2026): when an agent delegates with
+  // `load_skills: ["memory-keeper", "knowledge-base"]`, the recipient
+  // gets those skills injected into its system prompt. The user wants
+  // to see WHICH skills were passed on the delegation card so they
+  // can audit the knowledge context the child received. The data is
+  // read from event.metadata.load_skills (string[]); it is OK for the
+  // backend to populate this lazily — the card renders gracefully when
+  // the field is absent.
+  describe('load_skills surfacing', () => {
+    it('renders each loaded skill as a chip when load_skills is non-empty', async () => {
+      const swarmStore = useSwarmStore()
+      swarmStore.events = [
+        makeDelegationEvent({
+          id: 'evt-with-skills',
+          metadata: {
+            source_agent: 'planner',
+            target_agent: 'knowledge-base-curator',
+            child_session_id: 'session-child-99',
+            load_skills: ['memory-keeper', 'knowledge-base', 'obsidian-structure'],
+          },
+        }),
+      ] as SwarmEvent[]
+
+      const wrapper = mount(DelegationPanel)
+      await flushPromises()
+
+      const skills = wrapper.findAll('[data-testid="delegation-skill-chip"]')
+      expect(skills).toHaveLength(3)
+      const texts = skills.map(s => s.text())
+      expect(texts).toEqual(['memory-keeper', 'knowledge-base', 'obsidian-structure'])
+    })
+
+    it('does not render a skills row when load_skills is missing', async () => {
+      const swarmStore = useSwarmStore()
+      swarmStore.events = [
+        makeDelegationEvent({
+          id: 'evt-no-skills',
+          metadata: {
+            source_agent: 'planner',
+            target_agent: 'researcher',
+            child_session_id: 'session-child-42',
+          },
+        }),
+      ] as SwarmEvent[]
+
+      const wrapper = mount(DelegationPanel)
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="delegation-skills-row"]').exists()).toBe(false)
+    })
+
+    it('does not render a skills row when load_skills is an empty array', async () => {
+      const swarmStore = useSwarmStore()
+      swarmStore.events = [
+        makeDelegationEvent({
+          id: 'evt-empty-skills',
+          metadata: {
+            source_agent: 'planner',
+            target_agent: 'researcher',
+            child_session_id: 'session-child-43',
+            load_skills: [],
+          },
+        }),
+      ] as SwarmEvent[]
+
+      const wrapper = mount(DelegationPanel)
+      await flushPromises()
+
+      expect(wrapper.find('[data-testid="delegation-skills-row"]').exists()).toBe(false)
+    })
+  })
 })

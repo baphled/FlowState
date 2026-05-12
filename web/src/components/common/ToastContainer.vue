@@ -56,34 +56,42 @@ function handleAction(toast: Toast): void {
 </template>
 
 <style scoped>
+/*
+ * Position: top-right (May 2026). Bottom-right was undersized and
+ * easy to miss; top-right matches the spatial hierarchy used by
+ * most modern toast surfaces and keeps the bottom of the chat
+ * surface free for streaming output. Stack grows top-down so the
+ * newest toast lands at the top of the column.
+ */
 .toast-container {
   position: fixed;
-  bottom: 1.5rem;
+  top: 1.5rem;
   right: 1.5rem;
   z-index: 1000;
-  max-width: 400px;
+  max-width: 460px;
   display: flex;
-  flex-direction: column-reverse;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.6rem;
   pointer-events: none;
 }
 
 .toast-list {
   display: flex;
-  flex-direction: column-reverse;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.6rem;
 }
 
 .toast-item {
   background: var(--bg-elevated, #2a2a2a);
   border: 1px solid var(--border, #3a3a3a);
-  border-radius: 8px;
-  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  min-width: 380px;
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 0.75rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  gap: 0.85rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
   pointer-events: auto;
 }
 
@@ -116,12 +124,13 @@ function handleAction(toast: Toast): void {
 
 .toast-title {
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 1rem;
   color: var(--text-primary, #e5e5e5);
 }
 
 .toast-message {
-  font-size: 0.85rem;
+  font-size: 0.95rem;
+  line-height: 1.4;
   color: var(--text-primary, #e5e5e5);
   word-wrap: break-word;
 }
@@ -175,11 +184,11 @@ function handleAction(toast: Toast): void {
 
 .toast-enter-from {
   opacity: 0;
-  transform: translateY(20px);
+  transform: translateY(-20px);
 }
 
 .toast-leave-to {
   opacity: 0;
-  transform: translateY(20px);
+  transform: translateY(-20px);
 }
 </style>
