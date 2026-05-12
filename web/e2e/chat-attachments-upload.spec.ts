@@ -26,6 +26,19 @@ interface MockState {
   attachmentsPosts: number
   /** Force the next POST /attachments call to fail with this status. */
   failNextUpload: { status: number; body: string } | null
+  /**
+   * PR4 task-15 — `providerForSession` lets the attachments stub
+   * simulate a non-Anthropic session: any PDF upload returns 415
+   * with the documented error-envelope body. Image uploads are
+   * always 200 regardless of provider. Empty / unset → Anthropic.
+   */
+  providerForSession?: 'anthropic' | 'ollama'
+  /**
+   * PR4 task-15 — deterministic id sequencing so the assertion on
+   * the messages-POST body's `attachmentIds` array can match
+   * exact ids across both image+PDF uploads.
+   */
+  nextAttachmentIds?: string[]
 }
 
 async function setupMocks(page: Page, state: MockState): Promise<void> {
@@ -104,17 +117,52 @@ async function setupMocks(page: Page, state: MockState): Promise<void> {
       await route.fulfill({ status: failure.status, contentType: 'text/plain', body: failure.body })
       return
     }
-    // Return one deterministic attachment per uploaded file. The frontend
-    // doesn't read sizeBytes / mediaType in the send-path so a single
-    // placeholder shape per file is enough for the round-trip pin.
+
+    // PR4 task-15 — non-Anthropic PDF rejection. Inspect the
+    // multipart body for the application/pdf token; when present
+    // AND the mock session is bound to a non-Anthropic provider,
+    // emit the documented structured-JSON error envelope at 415.
+    // Image uploads (and PDFs on Anthropic sessions) fall through
+    // to the 200 path below.
+    if (state.providerForSession === 'ollama') {
+      const rawBody = route.request().postData() ?? ''
+      if (rawBody.includes('application/pdf')) {
+        await route.fulfill({
+          status: 415,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: 'provider_does_not_support_pdf',
+            message: 'PDF attachments require an Anthropic model; switch model or remove the PDF',
+          }),
+        })
+        return
+      }
+    }
+
+    // PR4 task-16 — deterministic ids per file. nextAttachmentIds
+    // shifts off one id per part the upload body carries; falls
+    // back to the PR1-era single-id default when unspecified.
+    const rawBody = route.request().postData() ?? ''
+    const partCount = (rawBody.match(/Content-Disposition: form-data; name="files"/g) ?? []).length
+    let ids: string[]
+    if (state.nextAttachmentIds && state.nextAttachmentIds.length > 0) {
+      ids = state.nextAttachmentIds.splice(0, partCount > 0 ? partCount : 1)
+    } else {
+      ids = ['att-server-1']
+    }
+    const attachments = ids.map((id, idx) => {
+      // Crude kind/mediaType inference from the multipart body so
+      // the mock's response shape is realistic for mixed uploads.
+      const mediaType = rawBody.includes('application/pdf') && idx === ids.length - 1
+        ? 'application/pdf'
+        : 'image/png'
+      const kind = mediaType === 'application/pdf' ? 'document' : 'image'
+      return { id, kind, mediaType, sizeBytes: 7, originalFilename: id + (kind === 'document' ? '.pdf' : '.png') }
+    })
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        attachments: [
-          { id: 'att-server-1', mediaType: 'image/png', sizeBytes: 7, originalFilename: 'sample.png' },
-        ],
-      }),
+      body: JSON.stringify({ attachments }),
     })
   })
 
@@ -187,6 +235,144 @@ test.describe('Chat Attachments Backend (May 2026) — PR1 round-trip', () => {
 
     // Staging row clears on successful send.
     await expect(page.getByTestId('message-input-attachments')).toBeHidden()
+  })
+
+  // Chat Attachments Backend PR4 (May 2026) task-16 — PDF e2e.
+  // Asserts the user-facing affordance closes:
+  //   1. PDF picker → staged with file-icon chip (NOT a thumbnail).
+  //   2. Send threads the PDF attachment id onto POST /messages.
+  //   3. Non-Anthropic session: PDF upload returns 415, toast
+  //      surfaces, no user message persists.
+  //   4. Mixed image+PDF: both chips render, both ids land in the
+  //      messages-POST body in source order.
+  test('PDF round-trip: file-icon chip → Send threads PDF id onto POST /messages (PR4 task-16)', async ({ page }) => {
+    const state: MockState = {
+      messagesPosts: [],
+      attachmentsPosts: 0,
+      failNextUpload: null,
+      providerForSession: 'anthropic',
+      nextAttachmentIds: ['att-pdf-1'],
+    }
+    await setupMocks(page, state)
+    await page.goto('/chat')
+
+    const composer = page.getByTestId('message-input')
+    await expect(composer).toBeVisible()
+
+    const filePicker = page.locator('input[type="file"]').first()
+    await filePicker.setInputFiles({
+      name: 'whitepaper.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n%fake-pdf-body\n', 'utf-8'),
+    })
+
+    // Staged attachments row surfaces with the PDF chip.
+    await expect(page.getByTestId('message-input-attachments')).toBeVisible()
+    // File-icon badge (not an img thumbnail).
+    await expect(page.getByTestId('message-input-attachment-doc-icon')).toBeVisible()
+    // No <img> thumbnail rendered for the PDF.
+    await expect(page.locator('img.message-input-attachment-thumb')).toHaveCount(0)
+
+    await composer.fill('summarise this paper')
+    await composer.press('Enter')
+
+    await expect.poll(() => state.attachmentsPosts, { timeout: 5000 }).toBe(1)
+    await expect.poll(() => state.messagesPosts.length, { timeout: 5000 }).toBe(1)
+
+    const sent = state.messagesPosts[0]
+    expect(sent.content).toBe('summarise this paper')
+    expect(sent.attachmentIds).toEqual(['att-pdf-1'])
+
+    // Staging row clears on successful send.
+    await expect(page.getByTestId('message-input-attachments')).toBeHidden()
+  })
+
+  test('PDF upload on a non-Anthropic session returns 415 with toast; no message sent (PR4 task-16)', async ({ page }) => {
+    const state: MockState = {
+      messagesPosts: [],
+      attachmentsPosts: 0,
+      failNextUpload: null,
+      providerForSession: 'ollama',
+    }
+    await setupMocks(page, state)
+    await page.goto('/chat')
+
+    const composer = page.getByTestId('message-input')
+    await expect(composer).toBeVisible()
+
+    const filePicker = page.locator('input[type="file"]').first()
+    await filePicker.setInputFiles({
+      name: 'whitepaper.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n%fake-pdf-body\n', 'utf-8'),
+    })
+
+    await expect(page.getByTestId('message-input-attachments')).toBeVisible()
+
+    await composer.fill('summarise this')
+    await composer.press('Enter')
+
+    // The upload attempt fires once; the message POST MUST NOT.
+    await expect.poll(() => state.attachmentsPosts, { timeout: 5000 }).toBe(1)
+    // Give the message POST a chance to (incorrectly) fire — it must not.
+    await page.waitForTimeout(250)
+    expect(state.messagesPosts).toEqual([])
+
+    // Error toast visible (the production fetch throws on !res.ok and
+    // the composer's catch surfaces a toast — the surface contract
+    // mirrors the upload-failure path).
+    await expect(page.getByText(/attachment upload failed/i)).toBeVisible()
+
+    // Staged file stays so the user can swap models and retry without
+    // re-staging.
+    await expect(page.getByTestId('message-input-attachments')).toBeVisible()
+  })
+
+  test('mixed image + PDF on Anthropic: both chips render, both ids land in messages-POST body (PR4 task-16)', async ({ page }) => {
+    const state: MockState = {
+      messagesPosts: [],
+      attachmentsPosts: 0,
+      failNextUpload: null,
+      providerForSession: 'anthropic',
+      nextAttachmentIds: ['att-img-1', 'att-pdf-1'],
+    }
+    await setupMocks(page, state)
+    await page.goto('/chat')
+
+    const composer = page.getByTestId('message-input')
+    await expect(composer).toBeVisible()
+
+    const filePicker = page.locator('input[type="file"]').first()
+    await filePicker.setInputFiles([
+      {
+        name: 'cat.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a]),
+      },
+      {
+        name: 'paper.pdf',
+        mimeType: 'application/pdf',
+        buffer: Buffer.from('%PDF-1.4\n%fake-pdf-body\n', 'utf-8'),
+      },
+    ])
+
+    await expect(page.getByTestId('message-input-attachments')).toBeVisible()
+    // Two chips total.
+    await expect(page.locator('[data-testid^="message-input-attachment-att-"]')).toHaveCount(2)
+    // Image chip shows a thumbnail.
+    await expect(page.locator('img.message-input-attachment-thumb')).toHaveCount(1)
+    // PDF chip shows the file-icon badge.
+    await expect(page.getByTestId('message-input-attachment-doc-icon')).toBeVisible()
+
+    await composer.fill('compare these')
+    await composer.press('Enter')
+
+    await expect.poll(() => state.attachmentsPosts, { timeout: 5000 }).toBe(1)
+    await expect.poll(() => state.messagesPosts.length, { timeout: 5000 }).toBe(1)
+
+    const sent = state.messagesPosts[0]
+    expect(sent.content).toBe('compare these')
+    expect(sent.attachmentIds).toEqual(['att-img-1', 'att-pdf-1'])
   })
 
   test('upload failure surfaces a toast and preserves staged attachments', async ({ page }) => {

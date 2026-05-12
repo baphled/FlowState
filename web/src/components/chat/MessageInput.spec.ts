@@ -941,6 +941,143 @@ describe('MessageInput — attachments (B3)', () => {
     wrapper.unmount()
   })
 
+  // Chat Attachments Backend PR4 (May 2026) task-15 — PDF document
+  // attachment support. The composer's file-input accept attribute
+  // covers PDFs; the staged-attachment chip branches on kind so
+  // PDFs render a filename + size + file-icon badge instead of a
+  // thumbnail. Active-model awareness in the chip itself is NOT in
+  // scope here — server 415 rejection on send is the safety net.
+  it('file picker accept attribute covers both image/* and application/pdf (PR4 task-15)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const fileInput = wrapper.find('[data-testid="file-input"]')
+    expect(fileInput.exists()).toBe(true)
+    expect(fileInput.attributes('accept')).toBe('image/*,application/pdf')
+    wrapper.unmount()
+  })
+
+  it('stages a PDF as a document-kind pending attachment with no thumbnail (PR4 task-15)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const file = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'doc.pdf', {
+      type: 'application/pdf',
+    })
+    const dataTransfer = {
+      items: [{ kind: 'file' as const, type: 'application/pdf', getAsFile: () => file }],
+    }
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await inputWrapper.trigger('paste', { clipboardData: dataTransfer })
+    await flushPromises()
+
+    // PDF chip renders.
+    expect(wrapper.find('[data-testid="message-input-attachments"]').exists()).toBe(true)
+    // File-icon badge present.
+    expect(wrapper.find('[data-testid="message-input-attachment-doc-icon"]').exists()).toBe(true)
+    // No <img> thumbnail.
+    expect(wrapper.find('img.message-input-attachment-thumb').exists()).toBe(false)
+    // Filename rendered.
+    const chip = wrapper.find('[data-testid^="message-input-attachment-att-"]')
+    expect(chip.text()).toContain('doc.pdf')
+    wrapper.unmount()
+  })
+
+  it('PDF chip renders a human-readable size next to the filename (PR4 task-15)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    // Approx 2.3 MB of bytes — exact size assertion is the size
+    // helper's job; the chip just has to render the formatted string.
+    const bytes = new Uint8Array(2_400_000)
+    bytes[0] = 0x25 // %
+    bytes[1] = 0x50 // P
+    bytes[2] = 0x44 // D
+    bytes[3] = 0x46 // F
+    const file = new File([bytes], 'paper.pdf', { type: 'application/pdf' })
+    const dataTransfer = {
+      items: [{ kind: 'file' as const, type: 'application/pdf', getAsFile: () => file }],
+    }
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await inputWrapper.trigger('paste', { clipboardData: dataTransfer })
+    await flushPromises()
+
+    const sizeNode = wrapper.find('[data-testid="message-input-attachment-size"]')
+    expect(sizeNode.exists()).toBe(true)
+    // Reports MB shorthand for files ≥ 1 MB.
+    expect(sizeNode.text()).toMatch(/MB$/)
+    wrapper.unmount()
+  })
+
+  it('mixed image + PDF: both chips render with their kind-appropriate visuals (PR4 task-15)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const png = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'cat.png', {
+      type: 'image/png',
+    })
+    const pdf = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'doc.pdf', {
+      type: 'application/pdf',
+    })
+    const dataTransfer = {
+      items: [
+        { kind: 'file' as const, type: 'image/png', getAsFile: () => png },
+        { kind: 'file' as const, type: 'application/pdf', getAsFile: () => pdf },
+      ],
+    }
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await inputWrapper.trigger('paste', { clipboardData: dataTransfer })
+    await flushPromises()
+
+    const chips = wrapper.findAll('[data-testid^="message-input-attachment-att-"]')
+    expect(chips.length).toBe(2)
+    // PNG chip shows a thumbnail.
+    expect(wrapper.find('img.message-input-attachment-thumb').exists()).toBe(true)
+    // PDF chip shows the file-icon badge.
+    expect(wrapper.find('[data-testid="message-input-attachment-doc-icon"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('non-image non-PDF files are silently skipped on stage (PR4 task-15)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const docx = new File(['fake-docx'], 'note.docx', {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    })
+    const dataTransfer = {
+      items: [
+        {
+          kind: 'file' as const,
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          getAsFile: () => docx,
+        },
+      ],
+    }
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await inputWrapper.trigger('paste', { clipboardData: dataTransfer })
+    await flushPromises()
+
+    // Nothing staged — chip strip remains hidden.
+    expect(wrapper.find('[data-testid="message-input-attachments"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   // UI Parity bug-fix bundle (May 2026). P0-2: cleanup on component unmount.
   // Attachments staged but not sent (user closes tab / nav away) must also
   // revoke their blob URLs so memory does not leak across sessions.
