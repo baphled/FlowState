@@ -300,6 +300,74 @@ var _ = Describe("OpenAI Compat", func() {
 				Expect(decoded).To(Equal(pngBytes))
 			})
 		})
+
+		// Plan §6 task-15 — defence-in-depth document skip. PDFs that
+		// reach the openaicompat translator (covers openai, copilot,
+		// openzen, zai, ollamacloud — anything wrapping openaicompat)
+		// are dropped with a structured slog.Warn. The upload-time
+		// gate is the primary defence; this closes R13's
+		// model-switch-mid-staging window.
+		Context("defence-in-depth document-skip (PR4 task-15, AC-15-LogShape-Pinned)", func() {
+			pdfBytes := []byte("%PDF-1.4\n%fake-pdf-body\n")
+			pngBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+
+			It("drops a Kind=document attachment from the request body", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "discuss this", Attachments: []provider.Attachment{
+						{ID: "doc-1", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				Expect(result).To(HaveLen(1))
+				// No documents got into the parts array — the message
+				// falls back to the legacy string-shaped user content.
+				Expect(result[0].OfUser).NotTo(BeNil())
+				Expect(result[0].OfUser.Content.OfString.Value).To(Equal("discuss this"))
+				Expect(result[0].OfUser.Content.OfArrayOfContentParts).To(BeNil())
+			})
+
+			It("mixed image+PDF: ships image, drops PDF, request still well-formed", func() {
+				msgs := []provider.Message{
+					{Role: "user", Content: "look", Attachments: []provider.Attachment{
+						{ID: "img-1", Kind: "image", MediaType: "image/png", Data: pngBytes},
+						{ID: "doc-1", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+					}},
+				}
+				result := openaicompat.BuildMessages(msgs)
+				parts := result[0].OfUser.Content.OfArrayOfContentParts
+				// Image + text only — PDF is silently dropped.
+				Expect(parts).To(HaveLen(2))
+				Expect(parts[0].OfImageURL).NotTo(BeNil())
+				Expect(parts[1].OfText.Text).To(Equal("look"))
+			})
+
+			It("emits slog.Warn with the AC-15-LogShape-Pinned 4-field schema", func() {
+				// Capture slog output to a buffer-backed handler so we
+				// can assert the exact message + keys.
+				var buf bytes.Buffer
+				handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+				prev := slog.Default()
+				slog.SetDefault(slog.New(handler))
+				defer slog.SetDefault(prev)
+
+				msgs := []provider.Message{
+					{Role: "user", Content: "x", Attachments: []provider.Attachment{
+						{ID: "doc-xyz", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+					}},
+				}
+				_ = openaicompat.BuildMessages(msgs)
+
+				var entry map[string]any
+				Expect(json.Unmarshal(buf.Bytes(), &entry)).To(Succeed())
+				Expect(entry).To(HaveKeyWithValue("msg",
+					"attachment_dropped: provider does not support documents"))
+				Expect(entry).To(HaveKeyWithValue("provider", "openaicompat"))
+				Expect(entry).To(HaveKeyWithValue("attachment_id", "doc-xyz"))
+				Expect(entry).To(HaveKeyWithValue("kind", "document"))
+				Expect(entry).To(HaveKeyWithValue("media_type", "application/pdf"))
+				Expect(entry).To(HaveKeyWithValue("level", "WARN"))
+			})
+		})
 	})
 
 	Describe("GateAttachmentRequestSize", func() {

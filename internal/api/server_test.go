@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net"
@@ -5705,6 +5706,198 @@ var _ = Describe("POST /api/v1/sessions/{id}/attachments", func() {
 		rec := httptest.NewRecorder()
 		srv.Handler().ServeHTTP(rec, req)
 		Expect(rec.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	// Plan §6 task-15 + §7a — Cap Precedence Order. Six rejection paths
+	// evaluate deterministically; where two share an HTTP status code
+	// (rows 1 and 6 are both 415) the `error` field disambiguates.
+	Context("cap-precedence ladder (plan §7a)", func() {
+		pdfBytesLocal := []byte("%PDF-1.4\n%fake-pdf-body\n")
+
+		// extractErr unmarshals the structured error envelope and
+		// returns (status, error-code) for ladder-precedence asserts.
+		extractErr := func(body []byte) (string, string) {
+			var env struct {
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			Expect(json.Unmarshal(body, &env)).To(Succeed())
+			return env.Error, env.Message
+		}
+
+		It("step 1 fires first: .txt upload returns 415/media_type_not_allowed (precedence over step 6)", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "ollama", "llama3.2")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "data.txt", contentType: "text/plain", data: []byte("a,b,c\n1,2,3\n")},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusUnsupportedMediaType))
+			code, _ := extractErr(rec.Body.Bytes())
+			Expect(code).To(Equal("media_type_not_allowed"))
+		})
+
+		It("step 2 fires before step 6: 12 MB PDF on Ollama returns 413/file_too_large", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "ollama", "llama3.2")
+			Expect(err).NotTo(HaveOccurred())
+
+			big := make([]byte, session.MaxPDFFileSize+1)
+			copy(big, []byte("%PDF-1.4\n"))
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "huge.pdf", contentType: "application/pdf", data: big},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusRequestEntityTooLarge))
+			code, _ := extractErr(rec.Body.Bytes())
+			Expect(code).To(Equal("file_too_large"))
+		})
+
+		It("step 3 fires: >5 PDFs on an Anthropic session returns 400/too_many_attachments", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			parts := make([]multipartPart, 6)
+			for i := range parts {
+				// Make each unique so dedup doesn't collapse them.
+				body := append([]byte("%PDF-1.4\n%body-"), byte('a'+i))
+				parts[i] = multipartPart{
+					filename:    fmt.Sprintf("doc-%d.pdf", i),
+					contentType: "application/pdf",
+					data:        body,
+				}
+			}
+			req := uploadRequest(sess.ID, parts)
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusBadRequest))
+			code, _ := extractErr(rec.Body.Bytes())
+			Expect(code).To(Equal("too_many_attachments"))
+		})
+
+		It("step 5 fires: cumulative >25 MB returns 413/request_too_large", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			// 3 × 10 MiB PDFs = 30 MiB total, over the 25 MB ceiling.
+			// Each PDF is exactly at MaxPDFFileSize, so step 2 passes
+			// (size cap is "exceeds limit" not "equals limit").
+			big1 := make([]byte, session.MaxPDFFileSize)
+			copy(big1, []byte("%PDF-1.4\n%a"))
+			big2 := make([]byte, session.MaxPDFFileSize)
+			copy(big2, []byte("%PDF-1.4\n%b"))
+			big3 := make([]byte, session.MaxPDFFileSize)
+			copy(big3, []byte("%PDF-1.4\n%c"))
+
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "a.pdf", contentType: "application/pdf", data: big1},
+				{filename: "b.pdf", contentType: "application/pdf", data: big2},
+				{filename: "c.pdf", contentType: "application/pdf", data: big3},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusRequestEntityTooLarge))
+			code, _ := extractErr(rec.Body.Bytes())
+			Expect(code).To(Equal("request_too_large"))
+		})
+
+		It("step 6 fires last: 2 MB PDF on Ollama returns 415/provider_does_not_support_pdf", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "ollama", "llama3.2")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "doc.pdf", contentType: "application/pdf", data: pdfBytesLocal},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusUnsupportedMediaType))
+			code, msg := extractErr(rec.Body.Bytes())
+			Expect(code).To(Equal("provider_does_not_support_pdf"))
+			Expect(msg).To(ContainSubstring("Anthropic"))
+		})
+
+		It("positive control: PDF on an Anthropic session returns 200", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "doc.pdf", contentType: "application/pdf", data: pdfBytesLocal},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusOK))
+			var out struct {
+				Attachments []struct {
+					Kind      string `json:"kind"`
+					MediaType string `json:"mediaType"`
+				} `json:"attachments"`
+			}
+			Expect(json.Unmarshal(rec.Body.Bytes(), &out)).To(Succeed())
+			Expect(out.Attachments).To(HaveLen(1))
+			Expect(out.Attachments[0].Kind).To(Equal("document"))
+			Expect(out.Attachments[0].MediaType).To(Equal("application/pdf"))
+		})
+
+		It("image upload on Ollama is unaffected by the PDF gate (returns 200)", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "ollama", "llama3.2")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "cat.png", contentType: "image/png", data: pngBytes},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusOK))
+		})
+
+		It("mixed image+PDF on Anthropic returns 200 with both kinds in source order", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "cat.png", contentType: "image/png", data: pngBytes},
+				{filename: "doc.pdf", contentType: "application/pdf", data: pdfBytesLocal},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusOK))
+			var out struct {
+				Attachments []struct {
+					Kind string `json:"kind"`
+				} `json:"attachments"`
+			}
+			Expect(json.Unmarshal(rec.Body.Bytes(), &out)).To(Succeed())
+			Expect(out.Attachments).To(HaveLen(2))
+			Expect(out.Attachments[0].Kind).To(Equal("image"))
+			Expect(out.Attachments[1].Kind).To(Equal("document"))
+		})
+
+		It("structured-JSON error envelope shape: {error, message} for every rejection path", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "ollama", "llama3.2")
+			Expect(err).NotTo(HaveOccurred())
+
+			req := uploadRequest(sess.ID, []multipartPart{
+				{filename: "doc.pdf", contentType: "application/pdf", data: pdfBytesLocal},
+			})
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Header().Get("Content-Type")).To(ContainSubstring("application/json"))
+			var env map[string]any
+			Expect(json.Unmarshal(rec.Body.Bytes(), &env)).To(Succeed())
+			Expect(env).To(HaveKey("error"))
+			Expect(env).To(HaveKey("message"))
+		})
 	})
 })
 

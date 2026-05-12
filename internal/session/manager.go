@@ -1142,8 +1142,12 @@ func (m *Manager) SendMessageWithAttachments(
 	}
 	atts := make([]provider.Attachment, 0, len(materialised))
 	for _, mat := range materialised {
+		// Plan §6 task-14: thread Kind through to provider.Attachment
+		// so the per-provider translator can discriminate image-vs-
+		// document blocks at request-build time.
 		atts = append(atts, provider.Attachment{
 			ID:               mat.Record.ID,
+			Kind:             mat.Record.Kind,
 			MediaType:        mat.Record.MediaType,
 			OriginalFilename: mat.Record.OriginalFilename,
 			SizeBytes:        mat.Record.SizeBytes,

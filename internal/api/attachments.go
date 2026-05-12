@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 )
 
@@ -40,6 +41,7 @@ const maxMultipartFormMemoryBytes = 32 * 1024 * 1024
 // attachment. Stable JSON tags so the frontend can map by field name.
 type attachmentResponse struct {
 	ID               string `json:"id"`
+	Kind             string `json:"kind,omitempty"`
 	MediaType        string `json:"mediaType"`
 	SizeBytes        int64  `json:"sizeBytes"`
 	OriginalFilename string `json:"originalFilename,omitempty"`
@@ -48,6 +50,49 @@ type attachmentResponse struct {
 // attachmentsUploadResponse is the wire shape for the upload endpoint.
 type attachmentsUploadResponse struct {
 	Attachments []attachmentResponse `json:"attachments"`
+}
+
+// attachmentErrorBody is the structured JSON error envelope for the
+// upload endpoint per plan §7a "Cap Precedence Order". Every
+// rejection path emits {"error": "<code>", "message": "<human>"}
+// so the frontend can map on `error` for UX branching without parsing
+// human text.
+type attachmentErrorBody struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+// Cap-precedence error codes per plan §7a. Stable wire-string values
+// — never re-spell.
+const (
+	errCodeMediaTypeNotAllowed     = "media_type_not_allowed"
+	errCodeFileTooLarge            = "file_too_large"
+	errCodeTooManyAttachments      = "too_many_attachments"
+	errCodeSessionBudgetExhausted  = "session_budget_exhausted"
+	errCodeRequestTooLarge         = "request_too_large"
+	errCodeProviderDoesNotSupport  = "provider_does_not_support_pdf"
+)
+
+// writeAttachmentError emits the structured JSON error envelope.
+func writeAttachmentError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(attachmentErrorBody{
+		Error:   code,
+		Message: message,
+	})
+}
+
+// stagedFile is the per-file state collected during the pre-Put scan.
+// The handler reads bytes + sniffs media type for every file up front
+// so the cap-precedence ladder evaluates against fully-typed data
+// before any side effect.
+type stagedFile struct {
+	filename  string
+	data      []byte
+	mediaType string
+	kind      string
+	ext       string
 }
 
 // handleUploadAttachments accepts a multipart/form-data POST under the
@@ -90,9 +135,15 @@ func (s *Server) handleUploadAttachments(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Verify the session exists. Mirrors handleSessionMessage's "session
-	// not found" 404 so the surface shape stays consistent.
-	if _, err := s.sessionManager.SnapshotSession(sessionID); err != nil {
+	// Verify the session exists AND snapshot the active model id so
+	// step 6 of the cap-precedence ladder can compare against
+	// "anthropic". SnapshotSession is preferred over GetSession per
+	// plan §6 task-15: the value-type snapshot is lock-safe past the
+	// manager's RLock boundary; passing the live *Session pointer
+	// would leak a reference out of the manager's mutex (memory
+	// project_flowstate_engine_boundary spirit).
+	snap, err := s.sessionManager.SnapshotSession(sessionID)
+	if err != nil {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -117,73 +168,173 @@ func (s *Server) handleUploadAttachments(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "no files in request", http.StatusBadRequest)
 		return
 	}
-	if len(files) > session.MaxAttachmentsPerRequest {
-		http.Error(
-			w,
-			fmt.Sprintf("too many files (max %d per request)",
-				session.MaxAttachmentsPerRequest),
-			http.StatusBadRequest,
-		)
+
+	store := s.sessionManager.AttachmentStore()
+
+	// Cap-precedence ladder per plan §7a. Stage 1+2 are per-file
+	// (MIME sniff + per-file size cap); stages 3-6 are aggregate
+	// (count caps, per-session budget, per-request total,
+	// provider-compatibility). The handler shorts on the FIRST step
+	// that fires in precedence order, so e.g. a `.txt` upload on an
+	// Ollama session returns 415/media_type_not_allowed (step 1)
+	// before step 6 sees the provider mismatch.
+	//
+	// We read every file fully before any Put so we never publish a
+	// partial multipart on a later-stage rejection.
+
+	staged := make([]stagedFile, 0, len(files))
+	for _, fh := range files {
+		f, err := fh.Open()
+		if err != nil {
+			writeAttachmentError(w, http.StatusBadRequest,
+				"invalid_multipart", "could not read uploaded file")
+			return
+		}
+		// Bound each file read at the larger of the two per-file caps
+		// (PDFs) +1 byte. Any file that exceeds even the PDF ceiling
+		// is rejected by stage 2 below; this just prevents a malicious
+		// multipart from streaming forever past the lie in its
+		// Content-Length header.
+		readCap := session.MaxPDFFileSize
+		if readCap < session.MaxAttachmentFileBytes {
+			readCap = session.MaxAttachmentFileBytes
+		}
+		data, err := io.ReadAll(io.LimitReader(f, readCap+1))
+		_ = f.Close()
+		if err != nil {
+			writeAttachmentError(w, http.StatusBadRequest,
+				"invalid_multipart", "could not read uploaded file")
+			return
+		}
+
+		// Stage 1 — MIME-type allow-list (sniffed bytes). 415 with
+		// error="media_type_not_allowed".
+		kind, mediaType, ext, sniffErr := session.DetectMediaType(data)
+		if sniffErr != nil {
+			writeAttachmentError(w, http.StatusUnsupportedMediaType,
+				errCodeMediaTypeNotAllowed,
+				fmt.Sprintf("file %q is not an allowed media type", fh.Filename))
+			return
+		}
+
+		// Stage 2 — per-file size cap (kind-aware). 413 with
+		// error="file_too_large".
+		var perFileCap int64
+		switch kind {
+		case session.AttachmentKindDocument:
+			perFileCap = session.MaxPDFFileSize
+		default:
+			perFileCap = session.MaxAttachmentFileBytes
+		}
+		if int64(len(data)) > perFileCap {
+			writeAttachmentError(w, http.StatusRequestEntityTooLarge,
+				errCodeFileTooLarge,
+				fmt.Sprintf("file %q exceeds per-file size limit", fh.Filename))
+			return
+		}
+
+		staged = append(staged, stagedFile{
+			filename:  fh.Filename,
+			data:      data,
+			mediaType: mediaType,
+			kind:      kind,
+			ext:       ext,
+		})
+	}
+
+	// Stage 3 — per-message file count. Images: 10 per multipart;
+	// documents: MaxPDFsPerMessage (5). 400 with
+	// error="too_many_attachments".
+	imageCount, pdfCount := 0, 0
+	for _, sf := range staged {
+		switch sf.kind {
+		case session.AttachmentKindDocument:
+			pdfCount++
+		default:
+			imageCount++
+		}
+	}
+	if imageCount > session.MaxAttachmentsPerRequest {
+		writeAttachmentError(w, http.StatusBadRequest,
+			errCodeTooManyAttachments,
+			fmt.Sprintf("too many image attachments (max %d per request)",
+				session.MaxAttachmentsPerRequest))
+		return
+	}
+	if pdfCount > session.MaxPDFsPerMessage {
+		writeAttachmentError(w, http.StatusBadRequest,
+			errCodeTooManyAttachments,
+			fmt.Sprintf("too many PDF attachments (max %d per message)",
+				session.MaxPDFsPerMessage))
 		return
 	}
 
-	store := s.sessionManager.AttachmentStore()
-	results := make([]attachmentResponse, 0, len(files))
+	// Stage 4 — per-session per-kind budget. 413 with
+	// error="session_budget_exhausted". Document budget is checked
+	// against the staged PDF sum (the Put-side sweep is the secondary
+	// defence; this is the deterministic gate the frontend can map).
+	stagedImageBytes, stagedDocumentBytes := int64(0), int64(0)
+	for _, sf := range staged {
+		switch sf.kind {
+		case session.AttachmentKindDocument:
+			stagedDocumentBytes += int64(len(sf.data))
+		default:
+			stagedImageBytes += int64(len(sf.data))
+		}
+	}
+	if stagedImageBytes > 0 &&
+		store.ImageBytesUsed(sessionID)+stagedImageBytes > session.MaxAttachmentSessionBytes {
+		writeAttachmentError(w, http.StatusRequestEntityTooLarge,
+			errCodeSessionBudgetExhausted,
+			"image session budget exhausted")
+		return
+	}
+	if stagedDocumentBytes > 0 &&
+		store.DocumentBytesUsed(sessionID)+stagedDocumentBytes > session.MaxDocumentBudgetPerSession {
+		writeAttachmentError(w, http.StatusRequestEntityTooLarge,
+			errCodeSessionBudgetExhausted,
+			"document session budget exhausted")
+		return
+	}
 
-	for _, fh := range files {
-		if fh.Size > session.MaxAttachmentFileBytes {
-			http.Error(
-				w,
-				fmt.Sprintf("file %q exceeds per-file size limit",
-					fh.Filename),
-				http.StatusRequestEntityTooLarge,
-			)
-			return
-		}
+	// Stage 5 — per-request total. 413 with error="request_too_large".
+	// 25 MB mirrors the engine-side TotalAttachmentBytes ceiling so the
+	// upload-time gate fires before the wire-time gate.
+	totalStaged := stagedImageBytes + stagedDocumentBytes
+	if totalStaged > provider.MaxAttachmentRequestBytes() {
+		writeAttachmentError(w, http.StatusRequestEntityTooLarge,
+			errCodeRequestTooLarge,
+			fmt.Sprintf("request body exceeds %d bytes",
+				provider.MaxAttachmentRequestBytes()))
+		return
+	}
 
-		f, err := fh.Open()
-		if err != nil {
-			http.Error(w, "could not read uploaded file", http.StatusBadRequest)
-			return
-		}
-		// Cap the per-file read at the per-file budget — defends against
-		// a malformed multipart header that lies about Size.
-		data, err := io.ReadAll(io.LimitReader(f, session.MaxAttachmentFileBytes+1))
-		_ = f.Close()
-		if err != nil {
-			http.Error(w, "could not read uploaded file", http.StatusBadRequest)
-			return
-		}
-		if int64(len(data)) > session.MaxAttachmentFileBytes {
-			http.Error(
-				w,
-				fmt.Sprintf("file %q exceeds per-file size limit",
-					fh.Filename),
-				http.StatusRequestEntityTooLarge,
-			)
-			return
-		}
+	// Stage 6 — provider compatibility (Anthropic gate). PDFs are
+	// only natively supported by Anthropic Chat in PR4; sessions
+	// bound to a non-Anthropic provider reject PDF uploads at the
+	// gate with 415 / error="provider_does_not_support_pdf".
+	// Image uploads remain unaffected — only PDFs gate on provider.
+	if pdfCount > 0 && snap.CurrentProviderID != "anthropic" {
+		writeAttachmentError(w, http.StatusUnsupportedMediaType,
+			errCodeProviderDoesNotSupport,
+			"PDF attachments require an Anthropic model; switch model or remove the PDF")
+		return
+	}
 
-		// Content-sniff to defeat renamed-extension attacks. The wire
-		// Content-Type header is advisory only; the bytes are the
-		// authoritative source.
-		mediaType, ok := session.DetectImageMediaType(data)
-		if !ok {
-			http.Error(
-				w,
-				fmt.Sprintf("file %q is not an allowed image type", fh.Filename),
-				http.StatusUnsupportedMediaType,
-			)
-			return
-		}
-
-		res, err := store.Put(sessionID, mediaType, data, fh.Filename)
-		if err != nil {
-			writeAttachmentStoreError(w, err)
+	// All gates passed — persist via the store.
+	results := make([]attachmentResponse, 0, len(staged))
+	for _, sf := range staged {
+		res, putErr := store.Put(sessionID, sf.mediaType, sf.data, sf.filename)
+		if putErr != nil {
+			// Storage-layer rejection (race condition between gate
+			// and Put — e.g. concurrent Put pushed the session over
+			// budget). Map back to a structured error.
+			writeAttachmentStoreErrorStructured(w, putErr)
 			return
 		}
 		results = append(results, attachmentResponse{
 			ID:               res.Record.ID,
+			Kind:             res.Record.Kind,
 			MediaType:        res.Record.MediaType,
 			SizeBytes:        res.Record.SizeBytes,
 			OriginalFilename: res.Record.OriginalFilename,
@@ -192,6 +343,26 @@ func (s *Server) handleUploadAttachments(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(attachmentsUploadResponse{Attachments: results})
+}
+
+// writeAttachmentStoreErrorStructured maps storage-layer errors to the
+// structured JSON envelope. Used post-gate to cover races where Put
+// rejects an upload that passed the upfront cap-precedence ladder.
+func writeAttachmentStoreErrorStructured(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, session.ErrAttachmentTooLarge):
+		writeAttachmentError(w, http.StatusRequestEntityTooLarge,
+			errCodeFileTooLarge, err.Error())
+	case errors.Is(err, session.ErrAttachmentUnsupportedType):
+		writeAttachmentError(w, http.StatusUnsupportedMediaType,
+			errCodeMediaTypeNotAllowed, err.Error())
+	case errors.Is(err, session.ErrAttachmentSessionCap):
+		writeAttachmentError(w, http.StatusRequestEntityTooLarge,
+			errCodeSessionBudgetExhausted, err.Error())
+	default:
+		writeAttachmentError(w, http.StatusInternalServerError,
+			"internal_error", "attachment storage error")
+	}
 }
 
 // handleGetAttachment streams the raw bytes for a single attachment
