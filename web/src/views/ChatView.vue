@@ -18,6 +18,7 @@ import MessageInput from '@/components/chat/MessageInput.vue'
 import QueuedPromptStrip from '@/components/chat/QueuedPromptStrip.vue'
 import TodoListPanel from '@/components/chat/TodoListPanel.vue'
 import ChildSessionsPanel from '@/components/chat/ChildSessionsPanel.vue'
+import EmptyChatState from '@/components/chat/EmptyChatState.vue'
 import AgentPicker from '@/components/agent-picker/AgentPicker.vue'
 import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
@@ -504,9 +505,14 @@ onBeforeUnmount(() => {
 
       <div class="message-pane-wrap">
         <section ref="messagePaneRef" class="message-pane" data-testid="chat-message-pane" @scroll="onMessagePaneScroll">
-          <div v-if="groupedMessages.length === 0" class="empty-state" data-testid="chat-empty-state">
-            Start a conversation with the selected agent.
-          </div>
+          <!--
+            UI Parity I10 (May 2026) — empty-state surfaces an agent
+            card + example-prompt chips + /help affordance. The
+            `data-testid="chat-empty-state"` pin lives on the
+            component root so the 5 e2e specs that wait on its
+            visibility continue to work unchanged.
+          -->
+          <EmptyChatState v-if="groupedMessages.length === 0" />
           <div v-else class="message-list" data-testid="message-list">
             <template v-for="(entry, index) in groupedMessages" :key="entry.type === 'message' ? entry.message.id : `context-group-${index}`">
               <MessageBubble
@@ -847,13 +853,11 @@ onBeforeUnmount(() => {
   gap: 0.75rem;
 }
 
-.empty-state {
-  height: 100%;
-  display: grid;
-  place-items: center;
-  color: var(--text-muted);
-  font-size: 0.95rem;
-}
+/*
+ * UI Parity I10 (May 2026) — the legacy `.empty-state` rule moved into
+ * `EmptyChatState.vue` so the component owns its own typography. The
+ * `data-testid="chat-empty-state"` pin moved with it.
+ */
 
 .input-selector-bar {
   display: flex;

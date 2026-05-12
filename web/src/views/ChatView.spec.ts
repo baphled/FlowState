@@ -1581,3 +1581,141 @@ describe('ChatView collapse/expand all toolbar (PR6 I4 extension)', () => {
     expect(chatStore.toolCardOpenOverride).toBe('collapsed')
   })
 })
+
+// UI Parity I10 (May 2026) — empty-state component.
+//
+// Pre-fix the empty-state at `ChatView.vue:507-509` was a single muted
+// line. The replacement is an `EmptyChatState` component that surfaces:
+//   - the active agent's name, model, and provider as an agent card
+//   - 3-4 clickable example-prompt chips that pre-fill the composer
+//   - a `/help` button that pre-fills `/help` into the composer
+//
+// The `data-testid="chat-empty-state"` pin is preserved (5 e2e specs
+// in `web/e2e/` use it as a visibility gate — they assert visibility,
+// not text content, so the inner content is free to change).
+describe('ChatView empty-state component (I10)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('preserves the chat-empty-state testid (pinned by 5 e2e specs as visibility gate)', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="chat-empty-state"]').exists()).toBe(true)
+  })
+
+  it('renders an agent card with the active agent name, model, and provider', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.agentId = 'planner'
+    chatStore.currentModelId = 'sonnet-4-5'
+    chatStore.currentProviderId = 'anthropic'
+    chatStore.availableAgentDetails = [
+      { id: 'planner', name: 'Planner', description: 'Plans things', model: 'sonnet-4-5', provider: 'anthropic' },
+    ]
+    await nextTick()
+
+    const card = wrapper.find('[data-testid="empty-state-agent-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('Planner')
+    expect(card.text()).toContain('sonnet-4-5')
+    expect(card.text()).toContain('anthropic')
+  })
+
+  it('renders 3-4 example-prompt chips', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chips = wrapper.findAll('[data-testid^="empty-state-example-"]')
+    expect(chips.length).toBeGreaterThanOrEqual(3)
+    expect(chips.length).toBeLessThanOrEqual(4)
+  })
+
+  it('writes the chip prompt into chatStore.composerText on chip click', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+    const chatStore = useChatStore()
+    chatStore.composerText = ''
+
+    const firstChip = wrapper.find('[data-testid="empty-state-example-0"]')
+    expect(firstChip.exists()).toBe(true)
+    const chipText = firstChip.text().trim()
+
+    await firstChip.trigger('click')
+    await nextTick()
+
+    expect(chatStore.composerText).toBe(chipText)
+  })
+
+  it('renders a /help button that writes "/help" into chatStore.composerText', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+    const chatStore = useChatStore()
+    chatStore.composerText = ''
+
+    const helpBtn = wrapper.find('[data-testid="empty-state-help-button"]')
+    expect(helpBtn.exists()).toBe(true)
+
+    await helpBtn.trigger('click')
+    await nextTick()
+
+    expect(chatStore.composerText).toBe('/help')
+  })
+
+  it('renders nothing inside the empty-state when groupedMessages is non-empty (existing contract — list takes over)', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+    const chatStore = useChatStore()
+    chatStore.messages = [
+      // Use a minimal shape compatible with chatViewHelpers.groupContextTools.
+      { id: 'm1', role: 'user', content: 'hello', createdAt: '2026-05-12T10:00:00Z' } as never,
+    ]
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="chat-empty-state"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="empty-state-agent-card"]').exists()).toBe(false)
+  })
+})
