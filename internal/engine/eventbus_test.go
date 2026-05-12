@@ -1013,6 +1013,122 @@ var _ = Describe("EventBus Integration", func() {
 			defer mu.Unlock()
 			Expect(received).To(Equal(0), "expected no heartbeats when interval is zero")
 		})
+
+		// UI Parity PR5 — Live token counter (May 2026).
+		//
+		// The engine's heartbeat ticker MUST thread the in-flight turn's
+		// cumulative output_tokens onto the bus payload so the chat UI
+		// can render "1,247 tokens · 42 t/s" next to the working-on
+		// label and compute tokens-per-second from the delta between
+		// consecutive ticks at the documented 15s cadence.
+		//
+		// Pre-fix the ticker published a zero-value TokenCount on every
+		// tick (the field did not exist) and the UI's streaming chrome
+		// surfaced no progress dimension — a 5-token vs 5,000-token turn
+		// looked identical to the user.
+		Context("with TokenCount surfaced (UI Parity PR5)", func() {
+			It("publishStreamingHeartbeat reads the in-flight per-session output-token count", func() {
+				sharedBus := eventbus.NewEventBus()
+				var mu sync.Mutex
+				var received []events.StreamingHeartbeatEventData
+				sharedBus.Subscribe(events.EventStreamingHeartbeat, func(event any) {
+					if hb, ok := event.(*events.StreamingHeartbeatEvent); ok {
+						mu.Lock()
+						received = append(received, hb.Data)
+						mu.Unlock()
+					}
+				})
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					EventBus:     sharedBus,
+				})
+
+				// Record the latest UsageDelta cumulative output_tokens
+				// for the session — the production hook fires from
+				// processStreamChunks every time chunk.Usage.OutputTokens
+				// surfaces.
+				eng.RecordSessionOutputTokensForTest("sess-pr5-1", 1247)
+
+				eng.PublishStreamingHeartbeatForTest("sess-pr5-1", "agent-pr5-1", "generating")
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(received).To(HaveLen(1))
+				Expect(received[0].SessionID).To(Equal("sess-pr5-1"))
+				Expect(received[0].Phase).To(Equal("generating"))
+				Expect(received[0].TokenCount).To(Equal(int64(1247)),
+					"heartbeat must carry the per-session cumulative output_tokens so the chat UI's streaming chrome surfaces a live counter")
+			})
+
+			It("publishStreamingHeartbeat reports zero TokenCount for sessions with no recorded UsageDelta", func() {
+				// First heartbeat of a turn typically fires before the
+				// provider's first message_delta — no cumulative output
+				// tokens to thread. The wire field stays zero and the
+				// chat UI suppresses the counter until the value
+				// transitions positive.
+				sharedBus := eventbus.NewEventBus()
+				var mu sync.Mutex
+				var received []events.StreamingHeartbeatEventData
+				sharedBus.Subscribe(events.EventStreamingHeartbeat, func(event any) {
+					if hb, ok := event.(*events.StreamingHeartbeatEvent); ok {
+						mu.Lock()
+						received = append(received, hb.Data)
+						mu.Unlock()
+					}
+				})
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					EventBus:     sharedBus,
+				})
+
+				eng.PublishStreamingHeartbeatForTest("sess-pr5-2", "agent-pr5-2", "thinking")
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(received).To(HaveLen(1))
+				Expect(received[0].TokenCount).To(BeZero(),
+					"sessions with no recorded UsageDelta emit zero TokenCount — the chat UI gates the counter render on >0")
+			})
+
+			It("keeps per-session counts isolated so session A's tokens never leak into session B's heartbeat", func() {
+				// The in-flight counter is per-session — a sandbox
+				// session running a chunky reasoning model MUST NOT
+				// project its 5000-token figure onto a sibling
+				// session's heartbeat when that session has emitted
+				// nothing yet.
+				sharedBus := eventbus.NewEventBus()
+				var mu sync.Mutex
+				received := map[string]int64{}
+				sharedBus.Subscribe(events.EventStreamingHeartbeat, func(event any) {
+					if hb, ok := event.(*events.StreamingHeartbeatEvent); ok {
+						mu.Lock()
+						received[hb.Data.SessionID] = hb.Data.TokenCount
+						mu.Unlock()
+					}
+				})
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					EventBus:     sharedBus,
+				})
+
+				eng.RecordSessionOutputTokensForTest("sess-A", 5000)
+
+				eng.PublishStreamingHeartbeatForTest("sess-A", "agent-1", "generating")
+				eng.PublishStreamingHeartbeatForTest("sess-B", "agent-2", "thinking")
+
+				mu.Lock()
+				defer mu.Unlock()
+				Expect(received["sess-A"]).To(Equal(int64(5000)))
+				Expect(received["sess-B"]).To(BeZero(),
+					"per-session isolation: a sibling session with no recorded UsageDelta emits zero, never another session's figure")
+			})
+		})
 	})
 })
 

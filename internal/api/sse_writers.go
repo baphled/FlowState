@@ -220,11 +220,21 @@ type sseGateFailed struct {
 //     the adaptive stall watchdog uses this to pick the next timeout
 //     window. Empty is tolerated so historical wire payloads remain
 //     decodable; the frontend falls back to the legacy 60s threshold.
+//   - TokenCount — the in-flight turn's cumulative output_tokens per
+//     the most recent provider UsageDelta (Anthropic message_delta,
+//     openaicompat trailing-chunk usage). UI Parity PR5 (May 2026):
+//     the Vue chat UI renders "1,247 tokens · 42 t/s" next to the
+//     working-on label and computes tokens-per-second from the
+//     delta-vs-prev-tick at the documented 15s heartbeat cadence.
+//     NOT omitempty — explicit zero is the legitimate
+//     pre-first-UsageDelta value the frontend uses to gate the
+//     counter render (zero = "no information yet, hide chip").
 type sseStreamingHeartbeat struct {
-	Type      string `json:"type"`
-	SessionID string `json:"session_id"`
-	AgentID   string `json:"agent_id"`
-	Phase     string `json:"phase"`
+	Type       string `json:"type"`
+	SessionID  string `json:"session_id"`
+	AgentID    string `json:"agent_id"`
+	Phase      string `json:"phase"`
+	TokenCount int64  `json:"token_count"`
 }
 
 // sseHarnessRetry represents a harness retry event in a server-sent event stream.
@@ -660,12 +670,21 @@ func writeSSEStreamingHeartbeat(w http.ResponseWriter, flusher http.Flusher, dat
 	sessionID, _ := data["session_id"].(string)
 	agentID, _ := data["agent_id"].(string)
 	phase, _ := data["phase"].(string)
+	// UI Parity PR5 (May 2026) — token_count is int64 on the bus
+	// payload (events.StreamingHeartbeatEventData.TokenCount); the
+	// bridge handler threads it onto the sanitised map under the
+	// snake_case wire key. Defensive type-assert tolerates a missing
+	// or wrong-typed field by defaulting to zero — the frontend's
+	// counter renderer gates on >0 so a zero from a degraded
+	// emitter renders as "no information yet, hide chip".
+	tokenCount, _ := data["token_count"].(int64)
 
 	payload := sseStreamingHeartbeat{
-		Type:      "streaming.heartbeat",
-		SessionID: sessionID,
-		AgentID:   agentID,
-		Phase:     phase,
+		Type:       "streaming.heartbeat",
+		SessionID:  sessionID,
+		AgentID:    agentID,
+		Phase:      phase,
+		TokenCount: tokenCount,
 	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {

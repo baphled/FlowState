@@ -1128,6 +1128,110 @@ describe('ChatView agent-activity indicator', () => {
   })
 })
 
+// UI Parity PR5 — Live token counter (May 2026).
+//
+// The streaming chrome (agent-activity-indicator) gains a live token
+// counter rendered next to the working-on label: "1,247 tokens · 42 t/s".
+// The values come from the engine's streaming.heartbeat ticks projected
+// onto chatStore.tokenCountBySession / tokensPerSecondBySession. The
+// counter renders only when a positive count is recorded for the
+// active session — the empty / pre-first-heartbeat state stays hidden
+// so a 5-token vs 5,000-token turn no longer looks identical to the user.
+describe('ChatView live token counter (UI Parity PR5)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('renders the token count next to the working-on label when a positive count is recorded', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.agentId = 'planner'
+    chatStore.currentSessionId = 'sess-pr5'
+    // Mark the active session as streaming via the per-session slot so
+    // the activity-indicator chrome renders (the chrome is gated on
+    // streamingFor(currentSessionId), not the legacy global flags).
+    chatStore.sessionStreaming = {
+      'sess-pr5': { isLoading: false, isStreaming: true },
+    }
+    chatStore.tokenCountBySession = { 'sess-pr5': 1247 }
+    chatStore.tokensPerSecondBySession = { 'sess-pr5': 42 }
+    await wrapper.vm.$nextTick()
+
+    const counter = wrapper.find('[data-testid="agent-activity-tokens"]')
+    expect(counter.exists()).toBe(true)
+    // Locale-grouped thousands: "1,247 tokens · 42 t/s". British /
+    // en-GB grouping uses commas at thousand boundaries.
+    expect(counter.text()).toContain('1,247 tokens')
+    expect(counter.text()).toContain('42 t/s')
+  })
+
+  it('hides the token counter when the active session has no recorded count (pre-first-heartbeat state)', async () => {
+    // The first heartbeat of a turn may fire while the provider is
+    // still reasoning — no UsageDelta arrived, count stays 0. The
+    // counter must hide until the value transitions positive so the
+    // user does not see a misleading "0 tokens" on every fresh turn.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.agentId = 'planner'
+    chatStore.currentSessionId = 'sess-pr5-empty'
+    chatStore.sessionStreaming = {
+      'sess-pr5-empty': { isLoading: false, isStreaming: true },
+    }
+    // No token count recorded for this session.
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="agent-activity-tokens"]').exists()).toBe(false)
+  })
+
+  it('omits the rate segment when tokensPerSecond is zero (single-tick state)', async () => {
+    // First tick: a count but no prior tick to delta against, so
+    // tokensPerSecond=0. The chrome renders "1,247 tokens" without the
+    // misleading "· 0 t/s" trailing.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.agentId = 'planner'
+    chatStore.currentSessionId = 'sess-pr5-first'
+    chatStore.sessionStreaming = {
+      'sess-pr5-first': { isLoading: false, isStreaming: true },
+    }
+    chatStore.tokenCountBySession = { 'sess-pr5-first': 1247 }
+    chatStore.tokensPerSecondBySession = { 'sess-pr5-first': 0 }
+    await wrapper.vm.$nextTick()
+
+    const counter = wrapper.find('[data-testid="agent-activity-tokens"]')
+    expect(counter.exists()).toBe(true)
+    expect(counter.text()).toContain('1,247 tokens')
+    expect(counter.text()).not.toContain('t/s')
+  })
+})
+
 describe('ChatView message grouping', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

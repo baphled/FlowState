@@ -469,4 +469,60 @@ describe('parseSSEPayload', () => {
     // than crashing on the property access.
     expect(parseSSEPayload('[1,2,3]')).toEqual({ kind: 'unknown', raw: '[1,2,3]' })
   })
+
+  // UI Parity PR5 — Live token counter (May 2026).
+  //
+  // The engine projects the in-flight turn's cumulative output_tokens
+  // onto every streaming.heartbeat tick under the wire key
+  // `token_count` (int64). The parser MUST surface it on the
+  // discriminated SSEStreamingHeartbeatEvent so the chat store can
+  // compute tokens-per-second from the delta-vs-prev-tick at the
+  // documented 15s cadence and the streaming chrome can render
+  // "1,247 tokens · 42 t/s" next to the working-on label.
+  describe('streaming_heartbeat — UI Parity PR5 token counter', () => {
+    it('extracts token_count onto the parsed event', () => {
+      const ev = parseSSEPayload(JSON.stringify({
+        type: 'streaming.heartbeat',
+        phase: 'generating',
+        token_count: 1247,
+      }))
+      expect(ev.kind).toBe('streaming_heartbeat')
+      if (ev.kind === 'streaming_heartbeat') {
+        expect(ev.phase).toBe('generating')
+        expect(ev.tokenCount).toBe(1247)
+      }
+    })
+
+    it('defaults tokenCount to 0 when the wire payload omits the field (pre-PR5 server compat)', () => {
+      // Forward compatibility: a heartbeat from a pre-PR5 server has
+      // {type, session_id, agent_id, phase} but no token_count. The
+      // parser must default to 0 so the chat store's counter renderer
+      // suppresses the chip (zero = "no information yet") rather than
+      // showing NaN or crashing.
+      const ev = parseSSEPayload(JSON.stringify({
+        type: 'streaming.heartbeat',
+        phase: 'thinking',
+      }))
+      expect(ev.kind).toBe('streaming_heartbeat')
+      if (ev.kind === 'streaming_heartbeat') {
+        expect(ev.tokenCount).toBe(0)
+      }
+    })
+
+    it('extracts token_count from the underscore-only wire variant too', () => {
+      // The dotted `streaming.heartbeat` is canonical; the underscore
+      // `streaming_heartbeat` is a tolerated alternative some SSE
+      // bridges normalise to (per the existing parser branch).
+      // tokenCount extraction must work on both variants.
+      const ev = parseSSEPayload(JSON.stringify({
+        type: 'streaming_heartbeat',
+        phase: 'tool_executing',
+        token_count: 3500,
+      }))
+      expect(ev.kind).toBe('streaming_heartbeat')
+      if (ev.kind === 'streaming_heartbeat') {
+        expect(ev.tokenCount).toBe(3500)
+      }
+    })
+  })
 })

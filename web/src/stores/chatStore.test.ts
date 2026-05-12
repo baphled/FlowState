@@ -5195,6 +5195,78 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
     expect(store.streamingPhase['sess-hb']).toBe('thinking')
   })
 
+  // UI Parity PR5 — Live token counter (May 2026).
+  //
+  // The engine threads cumulative output_tokens onto every
+  // streaming.heartbeat tick. The chat store records the count per
+  // session AND computes tokens-per-second from the delta-vs-prev-tick
+  // so the streaming chrome renders "1,247 tokens · 42 t/s" next to
+  // the working-on label. Pre-fix the chrome showed a pulsing dot and
+  // agent/model only — a 5-token vs 5,000-token turn looked identical.
+  describe('UI Parity PR5 — live token counter', () => {
+    it('records the latest TokenCount per session on each heartbeat', () => {
+      const store = useChatStore()
+      store.applyContentEvent(
+        JSON.stringify({ type: 'streaming.heartbeat', phase: 'generating', token_count: 1247 }),
+        'sess-pr5',
+      )
+      expect(store.tokenCountBySession['sess-pr5']).toBe(1247)
+    })
+
+    it('computes tokensPerSecond from the delta between consecutive heartbeats', () => {
+      // Heartbeat 1 at t=0s with 100 tokens. Heartbeat 2 at t=15s with
+      // 730 tokens. Δtokens=630, Δseconds=15. t/s = 42.
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(new Date(1_000_000_000_000))
+        const store = useChatStore()
+        store.applyContentEvent(
+          JSON.stringify({ type: 'streaming.heartbeat', phase: 'generating', token_count: 100 }),
+          'sess-pr5',
+        )
+        // First tick seeds the counter — t/s is not yet defined.
+        expect(store.tokenCountBySession['sess-pr5']).toBe(100)
+
+        vi.setSystemTime(new Date(1_000_000_015_000)) // +15s
+        store.applyContentEvent(
+          JSON.stringify({ type: 'streaming.heartbeat', phase: 'generating', token_count: 730 }),
+          'sess-pr5',
+        )
+        expect(store.tokenCountBySession['sess-pr5']).toBe(730)
+        expect(store.tokensPerSecondBySession['sess-pr5']).toBe(42)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('reports zero tokensPerSecond on the first heartbeat (no prior tick to delta against)', () => {
+      // The first tick of a turn has no predecessor — t/s is
+      // undefined-but-rendered-as-0. The chat UI conditionally
+      // hides the t/s segment when 0 so the chrome reads
+      // "1,247 tokens" without the misleading "· 0 t/s" trailing.
+      const store = useChatStore()
+      store.applyContentEvent(
+        JSON.stringify({ type: 'streaming.heartbeat', phase: 'generating', token_count: 1247 }),
+        'sess-pr5-first',
+      )
+      expect(store.tokensPerSecondBySession['sess-pr5-first']).toBe(0)
+    })
+
+    it('keeps per-session token counts isolated', () => {
+      const store = useChatStore()
+      store.applyContentEvent(
+        JSON.stringify({ type: 'streaming.heartbeat', phase: 'generating', token_count: 5000 }),
+        'sess-A',
+      )
+      store.applyContentEvent(
+        JSON.stringify({ type: 'streaming.heartbeat', phase: 'thinking', token_count: 200 }),
+        'sess-B',
+      )
+      expect(store.tokenCountBySession['sess-A']).toBe(5000)
+      expect(store.tokenCountBySession['sess-B']).toBe(200)
+    })
+  })
+
   it('adaptive watchdog uses per-phase thresholds (Slice F)', async () => {
     // The store reads the latest phase and passes the matching threshold
     // to the session stream's armWatchdog. We verify by faking timers and

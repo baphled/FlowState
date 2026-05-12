@@ -110,6 +110,33 @@ function precedingUserPromptFor(messageId: string): { id: string; content: strin
 // mounts that set chatStore.isStreaming = true directly without
 // wiring a session id), preserving backwards compatibility.
 const activeStreamingState = computed(() => chatStore.streamingFor(chatStore.currentSessionId))
+// UI Parity PR5 — Live token counter (May 2026).
+//
+// The engine threads cumulative output_tokens onto every
+// streaming.heartbeat tick; chatStore.tokenCountBySession records
+// the latest value per session and tokensPerSecondBySession holds the
+// computed rate from the delta between consecutive heartbeats. These
+// computeds expose the active session's figures to the streaming
+// chrome so the counter chip renders "1,247 tokens · 42 t/s" next
+// to the working-on label. Zero token counts gate the chip render
+// entirely (hide on pre-first-UsageDelta state); zero rates suppress
+// the trailing "· N t/s" segment (single-tick state).
+const activeLiveTokenCount = computed(() => {
+  const sid = chatStore.currentSessionId
+  if (!sid) return 0
+  return chatStore.tokenCountBySession[sid] ?? 0
+})
+const activeLiveTokensPerSecond = computed(() => {
+  const sid = chatStore.currentSessionId
+  if (!sid) return 0
+  return chatStore.tokensPerSecondBySession[sid] ?? 0
+})
+// Pre-formatted thousands-grouped string (en-GB, matches British
+// English convention used across the codebase). Computed so Vue's
+// reactivity tracks the count not the formatted output.
+const activeLiveTokenCountFormatted = computed(() =>
+  activeLiveTokenCount.value.toLocaleString('en-GB'),
+)
 const lastMessage = computed(() => {
   const messages = chatStore.messages
   return messages.length > 0 ? messages[messages.length - 1] : null
@@ -634,6 +661,26 @@ onBeforeUnmount(() => {
           on {{ chatStore.currentModelId || chatStore.currentProviderId }}<template
             v-if="chatStore.currentModelId && chatStore.currentProviderId"
           > · {{ chatStore.currentProviderId }}</template>
+        </span>
+        <!--
+          UI Parity PR5 — Live token counter (May 2026).
+          Renders the active session's cumulative output_tokens and
+          tokens-per-second from the engine's streaming.heartbeat
+          ticks. Hidden entirely until a positive count arrives so a
+          fresh turn does not flash "0 tokens" before the provider's
+          first message_delta. The trailing rate segment is suppressed
+          on the first tick (no predecessor to delta against) so the
+          chrome reads "1,247 tokens" rather than the misleading
+          "1,247 tokens · 0 t/s".
+        -->
+        <span
+          v-if="activeLiveTokenCount > 0"
+          class="agent-activity-tokens"
+          data-testid="agent-activity-tokens"
+        >
+          {{ activeLiveTokenCountFormatted }} tokens<template
+            v-if="activeLiveTokensPerSecond > 0"
+          > · {{ activeLiveTokensPerSecond }} t/s</template>
         </span>
       </div>
 

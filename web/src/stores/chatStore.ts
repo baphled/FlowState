@@ -448,6 +448,30 @@ export const useChatStore = defineStore('chat', {
     // empty / unrecognised. Stored per-session so a stalled session A
     // does not borrow session B's longer threshold.
     streamingPhase: {} as Record<string, string>,
+    // UI Parity PR5 — Live token counter (May 2026).
+    //
+    // tokenCountBySession records the in-flight turn's cumulative
+    // output_tokens per session, projected onto the streaming chrome
+    // as "1,247 tokens" next to the working-on label. Populated on
+    // every streaming.heartbeat tick from event.tokenCount. Zero is
+    // the legitimate pre-first-UsageDelta value; the ChatView counter
+    // renderer gates on >0 so a fresh turn does not flash "0 tokens"
+    // until the provider's first message_delta arrives.
+    //
+    // tokensPerSecondBySession holds the latest computed t/s rate
+    // from the delta between consecutive heartbeats at the documented
+    // 15s engine cadence. ChatView renders "· 42 t/s" trailing only
+    // when the value is positive; the first tick of a turn has no
+    // predecessor so the rate stays 0 and the trailing segment is
+    // suppressed.
+    //
+    // lastHeartbeatAtBySession is the timestamp of the previous tick
+    // (ms since epoch), used as the basis for the Δseconds computation.
+    // Cleared on session-change to prevent a stale anchor from a prior
+    // turn producing a misleading rate on the next tick.
+    tokenCountBySession: {} as Record<string, number>,
+    tokensPerSecondBySession: {} as Record<string, number>,
+    lastHeartbeatAtBySession: {} as Record<string, number>,
     // Slice G — Escape-twice cancel cascade (Streaming Coherence May 2026).
     // Tracks escape press count and timeout for the 600ms chord window.
     escapePressCount: 0,
@@ -1384,6 +1408,25 @@ export const useChatStore = defineStore('chat', {
         delete next[sessionId]
         this.streamingPhase = next
       }
+      // UI Parity PR5 (May 2026) — prune per-session token counter
+      // state on session delete to match streamingPhase / sessionStreaming
+      // pruning above. Without this, a deleted session's last
+      // counter / rate stays in the map indefinitely.
+      if (this.tokenCountBySession[sessionId] !== undefined) {
+        const next = { ...this.tokenCountBySession }
+        delete next[sessionId]
+        this.tokenCountBySession = next
+      }
+      if (this.tokensPerSecondBySession[sessionId] !== undefined) {
+        const next = { ...this.tokensPerSecondBySession }
+        delete next[sessionId]
+        this.tokensPerSecondBySession = next
+      }
+      if (this.lastHeartbeatAtBySession[sessionId] !== undefined) {
+        const next = { ...this.lastHeartbeatAtBySession }
+        delete next[sessionId]
+        this.lastHeartbeatAtBySession = next
+      }
       if (wasCurrent) {
         // Roll forward to the most-recently-updated remaining ROOT session
         // (children are unreachable without a parent in the UI). Empty
@@ -1475,6 +1518,14 @@ export const useChatStore = defineStore('chat', {
       // for the target session so its watchdog starts at the legacy
       // 60s default until the next engine heartbeat updates the phase.
       delete this.streamingPhase[sessionId]
+      // UI Parity PR5 (May 2026) — clear stale token counter state
+      // for the target session so a returning user does not see a
+      // counter from the prior turn flash up before the next
+      // heartbeat re-seeds it. The next streaming.heartbeat tick
+      // repopulates these.
+      delete this.tokenCountBySession[sessionId]
+      delete this.tokensPerSecondBySession[sessionId]
+      delete this.lastHeartbeatAtBySession[sessionId]
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId
@@ -2238,6 +2289,28 @@ export const useChatStore = defineStore('chat', {
       // arm runs below.
       if (event.kind === 'streaming_heartbeat' && targetSessionId) {
         this.streamingPhase[targetSessionId] = event.phase || ''
+        // UI Parity PR5 (May 2026) — live token counter. Record
+        // the engine's reported cumulative output_tokens for this
+        // session AND compute the tokens-per-second rate from the
+        // delta against the previous tick. The first tick has no
+        // predecessor so t/s stays 0 and the ChatView counter
+        // suppresses the trailing rate segment.
+        const prevCount = this.tokenCountBySession[targetSessionId]
+        const prevAt = this.lastHeartbeatAtBySession[targetSessionId]
+        const nowMs = Date.now()
+        this.tokenCountBySession[targetSessionId] = event.tokenCount
+        if (typeof prevCount === 'number' && typeof prevAt === 'number') {
+          const deltaTokens = event.tokenCount - prevCount
+          const deltaSeconds = (nowMs - prevAt) / 1000
+          if (deltaSeconds > 0 && deltaTokens > 0) {
+            this.tokensPerSecondBySession[targetSessionId] = Math.round(deltaTokens / deltaSeconds)
+          } else {
+            this.tokensPerSecondBySession[targetSessionId] = 0
+          }
+        } else {
+          this.tokensPerSecondBySession[targetSessionId] = 0
+        }
+        this.lastHeartbeatAtBySession[targetSessionId] = nowMs
       }
 
       // Any SSE event counts as "the stream is alive" — re-arm the
