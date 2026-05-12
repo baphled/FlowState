@@ -188,3 +188,29 @@ describe('SessionBrowser per-row delete', () => {
     expect(titles).toEqual(['Streaming', 'Recent', 'Mid'])
   })
 })
+
+// UI Parity PR6 I1 residual (May 2026) — the modal close button rendered a
+// raw `✕` character instead of the Icon wrapper. Every chrome glyph elsewhere
+// on this surface is the Icon wrapper (search, plus, trash, message), so the
+// close affordance was the lone holdout. Pin the contract so it can't drift.
+describe('SessionBrowser close button (I1 residual — ✕ → Icon)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('renders <Icon name="close" /> in the close button, not a raw ✕ glyph', async () => {
+    const wrapper = mount(SessionBrowser)
+    ;(wrapper.vm as unknown as { open: () => void }).open()
+    await flushPromises()
+
+    const closeBtn = wrapper.find('.close-button')
+    expect(closeBtn.exists()).toBe(true)
+
+    // Icon wrapper stamps data-icon-name on the rendered SVG.
+    const closeIcon = closeBtn.find('[data-testid="icon"][data-icon-name="close"]')
+    expect(closeIcon.exists()).toBe(true)
+
+    // The raw ✕ glyph must not appear in the close button's text content.
+    expect(closeBtn.text()).not.toContain('✕')
+  })
+})

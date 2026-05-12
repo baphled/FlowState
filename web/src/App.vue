@@ -20,6 +20,19 @@ const appReady = ref(false)
 const apiOnline = ref(true)
 const chatStore = useChatStore()
 
+// UI Parity PR6 N10 (May 2026) — min-duration gate.
+//
+// A fast local backend (50–100ms typical) resolved bootstrap before the
+// overlay had paid for itself, flashing visibly on every page load. The
+// gate keeps the overlay hidden until a 200ms timer fires; if bootstrap
+// settles first the overlay never shows at all. If the timer fires while
+// bootstrap is still in flight the overlay reveals and stays up until
+// appReady flips true. `overlayVisible` is the actual render gate; the
+// existing `appReady` continues to gate the router view and downstream
+// chrome (so the page underneath stays hidden during real slow boots).
+const overlayVisible = ref(false)
+const OVERLAY_MIN_DELAY_MS = 200
+
 onMounted(async () => {
   // Tear down the index.html splash so the Vue overlay can take over
   // without two opaque covers stacking. Removing it before flipping
@@ -27,6 +40,15 @@ onMounted(async () => {
   // visual handover seamless: HTML splash → Vue overlay → app.
   const htmlSplash = document.getElementById('app-loading-splash')
   if (htmlSplash) htmlSplash.remove()
+
+  // Schedule the overlay to appear only if bootstrap has not settled by
+  // the time the gate fires. If bootstrap resolves first, the timer fires
+  // into an already-ready app and the if-guard keeps the overlay hidden.
+  const overlayTimer = setTimeout(() => {
+    if (!appReady.value) {
+      overlayVisible.value = true
+    }
+  }, OVERLAY_MIN_DELAY_MS)
 
   // Kick off both bootstrap probes in parallel. Promise.allSettled so
   // either rejection still flips appReady — see the appReady comment.
@@ -39,13 +61,16 @@ onMounted(async () => {
     }
   })()
   await Promise.allSettled([healthPromise, chatStore.bootstrap()])
+
+  clearTimeout(overlayTimer)
   appReady.value = true
+  overlayVisible.value = false
 })
 </script>
 
 <template>
   <div class="app-shell">
-    <LoadingOverlay v-if="!appReady" />
+    <LoadingOverlay v-if="overlayVisible" />
     <template v-if="appReady">
       <NavBar />
       <div v-if="!apiOnline" class="api-offline-banner" data-testid="api-offline-banner">

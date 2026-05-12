@@ -314,6 +314,21 @@ function closeKeyboardHelp(): void {
   keyboardHelpOpen.value = false
 }
 
+// UI Parity PR6 — Collapse all / Expand all toolbar (I4 extension).
+//
+// Flip the store-level override; ToolBubble computes its effective open
+// state from chatStore.toolCardOpenOverride and bulk-applies the new
+// value. 'auto' is the no-op default — buttons only set 'expanded' or
+// 'collapsed' so the per-card state remains intact when the user later
+// toggles a single card.
+function expandAllToolCards(): void {
+  chatStore.toolCardOpenOverride = 'expanded'
+}
+
+function collapseAllToolCards(): void {
+  chatStore.toolCardOpenOverride = 'collapsed'
+}
+
 // Discriminator used by the `?` trigger: opening the modal must NOT
 // fight the user mid-prompt. Anything inside a textarea / input /
 // contenteditable suppresses the trigger.
@@ -545,6 +560,30 @@ onBeforeUnmount(() => {
         </span>
         <ContextUsageChip />
         <ModelPicker :readonly="isChildSession" />
+        <!--
+          UI Parity PR6 — Collapse all / Expand all (I4 extension). Bulk
+          toggle every ToolBubble via the store-level override. The buttons
+          live in the toolbar where tool-density is highest; per-card state
+          is preserved and resumes when the override returns to 'auto'.
+        -->
+        <button
+          type="button"
+          class="tool-toggle-btn"
+          data-testid="expand-all-tools-btn"
+          title="Expand all tool cards"
+          @click="expandAllToolCards"
+        >
+          Expand all
+        </button>
+        <button
+          type="button"
+          class="tool-toggle-btn"
+          data-testid="collapse-all-tools-btn"
+          title="Collapse all tool cards"
+          @click="collapseAllToolCards"
+        >
+          Collapse all
+        </button>
       </div>
 
       <!--
@@ -785,6 +824,28 @@ onBeforeUnmount(() => {
   letter-spacing: 0.02em;
   user-select: none;
   white-space: nowrap;
+}
+
+/*
+ * UI Parity PR6 — Collapse all / Expand all toolbar (I4 extension). Small
+ * neutral buttons next to the model picker. Hover lifts the border colour to
+ * the accent token so the affordance becomes discoverable on touch.
+ */
+.tool-toggle-btn {
+  padding: 0.25rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.tool-toggle-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
 }
 
 .loading-pulse {

@@ -1,12 +1,23 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { setActivePinia, createPinia } from 'pinia'
+import { nextTick } from 'vue'
 import ToolBubble from './ToolBubble.vue'
+import { useChatStore } from '@/stores/chatStore'
 
 describe('ToolBubble', () => {
   const defaultProps = {
     toolName: 'test-tool',
     title: 'Test Tool'
   }
+
+  // ToolBubble reads chatStore.toolCardOpenOverride (PR6 — Collapse all /
+  // Expand all) so every mount needs an active Pinia instance. The default
+  // 'auto' state preserves the original local-isOpen behaviour the legacy
+  // tests pin.
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
 
   it('renders with correct data attributes', () => {
     const wrapper = mount(ToolBubble, {
@@ -178,5 +189,59 @@ describe('ToolBubble', () => {
     // User closes manually.
     await trigger.trigger('click')
     expect(root.attributes('data-open')).toBe('false')
+  })
+})
+
+// UI Parity PR6 — chatStore.toolCardOpenOverride respected by ToolBubble.
+//
+// The override has three states: 'auto' (default), 'expanded', 'collapsed'.
+// When 'auto' the local isOpen ref drives rendering. When 'expanded' or
+// 'collapsed' every ToolBubble is forced to the matching state regardless of
+// per-card history. Flipping back to 'auto' restores the local ref so a
+// user can resume per-card control.
+describe('ToolBubble respects chatStore.toolCardOpenOverride', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('forces open when override flips to "expanded"', async () => {
+    const wrapper = mount(ToolBubble, { props: { toolName: 't', title: 'T', defaultOpen: false } })
+    const root = wrapper.find('[data-testid="tool-bubble"]')
+    expect(root.attributes('data-open')).toBe('false')
+
+    const chatStore = useChatStore()
+    chatStore.toolCardOpenOverride = 'expanded'
+    await nextTick()
+
+    expect(root.attributes('data-open')).toBe('true')
+  })
+
+  it('forces closed when override flips to "collapsed"', async () => {
+    const wrapper = mount(ToolBubble, { props: { toolName: 't', title: 'T', defaultOpen: true } })
+    const root = wrapper.find('[data-testid="tool-bubble"]')
+    expect(root.attributes('data-open')).toBe('true')
+
+    const chatStore = useChatStore()
+    chatStore.toolCardOpenOverride = 'collapsed'
+    await nextTick()
+
+    expect(root.attributes('data-open')).toBe('false')
+  })
+
+  it('restores local state when override is set back to "auto"', async () => {
+    const wrapper = mount(ToolBubble, { props: { toolName: 't', title: 'T', defaultOpen: true } })
+    const root = wrapper.find('[data-testid="tool-bubble"]')
+    expect(root.attributes('data-open')).toBe('true')
+
+    const chatStore = useChatStore()
+    chatStore.toolCardOpenOverride = 'collapsed'
+    await nextTick()
+    expect(root.attributes('data-open')).toBe('false')
+
+    chatStore.toolCardOpenOverride = 'auto'
+    await nextTick()
+    // Local ref still says open (defaultOpen=true seeded it), so unsetting the
+    // override restores the prior state.
+    expect(root.attributes('data-open')).toBe('true')
   })
 })

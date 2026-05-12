@@ -97,4 +97,85 @@ describe('RecallSearchTool', () => {
     expect(wrapper.find('[data-testid="recall-empty"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="recall-result"]')).toHaveLength(0)
   })
+
+  // UI Parity PR6 N6 (May 2026) — recall results expose timestamp + chain
+  // depth when carried in the formatted body. The current backend body shape
+  // is `role: content`, but recall chain-search results can prefix each
+  // chunk with `[time=<iso>] [depth=N]` markers when carrying provenance.
+  // The parser must surface them as relative time ("2h ago") and an `↑N`
+  // hop hint without breaking the plain `role: content` form. The
+  // optional-prefix shape keeps the renderer forward-compatible with a
+  // backend that has not yet been migrated.
+  describe('N6 — timestamp + chain-hop hint', () => {
+    it('renders a relative timestamp pulled from a [time=<iso>] prefix', () => {
+      // Two hours ago, stable for the test by stubbing Date.now.
+      const fixedNow = new Date('2026-05-12T12:00:00Z').getTime()
+      const origNow = Date.now
+      Date.now = () => fixedNow
+      try {
+        const twoHoursAgo = '2026-05-12T10:00:00Z'
+        const body = `[time=${twoHoursAgo}] user: hello`
+        const wrapper = mount(RecallSearchTool, {
+          props: { toolName: 'search_context', heading: 'q', body, status: 'completed' },
+          global: { stubs: { ToolBubble } },
+        })
+        const ts = wrapper.find('[data-testid="recall-timestamp"]')
+        expect(ts.exists()).toBe(true)
+        expect(ts.text()).toContain('2h ago')
+        // Source label survives the prefix strip.
+        expect(wrapper.find('[data-testid="recall-result"]').text()).toContain('user')
+        // The raw prefix must NOT leak into the snippet.
+        expect(wrapper.find('[data-testid="recall-result"]').text()).not.toContain('time=')
+      } finally {
+        Date.now = origNow
+      }
+    })
+
+    it('renders a chain-hop hint (↑N) from a [depth=N] prefix', () => {
+      const body = '[depth=3] user: through three hops'
+      const wrapper = mount(RecallSearchTool, {
+        props: { toolName: 'chain_search_context', heading: 'q', body, status: 'completed' },
+        global: { stubs: { ToolBubble } },
+      })
+      const hop = wrapper.find('[data-testid="recall-chain-depth"]')
+      expect(hop.exists()).toBe(true)
+      expect(hop.text()).toBe('↑3')
+      // The raw prefix must not leak.
+      expect(wrapper.find('[data-testid="recall-result"]').text()).not.toContain('depth=')
+    })
+
+    it('renders both prefixes when present and preserves snippet content', () => {
+      const fixedNow = new Date('2026-05-12T12:00:00Z').getTime()
+      const origNow = Date.now
+      Date.now = () => fixedNow
+      try {
+        const body = '[time=2026-05-12T11:30:00Z] [depth=2] assistant: hop reply'
+        const wrapper = mount(RecallSearchTool, {
+          props: { toolName: 'chain_search_context', heading: 'q', body, status: 'completed' },
+          global: { stubs: { ToolBubble } },
+        })
+        expect(wrapper.find('[data-testid="recall-timestamp"]').text()).toContain('30m ago')
+        expect(wrapper.find('[data-testid="recall-chain-depth"]').text()).toBe('↑2')
+        expect(wrapper.find('[data-testid="recall-result"]').text()).toContain('hop reply')
+        expect(wrapper.find('[data-testid="recall-result"]').text()).toContain('assistant')
+      } finally {
+        Date.now = origNow
+      }
+    })
+
+    it('omits timestamp + chain-hop affordances when prefixes are absent (current backend format)', () => {
+      // Body in the current backend wire shape — no metadata prefix.
+      const body = 'user: plain body, no metadata\n---\nassistant: also plain'
+      const wrapper = mount(RecallSearchTool, {
+        props: { toolName: 'search_context', heading: 'q', body, status: 'completed' },
+        global: { stubs: { ToolBubble } },
+      })
+      expect(wrapper.findAll('[data-testid="recall-timestamp"]')).toHaveLength(0)
+      expect(wrapper.findAll('[data-testid="recall-chain-depth"]')).toHaveLength(0)
+      // Existing rendering path remains intact.
+      const results = wrapper.findAll('[data-testid="recall-result"]')
+      expect(results).toHaveLength(2)
+      expect(results[0].text()).toContain('plain body, no metadata')
+    })
+  })
 })

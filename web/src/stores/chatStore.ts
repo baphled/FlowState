@@ -683,6 +683,20 @@ export const useChatStore = defineStore('chat', {
     //
     // Transient — never persisted, never hydrated from the backend.
     bootstrapPromise: null as Promise<void> | null,
+    // UI Parity PR6 — Collapse all / Expand all override (May 2026).
+    //
+    // Per-card open state lives in ToolBubble's local isOpen ref. The
+    // override here lets a parent (e.g. the ChatView toolbar) bulk-flip
+    // every ToolBubble without lifting per-card state into the store.
+    //
+    //   'auto'      — default; ToolBubble uses its local isOpen ref.
+    //   'expanded'  — every ToolBubble forces open regardless of local state.
+    //   'collapsed' — every ToolBubble forces closed regardless of local state.
+    //
+    // Flipping back to 'auto' restores per-card behaviour so the user can
+    // resume granular control. Transient — never persisted (the override is
+    // session-level UX, not session metadata).
+    toolCardOpenOverride: 'auto' as 'auto' | 'expanded' | 'collapsed',
   }),
 
   getters: {

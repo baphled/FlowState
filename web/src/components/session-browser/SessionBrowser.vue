@@ -151,12 +151,12 @@ onMounted(() => {
     <div class="session-browser-content" role="dialog" aria-modal="true" aria-labelledby="session-browser-title">
       <div class="session-browser-header">
         <h2 id="session-browser-title">Session Browser</h2>
-        <button 
-          class="close-button" 
+        <button
+          class="close-button"
           @click="handleClose"
           aria-label="Close session browser"
         >
-          ✕
+          <Icon name="close" :size="14" />
         </button>
       </div>
 

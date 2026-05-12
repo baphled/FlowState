@@ -1415,3 +1415,65 @@ describe('ChatView keyboard-help `?` trigger gating (P1-8)', () => {
     wrapper.unmount()
   })
 })
+
+// UI Parity PR6 — Collapse all / Expand all toolbar (I4 extension, May 2026).
+//
+// The per-bubble tool-card open state lived only in ToolBubble's local ref,
+// so bulk-toggling tool cards required scrolling the whole thread and
+// clicking each chevron. The fix is a chatStore-level override:
+//
+//   chatStore.toolCardOpenOverride: 'auto' | 'expanded' | 'collapsed'
+//
+// 'auto' preserves the existing per-card local state (backwards compatible).
+// 'expanded' and 'collapsed' force every ToolBubble open or closed. The
+// toolbar in ChatView near the input-selector-bar exposes two buttons that
+// flip the override.
+describe('ChatView collapse/expand all toolbar (PR6 I4 extension)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('renders Expand all and Collapse all buttons in the input selector bar', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="expand-all-tools-btn"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="collapse-all-tools-btn"]').exists()).toBe(true)
+  })
+
+  it('clicking Expand all sets chatStore.toolCardOpenOverride to "expanded"', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+    const chatStore = useChatStore()
+
+    await wrapper.find('[data-testid="expand-all-tools-btn"]').trigger('click')
+    expect(chatStore.toolCardOpenOverride).toBe('expanded')
+  })
+
+  it('clicking Collapse all sets chatStore.toolCardOpenOverride to "collapsed"', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+    const chatStore = useChatStore()
+
+    await wrapper.find('[data-testid="collapse-all-tools-btn"]').trigger('click')
+    expect(chatStore.toolCardOpenOverride).toBe('collapsed')
+  })
+})
