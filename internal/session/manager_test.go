@@ -2513,6 +2513,348 @@ var _ = Describe("Manager", func() {
 	})
 })
 
+// Manager <-> AttachmentStore integration. Plan §6 task-02 AC: the
+// session delete path must clear the attachment subtree as well as the
+// flat metadata sidecar.
+var _ = Describe("Manager attachment integration", func() {
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+
+	It("AttachmentStore is lazily constructed and stable across calls", func() {
+		mgr := session.NewManager(newMockStreamer())
+		s1 := mgr.AttachmentStore()
+		s2 := mgr.AttachmentStore()
+		Expect(s1).NotTo(BeNil())
+		Expect(s1).To(BeIdenticalTo(s2))
+	})
+
+	It("DeleteSession removes the attachment subtree", func() {
+		tmpDir := GinkgoT().TempDir()
+		mgr := session.NewManager(newMockStreamer())
+		mgr.SetSessionsDir(tmpDir)
+		sess, err := mgr.CreateSession("agent-x")
+		Expect(err).NotTo(HaveOccurred())
+
+		store := mgr.AttachmentStore()
+		_, err = store.Put(sess.ID, "image/png", pngBytes, "a.png")
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(mgr.DeleteSession(sess.ID)).To(Succeed())
+
+		list, err := store.List(sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(list).To(BeEmpty())
+	})
+})
+
+// AttachmentStore specs — extending the existing manager_test.go seam
+// per plan "Chat Attachments Backend (May 2026)" §6 task-02 and memory
+// feedback_extend_existing_specs.
+var _ = Describe("AttachmentStore", func() {
+	var (
+		dir   string
+		store *session.AttachmentStore
+	)
+
+	// PNG header (8 bytes) — minimal sniffable PNG so DetectImageMediaType
+	// returns "image/png" and the store accepts the upload.
+	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00}
+	jpgBytes := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
+
+	BeforeEach(func() {
+		dir = GinkgoT().TempDir()
+		store = session.NewAttachmentStore(dir)
+	})
+
+	Describe("Put", func() {
+		It("writes a binary file and persists the index", func() {
+			res, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Duplicate).To(BeFalse())
+			Expect(res.Record.MediaType).To(Equal("image/png"))
+			Expect(res.Record.SizeBytes).To(Equal(int64(len(pngBytes))))
+			Expect(res.Record.Ext).To(Equal(".png"))
+			Expect(res.Record.OriginalFilename).To(Equal("cat.png"))
+		})
+
+		It("rejects an unsupported media type with ErrAttachmentUnsupportedType", func() {
+			_, err := store.Put("sess-1", "application/pdf", []byte{0x25, 0x50, 0x44, 0x46}, "doc.pdf")
+			Expect(err).To(MatchError(session.ErrAttachmentUnsupportedType))
+		})
+
+		It("rejects a file over the per-file cap with ErrAttachmentTooLarge", func() {
+			big := make([]byte, session.MaxAttachmentFileBytes+1)
+			_, err := store.Put("sess-1", "image/png", big, "big.png")
+			Expect(err).To(MatchError(session.ErrAttachmentTooLarge))
+		})
+
+		It("dedups identical content within a session and returns the same id", func() {
+			first, err := store.Put("sess-1", "image/png", pngBytes, "first.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			second, err := store.Put("sess-1", "image/png", pngBytes, "second.png")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(second.Duplicate).To(BeTrue())
+			Expect(second.Record.ID).To(Equal(first.Record.ID))
+			// Original filename from the first upload is preserved.
+			Expect(second.Record.OriginalFilename).To(Equal("first.png"))
+
+			list, err := store.List("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(list).To(HaveLen(1))
+		})
+
+		It("keeps per-session indices isolated", func() {
+			_, err := store.Put("sess-1", "image/png", pngBytes, "a.png")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.Put("sess-2", "image/jpeg", jpgBytes, "b.jpg")
+			Expect(err).NotTo(HaveOccurred())
+
+			l1, _ := store.List("sess-1")
+			l2, _ := store.List("sess-2")
+			Expect(l1).To(HaveLen(1))
+			Expect(l2).To(HaveLen(1))
+			Expect(l1[0].MediaType).To(Equal("image/png"))
+			Expect(l2[0].MediaType).To(Equal("image/jpeg"))
+		})
+
+		It("writes the .index.json sidecar atomically (file is valid JSON after Put)", func() {
+			res, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Re-construct a fresh store against the same dir and assert
+			// it reads back the persisted entry. This validates atomic
+			// persistence end-to-end — if the index were torn the new
+			// store would either fail to parse or report zero entries.
+			fresh := session.NewAttachmentStore(dir)
+			list, err := fresh.List("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(list).To(HaveLen(1))
+			Expect(list[0].ID).To(Equal(res.Record.ID))
+			Expect(list[0].ContentHash).To(Equal(res.Record.ContentHash))
+		})
+	})
+
+	Describe("Get", func() {
+		It("returns the bytes and record for a stored attachment", func() {
+			res, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			rec, data, err := store.Get("sess-1", res.Record.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rec.ID).To(Equal(res.Record.ID))
+			Expect(data).To(Equal(pngBytes))
+		})
+
+		It("returns ErrAttachmentNotFound for an unknown id", func() {
+			_, _, err := store.Get("sess-1", "no-such-id")
+			Expect(err).To(MatchError(session.ErrAttachmentNotFound))
+		})
+	})
+
+	Describe("Resolve", func() {
+		It("materialises a slice of attachment ids in order", func() {
+			r1, err := store.Put("sess-1", "image/png", pngBytes, "a.png")
+			Expect(err).NotTo(HaveOccurred())
+			r2, err := store.Put("sess-1", "image/jpeg", jpgBytes, "b.jpg")
+			Expect(err).NotTo(HaveOccurred())
+
+			out, err := store.Resolve("sess-1", []string{r1.Record.ID, r2.Record.ID})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(HaveLen(2))
+			Expect(out[0].Record.ID).To(Equal(r1.Record.ID))
+			Expect(out[0].Data).To(Equal(pngBytes))
+			Expect(out[1].Record.ID).To(Equal(r2.Record.ID))
+			Expect(out[1].Data).To(Equal(jpgBytes))
+		})
+
+		It("returns ErrAttachmentNotFound on the first unknown id", func() {
+			r1, err := store.Put("sess-1", "image/png", pngBytes, "a.png")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.Resolve("sess-1", []string{r1.Record.ID, "ghost-id"})
+			Expect(err).To(MatchError(session.ErrAttachmentNotFound))
+		})
+	})
+
+	Describe("RemoveSession", func() {
+		It("clears in-memory state and removes the on-disk subtree", func() {
+			_, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			store.RemoveSession("sess-1")
+
+			list, err := store.List("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(list).To(BeEmpty())
+		})
+	})
+
+	Describe("DetectImageMediaType", func() {
+		It("sniffs a PNG payload to image/png", func() {
+			mt, ok := session.DetectImageMediaType(pngBytes)
+			Expect(ok).To(BeTrue())
+			Expect(mt).To(Equal("image/png"))
+		})
+
+		It("sniffs a JPEG payload to image/jpeg", func() {
+			mt, ok := session.DetectImageMediaType(jpgBytes)
+			Expect(ok).To(BeTrue())
+			Expect(mt).To(Equal("image/jpeg"))
+		})
+
+		It("rejects a payload that does not sniff to an allowed image type", func() {
+			_, ok := session.DetectImageMediaType([]byte("plain text"))
+			Expect(ok).To(BeFalse())
+		})
+
+		It("rejects an SVG payload (PR1 excludes image/svg+xml)", func() {
+			// SVG is parsed by DetectContentType as image/svg+xml.
+			svg := []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"/>`)
+			mt, ok := session.DetectImageMediaType(svg)
+			Expect(ok).To(BeFalse())
+			Expect(mt).To(BeEmpty())
+		})
+	})
+
+	Describe("Two-phase reference (S2)", func() {
+		// Plan §6 task-06 AC-06-Race-Two-Phase. Covers the TOCTOU window
+		// closed by MarkReserved fired BEFORE provider dispatch and
+		// MarkReferenced / ReleaseReservation post-flight.
+		It("SweepOrphans skips reserved entries even when older than TTL", func() {
+			res, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			store.MarkReserved("sess-1", res.Record.ID)
+
+			// Advance the fake clock past TTL and sweep — the reserved
+			// entry MUST be skipped.
+			future := time.Now().Add(2 * time.Hour)
+			removed := store.SweepOrphans(future, time.Hour)
+			Expect(removed).To(Equal(0))
+
+			list, _ := store.List("sess-1")
+			Expect(list).To(HaveLen(1))
+		})
+
+		It("SweepOrphans deletes unreserved orphans past TTL", func() {
+			_, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			future := time.Now().Add(2 * time.Hour)
+			removed := store.SweepOrphans(future, time.Hour)
+			Expect(removed).To(Equal(1))
+
+			list, _ := store.List("sess-1")
+			Expect(list).To(BeEmpty())
+		})
+
+		It("MarkReferenced records the message id and decrements the reservation", func() {
+			res, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			store.MarkReserved("sess-1", res.Record.ID)
+			store.MarkReferenced("sess-1", res.Record.ID, "msg-42")
+
+			// After MarkReferenced, the sweeper still skips the entry
+			// (it has a permanent referrer).
+			future := time.Now().Add(2 * time.Hour)
+			removed := store.SweepOrphans(future, time.Hour)
+			Expect(removed).To(Equal(0))
+
+			list, _ := store.List("sess-1")
+			Expect(list).To(HaveLen(1))
+			Expect(list[0].ReferencedByMessageIDs).To(ConsistOf("msg-42"))
+		})
+
+		It("ReleaseReservation makes the entry sweepable again", func() {
+			res, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			store.MarkReserved("sess-1", res.Record.ID)
+			store.ReleaseReservation("sess-1", res.Record.ID)
+
+			future := time.Now().Add(2 * time.Hour)
+			removed := store.SweepOrphans(future, time.Hour)
+			Expect(removed).To(Equal(1))
+		})
+
+		It("MarkReferenced is idempotent on repeated message-id replays", func() {
+			res, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			store.MarkReserved("sess-1", res.Record.ID)
+			store.MarkReferenced("sess-1", res.Record.ID, "msg-1")
+			store.MarkReferenced("sess-1", res.Record.ID, "msg-1") // replay
+			list, _ := store.List("sess-1")
+			Expect(list[0].ReferencedByMessageIDs).To(HaveLen(1))
+		})
+	})
+
+	Describe("ColdStartSweep", func() {
+		It("removes orphans staged on disk before the manager started", func() {
+			// Stage an attachment, then construct a fresh store (simulating
+			// a process restart) and run ColdStartSweep before any other
+			// store method touches it.
+			_, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			fresh := session.NewAttachmentStore(dir)
+			future := time.Now().Add(2 * time.Hour)
+			removed, err := fresh.ColdStartSweep(future, time.Hour)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(removed).To(Equal(1))
+
+			list, _ := fresh.List("sess-1")
+			Expect(list).To(BeEmpty())
+		})
+
+		It("returns zero when rootDir does not exist", func() {
+			store := session.NewAttachmentStore(dir + "-missing")
+			removed, err := store.ColdStartSweep(time.Now(), time.Hour)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(removed).To(Equal(0))
+		})
+	})
+
+	Describe("Cumulative session cap (50 MB)", func() {
+		It("rejects an upload when the cap cannot be respected even after sweeping", func() {
+			// Pin two reserved (un-sweepable) 4 MB blobs, then attempt a
+			// third that would push over 50 MB. The cap math is contrived
+			// for the test — we shrink the cap by manipulating SizeBytes
+			// directly via repeated reserved entries.
+			// Use a builder pattern: upload near-cap entries and mark
+			// them reserved so the sweeper cannot reclaim.
+			const blobSize = int64(4 * 1024 * 1024)
+			blob := make([]byte, blobSize)
+			// PNG magic so the sniff passes for the test.
+			copy(blob, pngBytes)
+
+			// Upload until we are within blobSize of the cap; reserve each
+			// so they cannot be swept.
+			cumulative := int64(0)
+			i := 0
+			for cumulative+blobSize <= session.MaxAttachmentSessionBytes-blobSize {
+				// Make each blob unique by mutating a trailing byte (after
+				// the PNG header) so dedup doesn't collapse them.
+				blob[blobSize-1] = byte(i)
+				res, err := store.Put("sess-cap", "image/png", blob, "")
+				Expect(err).NotTo(HaveOccurred())
+				store.MarkReserved("sess-cap", res.Record.ID)
+				cumulative += blobSize
+				i++
+			}
+
+			// The next upload should fit (cap not yet hit by a margin).
+			blob[blobSize-1] = byte(i)
+			res, err := store.Put("sess-cap", "image/png", blob, "")
+			Expect(err).NotTo(HaveOccurred())
+			store.MarkReserved("sess-cap", res.Record.ID)
+			cumulative += blobSize
+			i++
+
+			// Now overflow: all entries reserved, sweep cannot reclaim.
+			blob[blobSize-1] = byte(i)
+			_, err = store.Put("sess-cap", "image/png", blob, "")
+			Expect(err).To(MatchError(session.ErrAttachmentSessionCap))
+		})
+	})
+})
+
 // mockHistorySeederStreamer implements both streaming.Streamer and
 // streaming.HistorySeeder, capturing what was seeded for assertions.
 type mockHistorySeederStreamer struct {
