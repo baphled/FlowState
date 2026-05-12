@@ -97,10 +97,25 @@ type Message struct {
 // provider does not use it. SizeBytes carries the on-disk size for
 // the 25 MB per-request ceiling check (task-04 AC).
 //
+// Kind is the attachment-class discriminant introduced in PR4 of plan
+// "Chat Attachments Backend (May 2026)" §6 task-14: "image" or
+// "document". An empty Kind defaults to "image" so PR1-era state
+// (persisted records without a Kind field) and any caller that hasn't
+// migrated yet continues to produce the existing image-block shape
+// (backwards-compat per AC-14-Detect-CallSites-Preserved).
+//
+// Provider translators read Kind to discriminate native content-block
+// shapes — Anthropic threads documents through NewDocumentBlock with
+// the Base64PDFSourceParam variant, every other provider's translator
+// silently skips Kind=="document" with a structured slog.Warn at the
+// engine seam (the upload-time gate is the primary defence; this is
+// the latent-surface backstop per task-15 / R13).
+//
 // All fields zero-valued is a legal empty Attachment — callers
 // should treat a zero ID as "skip this entry".
 type Attachment struct {
 	ID               string
+	Kind             string
 	MediaType        string
 	OriginalFilename string
 	SizeBytes        int64

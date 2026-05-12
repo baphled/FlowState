@@ -73,11 +73,23 @@ var (
 )
 
 // Attachment size and count caps. Plan §1 / §6 task-02.
+//
+// Image caps (MaxAttachmentFileBytes / MaxAttachmentSessionBytes /
+// MaxAttachmentsPerRequest) keep their PR1 values. PR4 introduces
+// independent document-cap constants per plan §6 task-14:
+//
+//   - MaxPDFFileSize          — 10 MiB per-file
+//   - MaxPDFsPerMessage       —  5 PDFs per multipart upload
+//   - MaxDocumentBudgetPerSession — 100 MiB per-session cumulative
+//
+// Document and image budgets are tracked independently (separate
+// persisted counters on the sidecar — see attachmentIndex below);
+// uploading a PDF does NOT decrement the image budget and vice versa.
 const (
-	// MaxAttachmentFileBytes is the per-file ceiling (5 MB).
+	// MaxAttachmentFileBytes is the per-file ceiling for images (5 MB).
 	MaxAttachmentFileBytes int64 = 5 * 1024 * 1024
 	// MaxAttachmentSessionBytes is the cumulative per-session ceiling
-	// (50 MB). When the cap is exceeded, oldest non-referenced
+	// for images (50 MB). When the cap is exceeded, oldest non-referenced
 	// entries are swept first; a true overflow returns
 	// ErrAttachmentSessionCap.
 	MaxAttachmentSessionBytes int64 = 50 * 1024 * 1024
@@ -85,6 +97,26 @@ const (
 	// constant lives here so the API layer can import it without a
 	// second source of truth.
 	MaxAttachmentsPerRequest = 10
+	// MaxPDFFileSize is the per-file ceiling for PDFs (10 MiB).
+	// Plan §6 task-14 / §7a cap-precedence step 2.
+	MaxPDFFileSize int64 = 10 * 1024 * 1024
+	// MaxPDFsPerMessage is the per-multipart count cap for PDFs.
+	// Plan §6 task-14 / §7a cap-precedence step 3.
+	MaxPDFsPerMessage = 5
+	// MaxDocumentBudgetPerSession is the cumulative per-session ceiling
+	// for document attachments (100 MiB). Independent of the image
+	// budget — neither budget overlaps the other on disk or in
+	// accounting.
+	MaxDocumentBudgetPerSession int64 = 100 * 1024 * 1024
+)
+
+// Attachment-kind discriminant values mirrored from
+// provider.Attachment.Kind. An empty string defaults to "image" per
+// AC-14-Detect-CallSites-Preserved so PR1-era records that omit the
+// field round-trip unchanged.
+const (
+	AttachmentKindImage    = "image"
+	AttachmentKindDocument = "document"
 )
 
 // attachmentIndexFile is the metadata sidecar filename inside each
@@ -92,13 +124,19 @@ const (
 const attachmentIndexFile = ".index.json"
 
 // allowedImageMediaTypes is the PR1 allow-list (lower-case, no params).
-// PR4 will extend this with application/pdf via a separate code path
-// per plan §6 task-14 — image-only stays focused for PR1.
+// PR4 extends document support via the parallel allowedDocumentMediaTypes
+// map below (PDFs only).
 var allowedImageMediaTypes = map[string]string{
 	"image/jpeg": ".jpg",
 	"image/png":  ".png",
 	"image/gif":  ".gif",
 	"image/webp": ".webp",
+}
+
+// allowedDocumentMediaTypes is the PR4 document allow-list. PDFs only —
+// no text/csv/docx/xlsx in this PR. Plan §6 task-14 AC.
+var allowedDocumentMediaTypes = map[string]string{
+	"application/pdf": ".pdf",
 }
 
 // AttachmentRecord is the persisted metadata entry for a single uploaded
@@ -117,6 +155,7 @@ var allowedImageMediaTypes = map[string]string{
 // commit (sweeper.go).
 type AttachmentRecord struct {
 	ID                     string    `json:"id"`
+	Kind                   string    `json:"kind,omitempty"`
 	MediaType              string    `json:"media_type"`
 	SizeBytes              int64     `json:"size_bytes"`
 	OriginalFilename       string    `json:"original_filename,omitempty"`
@@ -133,9 +172,33 @@ type AttachmentRecord struct {
 	reserved atomic.Int32 `json:"-"`
 }
 
+// effectiveKind returns the record's Kind discriminant, defaulting to
+// AttachmentKindImage for backwards-compat with PR1-era records that
+// omitted the field. See AC-14-Detect-CallSites-Preserved.
+func (r *AttachmentRecord) effectiveKind() string {
+	if r.Kind == "" {
+		return AttachmentKindImage
+	}
+	return r.Kind
+}
+
 // attachmentIndex is the on-disk shape of .index.json.
+//
+// PR4 (plan §6 task-14 AC-14-Budget-Counters-Introduced) adds two
+// persisted budget counters alongside Entries:
+//
+//   - ImageBytesUsed     — cumulative bytes of all "image" records
+//   - DocumentBytesUsed  — cumulative bytes of all "document" records
+//
+// PR1-era sidecars on disk carry only `entries`. On first read,
+// ensureLoadedLocked walks the entries and backfills both counters from
+// SizeBytes per Kind (empty Kind → image bucket per
+// effectiveKind()). The next mutation persists the sidecar in the new
+// shape via atomicwrite.File (AC-14-First-Read-Backfill).
 type attachmentIndex struct {
-	Entries []*AttachmentRecord `json:"entries"`
+	Entries           []*AttachmentRecord `json:"entries"`
+	ImageBytesUsed    int64               `json:"image_bytes_used,omitempty"`
+	DocumentBytesUsed int64               `json:"document_bytes_used,omitempty"`
 }
 
 // AttachmentStore is the per-manager handle into the on-disk attachment
@@ -155,11 +218,22 @@ type attachmentIndex struct {
 // store, not per session); a future multi-server architecture would
 // shard by sessionID.
 type AttachmentStore struct {
-	mu        sync.Mutex
-	rootDir   string                                  // <sessionsDir>
-	sessions  map[string]map[string]*AttachmentRecord // sessionID → id → record
-	loaded    map[string]bool                         // sessionID → loaded
-	allowList map[string]string                       // media type → ext
+	mu       sync.Mutex
+	rootDir  string                                  // <sessionsDir>
+	sessions map[string]map[string]*AttachmentRecord // sessionID → id → record
+	loaded   map[string]bool                         // sessionID → loaded
+	// allowList covers image media types (legacy PR1 surface kept for
+	// the IsAllowedMediaType / AllowedMediaTypes / ExtensionForMediaType
+	// callers that pre-date the document kind). Document media types
+	// live in documentAllowList.
+	allowList         map[string]string // image media type → ext
+	documentAllowList map[string]string // document media type → ext
+	// imageBytesUsed and documentBytesUsed track the persisted per-kind
+	// budgets loaded from the .index.json sidecar (with first-read
+	// backfill from Entries[] for PR1-era state per
+	// AC-14-First-Read-Backfill).
+	imageBytesUsed    map[string]int64 // sessionID → bytes
+	documentBytesUsed map[string]int64 // sessionID → bytes
 }
 
 // NewAttachmentStore constructs a store rooted at sessionsDir. An empty
@@ -183,11 +257,18 @@ func NewAttachmentStore(rootDir string) *AttachmentStore {
 	for k, v := range allowedImageMediaTypes {
 		allowList[k] = v
 	}
+	docAllowList := make(map[string]string, len(allowedDocumentMediaTypes))
+	for k, v := range allowedDocumentMediaTypes {
+		docAllowList[k] = v
+	}
 	return &AttachmentStore{
-		rootDir:   rootDir,
-		sessions:  make(map[string]map[string]*AttachmentRecord),
-		loaded:    make(map[string]bool),
-		allowList: allowList,
+		rootDir:           rootDir,
+		sessions:          make(map[string]map[string]*AttachmentRecord),
+		loaded:            make(map[string]bool),
+		allowList:         allowList,
+		documentAllowList: docAllowList,
+		imageBytesUsed:    make(map[string]int64),
+		documentBytesUsed: make(map[string]int64),
 	}
 }
 
@@ -231,11 +312,18 @@ func (s *AttachmentStore) Put(sessionID, mediaType string, data []byte, original
 	if sessionID == "" {
 		return AttachmentPutResult{}, errors.New("attachment: empty session id")
 	}
-	ext, ok := s.allowList[mediaType]
+
+	// Discriminate kind by allow-list. Plan §6 task-14: image and
+	// document allow-lists are separate (allowedImageMediaTypes /
+	// allowedDocumentMediaTypes). Per-file caps and per-session
+	// budgets are also separate (images: MaxAttachmentFileBytes /
+	// MaxAttachmentSessionBytes; documents: MaxPDFFileSize /
+	// MaxDocumentBudgetPerSession).
+	kind, ext, fileCap, ok := s.classifyMediaTypeLocked(mediaType)
 	if !ok {
 		return AttachmentPutResult{}, ErrAttachmentUnsupportedType
 	}
-	if int64(len(data)) > MaxAttachmentFileBytes {
+	if int64(len(data)) > fileCap {
 		return AttachmentPutResult{}, ErrAttachmentTooLarge
 	}
 
@@ -255,13 +343,17 @@ func (s *AttachmentStore) Put(sessionID, mediaType string, data []byte, original
 	}
 
 	// Cumulative cap with reactive sweep — drop oldest non-referenced
-	// entries until adding this attachment fits. AC-02 in the plan.
-	if err := s.makeRoomLocked(sessionID, int64(len(data))); err != nil {
+	// entries of the SAME kind until adding this attachment fits.
+	// Per AC-14-Budget-Counters-Introduced budgets are tracked
+	// independently per kind, so an oversized PDF never sweeps an
+	// image (and vice versa).
+	if err := s.makeRoomLocked(sessionID, kind, int64(len(data))); err != nil {
 		return AttachmentPutResult{}, err
 	}
 
 	rec := &AttachmentRecord{
 		ID:               contentHash,
+		Kind:             kind,
 		MediaType:        mediaType,
 		SizeBytes:        int64(len(data)),
 		OriginalFilename: originalFilename,
@@ -280,14 +372,74 @@ func (s *AttachmentStore) Put(sessionID, mediaType string, data []byte, original
 	}
 
 	s.sessions[sessionID][contentHash] = rec
+	s.addToBudgetLocked(sessionID, kind, rec.SizeBytes)
 	if err := s.persistIndexLocked(sessionID); err != nil {
 		// Best-effort rollback so we never leak a binary without an
 		// index entry pointing at it.
 		delete(s.sessions[sessionID], contentHash)
+		s.addToBudgetLocked(sessionID, kind, -rec.SizeBytes)
 		_ = os.Remove(filePath)
 		return AttachmentPutResult{}, fmt.Errorf("attachment: persisting index: %w", err)
 	}
 	return AttachmentPutResult{Record: rec, Duplicate: false}, nil
+}
+
+// classifyMediaTypeLocked maps a media type to (kind, ext, file-cap)
+// using the per-kind allow-lists. Returns ok=false for off-allow-list
+// types. Safe to call without holding s.mu — reads happen against
+// allow-list maps that are immutable after construction.
+func (s *AttachmentStore) classifyMediaTypeLocked(
+	mediaType string,
+) (kind, ext string, fileCap int64, ok bool) {
+	if ext, found := s.allowList[mediaType]; found {
+		return AttachmentKindImage, ext, MaxAttachmentFileBytes, true
+	}
+	if ext, found := s.documentAllowList[mediaType]; found {
+		return AttachmentKindDocument, ext, MaxPDFFileSize, true
+	}
+	return "", "", 0, false
+}
+
+// addToBudgetLocked mutates the per-session per-kind byte counter by
+// delta (positive on add, negative on remove). Caller must hold s.mu.
+func (s *AttachmentStore) addToBudgetLocked(sessionID, kind string, delta int64) {
+	switch kind {
+	case AttachmentKindDocument:
+		s.documentBytesUsed[sessionID] += delta
+		if s.documentBytesUsed[sessionID] < 0 {
+			s.documentBytesUsed[sessionID] = 0
+		}
+	default:
+		// Treat empty kind as image per effectiveKind().
+		s.imageBytesUsed[sessionID] += delta
+		if s.imageBytesUsed[sessionID] < 0 {
+			s.imageBytesUsed[sessionID] = 0
+		}
+	}
+}
+
+// ImageBytesUsed reports the cumulative bytes of image attachments
+// persisted for the session. Returns zero for unknown sessions.
+// Lazy-loads the sidecar.
+func (s *AttachmentStore) ImageBytesUsed(sessionID string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoadedLocked(sessionID); err != nil {
+		return 0
+	}
+	return s.imageBytesUsed[sessionID]
+}
+
+// DocumentBytesUsed reports the cumulative bytes of document
+// attachments persisted for the session. Returns zero for unknown
+// sessions. Lazy-loads the sidecar.
+func (s *AttachmentStore) DocumentBytesUsed(sessionID string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoadedLocked(sessionID); err != nil {
+		return 0
+	}
+	return s.documentBytesUsed[sessionID]
 }
 
 // Get returns the record and binary bytes for the given attachment id
@@ -384,6 +536,8 @@ func (s *AttachmentStore) RemoveSession(sessionID string) {
 	defer s.mu.Unlock()
 	delete(s.sessions, sessionID)
 	delete(s.loaded, sessionID)
+	delete(s.imageBytesUsed, sessionID)
+	delete(s.documentBytesUsed, sessionID)
 	if s.rootDir == "" {
 		return
 	}
@@ -565,14 +719,19 @@ func (s *AttachmentStore) AllowedMediaTypes() map[string]string {
 	return out
 }
 
-// DetectImageMediaType cross-checks an upload's claimed content-type
-// against the bytes by calling net/http.DetectContentType. Returns the
-// authoritative media type (always lower-case, without the charset
-// parameter) and ok=true when the detection matches the PR1 allow-list.
+// DetectMediaType cross-checks an upload's claimed content-type against
+// the bytes by calling net/http.DetectContentType, with an additional
+// PDF magic-byte sniff (DetectContentType returns "application/pdf"
+// for the %PDF- prefix on Go 1.17+, so the explicit prefix check is
+// belt-and-braces against an environment where the stdlib sniff is
+// out of date). Returns the authoritative media type, the attachment
+// kind ("image" or "document"), and the canonical extension when the
+// bytes match an allowed type.
 //
-// Used by the upload handler so a renamed .exe-as-.png cannot slip
-// past the allow-list — the bytes themselves are the source of truth.
-// Plan §6 task-03 acceptance criteria.
+// Plan §6 task-14: extends task-03's image-only sniff to cover PDFs
+// alongside images. The thin wrapper DetectImageMediaType (below)
+// keeps the PR1 contract — every existing call site continues to
+// compile and pass unchanged per AC-14-Detect-CallSites-Preserved.
 //
 // Expected:
 //   - data is the file's leading bytes (DetectContentType reads the
@@ -580,18 +739,43 @@ func (s *AttachmentStore) AllowedMediaTypes() map[string]string {
 //     what DetectContentType actually needs internally.
 //
 // Returns:
-//   - The detected media type and true when on the allow-list.
-//   - Empty string and false when the bytes do not sniff to an allowed
-//     image type.
-func DetectImageMediaType(data []byte) (string, bool) {
+//   - kind: "image" or "document" when ok=true; empty when ok=false.
+//   - mediaType: the validated media type (e.g. "image/png",
+//     "application/pdf").
+//   - ext: the canonical file extension (e.g. ".png", ".pdf").
+//   - err: nil on success; ErrAttachmentUnsupportedType when the
+//     bytes do not match any allowed type.
+func DetectMediaType(data []byte) (kind, mediaType, ext string, err error) {
 	sniff := http.DetectContentType(data)
-	// DetectContentType returns "image/png" for PNG, "image/jpeg" for
-	// JPEG, "image/gif" for GIF; webp is returned as "image/webp" on
-	// Go 1.17+ where the magic bytes (RIFF...WEBP) are recognised.
-	if _, ok := allowedImageMediaTypes[sniff]; ok {
-		return sniff, true
+	if ext, ok := allowedImageMediaTypes[sniff]; ok {
+		return AttachmentKindImage, sniff, ext, nil
 	}
-	return "", false
+	if ext, ok := allowedDocumentMediaTypes[sniff]; ok {
+		return AttachmentKindDocument, sniff, ext, nil
+	}
+	// Defence in depth: %PDF- magic bytes may not be recognised by an
+	// older stdlib release in unusual build envs — explicit prefix
+	// check catches those.
+	if len(data) >= 5 && string(data[:5]) == "%PDF-" {
+		return AttachmentKindDocument, "application/pdf", ".pdf", nil
+	}
+	return "", "", "", ErrAttachmentUnsupportedType
+}
+
+// DetectImageMediaType is the PR1-era thin wrapper around DetectMediaType
+// kept for backwards-compat with every existing call site (production
+// upload handler + four manager_test.go cases). Returns the detected
+// image media type and ok=true only when the bytes sniff to an
+// allow-listed image — a PDF returns ok=false, mirroring the original
+// image-only contract.
+//
+// AC-14-Detect-CallSites-Preserved.
+func DetectImageMediaType(data []byte) (string, bool) {
+	kind, mt, _, err := DetectMediaType(data)
+	if err != nil || kind != AttachmentKindImage {
+		return "", false
+	}
+	return mt, true
 }
 
 // --- internal helpers ----------------------------------------------------
@@ -635,6 +819,28 @@ func (s *AttachmentStore) ensureLoadedLocked(sessionID string) error {
 	for _, rec := range idx.Entries {
 		s.sessions[sessionID][rec.ID] = rec
 	}
+	// Counter backfill (AC-14-First-Read-Backfill): a PR1-era sidecar
+	// carries `entries` but no counter fields. Persisted counters,
+	// when present, are authoritative; otherwise sum SizeBytes per
+	// effectiveKind() so a mid-session upgrade from PR1 → PR4 carries
+	// the existing image budget forward and starts the document
+	// counter at zero (PR1-era sessions never contained documents).
+	if idx.ImageBytesUsed > 0 || idx.DocumentBytesUsed > 0 {
+		s.imageBytesUsed[sessionID] = idx.ImageBytesUsed
+		s.documentBytesUsed[sessionID] = idx.DocumentBytesUsed
+	} else {
+		var imgTotal, docTotal int64
+		for _, rec := range idx.Entries {
+			switch rec.effectiveKind() {
+			case AttachmentKindDocument:
+				docTotal += rec.SizeBytes
+			default:
+				imgTotal += rec.SizeBytes
+			}
+		}
+		s.imageBytesUsed[sessionID] = imgTotal
+		s.documentBytesUsed[sessionID] = docTotal
+	}
 	s.loaded[sessionID] = true
 	return nil
 }
@@ -652,7 +858,11 @@ func (s *AttachmentStore) persistIndexLocked(sessionID string) error {
 		records = append(records, rec)
 	}
 	sortRecordsByUploadedAt(records)
-	idx := attachmentIndex{Entries: records}
+	idx := attachmentIndex{
+		Entries:           records,
+		ImageBytesUsed:    s.imageBytesUsed[sessionID],
+		DocumentBytesUsed: s.documentBytesUsed[sessionID],
+	}
 	data, err := json.MarshalIndent(idx, "", "  ")
 	if err != nil {
 		return fmt.Errorf("attachment: marshalling index: %w", err)
@@ -660,36 +870,56 @@ func (s *AttachmentStore) persistIndexLocked(sessionID string) error {
 	return atomicwrite.File(filepath.Join(dir, attachmentIndexFile), data, 0o600)
 }
 
-// cumulativeBytesLocked sums sizes of records currently in the session.
-func (s *AttachmentStore) cumulativeBytesLocked(sessionID string) int64 {
-	var total int64
-	for _, rec := range s.sessions[sessionID] {
-		total += rec.SizeBytes
+// cumulativeBytesLocked sums sizes of records of a given kind currently
+// in the session. Kinds are tracked independently per
+// AC-14-Budget-Counters-Introduced. Caller must hold s.mu.
+func (s *AttachmentStore) cumulativeBytesLocked(sessionID, kind string) int64 {
+	switch kind {
+	case AttachmentKindDocument:
+		return s.documentBytesUsed[sessionID]
+	default:
+		return s.imageBytesUsed[sessionID]
 	}
-	return total
 }
 
-// makeRoomLocked sweeps oldest unreferenced records until incoming
-// bytes fit under the session cap, or returns ErrAttachmentSessionCap
-// when the cap cannot be respected without destroying referenced data.
-func (s *AttachmentStore) makeRoomLocked(sessionID string, incoming int64) error {
-	if incoming > MaxAttachmentSessionBytes {
+// budgetForKind returns the per-session cap for the given kind.
+func budgetForKind(kind string) int64 {
+	switch kind {
+	case AttachmentKindDocument:
+		return MaxDocumentBudgetPerSession
+	default:
+		return MaxAttachmentSessionBytes
+	}
+}
+
+// makeRoomLocked sweeps oldest unreferenced records of the same kind
+// until incoming bytes fit under the per-kind session cap, or returns
+// ErrAttachmentSessionCap when the cap cannot be respected without
+// destroying referenced data. Cross-kind eviction never occurs — a
+// PDF upload over the document budget will not evict images, and vice
+// versa (AC-14-Budget-Counters-Introduced).
+func (s *AttachmentStore) makeRoomLocked(sessionID, kind string, incoming int64) error {
+	cap := budgetForKind(kind)
+	if incoming > cap {
 		// A single file bigger than the whole cap is impossible by the
 		// per-file cap, but defend in depth.
 		return ErrAttachmentSessionCap
 	}
-	cur := s.cumulativeBytesLocked(sessionID)
-	if cur+incoming <= MaxAttachmentSessionBytes {
+	cur := s.cumulativeBytesLocked(sessionID, kind)
+	if cur+incoming <= cap {
 		return nil
 	}
-	// Sweep oldest-first non-referenced entries.
+	// Sweep oldest-first non-referenced entries of the same kind only.
 	records := make([]*AttachmentRecord, 0, len(s.sessions[sessionID]))
 	for _, rec := range s.sessions[sessionID] {
+		if rec.effectiveKind() != kind {
+			continue
+		}
 		records = append(records, rec)
 	}
 	sortRecordsByUploadedAt(records)
 	for _, rec := range records {
-		if cur+incoming <= MaxAttachmentSessionBytes {
+		if cur+incoming <= cap {
 			break
 		}
 		if rec.reserved.Load() > 0 {
@@ -702,17 +932,19 @@ func (s *AttachmentStore) makeRoomLocked(sessionID string, incoming int64) error
 		s.removeRecordLocked(sessionID, rec)
 		cur -= rec.SizeBytes
 	}
-	if cur+incoming > MaxAttachmentSessionBytes {
+	if cur+incoming > cap {
 		return ErrAttachmentSessionCap
 	}
 	return nil
 }
 
 // removeRecordLocked deletes a record from the in-memory index and its
-// binary file from disk. Persistence of the new index shape is the
-// caller's responsibility (typically batched with another mutation).
+// binary file from disk and decrements the per-kind budget counter.
+// Persistence of the new index shape is the caller's responsibility
+// (typically batched with another mutation).
 func (s *AttachmentStore) removeRecordLocked(sessionID string, rec *AttachmentRecord) {
 	delete(s.sessions[sessionID], rec.ID)
+	s.addToBudgetLocked(sessionID, rec.effectiveKind(), -rec.SizeBytes)
 	if s.rootDir == "" {
 		return
 	}

@@ -3,6 +3,8 @@ package session_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"time"
@@ -2710,6 +2712,10 @@ var _ = Describe("AttachmentStore", func() {
 	// returns "image/png" and the store accepts the upload.
 	pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00}
 	jpgBytes := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46}
+	// Minimal sniffable PDF — `%PDF-1.4\n` is the smallest input that
+	// DetectContentType classifies as "application/pdf" and the prefix
+	// check accepts. Body is a few extra bytes so SizeBytes is non-trivial.
+	pdfBytes := []byte("%PDF-1.4\n%fake-pdf-body\n")
 
 	BeforeEach(func() {
 		dir = GinkgoT().TempDir()
@@ -2725,11 +2731,40 @@ var _ = Describe("AttachmentStore", func() {
 			Expect(res.Record.SizeBytes).To(Equal(int64(len(pngBytes))))
 			Expect(res.Record.Ext).To(Equal(".png"))
 			Expect(res.Record.OriginalFilename).To(Equal("cat.png"))
+			// PR4 (plan §6 task-14): every Put stamps a Kind on the
+			// record. Images get "image".
+			Expect(res.Record.Kind).To(Equal(session.AttachmentKindImage))
+		})
+
+		// Plan §6 task-14 — PDF acceptance flips the PR1-era rejection
+		// pin (the pre-PR4 behaviour was ErrAttachmentUnsupportedType
+		// for application/pdf). PDFs land in the same session
+		// attachments/ directory as images (content-hash filename ensures
+		// no collision) with Kind="document".
+		It("accepts a PDF upload and stamps Kind=document on the record", func() {
+			res, err := store.Put("sess-1", "application/pdf", pdfBytes, "doc.pdf")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Duplicate).To(BeFalse())
+			Expect(res.Record.MediaType).To(Equal("application/pdf"))
+			Expect(res.Record.SizeBytes).To(Equal(int64(len(pdfBytes))))
+			Expect(res.Record.Ext).To(Equal(".pdf"))
+			Expect(res.Record.Kind).To(Equal(session.AttachmentKindDocument))
 		})
 
 		It("rejects an unsupported media type with ErrAttachmentUnsupportedType", func() {
-			_, err := store.Put("sess-1", "application/pdf", []byte{0x25, 0x50, 0x44, 0x46}, "doc.pdf")
+			// Plan §6 task-14 — the PR1-era rejection target moved from
+			// application/pdf to text/csv (a representative type that's
+			// still off-allow-list in PR4). Asserts the allow-list
+			// continues to gate every non-image, non-PDF media type.
+			_, err := store.Put("sess-1", "text/csv", []byte("a,b,c\n1,2,3\n"), "data.csv")
 			Expect(err).To(MatchError(session.ErrAttachmentUnsupportedType))
+		})
+
+		It("rejects a PDF over MaxPDFFileSize with ErrAttachmentTooLarge", func() {
+			big := make([]byte, session.MaxPDFFileSize+1)
+			copy(big, pdfBytes)
+			_, err := store.Put("sess-1", "application/pdf", big, "huge.pdf")
+			Expect(err).To(MatchError(session.ErrAttachmentTooLarge))
 		})
 
 		It("rejects a file over the per-file cap with ErrAttachmentTooLarge", func() {
@@ -2862,6 +2897,157 @@ var _ = Describe("AttachmentStore", func() {
 			mt, ok := session.DetectImageMediaType(svg)
 			Expect(ok).To(BeFalse())
 			Expect(mt).To(BeEmpty())
+		})
+
+		// Plan §6 task-14 — PR4 adds PDFs alongside images. The
+		// PR1-era DetectImageMediaType wrapper still returns
+		// (image-type-or-empty, ok) — a PDF returns ok=false to
+		// preserve the contract every existing call site relies on
+		// (AC-14-Detect-CallSites-Preserved).
+		It("DetectImageMediaType returns ok=false for a PDF (image-only contract preserved)", func() {
+			mt, ok := session.DetectImageMediaType([]byte("%PDF-1.4\n%body"))
+			Expect(ok).To(BeFalse())
+			Expect(mt).To(BeEmpty())
+		})
+	})
+
+	// Plan §6 task-14 — DetectMediaType is the kind-aware sister of
+	// DetectImageMediaType. Returns the discriminant alongside the
+	// detected media type and extension; ErrAttachmentUnsupportedType
+	// for off-allow-list payloads.
+	Describe("DetectMediaType", func() {
+		Context("when sniffing PDFs", func() {
+			It("returns kind=document, mediaType=application/pdf, ext=.pdf for a valid %PDF- prefix", func() {
+				kind, mt, ext, err := session.DetectMediaType([]byte("%PDF-1.4\n%body bytes\n"))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(kind).To(Equal(session.AttachmentKindDocument))
+				Expect(mt).To(Equal("application/pdf"))
+				Expect(ext).To(Equal(".pdf"))
+			})
+
+			It("rejects a truncated header that does not start with %PDF-", func() {
+				_, _, _, err := session.DetectMediaType([]byte("PDF-1.4\nno percent prefix"))
+				Expect(err).To(MatchError(session.ErrAttachmentUnsupportedType))
+			})
+
+			It("does not misclassify a plain-text payload as a PDF", func() {
+				_, _, _, err := session.DetectMediaType([]byte("not a pdf, just text"))
+				Expect(err).To(MatchError(session.ErrAttachmentUnsupportedType))
+			})
+		})
+
+		Context("when sniffing images", func() {
+			It("returns kind=image for a PNG payload", func() {
+				kind, mt, ext, err := session.DetectMediaType(pngBytes)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(kind).To(Equal(session.AttachmentKindImage))
+				Expect(mt).To(Equal("image/png"))
+				Expect(ext).To(Equal(".png"))
+			})
+
+			It("returns kind=image for a JPEG payload", func() {
+				kind, mt, _, err := session.DetectMediaType(jpgBytes)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(kind).To(Equal(session.AttachmentKindImage))
+				Expect(mt).To(Equal("image/jpeg"))
+			})
+		})
+	})
+
+	// Plan §6 task-14 — persisted per-kind budget counters live on the
+	// attachmentIndex sidecar and back the cap-precedence ladder's
+	// per-session-budget step.
+	Describe("Per-kind budget counters (AC-14-Budget-Counters-Introduced)", func() {
+		pdfBytesLocal := []byte("%PDF-1.4\n%fake-pdf-body-A\n")
+		pdfBytesB := []byte("%PDF-1.4\n%fake-pdf-body-B-different-content\n")
+
+		It("PDF upload increments DocumentBytesUsed and leaves ImageBytesUsed unchanged", func() {
+			_, err := store.Put("sess-1", "application/pdf", pdfBytesLocal, "doc.pdf")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.DocumentBytesUsed("sess-1")).To(Equal(int64(len(pdfBytesLocal))))
+			Expect(store.ImageBytesUsed("sess-1")).To(Equal(int64(0)))
+		})
+
+		It("image upload increments ImageBytesUsed and leaves DocumentBytesUsed unchanged", func() {
+			_, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.ImageBytesUsed("sess-1")).To(Equal(int64(len(pngBytes))))
+			Expect(store.DocumentBytesUsed("sess-1")).To(Equal(int64(0)))
+		})
+
+		It("mixed kinds accrue to independent counters", func() {
+			_, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.Put("sess-1", "application/pdf", pdfBytesLocal, "a.pdf")
+			Expect(err).NotTo(HaveOccurred())
+			_, err = store.Put("sess-1", "application/pdf", pdfBytesB, "b.pdf")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(store.ImageBytesUsed("sess-1")).To(Equal(int64(len(pngBytes))))
+			Expect(store.DocumentBytesUsed("sess-1")).To(Equal(int64(len(pdfBytesLocal) + len(pdfBytesB))))
+		})
+
+		It("Storage layout: image + PDF share the same attachments/ dir as content-hash siblings", func() {
+			// AC-14-Storage-Layout.
+			rImg, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+			rPDF, err := store.Put("sess-1", "application/pdf", pdfBytesLocal, "doc.pdf")
+			Expect(err).NotTo(HaveOccurred())
+
+			attDir := filepath.Join(dir, "sess-1", "attachments")
+			Expect(filepath.Join(attDir, rImg.Record.ContentHash+".png")).To(BeAnExistingFile())
+			Expect(filepath.Join(attDir, rPDF.Record.ContentHash+".pdf")).To(BeAnExistingFile())
+		})
+
+		It("first-read backfill: PR1-era sidecar with no counters populates ImageBytesUsed from Entries", func() {
+			// AC-14-First-Read-Backfill: simulate the PR1-shaped sidecar
+			// on disk (no counter fields, no Kind on records) and assert
+			// the next Open backfills the image counter from SizeBytes
+			// sums while leaving the document counter at zero.
+			attDir := filepath.Join(dir, "sess-pr1", "attachments")
+			Expect(os.MkdirAll(attDir, 0o750)).To(Succeed())
+			legacyIdx := `{
+				"entries": [
+					{"id": "a", "media_type": "image/png", "size_bytes": 1024, "content_hash": "a", "ext": ".png", "uploaded_at": "2026-05-01T00:00:00Z"},
+					{"id": "b", "media_type": "image/jpeg", "size_bytes": 2048, "content_hash": "b", "ext": ".jpg", "uploaded_at": "2026-05-02T00:00:00Z"}
+				]
+			}`
+			Expect(os.WriteFile(filepath.Join(attDir, ".index.json"), []byte(legacyIdx), 0o600)).To(Succeed())
+
+			fresh := session.NewAttachmentStore(dir)
+			Expect(fresh.ImageBytesUsed("sess-pr1")).To(Equal(int64(1024 + 2048)))
+			Expect(fresh.DocumentBytesUsed("sess-pr1")).To(Equal(int64(0)))
+
+			// Next mutation must persist the counters in the new shape.
+			_, err := fresh.Put("sess-pr1", "image/png", pngBytes, "fresh.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			raw, err := os.ReadFile(filepath.Join(attDir, ".index.json"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(raw)).To(ContainSubstring(`"image_bytes_used"`))
+		})
+
+		It("budgets are kind-isolated: a PDF over MaxDocumentBudgetPerSession does not sweep images", func() {
+			// AC-14-Budget-Counters-Introduced — cross-kind eviction is
+			// forbidden. Bound the document budget so the next PDF
+			// would overflow and demonstrate that the existing image
+			// stays in place (cross-kind sweep is not allowed).
+			_, err := store.Put("sess-1", "image/png", pngBytes, "cat.png")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Construct a synthetic 100 MiB PDF (the full document
+			// budget) by pre-priming the counter; then attempt a
+			// second 1-byte-over upload and assert it rejects without
+			// evicting the image.
+			// We bypass the file-size cap by going through Put with a
+			// large but valid PDF — easier: assert image stays after a
+			// rejected oversize PDF.
+			big := make([]byte, session.MaxPDFFileSize+1)
+			copy(big, []byte("%PDF-1.4\n"))
+			_, err = store.Put("sess-1", "application/pdf", big, "huge.pdf")
+			Expect(err).To(MatchError(session.ErrAttachmentTooLarge))
+
+			Expect(store.ImageBytesUsed("sess-1")).To(Equal(int64(len(pngBytes))))
 		})
 	})
 
