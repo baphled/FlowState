@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 
 interface Props {
   toolName: string
@@ -15,6 +15,23 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const isOpen = ref(props.defaultOpen)
+
+// UI Parity bug-fix bundle (May 2026). P0-3: pre-fix isOpen was seeded
+// once at mount from defaultOpen, so a card mounted with
+// status='running' (defaultOpen=false) that later transitioned to
+// status='error' never force-opened — its error stayed hidden behind a
+// chevron click. Watch defaultOpen and force-open when it flips true.
+// Importantly: do NOT auto-close on defaultOpen=false. If the parent's
+// computed re-evaluates back to false (status moves from 'error' →
+// 'completed') we leave the card open — the user may have explicitly
+// opened it and yanking it closed is a surprising UX. The user can
+// always toggle it back via the trigger.
+watch(
+  () => props.defaultOpen,
+  (next) => {
+    if (next) isOpen.value = true
+  },
+)
 
 function toggleOpen() {
   isOpen.value = !isOpen.value

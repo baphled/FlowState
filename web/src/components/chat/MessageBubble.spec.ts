@@ -1042,5 +1042,155 @@ describe('MessageBubble', () => {
       expect(mockChatStore.revertToMessage).not.toHaveBeenCalled()
       expect(mockChatStore.sendMessage).not.toHaveBeenCalled()
     })
+
+    // UI Parity bug-fix bundle (May 2026). P1-7: Regenerate clicked
+    // mid-stream silently kills a different in-flight turn (revertToMessage
+    // disconnects the active stream). Hide the button while any stream is
+    // in flight so the user can't trigger the cascade.
+    it('hides Regenerate while a stream is in flight (P1-7)', () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'hello' })
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'hi back' })
+      mockChatStore.messages = [userMsg, assistantMsg]
+      // Simulate any session streaming via the per-session map. The
+      // gating predicate must consider an active stream on ANY session
+      // — a regenerate-cascade kill applies even to backgrounded turns.
+      mockChatStore.sessionStreaming = {
+        'other-session': { isLoading: false, isStreaming: true },
+      }
+      mockChatStore.isStreaming = false
+      mockChatStore.isLoading = false
+      // Provide streamingFor so the component can also probe by id.
+      mockChatStore.streamingFor = (id: string | null | undefined) => {
+        if (!id) return { isLoading: false, isStreaming: false }
+        const slot = mockChatStore.sessionStreaming[id]
+        return slot ?? { isLoading: false, isStreaming: false }
+      }
+
+      const wrapper = mountWithStubs(assistantMsg)
+      expect(wrapper.find('[data-testid="message-regenerate-btn"]').exists()).toBe(false)
+    })
+
+    it('hides Regenerate while the legacy flat isStreaming is true (P1-7)', () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'hello' })
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'hi back' })
+      mockChatStore.messages = [userMsg, assistantMsg]
+      mockChatStore.sessionStreaming = {}
+      mockChatStore.isStreaming = true
+      mockChatStore.isLoading = false
+      mockChatStore.streamingFor = () => ({ isLoading: false, isStreaming: false })
+
+      const wrapper = mountWithStubs(assistantMsg)
+      expect(wrapper.find('[data-testid="message-regenerate-btn"]').exists()).toBe(false)
+    })
+
+    it('hides Regenerate while the legacy flat isLoading is true (P1-7)', () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'hello' })
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'hi back' })
+      mockChatStore.messages = [userMsg, assistantMsg]
+      mockChatStore.sessionStreaming = {}
+      mockChatStore.isStreaming = false
+      mockChatStore.isLoading = true
+      mockChatStore.streamingFor = () => ({ isLoading: false, isStreaming: false })
+
+      const wrapper = mountWithStubs(assistantMsg)
+      expect(wrapper.find('[data-testid="message-regenerate-btn"]').exists()).toBe(false)
+    })
+
+    it('shows Regenerate again once streaming has settled', () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'hello' })
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'hi back' })
+      mockChatStore.messages = [userMsg, assistantMsg]
+      mockChatStore.sessionStreaming = {}
+      mockChatStore.isStreaming = false
+      mockChatStore.isLoading = false
+      mockChatStore.streamingFor = () => ({ isLoading: false, isStreaming: false })
+
+      const wrapper = mountWithStubs(assistantMsg)
+      expect(wrapper.find('[data-testid="message-regenerate-btn"]').exists()).toBe(true)
+    })
+  })
+
+  // UI Parity bug-fix bundle (May 2026). P2-9: precedingUserPrompt was a
+  // local O(N) computed on every bubble that re-evaluated for every chunk
+  // arrival via the chatStore.messages dependency — O(N²) work per chunk on
+  // long sessions. The fix accepts the preceding user message as a prop
+  // (`precedingUserPrompt`) so the lookup is done ONCE in the parent
+  // (ChatView.groupedMessages), and the bubble's per-chunk re-render cost
+  // is O(1).
+  describe('precedingUserPrompt prop hoist (P2-9)', () => {
+    it('uses the precedingUserPrompt prop when supplied without scanning messages', async () => {
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'reply' })
+      // Deliberately leave messages empty — the prop must take precedence,
+      // and the spec must still see the Regenerate button render. Pre-fix
+      // the computed would fail to resolve (no messages to scan) so the
+      // button hid; post-fix the prop drives the affordance directly.
+      mockChatStore.messages = []
+      mockChatStore.sessionStreaming = {}
+      mockChatStore.isStreaming = false
+      mockChatStore.isLoading = false
+      mockChatStore.streamingFor = () => ({ isLoading: false, isStreaming: false })
+      mockChatStore.revertToMessage = vi.fn().mockResolvedValue(undefined)
+      mockChatStore.sendMessage = vi.fn().mockResolvedValue(undefined)
+
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: assistantMsg,
+          precedingUserPrompt: { id: 'u1', content: 'hoisted prompt' },
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      })
+
+      const btn = wrapper.find('[data-testid="message-regenerate-btn"]')
+      expect(btn.exists()).toBe(true)
+      await btn.trigger('click')
+      await wrapper.vm.$nextTick()
+      await wrapper.vm.$nextTick()
+
+      expect(mockChatStore.revertToMessage).toHaveBeenCalledWith('u1')
+      expect(mockChatStore.sendMessage).toHaveBeenCalledWith('hoisted prompt')
+    })
+
+    it('falls back to the legacy messages scan when no prop is supplied (backwards-compat)', async () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'legacy prompt' })
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'reply' })
+      mockChatStore.messages = [userMsg, assistantMsg]
+      mockChatStore.sessionStreaming = {}
+      mockChatStore.isStreaming = false
+      mockChatStore.isLoading = false
+      mockChatStore.streamingFor = () => ({ isLoading: false, isStreaming: false })
+      mockChatStore.revertToMessage = vi.fn().mockResolvedValue(undefined)
+      mockChatStore.sendMessage = vi.fn().mockResolvedValue(undefined)
+
+      const wrapper = mountWithStubs(assistantMsg)
+      const btn = wrapper.find('[data-testid="message-regenerate-btn"]')
+      expect(btn.exists()).toBe(true)
+      await btn.trigger('click')
+      await wrapper.vm.$nextTick()
+      await wrapper.vm.$nextTick()
+
+      expect(mockChatStore.revertToMessage).toHaveBeenCalledWith('u1')
+      expect(mockChatStore.sendMessage).toHaveBeenCalledWith('legacy prompt')
+    })
+
+    it('explicit null precedingUserPrompt prop hides Regenerate (defensive)', () => {
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'reply' })
+      mockChatStore.messages = []
+      mockChatStore.sessionStreaming = {}
+      mockChatStore.isStreaming = false
+      mockChatStore.isLoading = false
+      mockChatStore.streamingFor = () => ({ isLoading: false, isStreaming: false })
+
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: assistantMsg,
+          // Explicit null — caller knows there is no preceding prompt for this
+          // bubble. The bubble must respect that and hide the button.
+          precedingUserPrompt: null,
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      })
+
+      expect(wrapper.find('[data-testid="message-regenerate-btn"]').exists()).toBe(false)
+    })
   })
 })

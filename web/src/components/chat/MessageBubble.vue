@@ -13,7 +13,16 @@ import { sanitiseMessageContent } from '@/lib/messageContentBackstop'
 
 defineOptions({ name: 'MessageBubble' })
 
-const props = defineProps<{ message: Message; agentName?: string }>()
+// UI Parity bug-fix bundle (May 2026). P2-9: precedingUserPrompt is now
+// an optional prop, hoisted to the parent's groupedMessages builder so
+// each bubble's lookup is O(1). The internal computed remains as a
+// fallback for callers that mount MessageBubble directly without
+// pre-resolving the predecessor (existing tests, ad-hoc renders).
+const props = defineProps<{
+  message: Message
+  agentName?: string
+  precedingUserPrompt?: { id: string; content: string } | null
+}>()
 
 const chatStore = useChatStore()
 const now = ref(Date.now())
@@ -323,7 +332,20 @@ const showRevertButton = computed(
 // Defensive: if no preceding user message can be found (orphan reply,
 // truncated history, malformed thread), the button is hidden rather
 // than surfacing a no-op click. Less surprising for the user.
+//
+// P2-9 (May 2026 bug-fix bundle): prefer the `precedingUserPrompt`
+// prop when supplied — the parent's groupedMessages builder resolves
+// the predecessor once, so the bubble doesn't re-scan chatStore.messages
+// on every chunk (O(N²) cost on long sessions during streaming). When
+// the prop is undefined we fall back to the legacy local computed so
+// existing callers (and unit tests that don't pass the prop) keep
+// working. An EXPLICIT null prop is respected: the parent has told us
+// there is no preceding prompt, hide the affordance.
 const precedingUserPrompt = computed<{ id: string; content: string } | null>(() => {
+  // Explicit prop wins (including explicit null).
+  if (props.precedingUserPrompt !== undefined) {
+    return props.precedingUserPrompt
+  }
   if (props.message.role !== 'assistant') return null
   // Defensive: chatStore.messages may be undefined in test mocks that
   // don't seed the array. Treat that as "no preceding prompt" so the
@@ -341,8 +363,30 @@ const precedingUserPrompt = computed<{ id: string; content: string } | null>(() 
   return null
 })
 
+// UI Parity bug-fix bundle (May 2026). P1-7: Regenerate clicked
+// mid-stream calls revertToMessage which disconnects whatever session
+// is currently streaming, silently killing a different in-flight turn.
+// Gate the button on "no stream in flight anywhere" so the user
+// physically cannot trigger the cascade. We check the per-session map
+// AND the legacy flat flags (some test mounts set the flats directly
+// without seeding the map).
+const anyStreamInFlight = computed<boolean>(() => {
+  // streamingFor is the canonical per-session getter; consult it via
+  // the active session and any other slot. The flat fields back up the
+  // null-session fast path.
+  const sessionMap = chatStore.sessionStreaming ?? {}
+  for (const slot of Object.values(sessionMap)) {
+    if (slot.isStreaming || slot.isLoading) return true
+  }
+  return Boolean(chatStore.isStreaming) || Boolean(chatStore.isLoading)
+})
+
 const showRegenerateButton = computed(
-  () => isPlain.value && props.message.role === 'assistant' && precedingUserPrompt.value !== null,
+  () =>
+    isPlain.value &&
+    props.message.role === 'assistant' &&
+    precedingUserPrompt.value !== null &&
+    !anyStreamInFlight.value,
 )
 
 // Failure marker: when a user-message send rejects (network error, backend

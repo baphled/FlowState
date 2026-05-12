@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
 import Icon from '@/components/common/Icon.vue'
 import { detectTrigger, insertToken, type TriggerDescriptor } from '@/composables/useInputTriggers'
 import { SLASH_COMMANDS } from '@/commands/slashCommands'
 import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
+import { showToast } from '@/composables/useToast'
 
 defineOptions({ name: 'MessageInput' })
 
@@ -252,6 +253,24 @@ function autoResize(): void {
 async function submit(): Promise<void> {
   const text = inputText.value.trim()
   if (!text && pendingAttachments.value.length === 0) return
+  // UI Parity bug-fix bundle (May 2026). P0-1: pre-fix a submit with
+  // staged attachments and no text fell through `if (!text && no
+  // attachments) return` (mixed predicate), invoked
+  // uploadPendingAttachments which cleared the staged array, then
+  // called store.sendMessage('') which silently early-returned (its
+  // own !text gate) — attachments lost, no error, no toast. Block the
+  // submit here with a user-visible toast so the user knows to add a
+  // message; the attachments stay staged so the next send carries
+  // them through.
+  if (!text && pendingAttachments.value.length > 0) {
+    showToast({
+      title: 'Message required',
+      message: 'Add a message to send your attachment.',
+      variant: 'error',
+      duration: 4000,
+    })
+    return
+  }
   // Streaming Coherence Slice E (May 2026) — queued prompts. The
   // composer no longer bounces submit-while-streaming with a toast;
   // it forwards the prompt to sendMessage which routes it to the
@@ -272,6 +291,11 @@ async function submit(): Promise<void> {
   activeTrigger.value = null
   historyCursor.value = -1
   liveDraft.value = ''
+  // UI Parity bug-fix bundle (May 2026). P0-2: revoke the blob: URLs
+  // we created in stageFiles so the browser frees the underlying
+  // resources. Pre-fix the array was cleared without revoking,
+  // leaking ~one object per staged image until page unload.
+  revokePreviewUrls(pendingAttachments.value)
   pendingAttachments.value = []
   await store.sendMessage(text)
 }
@@ -334,6 +358,22 @@ function removeAttachment(id: string): void {
     }
   }
   pendingAttachments.value = pendingAttachments.value.filter((a) => a.id !== id)
+}
+
+// UI Parity bug-fix bundle (May 2026). P0-2: helper that revokes every
+// blob: URL on a list of pending attachments. Used by both submit()
+// (post-send cleanup) and onBeforeUnmount (component teardown cleanup);
+// removeAttachment also revokes inline since it can short-circuit
+// without iterating the whole list.
+function revokePreviewUrls(list: PendingAttachment[]): void {
+  for (const att of list) {
+    if (!att.previewUrl) continue
+    try {
+      URL.revokeObjectURL(att.previewUrl)
+    } catch {
+      // jsdom and some test environments lack revokeObjectURL — non-fatal.
+    }
+  }
 }
 
 function handlePaste(event: ClipboardEvent): void {
@@ -452,12 +492,37 @@ function closePicker(): void {
   activeTrigger.value = null
 }
 
+// UI Parity bug-fix bundle (May 2026). P1-6: defensive drag-counter
+// reset. When the user drags out of the browser window and drops the
+// drag outside the viewport, Chrome on Linux/Win misses the final
+// dragleave on the composer — dragCounter stays at 1 and the overlay
+// becomes permanent. Window-level dragend / drop listeners reset the
+// state defensively. They run even if the drag never actually entered
+// the composer (cheap no-op when counter is already 0).
+function handleWindowDragEnd(): void {
+  dragCounter = 0
+  isDragging.value = false
+}
+
 onMounted(() => {
   // Agents may not be loaded yet when the input mounts inside a fresh
   // chat session — kick it off so the @-picker has something to show.
   if (store.availableAgentDetails.length === 0) {
     void store.loadAgents()
   }
+  window.addEventListener('dragend', handleWindowDragEnd)
+  // Drop on the window (anywhere outside the composer) also unsticks
+  // the overlay. Use capture so a drop on a child that stops
+  // propagation still resets the composer's state defensively.
+  window.addEventListener('drop', handleWindowDragEnd, { capture: true })
+})
+
+onBeforeUnmount(() => {
+  // UI Parity bug-fix bundle (May 2026). P0-2: revoke any outstanding
+  // preview URLs so navigating away does not leak the blobs.
+  revokePreviewUrls(pendingAttachments.value)
+  window.removeEventListener('dragend', handleWindowDragEnd)
+  window.removeEventListener('drop', handleWindowDragEnd, { capture: true } as EventListenerOptions)
 })
 
 // Watch composerText so a revert-to-message action pre-fills the textarea.

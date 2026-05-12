@@ -524,6 +524,98 @@ describe('MessageInput — prompt history (B4)', () => {
     expect(store.promptHistory[0]).toBe('p5')
     expect(store.promptHistory[49]).toBe('p54')
   })
+
+  // UI Parity bug-fix bundle (May 2026). P1-4: privacy. Pre-fix
+  // promptHistory was a flat singleton — a prompt typed in session A
+  // leaked into session B's ArrowUp recall (a real privacy concern
+  // during screen-shares). The fix scopes history per session id.
+  it('prompt history is per-session — switching sessions hides the prior session prompts (P1-4)', () => {
+    const store = useChatStore()
+
+    // Session A — record two prompts.
+    store.currentSessionId = 'session-a'
+    store.recordPromptHistory('A1 secret prompt')
+    store.recordPromptHistory('A2 follow-up')
+    expect(store.promptHistory).toEqual(['A1 secret prompt', 'A2 follow-up'])
+
+    // Switch to session B — the active prompt history must NOT show
+    // session A's entries.
+    store.currentSessionId = 'session-b'
+    expect(store.promptHistory).toEqual([])
+
+    // Recording into session B keeps A's history intact and isolated.
+    store.recordPromptHistory('B1 different prompt')
+    expect(store.promptHistory).toEqual(['B1 different prompt'])
+
+    // Switching back to session A restores A's history (per-session
+    // memory, not a destructive switch).
+    store.currentSessionId = 'session-a'
+    expect(store.promptHistory).toEqual(['A1 secret prompt', 'A2 follow-up'])
+  })
+
+  it('prompt history per-session cap is still 50 entries (P1-4)', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-x'
+    for (let i = 0; i < 60; i++) {
+      store.recordPromptHistory(`x${i}`)
+    }
+    expect(store.promptHistory).toHaveLength(50)
+    expect(store.promptHistory[0]).toBe('x10')
+    expect(store.promptHistory[49]).toBe('x59')
+  })
+})
+
+// UI Parity bug-fix bundle (May 2026). P1-5: stop button stuck.
+// Clicking Stop should fully clear the per-session streaming state once
+// the cancel cascade fires, not wait for the outer POST to drain. The
+// fix calls setSessionStreaming(sessionId, {isLoading: false, isStreaming: false})
+// right after disconnectSessionStream in handleEscapeKey.
+describe('chatStore.handleEscapeKey — clears streaming state after cancel (P1-5)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('clears isStreaming/isLoading on confirmed escape-twice cancel', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'sess-1'
+    store.setSessionStreaming('sess-1', { isLoading: true, isStreaming: true })
+    expect(store.streamingFor('sess-1')).toEqual({ isLoading: true, isStreaming: true })
+
+    // Mock fetch so the DELETE resolves OK.
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).fetch = fetchSpy
+
+    // First press arms the chord.
+    await store.handleEscapeKey()
+    // Second press within window fires the cancel cascade.
+    await store.handleEscapeKey()
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/v1/sessions/sess-1/stream', { method: 'DELETE' })
+    // The streaming slot must have been cleared so the composer's
+    // isStreamingNow gate flips back to Send and queued prompts stop
+    // accumulating.
+    expect(store.streamingFor('sess-1')).toEqual({ isLoading: false, isStreaming: false })
+  })
+
+  it('clears streaming state even when the DELETE rejects (network error)', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'sess-2'
+    store.setSessionStreaming('sess-2', { isLoading: true, isStreaming: true })
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).fetch = vi.fn().mockRejectedValue(new Error('offline'))
+
+    await store.handleEscapeKey()
+    await store.handleEscapeKey()
+
+    // Even on network failure the UI must unstick — the stream was
+    // already closed locally by disconnectSessionStream.
+    expect(store.streamingFor('sess-2')).toEqual({ isLoading: false, isStreaming: false })
+  })
 })
 
 // UI Parity PR2 B5 (May 2026) — Stop-generating button swap. Verifies
@@ -617,15 +709,12 @@ describe('MessageInput — stop button (B5)', () => {
 describe('MessageInput — attachments (B3)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    // jsdom does not implement createObjectURL; stub it so the
-    // previewUrl branch in stageFiles does not throw.
-    if (!('createObjectURL' in URL)) {
-      ;(URL as unknown as { createObjectURL: (f: File) => string }).createObjectURL = () =>
-        'blob:mock-url'
-    }
-    if (!('revokeObjectURL' in URL)) {
-      ;(URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {}
-    }
+    // jsdom + node-canvas may provide a real createObjectURL that returns
+    // a blob:nodedata:... URL; we always overwrite both with predictable
+    // stubs so the spec assertions are stable across environments.
+    ;(URL as unknown as { createObjectURL: (f: File) => string }).createObjectURL = () =>
+      'blob:mock-url'
+    ;(URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {}
   })
   afterEach(() => {
     vi.restoreAllMocks()
@@ -737,6 +826,176 @@ describe('MessageInput — attachments (B3)', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="message-input-attachments"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  // UI Parity bug-fix bundle (May 2026). P0-1: send-with-attachments-but-no-text
+  // previously fell through submit() → uploadPendingAttachments() → empty
+  // sendMessage('') silently dropped the staged files. The fix surfaces a
+  // toast and refuses the submit so attachments stay staged.
+  it('refuses submit when attachments are staged but no text (no silent drop)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+    const sendSpy = vi.spyOn(store, 'sendMessage').mockResolvedValue()
+
+    const { useToast } = await import('@/composables/useToast')
+    const { toasts, dismissAll } = useToast()
+    dismissAll()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const file = new File(['x'], 'img.png', { type: 'image/png' })
+    const dataTransfer = {
+      items: [{ kind: 'file' as const, type: 'image/png', getAsFile: () => file }],
+    }
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await inputWrapper.trigger('paste', { clipboardData: dataTransfer })
+    await flushPromises()
+
+    // Empty text — fire the submit path via the component VM. The send
+    // button is disabled in this state, but submit() can also be reached
+    // via Enter on the textarea with a staged attachment and empty input.
+    const vm = wrapper.getComponent(MessageInput).vm as unknown as {
+      submit: () => Promise<void>
+    }
+    await vm.submit()
+    await flushPromises()
+
+    // sendMessage MUST NOT have been called — silently dropping the
+    // attachment is the failure mode the fix closes.
+    expect(sendSpy).not.toHaveBeenCalled()
+    // Attachments stay staged so the user can still send them with text.
+    expect(wrapper.find('[data-testid="message-input-attachments"]').exists()).toBe(true)
+    // Toast surfaces the affordance.
+    const toast = toasts.value.find((t) => /attachment/i.test(t.message ?? ''))
+    expect(toast).toBeTruthy()
+    dismissAll()
+    wrapper.unmount()
+  })
+
+  // UI Parity bug-fix bundle (May 2026). P0-2: URL.createObjectURL leaks.
+  // Pre-fix the submit-then-clear path nulled the pendingAttachments array
+  // without revoking the blob URLs; repeated send cycles leaked. The fix
+  // revokes every preview URL before clearing the array.
+  it('revokes blob preview URLs on send (P0-2)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+    const sendSpy = vi.spyOn(store, 'sendMessage').mockResolvedValue()
+
+    // Spy on URL.revokeObjectURL — the production code must call it for
+    // every staged attachment that carried a previewUrl.
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL')
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    // Stage an image via paste so previewUrl gets seeded (jsdom stub above
+    // makes createObjectURL return 'blob:mock-url').
+    const file = new File(['x'], 'img.png', { type: 'image/png' })
+    const dataTransfer = {
+      items: [{ kind: 'file' as const, type: 'image/png', getAsFile: () => file }],
+    }
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await inputWrapper.trigger('paste', { clipboardData: dataTransfer })
+    await flushPromises()
+
+    // Type some text so submit() takes the happy path (with attachments + text).
+    await inputWrapper.setValue('here is the image')
+    await flushPromises()
+
+    const vm = wrapper.getComponent(MessageInput).vm as unknown as {
+      submit: () => Promise<void>
+    }
+    await vm.submit()
+    await flushPromises()
+
+    expect(sendSpy).toHaveBeenCalled()
+    // Pre-fix this assertion would be 0.
+    expect(revokeSpy).toHaveBeenCalledWith('blob:mock-url')
+    wrapper.unmount()
+  })
+
+  // UI Parity bug-fix bundle (May 2026). P0-2: cleanup on component unmount.
+  // Attachments staged but not sent (user closes tab / nav away) must also
+  // revoke their blob URLs so memory does not leak across sessions.
+  it('revokes outstanding blob preview URLs on unmount (P0-2)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL')
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const file = new File(['x'], 'img.png', { type: 'image/png' })
+    const dataTransfer = {
+      items: [{ kind: 'file' as const, type: 'image/png', getAsFile: () => file }],
+    }
+    const inputWrapper = wrapper.get('[data-testid="message-input"]')
+    await inputWrapper.trigger('paste', { clipboardData: dataTransfer })
+    await flushPromises()
+
+    revokeSpy.mockClear()
+    wrapper.unmount()
+    // After unmount the onBeforeUnmount hook should have revoked the staged
+    // attachment's preview URL.
+    expect(revokeSpy).toHaveBeenCalledWith('blob:mock-url')
+  })
+})
+
+// UI Parity bug-fix bundle (May 2026). P1-6: drag overlay sticky-state.
+// When the user drags out of the browser window and releases the drag
+// there, Chrome on Linux/Win misses the final dragleave so the
+// dragCounter stays at 1 and the overlay never goes away. Window-level
+// dragend / drop listeners reset the counter defensively.
+describe('MessageInput — drag overlay defensive reset (P1-6)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('window-level dragend resets the drag overlay state', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    // Simulate a dragenter to set the overlay.
+    const wrap = wrapper.get('[data-testid="message-input-wrap"]')
+    await wrap.trigger('dragenter', { dataTransfer: { types: ['Files'] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="message-input-drag-overlay"]').exists()).toBe(true)
+
+    // Window-level dragend — the user released the drag outside the window.
+    window.dispatchEvent(new Event('dragend'))
+    await flushPromises()
+
+    // Pre-fix this would be true (overlay sticks). Fix sets isDragging=false.
+    expect(wrapper.find('[data-testid="message-input-drag-overlay"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('window-level drop also resets the drag overlay state', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    const wrap = wrapper.get('[data-testid="message-input-wrap"]')
+    await wrap.trigger('dragenter', { dataTransfer: { types: ['Files'] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="message-input-drag-overlay"]').exists()).toBe(true)
+
+    // A drop somewhere outside the composer — overlay must still clear.
+    window.dispatchEvent(new Event('drop'))
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="message-input-drag-overlay"]').exists()).toBe(false)
     wrapper.unmount()
   })
 })

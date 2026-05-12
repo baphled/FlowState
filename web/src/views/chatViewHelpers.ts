@@ -63,6 +63,36 @@ export function collapseToolPairs(messages: Message[]): Message[] {
 }
 
 /**
+ * UI Parity bug-fix bundle (May 2026). P2-9: precompute "preceding user
+ * message" lookups once per messages array so MessageBubble no longer
+ * re-scans the entire array per chunk. Walks the messages list in a
+ * single pass tracking the most-recent user message; for each assistant
+ * message encountered, stores a tuple keyed by assistant id. Returns a
+ * Map so callers get O(1) lookups in the render loop.
+ *
+ * Only `assistant` messages are keyed; tool / thinking / system roles
+ * are skipped because they have no "regenerate" affordance. Returns
+ * `null` when there is no preceding user message — the bubble hides the
+ * Regenerate button in that case.
+ */
+export function buildPrecedingUserPromptMap(
+  messages: Message[],
+): Map<string, { id: string; content: string } | null> {
+  const map = new Map<string, { id: string; content: string } | null>()
+  let lastUser: { id: string; content: string } | null = null
+  for (const m of messages) {
+    if (m.role === 'user') {
+      lastUser = { id: m.id, content: m.content }
+      continue
+    }
+    if (m.role === 'assistant') {
+      map.set(m.id, lastUser)
+    }
+  }
+  return map
+}
+
+/**
  * Group consecutive context tools (tool_result role and isContextTool is true)
  * into a single group entry. Single context tools are not grouped.
  */

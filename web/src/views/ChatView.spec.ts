@@ -1277,6 +1277,7 @@ describe('ChatView Escape keydown listener lifecycle (H9)', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
 
+
     // No live ChatView → no listener → no store call. Pre-fix the
     // anonymous handler outlived the component and continued firing.
     expect(handleEscapeSpy).not.toHaveBeenCalled()
@@ -1334,5 +1335,83 @@ describe('ChatView mount-time restore failure (Principal F7)', () => {
 
     expect(realToast).not.toHaveBeenCalled()
     realToast.mockRestore()
+  })
+})
+
+// UI Parity bug-fix bundle (May 2026). P1-8: keyboard-help `?` trigger
+// fires for non-input focus on shifted symbols. Tab to a button, press
+// `?` — modal opens unexpectedly. The fix tightens the predicate so the
+// modal only opens when the user clearly meant `?` (shift+slash) AND
+// the focused element is not a button-ish surface, with event.repeat
+// excluded to prevent held-key spam.
+describe('ChatView keyboard-help `?` trigger gating (P1-8)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('opens the modal when `?` is pressed on a non-button, non-editable surface', async () => {
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+
+    // Bare `?` on document body — no input focused — should open.
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', code: 'Slash', shiftKey: true }),
+    )
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="keyboard-help-modal"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('does NOT open the modal when `?` is pressed while a button is focused (P1-8)', async () => {
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+
+    // Synthetic button focus — the trigger gate must reject this target.
+    const btn = document.createElement('button')
+    document.body.appendChild(btn)
+    btn.focus()
+
+    btn.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', code: 'Slash', shiftKey: true, bubbles: true }),
+    )
+    await flushPromises()
+
+    // Pre-fix this would be true (modal opened on button focus).
+    expect(wrapper.find('[data-testid="keyboard-help-modal"]').exists()).toBe(false)
+    document.body.removeChild(btn)
+    wrapper.unmount()
+  })
+
+  it('does NOT open the modal when `?` is pressed while a link is focused (P1-8)', async () => {
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+
+    const link = document.createElement('a')
+    link.href = '#'
+    document.body.appendChild(link)
+    link.focus()
+
+    link.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', code: 'Slash', shiftKey: true, bubbles: true }),
+    )
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="keyboard-help-modal"]').exists()).toBe(false)
+    document.body.removeChild(link)
+    wrapper.unmount()
+  })
+
+  it('does NOT open the modal on a key event marked as a repeat (held key) (P1-8)', async () => {
+    const wrapper = mount(ChatView, { attachTo: document.body })
+    await flushPromises()
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', code: 'Slash', shiftKey: true, repeat: true }),
+    )
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="keyboard-help-modal"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 })
