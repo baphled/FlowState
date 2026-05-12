@@ -224,3 +224,110 @@ describe('SessionSwitcher per-row delete and ordering', () => {
     expect(titles).toEqual(['Streaming', 'Recent', 'Mid'])
   })
 })
+
+// UI Parity I3 (May 2026) — Cmd+K / Ctrl+K fuzzy session palette.
+//
+// The palette is a `FuzzySearchModal` consumer that surfaces all root
+// sessions (children are still filtered out — they remain reachable via
+// the ChildSessionsPanel under the chat thread). Cmd+K (mac) and Ctrl+K
+// (everywhere else) both open it from a document-level keydown listener
+// installed on mount. Selecting a row jumps to that session via
+// chatStore.currentSessionId + loadSessionMessages — the same path the
+// existing dropdown takes.
+//
+// The existing dropdown stays intact: the activity-indicator surface
+// (background-activity dot, per-row streaming dot, inline-confirm delete)
+// keeps living there. The palette is purely a fast switcher overlay.
+describe('SessionSwitcher Cmd+K fuzzy palette (I3)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('opens the fuzzy palette on Cmd+K (metaKey)', async () => {
+    const wrapper = mount(SessionSwitcher, { attachTo: document.body })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="session-palette-modal"]').exists()).toBe(false)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="session-palette-modal"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('opens the fuzzy palette on Ctrl+K (ctrlKey)', async () => {
+    const wrapper = mount(SessionSwitcher, { attachTo: document.body })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="session-palette-modal"]').exists()).toBe(false)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="session-palette-modal"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('does not open the palette on bare K (no modifier)', async () => {
+    const wrapper = mount(SessionSwitcher, { attachTo: document.body })
+    await flushPromises()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k' }))
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="session-palette-modal"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('surfaces only root sessions in the palette (children filtered out)', async () => {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionSwitcher, { attachTo: document.body })
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'root-A', title: 'Alpha' }),
+      makeSession({ id: 'child-A', title: 'Child of Alpha', parentId: 'root-A' }),
+      makeSession({ id: 'root-B', title: 'Beta' }),
+    ]
+    await nextTick()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="fuzzy-search-item-root-A"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="fuzzy-search-item-root-B"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="fuzzy-search-item-child-A"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('jumps to the chosen session and closes the palette on select', async () => {
+    const chatStore = useChatStore()
+    const wrapper = mount(SessionSwitcher, { attachTo: document.body })
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'root-A', title: 'Alpha' }),
+      makeSession({ id: 'root-B', title: 'Beta' }),
+    ]
+    chatStore.currentSessionId = 'root-A'
+    await nextTick()
+
+    const loadSpy = vi.spyOn(chatStore, 'loadSessionMessages').mockResolvedValue(undefined)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }))
+    await nextTick()
+
+    await wrapper.find('[data-testid="fuzzy-search-item-root-B"]').trigger('click')
+    await flushPromises()
+
+    expect(chatStore.currentSessionId).toBe('root-B')
+    expect(loadSpy).toHaveBeenCalledWith('root-B')
+    expect(wrapper.find('[data-testid="session-palette-modal"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
