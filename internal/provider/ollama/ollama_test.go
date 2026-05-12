@@ -3,6 +3,7 @@ package ollama_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1609,6 +1610,197 @@ var _ = Describe("Ollama Provider", func() {
 			Expect(entry).To(HaveKeyWithValue("kind", "document"))
 			Expect(entry).To(HaveKeyWithValue("media_type", "application/pdf"))
 			Expect(entry).To(HaveKeyWithValue("level", "WARN"))
+		})
+	})
+
+	// PR3 deferral closure — image attachments thread into
+	// ollamaAPI.Message.Images []ImageData (raw bytes, NOT data: URLs).
+	// The Ollama SDK marshals []byte values as base64-encoded JSON
+	// strings on the wire, so specs assert against decoded payloads.
+	// Multimodal models (llama3.2-vision, llava, etc.) consume Images
+	// server-side; non-multimodal models silently ignore the field.
+	Describe("Image attachment threading (PR3 deferral closure)", func() {
+		var (
+			server           *httptest.Server
+			provider         *ollama.Provider
+			capturedMessages []map[string]interface{}
+		)
+
+		// imagesFor decodes the captured wire-level `images` array on
+		// the given message into raw []byte slices for comparison.
+		// Returns nil when the key is absent (omitempty drops the field
+		// for messages with no images).
+		imagesFor := func(msg map[string]interface{}) [][]byte {
+			raw, ok := msg["images"]
+			if !ok || raw == nil {
+				return nil
+			}
+			arr, ok := raw.([]interface{})
+			if !ok {
+				return nil
+			}
+			out := make([][]byte, 0, len(arr))
+			for _, entry := range arr {
+				s, ok := entry.(string)
+				Expect(ok).To(BeTrue(), "images entries must marshal as base64 strings")
+				decoded, err := base64.StdEncoding.DecodeString(s)
+				Expect(err).NotTo(HaveOccurred())
+				out = append(out, decoded)
+			}
+			return out
+		}
+
+		BeforeEach(func() {
+			capturedMessages = nil
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				Expect(err).NotTo(HaveOccurred())
+
+				var req map[string]interface{}
+				err = json.Unmarshal(body, &req)
+				Expect(err).NotTo(HaveOccurred())
+
+				msgs := req["messages"].([]interface{})
+				for _, m := range msgs {
+					capturedMessages = append(capturedMessages, m.(map[string]interface{}))
+				}
+
+				resp := map[string]interface{}{
+					"model": "llama3.2-vision",
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "ack",
+					},
+					"done":              true,
+					"prompt_eval_count": 1,
+					"eval_count":        1,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+
+			var err error
+			provider, err = ollama.NewWithClient(server.URL, server.Client())
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			if server != nil {
+				server.Close()
+			}
+		})
+
+		It("threads a single image attachment into Images[0] with raw bytes", func() {
+			pngBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
+			_, err := provider.Chat(context.Background(), providerPkg.ChatRequest{
+				Model: "llama3.2-vision",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "describe", Attachments: []providerPkg.Attachment{
+						{ID: "img-1", Kind: "image", MediaType: "image/png", Data: pngBytes},
+					}},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(capturedMessages).To(HaveLen(1))
+			imgs := imagesFor(capturedMessages[0])
+			Expect(imgs).To(HaveLen(1))
+			Expect(imgs[0]).To(Equal(pngBytes))
+		})
+
+		It("threads multiple images in declaration order", func() {
+			first := []byte{0x89, 0x50, 0x4E, 0x47, 0xAA}
+			second := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0xBB}
+			third := []byte{0x52, 0x49, 0x46, 0x46, 0xCC}
+			_, err := provider.Chat(context.Background(), providerPkg.ChatRequest{
+				Model: "llama3.2-vision",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "compare", Attachments: []providerPkg.Attachment{
+						{ID: "img-a", Kind: "image", MediaType: "image/png", Data: first},
+						{ID: "img-b", Kind: "image", MediaType: "image/jpeg", Data: second},
+						{ID: "img-c", Kind: "image", MediaType: "image/webp", Data: third},
+					}},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(capturedMessages).To(HaveLen(1))
+			imgs := imagesFor(capturedMessages[0])
+			Expect(imgs).To(HaveLen(3))
+			Expect(imgs[0]).To(Equal(first))
+			Expect(imgs[1]).To(Equal(second))
+			Expect(imgs[2]).To(Equal(third))
+		})
+
+		It("defaults empty Kind to image (PR1 backwards-compat)", func() {
+			payload := []byte{0x89, 0x50, 0x4E, 0x47, 0x42, 0x43}
+			_, err := provider.Chat(context.Background(), providerPkg.ChatRequest{
+				Model: "llama3.2-vision",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "legacy", Attachments: []providerPkg.Attachment{
+						{ID: "img-legacy", Kind: "", MediaType: "image/png", Data: payload},
+					}},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(capturedMessages).To(HaveLen(1))
+			imgs := imagesFor(capturedMessages[0])
+			Expect(imgs).To(HaveLen(1))
+			Expect(imgs[0]).To(Equal(payload))
+		})
+
+		It("preserves PR4 document-skip when image and document attachments are mixed", func() {
+			var buf bytes.Buffer
+			handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+			prev := slog.Default()
+			slog.SetDefault(slog.New(handler))
+			defer slog.SetDefault(prev)
+
+			imgBytes := []byte{0x89, 0x50, 0x4E, 0x47, 0x11, 0x22}
+			_, err := provider.Chat(context.Background(), providerPkg.ChatRequest{
+				Model: "llama3.2-vision",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "mixed", Attachments: []providerPkg.Attachment{
+						{ID: "img-mix", Kind: "image", MediaType: "image/png", Data: imgBytes},
+						{ID: "doc-mix", Kind: "document", MediaType: "application/pdf"},
+					}},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Image threaded to Images[].
+			Expect(capturedMessages).To(HaveLen(1))
+			imgs := imagesFor(capturedMessages[0])
+			Expect(imgs).To(HaveLen(1))
+			Expect(imgs[0]).To(Equal(imgBytes))
+
+			// Document slog.Warn'd with the AC-15-LogShape-Pinned schema.
+			var entry map[string]any
+			Expect(json.Unmarshal(buf.Bytes(), &entry)).To(Succeed())
+			Expect(entry).To(HaveKeyWithValue("msg",
+				"attachment_dropped: provider does not support documents"))
+			Expect(entry).To(HaveKeyWithValue("provider", "ollama"))
+			Expect(entry).To(HaveKeyWithValue("attachment_id", "doc-mix"))
+			Expect(entry).To(HaveKeyWithValue("kind", "document"))
+			Expect(entry).To(HaveKeyWithValue("media_type", "application/pdf"))
+		})
+
+		It("omits Images when no attachments are present", func() {
+			_, err := provider.Chat(context.Background(), providerPkg.ChatRequest{
+				Model: "llama3.2",
+				Messages: []providerPkg.Message{
+					{Role: "user", Content: "plain text"},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(capturedMessages).To(HaveLen(1))
+			// `images` is `omitempty` on ollamaAPI.Message — the key
+			// must not appear in the wire payload when no attachments
+			// thread through.
+			_, present := capturedMessages[0]["images"]
+			Expect(present).To(BeFalse(), "images key must be absent for attachment-free messages")
 		})
 	})
 })

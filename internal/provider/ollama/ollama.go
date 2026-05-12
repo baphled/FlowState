@@ -504,13 +504,28 @@ func convertMessages(msgs []provider.Message) []ollamaAPI.Message {
 	pairs := shared.ConvertMessagesToRolePairs(msgs)
 	result := make([]ollamaAPI.Message, 0, len(pairs))
 	for i, p := range pairs {
-		// Plan §6 task-15 — defence-in-depth document-skip. The Ollama
-		// SDK has no Documents field, so any provider.Attachment with
-		// Kind=="document" reaching this translator is dropped with a
-		// structured slog.Warn (closes R13's model-switch-mid-staging
-		// window). Image attachments are not yet threaded into Ollama
-		// in PR4 — the absence of a wire-up for images is an
-		// orthogonal gap; see task-13 (Ollama survey).
+		ollamaMsg := ollamaAPI.Message{
+			Role:    p.Role,
+			Content: p.Content,
+		}
+		// PR3 deferral closure — image attachments thread into the
+		// Ollama SDK's native multimodal field (ollamaAPI.Message.Images
+		// is []ImageData where ImageData == []byte, raw bytes — NOT a
+		// data: URL). Multimodal models (llama3.2-vision, llava, etc.)
+		// consume Images server-side; non-multimodal models silently
+		// ignore the field, which mirrors the upstream API contract.
+		//
+		// Kind discriminant (provider.Attachment §6 task-14):
+		//   - "document" → defence-in-depth slog.Warn skip (Plan §6
+		//     task-15, AC-15-LogShape-Pinned). The Ollama SDK has no
+		//     Documents field; the upload-time gate is the primary
+		//     defence. This skip closes R13's model-switch-mid-staging
+		//     window.
+		//   - "image" or "" → append raw bytes to Images. Empty Kind
+		//     defaults to image for PR1 backwards-compat (callers and
+		//     persisted records without a Kind field continue to
+		//     produce the existing image-block shape; see
+		//     AC-14-Detect-CallSites-Preserved).
 		for _, a := range msgs[i].Attachments {
 			if a.Kind == "document" {
 				slog.Warn(
@@ -520,11 +535,9 @@ func convertMessages(msgs []provider.Message) []ollamaAPI.Message {
 					"kind", a.Kind,
 					"media_type", a.MediaType,
 				)
+				continue
 			}
-		}
-		ollamaMsg := ollamaAPI.Message{
-			Role:    p.Role,
-			Content: p.Content,
+			ollamaMsg.Images = append(ollamaMsg.Images, ollamaAPI.ImageData(a.Data))
 		}
 		for _, tc := range msgs[i].ToolCalls {
 			args := ollamaAPI.NewToolCallFunctionArguments()
