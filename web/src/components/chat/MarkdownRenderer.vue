@@ -1,6 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import MarkdownIt from 'markdown-it'
+import {
+  ensureHighlighterLoaded,
+  highlightCode,
+  onHighlighterReady,
+} from '@/lib/markdownHighlighter'
 
 defineOptions({ name: 'MarkdownRenderer' })
 
@@ -11,7 +16,79 @@ const md = new MarkdownIt({
   linkify: false,
   typographer: true,
   breaks: true,
+  // B1 (Vue UI Parity vs OpenCode, May 2026). Wire Shiki as the
+  // fenced-block highlighter. Returning a non-empty string from this
+  // callback tells MarkdownIt to use it verbatim (i.e. skip the
+  // default `<pre><code>` wrap). `highlightCode` itself returns
+  // Shiki's full `<pre class="shiki …">…</pre>` markup, so the inner
+  // result is a complete pre element. On unsupported languages or
+  // any Shiki failure we return `''` and let the fence renderer
+  // (overridden below) inject a plain `<pre><code>` with the
+  // language class — preserves the current contract for legacy
+  // languages and never surfaces a Shiki error to the user.
+  highlight: (str: string, lang: string): string => {
+    const html = highlightCode(str, lang)
+    return html ?? ''
+  },
 })
+
+// N4 (Vue UI Parity vs OpenCode, May 2026). Per-code-block copy
+// affordance. Override the default fence renderer so every fenced
+// block emits a wrapper carrying a copy button. Hover-reveal
+// styling is handled in the scoped CSS below — the data-testid is
+// present unconditionally so the spec contract can lift the
+// affordance without depending on visibility.
+//
+// Three rendering paths converge here:
+//
+//   1. Shiki succeeded — `highlight()` returned a `<pre class="shiki …">`
+//      block. We use it verbatim as the inner code surface.
+//   2. Shiki returned `''` (unknown language, plain fence, or Shiki
+//      failure). We render a plain `<pre><code class="language-…">`
+//      with the source HTML-escaped, matching the legacy contract.
+//   3. The HTML output already carries Shiki's own wrapper; we add
+//      our wrapper outside it so the inner `<pre>` is unmodified
+//      and CSS targeting `pre.shiki` keeps working.
+//
+// The copy button is wired via an unobtrusive click listener
+// registered on the rendered DOM (see `onCopyClick` below) — keeps
+// the markdown render output pure HTML and avoids a hydration
+// boundary inside the v-html surface.
+md.renderer.rules.fence = (tokens, idx, options): string => {
+  const token = tokens[idx]
+  const info = token.info ? token.info.trim() : ''
+  const lang = info.split(/\s+/g)[0] ?? ''
+  const content = token.content
+
+  // Try Shiki first via the highlight option.
+  let codeHtml = ''
+  if (options.highlight) {
+    codeHtml = options.highlight(content, lang, '') || ''
+  }
+
+  if (codeHtml === '') {
+    // Fallback path — plain `<pre><code>` with HTML-escaped source.
+    // Matches what MarkdownIt's default fence renderer would have
+    // produced before B1 landed.
+    const escaped = md.utils.escapeHtml(content)
+    const langClass = lang ? ` class="language-${md.utils.escapeHtml(lang)}"` : ''
+    codeHtml = `<pre><code${langClass}>${escaped}</code></pre>`
+  }
+
+  // Wrap with a copy affordance container. The raw source is stored
+  // on a data attribute on the wrapper so the click handler can
+  // copy the original text (not the tokenised HTML). HTML-escape
+  // the raw to avoid breaking out of the attribute.
+  const rawAttr = md.utils.escapeHtml(content)
+  return (
+    `<div class="markdown-code" data-code-raw="${rawAttr}">` +
+    codeHtml +
+    `<button type="button" class="markdown-code__copy-btn" data-testid="markdown-code-copy-btn" aria-label="Copy code block">` +
+    `<span aria-hidden="true">📋</span><span class="markdown-code__copy-label">Copy</span>` +
+    `</button>` +
+    `</div>`
+  )
+}
 
 // M6 (Bug Hunt May 2026): tighten link validation. markdown-it 14's default
 // validateLink regex-tests the trimmed lower-cased URL but does NOT URL-
@@ -57,11 +134,89 @@ md.validateLink = (url: string): boolean => {
   return ALLOWED_SCHEMES.has(scheme)
 }
 
-const renderedHtml = computed(() => md.render(props.content))
+// B1: Reactive version counter to trigger a re-render after the
+// lazy-loaded Shiki highlighter resolves. Before Shiki is ready,
+// `highlightCode` returns `null` and the fence renderer falls back
+// to plain `<pre><code>`. The first time `ensureHighlighterLoaded`
+// completes (typically <100 ms after first render), this counter
+// increments and Vue re-runs `renderedHtml` so the same content
+// re-renders with tokenised code blocks.
+const highlighterVersion = ref(0)
+let unsubscribeReady: (() => void) | null = null
+
+onMounted(() => {
+  unsubscribeReady = onHighlighterReady(() => {
+    highlighterVersion.value += 1
+  })
+  // Fire-and-forget — load Shiki in the background. The
+  // `highlighterVersion` increment above wakes us up when it lands.
+  void ensureHighlighterLoaded()
+})
+
+const renderedHtml = computed(() => {
+  // Touch the version counter so Vue tracks it as a dependency —
+  // when Shiki finishes loading and the version bumps, the
+  // computed re-evaluates with the real highlight callback wired
+  // through MarkdownIt.
+  void highlighterVersion.value
+  return md.render(props.content)
+})
+
+// Per-block copy affordance handler. The fence renderer emits the
+// copy button as static HTML inside the v-html surface, so the click
+// is wired via event delegation on the outer `.markdown-body`. The
+// raw (untokenised) source text lives on the wrapper's
+// `data-code-raw` attribute. A two-second "Copied" affordance hint
+// is surfaced by toggling a class on the clicked button.
+const copiedTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>()
+
+function onCopyClick(event: MouseEvent): void {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  const btn = target.closest('.markdown-code__copy-btn') as HTMLButtonElement | null
+  if (!btn) return
+  event.preventDefault()
+  const wrapper = btn.closest('.markdown-code') as HTMLElement | null
+  if (!wrapper) return
+  const raw = wrapper.getAttribute('data-code-raw') ?? ''
+  // navigator.clipboard is async; the spec only asserts the button
+  // exists. Best-effort copy — silently no-ops if clipboard API is
+  // unavailable (e.g. headless test environments).
+  if (
+    typeof navigator !== 'undefined' &&
+    navigator.clipboard &&
+    typeof navigator.clipboard.writeText === 'function'
+  ) {
+    navigator.clipboard.writeText(raw).then(
+      () => {
+        btn.classList.add('markdown-code__copy-btn--copied')
+        const existing = copiedTimers.get(btn)
+        if (existing) clearTimeout(existing)
+        const t = setTimeout(() => {
+          btn.classList.remove('markdown-code__copy-btn--copied')
+          copiedTimers.delete(btn)
+        }, 2000)
+        copiedTimers.set(btn, t)
+      },
+      () => {
+        // Clipboard rejected — no surfacing, the user can retry.
+      },
+    )
+  }
+}
+
+onBeforeUnmount(() => {
+  copiedTimers.forEach((t) => clearTimeout(t))
+  copiedTimers.clear()
+  if (unsubscribeReady !== null) {
+    unsubscribeReady()
+    unsubscribeReady = null
+  }
+})
 </script>
 
 <template>
-  <div class="markdown-body" v-html="renderedHtml" />
+  <div class="markdown-body" v-html="renderedHtml" @click="onCopyClick" />
 </template>
 
 <style scoped>
@@ -237,5 +392,83 @@ const renderedHtml = computed(() => md.render(props.content))
   max-width: 100%;
   border-radius: 6px;
   margin: 0.5rem 0;
+}
+
+/* N4: per-fence wrapper with hover-revealed copy button. The wrapper
+ * holds the Shiki `<pre>` (or plain `<pre>` fallback) plus the copy
+ * affordance. Positioned in the top-right corner of the block. */
+.markdown-body :deep(.markdown-code) {
+  position: relative;
+}
+
+.markdown-body :deep(.markdown-code__copy-btn) {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--border, rgba(148, 163, 184, 0.35));
+  border-radius: 4px;
+  background: var(--bg-elevated, rgba(0, 0, 0, 0.5));
+  color: var(--text-secondary, inherit);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+
+.markdown-body :deep(.markdown-code:hover .markdown-code__copy-btn),
+.markdown-body :deep(.markdown-code__copy-btn:focus-visible) {
+  opacity: 1;
+}
+
+.markdown-body :deep(.markdown-code__copy-btn:hover) {
+  border-color: var(--accent, #7aa2f7);
+}
+
+.markdown-body :deep(.markdown-code__copy-btn--copied) {
+  opacity: 1;
+  border-color: var(--success, #9ece6a);
+  color: var(--success, #9ece6a);
+}
+
+.markdown-body :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label::before) {
+  content: 'Copied';
+}
+
+.markdown-body :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label) {
+  font-size: 0;
+}
+
+.markdown-body :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label::before) {
+  font-size: 0.7rem;
+}
+
+/* B1: Shiki output. The `pre.shiki` element carries inline `style`
+ * for the chosen theme's background — that's intentional. We layer
+ * the existing `pre` rules (border, radius, padding, overflow)
+ * underneath the theme background so the block still feels like
+ * part of the bubble. */
+.markdown-body :deep(pre.shiki) {
+  background: var(--bg-secondary, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.markdown-body :deep(pre.shiki code) {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
 }
 </style>

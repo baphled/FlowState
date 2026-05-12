@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import { ensureHighlighterLoaded } from '@/lib/markdownHighlighter'
 
 describe('MarkdownRenderer', () => {
   it('renders plain text as a paragraph', () => {
@@ -43,6 +44,121 @@ describe('MarkdownRenderer', () => {
     expect(pre.exists()).toBe(true)
     expect(pre.find('code').exists()).toBe(true)
     expect(pre.find('code').text()).toContain('const x = 1;')
+  })
+
+  // B1 (Vue UI Parity vs OpenCode, May 2026): syntax highlighting in
+  // markdown code blocks. Pre-fix the MarkdownIt instance has no
+  // `highlight` callback, so fenced code blocks render as a plain
+  // `<pre><code class="language-…">…</code></pre>` with zero token
+  // markup. OpenCode's TUI ships Shiki-tokenised output (per-token
+  // <span style="color:…">). This contract pins the post-fix state at
+  // the component-seam level: a fenced typescript block produces a
+  // wrapper carrying a Shiki marker class AND at least one inline
+  // colour token. The specific token text is intentionally not
+  // asserted — Shiki's tokenisation can drift between grammar bumps
+  // without changing the user-visible outcome.
+  describe('syntax highlighting (B1)', () => {
+    it('emits Shiki-tokenised spans for a fenced typescript block', async () => {
+      // Shiki is lazy-loaded to keep the initial JS bundle under the
+      // 300 KB cap (PR brief). The component triggers the load on
+      // mount and re-renders when the highlighter resolves. The spec
+      // awaits that resolution explicitly so it asserts the post-
+      // load state, not the plain `<pre><code>` first paint.
+      await ensureHighlighterLoaded()
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          content: '```typescript\nconst answer: number = 42;\n```',
+        },
+      })
+      await flushPromises()
+
+      const html = wrapper.html()
+      // Shiki wraps its output in a `<pre class="shiki ...">` element.
+      // The class marker survives transformer pipelines and is the
+      // load-bearing signal that the highlight callback fired.
+      expect(html).toContain('shiki')
+      // At least one inline coloured token must appear. Shiki emits
+      // each token as `<span style="color:#xxxxxx">…</span>` (CSS
+      // variables theme switches the `--shiki-light` / `--shiki-dark`
+      // CSS custom properties instead, also matched here).
+      expect(html).toMatch(/<span[^>]*(?:color:|--shiki)/i)
+      // The original content must survive — the token spans render
+      // the same characters, just wrapped.
+      expect(wrapper.text()).toContain('const')
+      expect(wrapper.text()).toContain('42')
+    })
+
+    it('emits Shiki-tokenised spans for a fenced bash block', async () => {
+      // OpenCode embeds bash among the six baseline languages; the
+      // bash grammar is the most-touched on chat output, so a
+      // standalone contract pins it.
+      await ensureHighlighterLoaded()
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          content: '```bash\necho "hello world"\n```',
+        },
+      })
+      await flushPromises()
+
+      expect(wrapper.html()).toContain('shiki')
+      expect(wrapper.html()).toMatch(/<span[^>]*(?:color:|--shiki)/i)
+      expect(wrapper.text()).toContain('echo')
+    })
+
+    it('renders a fenced code block with an unknown language without crashing', () => {
+      // Shiki throws on unknown grammars unless the highlight callback
+      // catches and falls back. Brainfuck is not in the bundled set —
+      // the highlight callback must degrade gracefully to plain
+      // <pre><code> output rather than break the entire message.
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '```brainfuck\n+++>+++\n```' },
+      })
+
+      // The bubble itself must still render (graceful degradation).
+      expect(wrapper.find('.markdown-body').exists()).toBe(true)
+      expect(wrapper.text()).toContain('+++>+++')
+    })
+
+    it('renders a fence with no language as plain text without crashing', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: '```\nuntagged content\n```' },
+      })
+
+      expect(wrapper.find('pre').exists()).toBe(true)
+      expect(wrapper.text()).toContain('untagged content')
+    })
+  })
+
+  // N4 (Vue UI Parity vs OpenCode, May 2026): per-code-block copy
+  // affordance. The whole-message copy lives on MessageBubble — this
+  // contract scopes the per-fence copy button to MarkdownRenderer
+  // where each fenced block gets its own clipboard handle. Hover-
+  // reveal styling is fine; the testid presence assertion does not
+  // require visibility.
+  describe('per-code-block copy buttons (N4)', () => {
+    it('renders a copy button inside each fenced code block', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: {
+          content:
+            '```bash\necho one\n```\n\nsome text\n\n```ts\nconst two = 2;\n```',
+        },
+      })
+
+      const buttons = wrapper.findAll(
+        '[data-testid="markdown-code-copy-btn"]',
+      )
+      expect(buttons.length).toBe(2)
+    })
+
+    it('renders no per-block copy button when the message has no code', () => {
+      const wrapper = mount(MarkdownRenderer, {
+        props: { content: 'just a paragraph, no fences' },
+      })
+
+      expect(
+        wrapper.find('[data-testid="markdown-code-copy-btn"]').exists(),
+      ).toBe(false)
+    })
   })
 
   it('renders tables with <table>, <thead>, <tbody>, <th>, and <td>', () => {
