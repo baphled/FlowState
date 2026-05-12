@@ -7,6 +7,7 @@ import { detectTrigger, insertToken, type TriggerDescriptor } from '@/composable
 import { SLASH_COMMANDS } from '@/commands/slashCommands'
 import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
 import { showToast } from '@/composables/useToast'
+import { uploadAttachments as apiUploadAttachments } from '@/api'
 
 defineOptions({ name: 'MessageInput' })
 
@@ -278,14 +279,24 @@ async function submit(): Promise<void> {
   // entries between the thread and the composer; clicking X reverts
   // a prompt into the composer for edit-then-resend.
   //
-  // UI Parity PR2 B3 — attachments. Upload the staged files BEFORE
-  // sending so the prompt arrives with attachment references already
-  // resolved. The backend endpoint does not yet exist on this branch
-  // so the upload is stubbed; the resulting refs are dropped on the
-  // floor for now. A follow-up PR will wire POST /api/v1/attachments
-  // and prepend the refs into the prompt body.
+  // Chat Attachments Backend PR1 (May 2026) — upload BEFORE sending so
+  // the prompt arrives with attachment references already resolved.
+  // Plan §6 task-05. On failure we keep the staged attachments and
+  // refuse the send so the user can retry without re-staging.
+  let uploadedIds: string[] = []
   if (pendingAttachments.value.length > 0) {
-    await uploadPendingAttachments()
+    try {
+      uploadedIds = await uploadPendingAttachments()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed.'
+      showToast({
+        title: 'Attachment upload failed',
+        message,
+        variant: 'error',
+        duration: 5000,
+      })
+      return
+    }
   }
   inputText.value = ''
   activeTrigger.value = null
@@ -297,7 +308,11 @@ async function submit(): Promise<void> {
   // leaking ~one object per staged image until page unload.
   revokePreviewUrls(pendingAttachments.value)
   pendingAttachments.value = []
-  await store.sendMessage(text)
+  if (uploadedIds.length > 0) {
+    await store.sendMessage(text, { attachmentIds: uploadedIds })
+  } else {
+    await store.sendMessage(text)
+  }
 }
 
 // UI Parity PR2 B5 — Stop-generating button.
@@ -430,41 +445,32 @@ function handleDrop(event: DragEvent): void {
   }
 }
 
-async function uploadPendingAttachments(): Promise<void> {
-  // UI Parity PR2 B3 — TODO(backend): the chat-attachment endpoint
-  // (POST /api/v1/attachments) does not exist on feature/vue-ui-rebase
-  // as of May 2026. The frontend half is ready: the FormData payload
-  // below would carry every staged file with a stable field name. When
-  // the backend lands, swap the `console.debug` for the real call and
-  // thread the returned refs into store.sendMessage so the prompt
-  // arrives with attachment metadata.
+async function uploadPendingAttachments(): Promise<string[]> {
+  // Chat Attachments Backend PR1 (May 2026) — closes the B3
+  // silent-file-loss bug. Plan §6 task-05.
   //
-  // Stubbed POST below intentionally NOT invoked — the call is
-  // commented out so the unit-test surface does not need a fetch mock
-  // and the user's first render of the feature does not 404 against a
-  // missing endpoint. The console.debug exists so a developer running
-  // the dev server can confirm the staging flow worked end-to-end.
+  // The staged pendingAttachments slice carries the user-picked files;
+  // we POST them to /api/v1/sessions/{id}/attachments which returns
+  // metadata including the stable content-hash id. The caller threads
+  // these ids onto the subsequent /messages call so the backend can
+  // resolve them against the session's attachment store and the
+  // provider can lift each into a native image content block.
   //
-  // const form = new FormData()
-  // for (const att of pendingAttachments.value) {
-  //   form.append('files', att.file, att.file.name)
-  // }
-  // const response = await fetch('/api/v1/attachments', {
-  //   method: 'POST',
-  //   body: form,
-  // })
-  // if (!response.ok) {
-  //   // TODO: surface a toast once the backend exists.
-  //   return
-  // }
-  // const refs = await response.json()
-  // ... thread refs into sendMessage
-  if (typeof console !== 'undefined' && pendingAttachments.value.length > 0) {
-    console.debug(
-      '[MessageInput] attachment-upload backend not yet wired — would send',
-      pendingAttachments.value.map((a) => a.file.name),
-    )
+  // Error semantics:
+  //  - Throws on any non-2xx response. The caller (submit) catches and
+  //    surfaces a toast, leaving the pendingAttachments slice intact so
+  //    the user can retry without re-staging.
+  //  - No staged-attachment side-effects on failure.
+  if (pendingAttachments.value.length === 0) {
+    return []
   }
+  const sessionId = store.currentSessionId
+  if (!sessionId) {
+    throw new Error('Cannot upload attachments without an active session.')
+  }
+  const files = pendingAttachments.value.map((a) => a.file)
+  const uploaded = await apiUploadAttachments(sessionId, files)
+  return uploaded.map((u) => u.id)
 }
 
 async function applySelection(item: FuzzySearchItem): Promise<void> {

@@ -5,6 +5,26 @@ import MessageInput from './MessageInput.vue'
 import { useChatStore } from '@/stores/chatStore'
 import type { Agent, Swarm } from '@/types'
 
+// Chat Attachments Backend PR1 (May 2026) — the composer's
+// uploadPendingAttachments() now POSTs to the real backend via
+// @/api uploadAttachments. Mock the import surface so the unit tests
+// don't need a live backend. Specs that need to assert upload-failure
+// semantics override the resolution per-test.
+vi.mock('@/api', async () => {
+  const actual = await vi.importActual<typeof import('@/api')>('@/api')
+  return {
+    ...actual,
+    uploadAttachments: vi.fn(async (_sid: string, files: File[]) =>
+      files.map((f, i) => ({
+        id: `att-${i}-${f.name}`,
+        mediaType: f.type || 'image/png',
+        sizeBytes: f.size,
+        originalFilename: f.name,
+      })),
+    ),
+  }
+})
+
 /**
  * Drives the textarea state in tests: pushes the value through Vue's
  * v-model via `setValue` (so `inputText.value` is updated), then sets
@@ -889,6 +909,11 @@ describe('MessageInput — attachments (B3)', () => {
 
     const wrapper = mount(MessageInput, { attachTo: document.body })
     await flushPromises()
+    // Chat Attachments Backend PR1 (May 2026) — uploadPendingAttachments
+    // requires an active session id. Seed AFTER mount + flushPromises per
+    // memory feedback_pinia_onmounted_clobbers_seed so the chatStore
+    // onMounted load doesn't clobber the seed.
+    store.currentSessionId = 'sess-attach-p02'
 
     // Stage an image via paste so previewUrl gets seeded (jsdom stub above
     // makes createObjectURL return 'blob:mock-url').

@@ -1808,11 +1808,12 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async sendMessage(content: string): Promise<void> {
+    async sendMessage(content: string, options?: { attachmentIds?: string[] }): Promise<void> {
       const text = content.trim()
       if (!text) {
         return
       }
+      const attachmentIds = options?.attachmentIds ?? []
       // UI Parity PR2 B4 (May 2026) — prompt history for ArrowUp recall.
       // Record every non-empty send (including /compress and queued
       // prompts) onto the ring buffer so the composer's history walk
@@ -1978,7 +1979,10 @@ export const useChatStore = defineStore('chat', {
           onStall: () => this.handleStreamStall(capturedSessionId),
         })
 
-        const sentSession = await sendSessionMessage(sessionId, text)
+        const sentSession =
+          attachmentIds.length > 0
+            ? await sendSessionMessage(sessionId, text, { attachmentIds })
+            : await sendSessionMessage(sessionId, text)
 
         // Reconcile the optimistic temp-* id with the server-assigned id
         // from the response so subsequent renders carry the canonical id

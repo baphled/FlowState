@@ -171,14 +171,30 @@ export async function createSession(agentId: string): Promise<Session> {
   return res.json()
 }
 
+export interface SendSessionMessageOptions {
+  /**
+   * attachmentIds is the optional list of attachment ids returned by a
+   * prior uploadAttachments() call. The backend resolves these against
+   * the session's attachment store and threads them onto the user
+   * message as native image content blocks (Anthropic PR1; OpenAI /
+   * Copilot in PR3). Unknown ids surface as 400 from the backend.
+   */
+  attachmentIds?: string[]
+}
+
 export async function sendSessionMessage(
   sessionId: string,
-  content: string
+  content: string,
+  options?: SendSessionMessageOptions
 ): Promise<Session> {
+  const body: Record<string, unknown> = { content }
+  if (options?.attachmentIds && options.attachmentIds.length > 0) {
+    body.attachmentIds = options.attachmentIds
+  }
   const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(body),
   })
 
   if (!res.ok) {
@@ -187,6 +203,56 @@ export async function sendSessionMessage(
 
   const session = (await res.json()) as Session
   return session
+}
+
+/**
+ * UploadedAttachment is the wire shape of a single attachment returned
+ * by POST /api/v1/sessions/{id}/attachments. The `id` field is the
+ * stable content-hash identifier the caller threads through to
+ * sendSessionMessage as attachmentIds.
+ *
+ * Plan "Chat Attachments Backend (May 2026)" §6 task-03 / task-05.
+ */
+export interface UploadedAttachment {
+  id: string
+  mediaType: string
+  sizeBytes: number
+  originalFilename?: string
+}
+
+/**
+ * uploadAttachments POSTs a multipart/form-data body to the per-session
+ * attachments endpoint and returns the array of stored attachment
+ * metadata. The caller is responsible for thread-safety against
+ * concurrent uploads — the backend dedups on content hash within a
+ * session so a re-upload of identical bytes returns the same id with
+ * no error.
+ *
+ * Error shape: throws on non-2xx response with the backend's status
+ * text in the error message. The composer (MessageInput.vue) catches
+ * and surfaces a toast; the staged-attachments array is NOT cleared
+ * on failure so the user can retry.
+ */
+export async function uploadAttachments(
+  sessionId: string,
+  files: File[]
+): Promise<UploadedAttachment[]> {
+  if (files.length === 0) {
+    return []
+  }
+  const form = new FormData()
+  for (const file of files) {
+    form.append('files', file, file.name)
+  }
+  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/attachments`), {
+    method: 'POST',
+    body: form,
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
+  }
+  const data = (await res.json()) as { attachments?: UploadedAttachment[] }
+  return data.attachments ?? []
 }
 
 export async function fetchSessionMessages(sessionId: string): Promise<Message[]> {
