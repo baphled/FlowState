@@ -603,6 +603,16 @@ export const useChatStore = defineStore('chat', {
     // composer with the content of a reverted user message. MessageInput
     // watches this field and consumes it (resetting to '') on next tick.
     composerText: '',
+    // promptHistory backs up-arrow recall in MessageInput (UI Parity PR2 B4,
+    // May 2026). Each successful sendMessage pushes the user's text onto this
+    // ring buffer; the composer's ArrowUp/ArrowDown handlers walk it when the
+    // textarea is empty or the caret sits at the buffer's start/end edge so
+    // the user can re-run / edit a recent prompt without re-typing.
+    //
+    // Capped at 50 entries — the TUI uses the same ceiling. Newest entry is at
+    // the END of the array (push semantics); the composer steps from end-to-
+    // start on ArrowUp.
+    promptHistory: [] as string[],
     // ---- tool-activity rolling-toast state (May 2026 notifications work) ----
     //
     // The user requested visible notifications when tools fire AND when the
@@ -1670,11 +1680,38 @@ export const useChatStore = defineStore('chat', {
       return this.loadSessionByAgentId(agentId)
     },
 
+    // UI Parity PR2 B4 (May 2026) — push a prompt onto the history ring.
+    // Capped at 50 entries; the oldest entry rolls off the front. Adjacent
+    // duplicates are folded so re-running the same prompt twice does not
+    // burn two slots.
+    recordPromptHistory(text: string): void {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      const buf = this.promptHistory
+      if (buf.length > 0 && buf[buf.length - 1] === trimmed) {
+        return
+      }
+      buf.push(trimmed)
+      // Cap matches the TUI history depth so muscle memory carries between
+      // surfaces.
+      const PROMPT_HISTORY_CAP = 50
+      if (buf.length > PROMPT_HISTORY_CAP) {
+        buf.splice(0, buf.length - PROMPT_HISTORY_CAP)
+      }
+    },
+
     async sendMessage(content: string): Promise<void> {
       const text = content.trim()
       if (!text) {
         return
       }
+      // UI Parity PR2 B4 (May 2026) — prompt history for ArrowUp recall.
+      // Record every non-empty send (including /compress and queued
+      // prompts) onto the ring buffer so the composer's history walk
+      // reaches the canonical list of what the user actually submitted.
+      // Dedup against the most recent entry — re-running the same prompt
+      // twice in a row should not double-fill the buffer.
+      this.recordPromptHistory(text)
       // Deliverable 3 (May 2026 context-accuracy bundle) — slash
       // commands that are handled entirely client-side must
       // short-circuit BEFORE the optimistic-bubble push so the

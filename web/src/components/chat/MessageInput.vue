@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
+import Icon from '@/components/common/Icon.vue'
 import { detectTrigger, insertToken, type TriggerDescriptor } from '@/composables/useInputTriggers'
 import { SLASH_COMMANDS } from '@/commands/slashCommands'
 import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
@@ -16,6 +17,45 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null)
 // recompute it on every input/keyup/click, so it always reflects the
 // latest textarea state.
 const activeTrigger = ref<TriggerDescriptor | null>(null)
+
+// ---- UI Parity PR2 B4 (May 2026) — prompt-history walk state ----
+//
+// historyCursor is the offset from the END of store.promptHistory. -1
+// means "live buffer" (the user's current draft); 0 means "newest
+// recorded prompt"; 1 means "second-newest"; etc. ArrowUp increments,
+// ArrowDown decrements. liveDraft preserves whatever the user had typed
+// before they started walking history so ArrowDown can restore it once
+// they walk past the newest entry.
+const historyCursor = ref<number>(-1)
+const liveDraft = ref<string>('')
+
+// ---- UI Parity PR2 B3 (May 2026) — attachment composer state ----
+//
+// pendingAttachments holds files the user has chosen via the picker,
+// dragged onto the composer, or pasted from the clipboard. They are
+// staged here until the user hits Send. The backend chat-attachment
+// endpoint does not yet exist on `feature/vue-ui-rebase`; the upload
+// path below stubs the POST and flags the gap.
+interface PendingAttachment {
+  id: string
+  file: File
+  previewUrl: string | null
+}
+const pendingAttachments = ref<PendingAttachment[]>([])
+const isDragging = ref(false)
+let dragCounter = 0
+const fileInputRef = ref<HTMLInputElement | null>(null)
+
+// ---- UI Parity PR2 B5 (May 2026) — stop-generating button state ----
+//
+// The composer swaps Send → Stop when the active session is streaming
+// (per-session, not the legacy flat flag). Clicking Stop calls the
+// store's handleEscapeKey twice in quick succession so users do not
+// have to remember the undiscoverable Esc-twice keybinding.
+const streamingState = computed(() => store.streamingFor(store.currentSessionId))
+const isStreamingNow = computed(
+  () => streamingState.value.isStreaming || streamingState.value.isLoading,
+)
 
 // Static slash-command catalogue mirrored from the TUI registry. See
 // web/src/commands/slashCommands.ts for the canonical source-of-truth
@@ -64,6 +104,13 @@ const initialQuery = computed(() => activeTrigger.value?.fragment ?? '')
 function handleInput(): void {
   autoResize()
   recomputeTrigger()
+  // Editing the textarea breaks the history walk — drop back to live mode.
+  // The user has decided to compose something new; further ArrowUp
+  // presses should start from the newest entry again.
+  if (historyCursor.value !== -1) {
+    historyCursor.value = -1
+    liveDraft.value = ''
+  }
 }
 
 function recomputeTrigger(): void {
@@ -77,6 +124,84 @@ function recomputeTrigger(): void {
   // generated listener, the reactive ref may not have been assigned
   // yet. The element's `.value` is always authoritative.
   activeTrigger.value = detectTrigger(el.value, el.selectionStart ?? 0)
+}
+
+// UI Parity PR2 B4 — ArrowUp recall.
+//
+// Step the cursor toward older entries. At the top of the history we
+// stop (the user has reached the oldest entry; no wraparound). The
+// FIRST ArrowUp stashes the live draft so ArrowDown can restore it.
+function walkHistoryUp(): boolean {
+  const history = store.promptHistory
+  if (history.length === 0) return false
+  if (historyCursor.value === -1) {
+    liveDraft.value = inputText.value
+    historyCursor.value = 0
+  } else if (historyCursor.value < history.length - 1) {
+    historyCursor.value += 1
+  } else {
+    return true // already at oldest; consumed but no movement
+  }
+  applyHistorySnapshot()
+  return true
+}
+
+// UI Parity PR2 B4 — ArrowDown forward-walk.
+//
+// Step toward newer entries. Walking past the newest entry restores the
+// live draft and re-enters "live" mode.
+function walkHistoryDown(): boolean {
+  if (historyCursor.value === -1) return false
+  if (historyCursor.value === 0) {
+    historyCursor.value = -1
+    inputText.value = liveDraft.value
+    liveDraft.value = ''
+  } else {
+    historyCursor.value -= 1
+    applyHistorySnapshot()
+  }
+  void nextTick(() => {
+    autoResize()
+    const el = textareaRef.value
+    if (el) {
+      const end = el.value.length
+      el.selectionStart = end
+      el.selectionEnd = end
+    }
+  })
+  return true
+}
+
+function applyHistorySnapshot(): void {
+  const history = store.promptHistory
+  if (history.length === 0) return
+  const idx = history.length - 1 - historyCursor.value
+  inputText.value = history[idx] ?? ''
+  void nextTick(() => {
+    autoResize()
+    const el = textareaRef.value
+    if (el) {
+      const end = el.value.length
+      el.selectionStart = end
+      el.selectionEnd = end
+    }
+  })
+}
+
+// Gate the ArrowUp recall: only consume the key when the caret is at
+// the very start of the textarea (or the buffer is empty). Mid-text
+// editing of multi-line prompts must still allow native ArrowUp to
+// move the caret between lines.
+function isAtBufferStart(el: HTMLTextAreaElement | null): boolean {
+  if (!el) return false
+  if (el.value.length === 0) return true
+  return (el.selectionStart ?? 0) === 0 && (el.selectionEnd ?? 0) === 0
+}
+
+function isAtBufferEnd(el: HTMLTextAreaElement | null): boolean {
+  if (!el) return false
+  const end = el.value.length
+  return (el.selectionStart ?? 0) === end && (el.selectionEnd ?? 0) === end
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -95,6 +220,22 @@ function handleKeydown(event: KeyboardEvent): void {
     return
   }
 
+  // UI Parity PR2 B4 — ArrowUp / ArrowDown history walk. Gated on
+  // caret-at-edge so users typing in the middle of a multi-line
+  // prompt keep native caret motion.
+  if (event.key === 'ArrowUp' && isAtBufferStart(textareaRef.value)) {
+    if (walkHistoryUp()) {
+      event.preventDefault()
+      return
+    }
+  }
+  if (event.key === 'ArrowDown' && isAtBufferEnd(textareaRef.value) && historyCursor.value !== -1) {
+    if (walkHistoryDown()) {
+      event.preventDefault()
+      return
+    }
+  }
+
   if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
     event.preventDefault()
     submit()
@@ -110,16 +251,180 @@ function autoResize(): void {
 
 async function submit(): Promise<void> {
   const text = inputText.value.trim()
-  if (!text) return
+  if (!text && pendingAttachments.value.length === 0) return
   // Streaming Coherence Slice E (May 2026) — queued prompts. The
   // composer no longer bounces submit-while-streaming with a toast;
   // it forwards the prompt to sendMessage which routes it to the
   // session's queue. The QueuedPromptStrip renders the queued
   // entries between the thread and the composer; clicking X reverts
   // a prompt into the composer for edit-then-resend.
+  //
+  // UI Parity PR2 B3 — attachments. Upload the staged files BEFORE
+  // sending so the prompt arrives with attachment references already
+  // resolved. The backend endpoint does not yet exist on this branch
+  // so the upload is stubbed; the resulting refs are dropped on the
+  // floor for now. A follow-up PR will wire POST /api/v1/attachments
+  // and prepend the refs into the prompt body.
+  if (pendingAttachments.value.length > 0) {
+    await uploadPendingAttachments()
+  }
   inputText.value = ''
   activeTrigger.value = null
+  historyCursor.value = -1
+  liveDraft.value = ''
+  pendingAttachments.value = []
   await store.sendMessage(text)
+}
+
+// UI Parity PR2 B5 — Stop-generating button.
+//
+// Clicking Stop fires handleEscapeKey twice in quick succession so the
+// user does not have to remember the Esc-Esc chord. The store's
+// handleEscapeKey is itself idempotent on the first press (just arms a
+// 600ms window), so two synchronous calls translate to "arm then
+// confirm" in one click.
+async function handleStop(): Promise<void> {
+  await store.handleEscapeKey()
+  await store.handleEscapeKey()
+}
+
+// ---- UI Parity PR2 B3 — attachment handlers ----
+
+function newAttachmentId(): string {
+  return `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function stageFiles(files: FileList | File[] | null | undefined): void {
+  if (!files) return
+  const list = Array.from(files)
+  if (list.length === 0) return
+  for (const file of list) {
+    // Image-only filter for the v1 surface — the TUI's attachment flow
+    // accepts arbitrary file types but the v1 web composer mirrors the
+    // brief's "image/*" scope. Non-image files are silently skipped.
+    if (!file.type.startsWith('image/')) continue
+    let previewUrl: string | null = null
+    try {
+      previewUrl = URL.createObjectURL(file)
+    } catch {
+      previewUrl = null
+    }
+    pendingAttachments.value.push({
+      id: newAttachmentId(),
+      file,
+      previewUrl,
+    })
+  }
+}
+
+function handleFilePicker(event: Event): void {
+  const target = event.target as HTMLInputElement
+  stageFiles(target.files)
+  // Reset so the user can re-pick the same file next time.
+  target.value = ''
+}
+
+function removeAttachment(id: string): void {
+  const found = pendingAttachments.value.find((a) => a.id === id)
+  if (found?.previewUrl) {
+    try {
+      URL.revokeObjectURL(found.previewUrl)
+    } catch {
+      // Some test environments (jsdom) lack revokeObjectURL — non-fatal.
+    }
+  }
+  pendingAttachments.value = pendingAttachments.value.filter((a) => a.id !== id)
+}
+
+function handlePaste(event: ClipboardEvent): void {
+  const items = event.clipboardData?.items
+  if (!items) return
+  const files: File[] = []
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (item.kind === 'file') {
+      const file = item.getAsFile()
+      if (file && file.type.startsWith('image/')) {
+        files.push(file)
+      }
+    }
+  }
+  if (files.length > 0) {
+    event.preventDefault()
+    stageFiles(files)
+  }
+}
+
+function handleDragEnter(event: DragEvent): void {
+  // Only react when the drag actually carries files — keeps the
+  // overlay from flashing for ordinary text-selection drags.
+  const types = event.dataTransfer?.types
+  if (!types) return
+  if (!Array.from(types).includes('Files')) return
+  event.preventDefault()
+  dragCounter += 1
+  isDragging.value = true
+}
+
+function handleDragLeave(event: DragEvent): void {
+  event.preventDefault()
+  dragCounter = Math.max(0, dragCounter - 1)
+  if (dragCounter === 0) isDragging.value = false
+}
+
+function handleDragOver(event: DragEvent): void {
+  if (!event.dataTransfer) return
+  if (Array.from(event.dataTransfer.types).includes('Files')) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+}
+
+function handleDrop(event: DragEvent): void {
+  event.preventDefault()
+  isDragging.value = false
+  dragCounter = 0
+  const files = event.dataTransfer?.files
+  if (files && files.length > 0) {
+    stageFiles(files)
+  }
+}
+
+async function uploadPendingAttachments(): Promise<void> {
+  // UI Parity PR2 B3 — TODO(backend): the chat-attachment endpoint
+  // (POST /api/v1/attachments) does not exist on feature/vue-ui-rebase
+  // as of May 2026. The frontend half is ready: the FormData payload
+  // below would carry every staged file with a stable field name. When
+  // the backend lands, swap the `console.debug` for the real call and
+  // thread the returned refs into store.sendMessage so the prompt
+  // arrives with attachment metadata.
+  //
+  // Stubbed POST below intentionally NOT invoked — the call is
+  // commented out so the unit-test surface does not need a fetch mock
+  // and the user's first render of the feature does not 404 against a
+  // missing endpoint. The console.debug exists so a developer running
+  // the dev server can confirm the staging flow worked end-to-end.
+  //
+  // const form = new FormData()
+  // for (const att of pendingAttachments.value) {
+  //   form.append('files', att.file, att.file.name)
+  // }
+  // const response = await fetch('/api/v1/attachments', {
+  //   method: 'POST',
+  //   body: form,
+  // })
+  // if (!response.ok) {
+  //   // TODO: surface a toast once the backend exists.
+  //   return
+  // }
+  // const refs = await response.json()
+  // ... thread refs into sendMessage
+  if (typeof console !== 'undefined' && pendingAttachments.value.length > 0) {
+    console.debug(
+      '[MessageInput] attachment-upload backend not yet wired — would send',
+      pendingAttachments.value.map((a) => a.file.name),
+    )
+  }
 }
 
 async function applySelection(item: FuzzySearchItem): Promise<void> {
@@ -174,8 +479,92 @@ watch(
 </script>
 
 <template>
-  <div class="message-input-wrap" data-testid="message-input-wrap">
+  <div
+    class="message-input-wrap"
+    :class="{ 'is-dragging': isDragging }"
+    data-testid="message-input-wrap"
+    @dragenter="handleDragEnter"
+    @dragleave="handleDragLeave"
+    @dragover="handleDragOver"
+    @drop="handleDrop"
+  >
+    <!--
+      UI Parity PR2 B3 — drag-and-drop overlay. Mounted always but only
+      visible when isDragging is true; keeps layout stable and avoids
+      a mount-time flicker during the first drag.
+    -->
+    <div
+      v-if="isDragging"
+      class="message-input-drag-overlay"
+      data-testid="message-input-drag-overlay"
+      aria-hidden="true"
+    >
+      <Icon name="attach" :size="32" />
+      <span>Drop image to attach</span>
+    </div>
+
+    <!--
+      UI Parity PR2 B3 — staged attachments. Renders thumbnails for any
+      image the user has chosen, dragged, or pasted. Each thumbnail has
+      a remove button so the user can unstage before sending.
+    -->
+    <div
+      v-if="pendingAttachments.length > 0"
+      class="message-input-attachments"
+      data-testid="message-input-attachments"
+    >
+      <div
+        v-for="att in pendingAttachments"
+        :key="att.id"
+        class="message-input-attachment"
+        :data-testid="`message-input-attachment-${att.id}`"
+      >
+        <img
+          v-if="att.previewUrl"
+          :src="att.previewUrl"
+          :alt="att.file.name"
+          class="message-input-attachment-thumb"
+        />
+        <span class="message-input-attachment-name">{{ att.file.name }}</span>
+        <button
+          type="button"
+          class="message-input-attachment-remove"
+          :data-testid="`message-input-attachment-remove-${att.id}`"
+          :aria-label="`Remove attachment ${att.file.name}`"
+          @click="removeAttachment(att.id)"
+        >
+          <Icon name="close" :size="14" />
+        </button>
+      </div>
+    </div>
+
     <div class="input-row">
+      <!--
+        UI Parity PR2 B3 — file picker button. Hidden file input + a
+        visible attach-icon button that proxies clicks to it; cleaner
+        than the native picker chrome and consistent with the rest of
+        the composer's icon vocabulary.
+      -->
+      <button
+        type="button"
+        class="attach-button"
+        data-testid="attach-button"
+        aria-label="Attach image"
+        title="Attach image"
+        @click="fileInputRef?.click()"
+      >
+        <Icon name="attach" :size="18" />
+      </button>
+      <input
+        ref="fileInputRef"
+        type="file"
+        accept="image/*"
+        multiple
+        class="file-input"
+        data-testid="file-input"
+        @change="handleFilePicker"
+      />
+
       <textarea
         v-model="inputText"
         ref="textareaRef"
@@ -187,15 +576,36 @@ watch(
         @keyup="recomputeTrigger"
         @click="recomputeTrigger"
         @keydown="handleKeydown"
+        @paste="handlePaste"
       />
 
+      <!--
+        UI Parity PR2 B5 — Send/Stop swap. While the current session is
+        actively streaming the composer renders a red Stop button instead
+        of the dimmed Send button. Clicking Stop fires the cancel path
+        directly; tooltip surfaces the discoverable Esc-Esc keybinding so
+        keyboard users learn the chord.
+      -->
       <button
+        v-if="isStreamingNow"
+        type="button"
+        class="stop-button"
+        data-testid="stop-button"
+        title="Stop generating (Esc Esc to confirm)"
+        aria-label="Stop generating"
+        @click="handleStop"
+      >
+        <Icon name="stop" :size="14" />
+        <span class="stop-button-label">Stop</span>
+      </button>
+      <button
+        v-else
         class="send-button"
         data-testid="send-button"
-        :disabled="!inputText.trim() || store.isLoading"
+        :disabled="!inputText.trim() && pendingAttachments.length === 0"
         @click="submit"
       >
-        {{ store.isLoading ? '…' : 'Send' }}
+        Send
       </button>
     </div>
 
@@ -203,7 +613,7 @@ watch(
       {{ store.error }}
     </p>
 
-    <p class="input-hint">Enter to send · Shift+Enter / Alt+Enter for newline · "/" commands · "@" agents</p>
+    <p class="input-hint">Enter to send · Shift+Enter / Alt+Enter for newline · ↑ history · "/" commands · "@" agents</p>
 
     <!--
       Slash and mention pickers reuse FuzzySearchModal — the same scaffolding
@@ -241,12 +651,60 @@ watch(
   border-top: 1px solid var(--border);
   background: var(--bg-secondary);
   flex-shrink: 0;
+  position: relative;
+}
+
+.message-input-wrap.is-dragging {
+  background: var(--accent-bg, rgba(74, 222, 128, 0.06));
+}
+
+.message-input-drag-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  font-weight: 600;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  z-index: 10;
+  pointer-events: none;
 }
 
 .input-row {
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
+}
+
+.attach-button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  align-self: flex-end;
+  height: 38px;
+}
+
+.attach-button:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.file-input {
+  display: none;
 }
 
 .message-input {
@@ -287,6 +745,37 @@ watch(
 .send-button:hover:not(:disabled) { background: var(--accent-hover); }
 .send-button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/*
+ * UI Parity PR2 B5 — Stop button styling. Red destructive accent + the
+ * square stop icon makes the affordance unambiguous; the label remains
+ * for clarity at the standard text colour. Animation matches the
+ * streaming-dot pulse cadence elsewhere so the "something is happening"
+ * vocabulary stays consistent.
+ */
+.stop-button {
+  background: var(--accent-danger, #f87171);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s;
+  flex-shrink: 0;
+  align-self: flex-end;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.stop-button:hover { filter: brightness(1.1); }
+.stop-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.stop-button-label {
+  font-size: 0.9rem;
+}
+
 .input-error {
   color: var(--error);
   font-size: 0.8rem;
@@ -297,5 +786,60 @@ watch(
   font-size: 0.72rem;
   color: var(--text-muted);
   margin-top: 0.25rem;
+}
+
+/*
+ * UI Parity PR2 B3 — staged attachments strip. Renders above the input
+ * row; thumbnails for image attachments with a remove button per item.
+ */
+.message-input-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.message-input-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.4rem 0.25rem 0.25rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 200px;
+}
+
+.message-input-attachment-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: var(--radius);
+}
+
+.message-input-attachment-name {
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100px;
+}
+
+.message-input-attachment-remove {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  padding: 0.15rem;
+}
+
+.message-input-attachment-remove:hover {
+  background: rgba(248, 113, 113, 0.15);
+  color: var(--accent-danger, #f87171);
 }
 </style>

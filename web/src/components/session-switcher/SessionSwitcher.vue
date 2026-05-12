@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { showToast } from '@/composables/useToast'
+import Icon from '@/components/common/Icon.vue'
 
 defineOptions({ name: 'SessionSwitcher' })
 
@@ -115,7 +116,7 @@ async function handleConfirmDelete(sessionId: string, event?: Event): Promise<vo
       aria-haspopup="listbox"
       :aria-expanded="isOpen"
     >
-      <span class="session-icon">💬</span>
+      <span class="session-icon"><Icon name="message" :size="14" /></span>
       <span class="session-name">{{ currentSessionDisplay }}</span>
       <!--
         Background-activity hint — a small dot in a distinct hue from the
@@ -144,7 +145,7 @@ async function handleConfirmDelete(sessionId: string, event?: Event): Promise<vo
         @click="createNewSession"
         role="option"
       >
-        <span class="option-icon">➕</span>
+        <span class="option-icon"><Icon name="plus" :size="14" /></span>
         <span class="option-name">New Session</span>
       </li>
       <li v-if="hasSessions" class="session-divider">
@@ -209,7 +210,7 @@ async function handleConfirmDelete(sessionId: string, event?: Event): Promise<vo
             :aria-label="`Delete session ${session.title || session.id.slice(0, 8)}`"
             @click.stop="handleDeleteClick(session.id, $event)"
           >
-            <span aria-hidden="true">🗑️</span>
+            <Icon name="trash" :size="14" aria-label="Delete" />
           </button>
         </div>
         <span class="option-meta">{{ session.messageCount }} messages</span>
