@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	filippo.io/age v1.3.1
+	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/anthropics/anthropic-sdk-go v1.27.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
