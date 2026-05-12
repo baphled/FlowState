@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2629,6 +2630,136 @@ var _ = Describe("attachmentsToBlocks and buildUserMessage", func() {
 			{Data: nil},
 		}
 		Expect(TotalAttachmentBytes(atts)).To(Equal(int64(350)))
+	})
+
+	// Plan §6 task-14 — PR4 PDF threading. Anthropic's non-Beta
+	// NewDocumentBlock[Base64PDFSourceParam] produces a
+	// ContentBlockParamUnion whose JSON serialises to
+	// {"type":"document","source":{"type":"base64",
+	// "media_type":"application/pdf","data":"..."}}.
+	Context("PDF attachment threading (PR4 task-14)", func() {
+		pdfBytes := []byte("%PDF-1.4\n%fake-pdf-body\n")
+
+		It("converts a PDF attachment to NewDocumentBlock with Base64PDFSourceParam", func() {
+			blocks := attachmentsToBlocks([]provider.Attachment{
+				{ID: "doc-1", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+			})
+			Expect(blocks).To(HaveLen(1))
+			Expect(blocks[0].OfDocument).NotTo(BeNil())
+			Expect(blocks[0].OfDocument.Source.OfBase64).NotTo(BeNil())
+			Expect(blocks[0].OfDocument.Source.OfBase64.Data).NotTo(BeEmpty())
+		})
+
+		It("base64-encodes the PDF bytes in the document source", func() {
+			blocks := attachmentsToBlocks([]provider.Attachment{
+				{ID: "doc-1", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+			})
+			Expect(blocks[0].OfDocument.Source.OfBase64.Data).
+				To(Equal(base64.StdEncoding.EncodeToString(pdfBytes)))
+		})
+
+		It("emits the wire shape {type:document, source:{type:base64, media_type:application/pdf, data:...}}", func() {
+			blocks := attachmentsToBlocks([]provider.Attachment{
+				{ID: "doc-1", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+			})
+			raw, err := json.Marshal(blocks[0])
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(raw)).To(ContainSubstring(`"type":"document"`))
+			Expect(string(raw)).To(ContainSubstring(`"type":"base64"`))
+			Expect(string(raw)).To(ContainSubstring(`"media_type":"application/pdf"`))
+			Expect(string(raw)).To(ContainSubstring(`"data":"` + base64.StdEncoding.EncodeToString(pdfBytes)))
+		})
+
+		It("preserves source order for mixed image+PDF in a single message", func() {
+			pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+			msg := provider.Message{
+				Role:    "user",
+				Content: "look at these",
+				Attachments: []provider.Attachment{
+					{ID: "i", MediaType: "image/png", Data: pngBytes},
+					{ID: "d", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+				},
+			}
+			out := buildUserMessage(msg)
+			// image, document, text
+			Expect(out.Content).To(HaveLen(3))
+			Expect(out.Content[0].OfImage).NotTo(BeNil())
+			Expect(out.Content[1].OfDocument).NotTo(BeNil())
+			Expect(out.Content[2].OfText).NotTo(BeNil())
+			Expect(out.Content[2].OfText.Text).To(Equal("look at these"))
+		})
+
+		It("PDF-first source order is preserved (document → image → text)", func() {
+			pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+			msg := provider.Message{
+				Role:    "user",
+				Content: "look",
+				Attachments: []provider.Attachment{
+					{ID: "d", Kind: "document", MediaType: "application/pdf", Data: pdfBytes},
+					{ID: "i", MediaType: "image/png", Data: pngBytes},
+				},
+			}
+			out := buildUserMessage(msg)
+			Expect(out.Content).To(HaveLen(3))
+			Expect(out.Content[0].OfDocument).NotTo(BeNil())
+			Expect(out.Content[1].OfImage).NotTo(BeNil())
+			Expect(out.Content[2].OfText.Text).To(Equal("look"))
+		})
+
+		It("backwards-compat: empty Kind on an image attachment still produces NewImageBlockBase64", func() {
+			// AC-14-Detect-CallSites-Preserved — an existing image
+			// attachment with empty Kind (PR1-era state) is unchanged.
+			pngBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+			blocks := attachmentsToBlocks([]provider.Attachment{
+				{ID: "img", Kind: "", MediaType: "image/png", Data: pngBytes},
+			})
+			Expect(blocks).To(HaveLen(1))
+			Expect(blocks[0].OfImage).NotTo(BeNil())
+			Expect(blocks[0].OfDocument).To(BeNil())
+		})
+
+		It("drops a Kind=document attachment with a non-PDF media type (defence-in-depth)", func() {
+			// Upstream allow-list is the primary defence; this is the
+			// belt-and-braces guard for any future caller that smuggles
+			// a non-PDF document past the storage layer.
+			blocks := attachmentsToBlocks([]provider.Attachment{
+				{ID: "doc-x", Kind: "document", MediaType: "application/msword", Data: []byte("docx-body")},
+			})
+			Expect(blocks).To(BeEmpty())
+		})
+	})
+})
+
+// Plan §6 task-14 — the 25 MB total-request ceiling lifted from PR3
+// task-10 already gates mixed image+PDF payloads; here we pin that
+// the helper continues to fire when the mixed sum overflows.
+var _ = Describe("buildRequestParams 25 MB ceiling fires on mixed image+PDF", func() {
+	It("returns ErrAttachmentRequestTooLarge when 3 images + 2 PDFs sum past 25 MB", func() {
+		p, providerErr := New("test-key")
+		Expect(providerErr).NotTo(HaveOccurred())
+		pngBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+		fiveMB := make([]byte, 5*1024*1024)
+		copy(fiveMB, pngBytes)
+		tenMB := make([]byte, 10*1024*1024)
+		copy(tenMB, []byte("%PDF-1.4\n"))
+		oneMB := make([]byte, 1*1024*1024)
+		copy(oneMB, []byte("%PDF-1.4\n"))
+
+		req := provider.ChatRequest{
+			Model: "claude-sonnet-4-6",
+			Messages: []provider.Message{
+				{Role: "user", Content: "mixed", Attachments: []provider.Attachment{
+					{ID: "i1", MediaType: "image/png", Data: fiveMB},
+					{ID: "i2", MediaType: "image/png", Data: fiveMB},
+					{ID: "i3", MediaType: "image/png", Data: fiveMB},
+					{ID: "d1", Kind: "document", MediaType: "application/pdf", Data: tenMB},
+					{ID: "d2", Kind: "document", MediaType: "application/pdf", Data: oneMB},
+				}},
+			},
+		}
+		_, _, err := p.buildRequestParams(req)
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, ErrAttachmentRequestTooLarge)).To(BeTrue())
 	})
 })
 
