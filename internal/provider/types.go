@@ -54,6 +54,57 @@ type Message struct {
 	// surface is only the error-path miscount which is bounded by the
 	// session's in-flight turn lifetime.
 	IsError bool
+	// Attachments carries provider-agnostic image (and, in later phases,
+	// document) attachment references that the per-provider request
+	// builder lifts into native content blocks. Empty for messages that
+	// carry no attachments, which is the dominant case.
+	//
+	// The agnostic shape is deliberate: the engine boundary holds
+	// pure-Go data and never sees SDK types — each provider package
+	// owns its own translator (anthropic.attachmentsToBlocks reads from
+	// this slice, builds anthropic.NewImageBlockBase64(...) blocks, and
+	// prepends them ahead of the text block per Anthropic's vision API).
+	//
+	// Base64 payloads are loaded lazily from disk at request-build time
+	// — the Attachment.Data slice carries the bytes only for the in-flight
+	// turn, never the long-lived session.Message replica. See plan
+	// "Chat Attachments Backend (May 2026)" §6 task-04.
+	Attachments []Attachment
+}
+
+// Attachment is the provider-agnostic descriptor for a user-supplied
+// file (PR1 scope: images only — jpeg/png/gif/webp) that should be
+// threaded into the upstream model request as a native content block.
+//
+// The struct is engine-seam-safe: it holds only pure-Go data with no
+// provider SDK types, so the engine can pass a []Attachment slice across
+// the boundary without leaking anthropic.* / openai.* / copilot.* types.
+//
+// MediaType is the validated wire-level media type ("image/png" etc.).
+// PR1 enforces the four Anthropic-supported types upstream of this
+// struct (at the upload endpoint, in session.Store.Put); the slice
+// reaching the provider is already validated and the provider need
+// only translate.
+//
+// Data is the raw bytes of the file, loaded from disk at request-build
+// time and base64-encoded by the per-provider translator. Empty when
+// the engine has only the metadata reference (the upload-and-defer
+// path, used while the message is still in-flight to the provider).
+//
+// ID is the storage layer's stable identifier (the SHA-256 content
+// hash), used by the audit trail and the GET retrieval endpoint.
+// OriginalFilename is preserved for the UI's attachment chip; the
+// provider does not use it. SizeBytes carries the on-disk size for
+// the 25 MB per-request ceiling check (task-04 AC).
+//
+// All fields zero-valued is a legal empty Attachment — callers
+// should treat a zero ID as "skip this entry".
+type Attachment struct {
+	ID               string
+	MediaType        string
+	OriginalFilename string
+	SizeBytes        int64
+	Data             []byte
 }
 
 // ThinkingBlock is a single thinking-content block as produced by the

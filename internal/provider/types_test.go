@@ -32,6 +32,55 @@ var _ = Describe("Model", func() {
 	})
 })
 
+var _ = Describe("Attachment and Message.Attachments", func() {
+	// Plan "Chat Attachments Backend (May 2026)" §6 task-04 — the
+	// provider-agnostic Attachment struct carries a user-supplied file
+	// reference that the per-provider translator lifts into a native
+	// image content block. Engine seam stays pure-Go data; no SDK
+	// types leak across the boundary (memory
+	// project_flowstate_engine_boundary).
+	It("zero-values fields and is safely usable as a struct literal", func() {
+		a := Attachment{}
+		Expect(a.ID).To(BeEmpty())
+		Expect(a.MediaType).To(BeEmpty())
+		Expect(a.OriginalFilename).To(BeEmpty())
+		Expect(a.SizeBytes).To(BeZero())
+		Expect(a.Data).To(BeNil())
+	})
+
+	It("round-trips populated fields verbatim", func() {
+		a := Attachment{
+			ID:               "abc-123",
+			MediaType:        "image/png",
+			OriginalFilename: "cat.png",
+			SizeBytes:        1024,
+			Data:             []byte{0x89, 0x50, 0x4e, 0x47},
+		}
+		Expect(a.ID).To(Equal("abc-123"))
+		Expect(a.MediaType).To(Equal("image/png"))
+		Expect(a.OriginalFilename).To(Equal("cat.png"))
+		Expect(a.SizeBytes).To(Equal(int64(1024)))
+		Expect(a.Data).To(Equal([]byte{0x89, 0x50, 0x4e, 0x47}))
+	})
+
+	It("attaches to Message.Attachments and is zero-empty when omitted", func() {
+		empty := Message{Role: "user", Content: "hello"}
+		Expect(empty.Attachments).To(BeNil())
+
+		populated := Message{
+			Role:    "user",
+			Content: "describe this",
+			Attachments: []Attachment{
+				{ID: "att1", MediaType: "image/png", SizeBytes: 2048},
+				{ID: "att2", MediaType: "image/jpeg", SizeBytes: 4096},
+			},
+		}
+		Expect(populated.Attachments).To(HaveLen(2))
+		Expect(populated.Attachments[0].MediaType).To(Equal("image/png"))
+		Expect(populated.Attachments[1].MediaType).To(Equal("image/jpeg"))
+	})
+})
+
 var _ = Describe("ToolResultInfo", func() {
 	It("stores content and error state", func() {
 		info := &ToolResultInfo{
