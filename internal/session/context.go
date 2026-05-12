@@ -74,3 +74,36 @@ func PriorMessagesFromContext(ctx context.Context) ([]provider.Message, bool) {
 	}
 	return v, true
 }
+
+// AttachmentsKey is the context key used to propagate attachment
+// references for the current turn from the session manager into the
+// engine. The engine reads this on Stream entry and threads the slice
+// onto the user message that gets built for the model request payload,
+// where the per-provider translator (anthropic.attachmentsToBlocks,
+// future openai/copilot equivalents) lifts each entry into a native
+// content block.
+//
+// Plan "Chat Attachments Backend (May 2026)" §6 task-04 — engine seam
+// stays pure-Go-data; the materialised []provider.Attachment slice
+// carries the raw bytes for the in-flight turn only and is dropped
+// after the request is constructed.
+type AttachmentsKey struct{}
+
+// WithAttachments returns a derived context carrying the supplied
+// per-turn attachment slice. A nil/empty slice is a no-op — callers
+// that have no attachments should not call this helper at all, so
+// AttachmentsFromContext returns the zero state.
+func WithAttachments(ctx context.Context, atts []provider.Attachment) context.Context {
+	if len(atts) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, AttachmentsKey{}, atts)
+}
+
+// AttachmentsFromContext extracts the per-turn attachment slice from
+// the context. Returns a nil slice (and length-zero) when no key is
+// present, which is the dominant case for text-only turns.
+func AttachmentsFromContext(ctx context.Context) []provider.Attachment {
+	v, _ := ctx.Value(AttachmentsKey{}).([]provider.Attachment)
+	return v
+}

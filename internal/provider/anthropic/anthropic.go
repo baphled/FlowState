@@ -3,6 +3,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,19 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
 )
+
+// maxAttachmentRequestBytes is the per-request ceiling for the total
+// base64-decoded attachment payload threaded onto a single Anthropic
+// turn. Anthropic's published hard cap on request body is ~32 MB; the
+// 25 MB target ceiling here gives headroom for system prompt + text
+// content + tool schemas. Plan §6 task-04 acceptance criteria.
+const maxAttachmentRequestBytes = int64(25 * 1024 * 1024)
+
+// ErrAttachmentRequestTooLarge fires when the sum of attachment byte
+// counts on a single turn exceeds maxAttachmentRequestBytes. Bubbled
+// out of the request-build path so the engine surfaces a typed error
+// to the UI (the existing classifier maps it to a 413-equivalent).
+var ErrAttachmentRequestTooLarge = errors.New("anthropic: attachments exceed per-request size ceiling")
 
 // ErrNotSupported is returned when an unsupported operation is attempted.
 var ErrNotSupported = errors.New("anthropic does not support embeddings")
@@ -1019,6 +1033,106 @@ func buildAssistantWithTools(
 	return &msg
 }
 
+// buildUserMessage converts a provider message of role "user" into an
+// Anthropic MessageParam, threading any attached images as
+// NewImageBlockBase64 content blocks ahead of the text block.
+//
+// Per Anthropic's vision API best-practice the image blocks come BEFORE
+// the text block on the same user turn (the model reads "image then
+// instruction"). The SDK accepts an arbitrary number of content blocks
+// in NewUserMessage so callers may freely mix [image, image, text].
+//
+// Base64 encoding happens here at request-build time — the bytes on
+// provider.Attachment.Data are short-lived and dropped after the
+// request fires. No long-lived copy of the decoded image exists on the
+// session.Message replica (plan §6 task-04: "base64 is loaded from disk
+// lazily at request-build time, NOT stored decoded").
+//
+// Expected:
+//   - m has Role:"user" and Content possibly non-empty.
+//   - m.Attachments carries already-validated entries; the upstream
+//     storage layer (internal/session) enforces the four-type allow-
+//     list (image/jpeg/png/gif/webp), so this function trusts the
+//     MediaType field. Unrecognised types degrade safely — the SDK
+//     rejects an unknown Base64ImageSourceMediaType at MarshalJSON
+//     time, so a wire error surfaces upstream of the model.
+//
+// Returns:
+//   - A MessageParam ready for the Anthropic API.
+//
+// Side effects:
+//   - None.
+func buildUserMessage(m provider.Message) anthropicAPI.MessageParam {
+	blocks := attachmentsToBlocks(m.Attachments)
+	if m.Content != "" {
+		blocks = append(blocks, anthropicAPI.NewTextBlock(m.Content))
+	}
+	if len(blocks) == 0 {
+		// Defensive: a user turn with empty content and no attachments
+		// is unusual but Anthropic accepts an empty text block. Emit
+		// one so the request payload stays well-formed.
+		blocks = append(blocks, anthropicAPI.NewTextBlock(""))
+	}
+	return anthropicAPI.NewUserMessage(blocks...)
+}
+
+// attachmentsToBlocks lifts a provider.Attachment slice into the
+// Anthropic content-block representation. PR1 scope is images via
+// NewImageBlockBase64 (the STABLE, non-beta constructor verified by
+// the task-01 SDK audit — see anthropic-sdk-go message.go:1773-1784).
+//
+// Empty input yields a nil/empty slice (no allocation); the caller
+// concatenates with the text block to form the final blocks array.
+//
+// Per memory project_flowstate_engine_boundary, the engine never sees
+// the returned SDK type — this function lives inside the provider
+// package and consumes only the agnostic provider.Attachment struct.
+//
+// Expected:
+//   - atts may be nil or empty.
+//   - Each Attachment.Data carries the raw image bytes (NOT
+//     base64-encoded); this function does the base64 encoding.
+//
+// Returns:
+//   - A slice of ContentBlockParamUnion values, one per input
+//     attachment, in input order.
+func attachmentsToBlocks(atts []provider.Attachment) []anthropicAPI.ContentBlockParamUnion {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]anthropicAPI.ContentBlockParamUnion, 0, len(atts))
+	for _, a := range atts {
+		if a.MediaType == "" || len(a.Data) == 0 {
+			// Skip incomplete entries rather than emit a malformed
+			// block. The upstream resolver ought to surface the
+			// missing-bytes case as an error before reaching here;
+			// this is defence-in-depth.
+			continue
+		}
+		encoded := base64.StdEncoding.EncodeToString(a.Data)
+		out = append(out, anthropicAPI.NewImageBlockBase64(a.MediaType, encoded))
+	}
+	return out
+}
+
+// TotalAttachmentBytes reports the sum of Data byte counts across a
+// slice of attachments. Exposed so the engine-side request-size gate
+// can pre-check against the 25 MB ceiling before any base64 encoding
+// happens (base64 inflates by ~33%, so a 25 MB raw budget translates
+// to ~33 MB on the wire — still under Anthropic's 32 MB hard cap with
+// headroom for surrounding payload).
+func TotalAttachmentBytes(atts []provider.Attachment) int64 {
+	var total int64
+	for _, a := range atts {
+		total += int64(len(a.Data))
+	}
+	return total
+}
+
+// MaxAttachmentRequestBytes returns the per-request raw byte ceiling.
+// Exposed for the engine-side gate and for tests.
+func MaxAttachmentRequestBytes() int64 { return maxAttachmentRequestBytes }
+
 // buildThinkingBlocks converts captured ThinkingBlock records into
 // Anthropic ContentBlockParamUnion values suitable for replay on a
 // subsequent turn. Both signed thinking (Thinking + Signature) and
@@ -1172,11 +1286,7 @@ func buildMessages(
 	for _, m := range sanitized {
 		switch m.Role {
 		case "user":
-			messages = append(messages,
-				anthropicAPI.NewUserMessage(
-					anthropicAPI.NewTextBlock(m.Content),
-				),
-			)
+			messages = append(messages, buildUserMessage(m))
 		case "assistant":
 			if msg := buildAssistantMessage(m); msg != nil {
 				messages = append(messages, *msg)
@@ -1317,6 +1427,23 @@ func buildTools(
 func (p *Provider) buildRequestParams(
 	req provider.ChatRequest,
 ) (anthropicAPI.MessageNewParams, []option.RequestOption, error) {
+	// Attachment-size gate (plan §6 task-04 AC: total request body
+	// MUST be checked against the 25 MB target ceiling; over-ceiling
+	// returns a clear error to the caller before hitting the wire).
+	// Sum across every message's attachments — typically only the
+	// final user message carries any, but the budget applies to the
+	// whole conversation prefix replayed on this turn.
+	var attachmentBytes int64
+	for _, m := range req.Messages {
+		attachmentBytes += TotalAttachmentBytes(m.Attachments)
+	}
+	if attachmentBytes > maxAttachmentRequestBytes {
+		return anthropicAPI.MessageNewParams{}, nil,
+			fmt.Errorf("%w (got %d bytes, limit %d)",
+				ErrAttachmentRequestTooLarge,
+				attachmentBytes, maxAttachmentRequestBytes)
+	}
+
 	params := anthropicAPI.MessageNewParams{
 		Model:    anthropicAPI.Model(req.Model),
 		Messages: buildMessages(req.Messages),

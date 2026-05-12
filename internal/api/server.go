@@ -838,6 +838,12 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	type reqBody struct {
 		Content string `json:"content"`
+		// AttachmentIDs is the optional list of attachment ids to thread
+		// onto this turn. Plan "Chat Attachments Backend (May 2026)"
+		// §6 task-04 / task-05. The ids must already exist in the
+		// session's attachment store (via POST .../attachments). Unknown
+		// ids surface as session.ErrAttachmentNotFound → 400.
+		AttachmentIDs []string `json:"attachmentIds,omitempty"`
 	}
 	var req reqBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Content == "" {
@@ -847,8 +853,14 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	if s.completionOrchestrator != nil {
 		s.completionOrchestrator.ResetRePromptCount(id)
 	}
-	chunks, err := s.sessionManager.SendMessage(r.Context(), id, req.Content)
+	chunks, err := s.sessionManager.SendMessageWithAttachments(
+		r.Context(), id, req.Content, req.AttachmentIDs,
+	)
 	if err != nil {
+		if errors.Is(err, session.ErrAttachmentNotFound) {
+			http.Error(w, "attachment id not found in session", http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
