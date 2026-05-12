@@ -84,6 +84,11 @@ const subtitle = computed(() => {
   }
   return `${results.value.length} ${results.value.length === 1 ? 'result' : 'results'}`
 })
+
+// UI Parity I4 (May 2026): recall searches return long result lists.
+// Start collapsed; subtitle already shows result count. Force open on
+// error so failure cause is visible.
+const cardDefaultOpen = computed(() => props.status === 'error')
 </script>
 
 <template>
@@ -92,7 +97,7 @@ const subtitle = computed(() => {
     :title="props.toolName"
     :subtitle="subtitle"
     :status="props.status"
-    :default-open="true"
+    :default-open="cardDefaultOpen"
   >
     <div class="tool-renderer" data-component="recall-search-tool">
       <div v-if="queryText" class="recall-query" data-testid="recall-query">

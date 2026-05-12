@@ -313,6 +313,38 @@ const showRevertButton = computed(
   () => isPlain.value && props.message.role === 'user',
 )
 
+// UI Parity I7 (May 2026) — Regenerate affordance on assistant messages.
+// Mirrors OpenCode's "regenerate this reply" gesture. Resolves the
+// preceding user message in chatStore.messages (the prompt that produced
+// this reply), then calls revertToMessage(userId) to truncate +
+// sendMessage(prompt) to re-send. Keeps current agent/model untouched —
+// the chatStore action targets the active session+agent.
+//
+// Defensive: if no preceding user message can be found (orphan reply,
+// truncated history, malformed thread), the button is hidden rather
+// than surfacing a no-op click. Less surprising for the user.
+const precedingUserPrompt = computed<{ id: string; content: string } | null>(() => {
+  if (props.message.role !== 'assistant') return null
+  // Defensive: chatStore.messages may be undefined in test mocks that
+  // don't seed the array. Treat that as "no preceding prompt" so the
+  // Regenerate affordance hides cleanly.
+  const messages = chatStore.messages
+  if (!Array.isArray(messages)) return null
+  const idx = messages.findIndex((m) => m.id === props.message.id)
+  if (idx <= 0) return null
+  for (let i = idx - 1; i >= 0; i -= 1) {
+    const m = messages[i]
+    if (m.role === 'user') {
+      return { id: m.id, content: m.content }
+    }
+  }
+  return null
+})
+
+const showRegenerateButton = computed(
+  () => isPlain.value && props.message.role === 'assistant' && precedingUserPrompt.value !== null,
+)
+
 // Failure marker: when a user-message send rejects (network error, backend
 // rejection), chatStore marks the optimistic bubble status='failed'. We
 // surface that with a small visible affordance so the user can see at a
@@ -324,6 +356,19 @@ const isFailedSend = computed(
 
 async function handleRevert(): Promise<void> {
   await chatStore.revertToMessage(props.message.id)
+}
+
+// I7 — Regenerate: truncate back to the preceding user prompt then
+// re-send it as a new turn. The revertToMessage call kills any in-flight
+// stream + truncates the session; sendMessage then re-issues the prompt
+// against the current agent/model. We capture the prompt content BEFORE
+// the revert because revertToMessage may invalidate `precedingUserPrompt`
+// once messages get sliced.
+async function handleRegenerate(): Promise<void> {
+  const target = precedingUserPrompt.value
+  if (!target) return
+  await chatStore.revertToMessage(target.id)
+  await chatStore.sendMessage(target.content)
 }
 </script>
 
@@ -491,6 +536,14 @@ async function handleRevert(): Promise<void> {
           title="Revert to this message"
           @click="handleRevert"
         >&#x21A9; Revert</button>
+        <button
+          v-if="showRegenerateButton"
+          type="button"
+          class="revert-button"
+          data-testid="message-regenerate-btn"
+          title="Regenerate this reply"
+          @click="handleRegenerate"
+        >&#x21BB; Regenerate</button>
         <CopyButton data-testid="message-copy-btn" :text="props.message.content" />
       </div>
     </template>
@@ -505,7 +558,20 @@ async function handleRevert(): Promise<void> {
   padding: 0.75rem 1rem;
   border-radius: var(--radius);
   max-width: 85%;
-  word-break: break-word;
+  /*
+   * UI Parity I6 (May 2026): swap word-break: break-word →
+   * overflow-wrap: anywhere. break-word splits on character boundaries
+   * mid-word ONLY when the existing soft-break opportunities don't fit,
+   * which makes URLs and IDs disappear off the right edge in some
+   * browsers before the engine attempts a hard split. `anywhere` is
+   * the more aggressive sibling: it considers EVERY position a valid
+   * break opportunity, so long unbreakable runs always wrap inside the
+   * card. Pair with min-width: 0 on the flex parent so the bubble
+   * shrinks to its container rather than forcing a horizontal
+   * scrollbar on the chat pane. Matches OpenCode's overflow handling.
+   */
+  overflow-wrap: anywhere;
+  min-width: 0;
   font-family: var(--font-mono);
 }
 

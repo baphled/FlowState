@@ -3,15 +3,25 @@ import { mount } from '@vue/test-utils'
 import TodoTool from './TodoTool.vue'
 
 const ToolBubble = {
-  props: ['toolName', 'title', 'subtitle', 'status'],
+  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
   template: `
-    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status">
+    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status" :data-default-open="defaultOpen ? 'true' : 'false'">
       <slot />
     </div>
   `,
 }
 
 describe('TodoTool', () => {
+  // I4: Todos render as a checkbox list — always tabular. The subtitle
+  // already shows N active / M total so collapsed is fine and avoids the
+  // todo block dominating a busy thread.
+  it('starts collapsed by default (always-tabular category)', () => {
+    const wrapper = mount(TodoTool, {
+      props: { toolName: 'todowrite', heading: 'todowrite', body: '[]', status: 'completed' },
+      global: { stubs: { ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('false')
+  })
   it('renders todowrite JSON as a checkbox list', () => {
     const body = JSON.stringify([
       { content: 'write the failing spec', status: 'pending', priority: 'high' },

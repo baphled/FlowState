@@ -13,9 +13,9 @@ const CopyButton = {
 }
 
 const ToolBubble = {
-  props: ['toolName', 'title', 'subtitle', 'status'],
+  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
   template: `
-    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status">
+    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status" :data-default-open="defaultOpen ? 'true' : 'false'">
       <span data-testid="tool-title">{{ title }}</span>
       <span v-if="subtitle" data-testid="tool-subtitle">{{ subtitle }}</span>
       <slot />
@@ -24,6 +24,60 @@ const ToolBubble = {
 }
 
 describe('BashTool', () => {
+  // I4: Bash tool cards are noisy on success (long stdout). They start
+  // collapsed by default so a chain of `bash · git status` cards doesn't
+  // bury the assistant reply. The trigger area still shows the command
+  // preview via the subtitle plumbed below.
+  it('starts collapsed by default (silent-success category)', () => {
+    const wrapper = mount(BashTool, {
+      props: {
+        toolName: 'bash',
+        heading: 'ls -la',
+        body: 'file-a\nfile-b',
+        status: 'completed',
+      },
+      global: {
+        stubs: { CopyButton, ToolBubble },
+      },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('false')
+  })
+
+  // I4: Force-open on error so the failure stdout/exit is visible without
+  // an extra click. Otherwise a failed bash buried under "✕ bash" requires
+  // the user to expand to see what went wrong.
+  it('forces open when status is error (visible failure)', () => {
+    const wrapper = mount(BashTool, {
+      props: {
+        toolName: 'bash',
+        heading: 'false',
+        body: 'exit 1',
+        status: 'error',
+      },
+      global: {
+        stubs: { CopyButton, ToolBubble },
+      },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('true')
+  })
+
+  // I5: Bash card was missing the subtitle prop, so a collapsed card read
+  // just "bash" with no command preview. The trigger should now plumb the
+  // heading (command preview) through as the subtitle.
+  it('plumbs the command preview as the subtitle (I5)', () => {
+    const wrapper = mount(BashTool, {
+      props: {
+        toolName: 'bash',
+        heading: 'git status -s',
+        body: 'M file.go',
+        status: 'completed',
+      },
+      global: {
+        stubs: { CopyButton, ToolBubble },
+      },
+    })
+    expect(wrapper.get('[data-testid="tool-subtitle"]').text()).toBe('git status -s')
+  })
   it('renders the bash command and output blocks', () => {
     const wrapper = mount(BashTool, {
       props: {

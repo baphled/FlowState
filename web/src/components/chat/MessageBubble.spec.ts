@@ -981,4 +981,66 @@ describe('MessageBubble', () => {
       expect(wrapper.find('.message-role').exists()).toBe(true)
     })
   })
+
+  describe('regenerate affordance (UI Parity I7, May 2026)', () => {
+    // The Revert button only landed on USER bubbles. To re-run a turn
+    // without retyping, the user previously had to scroll to the
+    // preceding user message and click Revert there. I7 puts a
+    // Regenerate button on the assistant bubble directly: clicking it
+    // truncates back to the preceding user message and re-sends that
+    // prompt as a new turn. Keep current agent/model.
+    it('shows a Regenerate button on assistant messages with content', () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'hello' })
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'hi back' })
+      mockChatStore.messages = [userMsg, assistantMsg]
+      const wrapper = mountWithStubs(assistantMsg)
+      expect(wrapper.find('[data-testid="message-regenerate-btn"]').exists()).toBe(true)
+    })
+
+    it('does NOT show Regenerate on user messages', () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'hello' })
+      mockChatStore.messages = [userMsg]
+      const wrapper = mountWithStubs(userMsg)
+      expect(wrapper.find('[data-testid="message-regenerate-btn"]').exists()).toBe(false)
+    })
+
+    it('reverts to the preceding user message and re-sends its content when clicked', async () => {
+      const userMsg = makeMessage({ id: 'u1', role: 'user', content: 'reword this' })
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'old reply' })
+      mockChatStore.messages = [userMsg, assistantMsg]
+      mockChatStore.revertToMessage = vi.fn().mockResolvedValue(undefined)
+      mockChatStore.sendMessage = vi.fn().mockResolvedValue(undefined)
+
+      const wrapper = mountWithStubs(assistantMsg)
+      const btn = wrapper.find('[data-testid="message-regenerate-btn"]')
+      expect(btn.exists()).toBe(true)
+      await btn.trigger('click')
+      // Wait for the handler's awaits to flush.
+      await wrapper.vm.$nextTick()
+      await wrapper.vm.$nextTick()
+
+      expect(mockChatStore.revertToMessage).toHaveBeenCalledWith('u1')
+      expect(mockChatStore.sendMessage).toHaveBeenCalledWith('reword this')
+    })
+
+    it('does nothing when there is no preceding user message (defensive)', async () => {
+      // Edge case: an assistant message that has no preceding user
+      // message in the local state (truncated history, weird load).
+      // The button should still render — UI consistency — but clicking
+      // is a safe no-op (no revert, no send).
+      const assistantMsg = makeMessage({ id: 'a1', role: 'assistant', content: 'orphan reply' })
+      mockChatStore.messages = [assistantMsg]
+      mockChatStore.revertToMessage = vi.fn().mockResolvedValue(undefined)
+      mockChatStore.sendMessage = vi.fn().mockResolvedValue(undefined)
+
+      const wrapper = mountWithStubs(assistantMsg)
+      const btn = wrapper.find('[data-testid="message-regenerate-btn"]')
+      // Defensive contract — when the predicate cannot resolve a
+      // preceding user message the button is hidden rather than
+      // surfacing a no-op click. Less surprising for the user.
+      expect(btn.exists()).toBe(false)
+      expect(mockChatStore.revertToMessage).not.toHaveBeenCalled()
+      expect(mockChatStore.sendMessage).not.toHaveBeenCalled()
+    })
+  })
 })

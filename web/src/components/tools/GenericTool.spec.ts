@@ -7,9 +7,9 @@ const CopyButton = {
 }
 
 const ToolBubble = {
-  props: ['toolName', 'title', 'subtitle', 'status'],
+  props: ['toolName', 'title', 'subtitle', 'status', 'defaultOpen'],
   template: `
-    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status">
+    <div data-testid="tool-bubble" data-component="tool" :data-tool="toolName" :data-status="status" :data-default-open="defaultOpen ? 'true' : 'false'">
       <span data-testid="tool-title">{{ title }}</span>
       <span v-if="subtitle" data-testid="tool-subtitle">{{ subtitle }}</span>
       <slot />
@@ -18,6 +18,15 @@ const ToolBubble = {
 }
 
 describe('GenericTool', () => {
+  // I4: Unknown tool shapes — safer to start open so the user sees the
+  // raw input/output rather than burying them.
+  it('starts open by default (unknown shape — safer expanded)', () => {
+    const wrapper = mount(GenericTool, {
+      props: { toolName: 'webfetch', heading: 'http://x', body: 'body', status: 'completed' },
+      global: { stubs: { CopyButton, ToolBubble } },
+    })
+    expect(wrapper.get('[data-testid="tool-bubble"]').attributes('data-default-open')).toBe('true')
+  })
   it('renders fallback content with the tool name and body', () => {
     const wrapper = mount(GenericTool, {
       props: {
