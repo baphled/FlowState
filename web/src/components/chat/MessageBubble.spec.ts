@@ -154,10 +154,12 @@ describe('MessageBubble', () => {
   // acceptable: chat parity targets (Claude, ChatGPT, OpenCode) all render
   // user markdown.
   //
-  // XSS posture is preserved — MarkdownRenderer already runs with
-  // `html: false` and the M6 link allowlist; user content flows through the
-  // same sanitiseMessageContent backstop assistant content uses, and
-  // ultimately through the same MarkdownIt instance.
+  // XSS posture is preserved — MarkdownRenderer runs with the M6 link
+  // allowlist plus the N9 image allow-list (markdown-it `html: true` since
+  // PR2 of the Chat Attachments Backend initiative; raw HTML tags other
+  // than `<img>` are stripped by the post-render allow-list filter). User
+  // content flows through the same sanitiseMessageContent backstop assistant
+  // content uses, and ultimately through the same MarkdownIt instance.
   describe('user-message markdown rendering', () => {
     it('routes user message content through MarkdownRenderer', () => {
       // Pin the wiring: a user bubble should mount a MarkdownRenderer
@@ -207,11 +209,12 @@ describe('MessageBubble', () => {
       expect(code.text()).toBe('console.log()')
     })
 
-    it('does not execute raw HTML in a user message (html: false posture preserved)', () => {
-      // XSS posture: MarkdownRenderer runs with `html: false`. Routing user
-      // content through it must NOT open a script-execution surface. The
-      // `<script>` tag should be HTML-escaped (rendered as visible text)
-      // rather than inserted into the DOM as a real element.
+    it('does not execute raw HTML script tags in a user message (allow-list strips non-<img>)', () => {
+      // XSS posture: MarkdownRenderer parses HTML (markdown-it `html: true`
+      // since N9) but the post-render allow-list filter strips every tag
+      // except `<img>` with a strict-src constraint. Routing user content
+      // through it must NOT open a script-execution surface. The
+      // `<script>` tag should not appear in the DOM as a real element.
       const wrapper = mountWithStubs(
         makeMessage({ role: 'user', content: '<script>alert("xss")</script>' }),
       )

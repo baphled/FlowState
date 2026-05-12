@@ -6,13 +6,33 @@ import {
   highlightCode,
   onHighlighterReady,
 } from '@/lib/markdownHighlighter'
+import { useChatStore } from '@/stores/chatStore'
 
 defineOptions({ name: 'MarkdownRenderer' })
 
 const props = defineProps<{ content: string }>()
 
+// Chat store handle — sourced once at setup time so the same instance
+// is used for every render pass. The image allow-list (below) reaches
+// in for `currentSessionId` to enforce the same-session URL constraint
+// on `<img src="/api/v1/sessions/{id}/attachments/...">` (plan R9
+// cross-session injection defence). The store is injected via Pinia
+// at app bootstrap and is the canonical source of the active session
+// id (also referenced as `chat.currentSessionId` in
+// web/src/stores/swarmStore.test.ts:103,127,156,205).
+const chat = useChatStore()
+
 const md = new MarkdownIt({
-  html: false,
+  // N9 (Vue UI Parity vs OpenCode, May 2026) / plan "Chat Attachments
+  // Backend (May 2026)" §6 task-08. `html: true` lets the renderer
+  // surface assistant-emitted `<img>` tags that point at base64 data
+  // URLs OR same-session attachment URLs. Every OTHER raw-HTML tag
+  // (script, iframe, object, …) is stripped from the rendered DOM by
+  // the post-render `applyImageAllowList()` filter below, so the
+  // threat model the original `html: false` posture closed remains
+  // closed — we trade a parser-level strip for an explicit allow-list
+  // gate, with no widening of the actually-rendered surface.
+  html: true,
   linkify: false,
   typographer: true,
   breaks: true,
@@ -153,13 +173,166 @@ onMounted(() => {
   void ensureHighlighterLoaded()
 })
 
+// N9 / task-08 — image allow-list. Walks the parsed HTML and drops
+// every non-<img> raw HTML tag (script, iframe, object, …) and every
+// <img> whose `src` does not match the strict allow-list:
+//
+//   1. `^data:image/(png|jpeg|gif|webp);base64,` — the four Anthropic-
+//      supported image types. SVG is INTENTIONALLY excluded
+//      (AC-08-SVG-Excluded) because SVG can carry inline <script> and
+//      event handlers (onload="…", onmouseover="…", …) that execute
+//      in the page's origin.
+//   2. `^/api/v1/sessions/<currentSessionId>/attachments/<aid>$` —
+//      same-session attachment URLs only. A cross-session probe
+//      (assistant prompt-injection trying to read attachments from
+//      another conversation, plan R9) dispatches an
+//      `attachment_blocked.cross_session` window event so a test or
+//      operator can observe the defence firing.
+//
+// The walk uses DOMParser inside a fragment context — it parses HTML
+// strict-once, lets the browser's own HTML parser handle the heavy
+// lifting, and re-serialises only allow-listed nodes. Markdown-rendered
+// elements (p, h1-h6, ul, ol, li, code, pre, table, thead, tbody, tr,
+// th, td, blockquote, hr, a, strong, em, br) are preserved verbatim
+// (they're emitted by markdown-it from markdown source, not from raw
+// HTML in the input). Only the small set of HTML *tags that can only
+// appear via the markdown-it `html: true` path* needs allow-list
+// gating — and within that set, only `<img>` is permitted.
+
+const DATA_URL_ALLOWED = /^data:image\/(png|jpeg|gif|webp);base64,/i
+
+const SESSION_ATTACHMENT_URL = /^\/api\/v1\/sessions\/([A-Za-z0-9_-]+)\/attachments\/[A-Za-z0-9_-]+$/
+
+// HTML tags that are explicit script-execution or exfiltration vectors
+// and must be stripped from the rendered DOM regardless of how they
+// got there (assistant-emitted raw HTML via the `html: true` parse
+// path). Markdown-it's grammar does not emit these; our custom fence
+// renderer emits `<div>`, `<pre>`, `<code>`, `<span>`, and `<button>`
+// only — none of which appear here.
+//
+// NOTE: `<svg>` is on this list because SVG can carry inline <script>
+// and event handlers — mirrors the AC-08-SVG-Excluded constraint on
+// the `<img>` src allow-list (data:image/svg+xml is rejected there
+// for the same reason).
+//
+// `<button>`, `<form>`, `<input>`, `<video>`, `<audio>`, `<canvas>`
+// are intentionally NOT in this list: a literal `<button>` in an
+// assistant message is just a button (no script execution surface),
+// and the fence renderer below legitimately emits `<button>` for the
+// per-code-block copy affordance. Stripping them would regress N4.
+const RAW_HTML_TAGS_TO_STRIP = new Set([
+  'script',
+  'iframe',
+  'object',
+  'embed',
+  'style',
+  'link',
+  'meta',
+  'base',
+  'frame',
+  'frameset',
+  'applet',
+  'svg',
+])
+
+function emitCrossSessionBlocked(rawSrc: string): void {
+  if (typeof window === 'undefined') return
+  try {
+    window.dispatchEvent(
+      new CustomEvent('attachment_blocked.cross_session', {
+        detail: { src: rawSrc },
+      }),
+    )
+  } catch {
+    // CustomEvent unavailable (very old environments) — fall back to a
+    // best-effort console signal so we never silently drop the
+    // observability promise made to operators / tests.
+    if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+      console.warn('attachment_blocked.cross_session', rawSrc)
+    }
+  }
+}
+
+function isImgSrcAllowed(rawSrc: string, currentSessionId: string | null): boolean {
+  if (typeof rawSrc !== 'string' || rawSrc === '') return false
+  if (DATA_URL_ALLOWED.test(rawSrc)) return true
+  const match = SESSION_ATTACHMENT_URL.exec(rawSrc)
+  if (match === null) return false
+  const srcSession = match[1]
+  if (currentSessionId !== null && srcSession === currentSessionId) {
+    return true
+  }
+  // The URL is shaped like a session-attachment path but points at a
+  // DIFFERENT session id — fire the typed observability event before
+  // the caller drops the node so a listener can attribute the block.
+  emitCrossSessionBlocked(rawSrc)
+  return false
+}
+
+function applyImageAllowList(html: string, currentSessionId: string | null): string {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    // SSR / non-browser environment — return the raw HTML unchanged.
+    // The chat surface is browser-only so this branch is defensive.
+    return html
+  }
+  // Parse inside a synthetic body so document-level boilerplate (html,
+  // head, body) does not appear in the output. We re-serialise body's
+  // children only.
+  const doc = new DOMParser().parseFromString(
+    `<!doctype html><html><body>${html}</body></html>`,
+    'text/html',
+  )
+  const body = doc.body
+  // Walk every element and gate it. Use a fresh static list of
+  // candidates because we mutate the DOM in-place.
+  const all = Array.from(body.querySelectorAll('*'))
+  for (const el of all) {
+    const tag = el.tagName.toLowerCase()
+    if (tag === 'img') {
+      const src = el.getAttribute('src')
+      if (src === null || !isImgSrcAllowed(src, currentSessionId)) {
+        el.remove()
+      }
+      continue
+    }
+    if (RAW_HTML_TAGS_TO_STRIP.has(tag)) {
+      el.remove()
+      continue
+    }
+    // Strip inline event handlers and `javascript:` href/src
+    // residue from preserved tags (defence in depth — these would not
+    // normally appear via markdown-it but a `html: true` parse could
+    // surface them via author HTML in an assistant response).
+    const attrs = Array.from(el.attributes)
+    for (const attr of attrs) {
+      const name = attr.name.toLowerCase()
+      const value = attr.value
+      if (name.startsWith('on')) {
+        el.removeAttribute(attr.name)
+        continue
+      }
+      if (
+        (name === 'href' || name === 'src') &&
+        /^\s*javascript:/i.test(value)
+      ) {
+        el.removeAttribute(attr.name)
+      }
+    }
+  }
+  return body.innerHTML
+}
+
 const renderedHtml = computed(() => {
   // Touch the version counter so Vue tracks it as a dependency —
   // when Shiki finishes loading and the version bumps, the
   // computed re-evaluates with the real highlight callback wired
   // through MarkdownIt.
   void highlighterVersion.value
-  return md.render(props.content)
+  const raw = md.render(props.content)
+  // Allow-list filter — Vue's reactivity tracks chat.currentSessionId
+  // through the closure, so a session switch re-evaluates the computed
+  // and re-applies the constraint with the new active id.
+  return applyImageAllowList(raw, chat.currentSessionId)
 })
 
 // Per-block copy affordance handler. The fence renderer emits the
