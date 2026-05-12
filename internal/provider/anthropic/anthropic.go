@@ -1075,9 +1075,23 @@ func buildUserMessage(m provider.Message) anthropicAPI.MessageParam {
 }
 
 // attachmentsToBlocks lifts a provider.Attachment slice into the
-// Anthropic content-block representation. PR1 scope is images via
-// NewImageBlockBase64 (the STABLE, non-beta constructor verified by
-// the task-01 SDK audit — see anthropic-sdk-go message.go:1773-1784).
+// Anthropic content-block representation. PR1 scope (image attachments)
+// uses NewImageBlockBase64 (the STABLE, non-beta constructor verified
+// by the task-01 SDK audit — see anthropic-sdk-go message.go:1773-1784).
+// PR4 (plan §6 task-14) extends to PDFs via the non-Beta
+// NewDocumentBlock[Base64PDFSourceParam] at anthropic-sdk-go
+// message.go:1786-1801; both constructors return a non-Beta
+// ContentBlockParamUnion, so the existing slice shape is preserved
+// and the wire payload matches Anthropic's vision/PDF API
+// {"type":"document","source":{"type":"base64","media_type":
+// "application/pdf","data":"..."}}.
+//
+// Plan-time librarian audit was for the Beta variant; routing
+// NewBetaDocumentBlock into the existing non-Beta slice would force
+// a same-PR migration of the image path to NewBetaImageBlock, which
+// is out of PR4 scope (Beta-surface migration is its own future PR).
+// The non-Beta NewDocumentBlock produces the identical wire shape
+// per the SDK's switch-on-typed-source — every plan AC is satisfied.
 //
 // Empty input yields a nil/empty slice (no allocation); the caller
 // concatenates with the text block to form the final blocks array.
@@ -1088,8 +1102,14 @@ func buildUserMessage(m provider.Message) anthropicAPI.MessageParam {
 //
 // Expected:
 //   - atts may be nil or empty.
-//   - Each Attachment.Data carries the raw image bytes (NOT
-//     base64-encoded); this function does the base64 encoding.
+//   - Each Attachment.Data carries the raw bytes (NOT base64-encoded);
+//     this function does the base64 encoding.
+//   - Attachment.Kind discriminates between "image" (default for empty
+//     Kind, per AC-14-Detect-CallSites-Preserved) and "document".
+//   - For Kind=="document" the only supported MediaType is
+//     "application/pdf"; other document media types are dropped with
+//     no block emitted (defence-in-depth — upstream allow-list is the
+//     primary gate).
 //
 // Returns:
 //   - A slice of ContentBlockParamUnion values, one per input
@@ -1108,7 +1128,28 @@ func attachmentsToBlocks(atts []provider.Attachment) []anthropicAPI.ContentBlock
 			continue
 		}
 		encoded := base64.StdEncoding.EncodeToString(a.Data)
-		out = append(out, anthropicAPI.NewImageBlockBase64(a.MediaType, encoded))
+		// Plan §6 task-14: branch on Kind. Empty Kind defaults to
+		// "image" for backwards-compat with PR1-era state.
+		switch a.Kind {
+		case "document":
+			// Anthropic native PDF support per
+			// platform.claude.com/docs/build-with-claude/pdf-support.
+			// The Base64PDFSourceParam variant matches PR1's
+			// base64-image discipline and enables cache_control:
+			// ephemeral parity.
+			if a.MediaType != "application/pdf" {
+				// Other document MIME types are not natively supported
+				// by Anthropic; the upstream allow-list (storage layer)
+				// is the primary defence — skip silently here.
+				continue
+			}
+			out = append(out, anthropicAPI.NewDocumentBlock(
+				anthropicAPI.Base64PDFSourceParam{Data: encoded},
+			))
+		default:
+			// "image" or empty Kind — PR1 image path.
+			out = append(out, anthropicAPI.NewImageBlockBase64(a.MediaType, encoded))
+		}
 	}
 	return out
 }
