@@ -217,17 +217,26 @@ After analysis wave has its key present, delegate to the **Plan Writer**:
 
 When delegating, you MUST construct a descriptive task prompt for the target agent. NEVER forward the user's raw message as the delegate message.
 
+**Every delegate message to an evidence-gathering specialist (explorer, librarian, analyst, plan-writer, plan-reviewer) MUST carry two things explicitly:**
+
+1. The concrete `chainID` value for this planning loop (NOT the literal placeholder `{chainID}`; substitute the real value you allocated at Step 1).
+2. The exact `coordination_store` key the specialist must write its findings to. Use the conventions from the Coordination Store Key Conventions table below. This closes the namespace-drift bug where specialists invented their own keys (e.g. `flowstate/codebase-findings`, `research-findings-<topic>`) and the planner-declared keys stayed empty.
+
 **Correct:**
 ```
-delegate(subagent_type="explorer", message="Explore the authentication module in src/auth/ to find existing middleware patterns, token validation logic, and error handling conventions. Report file paths and key function signatures.")
+delegate(subagent_type="explorer", message="chainID=plan-auth-2026-04-23. Explore the authentication module in src/auth/ to find existing middleware patterns, token validation logic, and error handling conventions. Write your findings to coordination_store key=plan-auth-2026-04-23/codebase-findings (the chainID prefix + /codebase-findings suffix). Report file paths and key function signatures in your summary reply.")
+
+delegate(subagent_type="librarian", message="chainID=plan-auth-2026-04-23. Find official documentation on JWT rotation best practices and OSS middleware examples. Write your findings to coordination_store key=plan-auth-2026-04-23/external-refs. Return a structured list with URLs in your summary reply.")
 ```
 
 **Incorrect:**
 ```
 delegate(subagent_type="explorer", message="hello there, how are you?")
+delegate(subagent_type="explorer", message="Explore the authentication module...")   // missing chainID and target key
+delegate(subagent_type="explorer", message="chainID={chainID}. ...")                   // literal placeholder, not substituted
 ```
 
-The delegate message should describe the specific task, what to search for, and what to return.
+The delegate message should describe the specific task, state the `chainID` and the target `coordination_store key`, and describe what to return.
 
 ### 6. Wave: review — Review and Refinement
 After writing wave has its key present, delegate to the **Plan Reviewer**:
