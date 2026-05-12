@@ -1123,7 +1123,22 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 			switch chunk.EventType {
 			case "tool_result":
 				if chunk.ToolResult != nil {
-					writeSSEToolResult(w, flusher, chunk.ToolResult.Content)
+					// Gap 2 (tool_error SSE wire, May 2026). The engine
+					// stamps ToolResult.IsError=true on tool_result chunks
+					// when the executor returns a non-nil err (see
+					// internal/engine/engine.go:storeToolResult dispatch
+					// at the appendToolResultsBatch site). Route those to
+					// the additive `tool_error` typed event so the Vue
+					// chatStore can flip the matching tool message to
+					// status='error' in-stream — without this branch the
+					// frontend's handleToolResultEvent hard-set
+					// status='completed' and the failure stayed hidden
+					// until the post-stream history reconcile.
+					if chunk.ToolResult.IsError {
+						writeSSEToolError(w, flusher, chunk.ToolResult.Content)
+					} else {
+						writeSSEToolResult(w, flusher, chunk.ToolResult.Content)
+					}
 				}
 			case "harness_retry":
 				writeSSEHarnessRetry(w, flusher, chunk.Content)
@@ -1761,6 +1776,15 @@ func projectDelegationEvent(data events.DelegationEventData, status string, ts t
 	}
 	if data.Error != "" {
 		metadata["error"] = data.Error
+	}
+	// Gap 1 (load_skills propagation, May 2026): the Vue
+	// DelegationPanel renders a delegation-skills-row chip block for
+	// every skill name in metadata.load_skills. Surface the bus event's
+	// LoadSkills onto the wire as a JSON array; omit the key entirely
+	// when the slice is empty so the chip-render gate (length>0) keeps
+	// the row hidden for delegations that did not pass load_skills.
+	if len(data.LoadSkills) > 0 {
+		metadata["load_skills"] = data.LoadSkills
 	}
 	return streaming.SwarmEvent{
 		ID:            data.ChainID,

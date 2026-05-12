@@ -895,6 +895,177 @@ var _ = Describe("Session stream live events", func() {
 		),
 	)
 
+	// Gap 2 (tool_error SSE wire, May 2026). The engine already emits
+	// chunk{EventType:"tool_result", ToolResult:{Content, IsError:true}}
+	// when a tool execution fails, but the SSE dispatcher serialised
+	// every such chunk as a plain `tool_result` — the frontend's
+	// handleToolResultEvent hard-set status='completed' regardless,
+	// so tool failures only surfaced post-stream via the canonical
+	// history reconcile. The contract: when chunk.ToolResult.IsError
+	// is true, the wire MUST emit a distinct typed event
+	// {"type":"tool_error","content":"<error text>"} so the frontend
+	// can flip the matching tool message to status='error' in-stream
+	// and the ToolBubble watcher force-opens the card on the live
+	// error transition. The legacy `tool_result` shape stays untouched
+	// for the success branch — `tool_error` is purely additive.
+	It("emits a tool_error SSE event when chunk.ToolResult.IsError is true", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		source <- provider.StreamChunk{
+			EventType:  "tool_result",
+			ToolCallID: "call-err-1",
+			ToolResult: &provider.ToolResultInfo{
+				Content: "Error: bash exited non-zero",
+				IsError: true,
+			},
+		}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		// MUST emit the typed tool_error event with the error content.
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"tool_error"`)),
+			"a chunk with IsError=true MUST route to writeSSEToolError, not writeSSEToolResult")
+		Expect(evts).To(ContainElement(ContainSubstring(`"content":"Error: bash exited non-zero"`)))
+
+		// MUST NOT emit a plain tool_result chunk for the same payload —
+		// the frontend's handleToolResultEvent unconditionally stamps
+		// status='completed', so emitting tool_result for an error chunk
+		// silently hides the failure.
+		for _, e := range evts {
+			if strings.Contains(e, `"type":"tool_result"`) {
+				Fail("an IsError chunk leaked as a tool_result event — frontend would mark the tool message as completed: " + e)
+			}
+		}
+		Expect(evts).To(ContainElement("[DONE]"))
+	})
+
+	// Regression catcher: the SUCCESS branch must keep emitting
+	// `tool_result`. The additive nature of `tool_error` means the
+	// legacy wire shape stays untouched for IsError=false. Without
+	// this pin a future refactor that always-routes through the new
+	// writer would silently break every healthy tool execution.
+	It("keeps emitting tool_result when chunk.ToolResult.IsError is false", func() {
+		sess, err := mgr.CreateSession("test-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+
+		source := make(chan provider.StreamChunk, 3)
+		source <- provider.StreamChunk{
+			EventType:  "tool_result",
+			ToolCallID: "call-ok-1",
+			ToolResult: &provider.ToolResultInfo{
+				Content: "ok output",
+				IsError: false,
+			},
+		}
+		source <- provider.StreamChunk{Done: true}
+		close(source)
+		go broker.Publish(sess.ID, source)
+
+		var resp *http.Response
+		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		var evts []string
+		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
+
+		Expect(evts).To(ContainElement(ContainSubstring(`"type":"tool_result"`)),
+			"the success branch keeps the legacy wire shape — only IsError chunks route to tool_error")
+		Expect(evts).To(ContainElement(ContainSubstring(`"content":"ok output"`)))
+		for _, e := range evts {
+			if strings.Contains(e, `"type":"tool_error"`) {
+				Fail("a non-error tool_result chunk leaked as tool_error: " + e)
+			}
+		}
+	})
+
 	// Drop #2 — Thinking SSE dispatch.
 	//
 	// Pre-fix the dispatcher in handleSessionStream had no branch for
@@ -3436,6 +3607,68 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 		metadata, ok := delegation["metadata"].(map[string]any)
 		Expect(ok).To(BeTrue())
 		Expect(metadata["error"]).To(Equal("stream initialisation failed"))
+	})
+
+	// Gap 1 (load_skills propagation, May 2026). The Vue surface's
+	// delegation-skills-row renders chips from
+	// SwarmEvent.metadata.load_skills (string[]); the projector must
+	// surface DelegationEventData.LoadSkills onto the wire, and must
+	// omit the key when the slice is empty so the chip block stays
+	// hidden for delegations that did not pass load_skills.
+	It("includes metadata.load_skills when DelegationEventData.LoadSkills is non-empty", func() {
+		collected := publishAndDrain("parent-skills", func() {
+			bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
+				ChainID:         "chain-skills-1",
+				ParentSessionID: "parent-skills",
+				ChildSessionID:  "child-skills",
+				SourceAgent:     "orchestrator",
+				TargetAgent:     "knowledge-base-curator",
+				LoadSkills:      []string{"memory-keeper", "knowledge-base"},
+			}))
+		})
+
+		var delegation map[string]any
+		for _, ev := range collected {
+			if ev["type"] == string(streaming.EventDelegation) {
+				delegation = ev
+				break
+			}
+		}
+		Expect(delegation).NotTo(BeNil())
+		metadata, ok := delegation["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		skills, ok := metadata["load_skills"].([]any)
+		Expect(ok).To(BeTrue(),
+			"load_skills must project as a JSON array so the Vue surface receives a string[] after the wire decode")
+		Expect(skills).To(HaveLen(2))
+		Expect(skills[0]).To(Equal("memory-keeper"))
+		Expect(skills[1]).To(Equal("knowledge-base"))
+	})
+
+	It("omits metadata.load_skills when DelegationEventData.LoadSkills is empty", func() {
+		collected := publishAndDrain("parent-no-skills", func() {
+			bus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(events.DelegationEventData{
+				ChainID:         "chain-no-skills-1",
+				ParentSessionID: "parent-no-skills",
+				ChildSessionID:  "child-no-skills",
+				SourceAgent:     "orchestrator",
+				TargetAgent:     "qa-agent",
+			}))
+		})
+
+		var delegation map[string]any
+		for _, ev := range collected {
+			if ev["type"] == string(streaming.EventDelegation) {
+				delegation = ev
+				break
+			}
+		}
+		Expect(delegation).NotTo(BeNil())
+		metadata, ok := delegation["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		_, present := metadata["load_skills"]
+		Expect(present).To(BeFalse(),
+			"omitting the load_skills key keeps the wire small and matches the frontend's `if load_skills` chip-render gate")
 	})
 })
 

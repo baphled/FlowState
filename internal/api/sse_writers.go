@@ -38,6 +38,25 @@ type sseToolResult struct {
 	Content string `json:"content"`
 }
 
+// sseToolError represents a tool execution failure event in a server-sent
+// event stream. Distinct from sseToolResult so the frontend's
+// handleToolErrorEvent can flip the matching tool message to status='error'
+// in-stream — the legacy `tool_result` event hard-sets status='completed',
+// which hid live tool failures until the post-stream history reconcile.
+//
+// Field semantics:
+//   - Content carries the error message (typically the executor's err.Error()
+//     prefixed with "Error: ", matching the engine's chunk content for
+//     IsError chunks). The frontend renders this verbatim in the tool body.
+//
+// Additive contract: emitting `tool_error` does NOT replace `tool_result` —
+// the legacy event keeps firing for IsError=false chunks. The new event is
+// only emitted when the engine stamps ToolResult.IsError=true on the chunk.
+type sseToolError struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
 // sseThinking represents a model reasoning ("thinking") event in a server-sent
 // event stream. The discriminant value "thinking" is namespaced specifically to
 // avoid collision with future provider-related event types planned by Track B
@@ -339,6 +358,30 @@ func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name, input s
 //   - Flushes response buffer.
 func writeSSESkillLoad(w http.ResponseWriter, flusher http.Flusher, name string) {
 	data := sseSkillLoad{Type: "skill_load", Name: name}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// writeSSEToolError marshals a tool execution failure as a JSON event and
+// writes it as a server-sent event. Routed from handleSessionStream when the
+// engine stamps ToolResult.IsError=true on a tool_result chunk (Gap 2 — May
+// 2026). Distinct event type so the Vue chatStore's handleToolErrorEvent can
+// flip the matching tool message's status to 'error' in-stream rather than
+// waiting for the post-stream history reconcile.
+//
+// Expected:
+//   - content is the error message (the engine prefixes the executor's error
+//     with "Error: " on the chunk).
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded tool error to response.
+//   - Flushes response buffer.
+func writeSSEToolError(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseToolError{Type: "tool_error", Content: content}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return
