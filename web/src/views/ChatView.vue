@@ -3,7 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useSwarmStore } from '@/stores/swarmStore'
-import { resolveAgentName, collapseToolPairs, groupContextTools } from '@/views/chatViewHelpers'
+import {
+  resolveAgentName,
+  collapseToolPairs,
+  groupContextTools,
+  buildPrecedingUserPromptMap,
+} from '@/views/chatViewHelpers'
 import type { GroupedMessageEntry } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import ContextUsageChip from '@/components/chat/ContextUsageChip.vue'
@@ -68,6 +73,26 @@ async function goToParentSession(): Promise<void> {
 const groupedMessages = computed<GroupedMessageEntry[]>(() =>
   groupContextTools(collapseToolPairs(chatStore.messages)),
 )
+
+// UI Parity bug-fix bundle (May 2026). P2-9: precompute the per-bubble
+// preceding-user-message lookup once per messages-array change instead
+// of letting each MessageBubble re-scan chatStore.messages on every
+// chunk. The bubble accepts the resolved tuple as a prop; the helper
+// walks the list once and returns a Map<assistantId, prompt | null>.
+// Pre-fix on a 200-message session streaming at 30 chunks/sec this
+// reactive chain did 200 × 200 × 30 = 1.2M iterations/sec; the prop
+// hoist drops it to a single walk per reactive update.
+const precedingUserPromptMap = computed(() =>
+  buildPrecedingUserPromptMap(chatStore.messages),
+)
+
+function precedingUserPromptFor(messageId: string): { id: string; content: string } | null {
+  // The map's `get` returns `undefined` for messages that aren't in the
+  // map (non-assistant messages); coerce to null so the prop semantics
+  // are consistent (explicit null → hide affordance).
+  const found = precedingUserPromptMap.value.get(messageId)
+  return found ?? null
+}
 
 // Bug Hunt (May 2026) — session-return streaming visibility. The
 // activity-indicator + loading-pulse must reflect the CURRENT
@@ -302,6 +327,22 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return false
 }
 
+// UI Parity bug-fix bundle (May 2026). P1-8: pre-fix the `?` trigger
+// fired any time the bare key was observed on a non-editable target,
+// which included buttons, links, role="button" elements — tab to a
+// button, press ?, and the modal popped open unexpectedly. The
+// predicate below excludes those button-ish surfaces so the modal only
+// opens when the user clearly meant to ask for help (i.e. focus is on
+// neutral chrome).
+function isButtonLikeTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  if (tag === 'BUTTON' || tag === 'A') return true
+  const role = target.getAttribute('role')
+  if (role === 'button' || role === 'link' || role === 'menuitem' || role === 'tab') return true
+  return false
+}
+
 // H9 — Bug Hunt Findings (May 2026). The Slice G escape-twice listener
 // was originally registered as an inline anonymous arrow inside
 // onMounted with no matching removeEventListener in onBeforeUnmount.
@@ -325,7 +366,23 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     keyboardHelpOpen.value = true
     return
   }
-  if (event.key === '?' && !isEditableTarget(event.target)) {
+  // UI Parity bug-fix bundle (May 2026). P1-8: tightened predicate.
+  // (1) event.repeat — held-key spam must not spawn a modal-open per
+  //     tick; one keystroke = at most one open.
+  // (2) shift+slash code probe — `event.key === '?'` is layout-
+  //     dependent. Pairing with `event.code === 'Slash' && shiftKey`
+  //     keeps the trigger robust on AZERTY/Dvorak where `?` may sit
+  //     on a different physical key.
+  // (3) button-like targets — pre-fix the trigger fired for ANY
+  //     non-editable target; tab to a button and `?` opened the
+  //     modal. Exclude button / link / role="button" etc.
+  if (event.repeat) return
+  const isHelpKey = event.key === '?' || (event.code === 'Slash' && event.shiftKey)
+  if (
+    isHelpKey &&
+    !isEditableTarget(event.target) &&
+    !isButtonLikeTarget(event.target)
+  ) {
     event.preventDefault()
     keyboardHelpOpen.value = true
   }
@@ -414,6 +471,7 @@ onBeforeUnmount(() => {
                 v-if="entry.type === 'message'"
                 :message="entry.message"
                 :agent-name="agentNameFor(entry.message)"
+                :preceding-user-prompt="precedingUserPromptFor(entry.message.id)"
               />
               <ContextToolGroup
                 v-else-if="entry.type === 'context-group'"

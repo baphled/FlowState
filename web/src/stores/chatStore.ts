@@ -603,16 +603,31 @@ export const useChatStore = defineStore('chat', {
     // composer with the content of a reverted user message. MessageInput
     // watches this field and consumes it (resetting to '') on next tick.
     composerText: '',
-    // promptHistory backs up-arrow recall in MessageInput (UI Parity PR2 B4,
-    // May 2026). Each successful sendMessage pushes the user's text onto this
+    // promptHistoryBySession backs up-arrow recall in MessageInput (UI Parity
+    // PR2 B4, May 2026; per-session privacy fix May 2026 bug-fix bundle).
+    // Each successful sendMessage pushes the user's text onto this session's
     // ring buffer; the composer's ArrowUp/ArrowDown handlers walk it when the
     // textarea is empty or the caret sits at the buffer's start/end edge so
     // the user can re-run / edit a recent prompt without re-typing.
     //
-    // Capped at 50 entries — the TUI uses the same ceiling. Newest entry is at
-    // the END of the array (push semantics); the composer steps from end-to-
-    // start on ArrowUp.
-    promptHistory: [] as string[],
+    // Privacy: pre-fix this was a flat singleton `string[]`. A prompt typed
+    // in session A leaked into session B's ArrowUp recall — a real
+    // privacy concern during screen-shares (e.g. "API key sk-..."). The
+    // map shape isolates history per session id so switching sessions
+    // hides the prior session's history without losing it.
+    //
+    // Capped at 50 entries PER SESSION — the TUI uses the same ceiling.
+    // Newest entry is at the END of the array (push semantics); the
+    // composer steps from end-to-start on ArrowUp.
+    promptHistoryBySession: {} as Record<string, string[]>,
+    // promptHistoryLegacy backs the legacy flat-shape contract for the
+    // null-currentSessionId fast path (pre-session-create sends from the
+    // App-level mount). The map-shape would be empty for any caller that
+    // has not yet minted a session id; preserving a flat fallback means
+    // those callers still get history-aware behaviour. Once a session id
+    // is set this slot is no longer the source of truth — promptHistory
+    // (the getter) resolves to `promptHistoryBySession[currentSessionId]`.
+    promptHistoryLegacy: [] as string[],
     // ---- tool-activity rolling-toast state (May 2026 notifications work) ----
     //
     // The user requested visible notifications when tools fire AND when the
@@ -780,6 +795,18 @@ export const useChatStore = defineStore('chat', {
         const slot = state.sessionStreaming[sessionId]
         return slot ? { isLoading: slot.isLoading, isStreaming: slot.isStreaming } : { isLoading: false, isStreaming: false }
       }
+    },
+
+    // UI Parity bug-fix bundle (May 2026). P1-4: per-session prompt-history
+    // getter. Resolves to the active session's history when a session is
+    // current; falls back to the legacy flat list when no session id is set
+    // (pre-session-create fast path). MessageInput reads this as
+    // `store.promptHistory` so the component layer is unchanged.
+    promptHistory(state): string[] {
+      if (state.currentSessionId) {
+        return state.promptHistoryBySession[state.currentSessionId] ?? []
+      }
+      return state.promptHistoryLegacy
     },
   },
 
@@ -1684,10 +1711,26 @@ export const useChatStore = defineStore('chat', {
     // Capped at 50 entries; the oldest entry rolls off the front. Adjacent
     // duplicates are folded so re-running the same prompt twice does not
     // burn two slots.
+    //
+    // P1-4 (May 2026 bug-fix bundle): per-session storage. When a session
+    // is current, the entry lands in `promptHistoryBySession[sessionId]`
+    // so it does not bleed into other sessions' ArrowUp recall. The
+    // null-session fast path still uses the legacy flat list so
+    // pre-session-create sends remain history-aware.
     recordPromptHistory(text: string): void {
       const trimmed = text.trim()
       if (!trimmed) return
-      const buf = this.promptHistory
+      const sessionId = this.currentSessionId
+      let buf: string[]
+      if (sessionId) {
+        buf = this.promptHistoryBySession[sessionId]
+        if (!buf) {
+          buf = []
+          this.promptHistoryBySession[sessionId] = buf
+        }
+      } else {
+        buf = this.promptHistoryLegacy
+      }
       if (buf.length > 0 && buf[buf.length - 1] === trimmed) {
         return
       }
@@ -2015,6 +2058,16 @@ export const useChatStore = defineStore('chat', {
           // Network error; still close the stream to release UI
           disconnectSessionStream(sessionId)
         }
+        // UI Parity bug-fix bundle (May 2026). P1-5: pre-fix the
+        // composer's Send/Stop affordance stayed in "Stop" mode until
+        // the outer POST drained server-side (the server has to
+        // propagate cancel through its own pipeline). Users would
+        // click Stop and the UI looked frozen for seconds while the
+        // pulse dot kept pulsing. We clear the per-session streaming
+        // slot here so the composer flips back to Send immediately;
+        // any late-arriving SSE chunks for this session are dropped
+        // by the C-3 cross-session guard upstream of applyContent.
+        this.setSessionStreaming(sessionId, { isLoading: false, isStreaming: false })
       }
     },
 
