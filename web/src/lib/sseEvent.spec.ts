@@ -106,6 +106,21 @@ describe('parseSSEPayload', () => {
     expect(ev).toEqual({ kind: 'tool_result', content: 'output' })
   })
 
+  // Gap 2 (tool_error SSE wire, May 2026). Distinct from tool_result so
+  // the chat store can flip the matching tool message to status='error'
+  // in-stream rather than waiting for the post-stream history reconcile.
+  // The wire shape mirrors tool_result (content only) — the type
+  // discriminant is the load-bearing field.
+  it('classifies a tool_error by the type discriminant', () => {
+    const ev = parseSSEPayload('{"type":"tool_error","content":"Error: bash exited non-zero"}')
+    expect(ev).toEqual({ kind: 'tool_error', content: 'Error: bash exited non-zero' })
+  })
+
+  it('defaults tool_error content to empty string when the wire omits it (defensive — never throws)', () => {
+    const ev = parseSSEPayload('{"type":"tool_error"}')
+    expect(ev).toEqual({ kind: 'tool_error', content: '' })
+  })
+
   it('classifies a delegation event by the type discriminant and unpacks fields', () => {
     const payload = JSON.stringify({
       type: 'delegation',

@@ -220,6 +220,12 @@ type delegationTarget struct {
 	denyDelegate bool
 	// denyTodoWrite is true when the target agent lacks the "todowrite" tool permission.
 	denyTodoWrite bool
+	// loadSkills is the raw user-supplied list of skill names from the
+	// delegate tool's load_skills argument, preserved verbatim (pre any
+	// resolver/allow-list filter). Threaded onto the bus event payload
+	// so the Vue DelegationPanel can render delegation-skills-row chips
+	// for the skills the user passed.
+	loadSkills []string
 }
 
 // delegationParams groups the parsed delegation input fields.
@@ -502,6 +508,7 @@ func (d *DelegateTool) publishDelegationEvent(status string, data events.Delegat
 func buildDelegationEventData(
 	baseInfo provider.DelegationInfo,
 	parentSessionID, childSessionID, errMsg string,
+	loadSkills []string,
 ) events.DelegationEventData {
 	data := events.DelegationEventData{
 		ChainID:         baseInfo.ChainID,
@@ -516,6 +523,7 @@ func buildDelegationEventData(
 		LastTool:        baseInfo.LastTool,
 		CompletedAt:     baseInfo.CompletedAt,
 		Error:           errMsg,
+		LoadSkills:      loadSkills,
 	}
 	if baseInfo.StartedAt != nil {
 		data.StartedAt = *baseInfo.StartedAt
@@ -2190,12 +2198,12 @@ func (d *DelegateTool) executeSync(
 		// require a child id (the SSE click-through path) treat empty
 		// as "no navigable target" and fall back to surfacing the
 		// failure on the parent timeline.
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error()))
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills))
 		return tool.Result{}, gateErr
 	}
 	if gateErr := d.dispatchPreMemberGates(ctx, target.agentID); gateErr != nil {
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error()))
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills))
 		return tool.Result{}, gateErr
 	}
 
@@ -2219,7 +2227,7 @@ func (d *DelegateTool) executeSync(
 	// fires *before* this — see Plans/Delegation Bus Bridge — Engine
 	// to SSE (May 2026) §"Why publish after resolve, not at chunk
 	// emission time" for the ordering rationale.
-	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, ""))
+	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, "", target.loadSkills))
 	closeStore := d.attachSessionStore(target.engine, delegateSessionID)
 	defer closeStore()
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
@@ -2237,7 +2245,7 @@ func (d *DelegateTool) executeSync(
 		baseInfo.LastTool = result.lastTool
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error()))
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error(), target.loadSkills))
 		// Bug fix (May 2026 — Session Seal Persistence Hole): the success
 		// branch below seals the child session via closeSessionIfManaged
 		// (line ~2016), but the dispatch-failure path returned without
@@ -2257,13 +2265,13 @@ func (d *DelegateTool) executeSync(
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
-	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, ""))
+	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, "", target.loadSkills))
 	d.closeSessionIfManaged(delegateSessionID)
 
 	if gateErr := d.dispatchPostMemberGates(ctx, target.agentID); gateErr != nil {
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error()))
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error(), target.loadSkills))
 		return tool.Result{}, gateErr
 	}
 
@@ -2952,7 +2960,7 @@ func (d *DelegateTool) executeAsync(
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 	// Bus-side `delegation.started` fires post-resolve so the payload
 	// carries the populated ChildSessionID (== taskID for the async path).
-	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, taskID, ""))
+	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, taskID, "", target.loadSkills))
 
 	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
@@ -3015,7 +3023,7 @@ func (d *DelegateTool) executeBackgroundTask(
 		completedAt := time.Now().UTC()
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error()))
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
 		// Bug fix (May 2026 — Session Seal Persistence Hole): mirror the
 		// sync-dispatcher fix on the async runner. The success branch
 		// (line ~2790) seals the child via closeSessionIfManaged, but the
@@ -3035,7 +3043,7 @@ func (d *DelegateTool) executeBackgroundTask(
 		baseInfo.LastTool = result.lastTool
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error()))
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
 		// Bug fix (May 2026 — Session Seal Persistence Hole): see the
 		// twin comment on the Stream-error path above. The async runner's
 		// success branch is the only place that previously sealed.
@@ -3051,7 +3059,7 @@ func (d *DelegateTool) executeBackgroundTask(
 	baseInfo.LastTool = result.lastTool
 	baseInfo.CompletedAt = &completedAt
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "completed")
-	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, taskID, ""))
+	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, taskID, "", target.loadSkills))
 
 	d.closeSessionIfManaged(taskID)
 
@@ -3135,6 +3143,7 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		requestedSession:  params.sessionID,
 		denyDelegate:      !d.agentHasToolPermission(targetAgentID, "delegate"),
 		denyTodoWrite:     !d.agentHasToolPermission(targetAgentID, "todowrite"),
+		loadSkills:        params.loadSkills,
 	}, nil
 }
 

@@ -712,6 +712,72 @@ describe('chatStore - sendMessage', () => {
     expect(store.messages[1].status).toBe('completed')
   })
 
+  // Gap 2 (tool_error SSE wire, May 2026). When the engine stamps
+  // IsError=true on a tool_result chunk, the SSE wire emits a distinct
+  // `tool_error` event so the live stream can mark the matching tool
+  // message as failed in-stream. The ToolBubble's cardDefaultOpen
+  // watcher reacts to status='error' and force-opens the card so the
+  // user sees the failure immediately, not behind a chevron click.
+  //
+  // Contract: the most recent running tool_result is flipped to
+  // status='error' AND the content is populated with the error text.
+  // The legacy tool_result handler keeps working for non-error chunks
+  // — tool_error is purely additive.
+  it('flips the most recent running tool_result to status=error when a tool_error event arrives', () => {
+    const store = useChatStore()
+    store.messages = [
+      {
+        id: 'tool-1',
+        role: 'tool_result',
+        toolName: 'read',
+        content: 'previous output',
+        timestamp: new Date().toISOString(),
+        status: 'completed',
+      },
+      {
+        id: 'tool-2',
+        role: 'tool_result',
+        toolName: 'bash',
+        content: '',
+        timestamp: new Date().toISOString(),
+        status: 'running',
+      },
+    ]
+
+    store.applyContentEvent(
+      JSON.stringify({ type: 'tool_error', content: 'Error: bash exited non-zero' }),
+    )
+
+    expect(store.messages[1].status).toBe('error')
+    expect(store.messages[1].content).toBe('Error: bash exited non-zero')
+    // The completed earlier message must stay untouched.
+    expect(store.messages[0].status).toBe('completed')
+    expect(store.messages[0].content).toBe('previous output')
+  })
+
+  it('does not mutate any tool message when a tool_error arrives but no running tool_result exists', () => {
+    const store = useChatStore()
+    store.messages = [
+      {
+        id: 'tool-1',
+        role: 'tool_result',
+        toolName: 'read',
+        content: 'ok',
+        timestamp: new Date().toISOString(),
+        status: 'completed',
+      },
+    ]
+
+    store.applyContentEvent(
+      JSON.stringify({ type: 'tool_error', content: 'Error: nothing to flip' }),
+    )
+
+    // Defensive: no running target means no mutation. We tolerate stray
+    // tool_error events (e.g. arriving after a watchdog cancel) by no-op.
+    expect(store.messages[0].status).toBe('completed')
+    expect(store.messages[0].content).toBe('ok')
+  })
+
   it('creates a running tool_result message for skill_load events', () => {
     const store = useChatStore()
 

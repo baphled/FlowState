@@ -120,6 +120,30 @@ export interface SSEToolResultEvent {
   content: string
 }
 
+/**
+ * SSEToolErrorEvent — tool execution failure event. Emitted by the Go SSE
+ * pipeline (writeSSEToolError at internal/api/sse_writers.go) when the
+ * engine stamps ToolResult.IsError=true on a tool_result chunk. Distinct
+ * event type so the chat store's handleToolErrorEvent can flip the matching
+ * running tool_result message to status='error' in-stream — the legacy
+ * `tool_result` event hard-sets status='completed', which previously hid
+ * live tool failures until the post-stream history reconcile.
+ *
+ * Additive contract: `tool_error` does NOT replace `tool_result` — the
+ * legacy event keeps firing for IsError=false chunks. Existing surfaces
+ * that only listen for `tool_result` continue to work; new surfaces opt
+ * into the error path by handling this discriminant.
+ *
+ * Field semantics:
+ *   - `content` is the error message verbatim from the wire (typically
+ *     prefixed with "Error: " by the engine). Empty string is tolerated
+ *     so the parser never throws on a malformed wire.
+ */
+export interface SSEToolErrorEvent {
+  kind: 'tool_error'
+  content: string
+}
+
 export interface SSEDelegationEvent {
   kind: 'delegation'
   /** Raw JSON-encoded payload — the chat store unpacks specific fields. */
@@ -473,6 +497,7 @@ export type SSEEvent =
   | SSEToolCallEvent
   | SSESkillLoadEvent
   | SSEToolResultEvent
+  | SSEToolErrorEvent
   | SSEDelegationEvent
   | SSEHarnessRetryEvent
   | SSEHarnessAttemptStartEvent
@@ -541,6 +566,13 @@ export function parseSSEPayload(payload: string): SSEEvent {
   if (type === 'tool_result') {
     return {
       kind: 'tool_result',
+      content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '',
+    }
+  }
+
+  if (type === 'tool_error') {
+    return {
+      kind: 'tool_error',
       content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '',
     }
   }

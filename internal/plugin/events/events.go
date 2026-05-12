@@ -680,6 +680,16 @@ type DelegationEventData struct {
 	CompletedAt *time.Time
 	// Error carries the failure message; non-empty only on failed events.
 	Error string
+	// LoadSkills is the raw user-supplied list of skill names the delegate
+	// tool was invoked with, before any allow-list filtering. Populated on
+	// started/completed/failed events when the caller passed a non-empty
+	// load_skills argument; empty otherwise. The Vue DelegationPanel
+	// renders one chip per name on the delegation card so the user can
+	// audit which knowledge context the child session was given. The raw
+	// (pre-filter) list is preferred over the resolved post-allow-list
+	// slice because the UI's purpose is to surface what the user asked
+	// for, not what the engine accepted.
+	LoadSkills []string
 }
 
 // DelegationStartedEvent represents a delegation start event, published by the

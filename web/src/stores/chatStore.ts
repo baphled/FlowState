@@ -2336,6 +2336,16 @@ export const useChatStore = defineStore('chat', {
         case 'tool_result':
           this.handleToolResultEvent({ content: event.content })
           return
+        case 'tool_error':
+          // Gap 2 (tool_error SSE wire, May 2026). The Go SSE pipeline
+          // emits this discriminant when chunk.ToolResult.IsError=true.
+          // Distinct from tool_result so the live stream can flip the
+          // matching tool message's status to 'error' — the legacy
+          // handleToolResultEvent unconditionally stamps 'completed'
+          // and would silently hide an in-stream failure until the
+          // post-stream reconcile.
+          this.handleToolErrorEvent({ content: event.content })
+          return
         case 'delegation':
           this.applyDelegationEvent(event.raw)
           return
@@ -3171,6 +3181,43 @@ export const useChatStore = defineStore('chat', {
         todoStore.ingestToolResult(this.currentSessionId, content)
       }
       // Clear the gate so a stray subsequent tool_result doesn't double-route.
+      this.lastToolName = null
+    },
+
+    /**
+     * handleToolErrorEvent — flips the most recent running tool_result
+     * message to status='error' and populates the error content. Mirrors
+     * handleToolResultEvent's "find most recent running" semantics so the
+     * tool_call → tool_error pairing matches the wire-time ordering.
+     *
+     * Gap 2 (May 2026): added so the Go SSE pipeline's new `tool_error`
+     * typed event can surface in-stream tool failures. Without this the
+     * frontend's handleToolResultEvent always stamped status='completed',
+     * which hid live errors behind the post-stream history reconcile.
+     *
+     * The status='error' transition is the load-bearing field — the
+     * ToolBubble's cardDefaultOpen watcher reacts to it and force-opens
+     * the matching card, so the user sees the failure immediately rather
+     * than needing to click the chevron.
+     *
+     * Defensive: a stray tool_error with no running target is a no-op
+     * rather than a throw. Stale events (e.g. arriving after a watchdog
+     * cancel) must not break the chat thread.
+     */
+    handleToolErrorEvent(info: { content?: unknown }): void {
+      const target = [...this.messages].reverse().find(
+        (message) => message.role === 'tool_result' && message.status === 'running',
+      )
+
+      const content = String(info.content ?? '')
+
+      if (target) {
+        target.content = content
+        target.status = 'error'
+      }
+
+      // Clear the gate so a subsequent tool_result/tool_error doesn't
+      // double-route to the same target (mirrors handleToolResultEvent).
       this.lastToolName = null
     },
 

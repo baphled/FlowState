@@ -461,6 +461,76 @@ var _ = Describe("DelegateTool delegation lifecycle bus publication", func() {
 			Expect(captured.failedEvents()).To(BeEmpty(),
 				"delegation.failed must not fire on the success path")
 		})
+
+		// Gap 1 (load_skills propagation, May 2026): the delegate tool
+		// already parses `load_skills` from the tool args and injects
+		// the matching skill prompts into the child manifest, but the
+		// bus payload dropped the list. The Vue DelegationPanel renders
+		// a delegation-skills-row when SwarmEvent.metadata.load_skills
+		// is populated; the bus event must carry the raw user-supplied
+		// list (pre-resolver filter) so the user sees the skill names
+		// they asked for, not what survived allow-listing.
+		It("publishes delegation.started with LoadSkills populated from the delegate tool's load_skills argument", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Run with skills",
+					"load_skills":   []interface{}{"memory-keeper", "knowledge-base"},
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1))
+			Expect(started[0].Data.LoadSkills).To(Equal([]string{"memory-keeper", "knowledge-base"}),
+				"delegation.started must surface the raw user-supplied load_skills so the UI can render the skill chips")
+
+			completed := captured.completedEvents()
+			Expect(completed).To(HaveLen(1))
+			Expect(completed[0].Data.LoadSkills).To(Equal([]string{"memory-keeper", "knowledge-base"}),
+				"delegation.completed must preserve LoadSkills so reload paths render the same chip block as the live stream")
+		})
+
+		It("publishes delegation.started with LoadSkills empty when the delegate tool args omit load_skills", func() {
+			captured := newDelegationCapture(bus)
+
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithEventBus(bus)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "Run without skills",
+				},
+			}
+
+			_, err = delegateTool.Execute(ctx, input)
+			Expect(err).NotTo(HaveOccurred())
+
+			started := captured.startedEvents()
+			Expect(started).To(HaveLen(1))
+			Expect(started[0].Data.LoadSkills).To(BeEmpty(),
+				"LoadSkills must stay empty when the caller did not supply load_skills — the frontend gates chip rendering on length>0")
+		})
 	})
 
 	Context("executeSync no-op when the bus is not wired", func() {

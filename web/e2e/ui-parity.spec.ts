@@ -637,29 +637,40 @@ test.describe('Tool cards parity — PR3 + bug fixes', () => {
     gate.release()
   })
 
-  // [10] (SKIPPED — see comment) P0-3 force-open-on-error transition is
-  // covered at unit level in ToolBubble.spec.ts:147; reproducing it end-
-  // to-end requires the chatStore to expose a status-update path that
-  // mutates an existing tool_result row's status to 'error'. The SSE
-  // wire format on `feature/vue-ui-rebase` has no `tool_error` typed
-  // event nor an `is_error` flag on `tool_result`; engines surface
-  // tool failures via the post-stream message reconcile (POST response
-  // body), which is a different code path from the watcher contract.
-  //
-  // A future e2e regression catcher would need either:
-  //   (a) a new SSE `tool_error` event the chatStore translates to a
-  //       status='error' update on the running tool_result, or
-  //   (b) a structured wire change to tool_result carrying is_error,
-  //
-  // both of which are downstream of this UI-Parity stream. Marked
-  // test.fixme so the suite makes the gap loud at run time rather
-  // than silently dropping the regression catcher slot.
-  test.fixme(
-    'Tool card auto-opens when status transitions to error (P0-3 — needs wire support)',
-    async () => {
-      // intentionally empty — see comment above.
-    },
-  )
+  // [10] P0-3 force-open-on-error live-stream path. The Gap 2 wire
+  // change (May 2026) added a `tool_error` SSE event the chatStore
+  // translates into a status='error' mutation on the matching running
+  // tool_result row. The ToolBubble's cardDefaultOpen watcher (P0-3 fix
+  // at ToolBubble.spec.ts:147) force-opens the card on the running →
+  // error transition, so the failure surfaces in-stream without a
+  // chevron click.
+  test('Tool card auto-opens when status transitions to error (P0-3)', async ({ page }) => {
+    const gate = newGate()
+    await installCommonRoutes(page, { postGate: gate })
+    await page.goto('/chat')
+    await page.getByTestId('message-input').fill('run a failing tool')
+    await page.getByTestId('send-button').click()
+    await waitForSSE(page)
+
+    // Fire a tool_call (creates a running bash tool_result row, default-
+    // collapsed because BashTool's cardDefaultOpen seeds from status=
+    // 'running' → false).
+    await fireSSE(page, 'message', { type: 'tool_call', name: 'bash', status: 'running' })
+
+    const bash = page.locator('[data-testid="tool-renderer"][data-tool="bash"]').first()
+    await expect(bash).toBeVisible({ timeout: 10_000 })
+    await expect(bash).toHaveAttribute('data-open', 'false')
+
+    // Now fire the new tool_error event. chatStore.handleToolErrorEvent
+    // flips the bash row's status to 'error'; BashTool's cardDefaultOpen
+    // computed becomes true; ToolBubble's watcher force-opens the card.
+    await fireSSE(page, 'message', { type: 'tool_error', content: 'Error: bash exited non-zero' })
+
+    await expect(bash).toHaveAttribute('data-status', 'error')
+    await expect(bash).toHaveAttribute('data-open', 'true')
+
+    gate.release()
+  })
 
   // [11] Regression catcher — P1-7: Regenerate button visible on completed
   // assistant; hidden during any in-flight stream (mid-stream click would
