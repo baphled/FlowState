@@ -81,6 +81,49 @@ var _ = Describe("Attachment and Message.Attachments", func() {
 	})
 })
 
+// Plan "Chat Attachments Backend (May 2026)" §6 task-10 — the agnostic
+// translator-helper layer at the engine seam. PR1 shipped these inside
+// the Anthropic package; PR3 lifts them here so OpenAI / openaicompat /
+// Copilot translators share the same ceiling without pulling in the
+// Anthropic SDK. Extends the existing types_test.go per memory
+// feedback_extend_existing_specs.
+var _ = Describe("Agnostic attachment helpers (PR3 task-10)", func() {
+	It("TotalAttachmentBytes returns 0 for nil / empty slices", func() {
+		Expect(TotalAttachmentBytes(nil)).To(Equal(int64(0)))
+		Expect(TotalAttachmentBytes([]Attachment{})).To(Equal(int64(0)))
+	})
+
+	It("TotalAttachmentBytes sums Data byte counts across attachments", func() {
+		atts := []Attachment{
+			{Data: make([]byte, 100)},
+			{Data: make([]byte, 250)},
+			{Data: nil}, // empty-data entries count as zero
+			{Data: make([]byte, 50)},
+		}
+		Expect(TotalAttachmentBytes(atts)).To(Equal(int64(400)))
+	})
+
+	It("MaxAttachmentRequestBytes returns the 25 MB ceiling", func() {
+		Expect(MaxAttachmentRequestBytes()).To(Equal(int64(25 * 1024 * 1024)))
+		Expect(MaxAttachmentRequestBytes()).To(Equal(MaxAttachmentRequestBytesValue))
+	})
+
+	It("ErrAttachmentRequestTooLarge is a non-nil sentinel suitable for errors.Is", func() {
+		Expect(ErrAttachmentRequestTooLarge).NotTo(BeNil())
+		// Wrapping with %w must preserve errors.Is traversal.
+		wrapped := fmt.Errorf("provider X: %w (got 30 MB)", ErrAttachmentRequestTooLarge)
+		Expect(errors.Is(wrapped, ErrAttachmentRequestTooLarge)).To(BeTrue())
+	})
+
+	It("ErrAttachmentRequestTooLarge message is provider-agnostic (no anthropic: prefix)", func() {
+		// Plan §6 task-10 lifted the sentinel out of the Anthropic package;
+		// the message must not name a specific provider so OpenAI / Copilot /
+		// openaicompat translators can wrap it with their own prefix.
+		Expect(ErrAttachmentRequestTooLarge.Error()).NotTo(ContainSubstring("anthropic"))
+		Expect(ErrAttachmentRequestTooLarge.Error()).To(ContainSubstring("attachments"))
+	})
+})
+
 var _ = Describe("ToolResultInfo", func() {
 	It("stores content and error state", func() {
 		info := &ToolResultInfo{
