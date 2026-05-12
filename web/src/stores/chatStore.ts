@@ -1390,43 +1390,54 @@ export const useChatStore = defineStore('chat', {
       // Local prune AFTER the server confirms — avoids torn state on
       // network failure / 404.
       const wasCurrent = this.currentSessionId === sessionId
-      this.sessions = this.sessions.filter((s) => s.id !== sessionId)
+
+      // User bug (May 2026 — "delete cascade"): the backend cascades
+      // delete to every delegated descendant. Mirror that cascade in the
+      // local cache so stale child summaries don't linger in
+      // `this.sessions` (where `lastDelegatedSessionId` /
+      // `ChildSessionsPanel` would still find them). DFS walk over the
+      // local parentId chain — bounded by `this.sessions.length`
+      // iterations so a malformed parentId cycle is safe.
+      const removed = new Set<string>([sessionId])
+      let grew = true
+      while (grew) {
+        grew = false
+        for (const s of this.sessions) {
+          if (s.parentId && removed.has(s.parentId) && !removed.has(s.id)) {
+            removed.add(s.id)
+            grew = true
+          }
+        }
+      }
+      const removedIds = removed
+      this.sessions = this.sessions.filter((s) => !removedIds.has(s.id))
       // Use Pinia-reactive patches so the QueuedPromptStrip watcher /
       // streaming watchers re-run when their per-session slots disappear.
-      if (this.sessionStreaming[sessionId]) {
-        const next = { ...this.sessionStreaming }
-        delete next[sessionId]
-        this.sessionStreaming = next
+      // Iterate over the full cascade set so descendant streaming /
+      // queuedPrompts / phase slots are dropped too (matching the
+      // backend cascade — otherwise a re-created sibling with the same
+      // id would inherit stale phase state).
+      const pruneMap = <T>(map: Record<string, T>): Record<string, T> => {
+        let touched = false
+        const next = { ...map }
+        for (const id of removedIds) {
+          if (id in next) {
+            delete next[id]
+            touched = true
+          }
+        }
+        return touched ? next : map
       }
-      if (this.queuedPrompts[sessionId]) {
-        const next = { ...this.queuedPrompts }
-        delete next[sessionId]
-        this.queuedPrompts = next
-      }
-      if (this.streamingPhase[sessionId]) {
-        const next = { ...this.streamingPhase }
-        delete next[sessionId]
-        this.streamingPhase = next
-      }
+      this.sessionStreaming = pruneMap(this.sessionStreaming)
+      this.queuedPrompts = pruneMap(this.queuedPrompts)
+      this.streamingPhase = pruneMap(this.streamingPhase)
       // UI Parity PR5 (May 2026) — prune per-session token counter
       // state on session delete to match streamingPhase / sessionStreaming
       // pruning above. Without this, a deleted session's last
       // counter / rate stays in the map indefinitely.
-      if (this.tokenCountBySession[sessionId] !== undefined) {
-        const next = { ...this.tokenCountBySession }
-        delete next[sessionId]
-        this.tokenCountBySession = next
-      }
-      if (this.tokensPerSecondBySession[sessionId] !== undefined) {
-        const next = { ...this.tokensPerSecondBySession }
-        delete next[sessionId]
-        this.tokensPerSecondBySession = next
-      }
-      if (this.lastHeartbeatAtBySession[sessionId] !== undefined) {
-        const next = { ...this.lastHeartbeatAtBySession }
-        delete next[sessionId]
-        this.lastHeartbeatAtBySession = next
-      }
+      this.tokenCountBySession = pruneMap(this.tokenCountBySession)
+      this.tokensPerSecondBySession = pruneMap(this.tokensPerSecondBySession)
+      this.lastHeartbeatAtBySession = pruneMap(this.lastHeartbeatAtBySession)
       if (wasCurrent) {
         // Roll forward to the most-recently-updated remaining ROOT session
         // (children are unreachable without a parent in the UI). Empty

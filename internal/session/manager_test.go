@@ -935,6 +935,157 @@ var _ = Describe("Manager", func() {
 					"DeleteSession must remove the .meta.json sidecar — otherwise the deleted session re-appears after restart")
 			})
 		})
+
+		// User bug (May 2026 — "delete cascade"): deleting a parent session
+		// must wholesale-remove every delegated descendant too, otherwise
+		// orphan child sessions linger on disk and silently leak storage
+		// (including PR1 attachment subtrees). DFS via sessionTree reuses
+		// the existing cycle-safe walk (visited map) — no separate cycle
+		// protection needed here.
+		Context("when the session has delegated children", func() {
+			It("cascades to direct children — child session is removed from the in-memory map", func() {
+				parent, err := mgr.CreateSession("parent-agent")
+				Expect(err).NotTo(HaveOccurred())
+				child, err := mgr.CreateWithParent(parent.ID, "worker")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mgr.DeleteSession(parent.ID)).To(Succeed())
+
+				_, err = mgr.GetSession(child.ID)
+				Expect(err).To(MatchError(session.ErrSessionNotFound),
+					"deleting a parent must cascade to direct children — otherwise the child orphans in memory")
+			})
+
+			It("cascades transitively — grandchild is removed alongside parent + child", func() {
+				root, err := mgr.CreateSession("root-agent")
+				Expect(err).NotTo(HaveOccurred())
+				child, err := mgr.CreateWithParent(root.ID, "child-agent")
+				Expect(err).NotTo(HaveOccurred())
+				grandchild, err := mgr.CreateWithParent(child.ID, "grandchild-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mgr.DeleteSession(root.ID)).To(Succeed())
+
+				_, err = mgr.GetSession(child.ID)
+				Expect(err).To(MatchError(session.ErrSessionNotFound))
+				_, err = mgr.GetSession(grandchild.ID)
+				Expect(err).To(MatchError(session.ErrSessionNotFound),
+					"cascade must be transitive — otherwise deep delegation chains orphan below the second level")
+			})
+
+			It("scopes the cascade to descendants — uninvolved siblings survive", func() {
+				rootA, err := mgr.CreateSession("agent-a")
+				Expect(err).NotTo(HaveOccurred())
+				rootB, err := mgr.CreateSession("agent-b")
+				Expect(err).NotTo(HaveOccurred())
+				childOfA, err := mgr.CreateWithParent(rootA.ID, "child-a")
+				Expect(err).NotTo(HaveOccurred())
+				childOfB, err := mgr.CreateWithParent(rootB.ID, "child-b")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mgr.DeleteSession(rootA.ID)).To(Succeed())
+
+				_, err = mgr.GetSession(childOfA.ID)
+				Expect(err).To(MatchError(session.ErrSessionNotFound))
+				// rootB and its child must be untouched.
+				_, err = mgr.GetSession(rootB.ID)
+				Expect(err).NotTo(HaveOccurred(),
+					"cascade must NOT cross to unrelated trees — rootB shares no ancestor with rootA")
+				_, err = mgr.GetSession(childOfB.ID)
+				Expect(err).NotTo(HaveOccurred(),
+					"cascade must NOT cross to unrelated trees — childOfB shares no ancestor with rootA")
+			})
+
+			It("subtree delete leaves the parent and uninvolved siblings intact", func() {
+				root, err := mgr.CreateSession("root-agent")
+				Expect(err).NotTo(HaveOccurred())
+				childA, err := mgr.CreateWithParent(root.ID, "child-a")
+				Expect(err).NotTo(HaveOccurred())
+				childB, err := mgr.CreateWithParent(root.ID, "child-b")
+				Expect(err).NotTo(HaveOccurred())
+				grandchildA, err := mgr.CreateWithParent(childA.ID, "grandchild-a")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Delete the childA subtree only.
+				Expect(mgr.DeleteSession(childA.ID)).To(Succeed())
+
+				_, err = mgr.GetSession(childA.ID)
+				Expect(err).To(MatchError(session.ErrSessionNotFound))
+				_, err = mgr.GetSession(grandchildA.ID)
+				Expect(err).To(MatchError(session.ErrSessionNotFound),
+					"subtree cascade must remove descendants of the deleted node")
+				_, err = mgr.GetSession(root.ID)
+				Expect(err).NotTo(HaveOccurred(),
+					"subtree delete must NOT cascade UP to the parent")
+				_, err = mgr.GetSession(childB.ID)
+				Expect(err).NotTo(HaveOccurred(),
+					"subtree delete must NOT cascade to sibling subtrees")
+			})
+
+			It("removes cascade descendants from ListSessions", func() {
+				root, err := mgr.CreateSession("root-agent")
+				Expect(err).NotTo(HaveOccurred())
+				child, err := mgr.CreateWithParent(root.ID, "child-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mgr.DeleteSession(root.ID)).To(Succeed())
+
+				for _, sum := range mgr.ListSessions() {
+					Expect(sum.ID).NotTo(Equal(root.ID))
+					Expect(sum.ID).NotTo(Equal(child.ID),
+						"cascade must drop descendants from the summary projection — otherwise the FE keeps showing ghosts")
+				}
+			})
+
+			It("cascades on-disk artefacts — child .meta.json sidecar is removed", func() {
+				tmpDir := GinkgoT().TempDir()
+				mgr.SetSessionsDir(tmpDir)
+
+				parent, err := mgr.CreateSessionWithDefaults("parent-agent", "anthropic", "claude-sonnet-4-6")
+				Expect(err).NotTo(HaveOccurred())
+				child, err := mgr.CreateWithParent(parent.ID, "child-agent")
+				Expect(err).NotTo(HaveOccurred())
+				// CreateWithParent does not auto-persist the child sidecar
+				// (chain-aware spawn delays persist until the first message).
+				// Force the sidecar onto disk via the exported PersistSession
+				// helper so we have something to observe in the post-delete
+				// assertion below.
+				Expect(session.PersistSession(tmpDir, child)).To(Succeed())
+
+				loaded, err := session.LoadSessionMetadata(tmpDir, child.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).NotTo(BeNil(), "precondition: child sidecar must exist before delete")
+
+				Expect(mgr.DeleteSession(parent.ID)).To(Succeed())
+
+				loaded, err = session.LoadSessionMetadata(tmpDir, child.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded).To(BeNil(),
+					"cascade must remove child sidecars from disk — otherwise the orphan re-appears after restart")
+			})
+
+			It("cascades attachment subtrees — child attachments are removed", func() {
+				tmpDir := GinkgoT().TempDir()
+				mgr.SetSessionsDir(tmpDir)
+
+				parent, err := mgr.CreateSession("parent-agent")
+				Expect(err).NotTo(HaveOccurred())
+				child, err := mgr.CreateWithParent(parent.ID, "child-agent")
+				Expect(err).NotTo(HaveOccurred())
+
+				store := mgr.AttachmentStore()
+				pngBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+				_, err = store.Put(child.ID, "image/png", pngBytes, "child.png")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(mgr.DeleteSession(parent.ID)).To(Succeed())
+
+				list, err := store.List(child.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(list).To(BeEmpty(),
+					"cascade must clean up descendant attachment subtrees — otherwise PR1 storage leaks per orphaned child")
+			})
+		})
 	})
 
 	Describe("Concurrent access", func() {
