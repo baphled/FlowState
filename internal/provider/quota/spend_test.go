@@ -61,6 +61,37 @@ func (m *memorySpendStore) Put(ctx context.Context, key quota.SpendStoreKey, sna
 	}, snap)
 }
 
+// Reset clears the Snapshot for the given key. PR5 — used by the
+// "Reset spend counter" dashboard button.
+func (m *memorySpendStore) Reset(ctx context.Context, key quota.SpendStoreKey) error {
+	return m.inner.Reset(ctx, store.Key{
+		ProviderID:  key.ProviderID,
+		AccountHash: key.AccountHash,
+		ModelID:     key.ModelID,
+	})
+}
+
+// List returns every (Key, Snapshot) the underlying MemoryStore
+// holds. PR5 — backs the dashboard aggregator.
+func (m *memorySpendStore) List(ctx context.Context) ([]quota.SpendStoreEntry, error) {
+	rows, err := m.inner.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]quota.SpendStoreEntry, len(rows))
+	for i, r := range rows {
+		out[i] = quota.SpendStoreEntry{
+			Key: quota.SpendStoreKey{
+				ProviderID:  r.Key.ProviderID,
+				AccountHash: r.Key.AccountHash,
+				ModelID:     r.Key.ModelID,
+			},
+			Snapshot: r.Snapshot,
+		}
+	}
+	return out, nil
+}
+
 // inner unwraps to the underlying MemoryStore for partition-key
 // assertions in the test suite.
 func (m *memorySpendStore) underlying() *store.MemoryStore { return m.inner }

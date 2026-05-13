@@ -227,6 +227,33 @@ func (m *MemoryStore) Cleanup(ctx context.Context, now time.Time) error {
 	return nil
 }
 
+// Entry is one row returned from List — a (Key, Snapshot) pair. Used
+// by the PR5 dashboard aggregator to render one row per partition
+// key.
+type Entry struct {
+	Key      Key
+	Snapshot quota.Snapshot
+}
+
+// List returns every (Key, Snapshot) the MemoryStore holds. Order is
+// unspecified; callers that need a deterministic sequence sort at the
+// API layer. PR5 dashboard aggregator entry point.
+//
+// Honours ctx cancellation up-front; the snapshot is taken under
+// RLock so concurrent Put / Delete during the copy is safe.
+func (m *MemoryStore) List(ctx context.Context) ([]Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	entries := make([]Entry, 0, len(m.data))
+	for k, snap := range m.data {
+		entries = append(entries, Entry{Key: k, Snapshot: snap})
+	}
+	return entries, nil
+}
+
 // RedisStore is the v1 stub for the Redis backend. Every method
 // returns ErrNotImplemented; the constructor compiles. v3 replaces
 // the method bodies with the real impl — the constructor and method

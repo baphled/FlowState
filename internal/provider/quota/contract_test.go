@@ -545,6 +545,19 @@ func (m *memoryStoreShim) Put(_ context.Context, key quota.SpendStoreKey, snap q
 	return nil
 }
 
+func (m *memoryStoreShim) Reset(_ context.Context, key quota.SpendStoreKey) error {
+	delete(m.data, key)
+	return nil
+}
+
+func (m *memoryStoreShim) List(_ context.Context) ([]quota.SpendStoreEntry, error) {
+	out := make([]quota.SpendStoreEntry, 0, len(m.data))
+	for k, snap := range m.data {
+		out = append(out, quota.SpendStoreEntry{Key: k, Snapshot: snap})
+	}
+	return out, nil
+}
+
 // recordedPricingResolver is a no-op PricingResolver/PriceEntryResolver
 // for the partition spec — the spec doesn't drive the pricing path so
 // both methods return zero values.

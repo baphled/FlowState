@@ -40,6 +40,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/sessionrecorder"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/ollama"
+	"github.com/baphled/flowstate/internal/provider/quota"
 	recall "github.com/baphled/flowstate/internal/recall"
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
@@ -651,6 +652,12 @@ type engineParams struct {
 	// engine.Config.
 	recallEmbeddingModel   string
 	sessionEmbeddingLookup func(string) (string, bool)
+	// quotaTracker / quotaAccountHashes / quotaCaps carry the PR5
+	// provider-quota wiring from buildQuotaWiring. Nil tracker means
+	// the feature is off — engine.Config drops the field cleanly.
+	quotaTracker       *quota.Tracker
+	quotaAccountHashes map[string]string
+	quotaCaps          map[string]quota.CapConfig
 }
 
 // compressionComponents bundles the wiring required to activate the
@@ -709,6 +716,15 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	chainStore := createChainStore(params.cfg)
 	broker := buildRecallBrokerFromSetup(params, traced.provider, tp.mcpManager, contextStore, chainStore)
 	compression := buildCompressionComponents(params.cfg, params.agentRegistry, traced.provider, traced.recorder)
+	// PR5 of the Provider Quota and Spend Visibility plan (May 2026)
+	// — construct the quota Tracker + per-provider account/cap maps
+	// from cfg.Quota. Returns zero wiring when the feature is off
+	// (cfg.Quota.Store.Backend == ""). Boot-time validation already
+	// ran in serve.go; this is the runtime assembly.
+	quotaW, err := buildQuotaWiring(params.cfg)
+	if err != nil {
+		return nil, err
+	}
 	// sessionMgrHolder bridges the engine → streamer → sessionMgr
 	// construction cycle: the engine's Recall embedding-model
 	// diagnostic needs to look up Session.EmbeddingModel by ID, but
@@ -733,7 +749,13 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		vaultHandler:           params.vaultHandler,
 		recallEmbeddingModel:   params.cfg.ResolvedEmbeddingModel(),
 		sessionEmbeddingLookup: sessionMgrHolder.lookup,
+		quotaWiring:            quotaW,
 	}))
+	// Attach the api.QuotaAggregator adapter post-engine-construction
+	// so the engine → api edge stays one-way (engine doesn't know
+	// about api). The adapter is wired into the api server below via
+	// api.WithQuotaAggregator.
+	quotaW.withAggregator(eng)
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
 	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel(), createCoordinationStore(params.cfg))
@@ -818,6 +840,12 @@ type engineAssemblyParams struct {
 	recallEmbeddingModel   string
 	sessionEmbeddingLookup func(string) (string, bool)
 	vaultHandler           toolsvault.Handler
+	// quotaWiring carries the PR5 provider-quota Tracker + per-
+	// provider account-hash + cap-config maps. Zero-value when the
+	// feature is off (cfg.Quota.Store.Backend == "") — engineParams
+	// then carries nil Tracker + empty maps and the engine drops
+	// every quota path cleanly.
+	quotaWiring quotaWiring
 }
 
 // buildEngineParams assembles the engineParams bundle from setupEngine
