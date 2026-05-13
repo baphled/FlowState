@@ -22,6 +22,7 @@ package api
 //     consumer-agnostic.
 
 import (
+	"encoding/json"
 	"net/http"
 
 	"github.com/baphled/flowstate/internal/auth"
@@ -109,11 +110,19 @@ func (s *Server) registerPublic(pattern string, h http.HandlerFunc) {
 
 // registerLogin wraps the handler with the login-chain (Origin + CSRF,
 // no Session) per plan §"Endpoint Inventory" line 398. Used for
-// POST /api/auth/login + GET /api/auth/whoami — endpoints that cannot
-// require a session because they predate it.
+// POST /api/auth/login + POST /api/auth/logout — endpoints that cannot
+// require a session because they predate / postdate it.
 //
 // When AuthBundle is inactive, falls back to plain registration so the
 // flag-off behaviour matches the rest of the server.
+//
+// Note: GET /api/auth/whoami is deliberately NOT registered here despite
+// the plan §"Endpoint Inventory" line 398 mention. PR5/C10 B8 fold:
+// whoami goes through registerProtected so the 401 wire shape is
+// byte-identical to every other protected endpoint and an unauthenticated
+// caller cannot fingerprint the active auth.mode by probing /whoami
+// (which the plan's line 511 "unauth returns {mode, authenticated:false}"
+// shape would have leaked).
 func (s *Server) registerLogin(pattern string, h http.HandlerFunc) {
 	if !s.auth.active() {
 		s.mux.HandleFunc(pattern, h)
@@ -125,4 +134,70 @@ func (s *Server) registerLogin(pattern string, h http.HandlerFunc) {
 		http.HandlerFunc(h),
 	)
 	s.mux.Handle(pattern, wrapped)
+}
+
+// WhoamiView is the JSON projection returned by GET /api/auth/whoami on
+// success. Mirrors auth.LoginPrincipalView (login response) so the SPA
+// can consume both shapes uniformly. Plan §"Wire Protocol" lines 514-522
+// (authenticated branch).
+type WhoamiView struct {
+	PrincipalID string `json:"principal_id"`
+	DisplayName string `json:"display_name,omitempty"`
+	Mode        string `json:"mode"`
+}
+
+// handleWhoami returns the GET /api/auth/whoami handler.
+//
+// PR5/C10 B8 fold (task brief): the handler is wired via
+// registerProtected so the 401 path is owned by the auth middleware
+// chain (uniform "unauthenticated" body — same shape as any other
+// protected endpoint). On success it returns the principal's id +
+// display name + mode read straight off the session Record stamped by
+// RequireSession.
+//
+// The handler runs ONLY when:
+//
+//   - The auth feature is active (s.auth.active()).
+//   - Origin check passed (RequireOrigin).
+//   - Session cookie validated against the store (RequireSession).
+//   - Record.Mode matches cfg.Mode (the round-5 B3 mode-mismatch check
+//     short-circuits with 401 before we get here).
+//
+// Why GET-only: whoami is a read of session state, not a mutation. The
+// composition chain runs RequireOrigin + RequireSession; CSRF runs only
+// on unsafe methods (the gorilla/csrf wrapper's behaviour), so GET
+// requests do not need the CSRF token. The Record-bound CSRF layer
+// (PR2/C5) is wrapped around handlers via Protected, but is a no-op for
+// safe methods.
+//
+// Returns 405 method_not_allowed if a non-GET method reaches the handler
+// (defensive — net/http's pattern matching already filters by method
+// prefix in the route registration, so this branch is hit only when a
+// future route restructure drops the method prefix).
+func handleWhoami(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	rec := auth.RecordFrom(r)
+	if rec == nil {
+		// Defensive — RequireSession's 401 short-circuit should mean we
+		// never see a nil Record here. If we do, fall back to the same
+		// wire shape (no body hint, uniform with the middleware's 401).
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
+
+	view := WhoamiView{
+		PrincipalID: rec.PrincipalID,
+		Mode:        rec.Mode,
+	}
+	if rec.Data != nil {
+		view.DisplayName = rec.Data["display_name"]
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(view)
 }
