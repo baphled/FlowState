@@ -12,6 +12,7 @@ import {
 import type { GroupedMessageEntry } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import ContextUsageChip from '@/components/chat/ContextUsageChip.vue'
+import QuotaChip from '@/components/chat/QuotaChip.vue'
 import CriticalErrorBanner from '@/components/chat/CriticalErrorBanner.vue'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import MessageInput from '@/components/chat/MessageInput.vue'
@@ -592,6 +593,7 @@ onBeforeUnmount(() => {
           {{ chatStore.currentProviderId }}
         </span>
         <ContextUsageChip />
+        <QuotaChip />
         <ModelPicker :readonly="isChildSession" />
         <!--
           UI Parity PR6 — Collapse all / Expand all (I4 extension). Bulk

@@ -19,6 +19,7 @@ import { recordStreamEvent } from '@/lib/streamLog'
 import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEvent'
 import { dismissToast, showToast, updateToast } from '@/composables/useToast'
 import { useTodoStore } from './todoStore'
+import { useQuotaStore } from './quotaStore'
 
 const activeSessionStorageKey = 'chat.currentSessionId'
 const activeAgentStorageKey = 'chat.agentId'
@@ -2433,6 +2434,17 @@ export const useChatStore = defineStore('chat', {
             // events that pre-date the field.
             trigger: event.trigger,
           })
+          return
+        case 'provider_quota':
+          // Provider Quota and Spend Visibility plan (May 2026) PR4a.
+          // The engine emits provider_quota inline (before reply) and
+          // post-turn (after streamWithToolLoop), mirroring the
+          // context_usage cadence at engine.go:2519-2533 (Stream).
+          // Route to the quotaStore unconditionally — the chip is
+          // provider+model scoped, not session scoped, so a fresh
+          // event for any session updates the same store key the
+          // chip is reading.
+          useQuotaStore().applyProviderQuotaEvent(event)
           return
         case 'streaming_heartbeat':
           // Streaming Coherence Slice F (May 2026) — adaptive watchdog.
