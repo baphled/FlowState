@@ -9,10 +9,14 @@ import (
 )
 
 // NotConfiguredAdapter is the canonical adapter for providers that
-// ship NotConfigured for the v1 quota surface — either temporarily
-// ("awaiting-pr3" for the openaicompat-inheriting providers whose
-// success-path lift is PR3 territory) or permanently
-// ("subscription-only" for copilot, "local-model" for ollama).
+// ship NotConfigured for the v1 quota surface — permanently:
+// "subscription-only" for copilot, "local-model" for ollama.
+//
+// Per PR3 (commit history: this file lost its "awaiting-pr3"
+// constituency when openai/openzen/zai/ollamacloud graduated to real
+// per-provider RateLimit adapters via the openai-compat success-path
+// lift). The "awaiting-pr3" string remains documented in the reason
+// table below as a historical marker; no production code emits it.
 //
 // The adapter satisfies the Quota interface (Remaining / RecordResponse)
 // with a fixed Snapshot. RecordResponse is a no-op — the provider
@@ -36,11 +40,13 @@ type NotConfiguredAdapter struct {
 //
 // reason MUST be one of the documented strings at line 207 of the
 // plan + per-provider matrix:
-//   - "local-model"
-//   - "no-quota-headers"
-//   - "subscription-only"
-//   - "awaiting-pr3"
-//   - "unknown-model:<id>"
+//   - "local-model"            — ollama (no remote quota concept)
+//   - "subscription-only"      — copilot (no public per-request meter)
+//   - "no-quota-headers"       — reserved for future providers
+//   - "unknown-model:<id>"     — fallback when a registry lookup fails
+//   - "awaiting-pr3"           — HISTORICAL ONLY; the four openai-
+//     compat-routed providers used this string from PR1 until PR3
+//     graduated them to real adapters. No production code emits it.
 //
 // Other strings compile but break the chip's tooltip rendering.
 func NewNotConfiguredAdapter(providerID, accountHash, reason string) *NotConfiguredAdapter {

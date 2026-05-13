@@ -10,17 +10,32 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/copilot"
 	"github.com/baphled/flowstate/internal/provider/ollama"
-	"github.com/baphled/flowstate/internal/provider/ollamacloud"
-	"github.com/baphled/flowstate/internal/provider/openai"
-	"github.com/baphled/flowstate/internal/provider/openzen"
 	"github.com/baphled/flowstate/internal/provider/quota"
-	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
 var _ = Describe("Per-provider quota fidelity matrix (plan lines 141-149)", func() {
-	// One row per provider that ships NotConfigured in PR1.
-	// Anthropic is NOT in this matrix because PR1 ships the
-	// success-path RateLimit lift for it — see anthropic/quota_test.go.
+	// One row per provider that ships NotConfigured **permanently**.
+	//
+	// History:
+	//   - PR1 seeded six rows: anthropic (lifted to RateLimit by
+	//     PR1 itself); openai/openzen/zai/ollamacloud (placeholder
+	//     "awaiting-pr3" until PR3 lifts the openaicompat shared
+	//     parser to the success path); ollama (local, no quota);
+	//     copilot (subscription, no public meter).
+	//   - PR3 (this slice, May 2026) lifts the four openai-compat-
+	//     routed providers to real RateLimit adapters — their pinning
+	//     moves out of this matrix into per-package quota_test.go
+	//     suites (openai/quota_test.go, openzen/quota_test.go,
+	//     zai/quota_test.go, ollamacloud/quota_test.go), each
+	//     mirroring the anthropic/quota_test.go shape.
+	//   - This matrix now pins only the two PERMANENT NotConfigured
+	//     adapters: ollama (local model, no rate-limit concept) and
+	//     copilot (subscription-only, no per-request meter — plan
+	//     line 149).
+	//
+	// Behaviour pin: any future regression that flips ollama or
+	// copilot to a "real" adapter must explicitly remove the row here
+	// and add a new per-package suite — silent drift is impossible.
 	type matrixRow struct {
 		providerID     string
 		expectedReason string
@@ -28,12 +43,6 @@ var _ = Describe("Per-provider quota fidelity matrix (plan lines 141-149)", func
 	}
 
 	rows := []matrixRow{
-		// openai/openzen/zai/ollamacloud are openaicompat-inheriting
-		// providers blocked on PR3's success-path lift.
-		{"openai", "awaiting-pr3", openai.NewQuota},
-		{"openzen", "awaiting-pr3", openzen.NewQuota},
-		{"zai", "awaiting-pr3", zai.NewQuota},
-		{"ollamacloud", "awaiting-pr3", ollamacloud.NewQuota},
 		// ollama is local — no quota concept ever.
 		{"ollama", "local-model", ollama.NewQuota},
 		// copilot is subscription-only — no per-request meter.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
@@ -17,6 +18,46 @@ var errAPIKeyRequired = errors.New("OpenAI API key is required")
 // Provider implements the provider.Provider interface for OpenAI.
 type Provider struct {
 	client openaiAPI.Client
+
+	// responseObserver is called on every 2xx (success-path) response
+	// from Chat or the stream handshake with the response headers.
+	// Nil by default — set via SetResponseObserver from the per-
+	// provider quota.go adapter (PR3 of the Provider Quota and Spend
+	// Visibility plan; mirrors anthropic.Provider's same field from
+	// PR1, commit 36cee69c).
+	//
+	// Per memory feedback_grep_for_behaviour_pinning_before_red: the
+	// existing error-path RateLimit parsing inside openaicompat
+	// (extractRateLimitHeadersFromError) stays unchanged; this is an
+	// additive observer that lights up success-path parsing without
+	// flipping the error-path contract.
+	responseObserver func(http.Header)
+}
+
+// SetResponseObserver registers a callback the Provider invokes on
+// every 2xx response with the response headers. Passing nil clears
+// the observer (defensive — engine reconfigures may unwire and
+// rewire the adapter).
+//
+// Mirrors anthropic.Provider.SetResponseObserver from Quota PR1.
+//
+// Concurrency: in v1 the observer is set once at boot and never
+// changes during a session, so no locking is needed. v2 hot-reload
+// work will need to revisit this seam.
+func (p *Provider) SetResponseObserver(fn func(http.Header)) {
+	p.responseObserver = fn
+}
+
+// notifyResponseObserver invokes the registered observer with the
+// response headers iff: (a) an observer is registered, AND (b) the
+// raw response pointer is non-nil (defensive — SDK contract is to
+// populate it before returning, but a nil here would crash the
+// happy path).
+func (p *Provider) notifyResponseObserver(raw *http.Response) {
+	if p.responseObserver == nil || raw == nil {
+		return
+	}
+	p.responseObserver(raw.Header)
 }
 
 // New creates a new OpenAI provider with the given API key.
@@ -95,7 +136,12 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 		return nil, err
 	}
 	params := openaicompat.BuildParams(req)
-	return openaicompat.RunStream(ctx, p.client, params, p.Name()), nil
+	// PR3 success-path lift: thread the quota response observer (if
+	// bound) through openaicompat.RunStreamWithObserver so the chip's
+	// live RateLimit Snapshot updates on the streaming handshake, not
+	// just on error returns. Observer is nil-safe (passing nil is
+	// identical to the legacy RunStream).
+	return openaicompat.RunStreamWithObserver(ctx, p.client, params, p.Name(), p.responseObserver), nil
 }
 
 // Chat sends a non-streaming chat request to the OpenAI API.
@@ -118,10 +164,27 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		return provider.ChatResponse{}, err
 	}
 	params := openaicompat.BuildParams(req)
-	resp, err := p.client.Chat.Completions.New(ctx, params)
+
+	// PR3 success-path lift: when an observer is bound, ask the SDK to
+	// populate rawResp so we can hand the response headers to the
+	// quota observer once the 2xx returns. Mirrors
+	// anthropic.go:Chat:441-463.
+	var rawResp *http.Response
+	var chatOpts []option.RequestOption
+	if p.responseObserver != nil {
+		chatOpts = append(chatOpts, option.WithResponseInto(&rawResp))
+	}
+
+	resp, err := p.client.Chat.Completions.New(ctx, params, chatOpts...)
 	if err != nil {
 		return provider.ChatResponse{}, openaicompat.WrapChatError(p.Name(), err)
 	}
+
+	// Success path: notify the quota observer before returning so the
+	// chip's Snapshot is fresh on every 2xx response, not just on the
+	// 429 error path.
+	p.notifyResponseObserver(rawResp)
+
 	return openaicompat.ParseChatResponse(resp)
 }
 

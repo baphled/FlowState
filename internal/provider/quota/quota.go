@@ -237,12 +237,17 @@ type TokenSpendVariant struct {
 //   - "no-quota-headers"      — proxy strips rate-limit headers.
 //   - "subscription-only"     — copilot (subscription model; no
 //     per-request meter or monthly token cap).
-//   - "awaiting-pr3"          — openaicompat success-path lift not yet
-//     shipped (PR3 territory).
+//   - "awaiting-first-response" — per-provider real adapter has not
+//     yet observed a 2xx response (post-PR3 for the openai-compat
+//     providers; anthropic from PR1).
 //   - "unknown-model:<id>"    — pricing table missing this model.
 //   - "no-adapter-registered" — Tracker.Lookup fallback for a provider
 //     that has not bound a quota adapter (e.g. third-party plugins).
 //     Emitted by tracker.go:71-76.
+//
+// Historical: "awaiting-pr3" was emitted by the four openai-compat-
+// routed providers between PR1 (commit ef40f9b0) and PR3 (this slice).
+// No production code emits it post-PR3 — see notconfigured.go.
 type NotConfiguredVariant struct {
 	Reason string
 }
