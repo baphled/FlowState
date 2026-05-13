@@ -11,6 +11,7 @@ package quota_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -837,3 +838,248 @@ var _ = Describe("Tracker.Lookup PR1/PR3 behaviour-pin (must not regress)", func
 		}).NotTo(Panic())
 	})
 })
+
+// PR6 — persisted cache + LoadSpend hydration specs. Pins the
+// serialisation contract (MarshalCache / UnmarshalCache + v1 envelope
+// tag) and the boot-time round-trip the app ticker performs.
+//
+// Plan §"Rollout Plan" PR6 row 430 — "JSON-on-disk persistence via
+// HealthManager pattern (versioned envelope), versioned schema (v1),
+// boot-time load of persisted state."
+var _ = Describe("Tracker cache round-trip (PR6 — cache.go (MarshalCache, UnmarshalCache, LoadSpend))", func() {
+	var (
+		ctx      context.Context
+		resolver *stubPricingResolver
+		mem      *memorySpendStore
+		tracker  *quota.Tracker
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		resolver = newStubPricingResolver()
+		mem = newMemorySpendStore()
+		tracker = quota.NewTrackerWithSpend("memory", resolver, mem, time.Now)
+	})
+
+	Context("MarshalCache / UnmarshalCache (cache.go (MarshalCache))", func() {
+		It("round-trips TokenSpend snapshots without loss across encode/decode", func() {
+			resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+			capCfg := quota.CapConfig{
+				Cap:    quota.Money{Amount: 5000, Currency: "USD"},
+				Period: "monthly",
+			}
+			err := tracker.RecordSpend(ctx, quota.SpendRecord{
+				Provider:    "anthropic",
+				Model:       "claude-opus-4-7",
+				AccountHash: "acc-A",
+				RequestID:   "req-1",
+				Usage:       &provider.UsageDelta{InputTokens: 1_000_000, OutputTokens: 1_000_000, RequestID: "req-1"},
+				CapConfig:   capCfg,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := tracker.Snapshots(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
+
+			now := time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+			data, err := quota.MarshalCache(entries, now)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(data).NotTo(BeEmpty())
+
+			// Decode back and rebuild a fresh tracker — the LoadSpend
+			// path must hydrate to byte-identical TokenSpend figures.
+			decoded, err := quota.UnmarshalCache(data)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(decoded).To(HaveLen(1))
+
+			fresh := quota.NewTrackerWithSpend("memory", resolver, newMemorySpendStore(), time.Now)
+			Expect(fresh.LoadSpend(ctx, decoded)).To(Succeed())
+
+			snap, ok := fresh.LookupSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+			Expect(ok).To(BeTrue())
+			Expect(snap.TokenSpend).NotTo(BeNil())
+			Expect(snap.TokenSpend.Spent.Amount).To(Equal(entries[0].Snapshot.TokenSpend.Spent.Amount),
+				"hydrated spent amount MUST equal the persisted figure")
+			Expect(snap.TokenSpend.Spent.Currency).To(Equal("USD"))
+			Expect(snap.TokenSpend.PricingSource).To(Equal(entries[0].Snapshot.TokenSpend.PricingSource))
+		})
+
+		It("filters non-TokenSpend variants out of the persisted envelope (OD-2)", func() {
+			// Hand-build a RateLimit + TokenSpend mix and pass through
+			// MarshalCache. Only the TokenSpend row should survive —
+			// RateLimit variants reset on the provider's own clock and
+			// are pointless to persist.
+			entries := []quota.SpendStoreEntry{
+				{
+					Key: quota.SpendStoreKey{ProviderID: "anthropic", AccountHash: "acc-A", ModelID: "ignored"},
+					Snapshot: quota.Snapshot{
+						Provider: "anthropic",
+						RateLimit: &quota.RateLimitVariant{
+							TightestPercentRemaining: 50,
+						},
+					},
+				},
+				{
+					Key: quota.SpendStoreKey{ProviderID: "openai", AccountHash: "acc-A", ModelID: "gpt-4o"},
+					Snapshot: quota.Snapshot{
+						Provider: "openai",
+						TokenSpend: &quota.TokenSpendVariant{
+							Spent: quota.Money{Amount: 42, Currency: "USD"},
+						},
+					},
+				},
+				{
+					Key: quota.SpendStoreKey{ProviderID: "ollama", AccountHash: "", ModelID: "llama3"},
+					Snapshot: quota.Snapshot{
+						Provider:      "ollama",
+						NotConfigured: &quota.NotConfiguredVariant{Reason: "local-model"},
+					},
+				},
+			}
+
+			data, err := quota.MarshalCache(entries, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+
+			decoded, err := quota.UnmarshalCache(data)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(decoded).To(HaveLen(1),
+				"OD-2: only TokenSpend variants persist; RateLimit + NotConfigured are filtered")
+			Expect(decoded[0].Snapshot.TokenSpend).NotTo(BeNil())
+			Expect(decoded[0].Snapshot.TokenSpend.Spent.Amount).To(Equal(int64(42)))
+		})
+
+		It("stamps the v1 envelope tag on every Marshal", func() {
+			data, err := quota.MarshalCache(nil, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			// Decode into a CacheEnvelope to confirm the tag.
+			var env quota.CacheEnvelope
+			Expect(jsonUnmarshalForTest(data, &env)).To(Succeed())
+			Expect(env.Version).To(Equal(quota.CacheEnvelopeVersion))
+			Expect(env.Version).To(Equal("v1"))
+		})
+
+		It("returns ErrUnknownCacheVersion when the envelope tag is unrecognised", func() {
+			// Hand-build a future-v2 envelope. The current loader must
+			// not panic and must surface a sentinel the app wireup can
+			// errors.Is against.
+			future := []byte(`{"version":"v2","saved_at":"2026-05-13T12:00:00Z","snapshots":[]}`)
+			_, err := quota.UnmarshalCache(future)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, quota.ErrUnknownCacheVersion)).To(BeTrue(),
+				"app wireup compares with errors.Is to log+degrade to empty Tracker")
+		})
+
+		It("returns a wrapped JSON error on malformed bytes", func() {
+			_, err := quota.UnmarshalCache([]byte("{not valid json"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("quota:"))
+		})
+
+		It("returns (nil, nil) on empty input — first-boot path", func() {
+			entries, err := quota.UnmarshalCache(nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(BeNil())
+
+			entries, err = quota.UnmarshalCache([]byte{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(BeNil())
+		})
+	})
+
+	Context("LoadSpend (cache.go (LoadSpend))", func() {
+		It("no-ops when the Tracker has no spend wiring", func() {
+			// NewTracker constructor — spend is nil.
+			bare := quota.NewTracker("memory")
+			err := bare.LoadSpend(ctx, []quota.SpendStoreEntry{
+				{
+					Key: quota.SpendStoreKey{ProviderID: "anthropic", ModelID: "claude-opus-4-7"},
+					Snapshot: quota.Snapshot{
+						TokenSpend: &quota.TokenSpendVariant{
+							Spent: quota.Money{Amount: 1, Currency: "USD"},
+						},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred(),
+				"LoadSpend on a no-spend Tracker MUST be a quiet no-op (mirrors RecordSpend)")
+		})
+
+		It("skips entries that have a nil TokenSpend variant on hydrate", func() {
+			// LoadSpend must defend against malformed cache files in
+			// case the writer ever leaks a RateLimit row in.
+			err := tracker.LoadSpend(ctx, []quota.SpendStoreEntry{
+				{
+					Key: quota.SpendStoreKey{ProviderID: "anthropic", AccountHash: "acc-A", ModelID: "claude-opus-4-7"},
+					Snapshot: quota.Snapshot{
+						RateLimit: &quota.RateLimitVariant{TightestPercentRemaining: 50},
+					},
+				},
+				{
+					Key: quota.SpendStoreKey{ProviderID: "openai", AccountHash: "acc-A", ModelID: "gpt-4o"},
+					Snapshot: quota.Snapshot{
+						TokenSpend: &quota.TokenSpendVariant{
+							Spent: quota.Money{Amount: 42, Currency: "USD"},
+						},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Only the TokenSpend row should be queryable.
+			_, anthropicOK := tracker.LookupSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+			Expect(anthropicOK).To(BeFalse(),
+				"RateLimit row in the input MUST be filtered out by LoadSpend")
+			openaiSnap, openaiOK := tracker.LookupSpend(ctx, "openai", "acc-A", "gpt-4o")
+			Expect(openaiOK).To(BeTrue())
+			Expect(openaiSnap.TokenSpend.Spent.Amount).To(Equal(int64(42)))
+		})
+
+		It("preserves period boundaries across the round-trip so rollover stays deterministic", func() {
+			// A persisted Snapshot in the CURRENT period must hydrate
+			// to the same period boundaries — the auto-reset logic in
+			// LookupSpend triggers on `now >= PeriodEnd`, so a sloppy
+			// hydrate that loses PeriodEnd would either fire a spurious
+			// reset (PeriodEnd zero) or never reset.
+			resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+			capCfg := quota.CapConfig{Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"}
+			err := tracker.RecordSpend(ctx, quota.SpendRecord{
+				Provider: "anthropic", Model: "claude-opus-4-7", AccountHash: "acc-A",
+				RequestID: "r1",
+				Usage:     &provider.UsageDelta{InputTokens: 1_000_000, OutputTokens: 1_000_000, RequestID: "r1"},
+				CapConfig: capCfg,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, err := tracker.Snapshots(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
+			origPeriodStart := entries[0].Snapshot.TokenSpend.PeriodStart
+			origPeriodEnd := entries[0].Snapshot.TokenSpend.PeriodEnd
+			Expect(origPeriodEnd).NotTo(BeZero())
+
+			data, err := quota.MarshalCache(entries, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			decoded, err := quota.UnmarshalCache(data)
+			Expect(err).NotTo(HaveOccurred())
+
+			fresh := quota.NewTrackerWithSpend("memory", resolver, newMemorySpendStore(), time.Now)
+			Expect(fresh.LoadSpend(ctx, decoded)).To(Succeed())
+
+			snap, ok := fresh.LookupSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+			Expect(ok).To(BeTrue())
+			Expect(snap.TokenSpend.PeriodStart.Equal(origPeriodStart)).To(BeTrue(),
+				"PeriodStart MUST round-trip exactly — auto-reset rollover depends on it")
+			Expect(snap.TokenSpend.PeriodEnd.Equal(origPeriodEnd)).To(BeTrue(),
+				"PeriodEnd MUST round-trip exactly")
+		})
+	})
+})
+
+// jsonUnmarshalForTest is the encoding/json indirection the PR6
+// envelope-tag spec uses to confirm the v1 tag is stamped on every
+// Marshal. Kept narrow so the rest of the spend suite continues to
+// rely on Gomega's matchers rather than raw JSON decoding.
+func jsonUnmarshalForTest(data []byte, v any) error {
+	return json.Unmarshal(data, v)
+}
