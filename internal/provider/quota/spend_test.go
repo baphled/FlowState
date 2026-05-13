@@ -548,6 +548,275 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 	})
 })
 
+// REV-3 backfill — direct specs for Tracker.Snapshots (spend.go:568)
+// and Tracker.ResetSpend (spend.go:616). The PR5 functional code
+// shipped with only shim methods on the test store; this Describe
+// block pins the Tracker behaviour itself.
+var _ = Describe("Tracker.Snapshots (PR5 dashboard aggregator — spend.go:568 (Tracker.Snapshots))", func() {
+	var (
+		ctx      context.Context
+		resolver *stubPricingResolver
+		mem      *memorySpendStore
+		tracker  *quota.Tracker
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		resolver = newStubPricingResolver()
+		mem = newMemorySpendStore()
+		tracker = quota.NewTrackerWithSpend("memory", resolver, mem, time.Now)
+	})
+
+	It("returns nil when no spend wiring (PR1/PR3 NewTracker path)", func() {
+		pr1Tracker := quota.NewTracker("memory")
+		rows, err := pr1Tracker.Snapshots(ctx)
+		Expect(err).NotTo(HaveOccurred(),
+			"PR1 tracker without spend layer MUST be a quiet no-op so the engine's QuotaSnapshots wrapper degrades cleanly")
+		Expect(rows).To(BeEmpty())
+	})
+
+	It("returns an empty slice when the underlying store has no entries", func() {
+		rows, err := tracker.Snapshots(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rows).To(BeEmpty(),
+			"empty store MUST be (empty slice, nil error) — dashboard renders [] rather than 500")
+	})
+
+	It("returns one row per recorded (provider, account, model) tuple (single + multi-row)", func() {
+		resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+		resolver.seed("openai", "gpt-4o", "USD", 2.50, 10.00)
+		capCfg := quota.CapConfig{Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"}
+
+		// Single row first.
+		err := tracker.RecordSpend(ctx, quota.SpendRecord{
+			Provider: "anthropic", Model: "claude-opus-4-7", AccountHash: "acc-A",
+			RequestID: "r1",
+			Usage:     &provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r1"},
+			CapConfig: capCfg,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		rows, err := tracker.Snapshots(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].Key.ProviderID).To(Equal("anthropic"))
+		Expect(rows[0].Key.AccountHash).To(Equal("acc-A"))
+		Expect(rows[0].Key.ModelID).To(Equal("claude-opus-4-7"))
+		Expect(rows[0].Snapshot.TokenSpend).NotTo(BeNil())
+
+		// Add a second row on a distinct (provider, model) — Snapshots
+		// MUST surface both.
+		err = tracker.RecordSpend(ctx, quota.SpendRecord{
+			Provider: "openai", Model: "gpt-4o", AccountHash: "acc-B",
+			RequestID: "r2",
+			Usage:     &provider.UsageDelta{InputTokens: 500, OutputTokens: 1000, RequestID: "r2"},
+			CapConfig: capCfg,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		rows, err = tracker.Snapshots(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rows).To(HaveLen(2))
+	})
+
+	It("preserves multi-account-per-provider row separation (R2 fold headline behaviour — commit db789ba6)", func() {
+		// R2 fold (commit db789ba6): pre-PR5 the storeKey shim ignored
+		// the Tracker and produced an empty-account key, collapsing
+		// every account on a provider into one Snapshot row.
+		// Snapshots MUST surface distinct accounts on the same
+		// (provider, model) as distinct rows — the dashboard renders
+		// them as separate cards in multi-account deployments.
+		resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+		capCfg := quota.CapConfig{Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"}
+
+		// Two writes — same provider + model, different accountHash.
+		err := tracker.RecordSpend(ctx, quota.SpendRecord{
+			Provider: "anthropic", Model: "claude-opus-4-7", AccountHash: "acc-A",
+			RequestID: "r-A",
+			Usage:     &provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r-A"},
+			CapConfig: capCfg,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		err = tracker.RecordSpend(ctx, quota.SpendRecord{
+			Provider: "anthropic", Model: "claude-opus-4-7", AccountHash: "acc-B",
+			RequestID: "r-B",
+			Usage:     &provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r-B"},
+			CapConfig: capCfg,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		rows, err := tracker.Snapshots(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(rows).To(HaveLen(2),
+			"two accounts on the same (provider, model) MUST surface as two rows — pre-R2 they collapsed to one bucket")
+
+		seen := map[string]bool{}
+		for _, row := range rows {
+			Expect(row.Key.ProviderID).To(Equal("anthropic"))
+			Expect(row.Key.ModelID).To(Equal("claude-opus-4-7"))
+			seen[row.Key.AccountHash] = true
+		}
+		Expect(seen["acc-A"]).To(BeTrue(), "acc-A row present and distinct")
+		Expect(seen["acc-B"]).To(BeTrue(), "acc-B row present and distinct")
+	})
+
+	It("propagates a Store List error verbatim", func() {
+		// Engine.QuotaSnapshots suppresses to empty; here we pin that
+		// the Tracker propagates the error verbatim so the engine can
+		// log it before suppressing. Drive via a shim whose List
+		// always errors.
+		listErr := errors.New("simulated store list failure")
+		erroringTracker := quota.NewTrackerWithSpend("memory", resolver, &errorListShim{listErr: listErr}, time.Now)
+		rows, err := erroringTracker.Snapshots(ctx)
+		Expect(err).To(MatchError(listErr),
+			"Tracker.Snapshots MUST surface Store.List errors verbatim so the engine layer can log them")
+		Expect(rows).To(BeNil())
+	})
+})
+
+var _ = Describe("Tracker.ResetSpend (PR5 dashboard reset — spend.go:616 (Tracker.ResetSpend))", func() {
+	var (
+		ctx      context.Context
+		resolver *stubPricingResolver
+		mem      *memorySpendStore
+		tracker  *quota.Tracker
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		resolver = newStubPricingResolver()
+		mem = newMemorySpendStore()
+		tracker = quota.NewTrackerWithSpend("memory", resolver, mem, time.Now)
+	})
+
+	It("returns (false, nil) on a tracker without spend wiring", func() {
+		pr1Tracker := quota.NewTracker("memory")
+		found, err := pr1Tracker.ResetSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse(),
+			"PR1 tracker MUST be a quiet no-op so the engine's ResetQuotaSpend wrapper degrades cleanly")
+	})
+
+	It("returns (false, nil) when the key has no recorded snapshot", func() {
+		// No RecordSpend call — Store.Get surfaces SpendStoreErrNotFound
+		// which ResetSpend maps to (false, nil) so the handler returns
+		// 404 rather than 500.
+		found, err := tracker.ResetSpend(ctx, "anthropic", "acc-A", "unknown-model")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
+	It("returns (true, nil) on a successful reset and clears the underlying Snapshot", func() {
+		resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+		capCfg := quota.CapConfig{Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"}
+		err := tracker.RecordSpend(ctx, quota.SpendRecord{
+			Provider: "anthropic", Model: "claude-opus-4-7", AccountHash: "acc-A",
+			RequestID: "r",
+			Usage:     &provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r"},
+			CapConfig: capCfg,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		found, err := tracker.ResetSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue(),
+			"recorded snapshot MUST surface (true, nil) — handler maps to 200")
+
+		// Underlying store row gone — a follow-up reset is (false, nil).
+		found2, err := tracker.ResetSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found2).To(BeFalse(),
+			"resetting an already-reset key is (false, nil) — handler maps to 404")
+	})
+
+	It("propagates Store impl errors verbatim", func() {
+		// Drive a Tracker whose Store.Get returns a non-NotFound error;
+		// ResetSpend surfaces that error so the handler can map to 500.
+		getErr := errors.New("simulated store get failure")
+		erroringTracker := quota.NewTrackerWithSpend("memory", resolver, &errorGetShim{getErr: getErr}, time.Now)
+		found, err := erroringTracker.ResetSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+		Expect(err).To(MatchError(getErr),
+			"non-NotFound Store errors MUST propagate so the handler can surface 500")
+		Expect(found).To(BeFalse())
+	})
+
+	It("partitions the reset by (provider, account, model) — does not touch peer rows", func() {
+		// R2 fold corollary: resetting acc-A's spend MUST leave acc-B's
+		// spend untouched. Pre-R2 the empty-account collapse would have
+		// also broken this — both rows shared a bucket.
+		resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+		capCfg := quota.CapConfig{Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"}
+		for _, acct := range []string{"acc-A", "acc-B"} {
+			err := tracker.RecordSpend(ctx, quota.SpendRecord{
+				Provider: "anthropic", Model: "claude-opus-4-7", AccountHash: acct,
+				RequestID: "r-" + acct,
+				Usage:     &provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r-" + acct},
+				CapConfig: capCfg,
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		found, err := tracker.ResetSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+
+		// acc-B's snapshot MUST survive — the dashboard reset button
+		// is per-row, not per-(provider, model). LookupSpend returns
+		// (Snapshot, bool); the bool must be true and TokenSpend must
+		// still carry the cumulative amount.
+		snapB, okB := tracker.LookupSpend(ctx, "anthropic", "acc-B", "claude-opus-4-7")
+		Expect(okB).To(BeTrue(),
+			"acc-B's spend MUST survive a reset of acc-A — partition is by (provider, account, model)")
+		Expect(snapB.TokenSpend).NotTo(BeNil())
+		Expect(snapB.TokenSpend.Spent.Amount).To(BeNumerically(">", int64(0)),
+			"acc-B's cumulative spend MUST be preserved across acc-A's reset")
+
+		// And acc-A is gone — confirms the reset actually fired.
+		_, okA := tracker.LookupSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+		Expect(okA).To(BeFalse(),
+			"acc-A's spend MUST be gone after ResetSpend")
+	})
+})
+
+// errorListShim is a SpendStore whose List returns a configured error.
+// Used by the REV-3 'propagates Store List error' spec.
+type errorListShim struct {
+	listErr error
+}
+
+func (s *errorListShim) Get(_ context.Context, _ quota.SpendStoreKey) (quota.Snapshot, error) {
+	return quota.Snapshot{}, quota.SpendStoreErrNotFound
+}
+
+func (s *errorListShim) Put(_ context.Context, _ quota.SpendStoreKey, _ quota.Snapshot) error {
+	return nil
+}
+
+func (s *errorListShim) Reset(_ context.Context, _ quota.SpendStoreKey) error { return nil }
+
+func (s *errorListShim) List(_ context.Context) ([]quota.SpendStoreEntry, error) {
+	return nil, s.listErr
+}
+
+// errorGetShim is a SpendStore whose Get returns a configured non-
+// NotFound error. Used by the REV-3 'propagates Store impl errors'
+// spec on ResetSpend.
+type errorGetShim struct {
+	getErr error
+}
+
+func (s *errorGetShim) Get(_ context.Context, _ quota.SpendStoreKey) (quota.Snapshot, error) {
+	return quota.Snapshot{}, s.getErr
+}
+
+func (s *errorGetShim) Put(_ context.Context, _ quota.SpendStoreKey, _ quota.Snapshot) error {
+	return nil
+}
+
+func (s *errorGetShim) Reset(_ context.Context, _ quota.SpendStoreKey) error { return nil }
+
+func (s *errorGetShim) List(_ context.Context) ([]quota.SpendStoreEntry, error) { return nil, nil }
+
 var _ = Describe("Tracker.Lookup PR1/PR3 behaviour-pin (must not regress)", func() {
 	It("Lookup with no registered adapter and no spend recorded returns NotConfigured{no-adapter-registered}", func() {
 		// Behaviour-pin from contract_test.go:169-175 — PR4 spend overlay
