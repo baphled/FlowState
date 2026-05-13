@@ -156,7 +156,7 @@ var _ = Describe("Tracker fan-out (plan lines 215-227)", func() {
 	Context("Register + Lookup", func() {
 		It("returns the adapter's Snapshot stamped with the tracker's store backend", func() {
 			tracker.Register("anthropic", adapter)
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.StoreBackend).To(Equal("memory"),
 				"Tracker MUST stamp StoreBackend so adapters need not know the backend")
@@ -166,7 +166,7 @@ var _ = Describe("Tracker fan-out (plan lines 215-227)", func() {
 
 		It("returns NotConfigured with reason 'no-adapter-registered' for an unknown provider", func() {
 			// No Register call.
-			snap, err := tracker.Lookup(ctx, "future-provider", "future-model")
+			snap, err := tracker.Lookup(ctx, "future-provider", "", "future-model")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.NotConfigured).NotTo(BeNil())
 			Expect(snap.NotConfigured.Reason).To(Equal("no-adapter-registered"))
@@ -183,14 +183,14 @@ var _ = Describe("Tracker fan-out (plan lines 215-227)", func() {
 				},
 			}
 			tracker.Register("anthropic", replacement)
-			snap, err := tracker.Lookup(ctx, "anthropic", "x")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "x")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.NotConfigured.Reason).To(Equal("replaced"))
 		})
 
 		It("ignores a nil adapter Register call (defensive)", func() {
 			tracker.Register("anthropic", nil)
-			snap, err := tracker.Lookup(ctx, "anthropic", "x")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "x")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.NotConfigured.Reason).To(Equal("no-adapter-registered"))
 		})
@@ -234,7 +234,7 @@ var _ = Describe("Tracker fan-out (plan lines 215-227)", func() {
 				}()
 				go func() {
 					defer wg.Done()
-					_, _ = tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+					_, _ = tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 				}()
 				go func() {
 					defer wg.Done()
@@ -243,7 +243,7 @@ var _ = Describe("Tracker fan-out (plan lines 215-227)", func() {
 			}
 			wg.Wait()
 			// Sanity: tracker still functional.
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.IsValid()).To(BeTrue())
 		})
@@ -261,7 +261,7 @@ var _ = Describe("StoreBackend disclosure (plan B3 fold, lines 285-293)", func()
 		t.Register("anthropic", &stubAdapter{
 			snap: quota.Snapshot{NotConfigured: &quota.NotConfiguredVariant{Reason: "x"}},
 		})
-		snap, err := t.Lookup(context.Background(), "anthropic", "x")
+		snap, err := t.Lookup(context.Background(), "anthropic", "", "x")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.StoreBackend).To(Equal("postgres"))
 	})
@@ -301,7 +301,7 @@ var _ = Describe("PricingSource plumbing (plan §Pricing table line 199, PR2 wir
 	It("NewTracker (no resolver) leaves PricingSource empty — PR1 behaviour preserved", func() {
 		t := quota.NewTracker("memory")
 		t.Register("anthropic", adapter)
-		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		snap, err := t.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.PricingSource).To(BeEmpty(),
 			"Trackers built via NewTracker (the PR1 entry point) MUST leave PricingSource empty so the wire shape stays backward-compatible")
@@ -313,7 +313,7 @@ var _ = Describe("PricingSource plumbing (plan §Pricing table line 199, PR2 wir
 		}}
 		t := quota.NewTrackerWithPricing("memory", resolver)
 		t.Register("anthropic", adapter)
-		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		snap, err := t.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.PricingSource).To(Equal("flowstate-default-v1"),
 			"Tracker MUST stamp Snapshot.PricingSource from the resolver — adapters must not need to know about pricing tiers")
@@ -325,7 +325,7 @@ var _ = Describe("PricingSource plumbing (plan §Pricing table line 199, PR2 wir
 		}}
 		t := quota.NewTrackerWithPricing("memory", resolver)
 		t.Register("anthropic", adapter)
-		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		snap, err := t.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.PricingSource).To(Equal("registry:https://prices.example/v1.json"))
 	})
@@ -336,7 +336,7 @@ var _ = Describe("PricingSource plumbing (plan §Pricing table line 199, PR2 wir
 		}}
 		t := quota.NewTrackerWithPricing("memory", resolver)
 		t.Register("anthropic", adapter)
-		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		snap, err := t.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.PricingSource).To(Equal("operator-override:/etc/flowstate/pricing.json"))
 	})
@@ -348,7 +348,7 @@ var _ = Describe("PricingSource plumbing (plan §Pricing table line 199, PR2 wir
 		}}
 		t := quota.NewTrackerWithPricing("memory", resolver)
 		t.Register("anthropic", adapter)
-		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		snap, err := t.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.PricingSource).To(BeEmpty(),
 			"resolver miss MUST leave PricingSource empty — the PR4 adapter then surfaces NotConfigured{Reason:'unknown-model:<id>'} per plan §Pricing table line 388")
@@ -375,9 +375,185 @@ var _ = Describe("PricingSource plumbing (plan §Pricing table line 199, PR2 wir
 		}}
 		t := quota.NewTrackerWithPricing("memory", resolver)
 		t.Register("anthropic", adapter)
-		snap, err := t.Lookup(ctx, "anthropic", "")
+		snap, err := t.Lookup(ctx, "anthropic", "", "")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.PricingSource).To(BeEmpty(),
 			"empty modelID MUST short-circuit the resolver — account-wide snapshots have no per-model price")
 	})
 })
+
+// PR5 R2 fold (plan §"Vue integration" + PR4 review R2 — Tracker.Lookup
+// MUST thread AccountHash so multi-account-per-provider deployments do
+// not silently merge into one bucket). Pre-PR5 the storeKey shim ignored
+// the Tracker and produced an empty-account key, collapsing every
+// account on a provider into one Snapshot row. This Describe block pins
+// the new behaviour.
+var _ = Describe("Tracker.Lookup AccountHash threading (PR5 R2 fold)", func() {
+	var ctx context.Context
+
+	BeforeEach(func() {
+		ctx = context.Background()
+	})
+
+	It("stamps the supplied accountHash on the no-adapter-registered fallback", func() {
+		t := quota.NewTracker("memory")
+		snap, err := t.Lookup(ctx, "future-provider", "acct-abc12345", "future-model")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.AccountHash).To(Equal("acct-abc12345"),
+			"Tracker.Lookup MUST stamp the supplied accountHash on the no-adapter fallback so multi-account dashboards can drill into per-account rows")
+		Expect(snap.NotConfigured).NotTo(BeNil())
+		Expect(snap.NotConfigured.Reason).To(Equal("no-adapter-registered"))
+	})
+
+	It("stamps the supplied accountHash on the adapter path when the adapter left it empty", func() {
+		t := quota.NewTracker("memory")
+		t.Register("anthropic", &stubAdapter{
+			snap: quota.Snapshot{
+				Provider: "anthropic",
+				Model:    "claude-opus-4-7",
+				// AccountHash deliberately empty — most adapters do
+				// not stamp this themselves; the Tracker fills it.
+				NotConfigured: &quota.NotConfiguredVariant{Reason: "awaiting-first-response"},
+			},
+		})
+		snap, err := t.Lookup(ctx, "anthropic", "acct-rotated-key", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.AccountHash).To(Equal("acct-rotated-key"),
+			"Tracker.Lookup MUST stamp the supplied accountHash when the adapter does not")
+	})
+
+	It("preserves the adapter's AccountHash when the adapter set it itself", func() {
+		t := quota.NewTracker("memory")
+		t.Register("anthropic", &stubAdapter{
+			snap: quota.Snapshot{
+				Provider:      "anthropic",
+				AccountHash:   "adapter-set-hash",
+				Model:         "claude-opus-4-7",
+				NotConfigured: &quota.NotConfiguredVariant{Reason: "x"},
+			},
+		})
+		snap, err := t.Lookup(ctx, "anthropic", "caller-supplied-hash", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.AccountHash).To(Equal("adapter-set-hash"),
+			"Tracker MUST NOT overwrite an adapter-set AccountHash — adapters that know their own account take precedence")
+	})
+
+	It("tolerates empty accountHash (v1 single-account-per-provider default)", func() {
+		t := quota.NewTracker("memory")
+		t.Register("anthropic", &stubAdapter{
+			snap: quota.Snapshot{
+				Provider:      "anthropic",
+				Model:         "claude-opus-4-7",
+				NotConfigured: &quota.NotConfiguredVariant{Reason: "x"},
+			},
+		})
+		snap, err := t.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.AccountHash).To(Equal(""),
+			"empty accountHash is the v1 single-account default — Tracker.Lookup MUST NOT fabricate one")
+	})
+
+	It("partitions the spend overlay by accountHash (multi-account stores stay distinct)", func() {
+		// Two accounts on the same provider+model should produce
+		// independent Snapshots from Lookup when wired through a spend
+		// store. This exercises the lookupSpendOverlay path that uses
+		// the new SpendStoreKey{Provider,Account,Model} composite key.
+		store := newMemoryStoreShim()
+		resolver := &recordedPricingResolver{}
+		tracker := quota.NewTrackerWithSpend("memory", resolver, store, nil)
+		tracker.Register("anthropic", &stubAdapter{
+			snap: quota.Snapshot{
+				NotConfigured: &quota.NotConfiguredVariant{Reason: "no-spend-yet"},
+			},
+		})
+		// Record one spend under acct-A and one under acct-B for the
+		// same (provider, model) — pre-R2 these collapsed into one
+		// bucket because storeKey ignored AccountHash. Post-R2 they
+		// must stay distinct.
+		acctA := quota.SpendStoreKey{
+			ProviderID:  "anthropic",
+			AccountHash: "acct-A",
+			ModelID:     "claude-opus-4-7",
+		}
+		acctB := quota.SpendStoreKey{
+			ProviderID:  "anthropic",
+			AccountHash: "acct-B",
+			ModelID:     "claude-opus-4-7",
+		}
+		now := time.Now()
+		_ = store.Put(ctx, acctA, quota.Snapshot{
+			Provider:    "anthropic",
+			AccountHash: "acct-A",
+			Model:       "claude-opus-4-7",
+			ObservedAt:  now,
+			TokenSpend: &quota.TokenSpendVariant{
+				Spent:       quota.Money{Amount: 100, Currency: "USD"},
+				Period:      "monthly",
+				PeriodStart: now.Add(-24 * time.Hour),
+				PeriodEnd:   now.Add(24 * time.Hour),
+			},
+		})
+		_ = store.Put(ctx, acctB, quota.Snapshot{
+			Provider:    "anthropic",
+			AccountHash: "acct-B",
+			Model:       "claude-opus-4-7",
+			ObservedAt:  now,
+			TokenSpend: &quota.TokenSpendVariant{
+				Spent:       quota.Money{Amount: 200, Currency: "USD"},
+				Period:      "monthly",
+				PeriodStart: now.Add(-24 * time.Hour),
+				PeriodEnd:   now.Add(24 * time.Hour),
+			},
+		})
+		snapA, errA := tracker.Lookup(ctx, "anthropic", "acct-A", "claude-opus-4-7")
+		Expect(errA).NotTo(HaveOccurred())
+		Expect(snapA.TokenSpend).NotTo(BeNil(),
+			"Lookup MUST resolve the acct-A TokenSpend Snapshot through the new partition key")
+		Expect(snapA.TokenSpend.Spent.Amount).To(Equal(int64(100)))
+
+		snapB, errB := tracker.Lookup(ctx, "anthropic", "acct-B", "claude-opus-4-7")
+		Expect(errB).NotTo(HaveOccurred())
+		Expect(snapB.TokenSpend).NotTo(BeNil(),
+			"Lookup MUST resolve acct-B independently — pre-R2 the empty-account collapse merged the buckets")
+		Expect(snapB.TokenSpend.Spent.Amount).To(Equal(int64(200)),
+			"acct-B's $2.00 must not be merged with acct-A's $1.00")
+	})
+})
+
+// memoryStoreShim is a minimal SpendStore impl scoped to the contract
+// spec — avoids importing the store package (would cycle) by inlining
+// the interface methods. Matches quota.SpendStore + an extra Put helper
+// for spec setup.
+type memoryStoreShim struct {
+	data map[quota.SpendStoreKey]quota.Snapshot
+}
+
+func newMemoryStoreShim() *memoryStoreShim {
+	return &memoryStoreShim{data: make(map[quota.SpendStoreKey]quota.Snapshot)}
+}
+
+func (m *memoryStoreShim) Get(_ context.Context, key quota.SpendStoreKey) (quota.Snapshot, error) {
+	snap, ok := m.data[key]
+	if !ok {
+		return quota.Snapshot{}, quota.SpendStoreErrNotFound
+	}
+	return snap, nil
+}
+
+func (m *memoryStoreShim) Put(_ context.Context, key quota.SpendStoreKey, snap quota.Snapshot) error {
+	m.data[key] = snap
+	return nil
+}
+
+// recordedPricingResolver is a no-op PricingResolver/PriceEntryResolver
+// for the partition spec — the spec doesn't drive the pricing path so
+// both methods return zero values.
+type recordedPricingResolver struct{}
+
+func (r *recordedPricingResolver) Lookup(_, _ string) (string, bool) {
+	return "", false
+}
+
+func (r *recordedPricingResolver) Entry(_, _ string) (quota.PriceEntry, bool) {
+	return quota.PriceEntry{}, false
+}

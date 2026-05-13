@@ -165,18 +165,17 @@ func (e *Engine) buildProviderQuotaChunk(ctx context.Context, req *provider.Chat
 	}
 	accountHash := e.quotaAccountHashes[req.Provider]
 	// Prefer LookupSpend (account-aware) — falls through to the
-	// adapter-driven Lookup when no TokenSpend is recorded yet.
+	// adapter-driven Lookup when no TokenSpend is recorded yet. PR5
+	// R2 fold: Lookup now also takes accountHash so the Store-overlay
+	// fallback inside Lookup uses the same partition key as the
+	// LookupSpend call above. Pre-PR5 the empty-account collapse meant
+	// multi-account deployments silently merged into one bucket.
 	snap, ok := e.quotaTracker.LookupSpend(ctx, req.Provider, accountHash, req.Model)
 	if !ok {
 		var err error
-		snap, err = e.quotaTracker.Lookup(ctx, req.Provider, req.Model)
+		snap, err = e.quotaTracker.Lookup(ctx, req.Provider, accountHash, req.Model)
 		if err != nil {
 			return provider.StreamChunk{}, false
-		}
-		// Stamp account hash post-Lookup so the chip's audit trail
-		// has it even when the adapter did not.
-		if snap.AccountHash == "" {
-			snap.AccountHash = accountHash
 		}
 	}
 	payload, ok := snapshotToPayload(snap)
@@ -241,15 +240,14 @@ func (e *Engine) buildProviderQuotaChunkExplicit(ctx context.Context, providerID
 		return provider.StreamChunk{}, false
 	}
 	accountHash := e.quotaAccountHashes[providerID]
+	// PR5 R2 fold — accountHash threaded through Lookup to match
+	// LookupSpend's partition key.
 	snap, ok := e.quotaTracker.LookupSpend(ctx, providerID, accountHash, modelID)
 	if !ok {
 		var err error
-		snap, err = e.quotaTracker.Lookup(ctx, providerID, modelID)
+		snap, err = e.quotaTracker.Lookup(ctx, providerID, accountHash, modelID)
 		if err != nil {
 			return provider.StreamChunk{}, false
-		}
-		if snap.AccountHash == "" {
-			snap.AccountHash = accountHash
 		}
 	}
 	payload, ok := snapshotToPayload(snap)

@@ -176,7 +176,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 			// 100 input × $15/M + 350 output × $75/M
 			//   = 0.0015 USD + 0.02625 USD = 0.02775 USD = 2.775 cents
 			//   rounded to nearest minor unit (cents) = 3
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.IsValid()).To(BeTrue(), "TokenSpend overlay MUST keep discriminant invariant")
 			Expect(snap.TokenSpend).NotTo(BeNil())
@@ -208,7 +208,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.TokenSpend).NotTo(BeNil())
 			Expect(snap.TokenSpend.Spent.Amount).To(Equal(int64(6)),
@@ -265,7 +265,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			snap, err := tracker.Lookup(ctx, "zai", "glm-4.6")
+			snap, err := tracker.Lookup(ctx, "zai", "", "glm-4.6")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.TokenSpend).NotTo(BeNil())
 			Expect(snap.TokenSpend.Spent.Amount).To(Equal(int64(2500)),
@@ -287,7 +287,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 				CapConfig: capCfg,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			snap, _ := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, _ := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(snap.TokenSpend.Spent.Amount).To(Equal(snap.TokenSpend.SpentUSD.Amount))
 			Expect(snap.TokenSpend.SpentUSD.Currency).To(Equal("USD"))
 		})
@@ -307,7 +307,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 			// chip surfaces the reason instead.
 			Expect(err).NotTo(HaveOccurred())
 
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-experimental")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-experimental")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.NotConfigured).NotTo(BeNil())
 			Expect(snap.NotConfigured.Reason).To(Equal("unknown-model:claude-experimental"))
@@ -329,7 +329,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 				CapConfig: capCfg,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			snap, _ := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, _ := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(snap.TokenSpend.ThresholdAmber).To(Equal(80))
 			Expect(snap.TokenSpend.ThresholdRed).To(Equal(95))
 		})
@@ -349,7 +349,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 				CapConfig: capCfg,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			snap, _ := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, _ := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(snap.TokenSpend.ThresholdAmber).To(Equal(60))
 			Expect(snap.TokenSpend.ThresholdRed).To(Equal(90))
 		})
@@ -367,7 +367,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 				CapConfig: capCfg,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			snap, _ := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, _ := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(snap.TokenSpend.Cap.IsZero()).To(BeTrue())
 			Expect(snap.TokenSpend.ThresholdAmber).To(Equal(-1),
 				"uncapped → -1 sentinel so chip stays green per OD-9 doc")
@@ -396,7 +396,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 				CapConfig: capCfg,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			snap, _ := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, _ := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(snap.TokenSpend.PeriodStart).To(Equal(time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)),
 				"monthly period starts at calendar-month boundary in UTC")
 			Expect(snap.TokenSpend.PeriodEnd).To(Equal(time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)),
@@ -407,7 +407,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 			now = time.Date(2026, 5, 2, 9, 0, 0, 0, time.UTC)
 
 			// A read alone MUST detect the rollover and reset Spent.
-			snap2, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap2, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap2.TokenSpend).NotTo(BeNil())
 			Expect(snap2.TokenSpend.Spent.Amount).To(Equal(int64(0)),
@@ -435,7 +435,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 
 			// Advance still inside April.
 			now = time.Date(2026, 4, 28, 23, 59, 0, 0, time.UTC)
-			snap, _ := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, _ := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(snap.TokenSpend.Spent.Amount).To(Equal(int64(3)),
 				"reads within the period MUST NOT reset")
 		})
@@ -461,7 +461,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 				Usage:     &provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r"},
 				CapConfig: capCfg,
 			})
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.IsValid()).To(BeTrue(), "discriminant invariant preserved")
 			Expect(snap.TokenSpend).NotTo(BeNil(),
@@ -478,7 +478,7 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 			}}
 			tracker.Register("anthropic", adapter)
 
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.RateLimit).NotTo(BeNil(),
 				"no spend recorded → adapter Snapshot passes through")
@@ -506,11 +506,11 @@ var _ = Describe("Tracker spend accumulator (PR4 — plan lines 299-318)", func(
 				}()
 				go func() {
 					defer wg.Done()
-					_, _ = tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+					_, _ = tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 				}()
 			}
 			wg.Wait()
-			snap, err := tracker.Lookup(ctx, "anthropic", "claude-opus-4-7")
+			snap, err := tracker.Lookup(ctx, "anthropic", "", "claude-opus-4-7")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap.TokenSpend).NotTo(BeNil())
 		})
@@ -523,7 +523,7 @@ var _ = Describe("Tracker.Lookup PR1/PR3 behaviour-pin (must not regress)", func
 		// MUST NOT change the no-adapter fallback path.
 		ctx := context.Background()
 		tracker := quota.NewTracker("memory")
-		snap, err := tracker.Lookup(ctx, "future-provider", "future-model")
+		snap, err := tracker.Lookup(ctx, "future-provider", "", "future-model")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(snap.NotConfigured).NotTo(BeNil())
 		Expect(snap.NotConfigured.Reason).To(Equal("no-adapter-registered"))
