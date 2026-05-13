@@ -11,6 +11,25 @@ import type {
 } from '@/types'
 import { parseError } from '@/lib/parseError'
 import { isAllowedApiHost } from '@/lib/apiHostAllowlist'
+import { withCsrfHeader } from '@/lib/csrf'
+
+// PR3 / C8 — auth coordinated change. Every fetch() in this module
+// adds `credentials: 'include'` so the browser sends the
+// `flowstate_session` cookie (and the `_csrf` cookie) cross-origin and
+// same-origin alike. Unsafe methods (POST/PUT/PATCH/DELETE) additionally
+// inject the `X-CSRF-Token` header from the _csrf cookie via
+// withCsrfHeader().
+//
+// Plan reference: FlowState API Auth Track (May 2026) §"Migration Path"
+// + §"Wire Protocol" CSRF section. Flag-gated server-side at PR3/C7 —
+// when features.auth_v1 is false (PR2/PR3 ship state), the server's
+// registerProtected helpers no-op so the extra header / cookie is
+// harmless. When PR5 flips the flag, the same call sites work without
+// further change — the load-bearing PR3 invariant.
+
+// CREDENTIALS_INCLUDE is the shared RequestCredentials literal so the
+// constant is referenced consistently across every fetch site.
+const CREDENTIALS_INCLUDE: RequestCredentials = 'include'
 
 const BASE = '/api'
 const API_HOST_STORAGE_KEY = 'flowstate-api-host'
@@ -57,7 +76,7 @@ export function joinBaseURL(path: string): string {
 }
 
 export async function fetchAgents(): Promise<Agent[]> {
-  const res = await fetch(joinBaseURL('/agents'))
+  const res = await fetch(joinBaseURL('/agents'), { credentials: CREDENTIALS_INCLUDE })
   if (!res.ok) {
     throw new Error(`Failed to fetch agents: ${res.statusText}`)
   }
@@ -65,7 +84,9 @@ export async function fetchAgents(): Promise<Agent[]> {
 }
 
 export async function fetchAgent(id: string): Promise<Agent> {
-  const res = await fetch(joinBaseURL(`/agents/${encodeURIComponent(id)}`))
+  const res = await fetch(joinBaseURL(`/agents/${encodeURIComponent(id)}`), {
+    credentials: CREDENTIALS_INCLUDE,
+  })
   if (!res.ok) {
     throw new Error(`Failed to fetch agent ${id}: ${res.statusText}`)
   }
@@ -83,7 +104,7 @@ export async function fetchAgent(id: string): Promise<Agent> {
  * GET /api/swarms specs in internal/api/server_test.go).
  */
 export async function fetchSwarms(): Promise<Swarm[]> {
-  const res = await fetch(joinBaseURL('/swarms'))
+  const res = await fetch(joinBaseURL('/swarms'), { credentials: CREDENTIALS_INCLUDE })
   if (!res.ok) {
     throw new Error(`Failed to fetch swarms: ${res.statusText}`)
   }
@@ -97,7 +118,8 @@ export async function postChat(
 ): Promise<string> {
   const res = await fetch(joinBaseURL('/chat'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ agent_id: agentId, message } as ChatRequest),
   })
 
@@ -144,7 +166,7 @@ export async function postChat(
 }
 
 export async function fetchSwarmEvents(): Promise<unknown[]> {
-  const res = await fetch(joinBaseURL('/swarm/events'))
+  const res = await fetch(joinBaseURL('/swarm/events'), { credentials: CREDENTIALS_INCLUDE })
   if (!res.ok) {
     throw new Error(`Failed to fetch swarm events: ${res.statusText}`)
   }
@@ -152,7 +174,7 @@ export async function fetchSwarmEvents(): Promise<unknown[]> {
 }
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
-  const res = await fetch(joinBaseURL('/v1/sessions'))
+  const res = await fetch(joinBaseURL('/v1/sessions'), { credentials: CREDENTIALS_INCLUDE })
   if (!res.ok) {
     throw new Error(`Failed to fetch sessions: ${res.statusText}`)
   }
@@ -162,7 +184,8 @@ export async function fetchSessions(): Promise<SessionSummary[]> {
 export async function createSession(agentId: string): Promise<Session> {
   const res = await fetch(joinBaseURL('/v1/sessions'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ agent_id: agentId }),
   })
   if (!res.ok) {
@@ -193,7 +216,8 @@ export async function sendSessionMessage(
   }
   const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify(body),
   })
 
@@ -246,6 +270,8 @@ export async function uploadAttachments(
   }
   const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/attachments`), {
     method: 'POST',
+    headers: withCsrfHeader(undefined),
+    credentials: CREDENTIALS_INCLUDE,
     body: form,
   })
   if (!res.ok) {
@@ -256,7 +282,9 @@ export async function uploadAttachments(
 }
 
 export async function fetchSessionMessages(sessionId: string): Promise<Message[]> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`))
+  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
+    credentials: CREDENTIALS_INCLUDE,
+  })
   if (!res.ok) {
     throw new Error(`Failed to fetch session messages: ${res.statusText}`)
   }
@@ -279,13 +307,23 @@ export async function fetchSessionMessages(sessionId: string): Promise<Message[]
 // `Access-Control-Allow-Credentials: true`. See MDN:
 // https://developer.mozilla.org/en-US/docs/Web/API/EventSource/EventSource
 export function subscribeSessionStream(sessionId: string): EventSource {
-  return new EventSource(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/stream`))
+  // PR3/C8 — withCredentials: true so the EventSource sends the
+  // `flowstate_session` cookie on the SSE handshake. Without it the
+  // protected stream endpoint returns 401 once features.auth_v1 flips
+  // on (PR5). Per MDN, the Go server must additionally emit
+  // `Access-Control-Allow-Origin: <origin>` (NOT `*`) and
+  // `Access-Control-Allow-Credentials: true` for cross-origin
+  // deployments; same-origin SSE works without server-side CORS.
+  return new EventSource(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/stream`), {
+    withCredentials: true,
+  })
 }
 
 export async function updateSessionAgent(sessionId: string, agentId: string): Promise<Session> {
   const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/agent`), {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ agentId }),
   })
   if (!res.ok) {
@@ -301,7 +339,8 @@ export async function updateSessionModel(
 ): Promise<Session> {
   const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/model`), {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ modelId, providerId }),
   })
   if (!res.ok) {
@@ -311,7 +350,7 @@ export async function updateSessionModel(
 }
 
 export async function fetchModels(): Promise<Model[]> {
-  const res = await fetch(joinBaseURL('/v1/models'))
+  const res = await fetch(joinBaseURL('/v1/models'), { credentials: CREDENTIALS_INCLUDE })
   if (!res.ok) {
     throw new Error(`Failed to fetch models: ${res.statusText}`)
   }
@@ -336,7 +375,11 @@ export async function fetchModels(): Promise<Model[]> {
  */
 export async function deleteSession(sessionId: string): Promise<void> {
   const url = joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}`)
-  const res = await fetch(url, { method: 'DELETE' })
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: withCsrfHeader(undefined),
+    credentials: CREDENTIALS_INCLUDE,
+  })
   if (!res.ok) {
     throw new Error(`Failed to delete session: ${res.status} ${res.statusText}`)
   }
@@ -346,12 +389,16 @@ export async function truncateSessionMessages(sessionId: string, fromMessageId: 
   const url = joinBaseURL(
     `/v1/sessions/${encodeURIComponent(sessionId)}/messages/from/${encodeURIComponent(fromMessageId)}`,
   )
-  const res = await fetch(url, { method: 'DELETE' })
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: withCsrfHeader(undefined),
+    credentials: CREDENTIALS_INCLUDE,
+  })
   if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
 }
 
 export async function listModels(): Promise<ModelsResponse> {
-  const res = await fetch(joinBaseURL('/v1/models'))
+  const res = await fetch(joinBaseURL('/v1/models'), { credentials: CREDENTIALS_INCLUDE })
   if (!res.ok) {
     throw new Error(`Failed to list models: ${res.statusText}`)
   }
@@ -381,7 +428,9 @@ export interface CompressionConfig {
  *   - Throws on any other non-OK status.
  */
 export async function fetchCompressionConfig(): Promise<CompressionConfig | null> {
-  const res = await fetch(joinBaseURL('/v1/config/compression'))
+  const res = await fetch(joinBaseURL('/v1/config/compression'), {
+    credentials: CREDENTIALS_INCLUDE,
+  })
   if (res.status === 501) {
     return null
   }
@@ -405,7 +454,8 @@ export async function fetchCompressionConfig(): Promise<CompressionConfig | null
 export async function updateCompressionThreshold(threshold: number): Promise<CompressionConfig> {
   const res = await fetch(joinBaseURL('/v1/config/compression'), {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ threshold }),
   })
   if (!res.ok) {
@@ -435,7 +485,11 @@ export interface CompactNowResult {
  */
 export async function compactSessionNow(sessionId: string): Promise<CompactNowResult> {
   const url = joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/compress`)
-  const res = await fetch(url, { method: 'POST' })
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: withCsrfHeader(undefined),
+    credentials: CREDENTIALS_INCLUDE,
+  })
   if (!res.ok) {
     throw new Error(await parseError(res))
   }

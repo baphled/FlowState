@@ -89,6 +89,10 @@ export const useSwarmStore = defineStore('swarm', () => {
     try {
       const response = await fetch(url, {
         signal: abortController.value.signal,
+        // PR3/C8 — send the flowstate_session cookie on the SSE-via-
+        // fetch handshake. Without it the protected /api/swarm/events
+        // endpoint returns 401 once features.auth_v1 flips on (PR5).
+        credentials: 'include',
       })
 
       if (!response.ok) {
