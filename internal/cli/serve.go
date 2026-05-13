@@ -119,6 +119,22 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 		if err := quotastore.ValidateDeploymentTopology(q.Backend, q.DeploymentTopology); err != nil {
 			return fmt.Errorf("quota boot-time validation: %w", err)
 		}
+		// PR2: reject pricing.registry.enabled=true with empty URL
+		// (memory feedback_default_urls_must_be_provisioned_or_disabled).
+		// v1 ships no canonical FlowState URL — the operator opts in
+		// AND provides their own.
+		if err := config.ValidatePricingRegistry(application.Config.Quota.Pricing.Registry); err != nil {
+			return fmt.Errorf("quota boot-time validation: %w", err)
+		}
+		// PR2: validate per-provider cap + period + thresholds. PR4
+		// will enforce these against runtime spend; PR2 just rejects
+		// malformed entries at boot so the misconfiguration surfaces
+		// here rather than at first-spend-event time.
+		for providerID, p := range application.Config.Quota.Providers {
+			if err := config.ValidateProviderQuota(providerID, p); err != nil {
+				return fmt.Errorf("quota boot-time validation: %w", err)
+			}
+		}
 	}
 
 	server := &http.Server{
