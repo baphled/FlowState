@@ -60,6 +60,13 @@ type quotaWiring struct {
 	// QuotaSnapshots / ResetQuotaSpend methods. Wired into the api
 	// server via api.WithQuotaAggregator. Nil when no tracker.
 	aggregator api.QuotaAggregator
+
+	// cacheController owns the PR6 persist-loop goroutine. Nil when
+	// persistence is disabled (refresh_interval = "0" or the cache
+	// directory cannot be prepared). App.ShutdownQuotaCache stops the
+	// controller before the engine drain so the final flush completes
+	// while the engine still answers Snapshots() cleanly.
+	cacheController *quotaCacheController
 }
 
 // buildQuotaWiring assembles the quota tracker and adjacent maps from
@@ -138,19 +145,38 @@ func buildQuotaWiring(cfg *config.AppConfig) (quotaWiring, error) {
 		time.Now,
 	)
 
+	// Step 6 — PR6 persisted cache. Best-effort: file absent is
+	// first-boot path; corrupt or version-mismatched files degrade to
+	// empty Tracker rather than fail boot. The ticker fires every
+	// 10s (default; configurable via cfg.Quota.Cache.RefreshInterval)
+	// and writes the current spend state via atomicwrite.File at
+	// mode 0600 (account hashes are sensitive).
+	logger := slog.Default()
+	cachePath := resolveQuotaCachePath(cfg, logger)
+	loadQuotaCacheFromDisk(context.Background(), tracker, cachePath, logger)
+	interval, tickEnabled := resolveQuotaRefreshInterval(cfg.Quota.Cache.RefreshInterval, logger)
+	var controller *quotaCacheController
+	if tickEnabled {
+		controller = startQuotaCacheController(tracker, cachePath, interval, logger)
+	}
+
 	wiring := quotaWiring{
-		tracker:       tracker,
-		accountHashes: accountHashes,
-		caps:          caps,
+		tracker:         tracker,
+		accountHashes:   accountHashes,
+		caps:            caps,
+		cacheController: controller,
 	}
 
 	slog.Info("provider-quota wiring active",
-		"phase", "PR5",
+		"phase", "PR6",
 		"store_backend", cfg.Quota.Store.Backend,
 		"deployment_topology", cfg.Quota.Store.DeploymentTopology,
 		"accounts_seen", len(accountHashes),
 		"caps_configured", len(caps),
 		"pricing_source", "embedded",
+		"cache_path", cachePath,
+		"cache_ticker_enabled", controller != nil,
+		"cache_interval", interval,
 	)
 
 	return wiring, nil
