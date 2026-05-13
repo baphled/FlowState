@@ -13,10 +13,13 @@ package api
 //   - The helpers route registration through `auth.Protected` /
 //     `auth.LoginChain` from the auth package. The composition order is
 //     fixed there — this file does not re-implement it.
-//   - When AuthBundle is unset OR AuthBundle.Auth.Enabled is false (the
-//     PR2 / PR3 default), helpers fall back to a plain
-//     `s.mux.HandleFunc` so existing call sites keep working
-//     untouched. PR5 will flip the flag default.
+//   - When AuthBundle is unset OR AuthBundle.Auth.Enabled is false,
+//     helpers fall back to a plain `s.mux.HandleFunc` so existing call
+//     sites keep working untouched. PR5/C10 flipped the default-on at
+//     the config layer (config.DefaultAuthConfig.Enabled=true), but
+//     servers constructed without WithAuth(...) still see the zero-
+//     value AuthBundle{Enabled=false} and the helpers pass through —
+//     so the pre-flip test surface is preserved bytewise.
 //   - Authentication wiring lives in the api package, NOT the engine —
 //     per project_flowstate_engine_boundary, the engine stays
 //     consumer-agnostic.
