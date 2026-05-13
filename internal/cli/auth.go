@@ -47,6 +47,11 @@ func newAuthCmd(getApp func() *app.App) *cobra.Command {
 		// Admin reset (FlowState API Auth Track PR4/C9 + plan §OD-H) —
 		// clears session store + moves users.json to a backup.
 		newAuthResetCmd(),
+		// CSRF signing key generator (FlowState API Auth Track PR5/C10).
+		// Replaces the ephemeral-random fallback removed in PR5; operators
+		// run `flowstate auth csrf-key gen` once at deploy time to mint a
+		// stable key.
+		newAuthCSRFKeyCmd(),
 	)
 
 	return cmd
