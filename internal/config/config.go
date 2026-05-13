@@ -721,6 +721,36 @@ type QuotaConfig struct {
 	// NOT enforce — PR4 wires the spend variant against these keys.
 	// Maps keyed by canonical provider id ("anthropic", "openai", ...).
 	Providers map[string]ProviderQuotaConfig `json:"providers,omitempty" yaml:"providers,omitempty"`
+
+	// Cache controls the PR6 on-disk cache + periodic refresh ticker.
+	// Default Path resolves to $XDG_CACHE_HOME/flowstate/provider-quota.json
+	// (or $HOME/.cache/flowstate/... when XDG_CACHE_HOME is empty).
+	// RefreshInterval defaults to 10 seconds.
+	//
+	// Plan §"Rollout Plan" PR6 row 430 + OD-2 RESOLVED 2026-05-13.
+	Cache QuotaCacheConfig `json:"cache" yaml:"cache"`
+}
+
+// QuotaCacheConfig controls the PR6 persisted-cache and refresh-ticker
+// behaviour. Both fields are optional — the wireup resolves sensible
+// defaults when empty.
+//
+// Plan §"Rollout Plan" PR6 row 430.
+type QuotaCacheConfig struct {
+	// Path is the operator-supplied path to the JSON cache file. Empty
+	// resolves to $XDG_CACHE_HOME/flowstate/provider-quota.json (or
+	// $HOME/.cache/flowstate/... when XDG_CACHE_HOME is empty). The
+	// parent directory is created at boot via os.MkdirAll(0o700); if
+	// creation fails the wireup logs a warn and skips persistence
+	// (graceful degradation).
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+
+	// RefreshInterval is the cadence at which the ticker writes the
+	// current spend state to disk. Format: a Go duration string
+	// ("10s", "30s"). Empty resolves to 10s — the plan's PR6 default.
+	// Set to "0" to disable the periodic write (boot-time load still
+	// runs; cache becomes append-only-on-shutdown).
+	RefreshInterval string `json:"refresh_interval,omitempty" yaml:"refresh_interval,omitempty"`
 }
 
 // QuotaStoreConfig holds the Store-backend selection and deployment

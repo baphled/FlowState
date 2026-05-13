@@ -155,6 +155,19 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 	select {
 	case <-ctx.Done():
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Shutting down server...")
+		// PR6 of the Provider Quota and Spend Visibility plan: drain
+		// the persist-loop ticker BEFORE engine.Shutdown so the final
+		// flush reads from the Tracker while it's still live. The
+		// drain is bounded — on timeout the engine shutdown still
+		// proceeds and the last few seconds of spend deltas are lost
+		// (acceptable failure mode per plan).
+		quotaCacheDrainCtx, quotaCacheCancel := context.WithTimeout(
+			context.Background(), quotaCacheShutdownTimeout)
+		if qErr := application.ShutdownQuotaCache(quotaCacheDrainCtx); qErr != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+				"warning: quota cache shutdown: %v\n", qErr)
+		}
+		quotaCacheCancel()
 		var eng engineShutdowner
 		if application.Engine != nil {
 			eng = application.Engine
@@ -164,6 +177,13 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 		return err
 	}
 }
+
+// quotaCacheShutdownTimeout bounds the wait for the PR6 persist-loop
+// goroutine to finish its final flush after SIGTERM. Tight (2s)
+// because the underlying work is a single Snapshots() read + atomic
+// write; longer would just delay the engine drain without any chance
+// of completing.
+const quotaCacheShutdownTimeout = 2 * time.Second
 
 // performServeShutdown drains the HTTP server and then the engine,
 // in that order. Extracted so the Item 6 regression test can drive

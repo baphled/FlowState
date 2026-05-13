@@ -155,6 +155,11 @@ type App struct {
 	// vaultHandler backs the mcp_vault-rag_query_vault tool. Nil when
 	// Qdrant is not configured; the tool is silently omitted in that case.
 	vaultHandler toolsvault.Handler
+	// quotaCacheController owns the PR6 persist-loop goroutine. Closed
+	// by ShutdownQuotaCache before engine.Shutdown so the final flush
+	// completes while the Tracker is still queryable. Nil when
+	// persistence is disabled.
+	quotaCacheController *quotaCacheController
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -521,9 +526,10 @@ func buildApp(params appBuildParams) *App {
 		compression:      runtime.compression,
 		mcpServerTools:   runtime.mcpServerTools,
 		mcpTools:         runtime.mcpTools,
-		memoryClient:     params.memoryClient,
-		vaultHandler:     params.vaultHandler,
-		gateRunner:       buildSwarmGateRunner(),
+		memoryClient:         params.memoryClient,
+		vaultHandler:         params.vaultHandler,
+		gateRunner:           buildSwarmGateRunner(),
+		quotaCacheController: runtime.quotaCacheController,
 	}
 
 	planDir := cfg.ResolvedPlanLocation()
@@ -803,20 +809,21 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		api.WithCompactionController(eng),
 	)
 	return &runtimeComponents{
-		engine:          eng,
-		defaultProvider: traced.provider,
-		discovery:       disc,
-		streamer:        streamer,
-		apiServer:       apiServer,
-		metricsRegistry: traced.metrics,
-		compression:     compression,
-		mcpManager:      tp.mcpManager,
-		todoStore:       tp.todoStore,
-		sessionRecorder: sessRecorder,
-		setEnsureTools:  setEnsureTools,
-		sessionManager:  sessionMgr,
-		mcpServerTools:  tp.mcpServerTools,
-		mcpTools:        tp.mcpTools,
+		engine:               eng,
+		defaultProvider:      traced.provider,
+		discovery:            disc,
+		streamer:             streamer,
+		apiServer:            apiServer,
+		metricsRegistry:      traced.metrics,
+		compression:          compression,
+		mcpManager:           tp.mcpManager,
+		todoStore:            tp.todoStore,
+		sessionRecorder:      sessRecorder,
+		setEnsureTools:       setEnsureTools,
+		sessionManager:       sessionMgr,
+		mcpServerTools:       tp.mcpServerTools,
+		mcpTools:             tp.mcpTools,
+		quotaCacheController: quotaW.cacheController,
 	}, nil
 }
 
@@ -1139,6 +1146,11 @@ type runtimeComponents struct {
 	// buildAllowedToolSet then gates exposure by the delegate manifest's
 	// MCPServers list.
 	mcpTools []tool.Tool
+	// quotaCacheController owns the PR6 persist-loop goroutine. Forwarded
+	// onto App so App.ShutdownQuotaCache can drain the ticker before
+	// engine.Shutdown tears the Tracker down. Nil when persistence is
+	// disabled (no Tracker configured or refresh_interval = "0").
+	quotaCacheController *quotaCacheController
 }
 
 // sessionManagerHolder bridges the engine → streamer → sessionMgr
@@ -2223,6 +2235,25 @@ func (a *App) SessionManager() *session.Manager {
 		return nil
 	}
 	return a.sessionManager
+}
+
+// ShutdownQuotaCache drains the PR6 persist-loop goroutine and writes
+// one final cache flush before returning. Idempotent — a second call
+// returns immediately.
+//
+// MUST be called BEFORE engine.Shutdown so the final Tracker.Snapshots()
+// read completes while the engine's Tracker is still live. Callers
+// (runServe / performServeShutdown) bound the wait with ctx; on
+// timeout the engine drain still proceeds — losing the last few
+// seconds of spend deltas is the acceptable failure mode.
+//
+// No-op when no Tracker is configured or persistence is disabled
+// (refresh_interval = "0"). Plan §"Rollout Plan" PR6 row 430.
+func (a *App) ShutdownQuotaCache(ctx context.Context) error {
+	if a == nil || a.quotaCacheController == nil {
+		return nil
+	}
+	return a.quotaCacheController.Stop(ctx)
 }
 
 // delegateCompactionConfig returns the RLM Phase A compaction config
