@@ -202,6 +202,93 @@ var _ = Describe("Display integration", Label("integration"), func() {
 		})
 	})
 
+	Context("when tool is todowrite", func() {
+		// Live evidence: session 59b4e1a2-daf9-44f2-b179-fa0757c34f02 persisted
+		// every todowrite call with toolInput == "" because the canonical
+		// fallback path only walks string-valued args, and todos is an array.
+		// The UI rendered blank cards as a result. A dedicated formatter is
+		// required so persistence and UI surface useful intent.
+
+		It("renders count plus the first active item content", func() {
+			args := map[string]any{
+				"todos": []interface{}{
+					map[string]interface{}{"content": "Write tests first", "status": "in_progress", "priority": "high"},
+					map[string]interface{}{"content": "Implement feature", "status": "pending", "priority": "medium"},
+					map[string]interface{}{"content": "Done item", "status": "completed", "priority": "low"},
+				},
+			}
+			result := tooldisplay.Summary("todowrite", args)
+			Expect(result).To(HavePrefix("todowrite: "))
+			Expect(result).To(ContainSubstring("2/3 todos"))
+			Expect(result).To(ContainSubstring("Write tests first"))
+		})
+
+		It("renders an explicit zero-count message when the list is empty", func() {
+			args := map[string]any{"todos": []interface{}{}}
+			Expect(tooldisplay.Summary("todowrite", args)).To(Equal("todowrite: 0 todos"))
+		})
+
+		It("falls back to count when no active items remain", func() {
+			args := map[string]any{
+				"todos": []interface{}{
+					map[string]interface{}{"content": "Done", "status": "completed", "priority": "low"},
+					map[string]interface{}{"content": "Cancelled", "status": "cancelled", "priority": "low"},
+				},
+			}
+			Expect(tooldisplay.Summary("todowrite", args)).To(Equal("todowrite: 0/2 todos"))
+		})
+
+		It("truncates long content with an ellipsis", func() {
+			longContent := strings.Repeat("z", truncateLen+30)
+			args := map[string]any{
+				"todos": []interface{}{
+					map[string]interface{}{"content": longContent, "status": "in_progress", "priority": "high"},
+				},
+			}
+			result := tooldisplay.Summary("todowrite", args)
+			Expect(result).To(HaveSuffix("..."))
+			Expect(len(result)).To(BeNumerically("<=", len("todowrite: ")+truncateLen+len("...")))
+		})
+
+		It("PrimaryArgValue returns ok=true with a non-empty value", func() {
+			args := map[string]any{
+				"todos": []interface{}{
+					map[string]interface{}{"content": "Plan slice", "status": "pending", "priority": "high"},
+				},
+			}
+			value, ok := tooldisplay.PrimaryArgValue("todowrite", args)
+			Expect(ok).To(BeTrue())
+			Expect(value).NotTo(BeEmpty())
+			Expect(value).To(ContainSubstring("Plan slice"))
+		})
+	})
+
+	Context("when tool is todo_update", func() {
+		// Companion to todowrite: per-transition patch tool. Display surfaces
+		// the status transition so the UI card shows the live progress flip
+		// rather than reconstructing the whole list.
+
+		It("renders status and the patched id together", func() {
+			args := map[string]any{"id": "todo-2", "status": "in_progress"}
+			Expect(tooldisplay.Summary("todo_update", args)).To(Equal("todo_update: in_progress: todo-2"))
+		})
+
+		It("falls back to content when no id is provided", func() {
+			args := map[string]any{"content": "Implement feature", "status": "completed"}
+			Expect(tooldisplay.Summary("todo_update", args)).To(Equal("todo_update: completed: Implement feature"))
+		})
+
+		It("renders the status alone when neither id nor content is given", func() {
+			args := map[string]any{"status": "cancelled"}
+			Expect(tooldisplay.Summary("todo_update", args)).To(Equal("todo_update: cancelled"))
+		})
+
+		It("falls back to the id alone when status is missing", func() {
+			args := map[string]any{"id": "todo-5"}
+			Expect(tooldisplay.Summary("todo_update", args)).To(Equal("todo_update: todo-5"))
+		})
+	})
+
 	Context("when an unknown tool's fallback value exceeds 80 characters", func() {
 		It("truncates the preferred-key value with an ellipsis", func() {
 			longQuery := strings.Repeat("a", truncateLen+30)
