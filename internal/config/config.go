@@ -91,6 +91,18 @@ type AppConfig struct {
 	// §"Bootstrap UX" precedence (env → flag → config → default).
 	Auth AuthConfig `json:"auth" yaml:"auth"`
 
+	// Quota controls the Provider Quota and Spend Visibility surface
+	// (May 2026 plan). PR1 ships Store.Backend + Store.DeploymentTopology
+	// keys + boot-time validation of the (Backend, DeploymentTopology)
+	// pairing. See QuotaConfig for field-level documentation.
+	//
+	// Fresh-install defaults boot quietly into single-instance + memory.
+	// Operators running multi-instance deployments must explicitly opt
+	// in to `deployment_topology: multi-instance` AND set `backend:
+	// redis` or `backend: postgres` (the boot validation rejects the
+	// only silent-double-count pairing: memory + multi-instance).
+	Quota QuotaConfig `json:"quota" yaml:"quota"`
+
 	// StreamTimeout overrides the per-LLM-stream wall-clock budget. Empty
 	// means inherit the engine's compiled-in default (5m). Long delegations
 	// on slow providers (e.g. zai/glm-4.7) are the typical reason to raise
@@ -664,6 +676,55 @@ type AuthConfig struct {
 	CSRFKey        string   `json:"csrf_key,omitempty" yaml:"csrf_key,omitempty"`
 }
 
+// QuotaConfig controls the Provider Quota and Spend Visibility surface
+// (May 2026 plan). PR1 ships the Store-backend + deployment-topology
+// keys + boot validation; PR2-6 layer pricing, spend, dashboard, and
+// persistence on top.
+//
+// The two load-bearing keys for PR1 are Store.Backend and
+// Store.DeploymentTopology. Per plan §"Boot validation" lines 289-291,
+// the combination `Backend=memory + DeploymentTopology=multi-instance`
+// is rejected at boot — the only silently-broken pairing that would
+// double-count across instances. All other combinations are valid
+// (incl. fresh-install defaults, which are quiet-boot single-instance
+// + memory).
+//
+// Plan §"`internal/provider/quota/store/`" YAML example lines 269-281.
+type QuotaConfig struct {
+	// Store controls the cluster-ready persistence backend.
+	Store QuotaStoreConfig `json:"store" yaml:"store"`
+}
+
+// QuotaStoreConfig holds the Store-backend selection and deployment
+// topology declaration.
+type QuotaStoreConfig struct {
+	// Backend is "memory" (single-instance default), "redis", or
+	// "postgres". v1 ships MemoryStore as the only full impl;
+	// Redis/Postgres are compile-clean stubs (every method returns
+	// ErrNotImplemented). v3 swaps in the real impls.
+	Backend string `json:"backend,omitempty" yaml:"backend,omitempty"`
+
+	// DeploymentTopology is "single-instance" (default) or
+	// "multi-instance". An operator running a horizontally-scaled
+	// FlowState deployment MUST set "multi-instance" AND select a
+	// non-memory Backend (the boot validation enforces this).
+	DeploymentTopology string `json:"deployment_topology,omitempty" yaml:"deployment_topology,omitempty"`
+}
+
+// DefaultQuotaConfig returns the canonical default. Per plan B4
+// (lines 283): both keys default to safe single-instance values so
+// fresh installs boot quietly into `memory + single-instance`.
+// Operators running multi-instance deployments must explicitly opt
+// in (and select a non-memory backend, enforced at boot).
+func DefaultQuotaConfig() QuotaConfig {
+	return QuotaConfig{
+		Store: QuotaStoreConfig{
+			Backend:            "memory",
+			DeploymentTopology: "single-instance",
+		},
+	}
+}
+
 // DefaultAuthConfig returns the canonical default AuthConfig. Used by
 // DefaultConfig and by cmd/serve when the operator's config.yaml omits
 // the `auth:` block.
@@ -805,6 +866,7 @@ func DefaultConfig() *AppConfig {
 		Compression:         contextpkg.DefaultCompressionConfig(),
 		Compaction:          compactionpkg.DefaultConfig(),
 		Auth:                DefaultAuthConfig(),
+		Quota:               DefaultQuotaConfig(),
 		ToolCapableModels:   defaultToolCapableModels(),
 		ToolIncapableModels: defaultToolIncapableModels(),
 	}
