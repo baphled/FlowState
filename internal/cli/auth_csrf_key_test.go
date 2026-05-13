@@ -2,9 +2,13 @@ package cli
 
 // PR5 C10 — `flowstate auth csrf-key gen` subcommand spec.
 //
-// Pins:
-//   - `gen` prints a 32-byte (RawURLEncoding = 43 chars, no padding) key
-//     to stdout followed by a single newline.
+// Pins (all under --print-only, since the Auth Track follow-up flipped
+// the default invocation to ALSO persist into config.yaml — the
+// save-to-config behaviour is pinned in the external Ginkgo spec at
+// auth_csrf_key_save_external_test.go; these internal tests stay
+// focused on the print path so they have no filesystem side effects):
+//   - `gen --print-only` prints a 32-byte (RawURLEncoding = 43 chars,
+//     no padding) key to stdout followed by a single newline.
 //   - Successive invocations produce different keys (CSPRNG, not
 //     deterministic).
 //   - Key length is exactly csrfKeyLen (32 bytes decoded), matching
@@ -28,7 +32,7 @@ import (
 
 func TestAuthCSRFKeyGen_PrintsBase64URLKey(t *testing.T) {
 	cmd := newAuthCSRFKeyCmd()
-	cmd.SetArgs([]string{"gen"})
+	cmd.SetArgs([]string{"gen", "--print-only"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
@@ -61,7 +65,7 @@ func TestAuthCSRFKeyGen_ProducesDistinctKeys(t *testing.T) {
 	keys := make([]string, 2)
 	for i := range keys {
 		cmd := newAuthCSRFKeyCmd()
-		cmd.SetArgs([]string{"gen"})
+		cmd.SetArgs([]string{"gen", "--print-only"})
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
@@ -86,7 +90,7 @@ func TestAuthCSRFKeyGen_WrapsRNGError(t *testing.T) {
 	}
 
 	cmd := newAuthCSRFKeyCmd()
-	cmd.SetArgs([]string{"gen"})
+	cmd.SetArgs([]string{"gen", "--print-only"})
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
