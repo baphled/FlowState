@@ -39,6 +39,27 @@ var _ = Describe("toolResultMessage", func() {
 		})
 	})
 
+	Context("when toolName is todo_update", func() {
+		// todo_update is the patch-op sibling of todowrite, sharing the same
+		// underlying Store and returning the same JSON list shape. The UI must
+		// render its result via the same todo-list widget so per-transition
+		// patches surface in chat the same way list creations do.
+
+		It("returns a message with role todo_update", func() {
+			msg := chat.ToolResultMessageForTest("todo_update", "[]", false)
+
+			Expect(msg.Role).To(Equal("todo_update"))
+		})
+
+		It("formats the content using FormatTodoList", func() {
+			rawJSON := `[{"content":"Write tests","status":"in_progress","priority":"high"}]`
+			msg := chat.ToolResultMessageForTest("todo_update", rawJSON, false)
+
+			Expect(msg.Content).NotTo(BeEmpty())
+			Expect(msg.Content).NotTo(Equal(rawJSON))
+		})
+	})
+
 	Context("when toolName is any other tool", func() {
 		It("returns a message with role tool_result", func() {
 			msg := chat.ToolResultMessageForTest("bash", "some output", false)

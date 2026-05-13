@@ -19,7 +19,7 @@ var _ = Describe("BuildAppTools", func() {
 
 		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans")
 
-		Expect(tools).To(HaveLen(8))
+		Expect(tools).To(HaveLen(9))
 		names := make([]string, 0, len(tools))
 		for _, t := range tools {
 			names = append(names, t.Name())
@@ -31,6 +31,7 @@ var _ = Describe("BuildAppTools", func() {
 			"web",
 			"skill_load",
 			"todowrite",
+			"todo_update",
 			"plan_list",
 			"plan_read",
 		}))

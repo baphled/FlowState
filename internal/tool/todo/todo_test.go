@@ -242,6 +242,212 @@ var _ = Describe("TodoTool", func() {
 	})
 })
 
+var _ = Describe("TodoUpdateTool", func() {
+	// Bug provenance: session 59b4e1a2-daf9-44f2-b179-fa0757c34f02 — models
+	// batched many per-task status flips into a single todowrite call because
+	// todowrite is the only API and replaces the entire list. todo_update is
+	// the patch-op companion that pins one-status-transition-per-call.
+
+	var (
+		u     tool.Tool
+		store *todotool.MemoryStore
+	)
+
+	BeforeEach(func() {
+		store = todotool.NewMemoryStore()
+		u = todotool.NewUpdate(store)
+
+		// Seed the session with a baseline list. Every Execute test mutates
+		// this list rather than starting from empty so the patch semantics
+		// are observable.
+		Expect(store.Set("sess-123", []todotool.Item{
+			{Content: "First task", Status: "pending", Priority: "high"},
+			{Content: "Second task", Status: "pending", Priority: "medium"},
+			{Content: "Third task", Status: "pending", Priority: "low"},
+		})).To(Succeed())
+	})
+
+	Describe("Name", func() {
+		It("returns todo_update", func() {
+			Expect(u.Name()).To(Equal("todo_update"))
+		})
+	})
+
+	Describe("Description", func() {
+		It("returns a non-empty description that names the tool's role", func() {
+			Expect(u.Description()).NotTo(BeEmpty())
+			Expect(u.Description()).To(ContainSubstring("todo"))
+		})
+	})
+
+	Describe("Schema", func() {
+		It("requires index and exposes status, content, priority as optional patch fields", func() {
+			s := u.Schema()
+			Expect(s.Type).To(Equal("object"))
+			Expect(s.Properties).To(HaveKey("index"))
+			Expect(s.Properties).To(HaveKey("status"))
+			Expect(s.Properties).To(HaveKey("content"))
+			Expect(s.Properties).To(HaveKey("priority"))
+			Expect(s.Required).To(ConsistOf("index"))
+		})
+	})
+
+	Describe("Execute", func() {
+		Context("when patching status by index", func() {
+			It("mutates only the targeted entry and returns the full list", func() {
+				result, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(1),
+						"status": "in_progress",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				var todos []todotool.Item
+				Expect(json.Unmarshal([]byte(result.Output), &todos)).To(Succeed())
+				Expect(todos).To(HaveLen(3))
+				Expect(todos[0].Status).To(Equal("pending"))
+				Expect(todos[1].Status).To(Equal("in_progress"))
+				Expect(todos[1].Content).To(Equal("Second task"))
+				Expect(todos[2].Status).To(Equal("pending"))
+
+				// Store should reflect the same shape.
+				stored := store.Get("sess-123")
+				Expect(stored[1].Status).To(Equal("in_progress"))
+			})
+		})
+
+		Context("when patching multiple fields at once", func() {
+			It("applies every non-empty patch field on the targeted entry", func() {
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":    float64(0),
+						"status":   "completed",
+						"priority": "low",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				stored := store.Get("sess-123")
+				Expect(stored[0].Status).To(Equal("completed"))
+				Expect(stored[0].Priority).To(Equal("low"))
+				Expect(stored[0].Content).To(Equal("First task"))
+			})
+		})
+
+		Context("when only patching content", func() {
+			It("updates the description without touching status or priority", func() {
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":   float64(2),
+						"content": "Third task (revised)",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				stored := store.Get("sess-123")
+				Expect(stored[2].Content).To(Equal("Third task (revised)"))
+				Expect(stored[2].Status).To(Equal("pending"))
+				Expect(stored[2].Priority).To(Equal("low"))
+			})
+		})
+
+		Context("when index is out of range", func() {
+			It("returns an error and does not mutate the stored list", func() {
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(99),
+						"status": "completed",
+					},
+				})
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("out of range"))
+
+				stored := store.Get("sess-123")
+				Expect(stored).To(HaveLen(3))
+				Expect(stored[0].Status).To(Equal("pending"))
+			})
+		})
+
+		Context("when index is negative", func() {
+			It("returns an error and does not mutate the stored list", func() {
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(-1),
+						"status": "completed",
+					},
+				})
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("out of range"))
+			})
+		})
+
+		Context("when index argument is missing", func() {
+			It("returns an error mentioning index", func() {
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"status": "completed",
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("index"))
+			})
+		})
+
+		Context("when no patch fields are provided", func() {
+			It("returns an error so the model can correct its call shape", func() {
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index": float64(0),
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("status"))
+			})
+		})
+
+		Context("when session ID is missing from context", func() {
+			It("returns an error", func() {
+				_, err := u.Execute(context.Background(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "completed",
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("session ID"))
+			})
+		})
+
+		Context("when the stored list is empty", func() {
+			It("returns an error before mutating", func() {
+				Expect(store.Set("sess-empty", []todotool.Item{})).To(Succeed())
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "sess-empty")
+
+				_, err := u.Execute(ctx, tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "completed",
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("out of range"))
+			})
+		})
+	})
+})
+
 var _ = Describe("MemoryStore", func() {
 	var s *todotool.MemoryStore
 
