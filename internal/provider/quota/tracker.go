@@ -58,6 +58,16 @@ type Tracker struct {
 	adapters        map[string]Quota // providerID → Quota adapter
 	storeBackend    string           // surfaced into Snapshot.StoreBackend
 	pricingResolver PricingResolver  // PR2: optional; nil leaves PricingSource empty
+
+	// spend is the PR4 spend-accumulator extension. Non-nil when
+	// constructed via NewTrackerWithSpend; nil for the PR1/PR3
+	// NewTracker / NewTrackerWithPricing paths. The Tracker's spend
+	// methods short-circuit cleanly when spend == nil so callers can
+	// keep the legacy constructors during incremental rollouts.
+	//
+	// See spend.go (RecordSpend, NewTrackerWithSpend) for the full
+	// PR4 surface.
+	spend *spendState
 }
 
 // NewTracker constructs an empty Tracker. The storeBackend string
@@ -117,6 +127,26 @@ func (t *Tracker) Register(providerID string, adapter Quota) {
 // wired (PR2 plumbing), Snapshot.PricingSource is also stamped with
 // the resolver's audit-trail string for hits on (providerID, modelID).
 func (t *Tracker) Lookup(ctx context.Context, providerID, modelID string) (Snapshot, error) {
+	// PR4 overlay: when spend is wired AND the Store has a Snapshot
+	// for this key, prefer it. The TokenSpend variant carries the
+	// figure the chip is most likely to act on (operator wants to
+	// see "what have I spent"); the RateLimit variant from the
+	// adapter only matters when no spend has been recorded. This
+	// preserves the discriminator-union invariant — Lookup returns
+	// EXACTLY one variant pointer non-nil.
+	//
+	// Auto-reset on PeriodStart rollover (OD-8 — plan lines 511-516):
+	// when the stored Snapshot's PeriodEnd has passed, rotate to the
+	// next period and zero Spent before returning. The Tracker writes
+	// the rotated Snapshot back to the Store so subsequent reads in
+	// the new period start clean.
+	if t != nil && t.spend != nil {
+		key := storeKey(providerID, modelID, t)
+		if snap, ok := t.lookupSpendOverlay(ctx, providerID, modelID, key); ok {
+			return snap, nil
+		}
+	}
+
 	t.mu.RLock()
 	adapter, ok := t.adapters[providerID]
 	resolver := t.pricingResolver
