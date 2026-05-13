@@ -114,3 +114,23 @@ func NewToolsCmdForTest(getApp func() *app.App) *cobra.Command {
 func NewToolsListCmdForTest(getApp func() *app.App) *cobra.Command {
 	return newToolsListCmd(getApp)
 }
+
+// SetStdinIsTerminal substitutes the package-level TTY probe used by the
+// `flowstate auth reset` --force guard. Tests drive both branches
+// (TTY-attached and not) deterministically through this hook.
+//
+// Expected:
+//   - probe is a non-nil func returning a boolean.
+//
+// Side effects:
+//   - Replaces stdinIsTerminal in package state.
+func SetStdinIsTerminal(probe func() bool) {
+	stdinIsTerminal = probe
+}
+
+// RestoreStdinIsTerminal resets the TTY probe back to the production
+// default (term.IsTerminal on os.Stdin.Fd()). Spec teardown calls this
+// so the next test starts from a clean state.
+func RestoreStdinIsTerminal() {
+	stdinIsTerminal = defaultStdinIsTerminal
+}

@@ -44,6 +44,9 @@ func newAuthCmd(getApp func() *app.App) *cobra.Command {
 		// users for multi-user deployments. Distinct from the per-provider
 		// auth commands above; this is the FlowState identity surface.
 		newAuthUserCmd(),
+		// Admin reset (FlowState API Auth Track PR4/C9 + plan §OD-H) —
+		// clears session store + moves users.json to a backup.
+		newAuthResetCmd(),
 	)
 
 	return cmd
