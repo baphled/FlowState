@@ -482,3 +482,102 @@ describe('compactSessionNow', () => {
     expect(calledUrl).toContain('a%2Fb%20c')
   })
 })
+
+// PR3/C8 — credentials + CSRF pin. The load-bearing invariant: every
+// fetch site in @/api sends `credentials: 'include'` so the browser
+// transmits the flowstate_session cookie. Unsafe methods additionally
+// merge the X-CSRF-Token header (via withCsrfHeader). Without this
+// pin, a future refactor could silently drop the credentials flag and
+// the flag-on default (PR5) would 401 every protected request.
+describe('PR3 C8 — credentials + CSRF header pin', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    installLocalStorageStub()
+    fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    // Stamp a _csrf cookie so withCsrfHeader emits the header for
+    // unsafe-method tests. document.cookie is a string assignment in
+    // happydom; cleanup happens in afterEach.
+    document.cookie = '_csrf=test-csrf-token'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    // Clear the _csrf cookie.
+    document.cookie = '_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+  })
+
+  it('GET fetchSessions sends credentials: include', async () => {
+    await fetchSessions()
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.credentials).toBe('include')
+  })
+
+  it('GET fetchSwarmEvents sends credentials: include', async () => {
+    await fetchSwarmEvents()
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.credentials).toBe('include')
+  })
+
+  it('GET fetchCompressionConfig sends credentials: include', async () => {
+    await fetchCompressionConfig()
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.credentials).toBe('include')
+  })
+
+  it('PATCH updateSessionAgent sends credentials: include and X-CSRF-Token header', async () => {
+    await updateSessionAgent('sess-1', 'agent-2')
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.credentials).toBe('include')
+    expect(init.method).toBe('PATCH')
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-CSRF-Token']).toBe('test-csrf-token')
+    expect(headers['Content-Type']).toBe('application/json')
+  })
+
+  it('DELETE deleteSession sends credentials: include and X-CSRF-Token header', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }))
+    await deleteSession('sess-1')
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.credentials).toBe('include')
+    expect(init.method).toBe('DELETE')
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-CSRF-Token']).toBe('test-csrf-token')
+  })
+
+  it('PATCH updateCompressionThreshold sends credentials + CSRF header', async () => {
+    await updateCompressionThreshold(0.5)
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.credentials).toBe('include')
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-CSRF-Token']).toBe('test-csrf-token')
+  })
+
+  it('POST compactSessionNow sends credentials + CSRF header', async () => {
+    await compactSessionNow('sess-1')
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(init.credentials).toBe('include')
+    expect(init.method).toBe('POST')
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-CSRF-Token']).toBe('test-csrf-token')
+  })
+
+  it('omits X-CSRF-Token header when _csrf cookie is absent', async () => {
+    // Clear cookie before this test runs.
+    document.cookie = '_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+    await updateSessionAgent('sess-1', 'agent-2')
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-CSRF-Token']).toBeUndefined()
+    // credentials still set so the cookie round-trip continues working.
+    expect(init.credentials).toBe('include')
+  })
+})
