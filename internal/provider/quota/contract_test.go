@@ -453,6 +453,88 @@ var _ = Describe("Tracker.Lookup AccountHash threading (PR5 R2 fold)", func() {
 			"empty accountHash is the v1 single-account default — Tracker.Lookup MUST NOT fabricate one")
 	})
 
+	It("returns distinct Snapshots via Tracker.Lookup for two AccountHashes on the same (provider, model) — R2 fold headline (commit db789ba6)", func() {
+		// REV-4 backfill — pins the R2 fold's headline behaviour
+		// directly on Tracker.Lookup. The R2 fold (commit db789ba6 —
+		// "feat(provider/quota): R2 fold — thread AccountHash through
+		// Tracker.Lookup (Quota Plan PR5 prep)") threaded AccountHash
+		// through Tracker.Lookup so multi-account-per-provider
+		// deployments do not silently merge into one bucket.
+		//
+		// Pre-R2 the storeKey shim ignored the Tracker and produced an
+		// empty-account key, collapsing every account on a provider
+		// into one Snapshot row. This spec drives the new behaviour
+		// directly via two Tracker.Lookup calls — distinct snapshots
+		// for distinct accountHashes on the same (provider, model).
+		store := newMemoryStoreShim()
+		resolver := &recordedPricingResolver{}
+		tracker := quota.NewTrackerWithSpend("memory", resolver, store, nil)
+		tracker.Register("anthropic", &stubAdapter{
+			snap: quota.Snapshot{
+				NotConfigured: &quota.NotConfiguredVariant{Reason: "no-spend-yet"},
+			},
+		})
+
+		now := time.Now()
+		// Two TokenSpend rows — same provider + model, different
+		// accountHash, deliberately different Spent amounts so the
+		// assertion below can detect any bucket collapse.
+		acctA := quota.SpendStoreKey{
+			ProviderID:  "anthropic",
+			AccountHash: "accountHash1",
+			ModelID:     "claude-opus-4-7",
+		}
+		acctB := quota.SpendStoreKey{
+			ProviderID:  "anthropic",
+			AccountHash: "accountHash2",
+			ModelID:     "claude-opus-4-7",
+		}
+		_ = store.Put(ctx, acctA, quota.Snapshot{
+			Provider: "anthropic", AccountHash: "accountHash1", Model: "claude-opus-4-7",
+			ObservedAt: now,
+			TokenSpend: &quota.TokenSpendVariant{
+				Spent:       quota.Money{Amount: 111, Currency: "USD"},
+				Period:      "monthly",
+				PeriodStart: now.Add(-24 * time.Hour),
+				PeriodEnd:   now.Add(24 * time.Hour),
+			},
+		})
+		_ = store.Put(ctx, acctB, quota.Snapshot{
+			Provider: "anthropic", AccountHash: "accountHash2", Model: "claude-opus-4-7",
+			ObservedAt: now,
+			TokenSpend: &quota.TokenSpendVariant{
+				Spent:       quota.Money{Amount: 222, Currency: "USD"},
+				Period:      "monthly",
+				PeriodStart: now.Add(-24 * time.Hour),
+				PeriodEnd:   now.Add(24 * time.Hour),
+			},
+		})
+
+		// Tracker.Lookup with accountHash1 — must surface the $1.11 row.
+		snap1, err1 := tracker.Lookup(ctx, "anthropic", "accountHash1", "claude-opus-4-7")
+		Expect(err1).NotTo(HaveOccurred())
+		Expect(snap1.TokenSpend).NotTo(BeNil(),
+			"Tracker.Lookup MUST resolve the accountHash1 TokenSpend Snapshot via the new partition key — R2 fold threaded accountHash through Lookup")
+		Expect(snap1.TokenSpend.Spent.Amount).To(Equal(int64(111)))
+		Expect(snap1.AccountHash).To(Equal("accountHash1"),
+			"Tracker.Lookup MUST stamp the supplied accountHash on the result so the dashboard renders the correct partition key")
+
+		// Tracker.Lookup with accountHash2 — must surface the $2.22 row,
+		// NOT a collapsed bucket of $3.33 (which is what pre-R2 would
+		// have returned).
+		snap2, err2 := tracker.Lookup(ctx, "anthropic", "accountHash2", "claude-opus-4-7")
+		Expect(err2).NotTo(HaveOccurred())
+		Expect(snap2.TokenSpend).NotTo(BeNil(),
+			"Tracker.Lookup MUST resolve accountHash2 independently — pre-R2 the empty-account collapse merged the buckets")
+		Expect(snap2.TokenSpend.Spent.Amount).To(Equal(int64(222)),
+			"accountHash2's $2.22 must NOT be merged with accountHash1's $1.11 — distinct (provider, account, model) partition key per R2 fold")
+		Expect(snap2.AccountHash).To(Equal("accountHash2"))
+
+		// Defensive — the snapshots must be different, not aliased.
+		Expect(snap1.TokenSpend.Spent.Amount).NotTo(Equal(snap2.TokenSpend.Spent.Amount),
+			"distinct Snapshots MUST carry distinct Spent amounts — confirms no bucket collapse")
+	})
+
 	It("partitions the spend overlay by accountHash (multi-account stores stay distinct)", func() {
 		// Two accounts on the same provider+model should produce
 		// independent Snapshots from Lookup when wired through a spend

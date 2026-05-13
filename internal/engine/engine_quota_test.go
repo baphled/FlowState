@@ -106,6 +106,40 @@ func (m *memSpendShim) Reset(ctx context.Context, key quota.SpendStoreKey) error
 	})
 }
 
+// errorListSpendShim is a SpendStore whose List always returns an
+// error. Used by the REV-2 'suppress-to-nil branch' spec to drive
+// the QuotaSnapshots error path without race conditions on a real
+// MemoryStore.
+type errorListSpendShim struct{}
+
+func (errorListSpendShim) Get(_ context.Context, _ quota.SpendStoreKey) (quota.Snapshot, error) {
+	return quota.Snapshot{}, quota.SpendStoreErrNotFound
+}
+func (errorListSpendShim) Put(_ context.Context, _ quota.SpendStoreKey, _ quota.Snapshot) error {
+	return nil
+}
+func (errorListSpendShim) Reset(_ context.Context, _ quota.SpendStoreKey) error { return nil }
+func (errorListSpendShim) List(_ context.Context) ([]quota.SpendStoreEntry, error) {
+	return nil, errors.New("simulated store list failure")
+}
+
+// errorGetSpendShim is a SpendStore whose Get always returns a
+// non-NotFound error. Used by the REV-2 ResetSpend error-propagation
+// spec — ResetSpend's Get-before-Reset probe surfaces the error
+// verbatim.
+type errorGetSpendShim struct{}
+
+func (errorGetSpendShim) Get(_ context.Context, _ quota.SpendStoreKey) (quota.Snapshot, error) {
+	return quota.Snapshot{}, errors.New("simulated store get failure")
+}
+func (errorGetSpendShim) Put(_ context.Context, _ quota.SpendStoreKey, _ quota.Snapshot) error {
+	return nil
+}
+func (errorGetSpendShim) Reset(_ context.Context, _ quota.SpendStoreKey) error { return nil }
+func (errorGetSpendShim) List(_ context.Context) ([]quota.SpendStoreEntry, error) {
+	return nil, nil
+}
+
 func (m *memSpendShim) List(ctx context.Context) ([]quota.SpendStoreEntry, error) {
 	rows, err := m.inner.List(ctx)
 	if err != nil {
@@ -256,6 +290,189 @@ var _ = Describe("Engine provider_quota emission (PR4 — plan lines 314-316)", 
 				"OD-9 default amber threshold")
 			Expect(payload.TokenSpend.ThresholdRed).To(Equal(95),
 				"OD-9 default red threshold")
+		})
+	})
+
+	Context("QuotaSnapshots (PR5 dashboard aggregator — provider_quota.go:318)", func() {
+		// REV-2 backfill — pins the engine-side aggregator surface
+		// the PR5 GET /api/v1/providers/quota handler iterates. The
+		// existing PR4 specs only exercised the per-turn emitter, not
+		// the multi-row dashboard read.
+		It("returns nil when the engine has no tracker wired", func() {
+			// Handler at quota_dashboard.go:96 iterates the result and
+			// uses len(entries) for the slice capacity hint — nil-safe.
+			// The 'nil slice protection' the reviewer flagged means the
+			// handler's range over nil is a zero-iteration loop, not a
+			// panic.
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:           "no-tracker-snapshots",
+					Name:         "no tracker snapshots",
+					Instructions: agent.Instructions{SystemPrompt: "sys"},
+				},
+			})
+			rows := eng.QuotaSnapshots(ctx)
+			Expect(rows).To(BeEmpty(),
+				"engine without QuotaTracker MUST return empty so handler iteration is a no-op rather than 500-ing the dashboard")
+		})
+
+		It("returns empty result when the Store List call errors (suppress-to-nil branch at provider_quota.go:323-330)", func() {
+			// Tracker.Snapshots surfaces ctx.Err() / store errors as
+			// (nil, err). Engine.QuotaSnapshots suppresses to nil so a
+			// transient store hiccup degrades the dashboard to empty
+			// rather than 500-ing the whole surface. Drive this via a
+			// shim whose List always errors.
+			tracker := quota.NewTrackerWithSpend("memory", newQuotaStubResolver(), &errorListSpendShim{}, nil)
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:           "list-error-snapshots",
+					Name:         "list error snapshots",
+					Instructions: agent.Instructions{SystemPrompt: "sys"},
+				},
+				QuotaTracker: tracker,
+			})
+			rows := eng.QuotaSnapshots(ctx)
+			Expect(rows).To(BeEmpty(),
+				"Tracker.Snapshots error MUST be suppressed to empty result — the dashboard renders nothing rather than blanking with 500")
+		})
+
+		It("happy path returns one row per recorded (provider, account, model) tuple", func() {
+			// Record spend for two distinct keys; QuotaSnapshots MUST
+			// surface both as QuotaAggregatorRow rows with the partition
+			// key threaded through.
+			resolver := newQuotaStubResolver()
+			resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+			resolver.seed("openai", "gpt-4o", "USD", 2.50, 10.00)
+			tracker := quota.NewTrackerWithSpend("memory", resolver, newMemSpendShim(), nil)
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:           "snapshots-happy",
+					Name:         "snapshots happy",
+					Instructions: agent.Instructions{SystemPrompt: "sys"},
+				},
+				QuotaTracker: tracker,
+				QuotaAccountHashes: map[string]string{
+					"anthropic": "acc-anthropic",
+					"openai":    "acc-openai",
+				},
+				QuotaCaps: map[string]quota.CapConfig{
+					"anthropic": {Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"},
+					"openai":    {Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"},
+				},
+			})
+			eng.RecordQuotaSpendForTest(ctx, "anthropic", "claude-opus-4-7",
+				&provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r1"})
+			eng.RecordQuotaSpendForTest(ctx, "openai", "gpt-4o",
+				&provider.UsageDelta{InputTokens: 500, OutputTokens: 1000, RequestID: "r2"})
+
+			rows := eng.QuotaSnapshots(ctx)
+			Expect(rows).To(HaveLen(2),
+				"two distinct (provider, account, model) writes MUST surface as two rows")
+
+			// Order from the underlying MemoryStore is unspecified; key
+			// the assertion off (provider, account, model).
+			byKey := map[string]engine.QuotaAggregatorRow{}
+			for _, row := range rows {
+				byKey[row.Provider+"|"+row.AccountHash+"|"+row.Model] = row
+			}
+			anthRow, ok := byKey["anthropic|acc-anthropic|claude-opus-4-7"]
+			Expect(ok).To(BeTrue(), "anthropic row present with the configured account hash threaded through")
+			Expect(anthRow.Snapshot.TokenSpend).NotTo(BeNil(),
+				"snapshot carries the TokenSpend variant the dashboard renders")
+
+			openaiRow, ok := byKey["openai|acc-openai|gpt-4o"]
+			Expect(ok).To(BeTrue(), "openai row present with the configured account hash threaded through")
+			Expect(openaiRow.Snapshot.TokenSpend).NotTo(BeNil())
+		})
+	})
+
+	Context("ResetQuotaSpend (PR5 dashboard reset — provider_quota.go:350)", func() {
+		// REV-2 backfill — pins the engine-side reset surface the
+		// PR5 POST /api/v1/providers/quota/reset handler calls.
+		It("returns (false, nil) when the engine has no tracker wired", func() {
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:           "no-tracker-reset",
+					Name:         "no tracker reset",
+					Instructions: agent.Instructions{SystemPrompt: "sys"},
+				},
+			})
+			found, err := eng.ResetQuotaSpend(ctx, "anthropic", "acc", "claude-opus-4-7")
+			Expect(err).NotTo(HaveOccurred(),
+				"unwired tracker MUST be a quiet no-op — handler maps (false, nil) to 404")
+			Expect(found).To(BeFalse())
+		})
+
+		It("returns (false, nil) when the key has no recorded spend", func() {
+			// Tracker wired but no RecordSpend call for this key — the
+			// Store returns SpendStoreErrNotFound which ResetSpend maps
+			// to (false, nil). Handler maps that to 404.
+			resolver := newQuotaStubResolver()
+			tracker := quota.NewTrackerWithSpend("memory", resolver, newMemSpendShim(), nil)
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:           "reset-not-found",
+					Name:         "reset not found",
+					Instructions: agent.Instructions{SystemPrompt: "sys"},
+				},
+				QuotaTracker: tracker,
+			})
+			found, err := eng.ResetQuotaSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse(),
+				"no Snapshot for the key MUST return (false, nil) — distinct from a Store impl error")
+		})
+
+		It("propagates Store impl errors verbatim", func() {
+			// Drive a Tracker whose Store fails Get with a non-NotFound
+			// error — ResetSpend returns the error verbatim, and the
+			// handler maps to 500 internal_error.
+			tracker := quota.NewTrackerWithSpend("memory", newQuotaStubResolver(), &errorGetSpendShim{}, nil)
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:           "reset-store-error",
+					Name:         "reset store error",
+					Instructions: agent.Instructions{SystemPrompt: "sys"},
+				},
+				QuotaTracker: tracker,
+			})
+			found, err := eng.ResetQuotaSpend(ctx, "anthropic", "acc-A", "claude-opus-4-7")
+			Expect(err).To(HaveOccurred(),
+				"Store impl errors MUST propagate so the handler can surface 500")
+			Expect(found).To(BeFalse())
+		})
+
+		It("returns (true, nil) on a successful reset of an existing snapshot", func() {
+			resolver := newQuotaStubResolver()
+			resolver.seed("anthropic", "claude-opus-4-7", "USD", 15.00, 75.00)
+			tracker := quota.NewTrackerWithSpend("memory", resolver, newMemSpendShim(), nil)
+			eng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:           "reset-happy",
+					Name:         "reset happy",
+					Instructions: agent.Instructions{SystemPrompt: "sys"},
+				},
+				QuotaTracker: tracker,
+				QuotaAccountHashes: map[string]string{
+					"anthropic": "deadbeef1234",
+				},
+				QuotaCaps: map[string]quota.CapConfig{
+					"anthropic": {Cap: quota.Money{Amount: 5000, Currency: "USD"}, Period: "monthly"},
+				},
+			})
+			eng.RecordQuotaSpendForTest(ctx, "anthropic", "claude-opus-4-7",
+				&provider.UsageDelta{InputTokens: 100, OutputTokens: 350, RequestID: "r"})
+
+			found, err := eng.ResetQuotaSpend(ctx, "anthropic", "deadbeef1234", "claude-opus-4-7")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue(),
+				"a recorded snapshot MUST surface (true, nil) so the handler returns 200")
+
+			// Second reset returns (false, nil) — the row is gone.
+			found2, err := eng.ResetQuotaSpend(ctx, "anthropic", "deadbeef1234", "claude-opus-4-7")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found2).To(BeFalse(),
+				"resetting an already-reset key MUST return (false, nil) — idempotent from the handler's perspective")
 		})
 	})
 
