@@ -2,10 +2,16 @@ package identity_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/baphled/flowstate/internal/auth/identity"
 )
@@ -130,40 +136,232 @@ var _ = Describe("identity.Source impls", func() {
 		})
 	})
 
-	// Plan §"Rollout Plan" PR2/C3 line 549: MultiUserSource ships as a stub
-	// returning ErrNotImplemented. PR4/C9 swaps in the real impl.
-	Describe("MultiUserSource (PR2 stub)", func() {
-		var source *identity.MultiUserSource
+	// Plan §"Rollout Plan" PR4/C9 line 555: real MultiUserSource impl
+	// backed by users.json + bcrypt.
+	Describe("MultiUserSource (PR4 real impl)", func() {
+		var (
+			tmpDir string
+			path   string
+		)
 
 		BeforeEach(func() {
-			source = identity.NewMultiUserSource()
+			var err error
+			tmpDir, err = os.MkdirTemp("", "flowstate-multiuser-*")
+			Expect(err).NotTo(HaveOccurred())
+			path = filepath.Join(tmpDir, "users.json")
 		})
 
-		It("returns ErrNotImplemented on every Authenticate call", func() {
-			_, err := source.Authenticate(ctx, identity.Credentials{
-				Username: "alice",
-				Password: "wonderland",
+		AfterEach(func() {
+			Expect(os.RemoveAll(tmpDir)).To(Succeed())
+		})
+
+		writeUsers := func(users []map[string]any, perm os.FileMode) {
+			body := map[string]any{"users": users}
+			b, err := json.Marshal(body)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.WriteFile(path, b, perm)).To(Succeed())
+			// os.WriteFile honours umask; chmod ensures the bit we asked for.
+			Expect(os.Chmod(path, perm)).To(Succeed())
+		}
+
+		hashFor := func(plain string) string {
+			h, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.MinCost)
+			Expect(err).NotTo(HaveOccurred())
+			return string(h)
+		}
+
+		It("constructor returns source with zero users when file missing (plan §Bootstrap UX multi-user)", func() {
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(source).NotTo(BeNil())
+			_, authErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
 			})
-			Expect(errors.Is(err, identity.ErrNotImplemented)).To(BeTrue())
+			Expect(errors.Is(authErr, identity.ErrInvalidCredentials)).To(BeTrue())
 		})
 
-		It("returns ErrNotImplemented even with empty credentials", func() {
-			_, err := source.Authenticate(ctx, identity.Credentials{})
-			Expect(errors.Is(err, identity.ErrNotImplemented)).To(BeTrue())
+		It("authenticates a valid (username, password) pair", func() {
+			writeUsers([]map[string]any{
+				{
+					"username":      "alice",
+					"password_hash": hashFor("wonderland"),
+					"display_name":  "Alice",
+					"created_at":    time.Now().UTC().Format(time.RFC3339),
+				},
+			}, 0o600)
+
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			p, err := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.ID).To(Equal("alice"))
+			Expect(p.DisplayName).To(Equal("Alice"))
+			Expect(p.Mode).To(Equal(identity.ModeMultiUser))
+		})
+
+		It("returns ErrInvalidCredentials on wrong password (B8)", func() {
+			writeUsers([]map[string]any{
+				{
+					"username":      "alice",
+					"password_hash": hashFor("wonderland"),
+					"created_at":    time.Now().UTC().Format(time.RFC3339),
+				},
+			}, 0o600)
+
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, authErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wrong",
+			})
+			Expect(errors.Is(authErr, identity.ErrInvalidCredentials)).To(BeTrue())
+		})
+
+		// B8 discipline pin (memory feedback_published_unsubscribed_events_dead_surface
+		// notwithstanding — absent-user vs wrong-password MUST collapse to
+		// the same sentinel so probers cannot fingerprint user existence).
+		It("returns ErrInvalidCredentials on absent username (B8 — same sentinel as wrong password)", func() {
+			writeUsers([]map[string]any{
+				{
+					"username":      "alice",
+					"password_hash": hashFor("wonderland"),
+					"created_at":    time.Now().UTC().Format(time.RFC3339),
+				},
+			}, 0o600)
+
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, authErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "bob", Password: "anything",
+			})
+			Expect(errors.Is(authErr, identity.ErrInvalidCredentials)).To(BeTrue())
+
+			// And the same call with EMPTY username — same sentinel,
+			// no leak of "no such user vs no username supplied".
+			_, emptyErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "", Password: "anything",
+			})
+			Expect(errors.Is(emptyErr, identity.ErrInvalidCredentials)).To(BeTrue())
+		})
+
+		It("returns ErrInvalidCredentials for empty users.json (no users provisioned)", func() {
+			writeUsers([]map[string]any{}, 0o600)
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, authErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
+			})
+			Expect(errors.Is(authErr, identity.ErrInvalidCredentials)).To(BeTrue())
+		})
+
+		It("returns construction error when users.json is unparseable JSON", func() {
+			Expect(os.WriteFile(path, []byte(`{not valid json`), 0o600)).To(Succeed())
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).To(HaveOccurred())
+			Expect(source).To(BeNil())
+		})
+
+		It("succeeds on world-readable users.json (operator's choice; logs warn only)", func() {
+			writeUsers([]map[string]any{
+				{
+					"username":      "alice",
+					"password_hash": hashFor("wonderland"),
+					"created_at":    time.Now().UTC().Format(time.RFC3339),
+				},
+			}, 0o644) // explicitly world-readable
+
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			// And the source still authenticates successfully — the warn
+			// is advisory, not a refusal.
+			p, authErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
+			})
+			Expect(authErr).NotTo(HaveOccurred())
+			Expect(p.ID).To(Equal("alice"))
+		})
+
+		It("falls back to username when display_name is empty", func() {
+			writeUsers([]map[string]any{
+				{
+					"username":      "alice",
+					"password_hash": hashFor("wonderland"),
+					"created_at":    time.Now().UTC().Format(time.RFC3339),
+				},
+			}, 0o600)
+
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			p, err := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.DisplayName).To(Equal("alice"))
+		})
+
+		It("empty path constructs a zero-user source (test/bootstrap escape hatch)", func() {
+			source, err := identity.NewMultiUserSource("")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(source).NotTo(BeNil())
+			_, authErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
+			})
+			Expect(errors.Is(authErr, identity.ErrInvalidCredentials)).To(BeTrue())
+		})
+
+		It("Reload picks up changes written via the cobra subcommand path", func() {
+			writeUsers([]map[string]any{}, 0o600)
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Before reload — auth must fail because the file is empty.
+			_, authErr := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
+			})
+			Expect(errors.Is(authErr, identity.ErrInvalidCredentials)).To(BeTrue())
+
+			// Write a user (simulating `flowstate auth user add`).
+			writeUsers([]map[string]any{
+				{
+					"username":      "alice",
+					"password_hash": hashFor("wonderland"),
+					"created_at":    time.Now().UTC().Format(time.RFC3339),
+				},
+			}, 0o600)
+
+			Expect(source.Reload()).To(Succeed())
+
+			p, err := source.Authenticate(ctx, identity.Credentials{
+				Username: "alice", Password: "wonderland",
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(p.ID).To(Equal("alice"))
+		})
+
+		It("Path returns the users.json path the source was constructed with", func() {
+			source, err := identity.NewMultiUserSource(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(source.Path()).To(Equal(path))
 		})
 
 		It("Mode() returns multi-user", func() {
+			source, err := identity.NewMultiUserSource("")
+			Expect(err).NotTo(HaveOccurred())
 			Expect(source.Mode()).To(Equal(identity.ModeMultiUser))
 		})
 
-		// Plan §"Wire Protocol" line 484 (B8): login.go MUST translate
-		// ErrNotImplemented to 401 invalid_credentials uniformly. This
-		// spec pins that ErrNotImplemented and ErrInvalidCredentials are
-		// DISTINCT sentinels — so login.go's wire-collapse layer is the
-		// only place the distinction is erased. If a future refactor
-		// merges these sentinels, this test fails and forces a deliberate
-		// re-decision.
-		It("ErrNotImplemented is distinct from ErrInvalidCredentials", func() {
+		It("ErrNotImplemented is retained as a forward-compat sentinel distinct from ErrInvalidCredentials", func() {
+			// PR4/C9 removes ErrNotImplemented from MultiUserSource's
+			// return surface, but the sentinel stays declared for future
+			// OAuth/OIDC stubs. The distinct-sentinel pin survives so a
+			// future refactor that merges them fails this spec.
 			Expect(errors.Is(identity.ErrNotImplemented, identity.ErrInvalidCredentials)).To(BeFalse())
 			Expect(errors.Is(identity.ErrInvalidCredentials, identity.ErrNotImplemented)).To(BeFalse())
 		})
@@ -176,7 +374,9 @@ var _ = Describe("identity.Source impls", func() {
 		It("all three impls satisfy Source", func() {
 			var _ identity.Source = identity.NewSharedSecretSource("")
 			var _ identity.Source = identity.NewDeploymentLoginSource("", "", "")
-			var _ identity.Source = identity.NewMultiUserSource()
+			mus, err := identity.NewMultiUserSource("")
+			Expect(err).NotTo(HaveOccurred())
+			var _ identity.Source = mus
 		})
 	})
 
@@ -201,9 +401,10 @@ var _ = Describe("identity.Source impls", func() {
 		It("returns ctx.Err() when ctx is already cancelled (MultiUserSource)", func() {
 			cancelled, cancel := context.WithCancel(context.Background())
 			cancel()
-			_, err := identity.NewMultiUserSource().
-				Authenticate(cancelled, identity.Credentials{})
-			Expect(errors.Is(err, context.Canceled)).To(BeTrue())
+			source, err := identity.NewMultiUserSource("")
+			Expect(err).NotTo(HaveOccurred())
+			_, authErr := source.Authenticate(cancelled, identity.Credentials{})
+			Expect(errors.Is(authErr, context.Canceled)).To(BeTrue())
 		})
 	})
 })

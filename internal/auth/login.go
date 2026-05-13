@@ -40,7 +40,8 @@ type LoginPrincipalView struct {
 //	  - unknown fields (DisallowUnknownFields=false; extra fields silently dropped)
 //	  - wrong shape (multi-user body to shared-secret server, etc.)
 //	  - wrong credentials (Source returns ErrInvalidCredentials)
-//	  - ErrNotImplemented from the MultiUserSource stub
+//	  - absent username in multi-user mode (PR4/C9 — same sentinel as wrong password)
+//	  - ErrNotImplemented from any future Source stub (forward-compat)
 //
 //	The on-wire response is byte-identical across all failure paths so
 //	probers cannot fingerprint the server's auth.mode by trying each body
@@ -71,8 +72,9 @@ func HandleLogin(source identity.Source, sessionMgr *SessionManager) http.Handle
 
 		principal, err := source.Authenticate(r.Context(), creds)
 		if err != nil {
-			// B8 — both ErrInvalidCredentials and ErrNotImplemented
-			// (MultiUserSource stub) collapse to the same 401 shape.
+			// B8 — every Authenticate error (ErrInvalidCredentials,
+			// any future ErrNotImplemented, ctx errors) collapses to
+			// the same 401 shape.
 			slog.Warn("auth login: authenticate failed",
 				"mode", source.Mode(),
 				"err", err.Error(),
