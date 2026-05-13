@@ -233,13 +233,16 @@ type TokenSpendVariant struct {
 // tooltip and the deep-view panel.
 //
 // Recognised values (plan line 207 + per-provider matrix):
-//   - "local-model"        — ollama (local; no quota by definition).
-//   - "no-quota-headers"   — proxy strips rate-limit headers.
-//   - "subscription-only"  — copilot (subscription model; no
+//   - "local-model"           — ollama (local; no quota by definition).
+//   - "no-quota-headers"      — proxy strips rate-limit headers.
+//   - "subscription-only"     — copilot (subscription model; no
 //     per-request meter or monthly token cap).
-//   - "awaiting-pr3"       — openaicompat success-path lift not yet
+//   - "awaiting-pr3"          — openaicompat success-path lift not yet
 //     shipped (PR3 territory).
-//   - "unknown-model:<id>" — pricing table missing this model.
+//   - "unknown-model:<id>"    — pricing table missing this model.
+//   - "no-adapter-registered" — Tracker.Lookup fallback for a provider
+//     that has not bound a quota adapter (e.g. third-party plugins).
+//     Emitted by tracker.go:71-76.
 type NotConfiguredVariant struct {
 	Reason string
 }
