@@ -8,13 +8,22 @@
 // internal/auth siblings, no HTTP-server-specific types.
 //
 // Plan reference: FlowState API Auth Track (May 2026) §"Deployment Modes &
-// Auth Modes Matrix" lines 144-172 and §"Rollout Plan" PR2/C3 line 549.
+// Auth Modes Matrix" lines 144-172 and §"Rollout Plan" PR2/C3 line 549 +
+// PR4/C9 line 555.
 package identity
 
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // ErrInvalidCredentials is returned by every Source.Authenticate impl when the
@@ -22,14 +31,18 @@ import (
 // translate this to a uniform `401 invalid_credentials` on the wire — see
 // plan §"Wire Protocol" line 484 (B8 — mode-fingerprint defence).
 //
+// B8 discipline (PR4/C9): MultiUserSource returns this sentinel for BOTH
+// absent username AND wrong-password cases. The wire response shape is
+// byte-identical so probers cannot fingerprint user existence.
+//
 // Sentinel; compare with errors.Is.
 var ErrInvalidCredentials = errors.New("auth/identity: invalid credentials")
 
-// ErrNotImplemented is returned by MultiUserSource in PR2/C3 (this commit).
-// PR4/C9 replaces the stub with a real impl backed by users.json. Returning
-// this from a stub keeps the wire-protocol invariant: login.go MUST collapse
-// any Authenticate error to a uniform 401, so the wire response shape does
-// not change between PR2 (stub) and PR4 (real impl).
+// ErrNotImplemented is retained as a sentinel for forward compatibility with
+// future Source impls (e.g. OAuth/OIDC v2 stubs). MultiUserSource no longer
+// returns it as of PR4/C9; SharedSecretSource and DeploymentLoginSource never
+// did. login.go's B8 wire-collapse still translates this to the same 401
+// shape as ErrInvalidCredentials.
 //
 // Sentinel; compare with errors.Is.
 var ErrNotImplemented = errors.New("auth/identity: source not implemented in this build")
@@ -38,9 +51,9 @@ var ErrNotImplemented = errors.New("auth/identity: source not implemented in thi
 // here means callers never mistype a mode value; the AuthConfig wiring in
 // PR3 reads these constants directly.
 const (
-	ModeSharedSecret       = "shared-secret"
-	ModeDeploymentLogin    = "per-deployment-login"
-	ModeMultiUser          = "multi-user"
+	ModeSharedSecret    = "shared-secret"
+	ModeDeploymentLogin = "per-deployment-login"
+	ModeMultiUser       = "multi-user"
 )
 
 // Principal is the post-authentication identity returned by Source.Authenticate.
@@ -88,12 +101,12 @@ type Credentials struct {
 //   - Return ErrInvalidCredentials on any auth failure (login.go maps to 401).
 //   - Be safe for concurrent use across request goroutines.
 //   - Honour ctx cancellation when the underlying lookup is non-trivial
-//     (bcrypt compare, file IO). The two v1 impls here are cheap enough that
-//     ctx is checked once at entry.
+//     (bcrypt compare, file IO). bcrypt compare in MultiUserSource is
+//     ~50-100ms at cost 12; ctx is checked at entry.
 type Source interface {
 	// Authenticate validates creds and returns the matching Principal on
-	// success. Returns ErrInvalidCredentials on failure; MAY return
-	// ErrNotImplemented (MultiUserSource stub).
+	// success. Returns ErrInvalidCredentials on any failure (including
+	// absent users — B8 discipline; PR4/C9).
 	Authenticate(ctx context.Context, creds Credentials) (Principal, error)
 
 	// Mode returns the deployment mode this Source implements. Used by
@@ -202,37 +215,235 @@ func (d *DeploymentLoginSource) Authenticate(ctx context.Context, creds Credenti
 // Mode returns ModeDeploymentLogin.
 func (d *DeploymentLoginSource) Mode() string { return ModeDeploymentLogin }
 
-// MultiUserSource is the PR2 stub for multi-user mode (plan §"Rollout Plan"
-// PR2/C3 line 549 — "lands as a stub here (compile-clean, returns not
-// implemented); real impl in PR4/C7"). The constructor compiles so PR3
-// can wire it through setupRoutes; first Authenticate call returns
-// ErrNotImplemented.
+// MultiUserSource is the multi-user identity source (plan §"Deployment Modes"
+// row 3 + §"Rollout Plan" PR4/C9 line 555). Reads bcrypt-hashed user records
+// from a JSON file at ${XDG_CONFIG_HOME}/flowstate/users.json (the path is
+// caller-controlled — see NewMultiUserSource).
 //
-// login.go's B8 fix collapses this error to `401 invalid_credentials` on
-// the wire, so the stub period is invisible to unauthenticated probers:
-// a multi-user-mode server with the PR2 stub looks identical on the wire
-// to one with the PR4 real impl returning ErrInvalidCredentials.
-type MultiUserSource struct{}
-
-// NewMultiUserSource constructs the PR2 stub. PR4/C9 replaces the impl
-// body without changing this constructor signature; the wiring in
-// setupRoutes stays unchanged across the v1→v1.x boundary.
-func NewMultiUserSource() *MultiUserSource { return &MultiUserSource{} }
-
-// Authenticate returns ErrNotImplemented. PR4/C9 swap-in.
+// File format (plan §OD-F):
 //
-// login.go MUST translate this to the same `401 invalid_credentials`
-// shape as ErrInvalidCredentials — see plan line 484 (B8). The stub
-// existing on the wire is invisible to probers.
-func (*MultiUserSource) Authenticate(ctx context.Context, _ Credentials) (Principal, error) {
+//	{
+//	  "users": [
+//	    {
+//	      "username": "alice",
+//	      "password_hash": "$2a$12$...",
+//	      "display_name": "Alice Operator",
+//	      "created_at": "2026-05-13T12:00:00Z"
+//	    }
+//	  ]
+//	}
+//
+// Atomic-write discipline: writes via the cobra subcommands route through
+// internal/atomicwrite.File — temp+rename+fsync so a crash mid-write never
+// truncates users.json.
+//
+// B8 discipline (plan §"Wire Protocol" line 484):
+//
+//	Authenticate returns ErrInvalidCredentials for BOTH absent username AND
+//	wrong-password cases. login.go's wire-collapse layer keeps the response
+//	byte-identical so probers cannot fingerprint user existence.
+//
+// Empty users.json (missing file OR zero users) is valid bootstrap state
+// per plan §"Bootstrap UX" multi-user — server starts, every login fails
+// closed, slog.Warn surfaces the misconfig to the operator. The cobra
+// `flowstate auth user add <name>` command provisions users out-of-band
+// (plan §OD-G — no self-signup endpoint).
+type MultiUserSource struct {
+	path string
+
+	mu    sync.RWMutex
+	users map[string]userEntry // username → entry
+}
+
+// userEntry is the in-memory shape of one row in users.json. JSON tags
+// match the on-disk format so the cobra commands and the auth path share
+// one source of truth.
+type userEntry struct {
+	Username     string    `json:"username"`
+	PasswordHash string    `json:"password_hash"`
+	DisplayName  string    `json:"display_name,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// usersFile is the on-disk container shape. A nested array under "users"
+// reserves room for future top-level fields (e.g. file-format version,
+// last-rotated timestamp) without an on-disk migration.
+type usersFile struct {
+	Users []userEntry `json:"users"`
+}
+
+// NewMultiUserSource constructs a MultiUserSource bound to path. The file
+// is loaded once at construction time and cached in memory; subsequent
+// Authenticate calls hit the cache, not the disk.
+//
+// Behaviour:
+//   - path == ""                  → ErrInvalidCredentials on every call.
+//     Use this for tests / bootstrap where users.json is intentionally
+//     absent (matches B8 discipline — no leak of "no path configured" vs
+//     "user not found").
+//   - file does not exist         → constructor returns OK with zero users.
+//     Server starts; every login fails closed. Plan §"Bootstrap UX" multi-user.
+//   - file world-readable (>0600) → slog.Warn surfaced but constructor
+//     succeeds. Operator's choice; not fatal.
+//   - file unparseable JSON       → constructor returns error so the
+//     operator sees the misconfig at boot, not at first login.
+//
+// Concurrent-safe for Authenticate. Provisioning (add / remove via the
+// cobra commands) writes via atomicwrite.File; in-process the source
+// re-reads via Reload (PR4/C9).
+func NewMultiUserSource(path string) (*MultiUserSource, error) {
+	m := &MultiUserSource{
+		path:  path,
+		users: map[string]userEntry{},
+	}
+	if path == "" {
+		return m, nil
+	}
+	if err := m.load(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// load reads m.path and replaces the in-memory cache. Missing file is OK
+// (zero users). Unparseable file is an error.
+//
+// World-readable check: stat the file; if perm bits beyond 0o600, log a
+// slog.Warn (advisory — the operator may have chosen to share the file).
+func (m *MultiUserSource) load() error {
+	info, statErr := os.Stat(m.path)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			m.mu.Lock()
+			m.users = map[string]userEntry{}
+			m.mu.Unlock()
+			return nil
+		}
+		return fmt.Errorf("auth/identity: stat users file %q: %w", m.path, statErr)
+	}
+
+	// 0o600 = read+write for owner only. Anything broader is a misconfig
+	// signal — log but proceed.
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		slog.Warn("multi_user_users_json_world_readable",
+			"path", m.path,
+			"perm", fmt.Sprintf("%#o", perm),
+		)
+	}
+
+	data, err := os.ReadFile(m.path)
+	if err != nil {
+		return fmt.Errorf("auth/identity: read users file %q: %w", m.path, err)
+	}
+
+	// Empty file is treated as zero users (matches missing-file behaviour).
+	if len(data) == 0 {
+		m.mu.Lock()
+		m.users = map[string]userEntry{}
+		m.mu.Unlock()
+		return nil
+	}
+
+	var parsed usersFile
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return fmt.Errorf("auth/identity: parse users file %q: %w", m.path, err)
+	}
+
+	next := make(map[string]userEntry, len(parsed.Users))
+	for _, u := range parsed.Users {
+		if u.Username == "" {
+			continue
+		}
+		next[u.Username] = u
+	}
+
+	m.mu.Lock()
+	m.users = next
+	m.mu.Unlock()
+	return nil
+}
+
+// Reload re-reads users.json from disk. Cobra subcommands (`auth user add`,
+// `auth user remove`) call this after an atomic-write so the server
+// (post-PR5 default-on) sees the change without a restart. In-process
+// callers can also invoke it on SIGHUP.
+//
+// Returns the same errors as the constructor's load step. Concurrent with
+// Authenticate via m.mu.
+func (m *MultiUserSource) Reload() error {
+	if m.path == "" {
+		return nil
+	}
+	return m.load()
+}
+
+// Path returns the users.json path the source was constructed with.
+// Cobra subcommands use this to locate the file when the source is
+// already constructed (e.g. when sharing one source between the serve
+// process and an admin command via Reload).
+func (m *MultiUserSource) Path() string { return m.path }
+
+// Authenticate validates creds.Username + creds.Password against the
+// cached users.json.
+//
+// Error contract (B8 discipline):
+//   - ctx cancelled                  → ctx.Err()
+//   - username == "" OR not found    → ErrInvalidCredentials
+//   - bcrypt.CompareHashAndPassword
+//     returns ErrMismatchedHash...   → ErrInvalidCredentials
+//   - bcrypt returns any other error → ErrInvalidCredentials
+//     (logged via slog.Warn so the operator sees corrupt-hash signals)
+//   - success                        → Principal{ID:username, ...}
+//
+// The same sentinel for absent-user and wrong-password is non-negotiable
+// (memory feedback_published_unsubscribed_events_dead_surface notwithstanding
+// — this is the B8 fingerprint defence). Distinguishing the two would
+// leak user-existence to probers.
+func (m *MultiUserSource) Authenticate(ctx context.Context, creds Credentials) (Principal, error) {
 	if err := ctx.Err(); err != nil {
 		return Principal{}, err
 	}
-	return Principal{}, ErrNotImplemented
+	if creds.Username == "" {
+		return Principal{}, ErrInvalidCredentials
+	}
+
+	m.mu.RLock()
+	entry, found := m.users[creds.Username]
+	m.mu.RUnlock()
+	if !found {
+		// B8 — same sentinel as wrong-password below.
+		return Principal{}, ErrInvalidCredentials
+	}
+
+	if err := bcrypt.CompareHashAndPassword(
+		[]byte(entry.PasswordHash),
+		[]byte(creds.Password),
+	); err != nil {
+		if !errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			// Corrupt hash, version-too-new, etc. Log so the operator sees
+			// the misconfig; still collapse to invalid_credentials on the
+			// wire (B8).
+			slog.Warn("multi_user_bcrypt_compare_failed",
+				"username", creds.Username,
+				"err", err.Error(),
+			)
+		}
+		return Principal{}, ErrInvalidCredentials
+	}
+
+	display := entry.DisplayName
+	if display == "" {
+		display = entry.Username
+	}
+	return Principal{
+		ID:          entry.Username,
+		DisplayName: display,
+		Mode:        ModeMultiUser,
+	}, nil
 }
 
 // Mode returns ModeMultiUser.
-func (*MultiUserSource) Mode() string { return ModeMultiUser }
+func (m *MultiUserSource) Mode() string { return ModeMultiUser }
 
 // constantTimeEqual is a constant-time string compare wrapping
 // crypto/subtle.ConstantTimeCompare. Length-mismatch returns false

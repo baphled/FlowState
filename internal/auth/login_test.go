@@ -114,7 +114,7 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 		//                    | shared-secret | per-deployment | multi-user
 		// --------------------|---------------|----------------|-----------
 		// shared-shape body   |    happy 200  |    happy 200   |   401
-		// multi-user body     |    401        |    401         |   401 (stub)
+		// multi-user body     |    401        |    401         |   401 (PR4 real)
 		// malformed JSON      |    401        |    401         |   401
 		// extra unknown field |    401 or 200 |    401 or 200  |   401
 		// completely empty {} |    401        |    401         |   401
@@ -122,6 +122,17 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 		newHandler := func(mode string, src identity.Source) http.HandlerFunc {
 			mgr = newMgr(mode)
 			return auth.HandleLogin(src, mgr)
+		}
+
+		// emptyMultiUserSource constructs a MultiUserSource with no users
+		// configured (empty path → zero users; every Authenticate returns
+		// ErrInvalidCredentials). This is the PR4/C9 replacement for the
+		// removed `identity.NewMultiUserSource()` zero-arg stub form —
+		// the wire-collapse path produces the same uniform 401 either way.
+		emptyMultiUserSource := func() identity.Source {
+			src, err := identity.NewMultiUserSource("")
+			Expect(err).NotTo(HaveOccurred())
+			return src
 		}
 
 		expectUniformBody := func(rec *httptest.ResponseRecorder) {
@@ -142,10 +153,12 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 		})
 
 		// B8 row 2 — shared-secret-shape body to a multi-user-mode server
-		// MUST also return 401 invalid_credentials (stub returns
-		// ErrNotImplemented → wire collapse).
+		// MUST also return 401 invalid_credentials. PR4/C9: the real
+		// MultiUserSource with no users configured returns
+		// ErrInvalidCredentials → wire collapse keeps the byte-identical
+		// 401 shape that the stub used to produce via ErrNotImplemented.
 		It("shared-secret-shape body to multi-user server → uniform 401", func() {
-			h := newHandler(identity.ModeMultiUser, identity.NewMultiUserSource())
+			h := newHandler(identity.ModeMultiUser, emptyMultiUserSource())
 			rec := post(h, `{"secret":"hunter2"}`)
 			expectUniformBody(rec)
 		})
@@ -158,9 +171,13 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 			expectUniformBody(rec)
 		})
 
-		// B8 row 4 — multi-user server with NO credentials (PR2 stub).
-		It("valid multi-user-shape body to multi-user-stub server → uniform 401", func() {
-			h := newHandler(identity.ModeMultiUser, identity.NewMultiUserSource())
+		// B8 row 4 — multi-user server with NO users configured.
+		// PR4/C9 replaces the PR2 stub with the real impl; an empty
+		// users.json (the bootstrap state per plan §"Bootstrap UX"
+		// multi-user) makes every login fail closed with the same
+		// uniform 401 the stub used to return.
+		It("valid multi-user-shape body to empty-users-multi-user server → uniform 401", func() {
+			h := newHandler(identity.ModeMultiUser, emptyMultiUserSource())
 			rec := post(h, `{"username":"alice","password":"wonderland"}`)
 			expectUniformBody(rec)
 		})
@@ -181,7 +198,7 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 		})
 
 		It("malformed JSON to multi-user server → uniform 401", func() {
-			h := newHandler(identity.ModeMultiUser, identity.NewMultiUserSource())
+			h := newHandler(identity.ModeMultiUser, emptyMultiUserSource())
 			rec := post(h, `{not valid json`)
 			expectUniformBody(rec)
 		})
@@ -219,7 +236,7 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 			}{
 				{identity.ModeSharedSecret, identity.NewSharedSecretSource("hunter2")},
 				{identity.ModeDeploymentLogin, identity.NewDeploymentLoginSource("hunter2", "op", "")},
-				{identity.ModeMultiUser, identity.NewMultiUserSource()},
+				{identity.ModeMultiUser, emptyMultiUserSource()},
 			}
 			probes := []string{
 				`{"secret":"wrong"}`,
