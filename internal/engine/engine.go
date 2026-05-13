@@ -23,6 +23,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/quota"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/sessionid"
@@ -282,6 +283,40 @@ type Engine struct {
 	sessionOutputTokens   map[string]int64
 	sessionOutputTokensMu sync.RWMutex
 
+	// quotaTracker is the optional provider-quota Tracker. When
+	// non-nil:
+	//   - processStreamChunks calls RecordSpend at the same site as
+	//     recordSessionOutputTokens (engine.go:3724-3726
+	//     (processStreamChunks)).
+	//   - Stream emits one inline provider_quota chunk before the
+	//     reply (engine.go:2519-2533 cadence parity with
+	//     context_usage).
+	//   - makePostTurnQuotaEmitter constructs the post-turn emitter
+	//     mirroring makePostTurnUsageEmitter
+	//     (engine.go:2707-2742).
+	// Nil disables all three code paths cleanly — the PR1 wire shape
+	// is dormant until PR4 wires this field.
+	//
+	// Plan §"Engine integration / spend accumulation rules
+	// (A4 resolution)" lines 299-318.
+	quotaTracker *quota.Tracker
+
+	// quotaAccountHashes and quotaCaps mirror the Config fields of
+	// the same names — see Config.QuotaAccountHashes /
+	// Config.QuotaCaps doc comments. Both are nil when the engine is
+	// not configured with quota tracking.
+	quotaAccountHashes map[string]string
+	quotaCaps          map[string]quota.CapConfig
+
+	// lastProviderQuotaPayload tracks the most-recent
+	// provider_quota payload string emitted onto a per-session
+	// outChan so the post-turn emitter can suppress no-op
+	// repetitions (same shape as lastUsagePayload above for
+	// context_usage). Per-session keying so session A's repeats
+	// don't suppress session B's first emit.
+	lastProviderQuotaPayload   map[string]string
+	lastProviderQuotaPayloadMu sync.Mutex
+
 	mu sync.RWMutex
 }
 
@@ -504,6 +539,38 @@ type Config struct {
 	// to assert on launch and shutdown semantics without touching
 	// the real cache directory.
 	ToolOutputCleaner func(root string, retention time.Duration) error
+
+	// QuotaTracker is the optional provider-quota-and-spend Tracker
+	// (PR1+PR4 of the Provider Quota and Spend Visibility plan, May
+	// 2026). When non-nil, the engine:
+	//   - calls QuotaTracker.RecordSpend from the streaming pipe at
+	//     the same site that records the live token counter (see
+	//     engine.go:3724-3726 (processStreamChunks)) so cumulative
+	//     spend updates land on every UsageDelta chunk.
+	//   - emits a `provider_quota` StreamChunk inline (before reply)
+	//     and via the post-turn emitter, mirroring the context_usage
+	//     cadence at engine.go:2519-2533 + 2707-2742
+	//     (makePostTurnUsageEmitter).
+	// Nil disables both code paths cleanly — the wire shape is
+	// dormant per PR1 commit ef40f9b0 until PR4 wires this field.
+	QuotaTracker *quota.Tracker
+
+	// QuotaAccountHashes carries the SHA-256-truncated account hash
+	// per provider id. Computed at boot via quota.HashAccount(apiKey).
+	// Surfaced into every RecordSpend call and into the inline +
+	// post-turn provider_quota chunk so the chip's tooltip can
+	// disclose which key is being charged without exposing the key
+	// itself. Nil/missing entries default to empty hash.
+	QuotaAccountHashes map[string]string
+
+	// QuotaCaps carries the per-provider CapConfig the engine passes
+	// through on every RecordSpend call. Built at boot from
+	// config.QuotaConfig.Providers — config does the YAML parse +
+	// ParseCap + ResolveThresholds + ResolvePeriod translation; the
+	// engine consumes pre-validated CapConfig values. Missing entries
+	// default to the zero CapConfig (uncapped — chip renders without
+	// a denominator and stays green per OD-9).
+	QuotaCaps map[string]quota.CapConfig
 }
 
 // New creates a new Engine from the given configuration.
@@ -689,6 +756,10 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		seededSessions:            make(map[string]struct{}),
 		lastUsagePayload:          make(map[string]string),
 		sessionOutputTokens:       make(map[string]int64),
+		quotaTracker:              cfg.QuotaTracker,
+		quotaAccountHashes:        cfg.QuotaAccountHashes,
+		quotaCaps:                 cfg.QuotaCaps,
+		lastProviderQuotaPayload:  make(map[string]string),
 		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
 		swarmContext:              cfg.SwarmContext,
 		microCompactor:            resolveMicroCompactor(cfg),
@@ -2525,12 +2596,28 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	// refuses the request.
 	usageChunk, hasUsage := e.buildContextUsageChunk(&req)
 
+	// Compute the provider_quota payload BEFORE streamFromProvider so
+	// the chip pivots in lockstep with context_usage. Same gate
+	// semantics — suppressed when the tracker has no Snapshot for
+	// (req.Provider, req.Model). Plan §"Engine integration" lines
+	// 314-316 + cadence parity with context_usage. PR4.
+	quotaChunk, hasQuota := e.buildProviderQuotaChunk(streamCtx, &req)
+
 	// Phase 3 — post-turn emitter. Constructed once per Stream so the
 	// goroutine inside the loop can emit a fresh context_usage chunk
 	// before every terminal Done. Only wired when the engine can
 	// compute a meaningful figure for the request — same gate as the
 	// pre-send chunk above so degraded environments stay quiet.
 	postTurnEmitter := e.makePostTurnUsageEmitter(&req, hasUsage)
+
+	// Post-turn provider_quota emitter mirrors the context_usage
+	// closure above. Constructed once per Stream so the
+	// streamWithToolLoop terminal-Done path can emit a fresh
+	// provider_quota chunk reflecting the cumulative spend the just-
+	// completed turn ticked up. Nil when the tracker is not wired —
+	// the runtime gate keeps degraded environments quiet. PR4.
+	postTurnQuotaEm := e.makePostTurnQuotaEmitter(&req)
+	_ = postTurnQuotaEm // used inside the goroutine below; explicit so future maintainers see the binding
 
 	providerChunks, err := e.streamFromProvider(streamCtx, &req)
 	e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
@@ -2565,7 +2652,28 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		if hasUsage {
 			outChan <- usageChunk
 		}
+		// Inline provider_quota chunk lands second so the chip's
+		// dual-display (context-usage + spend) updates in one
+		// frame. Cadence parity with context_usage per plan
+		// §"Engine integration" lines 314-316. Suppression via
+		// tryEmitProviderQuotaInline keeps the SSE wire quiet
+		// between identical payloads (the no-spend boot path can
+		// emit the same NotConfigured Snapshot turn after turn).
+		if hasQuota {
+			e.tryEmitProviderQuotaInline(sessionID, quotaChunk, outChan)
+		}
 		e.streamWithToolLoop(streamCtx, sessionID, messages, providerChunks, outChan, postTurnEmitter)
+		// Post-turn provider_quota emit — fires once after the
+		// stream completes (terminal Done forwarded inside
+		// streamWithToolLoop). Mirrors the context_usage post-
+		// turn cadence makePostTurnUsageEmitter installs inside
+		// the loop; we emit here because the post-turn quota
+		// emitter is a sibling channel (separate from the
+		// context_usage closure the loop hosts). The emitter is
+		// nil-safe so streams without quota wiring no-op.
+		if postTurnQuotaEm != nil {
+			postTurnQuotaEm(streamCtx, outChan)
+		}
 		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
 		e.dispatchKnowledgeExtraction(sessionID, messages)
 	}()
@@ -3723,6 +3831,18 @@ func (e *Engine) processStreamChunks(
 			// a prior recorded figure mid-turn.
 			if chunk.Usage != nil && chunk.Usage.OutputTokens > 0 {
 				e.recordSessionOutputTokens(sessionID, chunk.Usage.OutputTokens)
+			}
+
+			// Quota Plan PR4 — spend accumulator. Mirror the gate
+			// above: any chunk carrying Usage feeds the Tracker via
+			// recordQuotaSpend (no-op when the tracker is unwired).
+			// The snapshot-not-increment dedupe lives inside the
+			// Tracker (spend.go RecordSpend) so a 3-chunk stream
+			// produces the cost of the FINAL cumulative, not the
+			// sum-of-deltas. Plan §"Engine integration / spend
+			// accumulation rules (A4 resolution)" lines 299-318.
+			if chunk.Usage != nil {
+				e.recordQuotaSpend(ctx, chunk.ProviderID, chunk.ModelID, chunk.Usage)
 			}
 
 			// Dispatch by chunk shape rather than EventType so the loop
