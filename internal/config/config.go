@@ -2,10 +2,12 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -678,21 +680,47 @@ type AuthConfig struct {
 
 // QuotaConfig controls the Provider Quota and Spend Visibility surface
 // (May 2026 plan). PR1 ships the Store-backend + deployment-topology
-// keys + boot validation; PR2-6 layer pricing, spend, dashboard, and
-// persistence on top.
+// keys + boot validation; PR2 adds Pricing (three-tier table),
+// Currency (OD-6 conversion), Providers (per-provider cap + period +
+// thresholds). PR4 lights up the spend variant against the PR2
+// plumbing.
 //
-// The two load-bearing keys for PR1 are Store.Backend and
+// The load-bearing keys for PR1 are Store.Backend and
 // Store.DeploymentTopology. Per plan §"Boot validation" lines 289-291,
 // the combination `Backend=memory + DeploymentTopology=multi-instance`
 // is rejected at boot — the only silently-broken pairing that would
-// double-count across instances. All other combinations are valid
-// (incl. fresh-install defaults, which are quiet-boot single-instance
-// + memory).
+// double-count across instances.
 //
-// Plan §"`internal/provider/quota/store/`" YAML example lines 269-281.
+// PR2 adds:
+//   - Pricing.Path        — operator-override file (highest precedence).
+//   - Pricing.Registry    — opt-in remote registry (B5 closure —
+//     disabled by default, no canonical FlowState URL).
+//   - Currency.ConversionTable — OD-6 USD-equivalent override path.
+//   - Providers[name]     — per-provider cap + period + thresholds
+//     (plumbed but NOT enforced in PR2 — PR4 lights spend up).
+//
+// Plan §"`internal/provider/quota/store/`" YAML example lines 269-281
+// + §"Pricing table" lines 338-388 + OD-6 lines 498-503 + OD-9
+// thresholds lines 517-520.
 type QuotaConfig struct {
 	// Store controls the cluster-ready persistence backend.
 	Store QuotaStoreConfig `json:"store" yaml:"store"`
+
+	// Pricing controls the three-tier pricing-table resolution.
+	// Operator override > remote registry > embedded default.
+	Pricing QuotaPricingConfig `json:"pricing" yaml:"pricing"`
+
+	// Currency controls the OD-6 native-to-USD conversion table.
+	// Default rates are embedded at
+	// internal/provider/quota/currencies.go; operators override the
+	// full table via the JSON file at Currency.ConversionTable.
+	Currency QuotaCurrencyConfig `json:"currency" yaml:"currency"`
+
+	// Providers carries the per-deployment cap + period + thresholds
+	// for each configured provider. PR2 plumbs this through but does
+	// NOT enforce — PR4 wires the spend variant against these keys.
+	// Maps keyed by canonical provider id ("anthropic", "openai", ...).
+	Providers map[string]ProviderQuotaConfig `json:"providers,omitempty" yaml:"providers,omitempty"`
 }
 
 // QuotaStoreConfig holds the Store-backend selection and deployment
@@ -711,18 +739,275 @@ type QuotaStoreConfig struct {
 	DeploymentTopology string `json:"deployment_topology,omitempty" yaml:"deployment_topology,omitempty"`
 }
 
+// QuotaPricingConfig controls the three-tier pricing resolution.
+// Plan §"Pricing table" lines 338-388.
+type QuotaPricingConfig struct {
+	// Path is the operator-supplied pricing JSON file. When set, takes
+	// highest precedence (partial files merge over the registry +
+	// embedded baseline per plan line 344). Empty means no override
+	// configured.
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+
+	// Registry controls the opt-in remote registry tier.
+	Registry QuotaPricingRegistryConfig `json:"registry" yaml:"registry"`
+}
+
+// QuotaPricingRegistryConfig holds the remote-registry knobs. Per B5
+// closure (feedback_default_urls_must_be_provisioned_or_disabled), v1
+// default is Enabled=false with empty URL — every fresh install boots
+// with embedded prices, no network, no warning. Operators wanting
+// fresh prices set Enabled=true AND supply their own URL.
+type QuotaPricingRegistryConfig struct {
+	// Enabled controls whether the registry tier participates. Default
+	// false (v1 baseline is embedded). When true, URL MUST be non-empty
+	// — the boot validation rejects the misconfiguration.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// URL is the operator-supplied registry URL. v1 ships no canonical
+	// FlowState URL per B5 — every operator who wants fresh prices runs
+	// their own registry (or waits for the infrastructure track to ship
+	// a pricing.flowstate.app endpoint).
+	URL string `json:"url,omitempty" yaml:"url,omitempty"`
+
+	// CacheTTL overrides the default 24h cache validity. Format: a Go
+	// duration string ("12h", "30m"). Empty means the registry
+	// package's DefaultCacheTTL (24h).
+	CacheTTL string `json:"cache_ttl,omitempty" yaml:"cache_ttl,omitempty"`
+
+	// CachePath overrides the default $XDG_CACHE_HOME/flowstate/
+	// pricing-registry.json path. Empty means the registry package's
+	// DefaultCachePath.
+	CachePath string `json:"cache_path,omitempty" yaml:"cache_path,omitempty"`
+}
+
+// QuotaCurrencyConfig controls the OD-6 conversion table.
+// Plan OD-6 lines 498-503.
+type QuotaCurrencyConfig struct {
+	// ConversionTable is the operator-supplied path to a JSON file
+	// matching the shape of the embedded
+	// internal/provider/quota/currencies.go map (USD identity entry
+	// MUST be present at rate 1.0). Empty means the embedded table.
+	ConversionTable string `json:"conversion_table,omitempty" yaml:"conversion_table,omitempty"`
+}
+
+// ProviderQuotaConfig is the per-provider cap + period + threshold
+// surface. PR2 ships the shape; PR4 enforces it.
+//
+// Plan §"Pricing table" line 390 + OD-9 thresholds lines 517-520.
+type ProviderQuotaConfig struct {
+	// Cap is the operator-configured monthly cap formatted as
+	// "<amount> <currency>" (e.g. "50.00 USD", "350.00 CNY"). Parsed
+	// via ParseCap. Empty means uncapped — the chip renders without
+	// a denominator and stays green.
+	Cap string `json:"cap,omitempty" yaml:"cap,omitempty"`
+
+	// Period is the spend-window granularity. "monthly" (default),
+	// "rolling-30d", or "session" per plan line 204.
+	Period string `json:"period,omitempty" yaml:"period,omitempty"`
+
+	// ThresholdAmber is the percentage (Spent/Cap * 100) at which the
+	// chip transitions green → amber. Default 80 per OD-9.
+	ThresholdAmber int `json:"threshold_amber,omitempty" yaml:"threshold_amber,omitempty"`
+
+	// ThresholdRed is the percentage at which the chip transitions
+	// amber → red. Default 95 per OD-9.
+	ThresholdRed int `json:"threshold_red,omitempty" yaml:"threshold_red,omitempty"`
+}
+
+// ParseCap parses the "<amount> <currency>" format (e.g. "50.00 USD",
+// "350.50 CNY") into amountMinor (int64 minor units) + currency code.
+// Returns an error on malformed input — the plan demands operators see
+// the misconfiguration at boot rather than at first-spend-event time.
+//
+// Recognised currencies are USD/CNY/EUR/GBP (v1 currencies per OD-6).
+// Unknown currencies parse without erroring here — the engine
+// validates against the conversion table when the cap is first
+// consulted.
+//
+// Format rules:
+//   - Exactly two whitespace-separated tokens: <amount> <currency>.
+//   - Amount uses decimal point (no thousands separator). Negative
+//     amounts rejected.
+//   - Currency is 3 uppercase letters (ISO-4217); case-insensitive on
+//     parse, normalised to uppercase in the returned string.
+//
+// Minor-unit conversion: cents for USD/EUR/GBP, fen for CNY, etc. The
+// v1 currencies named in OD-6 all use the 100-minor-units-per-major
+// convention; future currencies with different exponents would need
+// per-currency handling.
+func ParseCap(cap string) (amountMinor int64, currency string, err error) {
+	cap = strings.TrimSpace(cap)
+	if cap == "" {
+		return 0, "", errors.New("config: empty cap value")
+	}
+	parts := strings.Fields(cap)
+	if len(parts) != 2 {
+		return 0, "", fmt.Errorf("config: cap %q must be \"<amount> <currency>\" (e.g. \"50.00 USD\")", cap)
+	}
+	amount := parts[0]
+	currencyCode := strings.ToUpper(parts[1])
+
+	// Strict 3-letter ISO-4217 form. Lowercase tolerated on parse but
+	// normalised. Letters only — reject "1.0" / "USD1".
+	if len(currencyCode) != 3 {
+		return 0, "", fmt.Errorf("config: cap currency %q must be 3 letters (ISO-4217)", parts[1])
+	}
+	for _, r := range currencyCode {
+		if r < 'A' || r > 'Z' {
+			return 0, "", fmt.Errorf("config: cap currency %q must be 3 letters (ISO-4217)", parts[1])
+		}
+	}
+
+	// Parse amount. Accept either an integer ("50") or a 2-decimal form
+	// ("50.00"). More decimal places are rejected — silent rounding is
+	// the failure mode the plan's honesty stance avoids.
+	dotIdx := strings.Index(amount, ".")
+	if dotIdx < 0 {
+		major, parseErr := strconv.ParseInt(amount, 10, 64)
+		if parseErr != nil {
+			return 0, "", fmt.Errorf("config: cap amount %q: %w", amount, parseErr)
+		}
+		if major < 0 {
+			return 0, "", fmt.Errorf("config: cap amount %q must be non-negative", amount)
+		}
+		return major * 100, currencyCode, nil
+	}
+	majorStr := amount[:dotIdx]
+	minorStr := amount[dotIdx+1:]
+	if len(minorStr) > 2 {
+		return 0, "", fmt.Errorf("config: cap amount %q has more than 2 decimal places", amount)
+	}
+	// Pad single-digit minor to two: "50.5" -> minor=50.
+	for len(minorStr) < 2 {
+		minorStr += "0"
+	}
+	major, parseErr := strconv.ParseInt(majorStr, 10, 64)
+	if parseErr != nil {
+		return 0, "", fmt.Errorf("config: cap amount major part %q: %w", majorStr, parseErr)
+	}
+	if major < 0 {
+		return 0, "", fmt.Errorf("config: cap amount %q must be non-negative", amount)
+	}
+	minor, parseErr := strconv.ParseInt(minorStr, 10, 64)
+	if parseErr != nil {
+		return 0, "", fmt.Errorf("config: cap amount minor part %q: %w", minorStr, parseErr)
+	}
+	if minor < 0 {
+		return 0, "", fmt.Errorf("config: cap amount %q minor part must be non-negative", amount)
+	}
+	return major*100 + minor, currencyCode, nil
+}
+
 // DefaultQuotaConfig returns the canonical default. Per plan B4
 // (lines 283): both keys default to safe single-instance values so
 // fresh installs boot quietly into `memory + single-instance`.
 // Operators running multi-instance deployments must explicitly opt
 // in (and select a non-memory backend, enforced at boot).
+//
+// PR2 defaults:
+//   - Pricing.Registry.Enabled = false (v1 baseline is embedded; B5
+//     closure — no aspirational URL provisioned).
+//   - Providers map empty (no caps configured).
 func DefaultQuotaConfig() QuotaConfig {
 	return QuotaConfig{
 		Store: QuotaStoreConfig{
 			Backend:            "memory",
 			DeploymentTopology: "single-instance",
 		},
+		Pricing: QuotaPricingConfig{
+			Registry: QuotaPricingRegistryConfig{
+				Enabled: false,
+			},
+		},
+		Currency:  QuotaCurrencyConfig{},
+		Providers: map[string]ProviderQuotaConfig{},
 	}
+}
+
+// ResolveThresholds returns (amber, red) with OD-9 defaults applied
+// when the per-provider config left the field at zero. Plan §"OD-9"
+// lines 519: TokenSpend defaults green < 80% used, amber 80-95%, red
+// ≥ 95% used.
+//
+// Out-of-range values (negative, > 100, amber >= red) are rejected
+// via ValidateThresholds at boot; ResolveThresholds is the in-engine
+// getter that assumes the config has already been validated.
+func (p ProviderQuotaConfig) ResolveThresholds() (amber, red int) {
+	amber = p.ThresholdAmber
+	red = p.ThresholdRed
+	if amber <= 0 {
+		amber = 80
+	}
+	if red <= 0 {
+		red = 95
+	}
+	return amber, red
+}
+
+// ResolvePeriod returns the period field with the "monthly" default
+// applied. Plan §"OD-9" lines 519 + ProviderQuotaConfig.Period.
+func (p ProviderQuotaConfig) ResolvePeriod() string {
+	if p.Period == "" {
+		return "monthly"
+	}
+	return p.Period
+}
+
+// ValidateProviderQuota checks the per-provider quota config is
+// well-formed. Boot validation calls this for every entry in
+// Providers; returns the first error encountered with the provider id
+// prefixed.
+//
+// Validations:
+//   - Cap parses cleanly when non-empty (via ParseCap).
+//   - Period is one of {"", "monthly", "rolling-30d", "session"}.
+//   - ThresholdAmber and ThresholdRed are in [0, 100] (0 means
+//     "apply default"; values > 100 reject).
+//   - When BOTH thresholds are set, amber < red (an amber threshold
+//     at or above the red threshold is a misconfiguration).
+func ValidateProviderQuota(providerID string, p ProviderQuotaConfig) error {
+	if p.Cap != "" {
+		if _, _, err := ParseCap(p.Cap); err != nil {
+			return fmt.Errorf("quota.providers.%s.cap: %w", providerID, err)
+		}
+	}
+	switch p.Period {
+	case "", "monthly", "rolling-30d", "session":
+		// ok
+	default:
+		return fmt.Errorf("quota.providers.%s.period: %q is not one of monthly, rolling-30d, session", providerID, p.Period)
+	}
+	if p.ThresholdAmber < 0 || p.ThresholdAmber > 100 {
+		return fmt.Errorf("quota.providers.%s.threshold_amber: %d out of range [0, 100]", providerID, p.ThresholdAmber)
+	}
+	if p.ThresholdRed < 0 || p.ThresholdRed > 100 {
+		return fmt.Errorf("quota.providers.%s.threshold_red: %d out of range [0, 100]", providerID, p.ThresholdRed)
+	}
+	if p.ThresholdAmber > 0 && p.ThresholdRed > 0 && p.ThresholdAmber >= p.ThresholdRed {
+		return fmt.Errorf("quota.providers.%s: threshold_amber (%d) must be less than threshold_red (%d)", providerID, p.ThresholdAmber, p.ThresholdRed)
+	}
+	return nil
+}
+
+// ValidatePricingRegistry rejects pricing.registry.enabled=true with
+// an empty pricing.registry.url. Per memory
+// feedback_default_urls_must_be_provisioned_or_disabled: v1 ships no
+// canonical FlowState URL; an operator who toggles enabled=true MUST
+// supply their own URL. Quiet boot when enabled=false regardless of
+// URL — disabled means "no registry tier participates", URL is
+// informational only.
+//
+// Plan §"Pricing table" line 345 (B5 closure).
+func ValidatePricingRegistry(p QuotaPricingRegistryConfig) error {
+	if p.Enabled && strings.TrimSpace(p.URL) == "" {
+		return errors.New(
+			"quota.pricing.registry.enabled=true requires quota.pricing.registry.url; " +
+				"v1 ships no canonical FlowState URL (B5 — no aspirational URLs). " +
+				"Set the URL to your self-hosted registry or disable the tier with enabled=false " +
+				"(the embedded pricing.json is the v1 baseline)",
+		)
+	}
+	return nil
 }
 
 // DefaultAuthConfig returns the canonical default AuthConfig. Used by
