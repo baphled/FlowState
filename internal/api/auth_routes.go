@@ -25,6 +25,7 @@ import (
 	"net/http"
 
 	"github.com/baphled/flowstate/internal/auth"
+	"github.com/baphled/flowstate/internal/auth/identity"
 )
 
 // AuthBundle is the optional auth wiring passed via WithAuth. When set,
@@ -42,6 +43,15 @@ type AuthBundle struct {
 	Session *auth.SessionManager
 	Auth    auth.AuthConfig
 	CSRF    auth.CSRFConfig
+
+	// IdentitySource is the per-mode credential validator wired by the
+	// cmd/serve layer (PR4/C9 — deferred from PR3 ship-state). When set
+	// AND Auth.Enabled is true, setupRoutes registers POST /api/auth/login
+	// and POST /api/auth/logout via registerLogin. When nil the auth
+	// endpoints are not registered, so the route map stays consistent with
+	// the pre-PR4 behaviour for callers that wire AuthBundle ahead of the
+	// flag flip without also constructing a Source.
+	IdentitySource identity.Source
 }
 
 // active reports whether the bundle is wired AND the feature flag is on.

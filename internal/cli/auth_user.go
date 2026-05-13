@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -456,22 +455,3 @@ func readLine(r io.Reader) (string, error) {
 	}
 }
 
-// withTimeout is a tiny helper for tests / future hooks that want to
-// bound auth-cli operations. Not used in the v1 paths; provided so the
-// auth-reset command (next commit) can compose without a fresh wrapper.
-//
-// Expected:
-//   - parent is a non-nil context.
-//   - d > 0.
-//
-// Returns:
-//   - A derived context with timeout d, plus its cancel func.
-//
-// Side effects:
-//   - None until the caller invokes the cancel func.
-func withTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(parent, d)
-}
-
-// ensure unused-helper warnings don't fire when only auth-user lands.
-var _ = withTimeout

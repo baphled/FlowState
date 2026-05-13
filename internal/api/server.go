@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/auth"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/engine"
@@ -392,6 +393,34 @@ func (s *Server) Handler() http.Handler {
 	return securityHeaders(s.mux)
 }
 
+// InstallAuth wires the auth bundle and rebuilds the route map. Called
+// from cmd/serve at boot when the FLOWSTATE_AUTH_ENABLED env var is true
+// (PR4/C9 — deferred from PR3 ship-state). Because the route map is
+// built during NewServer, late-installing auth requires throwing away
+// the current mux and re-registering every route through the auth-aware
+// register* helpers.
+//
+// Expected:
+//   - bundle is a fully-constructed AuthBundle (Origin / Session / Auth /
+//     CSRF + optional IdentitySource).
+//   - InstallAuth is called BEFORE the server starts serving traffic so
+//     no in-flight handler sees the half-rebuilt mux.
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Replaces s.mux with a fresh http.ServeMux.
+//   - Re-runs setupRoutes() so every route registers via the auth-aware
+//     helpers using the new bundle.
+//   - When bundle.IdentitySource is set, registers POST /api/auth/login
+//     and POST /api/auth/logout.
+func (s *Server) InstallAuth(bundle AuthBundle) {
+	s.auth = bundle
+	s.mux = http.NewServeMux()
+	s.setupRoutes()
+}
+
 // securityHeaders returns a middleware that adds defensive HTTP security headers to every response.
 //
 // Expected:
@@ -499,6 +528,19 @@ func (s *Server) setupRoutes() {
 		// non-HandlerFunc shape that the metricsHandler interface
 		// permits.
 		s.mux.Handle("GET /metrics", s.metricsHandler)
+	}
+
+	// Login + logout routes — PR4/C9 (deferred from PR3 ship-state).
+	// Only registered when the AuthBundle carries an IdentitySource AND
+	// the feature flag is on. Origin + CSRF wrap via registerLogin; the
+	// session middleware deliberately does NOT run on these endpoints
+	// (login mints the session, logout drops it — neither prerequisites
+	// an existing session). Plan §"Endpoint Inventory" line 398.
+	if s.auth.active() && s.auth.IdentitySource != nil {
+		s.registerLogin("POST /api/auth/login",
+			auth.HandleLogin(s.auth.IdentitySource, s.auth.Session))
+		s.registerLogin("POST /api/auth/logout",
+			auth.HandleLogout(s.auth.Session))
 	}
 }
 
