@@ -40,6 +40,10 @@ func newAuthCmd(getApp func() *app.App) *cobra.Command {
 		newAuthOpenZenCmd(getApp),
 		newAuthOllamaCmd(getApp),
 		newAuthOllamaCloudCmd(getApp),
+		// Multi-user mode (FlowState API Auth Track PR4/C9) — provisions
+		// users for multi-user deployments. Distinct from the per-provider
+		// auth commands above; this is the FlowState identity surface.
+		newAuthUserCmd(),
 	)
 
 	return cmd
