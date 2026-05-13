@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -113,6 +114,18 @@ func PrimaryArgValue(name string, args map[string]any) (string, bool) {
 		}
 	}
 
+	if name == "todowrite" {
+		if v, ok := todoListDisplayValue(args); ok {
+			return v, true
+		}
+	}
+
+	if name == "todo_update" {
+		if v, ok := todoUpdateDisplayValue(args); ok {
+			return v, true
+		}
+	}
+
 	if key := primaryArgKeys[name]; key != "" {
 		if v, ok := args[key].(string); ok && v != "" {
 			return truncate(redactIfSensitive(key, v)), true
@@ -155,6 +168,85 @@ func delegateDisplayValue(args map[string]any) (string, bool) {
 		return truncate(subagent), true
 	case message != "":
 		return truncate(message), true
+	}
+	return "", false
+}
+
+// todoListDisplayValue renders the todowrite tool's primary display value as
+// "<active>/<total> todos: <first-active-content>" — or "0 todos" when the list
+// is empty — so the persisted ToolInput and UI card retain useful intent even
+// though the canonical argument (todos) is an array rather than a string.
+//
+// Without this todowrite calls reach the UI with toolInput "" because the
+// canonical fallback path only handles string-valued args. Live evidence is
+// session 59b4e1a2-daf9-44f2-b179-fa0757c34f02 where every todowrite call
+// rendered as a blank card body.
+//
+// Returns ok=false when args["todos"] is absent so callers can fall through.
+// An empty list returns "0 todos" and ok=true — explicit empty-state rendering
+// is preferable to a blank card.
+func todoListDisplayValue(args map[string]any) (string, bool) {
+	raw, present := args["todos"]
+	if !present {
+		return "", false
+	}
+	list, ok := raw.([]interface{})
+	if !ok {
+		return "", false
+	}
+	if len(list) == 0 {
+		return truncate("0 todos"), true
+	}
+
+	active := 0
+	var firstActive string
+	for _, entry := range list {
+		item, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		status, _ := item["status"].(string)
+		if status == "completed" || status == "cancelled" {
+			continue
+		}
+		active++
+		if firstActive == "" {
+			firstActive, _ = item["content"].(string)
+		}
+	}
+
+	prefix := strconv.Itoa(active) + "/" + strconv.Itoa(len(list)) + " todos"
+	if firstActive == "" {
+		return truncate(prefix), true
+	}
+	return truncate(prefix + ": " + firstActive), true
+}
+
+// todoUpdateDisplayValue renders the todo_update tool's primary display value
+// as "<status>: <id-or-content>" when status is present, or just the id/content
+// otherwise. The patch tool ships a single status transition per call, so the
+// display surfaces the transition itself rather than reconstructing the whole
+// list.
+//
+// Returns ok=false when neither status, id, nor content yields a usable string,
+// so the caller can fall through to the generic resolution path.
+func todoUpdateDisplayValue(args map[string]any) (string, bool) {
+	status, _ := args["status"].(string)
+	id, _ := args["id"].(string)
+	content, _ := args["content"].(string)
+
+	subject := id
+	if subject == "" {
+		subject = content
+	}
+
+	switch {
+	case status != "" && subject != "":
+		return truncate(status + ": " + subject), true
+	case status != "":
+		return truncate(status), true
+	case subject != "":
+		return truncate(subject), true
 	}
 	return "", false
 }
