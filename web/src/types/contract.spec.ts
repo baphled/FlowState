@@ -265,11 +265,15 @@ describe('Provider Quota wire contract — Go ↔ TS hand-mirror', () => {
       expect(Object.prototype.hasOwnProperty.call(nc, required)).toBe(true)
     }
     // Recognised Reason values per quota.go:230-243 doc-comment +
-    // tracker.go:71-76 fallback.
+    // tracker.go:71-76 fallback. Note: "awaiting-pr3" is historical
+    // (PR1 → PR3 transition string); no production code emits it
+    // post-PR3 but the chip still tolerates the string for back-compat
+    // with operators viewing older session payloads.
     const recognisedReasons = [
       'local-model',
       'no-quota-headers',
       'subscription-only',
+      'awaiting-first-response',
       'awaiting-pr3',
       'no-adapter-registered',
     ]

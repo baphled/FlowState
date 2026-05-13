@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
@@ -39,6 +40,24 @@ var errAPIKeyRequired = errors.New("ollama Cloud API key is required")
 // Provider implements the provider.Provider interface for Ollama Cloud.
 type Provider struct {
 	client openaiAPI.Client
+
+	// responseObserver — see openai.Provider.responseObserver (PR3
+	// success-path lift; live-key smoke test in quota_live_test.go
+	// confirms the Ollama Cloud proxy actually emits the headers).
+	responseObserver func(http.Header)
+}
+
+// SetResponseObserver — see openai.Provider.SetResponseObserver.
+func (p *Provider) SetResponseObserver(fn func(http.Header)) {
+	p.responseObserver = fn
+}
+
+// notifyResponseObserver — see openai.Provider.notifyResponseObserver.
+func (p *Provider) notifyResponseObserver(raw *http.Response) {
+	if p.responseObserver == nil || raw == nil {
+		return
+	}
+	p.responseObserver(raw.Header)
 }
 
 // New creates a new Ollama Cloud provider with the given API key.
@@ -125,7 +144,8 @@ func (p *Provider) Name() string {
 //   - Spawns a goroutine to read from the Ollama Cloud streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	params := openaicompat.BuildParams(req)
-	return openaicompat.RunStream(ctx, p.client, params, p.Name()), nil
+	// PR3 success-path lift — observer is nil-safe.
+	return openaicompat.RunStreamWithObserver(ctx, p.client, params, p.Name(), p.responseObserver), nil
 }
 
 // Chat sends a non-streaming chat request to the Ollama Cloud API.
@@ -142,10 +162,19 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 //   - Makes an HTTP request to the Ollama Cloud API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
 	params := openaicompat.BuildParams(req)
-	resp, err := p.client.Chat.Completions.New(ctx, params)
+
+	// PR3 success-path lift — see openai.Provider.Chat.
+	var rawResp *http.Response
+	var chatOpts []option.RequestOption
+	if p.responseObserver != nil {
+		chatOpts = append(chatOpts, option.WithResponseInto(&rawResp))
+	}
+
+	resp, err := p.client.Chat.Completions.New(ctx, params, chatOpts...)
 	if err != nil {
 		return provider.ChatResponse{}, openaicompat.WrapChatError(p.Name(), err)
 	}
+	p.notifyResponseObserver(rawResp)
 	return openaicompat.ParseChatResponse(resp)
 }
 

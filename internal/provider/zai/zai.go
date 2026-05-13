@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
@@ -67,6 +68,23 @@ var errAPIKeyRequired = errors.New("Z.AI API key is required")
 // Provider implements the provider.Provider interface for Z.AI.
 type Provider struct {
 	client openaiAPI.Client
+
+	// responseObserver — see openai.Provider.responseObserver (PR3
+	// success-path lift).
+	responseObserver func(http.Header)
+}
+
+// SetResponseObserver — see openai.Provider.SetResponseObserver.
+func (p *Provider) SetResponseObserver(fn func(http.Header)) {
+	p.responseObserver = fn
+}
+
+// notifyResponseObserver — see openai.Provider.notifyResponseObserver.
+func (p *Provider) notifyResponseObserver(raw *http.Response) {
+	if p.responseObserver == nil || raw == nil {
+		return
+	}
+	p.responseObserver(raw.Header)
 }
 
 // New creates a new Z.AI provider with the given API key.
@@ -161,7 +179,9 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 		return nil, err
 	}
 	params := openaicompat.BuildParams(req)
-	rawCh := openaicompat.RunStream(ctx, p.client, params, p.Name())
+	// PR3 success-path lift — observer is nil-safe; classifyStreamErrors
+	// still wraps the channel for Z.AI's error-code-1001/1112 refinement.
+	rawCh := openaicompat.RunStreamWithObserver(ctx, p.client, params, p.Name(), p.responseObserver)
 	return classifyStreamErrors(ctx, rawCh), nil
 }
 
@@ -183,13 +203,22 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		return provider.ChatResponse{}, err
 	}
 	params := openaicompat.BuildParams(req)
-	resp, err := p.client.Chat.Completions.New(ctx, params)
+
+	// PR3 success-path lift — see openai.Provider.Chat.
+	var rawResp *http.Response
+	var chatOpts []option.RequestOption
+	if p.responseObserver != nil {
+		chatOpts = append(chatOpts, option.WithResponseInto(&rawResp))
+	}
+
+	resp, err := p.client.Chat.Completions.New(ctx, params, chatOpts...)
 	if err != nil {
 		if provErr := openaicompat.ParseProviderError(providerName, err); provErr != nil {
 			return provider.ChatResponse{}, classifyZAIError(provErr)
 		}
 		return provider.ChatResponse{}, openaicompat.WrapChatError(providerName, err)
 	}
+	p.notifyResponseObserver(rawResp)
 	return openaicompat.ParseChatResponse(resp)
 }
 
