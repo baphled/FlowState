@@ -2135,6 +2135,249 @@ var _ = Describe("BuildMessages multi-tool-call tool-role handling", func() {
 	})
 })
 
+// fullOpenAIRateLimitHeaders builds an http.Header carrying all six
+// documented openai-compat rate-limit window headers + scalar
+// request-id / retry-after. Used by the PR3 success-path lift specs.
+func fullOpenAIRateLimitHeaders() http.Header {
+	h := http.Header{}
+	h.Set("x-request-id", "req_success_2xx")
+	h.Set("retry-after", "30")
+	h.Set("x-ratelimit-limit-requests", "1000")
+	h.Set("x-ratelimit-remaining-requests", "999")
+	h.Set("x-ratelimit-reset-requests", "1s")
+	h.Set("x-ratelimit-limit-tokens", "100000")
+	h.Set("x-ratelimit-remaining-tokens", "75000")
+	h.Set("x-ratelimit-reset-tokens", "60s")
+	return h
+}
+
+var _ = Describe("openaicompat success-path RateLimit lift (Quota Plan PR3, plan lines 113-114, 427)", func() {
+	Context("ExtractRateLimitHeadersFromResponse — the success-path-callable helper", func() {
+		It("parses all six documented openai-compat rate-limit headers on a 2xx-style header set", func() {
+			rl := openaicompat.ExtractRateLimitHeadersFromResponse(fullOpenAIRateLimitHeaders())
+
+			Expect(rl).NotTo(BeNil(),
+				"a header set with all six rate-limit headers must produce a populated RateLimit")
+
+			Expect(rl.RequestID).To(Equal("req_success_2xx"))
+			Expect(rl.RetryAfter).To(Equal(30 * time.Second))
+
+			Expect(rl.RequestsLimit).To(Equal(1000))
+			Expect(rl.RequestsRemaining).To(Equal(999))
+			Expect(rl.RequestsReset.After(time.Now())).To(BeTrue(),
+				"reset is parsed as a future wall-clock time")
+
+			Expect(rl.TokensLimit).To(Equal(100000))
+			Expect(rl.TokensRemaining).To(Equal(75000))
+		})
+
+		It("returns nil when the response carries no rate-limit headers", func() {
+			Expect(openaicompat.ExtractRateLimitHeadersFromResponse(http.Header{})).To(BeNil())
+		})
+
+		It("returns nil when headers contain only non-rate-limit entries", func() {
+			h := http.Header{}
+			h.Set("content-type", "application/json")
+			h.Set("x-arbitrary", "noise")
+			Expect(openaicompat.ExtractRateLimitHeadersFromResponse(h)).To(BeNil(),
+				"a header set containing only non-rate-limit headers must produce nil")
+		})
+
+		It("returns nil when headers map itself is nil", func() {
+			Expect(openaicompat.ExtractRateLimitHeadersFromResponse(nil)).To(BeNil())
+		})
+
+		It("populates only the fields present (-1 sentinels for absent window triples)", func() {
+			h := http.Header{}
+			h.Set("x-ratelimit-limit-requests", "500")
+			h.Set("x-ratelimit-remaining-requests", "499")
+			rl := openaicompat.ExtractRateLimitHeadersFromResponse(h)
+			Expect(rl).NotTo(BeNil())
+			Expect(rl.RequestsLimit).To(Equal(500))
+			Expect(rl.RequestsRemaining).To(Equal(499))
+			// Tokens window stays at -1 sentinel.
+			Expect(rl.TokensLimit).To(Equal(-1))
+			Expect(rl.TokensRemaining).To(Equal(-1))
+			// Anthropic-style input/output stay at -1 sentinel too —
+			// openai-compat doesn't emit them but the RateLimit shape
+			// is shared across providers.
+			Expect(rl.InputTokensLimit).To(Equal(-1))
+			Expect(rl.OutputTokensRemaining).To(Equal(-1))
+		})
+
+		It("accepts Z.AI dialect (seconds-int reset) as well as OpenAI dialect (duration-string reset)", func() {
+			// Z.AI emits a bare seconds-int.
+			zaiHeaders := http.Header{}
+			zaiHeaders.Set("x-ratelimit-limit-requests", "60")
+			zaiHeaders.Set("x-ratelimit-remaining-requests", "50")
+			zaiHeaders.Set("x-ratelimit-reset-requests", "120")
+			rl := openaicompat.ExtractRateLimitHeadersFromResponse(zaiHeaders)
+			Expect(rl).NotTo(BeNil())
+			Expect(rl.RequestsReset.After(time.Now())).To(BeTrue())
+		})
+	})
+
+	Context("Regression — existing error-path RateLimit extraction unchanged (AC: openaicompat populates RateLimit on Error)", func() {
+		It("returns the same populated RateLimit the error path always produced (no regression on 429)", func() {
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"rate limited","type":"rate_limit","code":"rate_limit"}`,
+				http.StatusTooManyRequests, fullOpenAIRateLimitHeaders(),
+			)
+			result := openaicompat.ParseProviderError("test", err)
+			Expect(result).NotTo(BeNil())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeRateLimit))
+			Expect(result.RateLimit).NotTo(BeNil(),
+				"error-path RateLimit extraction MUST continue to populate post-refactor (PR3 success-path lift is purely additive)")
+			Expect(result.RateLimit.RequestsRemaining).To(Equal(999))
+			Expect(result.RateLimit.RequestID).To(Equal("req_success_2xx"))
+		})
+
+		It("leaves RateLimit nil for a 500 server error with no rate-limit headers (unchanged)", func() {
+			err := newOpenAIErrorWithHeaders(
+				`{"message":"boom","type":"server_error","code":"server_error"}`,
+				http.StatusInternalServerError, http.Header{},
+			)
+			result := openaicompat.ParseProviderError("test", err)
+			Expect(result).NotTo(BeNil())
+			Expect(result.RateLimit).To(BeNil(),
+				"absent rate-limit headers must surface as nil — no synthesised metadata")
+		})
+	})
+})
+
+var _ = Describe("RunStreamWithObserver — streaming success-path observer hook (Quota Plan PR3)", func() {
+	// A minimal SSE response that completes one delta + finish_reason +
+	// terminal usage block — exercises the full RunStream loop including
+	// the deferred `Done` epilogue.
+	const sseHappy = "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n" +
+		"data: [DONE]\n\n"
+
+	newSSEServer := func(headers http.Header, status int, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			for k, vs := range headers {
+				for _, v := range vs {
+					w.Header().Add(k, v)
+				}
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+
+	drain := func(ch <-chan provider.StreamChunk) []provider.StreamChunk {
+		var out []provider.StreamChunk
+		for c := range ch {
+			out = append(out, c)
+		}
+		return out
+	}
+
+	It("fires the observer once on a 2xx streaming handshake with the response headers", func() {
+		server := newSSEServer(fullOpenAIRateLimitHeaders(), http.StatusOK, sseHappy)
+		defer server.Close()
+
+		client := openaiAPI.NewClient(
+			option.WithAPIKey("test-key"),
+			option.WithBaseURL(server.URL),
+		)
+
+		var seenHeaders http.Header
+		callCount := 0
+		observer := func(h http.Header) {
+			callCount++
+			seenHeaders = h
+		}
+
+		params := openaiAPI.ChatCompletionNewParams{
+			Model:    "gpt-4o",
+			Messages: openaicompat.BuildMessages([]provider.Message{{Role: "user", Content: "hi"}}),
+		}
+		ch := openaicompat.RunStreamWithObserver(context.Background(), client, params, "openai", observer)
+		_ = drain(ch)
+
+		Expect(callCount).To(Equal(1),
+			"observer MUST fire exactly once per stream — the SDK populates rawResp on handshake; future re-issues must not double-fire")
+		Expect(seenHeaders).NotTo(BeNil())
+		Expect(seenHeaders.Get("x-ratelimit-remaining-requests")).To(Equal("999"),
+			"observer MUST receive the rate-limit headers verbatim so the quota adapter can parse them")
+		Expect(seenHeaders.Get("x-request-id")).To(Equal("req_success_2xx"))
+	})
+
+	It("does NOT fire the observer on a 5xx response (error-path stays sole owner of error-status RateLimit)", func() {
+		server := newSSEServer(http.Header{}, http.StatusInternalServerError, `{"error":{"message":"boom","type":"server_error"}}`)
+		defer server.Close()
+
+		client := openaiAPI.NewClient(
+			option.WithAPIKey("test-key"),
+			option.WithBaseURL(server.URL),
+			option.WithMaxRetries(0),
+		)
+
+		called := false
+		observer := func(http.Header) {
+			called = true
+		}
+
+		params := openaiAPI.ChatCompletionNewParams{
+			Model:    "gpt-4o",
+			Messages: openaicompat.BuildMessages([]provider.Message{{Role: "user", Content: "hi"}}),
+		}
+		ch := openaicompat.RunStreamWithObserver(context.Background(), client, params, "openai", observer)
+		chunks := drain(ch)
+
+		Expect(called).To(BeFalse(),
+			"observer MUST NOT fire on a 5xx — the existing error-path RateLimit extraction owns 4xx/5xx; this guarantee prevents double-recording when both paths run")
+		// Sanity: error surfaced through the channel.
+		hasError := false
+		for _, c := range chunks {
+			if c.Error != nil {
+				hasError = true
+				break
+			}
+		}
+		Expect(hasError).To(BeTrue(), "5xx must surface as a StreamChunk.Error")
+	})
+
+	It("RunStream (nil-observer wrapper) is identical to RunStream — no behavioural change for callers that don't bind a quota adapter", func() {
+		server := newSSEServer(http.Header{}, http.StatusOK, sseHappy)
+		defer server.Close()
+
+		client := openaiAPI.NewClient(
+			option.WithAPIKey("test-key"),
+			option.WithBaseURL(server.URL),
+		)
+		params := openaiAPI.ChatCompletionNewParams{
+			Model:    "gpt-4o",
+			Messages: openaicompat.BuildMessages([]provider.Message{{Role: "user", Content: "hi"}}),
+		}
+
+		// RunStream (the legacy entry) must still flow content, finish,
+		// usage, Done — the pre-PR3 contract is unchanged.
+		ch := openaicompat.RunStream(context.Background(), client, params, "openai")
+		chunks := drain(ch)
+
+		var sawContent, sawUsage, sawDone bool
+		for _, c := range chunks {
+			if c.Content != "" {
+				sawContent = true
+			}
+			if c.EventType == "usage" {
+				sawUsage = true
+			}
+			if c.Done {
+				sawDone = true
+			}
+		}
+		Expect(sawContent).To(BeTrue())
+		Expect(sawUsage).To(BeTrue(),
+			"AC-12-UsageDelta-No-Regress (Chat Attachments PR3) — RunStream MUST continue to emit a usage chunk on stream-end")
+		Expect(sawDone).To(BeTrue())
+	})
+})
+
 func unmarshalToolCall(raw string) openaiAPI.ChatCompletionMessageToolCall {
 	var tc openaiAPI.ChatCompletionMessageToolCall
 	if err := json.Unmarshal([]byte(raw), &tc); err != nil {

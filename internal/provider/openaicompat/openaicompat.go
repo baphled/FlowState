@@ -16,6 +16,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
 	openaiAPI "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 )
 
 // BuildMessages converts a slice of provider.Message to OpenAI-compatible message parameters.
@@ -317,7 +318,8 @@ func ExtractToolCalls(toolCalls []openaiAPI.ChatCompletionMessageToolCall) []pro
 	return result
 }
 
-// RunStream executes a streaming chat completion and emits StreamChunk events.
+// RunStream executes a streaming chat completion and emits StreamChunk
+// events. Equivalent to RunStreamWithObserver with a nil observer.
 //
 // Expected:
 //   - ctx is a valid context for the API call.
@@ -336,6 +338,47 @@ func RunStream(
 	params openaiAPI.ChatCompletionNewParams,
 	providerName string,
 ) <-chan provider.StreamChunk {
+	return RunStreamWithObserver(ctx, client, params, providerName, nil)
+}
+
+// RunStreamWithObserver is RunStream plus a success-path response
+// observer hook. The observer fires once per stream — after the SSE
+// handshake completes (rawResp populated by the SDK via WithResponseInto)
+// — with the response headers, before the body chunks are forwarded
+// downstream. This is the streaming counterpart to the Chat success-
+// path lift that per-provider Quota adapters consume to refresh their
+// live RateLimit Snapshot.
+//
+// Per Provider Quota and Spend Visibility plan (May 2026) PR3 row 427:
+// the openaicompat-routed providers (openai/openzen/zai/ollamacloud)
+// shared this gap with Anthropic until the Anthropic lift landed in
+// PR1 (commit 36cee69c); PR3 closes it for the openai-compat layer
+// they all share.
+//
+// observer may be nil — in which case this is identical to RunStream
+// (the existing behaviour-preserving entry).
+//
+// Expected:
+//   - ctx is a valid context for the API call.
+//   - client is an initialised OpenAI API client.
+//   - params contains the chat completion parameters.
+//   - providerName identifies the provider for error classification.
+//   - observer may be nil; when non-nil it is invoked at most once per
+//     stream with the response headers after a successful handshake.
+//
+// Returns:
+//   - A channel emitting provider.StreamChunk events.
+//
+// Side effects:
+//   - Spawns a goroutine and initiates network streaming.
+//   - Invokes observer at most once on the spawned goroutine.
+func RunStreamWithObserver(
+	ctx context.Context,
+	client openaiAPI.Client,
+	params openaiAPI.ChatCompletionNewParams,
+	providerName string,
+	observer func(http.Header),
+) <-chan provider.StreamChunk {
 	// Opt in to OpenAI's stream_options.include_usage so the upstream
 	// emits a terminal chunk carrying request-level token totals (per
 	// OpenAI streaming spec — the chunk has empty choices and a
@@ -346,10 +389,38 @@ func RunStream(
 	// param.Opt[bool] which marshals correctly under the SDK's
 	// omitzero contract.
 	params.StreamOptions.IncludeUsage = openaiAPI.Bool(true)
+
+	// PR3 success-path lift: when an observer is registered, ask the
+	// SDK to populate rawResp on a successful handshake so we can hand
+	// the response headers to the quota adapter. Mirrors the Anthropic
+	// streamMessages pattern at anthropic.go:354-413 — observer fires
+	// once after the first stream.Next() (handshake done) so the chip
+	// has a fresh RateLimit Snapshot even if no body chunks flow yet.
+	var rawResp *http.Response
+	var streamOpts []option.RequestOption
+	if observer != nil {
+		streamOpts = append(streamOpts, option.WithResponseInto(&rawResp))
+	}
+
 	ch := make(chan provider.StreamChunk, 16)
 	go func() {
 		defer close(ch)
-		stream := client.Chat.Completions.NewStreaming(ctx, params)
+		stream := client.Chat.Completions.NewStreaming(ctx, params, streamOpts...)
+		// observerNotified is closure-local so a single stream cannot
+		// double-fire the observer (defence-in-depth — the SDK populates
+		// rawResp once on handshake but a future SDK that re-issues the
+		// request internally must not produce duplicate Snapshots).
+		observerNotified := false
+		maybeNotifyOnce := func() {
+			if observer == nil || observerNotified {
+				return
+			}
+			if rawResp == nil {
+				return
+			}
+			observer(rawResp.Header)
+			observerNotified = true
+		}
 		var acc openaiAPI.ChatCompletionAccumulator
 		emitted := make(map[int]bool)
 		// inlineExtractor scans reasoning_content for inline-XML
@@ -367,6 +438,10 @@ func RunStream(
 		// downstream consumers see Done and stop reading.
 		var sawFinish bool
 		for stream.Next() {
+			// First successful chunk implies the handshake completed and
+			// rawResp is populated. Notify the observer at most once —
+			// mirrors anthropic/anthropic.go:streamMessages:385-388.
+			maybeNotifyOnce()
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
 			if len(chunk.Choices) > 0 {
@@ -426,6 +501,11 @@ func RunStream(
 		}
 		flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
 		flushInlineExtractor(ctx, ch, &inlineExtractor, recoveredCalls, emitted)
+		// Defensive: stream ended cleanly without any chunks flowing
+		// (rare; e.g. an upstream that handshakes then closes without
+		// data). Still notify if we have the response — parity with
+		// anthropic/anthropic.go:streamMessages:412.
+		maybeNotifyOnce()
 		if sawFinish {
 			emitStreamUsage(ctx, ch, &acc)
 			shared.SendChunk(ctx, ch, provider.StreamChunk{Done: true})
@@ -717,7 +797,7 @@ func ParseProviderError(providerName string, err error) *provider.Error {
 			Message:     openaiErr.Message,
 			IsRetriable: retriable,
 			RawError:    err,
-			RateLimit:   extractRateLimitHeaders(openaiErr.Response),
+			RateLimit:   extractRateLimitHeadersFromError(openaiErr.Response),
 		}
 	}
 
@@ -735,9 +815,12 @@ func ParseProviderError(providerName string, err error) *provider.Error {
 	return nil
 }
 
-// extractRateLimitHeaders inspects the openai-go SDK error's underlying
-// http.Response for the documented rate-limit headers and returns a
-// populated RateLimit when at least one header is present.
+// ExtractRateLimitHeadersFromResponse inspects an http.Header map for the
+// documented OpenAI-compat rate-limit headers and returns a populated
+// RateLimit when at least one is present. This is the success-path-
+// callable shape the per-provider quota.go adapters consume via the
+// provider's response observer — mirroring Anthropic's
+// extractRateLimitHeadersFromResponse (anthropic/anthropic.go:680+).
 //
 // OpenAI exposes per-window budgets for requests and tokens. Each
 // window has three headers — limit, remaining, reset. Reset is a
@@ -747,21 +830,29 @@ func ParseProviderError(providerName string, err error) *provider.Error {
 // or HTTP-date) and either `x-request-id` (OpenAI) or `request-id`
 // (Z.AI) for support correlation.
 //
+// Per Provider Quota and Spend Visibility plan (May 2026) §"Where we are
+// today" line 113-114: PR3 lifts this parser out of the error-only path
+// so the chip's live RateLimit Snapshot updates on every 2xx response,
+// not just on 429/4xx/5xx error returns.
+//
+// Per memory feedback_grep_for_behaviour_pinning_before_red: the
+// existing error-path `extractRateLimitHeadersFromError` continues to
+// own the 4xx/5xx path verbatim — this success-path helper is purely
+// additive and shares the same `readScalarHeaders` /
+// `readWindowHeaders` decomposition so the two paths cannot drift.
+//
 // Expected:
-//   - resp may be nil.
+//   - headers may be nil or empty.
 //
 // Returns:
 //   - A pointer to a RateLimit when at least one rate-limit header was
 //     present.
-//   - nil otherwise.
+//   - nil otherwise (no signal — caller must treat as "no metadata
+//     available", not "limits zeroed").
 //
 // Side effects:
 //   - None.
-func extractRateLimitHeaders(resp *http.Response) *provider.RateLimit {
-	if resp == nil {
-		return nil
-	}
-	headers := resp.Header
+func ExtractRateLimitHeadersFromResponse(headers http.Header) *provider.RateLimit {
 	if len(headers) == 0 {
 		return nil
 	}
@@ -774,6 +865,30 @@ func extractRateLimitHeaders(resp *http.Response) *provider.RateLimit {
 		return nil
 	}
 	return &rl
+}
+
+// extractRateLimitHeadersFromError is the legacy error-path wrapper
+// retained for 4xx/5xx ParseProviderError use. It delegates to the
+// success-path-callable ExtractRateLimitHeadersFromResponse so the
+// shared parser owns the header semantics — keeping the two paths in
+// lockstep was a load-bearing review condition (memory
+// feedback_close_latent_surfaces_too).
+//
+// Expected:
+//   - resp may be nil.
+//
+// Returns:
+//   - A pointer to a RateLimit when at least one rate-limit header was
+//     present in the underlying response.
+//   - nil otherwise.
+//
+// Side effects:
+//   - None.
+func extractRateLimitHeadersFromError(resp *http.Response) *provider.RateLimit {
+	if resp == nil {
+		return nil
+	}
+	return ExtractRateLimitHeadersFromResponse(resp.Header)
 }
 
 // newEmptyRateLimit builds a RateLimit pre-populated with -1 sentinels
