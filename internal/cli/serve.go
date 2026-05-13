@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/auth"
 	"github.com/baphled/flowstate/internal/auth/identity"
 	"github.com/baphled/flowstate/internal/auth/store"
+	"github.com/baphled/flowstate/internal/config"
 )
 
 // httpShutdowner is the narrow slice of *http.Server the serve
@@ -99,12 +99,12 @@ func newServeCmd(getApp func() *app.App) *cobra.Command {
 func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) error {
 	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
 
-	// PR4/C9 — boot-time auth wiring (deferred from PR3 ship-state).
-	// Reads FLOWSTATE_AUTH_* env vars; when FLOWSTATE_AUTH_ENABLED=true
-	// installs the AuthBundle on the api.Server and registers the
-	// /api/auth/login + /api/auth/logout routes. When the flag is off
-	// (default through PR4) the server keeps its pre-flag behaviour.
-	if err := installAuthFromEnv(application.API); err != nil {
+	// PR5/C10 — boot-time auth wiring. Composes config layer (cfg.Auth)
+	// with env vars (FLOWSTATE_AUTH_*) per plan §"Bootstrap UX"
+	// precedence (env → flag → config → default). PR4/C9 shipped the
+	// env-only path; PR5 lifts the config layer + flips Enabled to
+	// true by default + removes the ephemeral-random CSRF key fallback.
+	if err := installAuthFromConfig(application.API, application.Config); err != nil {
 		return fmt.Errorf("auth boot-time wiring: %w", err)
 	}
 
@@ -194,36 +194,49 @@ func performServeShutdown(server httpShutdowner, eng engineShutdowner, _ io.Writ
 // sub-second for realistic channel depths.
 const engineShutdownTimeout = 30 * time.Second
 
-// installAuthFromEnv reads FLOWSTATE_AUTH_* env vars and, when
-// FLOWSTATE_AUTH_ENABLED=true, constructs an api.AuthBundle and installs
-// it on the server. Also wires the SessionStore used by `flowstate auth
-// reset`'s store-cleanup step (memory feedback_close_latent_surfaces_too —
-// every place that uses the store should see the same instance).
+// installAuthFromConfig composes cfg.Auth with FLOWSTATE_AUTH_* env vars
+// per plan §"Bootstrap UX" precedence (env → flag → config → default).
+// When the resolved Enabled is true, constructs an api.AuthBundle and
+// installs it on the server. Also wires the SessionStore used by
+// `flowstate auth reset`'s store-cleanup step (memory
+// feedback_close_latent_surfaces_too — every place that uses the store
+// should see the same instance).
 //
-// Env vars (plan §"Bootstrap UX" read order: env → CLI flag → config →
-// default. C9 covers the env-var slice; CLI flag + config layer wiring
-// land in PR5 when the flag flips default-on).
+// PR5/C10 changes vs PR4/C9 (installAuthFromEnv):
 //
-//   - FLOWSTATE_AUTH_ENABLED          → "true" arms the bundle
-//   - FLOWSTATE_AUTH_MODE             → "shared-secret" | "per-deployment-login" | "multi-user"
-//   - FLOWSTATE_AUTH_SECRET           → shared-secret / per-deployment-login modes
-//   - FLOWSTATE_AUTH_PRINCIPAL_ID     → per-deployment-login mode
-//   - FLOWSTATE_AUTH_DISPLAY_NAME     → per-deployment-login mode (optional)
-//   - FLOWSTATE_AUTH_ALLOWED_ORIGINS  → comma-separated glob list
-//   - FLOWSTATE_AUTH_SECURE_COOKIES   → "false" disables Secure (dev only)
-//   - FLOWSTATE_AUTH_CSRF_KEY         → 32B HMAC key (hex / base64 / raw);
-//                                       boot-time fallback generates one
-//                                       and logs the fact (operator-visible
-//                                       so the next restart sees the same
-//                                       sessions).
+//   - Reads cfg.Auth as the config layer; env vars override per field
+//     (the precedence is field-level, not all-or-nothing).
+//   - CSRF key resolution removes the ephemeral-random fallback. When
+//     Enabled=true and neither env nor config supplies a key, the call
+//     returns an error pointing the operator at
+//     `flowstate auth csrf-key gen`. This is the load-bearing change —
+//     it fails CLOSED rather than the prior fail-OPEN with a warn.
+//   - DefaultConfig().Auth.Enabled = true (the PR5 flip). Operators who
+//     don't configure auth still need credentials + a CSRF key; the
+//     fail-closed CSRF key check is the safety net that catches a
+//     misconfigured deployment.
+//
+// Field resolution order (per field, highest precedence first):
+//
+//   - Enabled:        env FLOWSTATE_AUTH_ENABLED (truthy/falsy) → cfg.Auth.Enabled
+//   - Mode:           env FLOWSTATE_AUTH_MODE → cfg.Auth.Mode → "per-deployment-login"
+//   - Secret:         env FLOWSTATE_AUTH_SECRET → cfg.Auth.Secret
+//   - PrincipalID:    env FLOWSTATE_AUTH_PRINCIPAL_ID → cfg.Auth.PrincipalID
+//   - DisplayName:    env FLOWSTATE_AUTH_DISPLAY_NAME → cfg.Auth.DisplayName
+//   - AllowedOrigins: env FLOWSTATE_AUTH_ALLOWED_ORIGINS (CSV) →
+//                     cfg.Auth.AllowedOrigins → ["localhost:*"]
+//   - SecureCookies:  env FLOWSTATE_AUTH_SECURE_COOKIES → cfg.Auth.SecureCookies
+//   - CSRFKey:        env FLOWSTATE_AUTH_CSRF_KEY → cfg.Auth.CSRFKey →
+//                     FAIL (no ephemeral fallback per PR5/C10)
 //
 // Expected:
 //   - apiServer is non-nil.
+//   - cfg may be nil; nil cfg behaves as DefaultConfig() for auth purposes.
 //
 // Returns:
-//   - nil when FLOWSTATE_AUTH_ENABLED is unset or "false" (no-op).
-//   - Error on misconfig (unknown mode, malformed allowlist, store
-//     mode-mismatch).
+//   - nil when the resolved Enabled is false (no-op).
+//   - Error on misconfig (unknown mode, missing CSRF key with auth.enabled=true,
+//     unparseable users.json for multi-user).
 //
 // Side effects:
 //   - Calls apiServer.InstallAuth(...) which replaces the route map.
@@ -231,35 +244,34 @@ const engineShutdownTimeout = 30 * time.Second
 //     the same store the live server uses.
 //   - May log slog.Warn for first-boot misconfigs (multi-user with no
 //     users.json — plan §"Bootstrap UX" multi-user lines 707-709).
-func installAuthFromEnv(apiServer *api.Server) error {
-	if !envBool("FLOWSTATE_AUTH_ENABLED") {
-		// Flag off — keep PR3 pass-through behaviour. Plan §"Rollout
-		// Plan" PR5/C10 flips this default.
-		slog.Info("auth boot-time wiring: FLOWSTATE_AUTH_ENABLED unset, "+
-			"running in pass-through mode (PR3 default)",
-			"phase", "PR4/C9",
+func installAuthFromConfig(apiServer *api.Server, cfg *config.AppConfig) error {
+	authCfg := resolveAuthConfig(cfg)
+
+	if !authCfg.Enabled {
+		slog.Info("auth boot-time wiring: disabled "+
+			"(auth.enabled=false in config / FLOWSTATE_AUTH_ENABLED=false), "+
+			"running in pass-through mode",
+			"phase", "PR5/C10",
 		)
 		return nil
 	}
 
-	mode := strings.TrimSpace(os.Getenv("FLOWSTATE_AUTH_MODE"))
-	if mode == "" {
-		mode = identity.ModeDeploymentLogin // plan §OD-E default
-	}
+	mode := resolveString("FLOWSTATE_AUTH_MODE", authCfg.Mode, identity.ModeDeploymentLogin)
 
-	source, err := buildIdentitySource(mode)
+	source, err := buildIdentitySource(mode, authCfg)
 	if err != nil {
 		return err
 	}
 
 	allowed := splitCSV(os.Getenv("FLOWSTATE_AUTH_ALLOWED_ORIGINS"))
 	if len(allowed) == 0 {
+		allowed = authCfg.AllowedOrigins
+	}
+	if len(allowed) == 0 {
 		allowed = []string{"localhost:*"} // pre-PR1 lift default
 	}
 
-	// SecureCookies defaults to true (HTTPS prod); operator opts out
-	// for HTTP-only dev by setting FLOWSTATE_AUTH_SECURE_COOKIES=false.
-	secureCookies := envBoolDefault("FLOWSTATE_AUTH_SECURE_COOKIES", true)
+	secureCookies := envBoolDefault("FLOWSTATE_AUTH_SECURE_COOKIES", authCfg.SecureCookies)
 
 	memStore := store.NewMemoryStore()
 	sessionCfg := auth.DefaultSessionConfig()
@@ -267,7 +279,7 @@ func installAuthFromEnv(apiServer *api.Server) error {
 	sessionCfg.Mode = mode
 	sessionMgr := auth.NewSessionManager(memStore, sessionCfg)
 
-	csrfKey, err := resolveCSRFKey()
+	csrfKey, err := resolveCSRFKey(authCfg.CSRFKey)
 	if err != nil {
 		return err
 	}
@@ -276,7 +288,7 @@ func installAuthFromEnv(apiServer *api.Server) error {
 	csrfCfg.SecureCookies = secureCookies
 
 	bundle := api.AuthBundle{
-		Origin: auth.OriginConfig{AllowedOrigins: allowed},
+		Origin:  auth.OriginConfig{AllowedOrigins: allowed},
 		Session: sessionMgr,
 		Auth: auth.AuthConfig{
 			Enabled: true,
@@ -292,15 +304,58 @@ func installAuthFromEnv(apiServer *api.Server) error {
 		"mode", mode,
 		"allowed_origins", allowed,
 		"secure_cookies", secureCookies,
+		"phase", "PR5/C10",
 	)
 	return nil
 }
 
+// resolveAuthConfig returns the effective config.AuthConfig after
+// folding cfg with FLOWSTATE_AUTH_ENABLED. Other fields are folded at
+// their resolution sites (resolveString / splitCSV / envBoolDefault /
+// resolveCSRFKey) because the env-vs-config rules differ per field.
+//
+// Expected:
+//   - cfg may be nil; nil cfg yields DefaultAuthConfig().
+//
+// Returns:
+//   - The resolved AuthConfig with Enabled folded.
+//
+// Side effects:
+//   - Reads the FLOWSTATE_AUTH_ENABLED env var.
+func resolveAuthConfig(cfg *config.AppConfig) config.AuthConfig {
+	base := config.DefaultAuthConfig()
+	if cfg != nil {
+		base = cfg.Auth
+	}
+	// Env var override — only when explicitly set. Empty / unset
+	// preserves cfg.Auth.Enabled (which DefaultAuthConfig sets to true).
+	if raw := strings.TrimSpace(os.Getenv("FLOWSTATE_AUTH_ENABLED")); raw != "" {
+		base.Enabled = envBool("FLOWSTATE_AUTH_ENABLED")
+	}
+	return base
+}
+
+// resolveString picks env var (highest precedence), then cfgVal, then
+// fallback. Empty / whitespace env values are treated as unset so an
+// operator can't accidentally clobber the config with an empty deploy
+// var.
+func resolveString(envVar, cfgVal, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(envVar)); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(cfgVal); v != "" {
+		return v
+	}
+	return fallback
+}
+
 // buildIdentitySource picks the right identity.Source for the configured
-// mode and reads its supporting env vars.
+// mode and reads its supporting fields (env → cfg).
 //
 // Expected:
 //   - mode is one of identity.Mode* constants.
+//   - cfg carries config-layer fallbacks for Secret / PrincipalID /
+//     DisplayName.
 //
 // Returns:
 //   - The identity.Source.
@@ -309,16 +364,16 @@ func installAuthFromEnv(apiServer *api.Server) error {
 // Side effects:
 //   - Reads users.json from disk in multi-user mode (logs a warn if
 //     absent — plan §"Bootstrap UX" multi-user).
-func buildIdentitySource(mode string) (identity.Source, error) {
+func buildIdentitySource(mode string, cfg config.AuthConfig) (identity.Source, error) {
 	switch mode {
 	case identity.ModeSharedSecret:
-		return identity.NewSharedSecretSource(os.Getenv("FLOWSTATE_AUTH_SECRET")), nil
+		secret := resolveString("FLOWSTATE_AUTH_SECRET", cfg.Secret, "")
+		return identity.NewSharedSecretSource(secret), nil
 	case identity.ModeDeploymentLogin:
-		return identity.NewDeploymentLoginSource(
-			os.Getenv("FLOWSTATE_AUTH_SECRET"),
-			os.Getenv("FLOWSTATE_AUTH_PRINCIPAL_ID"),
-			os.Getenv("FLOWSTATE_AUTH_DISPLAY_NAME"),
-		), nil
+		secret := resolveString("FLOWSTATE_AUTH_SECRET", cfg.Secret, "")
+		principalID := resolveString("FLOWSTATE_AUTH_PRINCIPAL_ID", cfg.PrincipalID, "")
+		displayName := resolveString("FLOWSTATE_AUTH_DISPLAY_NAME", cfg.DisplayName, "")
+		return identity.NewDeploymentLoginSource(secret, principalID, displayName), nil
 	case identity.ModeMultiUser:
 		path := multiUserPath()
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -330,7 +385,8 @@ func buildIdentitySource(mode string) (identity.Source, error) {
 		}
 		return identity.NewMultiUserSource(path)
 	default:
-		return nil, fmt.Errorf("unknown FLOWSTATE_AUTH_MODE %q", mode)
+		return nil, fmt.Errorf("unknown auth mode %q "+
+			"(want one of: shared-secret, per-deployment-login, multi-user)", mode)
 	}
 }
 
@@ -348,36 +404,54 @@ func multiUserPath() string {
 	return filepath.Join(home, ".config", "flowstate", "users.json")
 }
 
-// resolveCSRFKey returns the 32-byte HMAC key used by gorilla/csrf. v1
-// reads FLOWSTATE_AUTH_CSRF_KEY (raw bytes). When unset, generates a
-// random 32-byte key and logs a warn — the next process restart will
-// produce a different key and invalidate sessions, so the operator MUST
-// set the env var for any non-ephemeral deployment.
+// resolveCSRFKey returns the 32-byte HMAC key used by gorilla/csrf.
+//
+// PR5/C10 hardens this surface: the ephemeral-random fallback in PR4/C9
+// is REMOVED. When neither FLOWSTATE_AUTH_CSRF_KEY nor cfgKey supplies
+// a value, the function returns an error pointing the operator at
+// `flowstate auth csrf-key gen`. Fails CLOSED rather than the prior
+// fail-OPEN-with-warn behaviour — a fresh restart with a fresh
+// ephemeral key invalidates every active session silently, which is
+// worse than refusing to start.
+//
+// Resolution order (highest precedence first):
+//   1. FLOWSTATE_AUTH_CSRF_KEY env var
+//   2. cfgKey (cfg.Auth.CSRFKey)
+//   3. ERROR — operator must configure a key.
+//
+// Key padding/truncation: a configured key is materialised into a
+// 32-byte slice. Keys shorter than 32 bytes are zero-padded (gorilla/csrf
+// accepts arbitrary AuthKey length but practical security wants 32 +
+// bytes); keys longer than 32 bytes are truncated. The
+// `flowstate auth csrf-key gen` command emits exactly 32 base64-URL
+// bytes (43 chars no padding), matching mintToken().
 //
 // Expected:
-//   - None.
+//   - cfgKey may be empty.
 //
 // Returns:
-//   - A 32-byte slice.
-//   - Error from rand.Read (effectively never).
+//   - A 32-byte slice on success.
+//   - Error when both env and cfg are empty, with a message pointing at
+//     `flowstate auth csrf-key gen`.
 //
 // Side effects:
-//   - On fallback, logs an slog.Warn so the operator notices.
-func resolveCSRFKey() ([]byte, error) {
-	if raw := os.Getenv("FLOWSTATE_AUTH_CSRF_KEY"); raw != "" {
-		// Take the first 32 bytes; pad with zero if shorter (defensive —
-		// gorilla/csrf panics on empty key, but accepts any length 32).
-		key := make([]byte, 32)
-		copy(key, []byte(raw))
-		return key, nil
+//   - Reads FLOWSTATE_AUTH_CSRF_KEY from the environment.
+func resolveCSRFKey(cfgKey string) ([]byte, error) {
+	source := strings.TrimSpace(os.Getenv("FLOWSTATE_AUTH_CSRF_KEY"))
+	if source == "" {
+		source = strings.TrimSpace(cfgKey)
 	}
+	if source == "" {
+		return nil, fmt.Errorf("auth.csrf_key is not configured. " +
+			"Either set FLOWSTATE_AUTH_CSRF_KEY in the environment, " +
+			"add `auth.csrf_key: <key>` to config.yaml, or disable auth " +
+			"with `auth.enabled: false`. Generate a key with " +
+			"`flowstate auth csrf-key gen`.")
+	}
+	// Take the first 32 bytes; pad with zero if shorter (defensive —
+	// gorilla/csrf panics on empty key but accepts any length 32).
 	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		return nil, fmt.Errorf("generating random CSRF key: %w", err)
-	}
-	slog.Warn("FLOWSTATE_AUTH_CSRF_KEY unset; using ephemeral random " +
-		"key — sessions WILL NOT survive a server restart. Set " +
-		"FLOWSTATE_AUTH_CSRF_KEY=<32+ char string> to fix.")
+	copy(key, []byte(source))
 	return key, nil
 }
 

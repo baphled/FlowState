@@ -79,6 +79,18 @@ type AppConfig struct {
 	// independently while Phase A is rolled out.
 	Compaction compactionpkg.Config `json:"compaction" yaml:"compaction"`
 
+	// Auth controls the FlowState API Auth Track (May 2026). PR5/C10
+	// flips Enabled to true by default; existing deployments upgrading
+	// to v1 MUST configure `auth.mode` + credentials before the upgrade
+	// takes effect (multi-user mode additionally requires a
+	// pre-provisioned users.json via `flowstate auth user add`). See
+	// AuthConfig for field-level documentation and the migration note
+	// in the PR5/C10 commit body for the rollout matrix.
+	//
+	// Env vars (FLOWSTATE_AUTH_*) override the config layer per plan
+	// §"Bootstrap UX" precedence (env → flag → config → default).
+	Auth AuthConfig `json:"auth" yaml:"auth"`
+
 	// StreamTimeout overrides the per-LLM-stream wall-clock budget. Empty
 	// means inherit the engine's compiled-in default (5m). Long delegations
 	// on slow providers (e.g. zai/glm-4.7) are the typical reason to raise
@@ -601,6 +613,77 @@ type FailoverConfig struct {
 	Tiers map[string]string `json:"tiers" yaml:"tiers,omitempty"`
 }
 
+// AuthConfig holds the FlowState API Auth Track (May 2026) config layer.
+// Sourced from `auth:` in config.yaml (NOT TOML — the codebase uses YAML
+// per LoadConfigFromPath); env vars (FLOWSTATE_AUTH_*) take precedence
+// per plan §"Bootstrap UX" precedence order (env → flag → config →
+// default).
+//
+// Fields:
+//
+//   - Enabled         — features.auth_v1. v1 ships with this true by default
+//     (the PR5/C10 flag-flip). Operators opt out by setting
+//     `auth.enabled: false` (development / smoke tests) or by leaving
+//     credentials unconfigured — the safety net in installAuthFromConfig
+//     downgrades to pass-through with a loud slog.Warn when Enabled=true
+//     but no Mode is resolvable.
+//   - Mode            — one of "shared-secret" | "per-deployment-login" |
+//     "multi-user". Empty defaults to "per-deployment-login" (plan §OD-E
+//     v1 deployable mode).
+//   - Secret          — credential for shared-secret / per-deployment-login.
+//     Production deployments typically supply this via the env var
+//     FLOWSTATE_AUTH_SECRET rather than the config file (which may be
+//     checked into version control).
+//   - PrincipalID     — operator id stamped on the session under
+//     per-deployment-login. Empty defaults to "default".
+//   - DisplayName     — human-readable label for the principal. Optional.
+//   - AllowedOrigins  — comma-list / YAML slice consumed by RequireOrigin.
+//     Empty defaults to ["localhost:*"] (the pre-PR1-lift behaviour).
+//   - SecureCookies   — controls the Secure attribute on the session +
+//     CSRF cookies. Defaults to TRUE (HTTPS production); flip to false
+//     ONLY for HTTP-only dev. Plan §"Wire Protocol" line 414 + R2/R12.
+//   - CSRFKey         — 32+ byte HMAC key for gorilla/csrf. v1 reads
+//     this from config OR env. PR5/C10 removes the ephemeral-random
+//     fallback in production: when Enabled=true and CSRFKey is unset on
+//     BOTH config and env, installAuthFromConfig returns an error. The
+//     `flowstate auth csrf-key gen` cobra subcommand prints a freshly
+//     generated key the operator can paste into config.yaml or pipe
+//     into the env.
+//
+// Default values are documented at the field level; DefaultAuthConfig
+// (below) returns the canonical default. PR5/C10 sets
+// DefaultConfig().Auth.Enabled = true (the flag-flip).
+type AuthConfig struct {
+	Enabled        bool     `json:"enabled" yaml:"enabled"`
+	Mode           string   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Secret         string   `json:"secret,omitempty" yaml:"secret,omitempty"`
+	PrincipalID    string   `json:"principal_id,omitempty" yaml:"principal_id,omitempty"`
+	DisplayName    string   `json:"display_name,omitempty" yaml:"display_name,omitempty"`
+	AllowedOrigins []string `json:"allowed_origins,omitempty" yaml:"allowed_origins,omitempty"`
+	SecureCookies  bool     `json:"secure_cookies" yaml:"secure_cookies"`
+	CSRFKey        string   `json:"csrf_key,omitempty" yaml:"csrf_key,omitempty"`
+}
+
+// DefaultAuthConfig returns the canonical default AuthConfig. Used by
+// DefaultConfig and by cmd/serve when the operator's config.yaml omits
+// the `auth:` block.
+//
+// Defaults:
+//   - Enabled:       true (PR5/C10 flag-flip — see AppConfig.Auth)
+//   - Mode:          "per-deployment-login" (plan §OD-E v1 deployable)
+//   - SecureCookies: true (production HTTPS; operator opts out for dev)
+//
+// Other fields are zero-valued; installAuthFromConfig fills in
+// implementation defaults (e.g. AllowedOrigins defaults to localhost:*
+// when both config and env are empty).
+func DefaultAuthConfig() AuthConfig {
+	return AuthConfig{
+		Enabled:       true,
+		Mode:          "per-deployment-login",
+		SecureCookies: true,
+	}
+}
+
 // Dir returns the configuration directory path.
 //
 // Checks XDG_CONFIG_HOME environment variable first, then falls back to
@@ -721,6 +804,7 @@ func DefaultConfig() *AppConfig {
 		AgentOverrides:      make(map[string]AgentOverrideConfig),
 		Compression:         contextpkg.DefaultCompressionConfig(),
 		Compaction:          compactionpkg.DefaultConfig(),
+		Auth:                DefaultAuthConfig(),
 		ToolCapableModels:   defaultToolCapableModels(),
 		ToolIncapableModels: defaultToolIncapableModels(),
 	}
