@@ -34,6 +34,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/baphled/flowstate/internal/provider/quota"
 )
 
 // Source is the audit-trail discriminator the Resolver stamps onto
@@ -354,3 +356,67 @@ func (s Sourced) Lookup(provider, model string) (string, bool) {
 	}
 	return s.Resolver.SourceLookup(provider, model)
 }
+
+// SpendResolver wraps a *Resolver so it satisfies BOTH
+// quota.PricingResolver (the source-only seam from PR2) and the
+// quota PriceEntryResolver shape (the richer seam the PR4 spend math
+// consumes). Construct one of these and pass it to
+// quota.NewTrackerWithSpend(... resolver any ...) — the Tracker
+// stores it under both interfaces.
+//
+// The two Lookup methods are deliberately distinct names:
+//   - Lookup(provider, model) (source, ok)   — PricingResolver
+//   - Entry(provider, model)  (entry, ok)    — PriceEntryResolver
+//
+// quota.PriceEntry mirrors pricing.Entry field-for-field per the
+// quota package's narrow-seam discipline (quota → pricing import is
+// forbidden because pricing depends on quota for the Snapshot type;
+// this adapter is the one-way bridge).
+//
+// Plan §"Engine integration / spend accumulation rules" lines 304-313.
+type SpendResolver struct {
+	Resolver *Resolver
+}
+
+// Lookup satisfies quota.PricingResolver — returns the audit-trail
+// source string for the price tier that holds (provider, model).
+// Returns ("", false) when the embedded resolver is nil.
+func (s SpendResolver) Lookup(provider, model string) (string, bool) {
+	if s.Resolver == nil {
+		return "", false
+	}
+	return s.Resolver.SourceLookup(provider, model)
+}
+
+// Entry satisfies quota.PriceEntryResolver — returns the price
+// record for (provider, model) so the spend math can compute the
+// cost delta. Returns the zero entry and false when the resolver is
+// nil or the (provider, model) misses every tier.
+//
+// pricing → quota is a clean one-way import (quota does NOT import
+// pricing — the PR2 plan deliberately put the PricingResolver
+// interface in quota with this directional discipline). The compile-
+// time assertion below catches any drift in quota.PriceEntry shape.
+func (s SpendResolver) Entry(provider, model string) (quota.PriceEntry, bool) {
+	if s.Resolver == nil {
+		return quota.PriceEntry{}, false
+	}
+	entry, _, ok := s.Resolver.Lookup(provider, model)
+	if !ok {
+		return quota.PriceEntry{}, false
+	}
+	return quota.PriceEntry{
+		Currency:                entry.Currency,
+		InputPerMillion:         entry.InputPerMillion,
+		OutputPerMillion:        entry.OutputPerMillion,
+		CacheReadPerMillion:     entry.CacheReadPerMillion,
+		CacheCreationPerMillion: entry.CacheCreationPerMillion,
+	}, true
+}
+
+// Compile-time assertions: SpendResolver satisfies both quota seams.
+// Drift in either interface here trips at build, not at runtime.
+var (
+	_ quota.PricingResolver    = (*SpendResolver)(nil)
+	_ quota.PriceEntryResolver = (*SpendResolver)(nil)
+)

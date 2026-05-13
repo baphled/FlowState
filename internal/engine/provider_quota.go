@@ -294,6 +294,66 @@ func (e *Engine) recordQuotaSpend(ctx context.Context, providerID, modelID strin
 	})
 }
 
+// QuotaAggregatorRow is the engine-side projection one row of the
+// PR5 dashboard aggregator returns. Mirrors the api package's
+// QuotaAggregatorEntry shape but stays in the engine to keep the
+// engine consumer-agnostic (api → engine import is fine; the engine
+// must not import api).
+//
+// Plan PR5 row 429 — backs GET /api/v1/providers/quota.
+type QuotaAggregatorRow struct {
+	Provider    string
+	AccountHash string
+	Model       string
+	Snapshot    quota.Snapshot
+}
+
+// QuotaSnapshots returns every (provider, account_hash, model)
+// Snapshot the engine's quota tracker holds. The returned slice is
+// empty (not nil) when no tracker is wired or the store is empty.
+//
+// PR5 dashboard aggregator entry point — the api package's
+// quota_dashboard.go handler iterates the result and projects each
+// Snapshot into the wire shape.
+func (e *Engine) QuotaSnapshots(ctx context.Context) []QuotaAggregatorRow {
+	if e == nil || e.quotaTracker == nil {
+		return nil
+	}
+	entries, err := e.quotaTracker.Snapshots(ctx)
+	if err != nil {
+		// Defensive — the in-memory MemoryStore cannot fail in v1; a
+		// future PR6 atomic-write impl may surface IO errors. Suppress
+		// the error to nil so the dashboard renders empty rather than
+		// 500-ing the whole surface. The api layer logs the error if
+		// it cares (it doesn't today).
+		return nil
+	}
+	out := make([]QuotaAggregatorRow, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, QuotaAggregatorRow{
+			Provider:    entry.Key.ProviderID,
+			AccountHash: entry.Key.AccountHash,
+			Model:       entry.Key.ModelID,
+			Snapshot:    entry.Snapshot,
+		})
+	}
+	return out
+}
+
+// ResetQuotaSpend zeros the spend counter for the given (provider,
+// account_hash, model). Returns true when a Snapshot existed and was
+// reset; false when no row was found. Errors from the Store impl
+// propagate.
+//
+// PR5 dashboard "Reset spend counter" button — backs
+// POST /api/v1/providers/quota/reset.
+func (e *Engine) ResetQuotaSpend(ctx context.Context, providerID, accountHash, modelID string) (bool, error) {
+	if e == nil || e.quotaTracker == nil {
+		return false, nil
+	}
+	return e.quotaTracker.ResetSpend(ctx, providerID, accountHash, modelID)
+}
+
 // tryEmitProviderQuotaInline writes the inline provider_quota chunk
 // onto outChan. Suppresses duplicate emissions per session via
 // lastProviderQuotaPayload — a chip update that would render the

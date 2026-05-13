@@ -19,6 +19,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/provider/quota"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -70,6 +71,14 @@ type Server struct {
 	// auth.Auth.Enabled is false (the PR3 ship-state default) the
 	// register* helpers no-op and routes register plain on the mux.
 	auth AuthBundle
+
+	// quotaAggregator backs GET /api/v1/providers/quota +
+	// POST /api/v1/providers/quota/reset (PR5 of the Provider Quota
+	// and Spend Visibility plan, May 2026). Wired via
+	// WithQuotaAggregator(...) from the cmd/serve boot path. Nil
+	// makes both endpoints return 501 so the SPA distinguishes
+	// "feature not wired" from "no providers configured".
+	quotaAggregator QuotaAggregator
 }
 
 // ServerOption configures an optional Server dependency.
@@ -285,6 +294,53 @@ func WithCompactionController(c CompactionController) ServerOption {
 // pass an explicit list or omit the option entirely.
 func WithOriginPatterns(patterns []string) ServerOption {
 	return func(s *Server) { s.originPatterns = patterns }
+}
+
+// QuotaAggregator is the engine-side surface the PR5 dashboard
+// endpoints call into. Returns the list of (provider, account_hash,
+// model) tuples the engine has observed and the Snapshot for each.
+//
+// Plan PR5 row 429 — the aggregator backs GET /api/v1/providers/quota
+// + POST /api/v1/providers/quota/reset.
+//
+// Production wires (*engine.Engine) which delegates to the configured
+// quota.Tracker. Tests pass a fake closure that returns canned
+// Snapshots.
+type QuotaAggregator interface {
+	// QuotaSnapshots returns every (provider, account_hash, model)
+	// Snapshot the engine has tracked. Order is unspecified; the API
+	// handler sorts for deterministic JSON. Each row carries the
+	// quota.Snapshot directly — the API handler then projects it
+	// into the JSON wire shape (snapshotToDashboardEntry in
+	// quota_dashboard.go).
+	QuotaSnapshots(ctx context.Context) []QuotaAggregatorRow
+
+	// ResetQuotaSpend zeros the spend counter for the given key. The
+	// engine deletes the underlying Store entry and purges the per-
+	// request cumulative cache; a subsequent UsageDelta starts the
+	// counter from zero. Returns true when the key existed, false
+	// when no Snapshot was found for the tuple. Errors propagate from
+	// the Store impl.
+	ResetQuotaSpend(ctx context.Context, providerID, accountHash, modelID string) (bool, error)
+}
+
+// QuotaAggregatorRow is one row in the dashboard's aggregated view.
+// Field-for-field mirror of engine.QuotaAggregatorRow to keep the
+// engine-package import edge one-way (api → engine — fine; engine
+// → api — forbidden per ADR-Engine-Boundary).
+type QuotaAggregatorRow struct {
+	Provider    string
+	AccountHash string
+	Model       string
+	Snapshot    quota.Snapshot
+}
+
+// WithQuotaAggregator installs the dashboard-side surface. Without it
+// the dashboard endpoints return 501 so the SPA can distinguish "no
+// quota tracker wired" (PR4 wiring incomplete) from "no providers
+// configured" (empty array).
+func WithQuotaAggregator(a QuotaAggregator) ServerOption {
+	return func(s *Server) { s.quotaAggregator = a }
 }
 
 // SetBackgroundManager sets the background manager after server construction.
@@ -553,6 +609,14 @@ func (s *Server) setupRoutes() {
 	// lines 503-522 (the authenticated branch ships; the unauth branch
 	// is folded down to the uniform 401 to honour B8).
 	s.registerProtected("GET /api/auth/whoami", handleWhoami)
+
+	// PR5 of the Provider Quota and Spend Visibility plan (May 2026).
+	// Dashboard aggregator + manual-reset endpoints. Both protected so
+	// the 401 wire shape stays uniform per Auth Track B8 carry-through.
+	// POST .../reset is state-changing → CSRF header required (handled
+	// by the middleware chain registerProtected composes).
+	s.registerProtected("GET /api/v1/providers/quota", s.handleListProviderQuotas)
+	s.registerProtected("POST /api/v1/providers/quota/reset", s.handleResetProviderQuota)
 }
 
 // handleListAgents writes all registered agent manifests as JSON to the response.

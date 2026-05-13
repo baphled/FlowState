@@ -53,9 +53,12 @@ type SpendStoreKey struct {
 
 // SpendStore is the narrow persistence seam the Tracker's spend
 // layer consumes. Mirrors the Get/Put subset of SpendStore; Delete /
-// Reset / Cleanup are not needed on the hot path so they're omitted
-// (the engine wires the full Store separately for the PR5 "Reset
-// spend counter" REST endpoint).
+// Cleanup are not needed on the hot path so they're omitted.
+//
+// PR5 additions: Reset + List back the dashboard surface (manual
+// "Reset spend counter" button per OD-8 + the multi-row aggregator).
+// Stub stores (Redis / Postgres in v1) may return ErrNotImplemented
+// from List + Reset until v3 lights the real impl up.
 //
 // Sentinel for "not found" — SpendStore implementations MUST return
 // SpendStoreErrNotFound when Get is called for an unrecorded key.
@@ -63,6 +66,26 @@ type SpendStoreKey struct {
 type SpendStore interface {
 	Get(ctx context.Context, key SpendStoreKey) (Snapshot, error)
 	Put(ctx context.Context, key SpendStoreKey, snap Snapshot) error
+
+	// Reset clears the Snapshot for key. Idempotent — resetting a
+	// non-existent Key is a no-op (returns nil). Used by the PR5
+	// "Reset spend counter" dashboard button.
+	Reset(ctx context.Context, key SpendStoreKey) error
+
+	// List returns every (Key, Snapshot) pair the store holds. Order
+	// is unspecified; callers that need a deterministic sequence sort
+	// at the API layer. Used by the PR5 GET /api/v1/providers/quota
+	// aggregator.
+	List(ctx context.Context) ([]SpendStoreEntry, error)
+}
+
+// SpendStoreEntry is one row returned from SpendStore.List. The Key
+// and Snapshot travel together so the dashboard handler can render
+// the (provider, account_hash, model) partition key alongside the
+// snapshot's variant data.
+type SpendStoreEntry struct {
+	Key      SpendStoreKey
+	Snapshot Snapshot
 }
 
 // SpendStoreErrNotFound is the sentinel SpendStore implementations
@@ -527,6 +550,100 @@ func resolveThresholdsForCap(cap CapConfig) (amber, red int) {
 		red = 95
 	}
 	return amber, red
+}
+
+// Snapshots returns every (Key, Snapshot) pair the spend store
+// holds. Order is unspecified; callers that need a deterministic
+// sequence sort at the API layer. Used by the PR5 dashboard
+// aggregator (GET /api/v1/providers/quota).
+//
+// Returns an empty slice + nil error when no spend is wired or the
+// underlying store has no entries. Surfaces ctx.Err() and any other
+// store error verbatim — the dashboard handler maps that to a 500.
+//
+// Auto-reset on PeriodStart rollover is applied row-by-row so the
+// aggregator returns the rotated-and-zeroed Snapshot when a period
+// has crossed; this preserves the per-row semantics LookupSpend
+// honours for single-row reads.
+func (t *Tracker) Snapshots(ctx context.Context) ([]SpendStoreEntry, error) {
+	if t == nil || t.spend == nil || t.spend.storeBackend == nil {
+		return nil, nil
+	}
+	rows, err := t.spend.storeBackend.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return rows, nil
+	}
+	now := t.spend.nowFunc()
+	out := make([]SpendStoreEntry, 0, len(rows))
+	for _, row := range rows {
+		snap := row.Snapshot
+		// Apply the same period rollover LookupSpend applies on
+		// single-row reads — so dashboard rows zero out at the
+		// boundary rather than ageing into stale figures.
+		if snap.TokenSpend != nil &&
+			!snap.TokenSpend.PeriodEnd.IsZero() &&
+			!now.Before(snap.TokenSpend.PeriodEnd) {
+			newStart, newEnd := monthlyPeriod(now)
+			snap.ObservedAt = now
+			snap.TokenSpend.Spent = Money{Amount: 0, Currency: snap.TokenSpend.Spent.Currency}
+			snap.TokenSpend.SpentUSD = Money{Amount: 0, Currency: "USD"}
+			snap.TokenSpend.PeriodStart = newStart
+			snap.TokenSpend.PeriodEnd = newEnd
+			_ = t.spend.storeBackend.Put(ctx, row.Key, snap)
+		}
+		snap.StoreBackend = t.storeBackend
+		out = append(out, SpendStoreEntry{Key: row.Key, Snapshot: snap})
+	}
+	return out, nil
+}
+
+// ResetSpend zeros the spend counter for (provider, account_hash,
+// model). Returns true when an existing Snapshot was reset, false
+// when no Snapshot existed for the key. Errors from the underlying
+// store impl propagate verbatim.
+//
+// Side effects:
+//   - Deletes the Store row.
+//   - Purges per-request cumulative entries for the (provider, model)
+//     tuple so a subsequent UsageDelta starts the counter from zero
+//     rather than re-applying the cumulative-cost delta.
+//
+// Used by the PR5 dashboard "Reset spend counter" button via
+// POST /api/v1/providers/quota/reset (OD-8 manual-reset path).
+func (t *Tracker) ResetSpend(ctx context.Context, providerID, accountHash, modelID string) (bool, error) {
+	if t == nil || t.spend == nil || t.spend.storeBackend == nil {
+		return false, nil
+	}
+	key := SpendStoreKey{
+		ProviderID:  providerID,
+		AccountHash: accountHash,
+		ModelID:     modelID,
+	}
+	if _, err := t.spend.storeBackend.Get(ctx, key); err != nil {
+		if errors.Is(err, SpendStoreErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if err := t.spend.storeBackend.Reset(ctx, key); err != nil {
+		return false, err
+	}
+	// Purge per-request cumulative cache entries for this (provider,
+	// model). The accountHash is not part of the request-cum key
+	// today (the engine assumes single-account-per-provider on the
+	// streaming pipe); a future multi-account stream-aware refactor
+	// should narrow this to per-account.
+	t.spend.mu.Lock()
+	for rk := range t.spend.requestCum {
+		if rk.provider == providerID && rk.model == modelID {
+			delete(t.spend.requestCum, rk)
+		}
+	}
+	t.spend.mu.Unlock()
+	return true, nil
 }
 
 // LookupSpend returns the most recent TokenSpend Snapshot for

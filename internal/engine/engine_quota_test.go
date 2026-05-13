@@ -98,6 +98,33 @@ func (m *memSpendShim) Put(ctx context.Context, key quota.SpendStoreKey, snap qu
 	}, snap)
 }
 
+func (m *memSpendShim) Reset(ctx context.Context, key quota.SpendStoreKey) error {
+	return m.inner.Reset(ctx, store.Key{
+		ProviderID:  key.ProviderID,
+		AccountHash: key.AccountHash,
+		ModelID:     key.ModelID,
+	})
+}
+
+func (m *memSpendShim) List(ctx context.Context) ([]quota.SpendStoreEntry, error) {
+	rows, err := m.inner.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]quota.SpendStoreEntry, len(rows))
+	for i, r := range rows {
+		out[i] = quota.SpendStoreEntry{
+			Key: quota.SpendStoreKey{
+				ProviderID:  r.Key.ProviderID,
+				AccountHash: r.Key.AccountHash,
+				ModelID:     r.Key.ModelID,
+			},
+			Snapshot: r.Snapshot,
+		}
+	}
+	return out, nil
+}
+
 // newQuotaEngine constructs an Engine wired with a Tracker bound to
 // resolver + a MemoryStore-backed SpendStore. Minimal cfg — the
 // emission helpers don't need Stream wiring or the full provider
