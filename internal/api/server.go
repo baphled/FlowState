@@ -1309,6 +1309,18 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 				// updates the toolbar usage chip so the user sees how
 				// close the request is to saturating the model's window.
 				writeSSEContextUsage(w, flusher, chunk.Content)
+			case "provider_quota":
+				// Per-provider quota chip event registered by PR1 of the
+				// Provider Quota and Spend Visibility plan (May 2026).
+				// PR1 freezes the wire contract — server fan-out + SSE
+				// writer + Vue Pinia subscription land together so the
+				// chip Pinia store (web/src/stores/quotaStore.ts) has a
+				// stable surface to bind to. PR4 lights up the engine's
+				// buildProviderQuotaChunk emitter; PR1 server-side is
+				// "wired but dormant" — this case will not fire until
+				// PR4 ships, but the dispatch table is correct from
+				// merge of PR1.
+				writeSSEProviderQuota(w, flusher, chunk.Content)
 			case "":
 				if chunk.Content != "" {
 					writeSSEContent(w, flusher, chunk.Content)

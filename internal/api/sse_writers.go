@@ -149,6 +149,85 @@ type sseContextUsage struct {
 	Model         string `json:"model"`
 }
 
+// sseProviderQuota is the wire shape for the per-provider quota
+// event registered in PR1 of the Provider Quota and Spend Visibility
+// plan (May 2026). The discriminator pattern mirrors sseContextUsage:
+// the engine marshals the variant-specific JSON payload (no type
+// field — that's this writer's contract) and writeSSEProviderQuota
+// injects "type":"provider_quota" at the wire layer.
+//
+// PR1 registers the wire type and the server fan-out case; the
+// engine does NOT yet emit chunks for it. PR4 lights up the emission
+// path. Wired-but-dormant is the load-bearing intent per plan PR1
+// row 425 — the chip's Pinia subscription contract is frozen so the
+// Vue side can land in PR4a without waiting on a fresh server PR.
+//
+// Field semantics (mirrors the discriminated-union shape exposed by
+// the engine via quota.Snapshot):
+//   - Provider / AccountHash / Model — partition keys.
+//   - ObservedAt — wall-clock of the snapshot refresh (RFC 3339).
+//   - Stale — true past the rate-limit window's reset wall-clock.
+//   - StoreBackend — "memory" | "redis" | "postgres" for the chip's
+//     single-instance-scope tooltip per plan B3 fold lines 285-293.
+//   - Variant — "rate_limit" | "token_spend" | "not_configured" —
+//     the TypeScript-side discriminant the Vue chip switches on.
+//   - RateLimit / TokenSpend / NotConfigured — variant-specific
+//     payloads. Exactly one is non-empty for every event.
+type sseProviderQuota struct {
+	Type          string                       `json:"type"`
+	Provider      string                       `json:"provider"`
+	AccountHash   string                       `json:"account_hash"`
+	Model         string                       `json:"model,omitempty"`
+	ObservedAt    string                       `json:"observed_at"`
+	Stale         bool                         `json:"stale,omitempty"`
+	StoreBackend  string                       `json:"store_backend,omitempty"`
+	PricingSource string                       `json:"pricing_source,omitempty"`
+	Variant       string                       `json:"variant"`
+	RateLimit     *sseProviderQuotaRateLimit   `json:"rate_limit,omitempty"`
+	TokenSpend    *sseProviderQuotaTokenSpend  `json:"token_spend,omitempty"`
+	NotConfigured *sseProviderQuotaNotConfig   `json:"not_configured,omitempty"`
+}
+
+// sseProviderQuotaRateLimit is the wire shape for the RateLimit
+// variant. Four windows + a tightest-window summary.
+type sseProviderQuotaRateLimit struct {
+	Requests                 sseQuotaWindow `json:"requests"`
+	Tokens                   sseQuotaWindow `json:"tokens"`
+	Input                    sseQuotaWindow `json:"input"`
+	Output                   sseQuotaWindow `json:"output"`
+	TightestPercentRemaining int            `json:"tightest_percent_remaining"`
+	TightestResetAt          string         `json:"tightest_reset_at,omitempty"`
+}
+
+// sseQuotaWindow is one rate-limit window triple. -1 sentinel for
+// "not provided" mirrors the Go side.
+type sseQuotaWindow struct {
+	Limit     int    `json:"limit"`
+	Remaining int    `json:"remaining"`
+	Reset     string `json:"reset,omitempty"`
+}
+
+// sseProviderQuotaTokenSpend is the wire shape for the TokenSpend
+// variant. PR1 ships the type; PR4 lights up the emission path.
+type sseProviderQuotaTokenSpend struct {
+	SpentMinor     int64  `json:"spent_minor"`
+	SpentCurrency  string `json:"spent_currency"`
+	SpentUSDMinor  int64  `json:"spent_usd_minor"`
+	CapMinor       int64  `json:"cap_minor,omitempty"`
+	CapCurrency    string `json:"cap_currency,omitempty"`
+	Period         string `json:"period"`
+	PeriodStart    string `json:"period_start"`
+	PeriodEnd      string `json:"period_end"`
+	ThresholdAmber int    `json:"threshold_amber"`
+	ThresholdRed   int    `json:"threshold_red"`
+}
+
+// sseProviderQuotaNotConfig is the wire shape for the NotConfigured
+// variant. Reason is operator-visible verbatim via the chip tooltip.
+type sseProviderQuotaNotConfig struct {
+	Reason string `json:"reason"`
+}
+
 // sseContextCompacted is the wire shape for the SSE event Slice 6a
 // emits when the engine's L2 auto-compactor publishes
 // EventContextCompacted on the bus. Mirrors the wire-shape contract
@@ -561,6 +640,50 @@ func writeSSEContextUsage(w http.ResponseWriter, flusher http.Flusher, payload s
 		Model:         parsed.Model,
 	}
 	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// writeSSEProviderQuota emits a typed provider_quota SSE event by
+// re-parsing the payload JSON marshalled by the engine and
+// re-emitting it with the canonical "type":"provider_quota"
+// discriminant injected. Mirrors writeSSEContextUsage at line 621.
+//
+// PR1 of the Provider Quota and Spend Visibility plan registers this
+// writer (and the matching server fan-out case at server.go) so the
+// wire contract is frozen — the chip's Pinia subscription contract
+// (web/src/stores/quotaStore.ts in PR4a) lands against a stable
+// server surface. PR4 lights up the actual emission path on the
+// engine side.
+//
+// Expected:
+//   - payload is the JSON encoded by the engine's
+//     buildProviderQuotaChunk (PR4). The shape mirrors
+//     quota.Snapshot's discriminated union.
+//   - flusher supports HTTP flushing.
+//
+// Side effects:
+//   - Writes one SSE data line carrying the JSON-encoded
+//     provider_quota event.
+//   - Flushes response buffer.
+//   - On a malformed payload, drops the event silently rather than
+//     emitting a malformed SSE event the frontend's parser would
+//     classify as "unknown" and discard. The chip stays on the prior
+//     value rather than blanking out mid-conversation.
+//
+// PR1 acceptance: this function is callable; the server fan-out has
+// the matching case; engine does not yet emit. PR4 wires the
+// emitter.
+func writeSSEProviderQuota(w http.ResponseWriter, flusher http.Flusher, payload string) {
+	var parsed sseProviderQuota
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return
+	}
+	// Stamp the discriminant — the engine omits it by contract.
+	parsed.Type = "provider_quota"
+	jsonData, err := json.Marshal(parsed)
 	if err != nil {
 		return
 	}

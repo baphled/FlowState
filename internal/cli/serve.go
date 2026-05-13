@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/auth/identity"
 	"github.com/baphled/flowstate/internal/auth/store"
 	"github.com/baphled/flowstate/internal/config"
+	quotastore "github.com/baphled/flowstate/internal/provider/quota/store"
 )
 
 // httpShutdowner is the narrow slice of *http.Server the serve
@@ -106,6 +107,18 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 	// true by default + removes the ephemeral-random CSRF key fallback.
 	if err := installAuthFromConfig(application.API, application.Config); err != nil {
 		return fmt.Errorf("auth boot-time wiring: %w", err)
+	}
+
+	// PR1 of the Provider Quota and Spend Visibility plan (May 2026):
+	// reject the `quota.store.backend = memory + deployment_topology
+	// = multi-instance` pairing at boot per plan §"Boot validation"
+	// lines 289-291. The only silent-double-count pairing — all four
+	// other combinations boot quietly.
+	if application.Config != nil {
+		q := application.Config.Quota.Store
+		if err := quotastore.ValidateDeploymentTopology(q.Backend, q.DeploymentTopology); err != nil {
+			return fmt.Errorf("quota boot-time validation: %w", err)
+		}
 	}
 
 	server := &http.Server{
