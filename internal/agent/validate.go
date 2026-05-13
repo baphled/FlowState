@@ -169,6 +169,7 @@ var canonicalTools = map[string]bool{
 	"background_cancel":   true,
 	"autoresearch_run":    true,
 	"todowrite":           true,
+	"todo_update":         true,
 
 	// Knowledge / skill / plan tools.
 	"skill_load":     true,

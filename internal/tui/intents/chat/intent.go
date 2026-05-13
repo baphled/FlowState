@@ -4742,7 +4742,7 @@ func toolResultMessage(toolName, result string, isError bool) chat.Message {
 		return chat.Message{Role: "tool_error", Content: result}
 	}
 	rawName, toolInput := splitToolSummary(toolName)
-	if rawName == "todowrite" {
+	if rawName == "todowrite" || rawName == "todo_update" {
 		return chat.Message{Role: "todo_update", Content: widgets.FormatTodoList(result)}
 	}
 	return chat.Message{Role: "tool_result", Content: result, ToolName: rawName, ToolInput: toolInput}

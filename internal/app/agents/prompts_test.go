@@ -51,6 +51,16 @@ const canonicalTodoMandate = "Always use the `todowrite` tool to track multi-ste
 // anti-pattern phrasings so every agent has the same explicit guard.
 const canonicalAutoContinueSentence = `Once the list is recorded, work through it without asking the user "should I continue?", "do you want me to proceed?", or "shall I move on?" — pause only for genuinely missing input, an unresolvable blocker, or list completion.`
 
+// canonicalTodoUpdateSentence is the case-sensitive substring every agent
+// prompt MUST carry on its Progress bullet. Bug provenance: session
+// 59b4e1a2-daf9-44f2-b179-fa0757c34f02 emitted 4 todowrite calls vs ~94 bash
+// calls because todowrite was the only API and replaced the entire list.
+// Models batched many flips into one call against the prompt's "never batch"
+// instruction. The fix introduced the patch-op sibling tool todo_update; this
+// pin names the tool explicitly so per-transition discipline survives prompt
+// drift. Registered at internal/tool/todo/update.go.
+const canonicalTodoUpdateSentence = "Use `todo_update` for every status transition — one call per flip, marking each item `in_progress` when you start it and `completed` when it is done. Reserve `todowrite` for the initial list creation only"
+
 // exemptedPrompts is the documented allow-list for prompts that are out of
 // scope of the propagation contract. Each entry MUST cite a reason and a
 // long-lived owner.
@@ -149,6 +159,25 @@ var _ = Describe("Todo Discipline directive on agent prompts", func() {
 			content := readFile(path)
 			Expect(content).To(ContainSubstring(canonicalTodoMandate),
 				"agent prompt missing canonical todo mandate sentence: %s", path)
+		}
+	})
+
+	It("every agent prompt carries the canonical todo_update transition sentence", func() {
+		// Bug provenance: session 59b4e1a2-daf9-44f2-b179-fa0757c34f02 —
+		// models batched many per-task status flips into one todowrite call
+		// because there was no single-task patch API and todowrite replaces
+		// the entire list. The fix added todo_update as the patch-op sibling
+		// (internal/tool/todo/update.go); this assertion pins the prompt
+		// clause that directs every agent to use it for per-transition flips,
+		// so the discipline survives future prompt drift.
+		for _, path := range listAgentPrompts() {
+			if reason, exempt := todoExempt[filepath.Base(path)]; exempt {
+				By("skipping " + path + " — " + reason)
+				continue
+			}
+			content := readFile(path)
+			Expect(content).To(ContainSubstring(canonicalTodoUpdateSentence),
+				"agent prompt missing canonical todo_update transition sentence: %s", path)
 		}
 	})
 
