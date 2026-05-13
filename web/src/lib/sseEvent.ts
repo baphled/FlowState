@@ -508,10 +508,71 @@ export type SSEEvent =
   | SSEModelActiveEvent
   | SSEContextUsageEvent
   | SSEContextCompactedEvent
+  | SSEProviderQuotaEvent
   | SSEGateFailedEvent
   | SSEStreamingHeartbeatEvent
   | SSEUnknownEvent
   | SSEMalformedEvent
+
+/**
+ * Provider Quota wire shape — Pinia store + chip subscribe via
+ * applyContentEvent → handleProviderQuotaEvent.
+ *
+ * PR1 (commit ef40f9b0) froze the wire shape via api.sseProviderQuota
+ * at internal/api/sse_writers.go:176-229 (sseProviderQuota); PR4 lit
+ * up the engine emission. The discriminator-union `variant` field
+ * picks which of {rateLimit, tokenSpend, notConfigured} is non-null.
+ *
+ * Mirrors the contract spec at web/src/types/contract.spec.ts (PR1
+ * deliverable) — any change here MUST update the contract spec AND
+ * the Go-side sseProviderQuota struct in lockstep.
+ */
+export interface SSEProviderQuotaEvent {
+  kind: 'provider_quota'
+  provider: string
+  accountHash: string
+  model: string
+  observedAt: string
+  stale: boolean
+  storeBackend: string
+  pricingSource: string
+  variant: 'rate_limit' | 'token_spend' | 'not_configured'
+  rateLimit: SSEProviderQuotaRateLimit | null
+  tokenSpend: SSEProviderQuotaTokenSpend | null
+  notConfigured: SSEProviderQuotaNotConfig | null
+}
+
+export interface SSEProviderQuotaRateLimit {
+  requests: SSEProviderQuotaWindow
+  tokens: SSEProviderQuotaWindow
+  input: SSEProviderQuotaWindow
+  output: SSEProviderQuotaWindow
+  tightestPercentRemaining: number
+  tightestResetAt: string
+}
+
+export interface SSEProviderQuotaWindow {
+  limit: number
+  remaining: number
+  reset: string
+}
+
+export interface SSEProviderQuotaTokenSpend {
+  spentMinor: number
+  spentCurrency: string
+  spentUsdMinor: number
+  capMinor: number
+  capCurrency: string
+  period: string
+  periodStart: string
+  periodEnd: string
+  thresholdAmber: number
+  thresholdRed: number
+}
+
+export interface SSEProviderQuotaNotConfig {
+  reason: string
+}
 
 /**
  * parseSSEPayload classifies a raw SSE data line into a typed SSEEvent.
@@ -646,6 +707,10 @@ export function parseSSEPayload(payload: string): SSEEvent {
     }
   }
 
+  if (type === 'provider_quota') {
+    return parseProviderQuotaEvent(obj)
+  }
+
   if (type === 'streaming.heartbeat' || type === 'streaming_heartbeat') {
     // Streaming Coherence Slice F (May 2026) — engine liveness tick.
     // Tolerate both wire formats: the canonical dotted variant per the
@@ -738,6 +803,108 @@ export function parseSSEPayload(payload: string): SSEEvent {
   }
 
   return { kind: 'unknown', raw: payload }
+}
+
+/**
+ * parseProviderQuotaEvent classifies the raw SSE provider_quota
+ * payload into the typed SSEProviderQuotaEvent variant. Defensive
+ * defaults throughout — a degraded wire payload returns an event
+ * the chip can render as the empty/neutral state rather than
+ * throwing or blanking.
+ *
+ * Plan §"Vue integration (OD-4 resolution)" lines 326-336 (PR4a).
+ * Contract spec parity: web/src/types/contract.spec.ts.
+ */
+function parseProviderQuotaEvent(obj: Record<string, unknown>): SSEProviderQuotaEvent {
+  const rawVariant = typeof obj['variant'] === 'string' ? (obj['variant'] as string) : ''
+  let variant: SSEProviderQuotaEvent['variant'] = 'not_configured'
+  if (rawVariant === 'rate_limit' || rawVariant === 'token_spend' || rawVariant === 'not_configured') {
+    variant = rawVariant
+  }
+
+  const rateLimitRaw = obj['rate_limit']
+  const rateLimit =
+    rateLimitRaw && typeof rateLimitRaw === 'object'
+      ? parseProviderQuotaRateLimit(rateLimitRaw as Record<string, unknown>)
+      : null
+
+  const tokenSpendRaw = obj['token_spend']
+  const tokenSpend =
+    tokenSpendRaw && typeof tokenSpendRaw === 'object'
+      ? parseProviderQuotaTokenSpend(tokenSpendRaw as Record<string, unknown>)
+      : null
+
+  const notConfiguredRaw = obj['not_configured']
+  const notConfigured =
+    notConfiguredRaw && typeof notConfiguredRaw === 'object'
+      ? {
+          reason:
+            typeof (notConfiguredRaw as Record<string, unknown>)['reason'] === 'string'
+              ? ((notConfiguredRaw as Record<string, unknown>)['reason'] as string)
+              : '',
+        }
+      : null
+
+  return {
+    kind: 'provider_quota',
+    provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
+    accountHash: typeof obj['account_hash'] === 'string' ? (obj['account_hash'] as string) : '',
+    model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
+    observedAt: typeof obj['observed_at'] === 'string' ? (obj['observed_at'] as string) : '',
+    stale: obj['stale'] === true,
+    storeBackend: typeof obj['store_backend'] === 'string' ? (obj['store_backend'] as string) : '',
+    pricingSource: typeof obj['pricing_source'] === 'string' ? (obj['pricing_source'] as string) : '',
+    variant,
+    rateLimit,
+    tokenSpend,
+    notConfigured,
+  }
+}
+
+function parseProviderQuotaWindow(obj: Record<string, unknown>): SSEProviderQuotaWindow {
+  return {
+    limit: typeof obj['limit'] === 'number' ? (obj['limit'] as number) : -1,
+    remaining: typeof obj['remaining'] === 'number' ? (obj['remaining'] as number) : -1,
+    reset: typeof obj['reset'] === 'string' ? (obj['reset'] as string) : '',
+  }
+}
+
+function parseProviderQuotaRateLimit(obj: Record<string, unknown>): SSEProviderQuotaRateLimit {
+  return {
+    requests: parseProviderQuotaWindow(
+      (obj['requests'] as Record<string, unknown>) ?? {},
+    ),
+    tokens: parseProviderQuotaWindow(
+      (obj['tokens'] as Record<string, unknown>) ?? {},
+    ),
+    input: parseProviderQuotaWindow(
+      (obj['input'] as Record<string, unknown>) ?? {},
+    ),
+    output: parseProviderQuotaWindow(
+      (obj['output'] as Record<string, unknown>) ?? {},
+    ),
+    tightestPercentRemaining:
+      typeof obj['tightest_percent_remaining'] === 'number'
+        ? (obj['tightest_percent_remaining'] as number)
+        : -1,
+    tightestResetAt:
+      typeof obj['tightest_reset_at'] === 'string' ? (obj['tightest_reset_at'] as string) : '',
+  }
+}
+
+function parseProviderQuotaTokenSpend(obj: Record<string, unknown>): SSEProviderQuotaTokenSpend {
+  return {
+    spentMinor: typeof obj['spent_minor'] === 'number' ? (obj['spent_minor'] as number) : 0,
+    spentCurrency: typeof obj['spent_currency'] === 'string' ? (obj['spent_currency'] as string) : '',
+    spentUsdMinor: typeof obj['spent_usd_minor'] === 'number' ? (obj['spent_usd_minor'] as number) : 0,
+    capMinor: typeof obj['cap_minor'] === 'number' ? (obj['cap_minor'] as number) : 0,
+    capCurrency: typeof obj['cap_currency'] === 'string' ? (obj['cap_currency'] as string) : '',
+    period: typeof obj['period'] === 'string' ? (obj['period'] as string) : '',
+    periodStart: typeof obj['period_start'] === 'string' ? (obj['period_start'] as string) : '',
+    periodEnd: typeof obj['period_end'] === 'string' ? (obj['period_end'] as string) : '',
+    thresholdAmber: typeof obj['threshold_amber'] === 'number' ? (obj['threshold_amber'] as number) : -1,
+    thresholdRed: typeof obj['threshold_red'] === 'number' ? (obj['threshold_red'] as number) : -1,
+  }
 }
 
 /**
