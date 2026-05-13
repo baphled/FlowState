@@ -497,4 +497,240 @@ export async function compactSessionNow(sessionId: string): Promise<CompactNowRe
   return data
 }
 
+// Provider Quota and Spend Visibility plan (May 2026) — PR5 REST
+// surface. GET /api/v1/providers/quota returns the aggregator view
+// across every (provider, account_hash, model) tuple the engine has
+// observed; POST .../reset zeros the spend counter for one row.
+//
+// Wire shape mirrors api/quota_dashboard.go's quotaDashboardEntry +
+// internal/api/sse_writers.go's sseProviderQuota* shapes so the
+// TypeScript discriminated-union types deserialise both the SSE chunk
+// and the REST array element with the same parsers.
 
+/**
+ * ProviderQuotaWindow mirrors api/sse_writers.go's sseQuotaWindow —
+ * one of four windows the rate_limit variant exposes.
+ */
+export interface ProviderQuotaWindow {
+  limit: number
+  remaining: number
+  reset: string
+}
+
+/**
+ * ProviderQuotaRateLimit mirrors api/sse_writers.go's
+ * sseProviderQuotaRateLimit — the rate_limit variant payload.
+ */
+export interface ProviderQuotaRateLimit {
+  requests: ProviderQuotaWindow
+  tokens: ProviderQuotaWindow
+  input: ProviderQuotaWindow
+  output: ProviderQuotaWindow
+  tightestPercentRemaining: number
+  tightestResetAt: string
+}
+
+/**
+ * ProviderQuotaTokenSpend mirrors api/sse_writers.go's
+ * sseProviderQuotaTokenSpend — the token_spend variant payload.
+ */
+export interface ProviderQuotaTokenSpend {
+  spentMinor: number
+  spentCurrency: string
+  spentUsdMinor: number
+  capMinor: number
+  capCurrency: string
+  period: string
+  periodStart: string
+  periodEnd: string
+  thresholdAmber: number
+  thresholdRed: number
+}
+
+/**
+ * ProviderQuotaNotConfigured mirrors api/sse_writers.go's
+ * sseProviderQuotaNotConfig — the not_configured variant payload.
+ */
+export interface ProviderQuotaNotConfigured {
+  reason: string
+}
+
+/**
+ * ProviderQuotaEntry is one row of the dashboard aggregator response.
+ * Field-for-field mirror of api/quota_dashboard.go's
+ * quotaDashboardEntry. The `variant` discriminant matches exactly one
+ * of the three nested payloads.
+ */
+export interface ProviderQuotaEntry {
+  provider: string
+  accountHash: string
+  model: string
+  observedAt: string
+  stale: boolean
+  storeBackend: string
+  pricingSource: string
+  variant: 'rate_limit' | 'token_spend' | 'not_configured'
+  rateLimit: ProviderQuotaRateLimit | null
+  tokenSpend: ProviderQuotaTokenSpend | null
+  notConfigured: ProviderQuotaNotConfigured | null
+}
+
+/**
+ * normaliseEntry maps the JSON-on-the-wire snake-case fields to the
+ * camelCase TypeScript shape the SPA consumes. The Go side uses
+ * `json:"..."` tags with snake_case identifiers; the SPA's
+ * SSEProviderQuotaEvent already uses camelCase via parseSSEPayload —
+ * keep both deserialisers symmetric so a future move to one shared
+ * codec replaces this in one place.
+ */
+function normaliseQuotaEntry(raw: unknown): ProviderQuotaEntry | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  const variant = obj['variant']
+  if (variant !== 'rate_limit' && variant !== 'token_spend' && variant !== 'not_configured') {
+    return null
+  }
+  return {
+    provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
+    accountHash: typeof obj['account_hash'] === 'string' ? (obj['account_hash'] as string) : '',
+    model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
+    observedAt: typeof obj['observed_at'] === 'string' ? (obj['observed_at'] as string) : '',
+    stale: obj['stale'] === true,
+    storeBackend: typeof obj['store_backend'] === 'string' ? (obj['store_backend'] as string) : '',
+    pricingSource: typeof obj['pricing_source'] === 'string' ? (obj['pricing_source'] as string) : '',
+    variant,
+    rateLimit: normaliseRateLimit(obj['rate_limit']),
+    tokenSpend: normaliseTokenSpend(obj['token_spend']),
+    notConfigured: normaliseNotConfigured(obj['not_configured']),
+  }
+}
+
+function normaliseWindow(raw: unknown): ProviderQuotaWindow {
+  if (!raw || typeof raw !== 'object') {
+    return { limit: 0, remaining: 0, reset: '' }
+  }
+  const obj = raw as Record<string, unknown>
+  return {
+    limit: typeof obj['limit'] === 'number' ? (obj['limit'] as number) : 0,
+    remaining: typeof obj['remaining'] === 'number' ? (obj['remaining'] as number) : 0,
+    reset: typeof obj['reset'] === 'string' ? (obj['reset'] as string) : '',
+  }
+}
+
+function normaliseRateLimit(raw: unknown): ProviderQuotaRateLimit | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  return {
+    requests: normaliseWindow(obj['requests']),
+    tokens: normaliseWindow(obj['tokens']),
+    input: normaliseWindow(obj['input']),
+    output: normaliseWindow(obj['output']),
+    tightestPercentRemaining:
+      typeof obj['tightest_percent_remaining'] === 'number'
+        ? (obj['tightest_percent_remaining'] as number)
+        : -1,
+    tightestResetAt:
+      typeof obj['tightest_reset_at'] === 'string' ? (obj['tightest_reset_at'] as string) : '',
+  }
+}
+
+function normaliseTokenSpend(raw: unknown): ProviderQuotaTokenSpend | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  return {
+    spentMinor: typeof obj['spent_minor'] === 'number' ? (obj['spent_minor'] as number) : 0,
+    spentCurrency:
+      typeof obj['spent_currency'] === 'string' ? (obj['spent_currency'] as string) : '',
+    spentUsdMinor:
+      typeof obj['spent_usd_minor'] === 'number' ? (obj['spent_usd_minor'] as number) : 0,
+    capMinor: typeof obj['cap_minor'] === 'number' ? (obj['cap_minor'] as number) : 0,
+    capCurrency:
+      typeof obj['cap_currency'] === 'string' ? (obj['cap_currency'] as string) : '',
+    period: typeof obj['period'] === 'string' ? (obj['period'] as string) : '',
+    periodStart:
+      typeof obj['period_start'] === 'string' ? (obj['period_start'] as string) : '',
+    periodEnd: typeof obj['period_end'] === 'string' ? (obj['period_end'] as string) : '',
+    thresholdAmber:
+      typeof obj['threshold_amber'] === 'number' ? (obj['threshold_amber'] as number) : -1,
+    thresholdRed:
+      typeof obj['threshold_red'] === 'number' ? (obj['threshold_red'] as number) : -1,
+  }
+}
+
+function normaliseNotConfigured(raw: unknown): ProviderQuotaNotConfigured | null {
+  if (!raw || typeof raw !== 'object') return null
+  const obj = raw as Record<string, unknown>
+  return {
+    reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
+  }
+}
+
+/**
+ * fetchProviderQuotas reads the dashboard aggregator. Returns the
+ * array of per-tuple entries; an empty array means "no providers
+ * observed yet" (200 OK + []). Returns null when the server reports
+ * 501 (aggregator not wired — feature off in this deployment); the
+ * view renders an explanatory empty state.
+ *
+ * Per memory feedback_response_ok_mock_gotcha — fetch mocks in tests
+ * MUST use real Response objects (or include `ok` getter explicitly)
+ * so the `if (!res.ok)` branch resolves correctly.
+ */
+export async function fetchProviderQuotas(): Promise<ProviderQuotaEntry[] | null> {
+  const res = await fetch(joinBaseURL('/v1/providers/quota'), {
+    headers: withCsrfHeader(undefined),
+    credentials: CREDENTIALS_INCLUDE,
+  })
+  if (res.status === 501) {
+    return null
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to fetch provider quotas: ${res.status} ${res.statusText}`)
+  }
+  const raw = (await res.json()) as unknown
+  if (!Array.isArray(raw)) {
+    return []
+  }
+  const out: ProviderQuotaEntry[] = []
+  for (const r of raw) {
+    const entry = normaliseQuotaEntry(r)
+    if (entry !== null) out.push(entry)
+  }
+  return out
+}
+
+/**
+ * resetProviderQuotaSpend posts a manual reset for one
+ * (provider, account_hash, model) tuple. Returns true when the
+ * Snapshot was reset, false when the server reported 404
+ * (nothing to reset — silently treat as a no-op). Throws on any
+ * other non-OK status.
+ *
+ * The Auth Track PR3 middleware chain rejects an unauthenticated
+ * caller with 401 before the handler runs; missing-CSRF rejects
+ * with 403. Both surface as a thrown Error here; the caller (the
+ * panel modal) shows an error toast and stays open.
+ */
+export async function resetProviderQuotaSpend(
+  provider: string,
+  accountHash: string,
+  model: string,
+): Promise<boolean> {
+  const res = await fetch(joinBaseURL('/v1/providers/quota/reset'), {
+    method: 'POST',
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
+    body: JSON.stringify({
+      provider,
+      account_hash: accountHash,
+      model,
+    }),
+  })
+  if (res.status === 404) {
+    return false
+  }
+  if (!res.ok) {
+    throw new Error(`Failed to reset provider quota: ${res.status} ${res.statusText}`)
+  }
+  return true
+}
