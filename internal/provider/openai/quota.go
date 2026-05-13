@@ -75,12 +75,25 @@ func (q *Quota) Bind(p *Provider) {
 		// Success-path observer: pass an empty provider.Usage. The
 		// streaming usage chunks already flow into the engine through
 		// the existing context_usage path (via emitStreamUsage at
-		// openaicompat.go:456); we don't double-count here. The model
-		// id is unknown at observer-call time — the response carries
-		// the model in the JSON body which the SDK has parsed, but
-		// the headers alone don't. Pass empty modelID; the live
-		// RateLimit is account-wide rather than per-model for openai
-		// (per-key rate windows, not per-model).
+		// openaicompat/openaicompat.go:510-557 (emitStreamUsage)); we
+		// don't double-count here. F1 PR3-review hygiene: the prior
+		// :456 anchor predated the success-path lift in commit
+		// 0d4f7af4 which moved the emitter to its current home.
+		//
+		// F3 PR3-review hygiene — modelID gap acknowledged:
+		// the modelID argument on RecordResponse is the call-site's
+		// view (engine knows req.Model at fan-out time), but the
+		// HTTP response observer fires from inside the SDK's response
+		// handler where only the headers are visible. The JSON body
+		// has the model echo but the SDK has already parsed it past
+		// the observer hook. Passing empty modelID is intentional for
+		// THIS call path: openai's RateLimit windows are account-wide
+		// rather than per-model anyway (per-key rate windows, not
+		// per-model). The engine-driven RecordResponse call from the
+		// streaming pipe (PR4) DOES pass the live req.Model so the
+		// per-model TokenSpend variant gets correctly partitioned;
+		// the observer's contribution is RateLimit-only and stays
+		// model-agnostic by design.
 		q.RecordResponse("openai", "", headers, provider.Usage{})
 	})
 }
