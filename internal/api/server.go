@@ -542,6 +542,15 @@ func (s *Server) setupRoutes() {
 		s.registerLogin("POST /api/auth/logout",
 			auth.HandleLogout(s.auth.Session))
 	}
+
+	// Whoami — PR5/C10. Returns the authenticated principal's id +
+	// display name + mode. Goes through registerProtected so the
+	// 401 wire shape on no-session is byte-identical to every other
+	// protected endpoint (B8 fold — task brief: "MUST NOT leak mode
+	// information to unauthenticated callers"). Plan §"Wire Protocol"
+	// lines 503-522 (the authenticated branch ships; the unauth branch
+	// is folded down to the uniform 401 to honour B8).
+	s.registerProtected("GET /api/auth/whoami", handleWhoami)
 }
 
 // handleListAgents writes all registered agent manifests as JSON to the response.
