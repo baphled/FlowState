@@ -116,17 +116,26 @@ func (t *Tracker) Register(providerID string, adapter Quota) {
 	t.adapters[providerID] = adapter
 }
 
-// Lookup returns the current Snapshot for (providerID, modelID) by
-// delegating to the registered adapter. Returns a NotConfigured
-// Snapshot when no adapter is registered for providerID — this is
-// the v1 fallback for unknown providers (e.g. a future provider not
-// yet wired into the per-provider matrix).
+// Lookup returns the current Snapshot for (providerID, accountHash,
+// modelID) by delegating to the registered adapter. Returns a
+// NotConfigured Snapshot when no adapter is registered for providerID
+// — this is the v1 fallback for unknown providers (e.g. a future
+// provider not yet wired into the per-provider matrix).
+//
+// PR5 R2 fold: the accountHash parameter threads through to the
+// Store-overlay key so multi-account-per-provider deployments do not
+// silently merge into a single bucket. Pre-PR5 the storeKey shim
+// ignored the Tracker and produced an empty-account key, collapsing
+// every account on a provider into one Snapshot row. Callers that
+// don't care about account scoping (single-account-per-provider
+// deployments, tests) pass "" — the v1 default that matches the
+// RecordSpend write path with empty AccountHash.
 //
 // The returned Snapshot is stamped with t.storeBackend so consumers
 // don't need to thread it separately. When a PricingResolver is
 // wired (PR2 plumbing), Snapshot.PricingSource is also stamped with
 // the resolver's audit-trail string for hits on (providerID, modelID).
-func (t *Tracker) Lookup(ctx context.Context, providerID, modelID string) (Snapshot, error) {
+func (t *Tracker) Lookup(ctx context.Context, providerID, accountHash, modelID string) (Snapshot, error) {
 	// PR4 overlay: when spend is wired AND the Store has a Snapshot
 	// for this key, prefer it. The TokenSpend variant carries the
 	// figure the chip is most likely to act on (operator wants to
@@ -141,7 +150,11 @@ func (t *Tracker) Lookup(ctx context.Context, providerID, modelID string) (Snaps
 	// the rotated Snapshot back to the Store so subsequent reads in
 	// the new period start clean.
 	if t != nil && t.spend != nil {
-		key := storeKey(providerID, modelID, t)
+		key := SpendStoreKey{
+			ProviderID:  providerID,
+			AccountHash: accountHash,
+			ModelID:     modelID,
+		}
 		if snap, ok := t.lookupSpendOverlay(ctx, providerID, modelID, key); ok {
 			return snap, nil
 		}
@@ -154,6 +167,7 @@ func (t *Tracker) Lookup(ctx context.Context, providerID, modelID string) (Snaps
 	if !ok {
 		return Snapshot{
 			Provider:      providerID,
+			AccountHash:   accountHash,
 			Model:         modelID,
 			ObservedAt:    time.Now(),
 			StoreBackend:  t.storeBackend,
@@ -168,6 +182,14 @@ func (t *Tracker) Lookup(ctx context.Context, providerID, modelID string) (Snaps
 	// can disclose single-instance scope. Adapters need not know the
 	// backend.
 	snap.StoreBackend = t.storeBackend
+	// Stamp the account hash post-Remaining when the adapter left it
+	// empty so the chip's partition key is always populated when the
+	// caller supplied one. R2 fold: previously the empty-account
+	// collapse meant a multi-account caller couldn't drill into a
+	// specific account from the dashboard.
+	if snap.AccountHash == "" && accountHash != "" {
+		snap.AccountHash = accountHash
+	}
 	// PR2: stamp PricingSource when a resolver is wired and the
 	// (provider, model) tuple resolves. Adapters do not need to know
 	// about pricing tiers — the Tracker is the single source of

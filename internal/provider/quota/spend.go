@@ -529,23 +529,6 @@ func resolveThresholdsForCap(cap CapConfig) (amber, red int) {
 	return amber, red
 }
 
-// storeKey builds the SpendStoreKey for a (providerID, modelID) pair on
-// the Tracker. AccountHash is empty for the Lookup path because
-// callers reach Tracker.Lookup without an account in the query —
-// account scoping is a future enhancement when multi-account
-// support lands. For PR4 single-account-per-provider deployments
-// the empty-account key matches the RecordSpend write path which
-// also uses empty-account when SpendRecord.AccountHash is empty.
-//
-// TODO(pr5): thread AccountHash through Lookup so multi-account
-// deployments can drill into per-account snapshots from the chip's
-// dashboard view. Not required for PR4a (chip is always provider-
-// wide). Tracked as a chip-side limitation in the SpentUSD doc.
-func storeKey(providerID, modelID string, t *Tracker) SpendStoreKey {
-	_ = t // reserved for future per-Tracker account-context wiring
-	return SpendStoreKey{ProviderID: providerID, ModelID: modelID}
-}
-
 // LookupSpend returns the most recent TokenSpend Snapshot for
 // (provider, account, model) WITHOUT touching the adapter overlay.
 // Exposed for the engine's per-turn emission cadence so the
