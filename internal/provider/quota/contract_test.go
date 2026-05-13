@@ -266,3 +266,118 @@ var _ = Describe("StoreBackend disclosure (plan B3 fold, lines 285-293)", func()
 		Expect(snap.StoreBackend).To(Equal("postgres"))
 	})
 })
+
+// fakePricingResolver lets the PricingSource plumbing assertion below
+// drive the Tracker without standing up the full embedded
+// pricing.json. The narrow PricingResolver seam is the load-bearing
+// shape PR2 promises — keeping the fake here pins the contract.
+type fakePricingResolver struct {
+	hits map[string]string // "<provider>/<model>" → audit-trail source
+}
+
+func (f *fakePricingResolver) Lookup(provider, model string) (string, bool) {
+	src, ok := f.hits[provider+"/"+model]
+	return src, ok
+}
+
+var _ = Describe("PricingSource plumbing (plan §Pricing table line 199, PR2 wire-through)", func() {
+	var (
+		adapter *stubAdapter
+		ctx     context.Context
+	)
+
+	BeforeEach(func() {
+		adapter = &stubAdapter{
+			snap: quota.Snapshot{
+				Provider:      "anthropic",
+				Model:         "claude-opus-4-7",
+				ObservedAt:    time.Now(),
+				NotConfigured: &quota.NotConfiguredVariant{Reason: "awaiting-first-response"},
+			},
+		}
+		ctx = context.Background()
+	})
+
+	It("NewTracker (no resolver) leaves PricingSource empty — PR1 behaviour preserved", func() {
+		t := quota.NewTracker("memory")
+		t.Register("anthropic", adapter)
+		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.PricingSource).To(BeEmpty(),
+			"Trackers built via NewTracker (the PR1 entry point) MUST leave PricingSource empty so the wire shape stays backward-compatible")
+	})
+
+	It("NewTrackerWithPricing stamps the resolver's source on every hit", func() {
+		resolver := &fakePricingResolver{hits: map[string]string{
+			"anthropic/claude-opus-4-7": "flowstate-default-v1",
+		}}
+		t := quota.NewTrackerWithPricing("memory", resolver)
+		t.Register("anthropic", adapter)
+		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.PricingSource).To(Equal("flowstate-default-v1"),
+			"Tracker MUST stamp Snapshot.PricingSource from the resolver — adapters must not need to know about pricing tiers")
+	})
+
+	It("stamps registry source when the resolver returns a registry hit", func() {
+		resolver := &fakePricingResolver{hits: map[string]string{
+			"anthropic/claude-opus-4-7": "registry:https://prices.example/v1.json",
+		}}
+		t := quota.NewTrackerWithPricing("memory", resolver)
+		t.Register("anthropic", adapter)
+		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.PricingSource).To(Equal("registry:https://prices.example/v1.json"))
+	})
+
+	It("stamps operator-override source when the resolver returns an override hit", func() {
+		resolver := &fakePricingResolver{hits: map[string]string{
+			"anthropic/claude-opus-4-7": "operator-override:/etc/flowstate/pricing.json",
+		}}
+		t := quota.NewTrackerWithPricing("memory", resolver)
+		t.Register("anthropic", adapter)
+		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.PricingSource).To(Equal("operator-override:/etc/flowstate/pricing.json"))
+	})
+
+	It("leaves PricingSource empty when the resolver misses (unknown-model fallthrough)", func() {
+		resolver := &fakePricingResolver{hits: map[string]string{
+			// resolver covers a different model only.
+			"anthropic/claude-sonnet-4-7": "flowstate-default-v1",
+		}}
+		t := quota.NewTrackerWithPricing("memory", resolver)
+		t.Register("anthropic", adapter)
+		snap, err := t.Lookup(ctx, "anthropic", "claude-opus-4-7")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.PricingSource).To(BeEmpty(),
+			"resolver miss MUST leave PricingSource empty — the PR4 adapter then surfaces NotConfigured{Reason:'unknown-model:<id>'} per plan §Pricing table line 388")
+	})
+
+	It("PricingResolver getter returns the wired resolver (engine seam)", func() {
+		resolver := &fakePricingResolver{}
+		t := quota.NewTrackerWithPricing("memory", resolver)
+		Expect(t.PricingResolver()).To(BeIdenticalTo(quota.PricingResolver(resolver)),
+			"PricingResolver MUST return the same instance — PR4 adapters need the seam to perform per-model pricing lookup at RecordResponse time")
+	})
+
+	It("PricingResolver returns nil when constructed via NewTracker", func() {
+		t := quota.NewTracker("memory")
+		Expect(t.PricingResolver()).To(BeNil())
+	})
+
+	It("skips resolver lookup when modelID is empty (defensive — account-wide snapshots)", func() {
+		// Adapter returns a snapshot with empty model (mirrors
+		// Anthropic's account-wide rate-limit windows).
+		adapter.snap.Model = ""
+		resolver := &fakePricingResolver{hits: map[string]string{
+			"anthropic/": "should-not-be-stamped",
+		}}
+		t := quota.NewTrackerWithPricing("memory", resolver)
+		t.Register("anthropic", adapter)
+		snap, err := t.Lookup(ctx, "anthropic", "")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(snap.PricingSource).To(BeEmpty(),
+			"empty modelID MUST short-circuit the resolver — account-wide snapshots have no per-model price")
+	})
+})

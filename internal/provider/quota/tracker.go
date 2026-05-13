@@ -9,6 +9,27 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// PricingResolver is the narrow seam Tracker depends on for the
+// three-tier pricing-table lookup (PR2). The actual implementation
+// lives at internal/provider/quota/pricing.Resolver — the seam exists
+// here so the quota package does not import pricing (and the test
+// suite can pass a fake resolver without standing up the full
+// embedded JSON).
+//
+// The PR2 contract:
+//   - Lookup returns (source, true) when ANY tier has the
+//     (provider, model) key. source is the Snapshot.PricingSource
+//     string the panel surfaces verbatim.
+//   - Lookup returns ("", false) when no tier has the key. The
+//     Tracker's Lookup caller (per-provider adapter in PR4) then
+//     surfaces NotConfigured{Reason:"unknown-model:<id>"} per plan
+//     §"Pricing table" line 388.
+//
+// Plan §"Pricing table (OD-1 resolution)" lines 338-388.
+type PricingResolver interface {
+	Lookup(provider, model string) (source string, ok bool)
+}
+
 // Tracker is the central in-memory accumulator. The engine constructs
 // one per session-server (NewEngine wires it in PR4); it subscribes to
 // provider responses via the Quota interface and persists the latest
@@ -22,23 +43,54 @@ import (
 // PR1 Tracker exists so the engine has a callable seam and PR1
 // Anthropic responses produce a non-stale Snapshot the chip can read.
 //
+// PR2 addition (plan §"Pricing table" lines 338-388): Tracker
+// optionally carries a PricingResolver. When wired, Lookup stamps
+// Snapshot.PricingSource with the resolver's audit-trail string so
+// downstream consumers (the SSE writer, the deep-view panel) see
+// which tier supplied the price. The resolver is OPTIONAL — a nil
+// resolver leaves PricingSource empty, matching PR1 behaviour.
+//
 // Concurrency: RecordResponse and Lookup are safe for concurrent use
 // across goroutines. The Tracker uses a sync.RWMutex internally; per-
 // adapter calls go through the adapter's own concurrency contract.
 type Tracker struct {
-	mu        sync.RWMutex
-	adapters  map[string]Quota // providerID → Quota adapter
-	storeBackend string         // surfaced into Snapshot.StoreBackend
+	mu              sync.RWMutex
+	adapters        map[string]Quota // providerID → Quota adapter
+	storeBackend    string           // surfaced into Snapshot.StoreBackend
+	pricingResolver PricingResolver  // PR2: optional; nil leaves PricingSource empty
 }
 
 // NewTracker constructs an empty Tracker. The storeBackend string
 // ("memory" | "redis" | "postgres") is surfaced into every Snapshot
 // the Tracker emits so the chip's tooltip can render the
 // single-instance-scope disclosure (plan B3 fold, line 174).
+//
+// No pricing resolver is wired — Snapshot.PricingSource will remain
+// empty on every Lookup. Callers wanting the PR2 three-tier pricing
+// audit trail use NewTrackerWithPricing.
 func NewTracker(storeBackend string) *Tracker {
 	return &Tracker{
 		adapters:     make(map[string]Quota),
 		storeBackend: storeBackend,
+	}
+}
+
+// NewTrackerWithPricing constructs a Tracker bound to the given
+// PricingResolver. The resolver MAY be nil — in which case behaviour
+// matches NewTracker (no PricingSource stamping). Non-nil resolver
+// stamps Snapshot.PricingSource on every Lookup return when the
+// resolver has a hit for (provider, model).
+//
+// The Tracker does NOT take ownership of the resolver — callers
+// remain free to hot-swap pricing tables via pricing.Resolver's
+// SetRegistry method without touching the Tracker.
+//
+// Plan §"Pricing table" lines 338-388 (PR2 plumbing).
+func NewTrackerWithPricing(storeBackend string, resolver PricingResolver) *Tracker {
+	return &Tracker{
+		adapters:        make(map[string]Quota),
+		storeBackend:    storeBackend,
+		pricingResolver: resolver,
 	}
 }
 
@@ -61,10 +113,13 @@ func (t *Tracker) Register(providerID string, adapter Quota) {
 // yet wired into the per-provider matrix).
 //
 // The returned Snapshot is stamped with t.storeBackend so consumers
-// don't need to thread it separately.
+// don't need to thread it separately. When a PricingResolver is
+// wired (PR2 plumbing), Snapshot.PricingSource is also stamped with
+// the resolver's audit-trail string for hits on (providerID, modelID).
 func (t *Tracker) Lookup(ctx context.Context, providerID, modelID string) (Snapshot, error) {
 	t.mu.RLock()
 	adapter, ok := t.adapters[providerID]
+	resolver := t.pricingResolver
 	t.mu.RUnlock()
 	if !ok {
 		return Snapshot{
@@ -83,7 +138,28 @@ func (t *Tracker) Lookup(ctx context.Context, providerID, modelID string) (Snaps
 	// can disclose single-instance scope. Adapters need not know the
 	// backend.
 	snap.StoreBackend = t.storeBackend
+	// PR2: stamp PricingSource when a resolver is wired and the
+	// (provider, model) tuple resolves. Adapters do not need to know
+	// about pricing tiers — the Tracker is the single source of
+	// truth for the audit-trail string. The override-to-
+	// NotConfigured{unknown-model} surfacing happens in PR4 when
+	// TokenSpend goes live; PR2 only plumbs the source string.
+	if resolver != nil && providerID != "" && modelID != "" {
+		if source, ok := resolver.Lookup(providerID, modelID); ok {
+			snap.PricingSource = source
+		}
+	}
 	return snap, nil
+}
+
+// PricingResolver returns the resolver wired into the Tracker, or nil
+// when constructed via NewTracker (PR1 path). Exposed for tests and
+// for the engine boundary so PR4 adapters can perform the per-model
+// pricing lookup at RecordResponse time.
+func (t *Tracker) PricingResolver() PricingResolver {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.pricingResolver
 }
 
 // RecordResponse fans out a provider response to the registered
