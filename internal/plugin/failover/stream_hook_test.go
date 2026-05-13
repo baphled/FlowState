@@ -1217,6 +1217,76 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		// H9 — model-not-found 404 must NOT mark the provider as unavailable.
+		// A wrong model ID in an agent manifest (e.g. requesting "claude-sonnet-4-7"
+		// which does not exist) produces a 404 from the Anthropic API. The previous
+		// behaviour classified this as ErrorTypeModelNotFound and applied a 24-hour
+		// provider-wide cooldown via CooldownForErrorType. This is wrong: the fault
+		// is the caller's model ID, not the provider's health. Every OTHER model
+		// on the same provider remains fully functional. Blackballing the entire
+		// provider for a day because one manifest had a typo cascades into a total
+		// outage when other providers are also unavailable (rate-limited, etc.).
+		// The error still surfaces to the caller; only the persistent health-state
+		// mutation is skipped. Mirrors H7/H8 — extends the named-category set.
+		Context("when sync error is a provider.Error with model_not_found type (H9)", func() {
+			BeforeEach(func() {
+				modelErr := &provider.Error{
+					ErrorType:   provider.ErrorTypeModelNotFound,
+					Provider:    "anthropic",
+					Message:     "model: claude-sonnet-4-7 not found",
+					IsRetriable: false,
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(modelErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("does NOT mark the provider as unavailable on a wrong model ID", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred(),
+					"the model-not-found error still surfaces to the caller — "+
+						"only the persistent 24h health-mark is skipped")
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
+					"a wrong model ID must not park the provider on a 24h "+
+						"cooldown; other models on the same provider remain "+
+						"functional and the next request with the correct model "+
+						"ID must succeed immediately")
+			})
+		})
+
+		// H9 — same gate must apply when the model-not-found error arrives async.
+		Context("when async first chunk carries model_not_found error (H9)", func() {
+			BeforeEach(func() {
+				modelErr := &provider.Error{
+					ErrorType:   provider.ErrorTypeModelNotFound,
+					Provider:    "anthropic",
+					Message:     "model: claude-sonnet-4-7 not found",
+					IsRetriable: false,
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: asyncErrorStreamFn(modelErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-3"},
+				})
+			})
+
+			It("does NOT mark the provider as unavailable", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
+					"model-not-found on the async path must also skip "+
+						"health-marking — same contract as the sync sibling")
+			})
+		})
+
 		Context("when sync error is a plain string containing rate_limit keyword", func() {
 			BeforeEach(func() {
 				registry.Register(&mockStreamProvider{
