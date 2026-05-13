@@ -64,6 +64,11 @@ type Server struct {
 	// the auth package consumes. Empty defaults to ["localhost:*"] to
 	// preserve the pre-lift behaviour (websocket.go:106).
 	originPatterns []string
+	// auth wires the optional PR3 auth track (Origin / Session / CSRF
+	// middleware composition). Installed via WithAuth(bundle); when
+	// auth.Auth.Enabled is false (the PR3 ship-state default) the
+	// register* helpers no-op and routes register plain on the mux.
+	auth AuthBundle
 }
 
 // ServerOption configures an optional Server dependency.
@@ -419,60 +424,80 @@ func securityHeaders(next http.Handler) http.Handler {
 
 // setupRoutes registers all HTTP route handlers on the server's mux.
 //
+// PR3/C7 — routes are classified via the registerProtected /
+// registerPublic / registerLogin helpers per plan §"Endpoint Inventory".
+// When AuthBundle is unwired OR AuthBundle.Auth.Enabled is false (the
+// PR3 default), the helpers no-op and routes register plain on the mux
+// — so the pre-PR3 behaviour is preserved exactly. PR5 flips the flag
+// default-on.
+//
 // Side effects:
-//   - Registers GET /api/agents, GET /api/agents/{id}, POST /api/chat,
-//     GET /api/discover, GET /api/skills, GET /api/sessions, and GET / routes.
-//   - Wraps the mux with security headers middleware.
+//   - Registers every API route on the internal mux.
+//   - Wraps protected routes through the auth chain when the flag is on.
 func (s *Server) setupRoutes() {
-	s.mux.HandleFunc("GET /api/agents", s.handleListAgents)
-	s.mux.HandleFunc("GET /api/agents/{id}", s.handleGetAgent)
-	s.mux.HandleFunc("GET /api/swarms", s.handleListSwarms)
-	s.mux.HandleFunc("POST /api/chat", s.handleChat)
-	s.mux.HandleFunc("GET /api/discover", s.handleDiscover)
-	s.mux.HandleFunc("GET /api/skills", s.handleListSkills)
-	s.mux.HandleFunc("GET /api/sessions", s.handleListSessions)
-	s.mux.HandleFunc("GET /", s.handleIndex)
-	s.mux.HandleFunc("POST /api/v1/sessions", s.handleCreateSession)
-	s.mux.HandleFunc("GET /api/v1/sessions", s.handleListV1Sessions)
-	s.mux.HandleFunc("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
-	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}/stream", s.handleCancelStream)
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/messages", s.handleSessionMessages)
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
-	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
-	s.mux.HandleFunc("DELETE /api/v1/sessions/{id}/messages/from/{messageId}", s.handleTruncateMessages)
-	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
-	s.mux.HandleFunc("PATCH /api/v1/sessions/{id}/model", s.handleUpdateSessionModel)
-	s.mux.HandleFunc("GET /api/v1/models", s.handleListModels)
-	s.mux.HandleFunc("GET /api/v1/tasks", s.handleListTasks)
-	s.mux.HandleFunc("GET /api/v1/tasks/{id}", s.handleGetTask)
-	s.mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
-	s.mux.HandleFunc("DELETE /api/v1/tasks", s.handleCancelAllTasks)
-	s.mux.HandleFunc("GET /health", s.handleHealth)
-	s.mux.HandleFunc("GET /api/swarm/events", s.handleSwarmEvents)
+	// Public — read-only catalog / probe endpoints (no PII, no
+	// session-scoped state). Plan §"Endpoint Inventory" Public list.
+	s.registerPublic("GET /api/agents", s.handleListAgents)
+	s.registerPublic("GET /api/agents/{id}", s.handleGetAgent)
+	s.registerPublic("GET /api/swarms", s.handleListSwarms)
+	s.registerPublic("GET /api/discover", s.handleDiscover)
+	s.registerPublic("GET /api/skills", s.handleListSkills)
+	// `GET /api/sessions` is a legacy duplicate of `GET /api/v1/sessions`
+	// (plan §"Endpoint Inventory"); kept public for backwards compat
+	// and flagged for deprecation in PR5. Plan §"Rollout Plan" PR5/C10.
+	s.registerPublic("GET /api/sessions", s.handleListSessions)
+	s.registerPublic("GET /", s.handleIndex)
+	s.registerPublic("GET /api/v1/models", s.handleListModels)
+	s.registerPublic("GET /health", s.handleHealth)
+
+	// Protected — session-scoped or mutating endpoints. Plan
+	// §"Endpoint Inventory" Protected list (16 endpoints). When the flag
+	// is on, every entry goes through RequireOrigin → RequireSession →
+	// Protect (gorilla/csrf) → RequireCSRFRecordBound.
+	s.registerProtected("POST /api/chat", s.handleChat)
+	s.registerProtected("POST /api/v1/sessions", s.handleCreateSession)
+	s.registerProtected("GET /api/v1/sessions", s.handleListV1Sessions)
+	s.registerProtected("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
+	s.registerProtected("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
+	s.registerProtected("DELETE /api/v1/sessions/{id}/stream", s.handleCancelStream)
+	s.registerProtected("GET /api/v1/sessions/{id}/messages", s.handleSessionMessages)
+	s.registerProtected("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
+	s.registerProtected("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
+	s.registerProtected("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
+	s.registerProtected("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
+	s.registerProtected("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
+	s.registerProtected("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
+	s.registerProtected("DELETE /api/v1/sessions/{id}/messages/from/{messageId}", s.handleTruncateMessages)
+	s.registerProtected("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
+	s.registerProtected("PATCH /api/v1/sessions/{id}/model", s.handleUpdateSessionModel)
+	s.registerProtected("GET /api/v1/tasks", s.handleListTasks)
+	s.registerProtected("GET /api/v1/tasks/{id}", s.handleGetTask)
+	s.registerProtected("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
+	s.registerProtected("DELETE /api/v1/tasks", s.handleCancelAllTasks)
+	// GET /api/swarm/events is the H5 closure — currently bearer-by-
+	// session_id per memory project_flowstate_api_bearer_by_session_id.
+	// PR3/C7 wraps it in the auth chain so the session_id filter becomes
+	// defence-in-depth rather than the sole check.
+	s.registerProtected("GET /api/swarm/events", s.handleSwarmEvents)
+
 	// Deliverable 2 / 3 of the May 2026 context-accuracy bundle —
 	// runtime-tunable compression threshold + manual /compress
-	// endpoint. Both flow through the CompactionController option;
-	// when not installed the handlers return 501 so callers see
-	// "wired but disabled" rather than a 404 confusion.
-	s.mux.HandleFunc("GET /api/v1/config/compression", s.handleGetCompressionConfig)
-	s.mux.HandleFunc("PATCH /api/v1/config/compression", s.handleUpdateCompressionConfig)
-	s.mux.HandleFunc("POST /api/v1/sessions/{id}/compress", s.handleCompactNow)
+	// endpoint. Session-scoped mutations → protected.
+	s.registerProtected("GET /api/v1/config/compression", s.handleGetCompressionConfig)
+	s.registerProtected("PATCH /api/v1/config/compression", s.handleUpdateCompressionConfig)
+	s.registerProtected("POST /api/v1/sessions/{id}/compress", s.handleCompactNow)
 	// Chat Attachments Backend PR1 — plan "Chat Attachments Backend
-	// (May 2026)" §6 task-03. Upload endpoint rides the same path-param
-	// session-scope gate as handleSessionMessage. Image-only PR1
-	// (jpeg/png/gif/webp). Caps: 5 MB/file, 10/request, 50 MB/session.
-	s.mux.HandleFunc("POST /api/v1/sessions/{id}/attachments", s.handleUploadAttachments)
-	// PR2 task-07: binary retrieval endpoint for the inbound `<img>`
-	// render surface that task-08 closes (N9). Same path-param
-	// session-scope gate; cross-session probes return 404 with no
-	// media-type leak (plan R9).
-	s.mux.HandleFunc("GET /api/v1/sessions/{id}/attachments/{aid}", s.handleGetAttachment)
+	// (May 2026)" §6 task-03. Session-scoped upload + retrieval →
+	// protected.
+	s.registerProtected("POST /api/v1/sessions/{id}/attachments", s.handleUploadAttachments)
+	s.registerProtected("GET /api/v1/sessions/{id}/attachments/{aid}", s.handleGetAttachment)
+
 	if s.metricsHandler != nil {
+		// Metrics is host-bind-gated (typically loopback-only) per plan
+		// §"Endpoint Inventory" — host perimeter controls access, no
+		// auth wrap needed. Wired via direct Handle to keep the
+		// non-HandlerFunc shape that the metricsHandler interface
+		// permits.
 		s.mux.Handle("GET /metrics", s.metricsHandler)
 	}
 }
@@ -1541,7 +1566,17 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// PR3/C7 round-6 fold: replace the pre-PR3
+	// `Access-Control-Allow-Origin: *` with the first configured
+	// allowlist origin + Allow-Credentials: true, so the SPA can send
+	// the session cookie on cross-origin SSE. With no allowlist
+	// configured we emit nothing — relying on same-origin (the most
+	// common deployment shape — server + SPA same host) rather than
+	// falling back to "*" which would re-open the gap PR1 flagged.
+	if len(s.originPatterns) > 0 {
+		w.Header().Set("Access-Control-Allow-Origin", s.originPatterns[0])
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
 
 	if s.eventBus == nil {
 		writeSSE(w, flusher, `{"error":"event bus not configured"}`)
