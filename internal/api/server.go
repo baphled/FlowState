@@ -455,10 +455,12 @@ func securityHeaders(next http.Handler) http.Handler {
 //
 // PR3/C7 — routes are classified via the registerProtected /
 // registerPublic / registerLogin helpers per plan §"Endpoint Inventory".
-// When AuthBundle is unwired OR AuthBundle.Auth.Enabled is false (the
-// PR3 default), the helpers no-op and routes register plain on the mux
-// — so the pre-PR3 behaviour is preserved exactly. PR5 flips the flag
-// default-on.
+// When AuthBundle is unwired OR AuthBundle.Auth.Enabled is false, the
+// helpers no-op and routes register plain on the mux — so the pre-PR3
+// behaviour is preserved exactly. PR5/C10 flipped the default-on at
+// the config layer (config.DefaultAuthConfig.Enabled=true); servers
+// boot-wired via cmd/serve install an active AuthBundle and the
+// helpers wrap as designed.
 //
 // Side effects:
 //   - Registers every API route on the internal mux.

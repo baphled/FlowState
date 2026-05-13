@@ -8,11 +8,20 @@ import (
 
 // AuthConfig holds the auth track's feature flag + composition knobs.
 // PR3 wires this into the global config layer (`features.auth_v1`);
-// PR2 ships the surface so tests can construct it directly.
+// PR2 shipped the surface so tests can construct it directly;
+// PR5/C10 flipped the default-on (see config.DefaultAuthConfig).
+//
+// Distinct from config.AuthConfig (the YAML-deserialised shape): the
+// boot wiring in internal/cli/serve.go projects the relevant
+// config-layer fields (Enabled, Mode) into this runtime feature-flag
+// struct. Direct construction is preserved for tests that drive the
+// middleware composition without the full boot wiring.
 type AuthConfig struct {
-	// Enabled is the features.auth_v1 flag. Default false — PR2 ships
-	// behind the flag; PR5 flips the default. When false, RequireSession
-	// passes through unconditionally (the route stays public).
+	// Enabled is the features.auth_v1 flag. PR5/C10 ships default-on
+	// via config.DefaultAuthConfig (deployments inherit Enabled=true
+	// unless they explicitly set `auth.enabled: false`). When false,
+	// RequireSession passes through unconditionally (the route stays
+	// public) — same compositional contract as the pre-PR5 default-off.
 	Enabled bool
 
 	// Mode is the active deployment mode. Stamped onto the Record at mint;
@@ -46,9 +55,11 @@ type AuthConfig struct {
 //     authentic, so a CSRF failure on a valid session points to a
 //     forged-token-within-active-session (defence-in-depth).
 //
-// When cfg.Enabled is false (default — PR2 ships flag-off), the
-// middleware passes through unconditionally. PR3 wires features.auth_v1
-// into AuthConfig.Enabled and PR5 flips the default.
+// When cfg.Enabled is false, the middleware passes through
+// unconditionally. PR5/C10 flipped the default-on (deployments inherit
+// Enabled=true via config.DefaultAuthConfig); operators opt out by
+// setting `auth.enabled: false` in config.yaml or
+// FLOWSTATE_AUTH_ENABLED=false at boot.
 //
 // Error handling:
 //   - ErrSessionInvalid       → 401 unauthenticated (no log — high volume).
