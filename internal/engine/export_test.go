@@ -236,3 +236,33 @@ func SetRePromptConcurrency(o *CompletionOrchestrator, n int) {
 func TeeToParentStreamForTest(ctx context.Context, agentID string, src <-chan provider.StreamChunk) <-chan provider.StreamChunk {
 	return teeToParentStream(ctx, agentID, src)
 }
+
+// BuildProviderQuotaChunkForTest exposes buildProviderQuotaChunk for
+// PR4 emission-cadence specs at engine_quota_test.go. Mirrors
+// EmitMidToolLoopRefreshForTest's pattern: thin pass-through to the
+// internal method so the test can assert on the returned chunk shape
+// without driving a full Stream.
+func (e *Engine) BuildProviderQuotaChunkForTest(ctx context.Context, req *provider.ChatRequest) (provider.StreamChunk, bool) {
+	return e.buildProviderQuotaChunk(ctx, req)
+}
+
+// RecordQuotaSpendForTest exposes recordQuotaSpend for PR4 specs that
+// drive the streaming-pipe call site directly without standing up the
+// full provider.Provider fixture chain. Tests call this to populate
+// the Tracker's Store, then assert via BuildProviderQuotaChunkForTest.
+func (e *Engine) RecordQuotaSpendForTest(ctx context.Context, providerID, modelID string, usage *provider.UsageDelta) {
+	e.recordQuotaSpend(ctx, providerID, modelID, usage)
+}
+
+// MakePostTurnQuotaEmitterForTest exposes makePostTurnQuotaEmitter so
+// specs can assert the post-turn emission path's nil-when-unwired
+// degradation and the dedupe with the inline emission.
+func (e *Engine) MakePostTurnQuotaEmitterForTest(req *provider.ChatRequest) func(ctx context.Context, outChan chan<- provider.StreamChunk) {
+	em := e.makePostTurnQuotaEmitter(req)
+	if em == nil {
+		return nil
+	}
+	return func(ctx context.Context, outChan chan<- provider.StreamChunk) {
+		em(ctx, outChan)
+	}
+}
