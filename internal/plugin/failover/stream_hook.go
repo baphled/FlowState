@@ -666,8 +666,12 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 //     provider in the chain would refuse it the same way.
 //   - ErrorTypeAuthFailure (H8) — typo'd / rotated key; once fixed the
 //     next call must succeed without waiting on a 24h persisted cooldown.
+//   - ErrorTypeModelNotFound (H9) — wrong model ID in agent manifest;
+//     the provider remains healthy for other models, so blackballing it
+//     for 24h cascades into a total outage when other providers are down.
+//     next call must succeed without waiting on a 24h persisted cooldown.
 //
-// Deliberately NOT in the set: Billing, Quota, ModelNotFound — these are
+// Deliberately NOT in the set: Billing, Quota — these are
 // per-credential exhaustion where the long cooldown is the right signal
 // and failing over to a different provider is meaningful. RateLimit /
 // Overload / NetworkError / ServerError stay outside the gate too — they
@@ -685,7 +689,7 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 //   - None.
 func isUserCorrectableError(t provider.ErrorType) bool {
 	switch t { //nolint:exhaustive // user-correctable subset by design.
-	case provider.ErrorTypeContextWindowExceeded, provider.ErrorTypeAuthFailure:
+	case provider.ErrorTypeContextWindowExceeded, provider.ErrorTypeAuthFailure, provider.ErrorTypeModelNotFound:
 		return true
 	default:
 		return false
