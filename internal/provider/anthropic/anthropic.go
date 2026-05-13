@@ -71,6 +71,47 @@ type Provider struct {
 	isOAuth      bool
 	tokenManager *TokenManager
 	currentToken string
+
+	// responseObserver is called on every 2xx (success-path) response
+	// from Chat or the stream handshake with the response headers.
+	// Nil by default — set via SetResponseObserver from the per-
+	// provider quota.go adapter (PR1 of the Provider Quota and Spend
+	// Visibility plan, §"Where we are today" / §"Architecture", lines
+	// 99-120 + 230). The adapter parses the four documented
+	// rate-limit windows from the headers and updates the live
+	// Snapshot the chip renders.
+	//
+	// Per memory feedback_grep_for_behaviour_pinning_before_red: the
+	// existing error-path RateLimit parsing at extractRateLimitHeaders
+	// stays unchanged; this is an additive observer that lights up
+	// success-path parsing without flipping the error-path contract.
+	responseObserver func(http.Header)
+}
+
+// SetResponseObserver registers a callback the Provider invokes on
+// every 2xx response with the response headers. Passing nil clears
+// the observer (defensive — engine reconfigures may unwire and
+// rewire the adapter).
+//
+// Concurrency: SetResponseObserver and the response-emitting paths
+// (Chat, streamMessages) may run concurrently. The implementation
+// uses a no-locking-needed read of an atomic-friendly value because
+// the observer is set once at boot and never changes during a
+// session in v1. v2 hot-reload work will need to revisit this seam.
+func (p *Provider) SetResponseObserver(fn func(http.Header)) {
+	p.responseObserver = fn
+}
+
+// notifyResponseObserver invokes the registered observer with the
+// response headers iff: (a) an observer is registered, AND (b) the
+// raw response pointer is non-nil (defensive — SDK contract is to
+// populate it before returning, but a nil here would crash the
+// happy path).
+func (p *Provider) notifyResponseObserver(raw *http.Response) {
+	if p.responseObserver == nil || raw == nil {
+		return
+	}
+	p.responseObserver(raw.Header)
 }
 
 // New creates a new Anthropic provider with the given API key.
@@ -283,7 +324,17 @@ func (p *Provider) Stream(
 	}
 	ch := make(chan provider.StreamChunk, streamChannelBuffSize)
 
-	go p.streamMessages(ctx, params, opts, ch)
+	// Append WithResponseInto so streamMessages can hand the response
+	// headers to the quota observer once the SDK has handshook the
+	// stream. Per the Provider Quota plan §"Where we are today" lines
+	// 113-114, today RateLimit is only parsed on error; this lifts it
+	// to the success path so the chip can render live remaining-
+	// budget on every healthy response.
+	var rawResp *http.Response
+	streamOpts := append([]option.RequestOption{}, opts...)
+	streamOpts = append(streamOpts, option.WithResponseInto(&rawResp))
+
+	go p.streamMessages(ctx, params, streamOpts, ch, &rawResp)
 
 	return ch, nil
 }
@@ -305,13 +356,37 @@ func (p *Provider) streamMessages(
 	params anthropicAPI.MessageNewParams,
 	opts []option.RequestOption,
 	ch chan<- provider.StreamChunk,
+	rawResp **http.Response,
 ) {
 	defer close(ch)
 
 	handler := newStreamEventHandler()
 	stream := p.client.Messages.NewStreaming(ctx, params, opts...)
 
+	// As soon as the SDK has handshook the streaming response,
+	// rawResp is populated with the response headers (SSE returns
+	// headers immediately, before the body chunks arrive). Notify
+	// the quota observer here — before the first stream.Next() — so
+	// the chip has a fresh RateLimit Snapshot even if no body chunks
+	// flow yet. Per the Provider Quota plan §"Where we are today"
+	// lines 113-114, this is the success-path lift the chip depends
+	// on. The observer is invoked once per stream, not per chunk.
+	observerNotified := false
+	maybeNotifyOnce := func() {
+		if observerNotified {
+			return
+		}
+		if rawResp != nil && *rawResp != nil {
+			p.notifyResponseObserver(*rawResp)
+			observerNotified = true
+		}
+	}
+
 	for stream.Next() {
+		// First successful chunk implies the handshake completed and
+		// rawResp is populated. Notify the observer at most once.
+		maybeNotifyOnce()
+
 		event := stream.Current()
 		chunk, shouldSend := handler.handleEvent(event)
 		if !shouldSend {
@@ -328,7 +403,13 @@ func (p *Provider) streamMessages(
 	if err := stream.Err(); err != nil {
 		streamErr := parseAnthropicStreamError(err)
 		ch <- provider.StreamChunk{Error: streamErr, Done: true}
+		return
 	}
+
+	// Defensive: stream ended cleanly without any chunks flowing
+	// (rare; e.g. zero-token max_tokens). Still notify if we have
+	// the response.
+	maybeNotifyOnce()
 }
 
 // Chat sends a non-streaming chat request to the Anthropic API.
@@ -357,7 +438,16 @@ func (p *Provider) Chat(
 			fmt.Errorf("building anthropic request: %w", err)
 	}
 
-	resp, err := p.client.Messages.New(ctx, params, opts...)
+	// Append WithResponseInto so we can hand the response headers to
+	// the quota observer once the SDK returns successfully. Per the
+	// Provider Quota plan §"Where we are today" lines 113-114, today
+	// RateLimit is only parsed on error — this is the success-path
+	// lift the chip depends on.
+	var rawResp *http.Response
+	chatOpts := append([]option.RequestOption{}, opts...)
+	chatOpts = append(chatOpts, option.WithResponseInto(&rawResp))
+
+	resp, err := p.client.Messages.New(ctx, params, chatOpts...)
 	if err != nil {
 		if provErr := parseAnthropicError(err); provErr != nil {
 			return provider.ChatResponse{}, provErr
@@ -366,6 +456,11 @@ func (p *Provider) Chat(
 		return provider.ChatResponse{},
 			fmt.Errorf("anthropic chat failed: %w", err)
 	}
+
+	// Success path: notify the quota observer before returning so the
+	// chip's Snapshot is fresh on every 2xx response, not just on the
+	// 429 error path.
+	p.notifyResponseObserver(rawResp)
 
 	content := extractTextContent(resp.Content)
 
@@ -681,13 +776,52 @@ func extractRateLimitHeaders(apiErr *anthropicAPI.Error) *provider.RateLimit {
 	if apiErr == nil || apiErr.Response == nil {
 		return nil
 	}
-	headers := apiErr.Response.Header
+	return extractRateLimitHeadersFromResponse(apiErr.Response.Header, apiErr.RequestID)
+}
+
+// extractRateLimitHeadersFromResponse is the success-path-callable
+// twin of extractRateLimitHeaders. Both code paths (error via
+// buildProviderError and success via the Provider's response
+// observer in Chat / streamMessages) call this helper to parse the
+// 14 documented Anthropic rate-limit headers (`anthropic-ratelimit-
+// {input,output,requests,tokens}-{limit,remaining,reset}` plus
+// `retry-after` and `request-id`).
+//
+// Per the Provider Quota and Spend Visibility plan (May 2026)
+// §"Where we are today" lines 113-114: today RateLimit is only
+// populated on Error; this lift produces a populated *provider.
+// RateLimit on every 2xx response so the chip can render live
+// remaining-budget continuously rather than only after the first
+// 429.
+//
+// Behaviour invariant per memory feedback_grep_for_behaviour_pinning
+// _before_red: the existing error-path extractRateLimitHeaders ABI
+// is unchanged — it is now a one-line wrapper around this helper,
+// preserving every spec at anthropic_test.go (request-id round-trip,
+// retry-after parse, -1 sentinels for absent windows, nil on a 500
+// with no headers, nil on unparseable retry-after).
+//
+// Expected:
+//   - headers may be empty (returns nil); typical success path has
+//     all 14 anthropic-ratelimit-* + request-id populated.
+//   - sdkRequestID is the SDK's parsed request id (apiErr.RequestID
+//     on error path; empty string on success path — the request-id
+//     header alone populates rl.RequestID).
+//
+// Returns:
+//   - A pointer to a RateLimit when at least one rate-limit header
+//     was present.
+//   - nil otherwise.
+//
+// Side effects:
+//   - None.
+func extractRateLimitHeadersFromResponse(headers http.Header, sdkRequestID string) *provider.RateLimit {
 	if len(headers) == 0 {
 		return nil
 	}
 
 	rl := newEmptyRateLimit()
-	hasAny := readScalarHeaders(headers, apiErr.RequestID, &rl)
+	hasAny := readScalarHeaders(headers, sdkRequestID, &rl)
 	hasAny = readWindowHeaders(headers, &rl) || hasAny
 
 	if !hasAny {
