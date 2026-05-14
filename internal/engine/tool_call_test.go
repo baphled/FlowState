@@ -426,7 +426,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				}
 			})
 
-			It("returns error in stream", func() {
+			It("returns helpful suggestion in tool result, not stream error", func() {
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
 					Manifest:     manifest,
@@ -438,16 +438,21 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var lastChunk provider.StreamChunk
+				var toolResultChunk *provider.StreamChunk
 				for chunk := range chunks {
-					lastChunk = chunk
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
 				}
 
-				Expect(lastChunk.Error).To(HaveOccurred())
-				Expect(lastChunk.Error.Error()).To(ContainSubstring("unknown_tool"))
+				Expect(toolResultChunk).NotTo(BeNil())
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("unknown_tool"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("Available tools"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"))
 			})
 
-			It("returns an error wrapping tool.ErrToolNotFound", func() {
+			It("returns tool result content listing available tools", func() {
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
 					Manifest:     manifest,
@@ -459,14 +464,19 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 
-				var lastChunk provider.StreamChunk
+				var toolResultChunk *provider.StreamChunk
 				for chunk := range chunks {
-					lastChunk = chunk
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
 				}
 
-				Expect(lastChunk.Error).To(HaveOccurred())
-				Expect(errors.Is(lastChunk.Error, tool.ErrToolNotFound)).To(BeTrue(),
-					"expected stream error to wrap tool.ErrToolNotFound for typed error matching")
+				Expect(toolResultChunk).NotTo(BeNil())
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("not found"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("Available tools"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"))
+				Expect(toolResultChunk.Error).To(BeNil())
 			})
 		})
 
@@ -1612,3 +1622,33 @@ var _ = Describe("Engine per-tool execution timeout", Label("tool-timeout"), fun
 		})
 	})
 })
+
+var _ = Describe("suggestTool", func() {
+	DescribeTable("suggests close matches",
+		func(available []string, requested, expected string) {
+			Expect(engine.SuggestToolForTest(available, requested)).To(Equal(expected))
+		},
+		Entry("exact prefix match", []string{"delegate", "bash", "skill_load"}, "delegat", "delegate"),
+		Entry("close edit distance", []string{"delegate", "bash", "skill_load"}, "delegae", "delegate"),
+		Entry("task suggests closest match bash", []string{"delegate", "bash", "skill_load"}, "task", "bash"),
+		Entry("single char tool name matches close", []string{"a"}, "x", "a"),
+		Entry("no close match returns empty", []string{"bash", "read", "write"}, "zzzzzzzz", ""),
+		Entry("empty available returns empty", []string{}, "anything", ""),
+		Entry("very different name returns empty", []string{"delegate", "bash", "skill_load"}, "zzzzzzzz", ""),
+	)
+})
+
+var _ = Describe("levenshtein", func() {
+	DescribeTable("computes edit distance",
+		func(a, b string, expected int) {
+			Expect(engine.LevenshteinForTest(a, b)).To(Equal(expected))
+		},
+		Entry("identical strings", "delegate", "delegate", 0),
+		Entry("empty to non-empty", "", "abc", 3),
+		Entry("non-empty to empty", "abc", "", 3),
+		Entry("single substitution", "delegate", "delegafe", 1),
+		Entry("single insertion", "task", "tasks", 1),
+		Entry("completely different", "abc", "xyz", 3),
+	)
+})
+

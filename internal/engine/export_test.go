@@ -266,3 +266,16 @@ func (e *Engine) MakePostTurnQuotaEmitterForTest(req *provider.ChatRequest) func
 		em(ctx, outChan)
 	}
 }
+
+// SuggestToolForTest exposes suggestTool for white-box testing of the
+// tool-not-found suggestion logic.
+func SuggestToolForTest(available []string, requested string) string {
+	return suggestTool(available, requested)
+}
+
+// LevenshteinForTest exposes levenshtein for white-box testing of the
+// edit-distance calculation used by tool-not-found suggestions.
+func LevenshteinForTest(a, b string) int {
+	return levenshtein(a, b)
+}
+
