@@ -4,8 +4,10 @@
  *
  * Plan: FlowState API Auth Track (May 2026) §"Wire Protocol" CSRF section.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { getCsrfToken, withCsrfHeader } from './csrf'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia, setActivePinia } from 'pinia'
+import { getCsrfToken, withCsrfHeader, ensureCsrfToken } from './csrf'
+import { useCsrfStore } from '@/stores/csrfStore'
 
 function setCookie(raw: string) {
   // Vitest happydom resets document.cookie between describes via the
@@ -109,5 +111,88 @@ describe('withCsrfHeader', () => {
     const headers = { 'Content-Type': 'application/json' }
     withCsrfHeader(headers)
     expect(headers).toEqual({ 'Content-Type': 'application/json' })
+  })
+})
+
+// QA BUG-1/BUG-2 fix (May 2026). getCsrfToken prefers the Pinia
+// csrfStore (the masked-token source) over the cookie reader (which
+// returns the gorilla securecookie blob and would 403). The cookie
+// fallback exists for callers that fire before the Pinia bootstrap.
+describe('getCsrfToken — Pinia-first precedence', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    clearAllCookies()
+  })
+  afterEach(() => {
+    clearAllCookies()
+  })
+
+  it('returns the Pinia-cached token in preference to the cookie value', () => {
+    setCookie('_csrf=cookie-blob-value')
+    const store = useCsrfStore()
+    store.setToken('pinia-masked-token')
+
+    expect(getCsrfToken()).toBe('pinia-masked-token')
+  })
+
+  it('falls through to the cookie when the Pinia cache is empty (defence-in-depth)', () => {
+    setCookie('_csrf=cookie-fallback')
+    // No setToken — cache is empty.
+    expect(getCsrfToken()).toBe('cookie-fallback')
+  })
+
+  it('returns empty string when both Pinia and cookie are empty', () => {
+    expect(getCsrfToken()).toBe('')
+  })
+
+  it('withCsrfHeader uses the Pinia token over the cookie', () => {
+    setCookie('_csrf=cookie-blob')
+    const store = useCsrfStore()
+    store.setToken('pinia-token')
+
+    const headers = withCsrfHeader({ 'Content-Type': 'application/json' }) as Record<string, string>
+    expect(headers['X-CSRF-Token']).toBe('pinia-token')
+  })
+})
+
+describe('ensureCsrfToken', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    clearAllCookies()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+    clearAllCookies()
+  })
+
+  it('delegates to csrfStore.ensureToken — fetches /api/auth/csrf on cache miss', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ csrf_token: 'fresh' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+
+    const got = await ensureCsrfToken()
+    expect(got).toBe('fresh')
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/auth/csrf'),
+      expect.objectContaining({ credentials: 'include' }),
+    )
+  })
+
+  it('returns the cached token without fetching when csrfStore has one', async () => {
+    const store = useCsrfStore()
+    store.setToken('warm-cache')
+
+    const got = await ensureCsrfToken()
+    expect(got).toBe('warm-cache')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

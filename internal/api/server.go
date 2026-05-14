@@ -601,6 +601,25 @@ func (s *Server) setupRoutes() {
 			auth.HandleLogout(s.auth.Session))
 	}
 
+	// CSRF prefetch — QA showstopper fix (May 2026). The SPA's
+	// first-time login flow has no _csrf cookie to read, so the POST
+	// /api/auth/login was rejected with 403 before credentials were
+	// evaluated. GET /api/auth/csrf is wrapped through registerLogin
+	// (RequireOrigin + Protect, no Session) so the wrap's ServeHTTP
+	// issues the _csrf cookie on the GET and csrf.Token(r) returns a
+	// non-empty masked token. The SPA caches the response token in a
+	// Pinia store and echoes it back as X-CSRF-Token on the login POST.
+	//
+	// Registered conditionally on the auth bundle being active — when
+	// auth is disabled (flag-off), the route is unregistered so the
+	// SPA's pre-login probe returns 404 (matching the "auth doesn't
+	// matter here" branch). When auth.active() but no IdentitySource
+	// is configured, the prefetch still ships — operators can wire
+	// /api/auth/csrf ahead of users.json provisioning.
+	if s.auth.active() {
+		s.registerLogin("GET /api/auth/csrf", auth.HandleCSRFPrefetch())
+	}
+
 	// Whoami — PR5/C10. Returns the authenticated principal's id +
 	// display name + mode. Goes through registerProtected so the
 	// 401 wire shape on no-session is byte-identical to every other

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gorilla/csrf"
+
 	"github.com/baphled/flowstate/internal/auth/identity"
 	"github.com/baphled/flowstate/internal/auth/store"
 )
@@ -119,6 +121,76 @@ func HandleLogin(source identity.Source, sessionMgr *SessionManager) http.Handle
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// CSRFPrefetchResponse is the JSON payload returned by HandleCSRFPrefetch.
+// The masked token is gorilla/csrf's session-bound XOR mask over the real
+// token cached in the _csrf cookie — the SPA echoes it back via the
+// X-CSRF-Token header on the next unsafe-method request.
+type CSRFPrefetchResponse struct {
+	CSRFToken string `json:"csrf_token"`
+}
+
+// HandleCSRFPrefetch returns the GET /api/auth/csrf handler.
+//
+// Why this endpoint exists (QA-reported showstopper, May 2026): on the
+// very first SPA visit the browser has no _csrf cookie, gorilla/csrf
+// can't mask a token the SPA never received, and the next POST /api/auth/
+// login is rejected with 403 before credentials are even evaluated.
+// Three different token values flowed through the system —
+//
+//   - the securecookie blob in the _csrf cookie (gorilla-private),
+//   - the masked token surfaced by csrf.Token(r), and
+//   - the unmasked Record-bound CSRFToken,
+//
+// — but the SPA could only read the cookie, so it sent the wrong value
+// and gorilla rejected. The prefetch endpoint hands the SPA the masked
+// token directly so the SPA's first POST has a valid (cookie, header)
+// pair. The endpoint MUST be wrapped via auth.LoginChain (Origin +
+// gorilla/csrf, no Session) so the wrap's ServeHTTP issues the _csrf
+// cookie on the GET and csrf.Token(r) returns a non-empty masked token.
+//
+// Method gate: GET only. The token doesn't change state, and exposing
+// POST here would invite confused-deputy variants.
+//
+// No session required — the gorilla mask is what protects, not a session
+// (an attacker who can fetch this endpoint cannot read the response from
+// a cross-origin context because Origin gates the request and SameSite=
+// Lax + credentials:include scopes the cookie). Subsequent CSRF
+// validation pairs the response token with the cookie the same browser
+// holds.
+//
+// Wire shape (plan-aligned with LoginResponse.csrf_token):
+//
+//	{"csrf_token": "<masked-token>"}
+//
+// Single field by design — the unmasked Record-bound token only exists
+// post-login (login response surfaces it). Prefetch is the pre-login
+// path so there is nothing else to return.
+func HandleCSRFPrefetch() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		// csrf.Token(r) reads the masked token gorilla/csrf stashed in
+		// the request context during ServeHTTP. Returns "" only if
+		// Protect did not run — fail closed in that defensive branch
+		// rather than ship an empty token the SPA would echo back.
+		token := csrf.Token(r)
+		if token == "" {
+			slog.Warn("csrf prefetch: empty masked token "+
+				"(Protect middleware did not run on this route)",
+				"path", r.URL.Path,
+			)
+			http.Error(w, "csrf_prefetch_misconfigured", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(CSRFPrefetchResponse{CSRFToken: token})
 	}
 }
 

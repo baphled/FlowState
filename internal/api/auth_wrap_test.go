@@ -19,6 +19,7 @@ package api_test
 // new seam: route registration helpers; no existing spec exercises it).
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -147,16 +148,19 @@ var _ = Describe("PR3 C7 — route wrapping via registerProtected/Public/Login",
 		It("login endpoints accept no-cookie POST from same-origin", func() {
 			// Plan §"Endpoint Inventory" Login list. POST /api/auth/login
 			// and POST /api/auth/logout use registerLogin (RequireOrigin
-			// only, no Session — login cannot require a session).
+			// + gorilla/csrf, no Session — login cannot require a
+			// session).
 			//
-			// Sec-Fetch-Site: same-origin satisfies the Origin check when
-			// no Origin header is present (RequireOrigin pass-through
-			// branch). gorilla/csrf in the LoginChain composes ahead of
-			// the handler; without a CSRF cookie on the first POST the
-			// CSRF middleware returns 403 — that's the expected wire
-			// behaviour for a fresh-page login attempt without prior
-			// cookie state. The contract is that the request reaches the
-			// CSRF gate (403), not RequireSession (401 unauthenticated).
+			// The contract: the request must not be rejected with 401
+			// (which would mean RequireSession ran on a login endpoint —
+			// a wiring bug). It MAY be rejected with 403 csrf when no
+			// _csrf cookie / X-CSRF-Token has been issued yet, but the
+			// SPA's prefetch flow (covered by the spec below) closes
+			// that path end-to-end. Behaviour-pin flip (QA BUG-1/BUG-2,
+			// May 2026): the prior pin documented 403-without-prefetch
+			// as "expected wire behaviour" — that was pinning the bug.
+			// The correct invariant is "not 401", and the showstopper
+			// fix is the prefetch round-trip pinned separately.
 			req := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{}`))
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
 			req.Header.Set("Content-Type", "application/json")
@@ -165,6 +169,95 @@ var _ = Describe("PR3 C7 — route wrapping via registerProtected/Public/Login",
 
 			Expect(rec.Code).NotTo(Equal(http.StatusUnauthorized),
 				"login endpoint must not require a session cookie")
+		})
+
+		// QA BUG-1/BUG-2 fix (May 2026): the SPA's first-time login
+		// path is "GET /api/auth/csrf → POST /api/auth/login with the
+		// returned masked token in X-CSRF-Token and the _csrf cookie
+		// the GET issued". The prefetch endpoint is the load-bearing
+		// surface; flipping the prior behaviour-pin above without
+		// pinning the new path would leave a regression window open.
+		It("GET /api/auth/csrf returns a masked token and issues the _csrf cookie", func() {
+			req := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusOK),
+				"GET /api/auth/csrf must succeed without prior cookie state")
+
+			// gorilla/csrf's ServeHTTP issues the _csrf cookie via
+			// Set-Cookie on every request that flows through Protect.
+			cookies := rec.Result().Cookies()
+			var csrfCookie *http.Cookie
+			for _, c := range cookies {
+				if c.Name == "_csrf" {
+					csrfCookie = c
+					break
+				}
+			}
+			Expect(csrfCookie).NotTo(BeNil(),
+				"_csrf cookie must be issued so the SPA has the cookie half of the pair")
+			Expect(csrfCookie.Value).NotTo(BeEmpty())
+
+			// Response body carries the masked token the SPA echoes
+			// back via X-CSRF-Token on the next unsafe-method request.
+			Expect(rec.Body.String()).To(ContainSubstring(`"csrf_token"`))
+			Expect(rec.Header().Get("Content-Type")).To(ContainSubstring("application/json"))
+			Expect(rec.Header().Get("Cache-Control")).To(Equal("no-store"))
+		})
+
+		It("the prefetched token + cookie pair lets the next unsafe-method POST clear the CSRF gate", func() {
+			// Full round-trip: GET /api/auth/csrf, capture the cookie +
+			// token, then POST /api/auth/login with both. The POST must
+			// NOT return 403 csrf — the QA reproducer's "first-time
+			// login → 403" path is now closed.
+			//
+			// The POST will still return 401 invalid_credentials because
+			// the test bundle has no IdentitySource wired (the harness'
+			// newAuthBundleForTest omits it — see the helper below).
+			// That's the point: the request reaches HandleLogin, which
+			// returns the uniform 401, instead of being rejected at the
+			// CSRF gate with 403.
+			getReq := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+			getReq.Header.Set("Sec-Fetch-Site", "same-origin")
+			getRec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(getRec, getReq)
+			Expect(getRec.Code).To(Equal(http.StatusOK))
+
+			var body struct {
+				CSRFToken string `json:"csrf_token"`
+			}
+			Expect(json.Unmarshal(getRec.Body.Bytes(), &body)).To(Succeed())
+			Expect(body.CSRFToken).NotTo(BeEmpty())
+
+			var csrfCookie *http.Cookie
+			for _, c := range getRec.Result().Cookies() {
+				if c.Name == "_csrf" {
+					csrfCookie = c
+					break
+				}
+			}
+			Expect(csrfCookie).NotTo(BeNil())
+
+			postReq := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+				strings.NewReader(`{"secret":"wrong"}`))
+			postReq.Header.Set("Sec-Fetch-Site", "same-origin")
+			postReq.Header.Set("Content-Type", "application/json")
+			postReq.Header.Set("X-CSRF-Token", body.CSRFToken)
+			postReq.AddCookie(csrfCookie)
+			postRec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(postRec, postReq)
+
+			// MUST NOT be 403 — the QA reproducer's failure path. The
+			// auth bundle in newAuthBundleForTest has no IdentitySource,
+			// so HandleLogin isn't registered; the request reaches the
+			// pass-through (404 net/http: no matching route). What we
+			// care about is "not 403 csrf_invalid". The route presence
+			// is exercised by the IdentitySource-wired harness in
+			// serve_auth_config_test.go.
+			Expect(postRec.Code).NotTo(Equal(http.StatusForbidden),
+				"prefetched (cookie, token) pair must clear the CSRF gate")
 		})
 	})
 

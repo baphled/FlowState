@@ -25,15 +25,20 @@ var _ = Describe("RequireSession middleware (load-bearing PR2 milestone)", func(
 	)
 
 	BeforeEach(func() {
-		mem = store.NewMemoryStore()
 		now = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+		// QA BUG-3 fix (May 2026): thread the same clock into the
+		// MemoryStore so Get's read-time expiry check honours the
+		// frozen clock too. See session_test.go BeforeEach for the
+		// full rationale.
+		clock := func() time.Time { return now }
+		mem = store.NewMemoryStore(store.WithNow(clock))
 		mgr = auth.NewSessionManager(mem, auth.SessionConfig{
 			CookieName:    "flowstate_session",
 			CookiePath:    "/api",
 			SecureCookies: true,
 			Lifetime:      time.Hour,
 			Mode:          identity.ModeDeploymentLogin,
-			Now:           func() time.Time { return now },
+			Now:           clock,
 		})
 		cfg = auth.AuthConfig{
 			Enabled: true,

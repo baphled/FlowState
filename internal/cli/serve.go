@@ -294,6 +294,50 @@ const engineShutdownTimeout = 30 * time.Second
 //   - May log slog.Warn for first-boot misconfigs (multi-user with no
 //     users.json — plan §"Bootstrap UX" multi-user lines 707-709).
 func installAuthFromConfig(apiServer *api.Server, cfg *config.AppConfig) error {
+	bundle, memStore, err := buildAuthBundle(cfg)
+	if err != nil {
+		return err
+	}
+	if memStore == nil {
+		// Disabled — no bundle to install, no reset-store to wire.
+		return nil
+	}
+
+	apiServer.InstallAuth(bundle)
+	SetResetStore(memStore)
+
+	slog.Info("auth boot-time wiring active",
+		"mode", bundle.Auth.Mode,
+		"allowed_origins", bundle.Origin.AllowedOrigins,
+		"secure_cookies", bundle.CSRF.SecureCookies,
+		"phase", "PR5/C10",
+	)
+	return nil
+}
+
+// buildAuthBundle resolves the auth configuration through the env-/cfg-/
+// default precedence and returns the AuthBundle ready to install on the
+// API server. Extracted from installAuthFromConfig so the resolved
+// bundle is testable in isolation (QA WARN-5 spec needs to assert
+// CSRF.TrustedOrigins is threaded from AllowedOrigins).
+//
+// Expected:
+//   - cfg may be nil; nil cfg behaves as DefaultConfig() for auth purposes.
+//
+// Returns:
+//   - When the resolved Enabled is false: zero AuthBundle, nil store, nil
+//     error. The caller skips InstallAuth.
+//   - On success: AuthBundle with every field resolved, the MemoryStore the
+//     SessionManager was constructed against (for SetResetStore), and
+//     nil error.
+//   - On misconfig: zero AuthBundle, nil store, error.
+//
+// Side effects:
+//   - Reads FLOWSTATE_AUTH_* env vars.
+//   - Reads users.json from disk in multi-user mode.
+//   - Emits slog.Info when auth is disabled (the caller suppresses the
+//     active-wiring slog for the disabled branch).
+func buildAuthBundle(cfg *config.AppConfig) (api.AuthBundle, *store.MemoryStore, error) {
 	authCfg := resolveAuthConfig(cfg)
 
 	if !authCfg.Enabled {
@@ -302,14 +346,14 @@ func installAuthFromConfig(apiServer *api.Server, cfg *config.AppConfig) error {
 			"running in pass-through mode",
 			"phase", "PR5/C10",
 		)
-		return nil
+		return api.AuthBundle{}, nil, nil
 	}
 
 	mode := resolveString("FLOWSTATE_AUTH_MODE", authCfg.Mode, identity.ModeDeploymentLogin)
 
 	source, err := buildIdentitySource(mode, authCfg)
 	if err != nil {
-		return err
+		return api.AuthBundle{}, nil, err
 	}
 
 	allowed := splitCSV(os.Getenv("FLOWSTATE_AUTH_ALLOWED_ORIGINS"))
@@ -330,11 +374,21 @@ func installAuthFromConfig(apiServer *api.Server, cfg *config.AppConfig) error {
 
 	csrfKey, err := resolveCSRFKey(authCfg.CSRFKey)
 	if err != nil {
-		return err
+		return api.AuthBundle{}, nil, err
 	}
 	csrfCfg := auth.DefaultCSRFConfig()
 	csrfCfg.AuthKey = csrfKey
 	csrfCfg.SecureCookies = secureCookies
+	// QA WARN-5 fix (May 2026): thread the resolved AllowedOrigins
+	// allowlist through gorilla/csrf's TrustedOrigins. Without this,
+	// every cross-origin POST was rejected at the CSRF gate regardless
+	// of the auth allowlist — gorilla/csrf has its OWN Origin check
+	// (exact-host match against TrustedOrigins) that runs in parallel
+	// to RequireOrigin. Sharing the slice keeps the two layers in
+	// lockstep so a cross-origin request the perimeter accepts isn't
+	// silently dropped by the CSRF middleware. See
+	// internal/auth/csrf.go:35 (CSRFConfig.TrustedOrigins doc).
+	csrfCfg.TrustedOrigins = allowed
 
 	bundle := api.AuthBundle{
 		Origin:  auth.OriginConfig{AllowedOrigins: allowed},
@@ -346,16 +400,7 @@ func installAuthFromConfig(apiServer *api.Server, cfg *config.AppConfig) error {
 		CSRF:           csrfCfg,
 		IdentitySource: source,
 	}
-	apiServer.InstallAuth(bundle)
-	SetResetStore(memStore)
-
-	slog.Info("auth boot-time wiring active",
-		"mode", mode,
-		"allowed_origins", allowed,
-		"secure_cookies", secureCookies,
-		"phase", "PR5/C10",
-	)
-	return nil
+	return bundle, memStore, nil
 }
 
 // resolveAuthConfig returns the effective config.AuthConfig after

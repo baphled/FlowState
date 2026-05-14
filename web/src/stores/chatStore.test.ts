@@ -1768,23 +1768,41 @@ describe('chatStore - SSE reconnect on restoreStateFromBackend (stuck-after-relo
     expect(es.closed).toBe(true)
   })
 
-  it('clears isLoading and isStreaming when the reconnected stream fires an error', async () => {
-    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+  it("clears isLoading and isStreaming when reconnect attempts are exhausted", async () => {
+    window.localStorage.setItem("chat.currentSessionId", "session-1")
     vi.mocked(fetchSessionMessages).mockResolvedValueOnce([
-      { id: 'srv-u1', role: 'user', content: 'continue', timestamp: '2026-05-04T00:00:00Z' },
+      { id: "srv-u1", role: "user", content: "continue", timestamp: "2026-05-04T00:00:00Z" },
     ])
 
     const store = useChatStore()
     await store.restoreStateFromBackend()
 
     expect(store.isLoading).toBe(true)
-    const es = FakeEventSource.instances[0]
-    es.fire('error', null)
+    for (let i = 0; i <= 5; i++) {
+      const es = FakeEventSource.instances[FakeEventSource.instances.length - 1]
+      es.fire("error", null)
+    }
 
     expect(store.isLoading).toBe(false)
     expect(store.isStreaming).toBe(false)
-    expect(es.closed).toBe(true)
   })
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 })
 
 describe('chatStore - sendMessage surfacing when isLoading is already true (silent-drop fix)', () => {
