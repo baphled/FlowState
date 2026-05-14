@@ -4116,7 +4116,95 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		}
 		return result, nil
 	}
-	return tool.Result{}, fmt.Errorf("%w: %s", tool.ErrToolNotFound, toolCall.Name)
+	available := e.availableToolNames()
+	suggestion := suggestTool(available, toolCall.Name)
+	msg := fmt.Sprintf("Error: tool '%s' not found. Available tools: [%s].", toolCall.Name, strings.Join(available, ", "))
+	if suggestion != "" {
+		msg += fmt.Sprintf(" Did you mean '%s'?", suggestion)
+	}
+	slog.Warn("tool not found in registry", "requested", toolCall.Name, "suggestion", suggestion)
+	return tool.Result{Output: msg}, nil
+}
+
+// availableToolNames returns a sorted slice of all registered tool names.
+//
+// Returns:
+//   - A sorted slice of tool name strings.
+//
+// Side effects:
+//   - None.
+func (e *Engine) availableToolNames() []string {
+	names := make([]string, 0, len(e.tools))
+	for _, t := range e.tools {
+		names = append(names, t.Name())
+	}
+	return names
+}
+
+// suggestTool returns the name of the closest matching available tool for
+// a requested name that was not found. An empty string indicates no close
+// match exists.
+//
+// Expected:
+//   - available is a non-empty slice of registered tool names.
+//   - requested is the tool name the model attempted to call.
+//
+// Returns:
+//   - The closest available tool name, or an empty string if nothing is
+//     similar enough (threshold: Levenshtein distance < len(requested)/2).
+//
+// Side effects:
+//   - None.
+func suggestTool(available []string, requested string) string {
+	threshold := len(requested) / 2
+	if threshold < 1 {
+		threshold = 1
+	}
+	best := ""
+	bestDist := threshold + 1
+	for _, name := range available {
+		d := levenshtein(requested, name)
+		if d < bestDist {
+			bestDist = d
+			best = name
+		}
+	}
+	if bestDist <= threshold {
+		return best
+	}
+	return ""
+}
+
+// levenshtein computes the Levenshtein distance between two strings.
+func levenshtein(a, b string) int {
+	la, lb := len(a), len(b)
+	if la == 0 {
+		return lb
+	}
+	if lb == 0 {
+		return la
+	}
+	prev := make([]int, lb+1)
+	curr := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		curr[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			curr[j] = min(
+				prev[j]+1,
+				curr[j-1]+1,
+				prev[j-1]+cost,
+			)
+		}
+		prev, curr = curr, prev
+	}
+	return prev[lb]
 }
 
 // checkToolPermission verifies the tool has permission to execute.
