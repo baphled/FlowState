@@ -3182,7 +3182,9 @@ export const useChatStore = defineStore('chat', {
       // Per-session state (Slice A) — clear in-flight flags on the
       // session being reverted.
       this.setSessionStreaming(this.currentSessionId, { isLoading: false, isStreaming: false })
-      await truncateSessionMessages(this.currentSessionId, messageId)
+      if (!messageId.startsWith('temp-')) {
+        await truncateSessionMessages(this.currentSessionId, messageId)
+      }
       this.messages = this.messages.slice(0, idx)
       this.composerText = content
     },

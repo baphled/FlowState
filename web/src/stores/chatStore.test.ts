@@ -2071,6 +2071,25 @@ describe('chatStore - revertToMessage', () => {
 
     expect(vi.mocked(truncateSessionMessages)).not.toHaveBeenCalled()
   })
+
+  it('skips truncateSessionMessages for temp message IDs and still reverts locally', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.isLoading = true
+    store.messages = [
+      { id: 'msg-1', role: 'user', content: 'first prompt', timestamp: '' },
+      { id: 'temp-1778784397087-98nzco', role: 'user', content: 'failed prompt', status: 'failed', timestamp: '' },
+      { id: 'msg-3', role: 'assistant', content: 'response', timestamp: '' },
+    ]
+
+    await store.revertToMessage('temp-1778784397087-98nzco')
+
+    expect(vi.mocked(truncateSessionMessages)).not.toHaveBeenCalled()
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0].id).toBe('msg-1')
+    expect(store.composerText).toBe('failed prompt')
+    expect(store.isLoading).toBe(false)
+  })
 })
 
 describe('chatStore - localStorage persistence for agent and model selection', () => {
