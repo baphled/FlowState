@@ -26,9 +26,9 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		FPS:   defaultFPS,
-		Zoom:  defaultZoom,
-		Width: 0,
+		FPS:    defaultFPS,
+		Zoom:   defaultZoom,
+		Width:  0,
 		Height: 0,
 	}
 }
