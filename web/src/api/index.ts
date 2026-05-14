@@ -1,8 +1,3 @@
-/**
- * Default timeout (ms) for sendSessionMessage API call.
- */
-export const SEND_MESSAGE_TIMEOUT_MS = 300000;
-
 import type {
   ChatRequest,
   SSEChunk,
@@ -210,43 +205,26 @@ export async function sendSessionMessage(
   content: string,
   options?: SendSessionMessageOptions
 ): Promise<Session> {
+  if (options?.signal?.aborted) {
+    throw new DOMException('This operation was aborted', 'AbortError')
+  }
+
   const body: Record<string, unknown> = { content }
   if (options?.attachmentIds && options.attachmentIds.length > 0) {
     body.attachmentIds = options.attachmentIds
   }
 
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), SEND_MESSAGE_TIMEOUT_MS)
-
-  if (options?.signal?.aborted) {
-    clearTimeout(timeoutId)
-    throw new Error('Request aborted')
+  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
+    method: 'POST',
+    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+    credentials: CREDENTIALS_INCLUDE,
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  })
+  if (!res.ok) {
+    throw new Error(await parseError(res))
   }
-
-  const onExternalAbort = () => controller.abort()
-  options?.signal?.addEventListener('abort', onExternalAbort)
-
-  try {
-    const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
-      method: 'POST',
-      headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
-      credentials: CREDENTIALS_INCLUDE,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
-    if (!res.ok) {
-      throw new Error(await parseError(res))
-    }
-    return (await res.json()) as Session
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new Error(`Request timed out after ${SEND_MESSAGE_TIMEOUT_MS / 1000} seconds`)
-    }
-    throw err
-  } finally {
-    clearTimeout(timeoutId)
-    options?.signal?.removeEventListener('abort', onExternalAbort)
-  }
+  return (await res.json()) as Session
 }
 
 /**

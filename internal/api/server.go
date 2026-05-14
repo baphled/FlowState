@@ -1061,10 +1061,12 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	if chunks != nil {
 		if s.sessionBroker != nil {
-			s.sessionBroker.Publish(id, chunks)
+			go s.sessionBroker.Publish(id, chunks)
 		} else {
-			for range chunks {
-			}
+			go func() {
+				for range chunks {
+				}
+			}()
 		}
 	}
 	// SnapshotSession (not GetSession) so the *Session pointer never
