@@ -125,13 +125,51 @@ var (
 // Atomic-write discipline (per feedback_atomicity_awareness_uneven):
 // disk persistence lands in OD-2 (PR2's session.go atomic JSON sidecar)
 // or beyond; PR1 stays in-memory deliberately.
+//
+// Clock injection (QA BUG-3 fix, May 2026): Get's read-time expiry
+// check (interface_contract_test.go row 3) honours an injected `now`
+// func when supplied via MemoryStoreOption (WithNow). The SessionManager
+// passes its own injected clock through so tests that mint sessions
+// with a past clock see the store's expiry check honour that same
+// clock — silently using time.Now here broke specs that drove
+// SessionConfig.Now to a fixed point in the past, producing test
+// fragility the QA report flagged.
 type MemoryStore struct {
 	records sync.Map // map[string]*Record
+	now     func() time.Time
 }
 
-// NewMemoryStore constructs an empty MemoryStore.
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{}
+// MemoryStoreOption configures a MemoryStore at construction time.
+// Functional-options pattern keeps NewMemoryStore zero-arg for the
+// happy path while letting tests / clock-aware callers inject knobs
+// without bloating the constructor signature.
+type MemoryStoreOption func(*MemoryStore)
+
+// WithNow injects a clock used by Get's read-time expiry check. The
+// SessionManager wires its own injected clock (SessionConfig.Now)
+// through this option so the store and the manager agree on "now"
+// across the same request. Tests use this to drive deterministic
+// expiry without manipulating wall-clock state.
+//
+// Passing a nil now is a no-op (preserves the time.Now default).
+func WithNow(now func() time.Time) MemoryStoreOption {
+	return func(m *MemoryStore) {
+		if now != nil {
+			m.now = now
+		}
+	}
+}
+
+// NewMemoryStore constructs an empty MemoryStore. Optional functional
+// options (WithNow) configure clock injection for deterministic tests.
+// The zero-option call site preserves the prior shape so existing
+// callers compile unchanged.
+func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
+	m := &MemoryStore{now: time.Now}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Get returns the Record for token, or ErrSessionNotFound if missing,
@@ -153,8 +191,12 @@ func (m *MemoryStore) Get(ctx context.Context, token string) (*Record, error) {
 		return nil, ErrSessionNotFound
 	}
 	// Read-time expiry check (plan ladder row 3): impls MUST NOT depend
-	// on Cleanup having run first.
-	if !rec.ExpiresAt.IsZero() && !time.Now().Before(rec.ExpiresAt) {
+	// on Cleanup having run first. QA BUG-3 fix (May 2026): use the
+	// injected clock so tests driving SessionConfig.Now to a fixed
+	// point in the past see the same "now" here as in
+	// SessionManager.Authenticate — silently using time.Now here was
+	// the source of the silent test fragility the QA report flagged.
+	if !rec.ExpiresAt.IsZero() && !m.now().Before(rec.ExpiresAt) {
 		return nil, ErrSessionNotFound
 	}
 	return rec, nil

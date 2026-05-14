@@ -97,6 +97,8 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { joinBaseURL } from '@/api'
 import { showToast } from '@/composables/useToast'
+import { ensureCsrfToken } from '@/lib/csrf'
+import { useCsrfStore } from '@/stores/csrfStore'
 
 // State — three free-form fields. The form renders all three; the
 // server's mode dictates which actually mints a session. The UI
@@ -134,9 +136,37 @@ async function onSubmit() {
   if (password.value) body.password = password.value
 
   try {
+    // QA BUG-1/BUG-2 fix (May 2026): prefetch the masked CSRF token
+    // before submitting. Without this, the first-time login flow has
+    // no _csrf cookie and gorilla/csrf rejects the POST with 403
+    // before credentials are evaluated. ensureCsrfToken hits
+    // GET /api/auth/csrf, which routes through the LoginChain wrap so
+    // the server issues the _csrf cookie + returns the matching
+    // masked token. The token is cached in the Pinia csrfStore; the
+    // X-CSRF-Token header below reads it via getCsrfToken().
+    let csrfToken: string
+    try {
+      csrfToken = await ensureCsrfToken()
+    } catch (err) {
+      // Pre-flight prefetch failed (network, server misconfig). Surface
+      // a clear error rather than firing the POST without a token — the
+      // user gets a "could not reach the server" toast and the operator
+      // sees the prefetch failure in the browser network panel.
+      showToast({
+        message: 'Could not reach the server. Try again.',
+        variant: 'error',
+      })
+      // eslint-disable-next-line no-console
+      console.error('[flowstate] csrf prefetch failed:', err)
+      return
+    }
+
     const res = await fetch(joinBaseURL('/auth/login'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+      },
       credentials: 'include',
       body: JSON.stringify(body),
     })
@@ -154,10 +184,22 @@ async function onSubmit() {
       return
     }
 
-    // 200 — cookie set by Set-Cookie; navigate to /chat. The Pinia
+    // 200 — cookie set by Set-Cookie; capture the rotated csrf_token
+    // from the response body so subsequent authenticated requests use
+    // the post-login token (which is bound to the new session Record
+    // by the server-side RequireCSRFRecordBound layer). The Pinia
     // chatStore's bootstrap re-runs on the new view and pulls fresh
-    // session data (or the existing data if the session manager
-    // recognises the cookie).
+    // session data.
+    try {
+      const respBody = (await res.json()) as { csrf_token?: string }
+      if (respBody?.csrf_token) {
+        useCsrfStore().setToken(respBody.csrf_token)
+      }
+    } catch {
+      // Best-effort — a malformed 200 body falls through to navigation.
+      // The next authenticated request will 403 if the token is wrong;
+      // the SPA's 401/403 handler kicks back to /login.
+    }
     await router.push('/chat')
   } catch (err) {
     // Network-level failure (DNS, CORS, offline). Surface a generic

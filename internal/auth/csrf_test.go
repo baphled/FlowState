@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"time"
@@ -226,6 +227,77 @@ var _ = Describe("CSRF wrapper composition", func() {
 		It("leaves AuthKey unset — caller MUST stamp 32 bytes", func() {
 			def := auth.DefaultCSRFConfig()
 			Expect(def.AuthKey).To(BeNil())
+		})
+	})
+
+	// QA BUG-1/BUG-2 fix (May 2026). HandleCSRFPrefetch is the load-
+	// bearing surface for the SPA's first-time login flow — without it
+	// the SPA has no way to acquire the masked token gorilla/csrf
+	// expects on the next unsafe-method request.
+	Describe("HandleCSRFPrefetch", func() {
+		It("returns 200 + masked token + _csrf cookie when wrapped via LoginChain", func() {
+			// LoginChain is the wrap the production route uses
+			// (registerLogin → auth.LoginChain). Pinning the wrap
+			// composition here, not raw HandleCSRFPrefetch, because
+			// csrf.Token(r) only returns non-empty when Protect ran.
+			origin := auth.OriginConfig{AllowedOrigins: []string{"localhost:*"}}
+			chain := auth.LoginChain(origin, csrfCfg, auth.HandleCSRFPrefetch())
+
+			req := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			rec := httptest.NewRecorder()
+			chain.ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusOK))
+			Expect(rec.Header().Get("Content-Type")).To(ContainSubstring("application/json"))
+			Expect(rec.Header().Get("Cache-Control")).To(Equal("no-store"))
+
+			var body auth.CSRFPrefetchResponse
+			Expect(json.NewDecoder(rec.Body).Decode(&body)).To(Succeed())
+			Expect(body.CSRFToken).NotTo(BeEmpty(),
+				"masked token must be non-empty; SPA echoes it back via X-CSRF-Token")
+
+			// Cookie issuance closes the (cookie, header) pair on the
+			// gorilla side — without this, the SPA's next POST would
+			// still hit the bug.
+			var found bool
+			for _, c := range rec.Result().Cookies() {
+				if c.Name == "_csrf" {
+					found = true
+					Expect(c.Value).NotTo(BeEmpty())
+				}
+			}
+			Expect(found).To(BeTrue(), "_csrf cookie must be set on the response")
+		})
+
+		It("returns 405 method_not_allowed on non-GET", func() {
+			origin := auth.OriginConfig{AllowedOrigins: []string{"localhost:*"}}
+			chain := auth.LoginChain(origin, csrfCfg, auth.HandleCSRFPrefetch())
+
+			// LoginChain runs gorilla/csrf which would 403 a POST with
+			// no cookie/header. To probe HandleCSRFPrefetch's own 405
+			// branch we call the handler directly. The wrap-level 405
+			// surface is covered by the integration spec in
+			// auth_wrap_test.go.
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/csrf", nil)
+			rec := httptest.NewRecorder()
+			auth.HandleCSRFPrefetch().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusMethodNotAllowed))
+			_ = chain // wrap composition pin in the spec above suffices
+		})
+
+		It("returns 500 when called without the Protect wrap (defensive)", func() {
+			// Defensive: if a future refactor registers this handler
+			// without LoginChain, csrf.Token(r) returns "" and the
+			// handler MUST fail closed rather than emit an empty token
+			// the SPA would echo back as a forged-looking pair.
+			req := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+			rec := httptest.NewRecorder()
+			auth.HandleCSRFPrefetch().ServeHTTP(rec, req)
+
+			Expect(rec.Code).To(Equal(http.StatusInternalServerError))
+			Expect(rec.Body.String()).To(ContainSubstring("csrf_prefetch_misconfigured"))
 		})
 	})
 })

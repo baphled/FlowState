@@ -222,3 +222,99 @@ func TestInstallAuthFromConfig_HappyPath(t *testing.T) {
 	// no error was returned, which is the regression we care about.
 	_ = os.Getenv // unused-import suppressor
 }
+
+// QA WARN-5 fix (May 2026). gorilla/csrf has its own TrustedOrigins
+// allowlist that runs in parallel to RequireOrigin. Without threading
+// the resolved AllowedOrigins through CSRFConfig.TrustedOrigins, every
+// cross-origin POST was rejected at the CSRF gate regardless of the
+// perimeter allowlist. Pin the threading at the bundle-resolution
+// seam (buildAuthBundle) so a future refactor can't silently drop the
+// wiring.
+func TestBuildAuthBundle_ThreadsTrustedOrigins(t *testing.T) {
+	t.Setenv("FLOWSTATE_AUTH_ENABLED", "")
+	t.Setenv("FLOWSTATE_AUTH_CSRF_KEY", "")
+	t.Setenv("FLOWSTATE_AUTH_ALLOWED_ORIGINS", "")
+
+	want := []string{
+		"https://flowstate.example.com",
+		"https://flowstate-staging.example.com",
+	}
+	cfg := &config.AppConfig{
+		Auth: config.AuthConfig{
+			Enabled:        true,
+			Mode:           identity.ModeDeploymentLogin,
+			Secret:         "operator-secret",
+			PrincipalID:    "operator-id",
+			CSRFKey:        strings.Repeat("a", 32),
+			SecureCookies:  true,
+			AllowedOrigins: want,
+		},
+	}
+
+	bundle, _, err := buildAuthBundle(cfg)
+	if err != nil {
+		t.Fatalf("buildAuthBundle: %v", err)
+	}
+
+	// The CSRF allowlist must match the Origin allowlist byte-for-byte.
+	if len(bundle.CSRF.TrustedOrigins) != len(want) {
+		t.Fatalf("CSRF.TrustedOrigins length: got %d, want %d",
+			len(bundle.CSRF.TrustedOrigins), len(want))
+	}
+	for i, got := range bundle.CSRF.TrustedOrigins {
+		if got != want[i] {
+			t.Errorf("CSRF.TrustedOrigins[%d]: got %q, want %q", i, got, want[i])
+		}
+	}
+
+	// Origin allowlist must also match — the two are threaded from the
+	// same resolution slice; a regression would surface as a divergence.
+	if len(bundle.Origin.AllowedOrigins) != len(want) {
+		t.Fatalf("Origin.AllowedOrigins length: got %d, want %d",
+			len(bundle.Origin.AllowedOrigins), len(want))
+	}
+}
+
+// Sibling pin: the env-var override path also threads through to
+// TrustedOrigins. Without this, an operator who configures the
+// allowlist via FLOWSTATE_AUTH_ALLOWED_ORIGINS would still see the
+// CSRF gate reject cross-origin POSTs.
+func TestBuildAuthBundle_EnvOverrideThreadsTrustedOrigins(t *testing.T) {
+	t.Setenv("FLOWSTATE_AUTH_ENABLED", "")
+	t.Setenv("FLOWSTATE_AUTH_CSRF_KEY", "")
+	t.Setenv("FLOWSTATE_AUTH_ALLOWED_ORIGINS",
+		"https://env.example.com,https://env-staging.example.com")
+
+	cfg := &config.AppConfig{
+		Auth: config.AuthConfig{
+			Enabled:       true,
+			Mode:          identity.ModeDeploymentLogin,
+			Secret:        "operator-secret",
+			PrincipalID:   "operator-id",
+			CSRFKey:       strings.Repeat("a", 32),
+			SecureCookies: true,
+			// cfg.AllowedOrigins deliberately set to something the env
+			// overrides — the env value must win for both Origin and CSRF.
+			AllowedOrigins: []string{"https://from-cfg.example.com"},
+		},
+	}
+
+	bundle, _, err := buildAuthBundle(cfg)
+	if err != nil {
+		t.Fatalf("buildAuthBundle: %v", err)
+	}
+
+	wantHosts := []string{
+		"https://env.example.com",
+		"https://env-staging.example.com",
+	}
+	if len(bundle.CSRF.TrustedOrigins) != len(wantHosts) {
+		t.Fatalf("env-override CSRF.TrustedOrigins length: got %v, want %v",
+			bundle.CSRF.TrustedOrigins, wantHosts)
+	}
+	for i, got := range bundle.CSRF.TrustedOrigins {
+		if got != wantHosts[i] {
+			t.Errorf("CSRF.TrustedOrigins[%d]: got %q, want %q", i, got, wantHosts[i])
+		}
+	}
+}

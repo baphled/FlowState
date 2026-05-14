@@ -25,9 +25,15 @@ var _ = Describe("SessionManager", func() {
 	)
 
 	BeforeEach(func() {
-		mem = store.NewMemoryStore()
 		now = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
 		clock = func() time.Time { return now }
+		// QA BUG-3 fix (May 2026): thread the same clock into the
+		// MemoryStore so Get's read-time expiry check honours the
+		// frozen clock too. Without WithNow, the store's default
+		// time.Now would mark records with a frozen ExpiresAt as
+		// expired against the wall clock — silent test fragility the
+		// QA report flagged.
+		mem = store.NewMemoryStore(store.WithNow(clock))
 		cfg = auth.SessionConfig{
 			CookieName:    "flowstate_session",
 			CookiePath:    "/api",

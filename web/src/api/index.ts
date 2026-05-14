@@ -1,3 +1,8 @@
+/**
+ * Default timeout (ms) for sendSessionMessage API call.
+ */
+export const SEND_MESSAGE_TIMEOUT_MS = 30000;
+
 import type {
   ChatRequest,
   SSEChunk,
@@ -194,15 +199,10 @@ export async function createSession(agentId: string): Promise<Session> {
   return res.json()
 }
 
+
 export interface SendSessionMessageOptions {
-  /**
-   * attachmentIds is the optional list of attachment ids returned by a
-   * prior uploadAttachments() call. The backend resolves these against
-   * the session's attachment store and threads them onto the user
-   * message as native image content blocks (Anthropic PR1; OpenAI /
-   * Copilot in PR3). Unknown ids surface as 400 from the backend.
-   */
   attachmentIds?: string[]
+  signal?: AbortSignal
 }
 
 export async function sendSessionMessage(
@@ -214,19 +214,39 @@ export async function sendSessionMessage(
   if (options?.attachmentIds && options.attachmentIds.length > 0) {
     body.attachmentIds = options.attachmentIds
   }
-  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
-    method: 'POST',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
-    credentials: CREDENTIALS_INCLUDE,
-    body: JSON.stringify(body),
-  })
 
-  if (!res.ok) {
-    throw new Error(await parseError(res))
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), SEND_MESSAGE_TIMEOUT_MS)
+
+  if (options?.signal?.aborted) {
+    clearTimeout(timeoutId)
+    throw new Error('Request aborted')
   }
 
-  const session = (await res.json()) as Session
-  return session
+  const onExternalAbort = () => controller.abort()
+  options?.signal?.addEventListener('abort', onExternalAbort)
+
+  try {
+    const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
+      method: 'POST',
+      headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+      credentials: CREDENTIALS_INCLUDE,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    if (!res.ok) {
+      throw new Error(await parseError(res))
+    }
+    return (await res.json()) as Session
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${SEND_MESSAGE_TIMEOUT_MS / 1000} seconds`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timeoutId)
+    options?.signal?.removeEventListener('abort', onExternalAbort)
+  }
 }
 
 /**

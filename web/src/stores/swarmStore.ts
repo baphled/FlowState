@@ -5,12 +5,20 @@ import { joinBaseURL } from '@/api'
 import { useChatStore } from '@/stores/chatStore'
 
 const MAX_EVENTS = 500
+const SWARM_STALL_TIMEOUT_MS = 60_000
+const SWARM_RECONNECT_BASE_DELAY_MS = 2_000
+const SWARM_RECONNECT_MAX_DELAY_MS = 30_000
+const SWARM_RECONNECT_MAX_ATTEMPTS = 5
 
 export const useSwarmStore = defineStore('swarm', () => {
   const events = ref<SwarmEvent[]>([])
   const isLive = ref(false)
   const error = ref<string | null>(null)
   const abortController = ref<AbortController | null>(null)
+  const reconnectAttempt = ref(0)
+  let stallTimerId: ReturnType<typeof setTimeout> | null = null
+  let reconnectTimerId: ReturnType<typeof setTimeout> | null = null
+  let shouldResetReconnectAttempt = true
 
   // Generation token. Every connect() increments this. The active read loop
   // captures the value at start and only mutates store state (events, isLive,
@@ -18,6 +26,50 @@ export const useSwarmStore = defineStore('swarm', () => {
   // the M8 contract: a late `read()` resolution from a previous generation —
   // including the generation's `finally` block — must not touch the store.
   const generation = ref(0)
+
+  function clearStallTimer(): void {
+    if (stallTimerId !== null) {
+      clearTimeout(stallTimerId)
+      stallTimerId = null
+    }
+  }
+
+  function armStallTimer(myGeneration: number): void {
+    clearStallTimer()
+    stallTimerId = setTimeout(() => {
+      if (myGeneration === generation.value) {
+        attemptReconnect(myGeneration)
+      }
+    }, SWARM_STALL_TIMEOUT_MS)
+  }
+
+  function clearReconnectTimer(): void {
+    if (reconnectTimerId !== null) {
+      clearTimeout(reconnectTimerId)
+      reconnectTimerId = null
+    }
+  }
+
+  function attemptReconnect(myGeneration: number): void {
+    if (myGeneration !== generation.value) return
+    clearReconnectTimer()
+    if (reconnectAttempt.value >= SWARM_RECONNECT_MAX_ATTEMPTS) {
+      error.value = `Swarm stream stalled after ${SWARM_RECONNECT_MAX_ATTEMPTS} reconnect attempts`
+      isLive.value = false
+      return
+    }
+    reconnectAttempt.value += 1
+    const delay = Math.min(
+      SWARM_RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempt.value - 1),
+      SWARM_RECONNECT_MAX_DELAY_MS,
+    )
+    reconnectTimerId = setTimeout(() => {
+      if (myGeneration === generation.value) {
+        shouldResetReconnectAttempt = false
+        void connect()
+      }
+    }, delay)
+  }
 
   function ingestEventLine(line: string): void {
     if (!line.startsWith('data: ')) {
@@ -62,13 +114,11 @@ export const useSwarmStore = defineStore('swarm', () => {
   async function connect(): Promise<void> {
     await disconnect()
     error.value = null
+    if (shouldResetReconnectAttempt) {
+      reconnectAttempt.value = 0
+    }
+    shouldResetReconnectAttempt = true
 
-    // H5 follow-up: GET /api/swarm/events now requires ?session_id=<id>. Read
-    // the active session from the canonical source (chatStore.currentSessionId
-    // — the same field NavBar/SessionSwitcher/QueuedPromptStrip read). If the
-    // caller invoked connect() with no active session, fail loudly: no fetch,
-    // a visible error string, and isLive stays false. A silent skip would mask
-    // the upstream routing bug (button enabled with no session in scope).
     const sessionId = useChatStore().currentSessionId
     if (!sessionId) {
       error.value = 'cannot connect to swarm events: no active session id'
@@ -76,8 +126,6 @@ export const useSwarmStore = defineStore('swarm', () => {
       return
     }
 
-    // Claim a fresh generation for this loop. The captured value below is the
-    // *only* token this invocation will check before mutating shared state.
     generation.value += 1
     const myGeneration = generation.value
 
@@ -106,24 +154,22 @@ export const useSwarmStore = defineStore('swarm', () => {
 
       const decoder = new TextDecoder()
       let buffer = ''
+      armStallTimer(myGeneration)
 
       while (true) {
         const { done, value } = await reader.read()
-        // Generation check on EVERY post-await resumption: if a newer connect()
-        // has fired, this loop is stale and must not append events or flip
-        // isLive/error. Just exit silently.
         if (myGeneration !== generation.value) {
           return
         }
         if (done) {
-          // Flush any remaining bytes held by the decoder's internal state,
-          // then process whatever is left in the line buffer.
+          clearStallTimer()
           buffer += decoder.decode()
           if (buffer) {
             ingestEventLine(buffer)
           }
           break
         }
+        armStallTimer(myGeneration)
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
@@ -132,17 +178,13 @@ export const useSwarmStore = defineStore('swarm', () => {
         }
       }
     } catch (e) {
-      // Stale generation: swallow without touching error.value (newer
-      // generation owns the slot now).
       if (myGeneration !== generation.value) {
         return
       }
       if (e instanceof Error && e.name !== 'AbortError') {
-        error.value = e.message
+        attemptReconnect(myGeneration)
       }
     } finally {
-      // Same guard for the success path's finally — only the live generation
-      // gets to flip isLive off.
       if (myGeneration === generation.value) {
         isLive.value = false
       }
@@ -150,6 +192,8 @@ export const useSwarmStore = defineStore('swarm', () => {
   }
 
   async function disconnect(): Promise<void> {
+    clearStallTimer()
+    clearReconnectTimer()
     if (abortController.value) {
       abortController.value.abort()
       abortController.value = null
@@ -220,5 +264,6 @@ export const useSwarmStore = defineStore('swarm', () => {
     planEvents,
     statusEvents,
     reviewEvents,
+    reconnectAttempt,
   }
 })

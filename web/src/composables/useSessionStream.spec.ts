@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { SSE_STALL_TIMEOUT_MS, useSessionStream } from './useSessionStream'
+import { SSE_RECONNECT_BASE_DELAY_MS, SSE_RECONNECT_MAX_ATTEMPTS, SSE_RECONNECT_MAX_DELAY_MS, SSE_STALL_TIMEOUT_MS, useSessionStream } from './useSessionStream'
 
 // FakeEventSource mirrors the pattern used in chatStore.test.ts so the
 // composable's tests exercise the same global-EventSource swap mechanism the
@@ -77,7 +77,7 @@ describe('useSessionStream', () => {
       expect(onMessage).toHaveBeenCalledWith('chunk-payload')
 
       es.fire('error', null)
-      expect(onError).toHaveBeenCalledOnce()
+      expect(onError).not.toHaveBeenCalled()
 
       stream.disconnect()
     })
@@ -276,3 +276,76 @@ describe('useSessionStream', () => {
     })
   })
 })
+
+  describe('SSE auto-reconnect with exponential backoff', () => {
+    let stream: ReturnType<typeof useSessionStream>
+    let onMessage: (payload: string) => void
+    let onError: () => void
+    let onReconnect: ((attempt: number, delayMs: number) => void) | undefined
+    let onStall: () => void
+
+    beforeEach(() => {
+      vi.useFakeTimers()
+      stream = useSessionStream()
+      onMessage = vi.fn()
+      onError = vi.fn()
+      onReconnect = vi.fn()
+      onStall = vi.fn()
+    })
+
+    afterEach(() => {
+      stream.disconnect()
+      vi.useRealTimers()
+    })
+
+    function latestEs(): FakeEventSource {
+      return FakeEventSource.instances[FakeEventSource.instances.length - 1]
+    }
+
+    it('schedules reconnect on error instead of calling onError', () => {
+      stream.connect('session-1', { onMessage, onError, onReconnect, onStall })
+      latestEs().fire('error', null)
+      expect(onError).not.toHaveBeenCalled()
+      expect(onReconnect).toHaveBeenCalledWith(1, SSE_RECONNECT_BASE_DELAY_MS)
+      expect(stream.reconnectAttempts()).toBe(1)
+    })
+
+    it('calls onError after max reconnect attempts exhausted', () => {
+      stream.connect('session-1', { onMessage, onError, onReconnect, onStall })
+      for (let i = 0; i <= SSE_RECONNECT_MAX_ATTEMPTS; i++) {
+        latestEs().fire('error', null)
+        vi.advanceTimersByTime(SSE_RECONNECT_MAX_DELAY_MS)
+      }
+      expect(onError).toHaveBeenCalledOnce()
+      expect(stream.reconnectAttempts()).toBe(0)
+    })
+
+    it('resets reconnect counter on successful message', () => {
+      stream.connect('session-1', { onMessage, onError, onReconnect, onStall })
+      latestEs().fire('error', null)
+      expect(stream.reconnectAttempts()).toBe(1)
+      vi.advanceTimersByTime(SSE_RECONNECT_BASE_DELAY_MS)
+      latestEs().fire('message', 'recovery-chunk')
+      expect(stream.reconnectAttempts()).toBe(0)
+    })
+
+    it('disconnect cancels pending reconnect', () => {
+      stream.connect('session-1', { onMessage, onError, onReconnect, onStall })
+      latestEs().fire('error', null)
+      stream.disconnect()
+      vi.advanceTimersByTime(SSE_RECONNECT_MAX_DELAY_MS)
+      expect(onError).not.toHaveBeenCalled()
+    })
+
+    it('exponential backoff increases delay per attempt', () => {
+      stream.connect('session-1', { onMessage, onError, onReconnect, onStall })
+      latestEs().fire('error', null)
+      expect(onReconnect).toHaveBeenLastCalledWith(1, 1000)
+      vi.advanceTimersByTime(1000)
+      latestEs().fire('error', null)
+      expect(onReconnect).toHaveBeenLastCalledWith(2, 2000)
+      vi.advanceTimersByTime(2000)
+      latestEs().fire('error', null)
+      expect(onReconnect).toHaveBeenLastCalledWith(3, 4000)
+    })
+  })

@@ -515,17 +515,17 @@ func buildApp(params appBuildParams) *App {
 			sessionStore,
 			runtime.sessionManager,
 		),
-		TodoStore:        runtime.todoStore,
-		mcpClient:        runtime.mcpManager,
-		plugins:          pluginRuntime,
-		providerRegistry: providerRegistry,
-		ollamaProvider:   ollamaProvider,
-		metricsRegistry:  runtime.metricsRegistry,
-		defaultProvider:  runtime.defaultProvider,
-		sessionManager:   runtime.sessionManager,
-		compression:      runtime.compression,
-		mcpServerTools:   runtime.mcpServerTools,
-		mcpTools:         runtime.mcpTools,
+		TodoStore:            runtime.todoStore,
+		mcpClient:            runtime.mcpManager,
+		plugins:              pluginRuntime,
+		providerRegistry:     providerRegistry,
+		ollamaProvider:       ollamaProvider,
+		metricsRegistry:      runtime.metricsRegistry,
+		defaultProvider:      runtime.defaultProvider,
+		sessionManager:       runtime.sessionManager,
+		compression:          runtime.compression,
+		mcpServerTools:       runtime.mcpServerTools,
+		mcpTools:             runtime.mcpTools,
 		memoryClient:         params.memoryClient,
 		vaultHandler:         params.vaultHandler,
 		gateRunner:           buildSwarmGateRunner(),
@@ -2009,6 +2009,10 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 	if a.Config != nil {
 		skillLoader := skill.NewFileSkillLoader(a.Config.SkillDir)
 		tools = append(tools, skilltool.New(skillLoader))
+	}
+
+	if a.TodoStore != nil {
+		tools = append(tools, todotool.New(a.TodoStore), todotool.NewUpdate(a.TodoStore))
 	}
 
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {

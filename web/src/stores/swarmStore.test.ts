@@ -10,17 +10,25 @@ import { useChatStore } from '@/stores/chatStore'
  */
 type FakeChunk = { value: Uint8Array; done?: false } | { value?: undefined; done: true }
 
+const SWARM_STALL_TIMEOUT_MS = 60_000
+const SWARM_RECONNECT_BASE_DELAY_MS = 2_000
+const SWARM_RECONNECT_MAX_DELAY_MS = 30_000
+const SWARM_RECONNECT_MAX_ATTEMPTS = 5
+
 function controllableReader() {
-  // Each pending read() call resolves when we push a chunk via emit() / close().
-  const queue: FakeChunk[] = []
-  const waiters: Array<(c: FakeChunk) => void> = []
+  const queue: Array<{ type: 'chunk'; value: FakeChunk } | { type: 'error'; value: Error }> = []
+  const waiters: Array<{ resolve: (c: FakeChunk) => void; reject: (error: Error) => void }> = []
   let aborted = false
 
   function dispatch(): void {
     while (queue.length > 0 && waiters.length > 0) {
-      const w = waiters.shift()!
-      const c = queue.shift()!
-      w(c)
+      const waiter = waiters.shift()!
+      const queued = queue.shift()!
+      if (queued.type === 'error') {
+        waiter.reject(queued.value)
+      } else {
+        waiter.resolve(queued.value)
+      }
     }
   }
 
@@ -30,18 +38,16 @@ function controllableReader() {
         if (aborted) {
           return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
         }
-        return new Promise<FakeChunk>((resolve) => {
-          waiters.push(resolve)
+        return new Promise<FakeChunk>((resolve, reject) => {
+          waiters.push({ resolve, reject })
           dispatch()
         })
       }),
       cancel: vi.fn(() => {
         aborted = true
-        // Drain any waiters with an abort error.
         while (waiters.length > 0) {
-          const w = waiters.shift()!
-          // Resolve as a rejection-shaped chunk; in real life cancel() rejects pending reads.
-          w({ done: true })
+          const waiter = waiters.shift()!
+          waiter.resolve({ done: true })
         }
         return Promise.resolve()
       }),
@@ -49,22 +55,22 @@ function controllableReader() {
     },
     emit(text: string): void {
       const value = new TextEncoder().encode(text)
-      queue.push({ value, done: false })
+      queue.push({ type: 'chunk', value: { value, done: false } })
       dispatch()
     },
     close(): void {
-      queue.push({ done: true })
+      queue.push({ type: 'chunk', value: { done: true } })
+      dispatch()
+    },
+    fail(error: Error): void {
+      queue.push({ type: 'error', value: error })
       dispatch()
     },
     abort(): void {
       aborted = true
-      // Pending reads get an abort rejection.
       while (waiters.length > 0) {
-        const w = waiters.shift()!
-        // Resolve waiter with done so the loop exits — but production code
-        // would observe AbortError. We simulate the abort path by rejecting
-        // through the read mock on the *next* call.
-        w({ done: true })
+        const waiter = waiters.shift()!
+        waiter.resolve({ done: true })
       }
     },
   }
@@ -86,6 +92,18 @@ function flushMicrotasks(times = 5): Promise<void> {
       await Promise.resolve()
     }
   })()
+}
+
+function createStreamingFetchSpy() {
+  const controllers: ReturnType<typeof controllableReader>[] = []
+  const fetchSpy = vi.fn((_url: string | URL, init?: RequestInit) => {
+    const controller = controllableReader()
+    controllers.push(controller)
+    init?.signal?.addEventListener('abort', () => controller.abort(), { once: true })
+    return Promise.resolve(makeFetchResponse(controller.reader))
+  })
+
+  return { fetchSpy, controllers }
 }
 
 describe('swarmStore.connect — H5 follow-up: session_id threading', () => {
@@ -238,6 +256,187 @@ describe('swarmStore.connect — M8: generation-token isolation across reconnect
     expect(swarm.isLive).toBe(false)
 
     await Promise.all([pA, pB])
+  })
+})
+
+describe('swarmStore.connect — stall watchdog and auto-reconnect', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('triggers a reconnect attempt when the stream stalls', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-stall-1'
+
+    const { fetchSpy } = createStreamingFetchSpy()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+    const connectPromise = swarm.connect()
+    await flushMicrotasks()
+
+    await vi.advanceTimersByTimeAsync(SWARM_STALL_TIMEOUT_MS)
+    await flushMicrotasks()
+
+    expect(swarm.reconnectAttempt).toBe(1)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    await swarm.disconnect()
+    await flushMicrotasks()
+    await connectPromise
+  })
+
+  it('surfaces an error after the maximum reconnect attempts are exceeded', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-stall-2'
+
+    const { fetchSpy } = createStreamingFetchSpy()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+    void swarm.connect()
+    await flushMicrotasks()
+
+    const reconnectDelays = [
+      SWARM_RECONNECT_BASE_DELAY_MS,
+      SWARM_RECONNECT_BASE_DELAY_MS * 2,
+      SWARM_RECONNECT_BASE_DELAY_MS * 4,
+      SWARM_RECONNECT_BASE_DELAY_MS * 8,
+      SWARM_RECONNECT_MAX_DELAY_MS,
+    ]
+
+    for (const [index, delay] of reconnectDelays.entries()) {
+      await vi.advanceTimersByTimeAsync(SWARM_STALL_TIMEOUT_MS)
+      await flushMicrotasks()
+      expect(swarm.reconnectAttempt).toBe(index + 1)
+
+      await vi.advanceTimersByTimeAsync(delay)
+      await flushMicrotasks()
+    }
+
+    await vi.advanceTimersByTimeAsync(SWARM_STALL_TIMEOUT_MS)
+    await flushMicrotasks()
+
+    expect(swarm.reconnectAttempt).toBe(SWARM_RECONNECT_MAX_ATTEMPTS)
+    expect(swarm.error).toBe(
+      `Swarm stream stalled after ${SWARM_RECONNECT_MAX_ATTEMPTS} reconnect attempts`,
+    )
+    expect(swarm.isLive).toBe(false)
+
+    await swarm.disconnect()
+    await flushMicrotasks()
+  })
+
+  it('cancels stall and reconnect timers on disconnect', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-stall-3'
+
+    const { fetchSpy } = createStreamingFetchSpy()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+
+    const firstConnect = swarm.connect()
+    await flushMicrotasks()
+
+    await swarm.disconnect()
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(SWARM_STALL_TIMEOUT_MS)
+    await flushMicrotasks()
+
+    expect(swarm.reconnectAttempt).toBe(0)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+
+    const secondConnect = swarm.connect()
+    await flushMicrotasks()
+
+    await vi.advanceTimersByTimeAsync(SWARM_STALL_TIMEOUT_MS)
+    await flushMicrotasks()
+    expect(swarm.reconnectAttempt).toBe(1)
+
+    await swarm.disconnect()
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(SWARM_RECONNECT_BASE_DELAY_MS)
+    await flushMicrotasks()
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(swarm.isLive).toBe(false)
+
+    await Promise.all([firstConnect, secondConnect])
+  })
+
+  it('resets the stall timer when data is received successfully', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-stall-4'
+
+    const { fetchSpy, controllers } = createStreamingFetchSpy()
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+    const connectPromise = swarm.connect()
+    await flushMicrotasks()
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    controllers[0]?.emit(
+      'data: {"id":"evt-reset-1","type":"tool_call","timestamp":"2026-05-12T00:00:00Z","agent_id":"agent-reset"}\n',
+    )
+    await flushMicrotasks()
+
+    await vi.advanceTimersByTimeAsync(45_000)
+    await flushMicrotasks()
+
+    expect(swarm.reconnectAttempt).toBe(0)
+    expect(swarm.events.map((event) => event.id)).toContain('evt-reset-1')
+
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushMicrotasks()
+
+    expect(swarm.reconnectAttempt).toBe(1)
+
+    await swarm.disconnect()
+    await flushMicrotasks()
+    await connectPromise
+  })
+
+  it('prevents stale generations from scheduling reconnects', async () => {
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-stall-5'
+
+    const ctrlA = controllableReader()
+    const ctrlB = controllableReader()
+    let call = 0
+    const fetchSpy = vi.fn((_url: string | URL, init?: RequestInit) => {
+      call += 1
+      const controller = call === 1 ? ctrlA : ctrlB
+      init?.signal?.addEventListener('abort', () => controller.abort(), { once: true })
+      return Promise.resolve(makeFetchResponse(controller.reader))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const swarm = useSwarmStore()
+
+    const firstConnect = swarm.connect()
+    await flushMicrotasks()
+
+    const secondConnect = swarm.connect()
+    await flushMicrotasks()
+
+    ctrlA.fail(new Error('late generation failure'))
+    await flushMicrotasks()
+
+    expect(swarm.reconnectAttempt).toBe(0)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+
+    await swarm.disconnect()
+    await flushMicrotasks()
+    await Promise.all([firstConnect, secondConnect])
   })
 })
 

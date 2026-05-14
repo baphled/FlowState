@@ -4123,7 +4123,11 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		msg += fmt.Sprintf(" Did you mean '%s'?", suggestion)
 	}
 	slog.Warn("tool not found in registry", "requested", toolCall.Name, "suggestion", suggestion)
-	return tool.Result{Output: msg}, nil
+	return tool.Result{
+		Output:  msg,
+		IsError: true,
+		Error:   fmt.Errorf("%w: %s", tool.ErrToolNotFound, toolCall.Name),
+	}, nil
 }
 
 // availableToolNames returns a sorted slice of all registered tool names.

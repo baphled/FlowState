@@ -447,9 +447,9 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				}
 
 				Expect(toolResultChunk).NotTo(BeNil())
-				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("unknown_tool"))
-				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("Available tools"))
-				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"))
+				Expect(toolResultChunk.ToolResult.Error).To(ContainSubstring("unknown tool"))
+				Expect(toolResultChunk.ToolResult.Output).To(ContainSubstring("Available tools"))
+				Expect(toolResultChunk.ToolResult.Output).To(ContainSubstring("test_tool"))
 			})
 
 			It("returns tool result content listing available tools", func() {
@@ -1651,4 +1651,3 @@ var _ = Describe("levenshtein", func() {
 		Entry("completely different", "abc", "xyz", 3),
 	)
 })
-

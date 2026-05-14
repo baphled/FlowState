@@ -580,6 +580,100 @@ var _ = Describe("Tool wiring integration", func() {
 			}
 			Expect(toolNames).To(ContainElement("coordination_store"))
 		})
+
+		// Regression guard for "tool not found: todowrite" in delegated sessions.
+		// buildToolsForManifestWithStore builds the tool slice for child engines
+		// spawned by the delegate tool. If todowrite or todo_update is missing
+		// from that slice, delegated agents cannot track task progress and the
+		// delegation stream errors out.
+		Context("when a delegate agent declares todowrite in capabilities.tools", func() {
+			It("registers todowrite and todo_update in the delegate engine's tools", func() {
+				delegateManifest := agent.Manifest{
+					ID:   "senior-engineer",
+					Name: "Senior Engineer",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file", "web", "todowrite"},
+					},
+					Delegation: agent.Delegation{CanDelegate: false},
+				}
+				agentReg.Register(&delegateManifest)
+				application.TodoStore = todotool.NewMemoryStore()
+
+				tools := application.buildToolsForManifestWithStore(delegateManifest, nil)
+
+				names := make([]string, 0, len(tools))
+				for _, t := range tools {
+					names = append(names, t.Name())
+				}
+				Expect(names).To(ContainElement("todowrite"),
+					"delegate engine must register todowrite when the manifest declares it")
+				Expect(names).To(ContainElement("todo_update"),
+					"delegate engine must register todo_update alongside todowrite")
+			})
+
+			It("surfaces todowrite in the provider request for a delegate agent", func() {
+				delegateManifest := agent.Manifest{
+					ID:   "senior-engineer",
+					Name: "Senior Engineer",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file", "web", "todowrite"},
+					},
+					Delegation: agent.Delegation{CanDelegate: false},
+				}
+				agentReg.Register(&delegateManifest)
+				application.TodoStore = todotool.NewMemoryStore()
+
+				twc := &toolWiringCallbacks{
+					hasTool: func(name string) bool {
+						if eng == nil {
+							return false
+						}
+						return eng.HasTool(name)
+					},
+					ensureTools: func(m agent.Manifest) {
+						if ensureToolsFn != nil {
+							ensureToolsFn(m)
+						}
+					},
+					schemaRebuilder: func() []provider.Tool {
+						if eng == nil {
+							return nil
+						}
+						return eng.ToolSchemas()
+					},
+				}
+
+				hookChain := buildHookChain(hookChainConfig{
+					manifestGetter: func() agent.Manifest { return delegateManifest },
+					twc:            twc,
+				})
+
+				delegateTools := application.buildToolsForManifestWithStore(delegateManifest, nil)
+				eng = engine.New(engine.Config{
+					Manifest:      delegateManifest,
+					AgentRegistry: agentReg,
+					Registry:      providerReg,
+					ChatProvider:  spy,
+					HookChain:     hookChain,
+					Tools:         delegateTools,
+				})
+				ensureToolsFn = func(m agent.Manifest) {
+					application.wireDelegateToolIfEnabled(eng, m)
+				}
+				application.wireDelegateToolIfEnabled(eng, delegateManifest)
+
+				_, err := eng.Stream(context.Background(), "senior-engineer", "implement feature X")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(spy.capturedRequest).NotTo(BeNil())
+				names := make([]string, 0, len(spy.capturedRequest.Tools))
+				for _, t := range spy.capturedRequest.Tools {
+					names = append(names, t.Name)
+				}
+				Expect(names).To(ContainElement("todowrite"),
+					"todowrite must reach the provider for a delegate agent that declares it")
+			})
+		})
 	})
 
 	// Regression guard for "thinking a skill was a tool" runtime error.
