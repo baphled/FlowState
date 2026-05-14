@@ -1,7 +1,7 @@
 /**
  * Default timeout (ms) for sendSessionMessage API call.
  */
-export const SEND_MESSAGE_TIMEOUT_MS = 30000;
+export const SEND_MESSAGE_TIMEOUT_MS = 300000;
 
 import type {
   ChatRequest,
