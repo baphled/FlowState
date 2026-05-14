@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/app"
-	"github.com/baphled/flowstate/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -90,7 +89,9 @@ const defaultAgentID = "default"
 // Side effects:
 //   - None.
 func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
-	return &cobra.Command{
+	resumeOpts := defaultCarbonylOptions()
+
+	cmd := &cobra.Command{
 		Use:   "resume ID",
 		Short: "Resume a saved session",
 		Long:  "Resume a saved FlowState session.",
@@ -109,9 +110,12 @@ func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
 				agentID = defaultAgentID
 			}
 
-			return tui.Run(a, agentID, sessionID)
+			return routeUIInteraction(a, &resumeOpts, agentID, sessionID)
 		},
 	}
+
+	addCarbonylFlags(cmd, &resumeOpts)
+	return cmd
 }
 
 // newSessionTreeCmd creates the session tree subcommand.

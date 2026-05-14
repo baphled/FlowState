@@ -15,7 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
-	"github.com/baphled/flowstate/internal/tui"
+	
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
@@ -28,6 +28,7 @@ var errInvalidSessionID = errors.New("invalid session ID")
 
 // ChatOptions holds configuration for the chat command.
 type ChatOptions struct {
+	CarbonylOpts CarbonylOptions
 	Agent     string
 	Message   string
 	Model     string
@@ -70,6 +71,7 @@ func newChatCmd(getApp func() *app.App) *cobra.Command {
 	flags.StringVar(&opts.Output, "output", "text", "Output format: text or json")
 	flags.StringVar(&opts.Verbosity, "verbosity", "standard", "Verbosity level: minimal, standard, or verbose")
 
+	addCarbonylFlags(cmd, &opts.CarbonylOpts)
 	return cmd
 }
 
@@ -197,7 +199,7 @@ func runInteractiveChat(application *app.App, opts *ChatOptions) error {
 		return err
 	}
 
-	return tui.Run(application, agentName, sessionID)
+	return routeUIInteraction(application, &opts.CarbonylOpts, agentName, sessionID)
 }
 
 // resolveChatAgentName returns the agent name, defaulting to the provided defaultAgent if empty.
