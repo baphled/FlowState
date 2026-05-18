@@ -888,3 +888,303 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
     ).toBeGreaterThan(0)
   })
 })
+
+/**
+ * sse-live-render-probe / default-assistant clean reproduction — Bug 2
+ * diagnostic (May 2026).
+ *
+ * The user reported: "I'm still having to refresh after a prompt to get an
+ * update. We're also experiencing hallucinations." Their DevTools confirms
+ * SSE chunks ARE arriving on the wire (context_usage / model_active /
+ * thinking deltas all show up in the Network panel timeline). The two
+ * shipped fixes for the live-render gap — 7eb3cf47 (chatStore renders
+ * thinking chunks via a `role:'thinking'` running row created in
+ * handleThinkingEvent) and 0345d2a1 (SSE handler waits briefly on sealed
+ * turns instead of fast-pathing past) — should already cover this exact
+ * scenario, but the user's flow runs against a previously-loaded page
+ * whose JS bundle may pre-date both commits.
+ *
+ * This probe drives a CLEAN browser context (no shared state, fresh page
+ * load) against the user's exact reproduction:
+ *   - agent_id = `default-assistant` (the registered default)
+ *   - provider/model = zai/glm-4.6 (pinned via PATCH so the cascade does
+ *     not pick a different provider mid-test)
+ *   - simple PING prompt (minimises cost; glm-4.6 still emits thinking
+ *     before any reply on this shape)
+ *
+ * If the probe PASSES in clean Playwright, the user's bug is browser
+ * cache / Vite HMR not invalidating the chatStore module after the
+ * commits landed — the answer is "hard-refresh." If the probe FAILS,
+ * there is a deeper code bug. Per the brief, this block diagnoses ONLY;
+ * it does not ship a code fix on a red — that would be a separate run.
+ */
+test.describe('sse live-render probe — default-assistant clean reproduction (Bug 2)', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(120_000)
+
+  test.beforeEach(async ({ page, request }) => {
+    // Fresh backend session under default-assistant — the exact agent
+    // the user's broken session (678318aa-6ec9-4c5e-92a8-624b2edd75a0)
+    // ran under.
+    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
+      data: { agent_id: 'default-assistant' },
+    })
+    const created = await createRes.json() as {
+      id: string
+      agentId: string
+      createdAt: string
+      updatedAt: string
+    }
+    const sessionId = created.id
+
+    // Pin provider+model BEFORE the page navigates. The user's broken
+    // session ran under zai/glm-4.6; without this PATCH the engine could
+    // pick any preferred-cascade provider on the first turn, making the
+    // probe non-deterministic across machines.
+    await request.patch(`http://localhost:8080/api/v1/sessions/${sessionId}/model`, {
+      data: { providerId: 'zai', modelId: 'glm-4.6' },
+    })
+
+    await page.route('**/api/v1/sessions', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            {
+              id: created.id,
+              agentId: created.agentId,
+              currentAgentId: created.agentId,
+              title: '',
+              messageCount: 0,
+              createdAt: created.createdAt,
+              updatedAt: created.updatedAt,
+              isStreaming: false,
+            },
+          ]),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    // Same probe wiring as the Team-Lead block. Wire-side EventSource
+    // wrap + DOM MutationObserver + Pinia $subscribe — captures the
+    // full chunk → store → DOM path so a red surface tells us WHICH
+    // layer dropped the update.
+    await page.addInitScript(() => {
+      const probe = {
+        wire: [] as ProbeWireEntry[],
+        store: [] as ProbeStoreEntry[],
+        dom: [] as ProbeDomEntry[],
+        apply: [] as ProbeApplyEntry[],
+        sub: [] as ProbeSubscribeEntry[],
+      }
+      ;(window as Window).__sseProbe = probe
+      const startedAt = Date.now()
+
+      const NativeEventSource = window.EventSource
+      class ProbeEventSource extends NativeEventSource {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init)
+          const probedUrl = typeof url === 'string' ? url : url.toString()
+          this.addEventListener('message', (event: MessageEvent) => {
+            const data = typeof event.data === 'string' ? event.data : ''
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: 'message',
+              preview: data.slice(0, 200),
+            })
+          })
+          this.addEventListener('error', () => {
+            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'error', preview: '' })
+          })
+          this.addEventListener('open', () => {
+            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'open', preview: '' })
+          })
+        }
+      }
+      window.EventSource = ProbeEventSource as unknown as typeof EventSource
+
+      ;(window as Window).__sseProbeInstall = (): void => {
+        const startedAtInstall = Date.now()
+        const recordDom = (): void => {
+          // Default-assistant on glm-4.6 emits thinking before any
+          // content (the model is reasoning-on by default on the zai
+          // provider). The thinking row surfaces as
+          // `.message-bubble.thinking`; the eventual reply surfaces as
+          // `.message-bubble.assistant`. Either bubble growing in the
+          // DOM before [DONE] arrives counts as live-render.
+          const bubbles = document.querySelectorAll<HTMLElement>(
+            '.message-bubble.assistant, .message-bubble.thinking',
+          )
+          const last = bubbles[bubbles.length - 1]
+          probe.dom.push({
+            t: Date.now() - startedAtInstall,
+            assistantBubbleCount: bubbles.length,
+            lastAssistantTextLen: last ? (last.textContent ?? '').length : 0,
+          })
+        }
+        const obs = new MutationObserver(() => recordDom())
+        obs.observe(document.body, { childList: true, subtree: true, characterData: true })
+        recordDom()
+
+        const findChatStore = (): unknown => {
+          const root = document.getElementById('app') ?? document.body
+          const vueApp = (root as unknown as {
+            __vue_app__?: {
+              config: {
+                globalProperties: {
+                  $pinia?: {
+                    _s?: Map<string, { $state?: Record<string, unknown> } & Record<string, unknown>>
+                    state: { value: Record<string, unknown> }
+                  }
+                }
+              }
+            }
+          }).__vue_app__
+          const pinia = vueApp?.config?.globalProperties?.$pinia
+          if (!pinia) return null
+          const fromRegistry = pinia._s?.get('chat')
+          if (fromRegistry) return fromRegistry
+          return pinia.state.value.chat
+        }
+        const recordStore = (): void => {
+          const state = findChatStore() as {
+            messages?: Array<{ id: string; role: string; status?: string; content?: string; thinkingContent?: string }>
+            currentSessionId?: string | null
+          } | null
+          if (!state || !Array.isArray(state.messages)) return
+          const msgs = state.messages
+          const running = msgs.filter((m) => m.status === 'running')
+          let bestStatus: string | null = null
+          let bestLen = 0
+          for (const m of running) {
+            if (m.role === 'assistant' || m.role === 'thinking') {
+              const contentLen = (m.content ?? '').length
+              const thinkingLen = (m.thinkingContent ?? '').length
+              const len = Math.max(contentLen, thinkingLen)
+              if (len > bestLen) {
+                bestStatus = m.status ?? null
+                bestLen = len
+              } else if (bestStatus === null) {
+                bestStatus = m.status ?? null
+              }
+            }
+          }
+          probe.store.push({
+            t: Date.now() - startedAtInstall,
+            messageCount: msgs.length,
+            lastAssistantStatus: bestStatus,
+            lastAssistantContentLen: bestLen,
+            currentSessionId: state.currentSessionId ?? null,
+            contextUsageKeys: [],
+            currentModelId: '',
+          })
+        }
+        recordStore()
+        const storePoll = setInterval(recordStore, 50)
+        ;(window as Window & { __ssePoll?: ReturnType<typeof setInterval> }).__ssePoll = storePoll
+      }
+    })
+
+    await page.goto('/chat')
+    await page.evaluate((sid) => {
+      localStorage.clear()
+      localStorage.setItem('chat.currentSessionId', sid)
+      localStorage.setItem('chat.agentId', 'default-assistant')
+    }, sessionId)
+    await page.reload()
+    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+
+    await page.evaluate(() => (window as Window).__sseProbeInstall?.())
+  })
+
+  test('default-assistant session on zai/glm-4.6 live-renders thinking before [DONE]', async ({ page }) => {
+    const input = page.getByTestId('message-input')
+    const sendBtn = page.getByTestId('send-button')
+
+    // Terse prompt — keeps the upstream cost low while still triggering
+    // glm-4.6's thinking surface (the model emits reasoning tokens before
+    // every reply, even single-token ones).
+    const PROMPT = 'say the word PING and nothing else'
+    await input.fill(PROMPT)
+    await sendBtn.click()
+
+    // Wait for the first reply-bearing SSE chunk — either thinking or
+    // content. context_usage / model_active land first and are skipped
+    // because they don't surface the assistant turn.
+    let firstChunkAt: number
+    try {
+      const firstChunkResult = await page.waitForFunction(
+        () => {
+          const probe = (window as Window).__sseProbe
+          if (!probe) return false
+          const replyChunk = probe.wire.find(
+            (w) =>
+              w.event === 'message' &&
+              w.preview !== '[DONE]' &&
+              !w.preview.includes('"type":"context_usage"') &&
+              !w.preview.includes('"type":"model_active"') &&
+              (w.preview.includes('"type":"thinking"') ||
+                w.preview.includes('"type":"content"')),
+          )
+          return replyChunk ? { firstChunkAt: replyChunk.t, preview: replyChunk.preview } : false
+        },
+        undefined,
+        { timeout: 90_000 },
+      )
+      ;({ firstChunkAt } = await firstChunkResult.jsonValue() as { firstChunkAt: number; preview: string })
+    } catch (e) {
+      const partial = await page.evaluate(() => {
+        const probe = (window as Window).__sseProbe
+        return probe ? { wire: probe.wire.slice() } : null
+      })
+      throw new Error(
+        `No reply-bearing SSE chunk arrived within 90s of send (default-assistant + zai/glm-4.6).\n` +
+          `(${(e as Error).message})\n` +
+          `--- WIRE (${partial?.wire.length ?? 0}) ---\n${JSON.stringify(partial?.wire.slice(0, 40) ?? [], null, 2)}`,
+      )
+    }
+
+    // 2s drain — gives the store poll (50ms cadence) and the MutationObserver
+    // ample time to capture the post-firstChunk live updates. 7eb3cf47's
+    // handleThinkingEvent path creates a thinking running row + appends
+    // thinkingContent on every delta; the MutationObserver should pick up
+    // either the row insertion or its text growth.
+    await page.waitForTimeout(2000)
+
+    const snapshot = await page.evaluate(() => {
+      const probe = (window as Window).__sseProbe
+      if (!probe) return null
+      return { wire: probe.wire.slice(), store: probe.store.slice(), dom: probe.dom.slice() }
+    })
+    expect(snapshot, 'probe snapshot must have been captured').not.toBeNull()
+    const { wire, store, dom } = snapshot as Pick<ProbeSnapshot, 'wire' | 'store' | 'dom'>
+
+    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0)
+    const liveStoreEntries = store.filter(
+      (s) => s.lastAssistantStatus === 'running' && s.lastAssistantContentLen > 0,
+    )
+
+    expect(
+      liveDomEntries.length,
+      `DOM evidence: expected ≥1 thinking-or-assistant bubble text mutation post-firstChunk@${firstChunkAt}ms ` +
+        `for the default-assistant + zai/glm-4.6 session (user's exact reproduction).\n` +
+        `Got ${liveDomEntries.length}.\n` +
+        `\n--- WIRE (${wire.length} entries, first 30) ---\n${JSON.stringify(wire.slice(0, 30), null, 2)}\n` +
+        `\n--- STORE (last 10 entries) ---\n${JSON.stringify(store.slice(-10), null, 2)}\n` +
+        `\n--- DOM (${dom.length} entries, last 10) ---\n${JSON.stringify(dom.slice(-10), null, 2)}`,
+    ).toBeGreaterThan(0)
+
+    expect(
+      liveStoreEntries.length,
+      `STORE evidence: chatStore.messages must carry a running thinking/assistant message ` +
+        `with non-empty content post-firstChunk@${firstChunkAt}ms.\n` +
+        `(WIRE has chunks but STORE empty ⇒ handler path broken; STORE updates but DOM empty ⇒ ` +
+        `Vue reactivity / template binding; both empty ⇒ chunk listener never wired.)\n` +
+        `STORE (last 30): ${JSON.stringify(store.slice(-30), null, 2)}`,
+    ).toBeGreaterThan(0)
+  })
+})
