@@ -121,6 +121,11 @@ type Server struct {
 type DispatcherService interface {
 	DispatchEphemeral(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.EphemeralHandle, error)
 	DispatchSessioned(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.SessionedHandle, error)
+	// SetSessionBroker propagates a post-init broker reference. Required
+	// because production wiring sets the broker AFTER NewServer's
+	// auto-construct captures it; without propagation the Dispatcher
+	// silently drops chunks. See SetSessionBroker on Server.
+	SetSessionBroker(broker dispatch.SessionBroker)
 }
 
 // ServerOption configures an optional Server dependency.
@@ -435,6 +440,17 @@ func (s *Server) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 //   - Updates the server's session broker reference.
 func (s *Server) SetSessionBroker(broker *SessionBroker) {
 	s.sessionBroker = broker
+	// Propagate to Dispatcher — production wires the broker AFTER NewServer
+	// has already auto-constructed the Dispatcher (internal/app/app.go:444-446
+	// calls api.NewSessionBroker() then app.API.SetSessionBroker()). Without
+	// this propagation the Dispatcher's broker reference stays nil and
+	// fanOutSessionedChunks falls into the drain-to-sink default case — SSE
+	// subscribers receive zero content chunks despite the engine producing
+	// them correctly. Diagnosed via live curl probe on May 18 2026; root cause
+	// of every "refresh required" report this session.
+	if s.dispatcher != nil {
+		s.dispatcher.SetSessionBroker(broker)
+	}
 }
 
 // SetCompletionOrchestrator attaches the completion orchestrator so user-
