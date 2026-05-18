@@ -1,0 +1,95 @@
+schema_version: "1.0.0"
+id: engineer-swarm
+description: >
+  Implementation sub-swarm embedded inside dev-swarm. Senior-Engineer
+  leads, decomposing delivery briefs into atomic TDD cycles delegated
+  through the Mid → Junior hierarchy. Every implementation task passes
+  through strict TDD-first gates (failing test before code) and
+  small-commit discipline (one commit per RED→GREEN→REFACTOR cycle).
+
+  Model policy:
+    - Senior-Engineer: permissive (opus-class, own manifest)
+    - Mid-Engineer:    strict (haiku-class, enforced by manifest)
+    - Junior-Engineer: strict (haiku-class, enforced by manifest)
+    - Principal-Engineer: permissive (opus-class, own manifest)
+    - QA-Engineer: standard (sonnet-class, own manifest)
+
+  Gates (all custom ext: gates, no application code required):
+    - tdd-commit-gate on Mid-Engineer and Junior-Engineer outputs:
+      validates RED→GREEN phase evidence and commit SHA via
+      `make ai-commit`. Failure halts the sub-swarm.
+    - standards-review-gate on Principal-Engineer output: validates
+      structured verdict (approve/revise/abort), files reviewed,
+      and TDD compliance check. Failure halts the sub-swarm.
+    - builtin result-schema on QA-Engineer output: validates
+      review-verdict-v1 shape (approve/revise/abort).
+
+  The swarm replaces the flat Senior/Mid/Junior roster in dev-swarm
+  with a composed sub-swarm so Team-Lead delegates "implementation"
+  as a single unit, and the Senior-Engineer orchestrates the
+  engineering hierarchy internally.
+
+lead: Senior-Engineer
+
+members:
+  - Mid-Engineer
+  - Junior-Engineer
+  - Principal-Engineer
+  - QA-Engineer
+
+swarm_type: codegen
+
+harness:
+  parallel: false
+
+  gates:
+    # Mid-Engineer output must include TDD evidence (failing test
+    # written first) and a valid commit via `make ai-commit`.
+    # MEDIUM precedence: genuine mistakes halt the swarm, but the
+    # Senior-Engineer can revise and retry without escalation.
+    - name: post-member-mid-engineer-tdd-commit
+      kind: ext:tdd-commit-gate
+      when: post-member
+      target: Mid-Engineer
+      output_key: output
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # Junior-Engineer output validated identically. Junior is
+    # execution-only so the gate catches missing test evidence
+    # or uncommitted work before it cascades.
+    - name: post-member-junior-engineer-tdd-commit
+      kind: ext:tdd-commit-gate
+      when: post-member
+      target: Junior-Engineer
+      output_key: output
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # Principal-Engineer standards gate: all Mid/Junior work must
+    # pass architecture, clean code, and TDD-cycle review before
+    # the swarm considers the implementation phase complete.
+    # CRITICAL: no bypass — a FAIL here halts the entire swarm.
+    - name: post-member-principal-engineer-standards
+      kind: ext:standards-review-gate
+      when: post-member
+      target: Principal-Engineer
+      output_key: output
+      precedence: CRITICAL
+      failurePolicy: halt
+
+    # QA-Engineer adversarial gate: edge cases, coverage gaps,
+    # and BDD scenario verification. HIGH precedence so a FAIL
+    # triggers revision but the Senior-Engineer can choose to
+    # re-delegate rather than aborting.
+    - name: post-member-qa-engineer-adversarial
+      kind: builtin:result-schema
+      schema_ref: review-verdict-v1
+      when: post-member
+      target: QA-Engineer
+      output_key: output
+      precedence: HIGH
+      failurePolicy: halt
+
+context:
+  chain_prefix: engineer-swarm

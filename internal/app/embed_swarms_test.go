@@ -349,5 +349,82 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 				"technical-analyst",
 			))
 		})
+
+		// Meta-Swarm Coordinator Architecture (May 2026).
+		//
+		// The coordinator was historically the lead of a-team, with a
+		// hard-coded A-Team persona that opened with "You are the lead
+		// of the A-Team swarm" and instructed the model to write a
+		// routing plan to `a-team/{chainID}/task-plan` before doing
+		// anything else. That persona made @coordinator a-team-specific
+		// and caused FlowState session dbcbe384 (52 messages, zero
+		// delegate calls) to inspect stale coord_store entries instead
+		// of dispatching members.
+		//
+		// New design: coordinator is a polymorphic swarm orchestrator
+		// driven entirely by the engine's Swarm Leadership block (see
+		// engine.go::appendSwarmLeadSectionFor). Coordinator leads a
+		// new top-level swarm `meta-swarm` whose members ARE OTHER
+		// SWARMS (a-team, dev-swarm, planning-loop, board-room) — true
+		// three-tier orchestration: user → coordinator → sub-swarm →
+		// members.
+		It("contains the bundled meta-swarm.yml", func() {
+			swarmsDir, err := fs.Sub(app.EmbeddedSwarmsFS(), "swarms")
+			Expect(err).NotTo(HaveOccurred())
+
+			body, err := fs.ReadFile(swarmsDir, "meta-swarm.yml")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("id: meta-swarm"))
+		})
+
+		It("parses meta-swarm.yml with coordinator as lead and sub-swarms as members", func() {
+			swarmsDir, err := fs.Sub(app.EmbeddedSwarmsFS(), "swarms")
+			Expect(err).NotTo(HaveOccurred())
+			body, err := fs.ReadFile(swarmsDir, "meta-swarm.yml")
+			Expect(err).NotTo(HaveOccurred())
+
+			var m swarm.Manifest
+			Expect(yaml.Unmarshal(body, &m)).To(Succeed())
+
+			Expect(m.SchemaVersion).To(Equal(swarm.SchemaVersionV1))
+			Expect(m.ID).To(Equal("meta-swarm"))
+			Expect(m.Lead).To(Equal("coordinator"))
+			// Members are SWARM ids; they must be the four canonical
+			// sub-swarms the coordinator routes between.
+			Expect(m.Members).To(ConsistOf(
+				"a-team",
+				"dev-swarm",
+				"planning-loop",
+				"board-room",
+			))
+			Expect(m.AutoDispatchOnLead).To(BeTrue(),
+				"@coordinator must auto-dispatch meta-swarm so the lead-block renders "+
+					"and the model sees its sub-swarm members instead of running solo")
+			Expect(m.Context.ChainPrefix).To(Equal("meta"))
+			Expect(m.Validate(nil)).To(Succeed())
+		})
+
+		It("bundles a generic coordinator persona with no a-team-specific routing language", func() {
+			// Phase 1 of the meta-swarm rewiring: the bundled
+			// coordinator.md must NOT mention a-team or its
+			// coord_store routing keys (`a-team/{chainID}/task-plan`,
+			// `a-team/{chainID}/final-output`, etc.). The persona now
+			// describes the lead behaviour generically so the same
+			// agent file can lead meta-swarm, a-team (legacy), or any
+			// future swarm without persona surgery.
+			agentsDir, err := fs.Sub(app.EmbeddedAgentsFS(), "agents")
+			Expect(err).NotTo(HaveOccurred())
+
+			body, err := fs.ReadFile(agentsDir, "coordinator.md")
+			Expect(err).NotTo(HaveOccurred())
+
+			persona := string(body)
+			Expect(persona).NotTo(ContainSubstring("A-Team"),
+				"coordinator persona must be generic — A-Team reference belongs in the swarm "+
+					"manifest, not the agent prompt")
+			Expect(persona).NotTo(ContainSubstring("a-team"),
+				"coordinator persona must be generic — a-team reference belongs in the swarm "+
+					"manifest, not the agent prompt")
+		})
 	})
 })
