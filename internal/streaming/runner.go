@@ -6,6 +6,47 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 )
 
+// DispatchHarnessEvent is the exported entry point to the harness /
+// typed-event dispatch logic. Used by internal/dispatch.Dispatcher to
+// route chunks emitted by the session-anchored streamer through the
+// same WS / SSE consumer surface that streaming.Run uses for ephemeral
+// callers. Centralising the dispatch logic here (rather than re-
+// implementing in dispatch.deliverChunkToConsumer) keeps the WS surface
+// observing the same chunk → frame mapping as the live engine driver.
+//
+// Side effects:
+//   - See dispatchHarnessEvent.
+func DispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
+	return dispatchHarnessEvent(c, chunk)
+}
+
+// DeliverDelegationEvent is the exported wrapper for the delegation
+// event dispatch logic. See deliverDelegationEvent for the contract.
+//
+// Side effects:
+//   - See deliverDelegationEvent.
+func DeliverDelegationEvent(c StreamConsumer, info *provider.DelegationInfo) bool {
+	return deliverDelegationEvent(c, info)
+}
+
+// DeliverToolCall is the exported wrapper for the tool-call dispatch
+// logic. See deliverToolCall for the contract.
+//
+// Side effects:
+//   - See deliverToolCall.
+func DeliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
+	deliverToolCall(c, toolCall)
+}
+
+// DeliverToolResult is the exported wrapper for the tool-result dispatch
+// logic. See deliverToolResult for the contract.
+//
+// Side effects:
+//   - See deliverToolResult.
+func DeliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
+	deliverToolResult(c, result)
+}
+
 // Run drives a Streamer into a StreamConsumer, coordinating the streaming lifecycle.
 //
 // Expected:

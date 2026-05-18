@@ -6,6 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -397,3 +400,236 @@ var _ = Describe("WebSocket session handler — Bug C2 channel-close panic safet
 			"bus-hammer publish counter must exceed iteration count to confirm pressure was applied")
 	})
 })
+
+// Phase 4 — Dispatcher Service Unification (May 2026) S1 closure.
+//
+// Pre-fix handleSessionWebSocket calls sessionManager.SendMessage(ctx, …)
+// with `ctx := r.Context()` (websocket.go:128, 265 / 142). A WS client
+// disconnecting mid-stream cancels the request context, which propagates
+// straight into the engine's chunk-loop select — the engine bails out with
+// `{Error: ctx.Err(), Done: true}` and zero accumulated content. The
+// session accumulator then persists an assistant Message whose Content
+// either is empty or carries the literal "context canceled" substring,
+// depending on the in-flight buffer state.
+//
+// Post-fix the WS handler routes through dispatch.Dispatcher.DispatchSessioned,
+// which wraps the engine's ctx with `context.WithoutCancel(ctx)` before
+// driving the streamer. A WS disconnect tears down the writer goroutine
+// but the engine keeps emitting chunks; the accumulator persists the full
+// content. Same pattern commit 51fb416c applied to POST /messages, now
+// centralised at the Dispatcher seam.
+//
+// dripStreamer is the load-bearing fixture: it returns the chunks channel
+// IMMEDIATELY (open chunks pending) and honours ctx.Done() by emitting
+// `{Error: ctx.Err(), Done: true}` — matching engine.go:3774-3776. The
+// pre-existing mockStreamer pre-fills and closes the channel before
+// returning, so it cannot exercise the WS-close-during-emit race.
+var _ = Describe("WS streamer outlives request context", func() {
+	It("preserves full assistant content when the WS client disconnects mid-stream", func() {
+		drip := &dripStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "Hello"},
+				{Content: " "},
+				{Content: "world"},
+				{Content: "!"},
+				{Done: true},
+			},
+			emitInterval: 40 * time.Millisecond,
+		}
+		dripBroker := api.NewSessionBroker()
+		dripMgr := session.NewManager(drip)
+		dripSrv := api.NewServer(
+			drip,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(dripMgr),
+			api.WithSessionBroker(dripBroker),
+		)
+		dripHTTP := httptest.NewServer(dripSrv.Handler())
+		defer dripHTTP.Close()
+
+		sess, err := dripMgr.CreateSession("drip-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		wsURL := "ws" + strings.TrimPrefix(dripHTTP.URL, "http") +
+			"/api/v1/sessions/" + sess.ID + "/ws"
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dialCancel()
+		conn, _, err := websocket.Dial(dialCtx, wsURL, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		payload, err := json.Marshal(map[string]string{"content": "drive a long stream"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(conn.Write(dialCtx, websocket.MessageText, payload)).To(Succeed())
+
+		// Drain at least two content chunks to prove the engine started
+		// streaming, then close the WS abruptly to cancel r.Context().
+		var seen int
+		for seen < 2 {
+			_, raw, readErr := conn.Read(dialCtx)
+			if readErr != nil {
+				break
+			}
+			var decoded map[string]interface{}
+			if jsonErr := json.Unmarshal(raw, &decoded); jsonErr != nil {
+				continue
+			}
+			if c, ok := decoded["content"].(string); ok && c != "" {
+				seen++
+			}
+		}
+		Expect(seen).To(BeNumerically(">=", 2),
+			"the WS must surface at least two content chunks before close so the test exercises an in-flight stream")
+
+		// Close abruptly — pre-fix this cancels r.Context() which
+		// propagates into the engine via SendMessage(ctx, …).
+		_ = conn.CloseNow()
+
+		// Wait for the drip streamer to drain. With emitInterval=40ms and
+		// 5 chunks the total emit time is ~200ms; allow generous headroom
+		// for the broker fan-out goroutine + accumulator persist.
+		Eventually(func() string {
+			snap, snapErr := dripMgr.SnapshotSession(sess.ID)
+			if snapErr != nil {
+				return ""
+			}
+			for i := len(snap.Messages) - 1; i >= 0; i-- {
+				if snap.Messages[i].Role == "assistant" {
+					return snap.Messages[i].Content
+				}
+			}
+			return ""
+		}, 4*time.Second, 50*time.Millisecond).Should(Equal("Hello world!"),
+			"the engine must outlive the WS request context — assistant content must contain every drip chunk, not be truncated by ctx cancellation propagating into SendMessage")
+	})
+
+	It("does not persist 'context canceled' in the assistant message after a mid-stream WS disconnect", func() {
+		drip := &dripStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "alpha"},
+				{Content: "-beta"},
+				{Content: "-gamma"},
+				{Done: true},
+			},
+			emitInterval: 40 * time.Millisecond,
+		}
+		dripBroker := api.NewSessionBroker()
+		dripMgr := session.NewManager(drip)
+		dripSrv := api.NewServer(
+			drip,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(dripMgr),
+			api.WithSessionBroker(dripBroker),
+		)
+		dripHTTP := httptest.NewServer(dripSrv.Handler())
+		defer dripHTTP.Close()
+
+		sess, err := dripMgr.CreateSession("drip-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		wsURL := "ws" + strings.TrimPrefix(dripHTTP.URL, "http") +
+			"/api/v1/sessions/" + sess.ID + "/ws"
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer dialCancel()
+		conn, _, err := websocket.Dial(dialCtx, wsURL, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		payload, err := json.Marshal(map[string]string{"content": "drive"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(conn.Write(dialCtx, websocket.MessageText, payload)).To(Succeed())
+
+		// Read one chunk then close to maximise the in-flight cancel
+		// window — pre-fix the engine bails with ctx.Err() and the
+		// accumulator persists the canceled substring in flushContent.
+		_, _, _ = conn.Read(dialCtx)
+		_ = conn.CloseNow()
+
+		Eventually(func() string {
+			snap, snapErr := dripMgr.SnapshotSession(sess.ID)
+			if snapErr != nil {
+				return ""
+			}
+			for i := len(snap.Messages) - 1; i >= 0; i-- {
+				if snap.Messages[i].Role == "assistant" {
+					return snap.Messages[i].Content
+				}
+			}
+			return ""
+		}, 4*time.Second, 50*time.Millisecond).Should(SatisfyAll(
+			Not(ContainSubstring("context canceled")),
+			Not(ContainSubstring("context.Canceled")),
+			ContainSubstring("alpha"),
+		),
+			"the persisted assistant message must NOT carry the context-cancellation substring — the engine's ctx must be decoupled from r.Context() via context.WithoutCancel at the Dispatcher seam")
+	})
+
+	// Ctx-binding ban — the source-text invariant that closes S1
+	// structurally. The two behavioural specs above pin the runtime
+	// behaviour; this spec pins the implementation so a future change
+	// that re-introduces the r.Context() coupling fails fast. Same shape
+	// as the bannedSymbols handler-thinness spec in
+	// handler_thinness_test.go, but scoped to the WS file and the two
+	// substrings the v6 plan's "verify" step calls out.
+	It("must not pass r.Context() into sessionManager.SendMessage — route through Dispatcher.DispatchSessioned", func() {
+		_, thisFile, _, ok := runtime.Caller(0)
+		Expect(ok).To(BeTrue())
+		websocketPath := filepath.Join(filepath.Dir(thisFile), "websocket.go")
+		data, err := os.ReadFile(websocketPath)
+		Expect(err).NotTo(HaveOccurred())
+		src := string(data)
+		// Two banned substrings carry the pre-fix shape together:
+		//   - `r.Context()` in the handler body lifts the request ctx
+		//     into a `ctx := r.Context()` assignment.
+		//   - `sessionManager.SendMessage(ctx` calls SendMessage with
+		//     that ctx — the propagation path the WithoutCancel wrap
+		//     closes.
+		// Both being present in handleSessionWebSocket's body is the
+		// pre-fix signature; both being absent is the Phase 4 GREEN
+		// invariant.
+		body := readHandlerBodyForTest(websocketPath, "handleSessionWebSocket")
+		Expect(strings.Contains(body, "r.Context()")).To(BeFalse(),
+			"handleSessionWebSocket must not use r.Context() directly — "+
+				"Dispatcher.DispatchSessioned wraps it with context.WithoutCancel at the seam")
+		Expect(strings.Contains(body, "sessionManager.SendMessage(ctx")).To(BeFalse(),
+			"handleSessionWebSocket must not call sessionManager.SendMessage(ctx, …) — "+
+				"route through dispatch.Dispatcher.DispatchSessioned so the engine outlives the WS request (S1 closure)")
+		_ = src // keep src reachable for future invariants without re-reading the file
+	})
+})
+
+// readHandlerBodyForTest is the Ginkgo-flavoured cousin of
+// handler_thinness_test.go::readHandlerBody — same brace-balance scan but
+// callable from an It block (no *testing.T). Extracts the body of the
+// named method by scanning for the "func (s *Server) <name>(" prefix and
+// returning the substring between the opening and matching closing brace.
+func readHandlerBodyForTest(path, funcName string) string {
+	data, err := os.ReadFile(path)
+	Expect(err).NotTo(HaveOccurred())
+	src := string(data)
+	needle := "func (s *Server) " + funcName + "("
+	start := strings.Index(src, needle)
+	Expect(start).To(BeNumerically(">=", 0),
+		"function "+funcName+" not found in "+path)
+	open := strings.Index(src[start:], "{")
+	Expect(open).To(BeNumerically(">=", 0),
+		"no opening brace for "+funcName+" in "+path)
+	open += start
+	depth := 1
+	for i := open + 1; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[open+1 : i]
+			}
+		}
+	}
+	Fail("unbalanced braces for " + funcName + " in " + path)
+	return ""
+}
+

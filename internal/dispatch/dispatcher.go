@@ -402,7 +402,7 @@ func (d *Dispatcher) DispatchEphemeral(
 func (d *Dispatcher) DispatchSessioned(
 	ctx context.Context,
 	req DispatchRequest,
-	_ streaming.StreamConsumer,
+	consumer streaming.StreamConsumer,
 ) (SessionedHandle, error) {
 	if d.sessionManager == nil {
 		return SessionedHandle{}, errors.New("dispatch: sessionManager not configured")
@@ -548,17 +548,19 @@ func (d *Dispatcher) DispatchSessioned(
 		chunks = d.wrapWithSwarmLifecycle(
 			streamCtx, chunks, manifestSnapshot, swarmActive, releaseGateSync,
 		)
-		if d.sessionBroker != nil {
-			go d.sessionBroker.Publish(req.SessionID, chunks)
-		} else {
-			// No broker — drain into a sink so the streamer goroutine
-			// terminates. Matches the pre-Phase-2 handler's nil-broker
-			// fallback (server.go pre-deletion :1244-1248).
-			go func() {
-				for range chunks {
-				}
-			}()
-		}
+		// Phase 4 — Dispatcher Service Unification (May 2026) S1 closure.
+		//
+		// When a consumer is wired (handleSessionWebSocket, Phase 4),
+		// tee chunks to BOTH the broker (live SSE subscribers, if any)
+		// AND the consumer (the WS handler's frame-writer pump). Pre-
+		// Phase-4 the consumer arg was discarded; the WS handler took
+		// chunks directly from sessionManager.SendMessage which kept
+		// r.Context() coupled to the engine. Routing through the
+		// consumer here lets the WS handler keep its existing
+		// out-channel + quit-signal pattern while the streamer's
+		// lifetime is decoupled via context.WithoutCancel inside this
+		// method (load-bearing for S1).
+		d.fanOutSessionedChunks(req.SessionID, chunks, consumer)
 	} else if swarmActive {
 		// Nil chunks channel + swarm active — manager returned cleanly
 		// without driving the streamer. Restore the manifest
@@ -697,6 +699,137 @@ func (d *Dispatcher) wrapWithSwarmLifecycle(
 		}
 	}()
 	return out
+}
+
+// fanOutSessionedChunks routes the post-lifecycle chunks channel to all
+// live subscribers of the sessioned dispatch: the broker (existing SSE
+// path) and the consumer (Phase 4 WS direct tee).
+//
+// Combinations:
+//   - broker non-nil, consumer nil   — broker.Publish in a goroutine
+//     (legacy Phase 2 behaviour).
+//   - broker nil, consumer non-nil   — single goroutine ranges over
+//     chunks and routes each chunk through the consumer interface
+//     (WriteChunk / WriteError / Done). Bare-engine test surfaces and
+//     WS-only deployments take this path.
+//   - broker non-nil, consumer non-nil — single goroutine ranges over
+//     chunks; each chunk fans BOTH to a buffered re-channel feeding
+//     broker.Publish AND to the consumer. The broker re-channel is
+//     buffered (capacity 64) so a slow subscriber cannot back-pressure
+//     the consumer (and vice versa). The goroutine closes the broker
+//     re-channel after src drains so broker.Publish's terminal close
+//     fires under its existing invariants.
+//   - broker nil, consumer nil       — chunks drain to a sink so the
+//     streamer goroutine terminates. Matches the pre-Phase-2 server.go
+//     nil-broker fallback.
+//
+// Why route content chunks through StreamConsumer.WriteChunk for the
+// consumer-only path: WSStreamConsumer's WriteChunk implementation
+// (internal/api/websocket.go) maps the content to a WSChunkMsg with the
+// content field set and delivers it through the out channel, preserving
+// the existing forwardWSChunks shape. Done chunks call consumer.Done()
+// so the WS client receives a final {done: true} frame, mirroring the
+// pre-fix BuildWSChunkMsg behaviour for chunk.Done. Error chunks call
+// consumer.WriteError so the WS surface still distinguishes critical-
+// vs-transient via the existing BuildWSChunkMsg severity gate at the
+// consumer seam.
+//
+// Side effects:
+//   - Spawns one goroutine that consumes src to completion.
+func (d *Dispatcher) fanOutSessionedChunks(
+	sessionID string,
+	src <-chan provider.StreamChunk,
+	consumer streaming.StreamConsumer,
+) {
+	switch {
+	case d.sessionBroker != nil && consumer == nil:
+		go d.sessionBroker.Publish(sessionID, src)
+	case d.sessionBroker == nil && consumer != nil:
+		go d.driveConsumer(src, consumer)
+	case d.sessionBroker != nil && consumer != nil:
+		// Tee: re-channel feeds broker; same goroutine drives consumer.
+		brokerCh := make(chan provider.StreamChunk, 64)
+		go d.sessionBroker.Publish(sessionID, brokerCh)
+		go func() {
+			defer close(brokerCh)
+			for chunk := range src {
+				// Broker first — the broker delivers with a bounded
+				// grace period; the consumer is the WS handler's local
+				// out channel and is essentially non-blocking with a
+				// 128-slot buffer (websocket.go:125).
+				brokerCh <- chunk
+				d.deliverChunkToConsumer(chunk, consumer)
+			}
+		}()
+	default:
+		// No broker, no consumer — drain to sink so the streamer
+		// goroutine terminates. Matches the pre-Phase-2 server.go
+		// nil-broker fallback (server.go pre-deletion :1244-1248).
+		go func() {
+			for range src {
+			}
+		}()
+	}
+}
+
+// driveConsumer ranges over src and delivers each chunk through the
+// streaming.StreamConsumer interface. Pulled out for symmetry with the
+// broker+consumer tee path and to keep fanOutSessionedChunks readable.
+//
+// Side effects:
+//   - Reads src to completion.
+//   - Calls consumer.WriteChunk / WriteError / Done for each chunk.
+func (d *Dispatcher) driveConsumer(src <-chan provider.StreamChunk, consumer streaming.StreamConsumer) {
+	for chunk := range src {
+		d.deliverChunkToConsumer(chunk, consumer)
+	}
+}
+
+// deliverChunkToConsumer routes a single chunk through the
+// StreamConsumer surface AND the optional consumer interfaces
+// (DelegationConsumer, ToolCallConsumer, ToolResultConsumer,
+// HarnessEventConsumer, EventConsumer). The dispatch order mirrors
+// streaming.Run (internal/streaming/runner.go:36-55) so the WS surface
+// observes the same chunk → frame mapping as the live engine driver
+// does. Pre-Phase-4 the WS handler's BuildWSChunkMsg surfaced these
+// signals from the chunk itself; centralising the dispatch here lets
+// the WS handler keep its existing out-channel pump without re-
+// implementing every chunk-type case.
+//
+// Side effects:
+//   - One or more Write* calls on consumer depending on chunk shape.
+func (d *Dispatcher) deliverChunkToConsumer(chunk provider.StreamChunk, consumer streaming.StreamConsumer) {
+	if chunk.Error != nil {
+		consumer.WriteError(chunk.Error)
+		// Errors do NOT short-circuit the rest of the dispatch — a
+		// chunk can legally carry Error + Done (engine.go:3796 builds
+		// exactly that shape on ctx cancel). Falling through preserves
+		// the Done signal so the WS client receives a terminal frame.
+	}
+	if streaming.DispatchHarnessEvent(consumer, chunk) {
+		// Harness / typed event chunks deliberately do NOT emit a
+		// content frame even when chunk.Content is non-empty — see
+		// streaming.IsControlEvent for the rationale (structured
+		// metadata vs natural-language assistant text).
+		if chunk.Done {
+			consumer.Done()
+		}
+		return
+	}
+	if streaming.DeliverDelegationEvent(consumer, chunk.DelegationInfo) {
+		if chunk.Done {
+			consumer.Done()
+		}
+		return
+	}
+	streaming.DeliverToolCall(consumer, chunk.ToolCall)
+	streaming.DeliverToolResult(consumer, chunk.ToolResult)
+	if chunk.Content != "" {
+		_ = consumer.WriteChunk(chunk.Content)
+	}
+	if chunk.Done {
+		consumer.Done()
+	}
 }
 
 // resolve picks the target agent or swarm. ScanMentions=true scans
