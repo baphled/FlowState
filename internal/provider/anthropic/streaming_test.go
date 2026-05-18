@@ -2,8 +2,13 @@ package anthropic
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"time"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
 	. "github.com/onsi/ginkgo/v2"
@@ -716,5 +721,105 @@ var _ = Describe("streamEventHandler", func() {
 			Expect(sent).To(BeTrue())
 			Expect(<-ch).To(Equal(provider.StreamChunk{Content: "hello"}))
 		})
+	})
+})
+
+// Bug: the Anthropic SDK's stream.Next() parks on a hung HTTP body
+// read with no read deadline configured. The May 2026 mid-thinking-
+// halt incident captured this in a 50s live SSE probe: 103 thinking
+// chunks then HALT with no [DONE]. The load-bearing fix is the
+// engine's idle-stream watchdog (engineStreamIdleTimeout = 60s);
+// this provider-level wall-clock cap is the defence-in-depth backstop
+// that lets stream.Next() return an error rather than block forever.
+//
+// The SDK threads option.WithRequestTimeout through to
+// context.WithTimeout on the per-attempt ctx, which propagates into
+// the body read. We pin that wiring by running Stream against a
+// httptest server that begins an SSE handshake then blocks forever
+// on the body, with the timeout overridden to a fast 100ms.
+var _ = Describe("Anthropic Stream wall-clock timeout", func() {
+	It("returns a Done chunk with an error when the body read parks past the timeout", func() {
+		// hangServer accepts the request, writes 200 + SSE headers,
+		// flushes them so the SDK considers the handshake complete,
+		// then blocks on a channel that never closes during the
+		// test's lifetime. The handler returns when the client
+		// disconnects (ctx cancel from WithRequestTimeout).
+		hangServer := httptest.NewServer(http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.WriteHeader(http.StatusOK)
+				flusher, ok := w.(http.Flusher)
+				if ok {
+					// Send a minimal message_start so the SDK
+					// commits to streaming-body mode. Without this
+					// some SDK versions retry on a zero-byte body.
+					fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-5-sonnet-20241022\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+					flusher.Flush()
+				}
+				// Park until the client disconnects (the SDK's
+				// WithRequestTimeout will cancel the request ctx,
+				// which disconnects the body read and unblocks
+				// r.Context().Done() here).
+				<-r.Context().Done()
+			},
+		))
+		defer hangServer.Close()
+
+		p, err := NewWithOptions(
+			"sk-ant-test-key",
+			option.WithBaseURL(hangServer.URL),
+			option.WithMaxRetries(0),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		p.SetStreamRequestTimeoutForTest(100 * time.Millisecond)
+
+		req := provider.ChatRequest{
+			Model: "claude-3-5-sonnet-20241022",
+			Messages: []provider.Message{
+				{Role: "user", Content: "hello"},
+			},
+		}
+
+		ch, err := p.Stream(context.Background(), req)
+		Expect(err).NotTo(HaveOccurred())
+
+		// The wall-clock cap should unblock the parked body read
+		// within ~100ms; allow generous slack for goroutine
+		// scheduling. Channel drain semantics: streamMessages
+		// closes ch on any terminal condition (Done chunk, error,
+		// or ctx cancel), so we accept either a Done chunk or a
+		// clean close as proof the body read unparked.
+		var sawTerminal bool
+		Eventually(func() bool {
+			select {
+			case chunk, ok := <-ch:
+				if !ok {
+					sawTerminal = true
+					return true
+				}
+				if chunk.Done || chunk.Error != nil {
+					sawTerminal = true
+					return true
+				}
+				return false
+			default:
+				return false
+			}
+		}, "3s", "10ms").Should(BeTrue(),
+			"expected the SDK's per-attempt wall-clock cap to unblock the parked body read within the override timeout + scheduling slack")
+		Expect(sawTerminal).To(BeTrue())
+	})
+
+	It("uses a sane production default", func() {
+		// Pin the production default — long enough that legitimate
+		// Anthropic extended-thinking responses don't trip it,
+		// short enough that a truly stuck connection surfaces
+		// within a single user-perceptible failure window.
+		Expect(DefaultStreamRequestTimeoutForTest()).To(Equal(10 * time.Minute),
+			"defaultStreamRequestTimeout pins the production wall-clock cap; "+
+				"changing it requires reviewing the trade-off between "+
+				"legitimate long-thinking allowances and stuck-connection "+
+				"detection windows")
 	})
 })
