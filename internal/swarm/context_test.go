@@ -177,6 +177,88 @@ var _ = Describe("swarm.Context", func() {
 
 			Expect(kind).To(Equal(swarm.KindNone))
 		})
+
+		// The auto-dispatch-on-lead branch exists so swarms whose lead is
+		// an agent (e.g. `@coordinator` for the a-team swarm) can be
+		// invoked by typing the lead's name and still have the swarm
+		// runtime install — the Team-Lead regression on session
+		// b62472a2-fa39-47a7-b049-e60f264260fe (184 messages, 173 bash
+		// calls, zero delegate calls) proved the lead's prompt block
+		// silently no-ops when KindAgent returns and the engine receives
+		// no swarmCtx.
+		Context("when an agent leads a swarm with AutoDispatchOnLead=true", func() {
+			It("resolves to KindSwarm with that swarm's manifest", func() {
+				reg := swarm.NewRegistry()
+				reg.Register(&swarm.Manifest{
+					ID:                 "a-team",
+					Lead:               "coordinator",
+					Members:            []string{"researcher", "writer"},
+					AutoDispatchOnLead: true,
+				})
+				// "coordinator" is also a registered agent (the lead) —
+				// auto-dispatch must beat the KindAgent verdict that the
+				// hasAgent hit would otherwise produce.
+				hasAgent := func(id string) bool { return id == "coordinator" }
+
+				kind, manifest := swarm.Resolve("coordinator", hasAgent, reg)
+
+				Expect(kind).To(Equal(swarm.KindSwarm))
+				Expect(manifest).NotTo(BeNil())
+				Expect(manifest.ID).To(Equal("a-team"))
+				Expect(manifest.Lead).To(Equal("coordinator"))
+			})
+		})
+
+		Context("when an agent leads a swarm with AutoDispatchOnLead=false", func() {
+			It("preserves the KindAgent verdict for standalone invocation", func() {
+				// Mirrors engineer-swarm: Senior-Engineer is the lead but
+				// is also routinely invoked standalone for ad-hoc work
+				// (sessions show 422/254/145-msg standalone runs). The
+				// opt-out default must keep @Senior-Engineer resolving to
+				// the agent, not the swarm.
+				reg := swarm.NewRegistry()
+				reg.Register(&swarm.Manifest{
+					ID:                 "engineer-swarm",
+					Lead:               "Senior-Engineer",
+					Members:            []string{"Mid-Engineer", "Junior-Engineer"},
+					AutoDispatchOnLead: false,
+				})
+				hasAgent := func(id string) bool { return id == "Senior-Engineer" }
+
+				kind, manifest := swarm.Resolve("Senior-Engineer", hasAgent, reg)
+
+				Expect(kind).To(Equal(swarm.KindAgent))
+				Expect(manifest).To(BeNil())
+			})
+		})
+
+		Context("when an agent leads multiple swarms that all have AutoDispatchOnLead=true", func() {
+			It("returns KindAgent because the auto-dispatch target is ambiguous", func() {
+				// Defensive case: today no agent leads more than one
+				// swarm, but the resolver must fall back to KindAgent
+				// when more than one auto-dispatch candidate exists so
+				// the user is forced to invoke the desired swarm by id.
+				reg := swarm.NewRegistry()
+				reg.Register(&swarm.Manifest{
+					ID:                 "swarm-one",
+					Lead:               "shared-lead",
+					Members:            []string{"a"},
+					AutoDispatchOnLead: true,
+				})
+				reg.Register(&swarm.Manifest{
+					ID:                 "swarm-two",
+					Lead:               "shared-lead",
+					Members:            []string{"b"},
+					AutoDispatchOnLead: true,
+				})
+				hasAgent := func(id string) bool { return id == "shared-lead" }
+
+				kind, manifest := swarm.Resolve("shared-lead", hasAgent, reg)
+
+				Expect(kind).To(Equal(swarm.KindAgent))
+				Expect(manifest).To(BeNil())
+			})
+		})
 	})
 
 	Describe("ResolveTarget", func() {

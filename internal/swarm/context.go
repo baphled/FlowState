@@ -268,6 +268,19 @@ func Resolve(id string, hasAgent HasAgent, swarmReg *Registry) (Kind, *Manifest)
 		return KindNone, nil
 	}
 	if hasAgent != nil && hasAgent(id) {
+		// Auto-dispatch override: when the matched agent is also the
+		// sole lead of a swarm that opted into AutoDispatchOnLead, the
+		// resolver promotes the verdict to KindSwarm so the runner
+		// installs swarmCtx and the lead's engine renders its swarm-
+		// leadership block. Multi-swarm collisions (more than one
+		// auto-dispatch candidate) leave the verdict as KindAgent —
+		// see Registry.AutoDispatchSwarmFor for the disambiguation
+		// rule. Zero matches falls through to today's behaviour.
+		if swarmReg != nil {
+			if m, ok := swarmReg.AutoDispatchSwarmFor(id); ok {
+				return KindSwarm, m
+			}
+		}
 		return KindAgent, nil
 	}
 	if swarmReg != nil {

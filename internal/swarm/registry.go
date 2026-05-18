@@ -111,6 +111,59 @@ func (r *Registry) List() []*Manifest {
 	return out
 }
 
+// AutoDispatchSwarmFor returns the unique swarm whose Lead matches
+// agentID AND whose AutoDispatchOnLead flag is true. The resolver
+// (swarm.Resolve) consults this helper before returning KindAgent for
+// an id that matches both the agent registry and a swarm's lead so a
+// `@<lead-agent>` invocation can auto-dispatch the swarm.
+//
+// Returns (nil, false) when:
+//   - the registry is empty, or
+//   - no swarm names agentID as its Lead with the flag set, or
+//   - more than one swarm matches (ambiguous; the resolver falls back
+//     to KindAgent so the user is forced to invoke a specific swarm
+//     by id).
+//
+// Expected:
+//   - agentID is a candidate agent identifier; empty short-circuits to
+//     (nil, false) so callers can pass user input unfiltered.
+//
+// Returns:
+//   - The matching *Manifest and true when exactly one auto-dispatch
+//     candidate exists for agentID.
+//   - nil and false otherwise.
+//
+// Side effects:
+//   - None (read-only access under the registry's RLock).
+func (r *Registry) AutoDispatchSwarmFor(agentID string) (*Manifest, bool) {
+	if r == nil || agentID == "" {
+		return nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var match *Manifest
+	for _, m := range r.manifests {
+		if m == nil || !m.AutoDispatchOnLead {
+			continue
+		}
+		if m.Lead != agentID {
+			continue
+		}
+		if match != nil {
+			// Multi-swarm collision: more than one auto-dispatch
+			// candidate exists for the same lead. Bail out so the
+			// resolver returns KindAgent and the user is forced to
+			// pick the swarm explicitly by id.
+			return nil, false
+		}
+		match = m
+	}
+	if match == nil {
+		return nil, false
+	}
+	return match, true
+}
+
 // AgentRegistry is the minimal surface NewRegistryFromDir needs from
 // the agent registry to validate swarm manifests. Defining the
 // interface in this package (rather than importing

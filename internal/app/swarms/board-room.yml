@@ -19,6 +19,12 @@ description: >
 # financial-analyst.md, technical-analyst.md).
 lead: chair
 
+# Auto-dispatch this swarm when the user invokes `@chair` by name.
+# Without this, `@chair` resolves to KindAgent and the lead's swarm-
+# leadership prompt block silently no-ops — see internal/swarm/
+# registry.go::AutoDispatchSwarmFor for the resolver rule.
+auto_dispatch_on_lead: true
+
 members:
   - bull-analyst
   - bear-analyst
