@@ -410,7 +410,7 @@ func (m *MultiRunner) Run(ctx context.Context, gate GateSpec, args GateArgs) err
 //   - Reads at most one coord-store key per declared input (multi-key
 //     mode) or one key total (single-key mode). No writes.
 func gateInputFromArgs(gate GateSpec, args GateArgs) (GateInput, error) {
-	in := GateInput{MemberID: args.MemberID}
+	in := GateInput{MemberID: args.MemberID, SwarmID: args.SwarmID}
 	if args.CoordStore == nil {
 		return in, nil
 	}
@@ -439,16 +439,27 @@ func gateInputFromArgs(gate GateSpec, args GateArgs) (GateInput, error) {
 // objects when the upstream agent emitted JSON, plain strings when it
 // emitted prose.
 //
+// Missing-key handling — a coord-store ErrKeyNotFound on a declared
+// input is NOT a hard composition failure. The composer writes a JSON
+// `null` for that key and lets the dispatched gate decide how to handle
+// the absent upstream output (per its own failure_policy). The previous
+// fail-fast behaviour surfaced the failure as an opaque *GateError with
+// the gate-name and swarm-id slots stripped at the wrap site (the
+// 2026-05-18 `gate "" ... in swarm ""` report). Other coord-store
+// errors (IO faults, contract violations) still raise a typed *GateError
+// so a genuinely broken store does not silently degrade.
+//
 // Expected:
 //   - gate.Kind has the "ext:" prefix; the lookup trims it to find the
 //     registered InputSpec slice.
 //   - args.CoordStore is non-nil.
 //
 // Returns:
-//   - (jsonBytes, nil) on success.
+//   - (jsonBytes, nil) on success — the bytes are GUARANTEED to be
+//     valid JSON regardless of the per-key value shape.
 //   - (nil, nil) when the gate has no inputs declaration.
-//   - (nil, *GateError) on a missing declared key or a coord-store
-//     read failure.
+//   - (nil, *GateError) on a non-ErrKeyNotFound coord-store error or a
+//     marshal failure.
 //
 // Side effects:
 //   - Calls args.CoordStore.Get once per declared input.
@@ -467,6 +478,14 @@ func composeMultiKeyPayload(gate GateSpec, args GateArgs) ([]byte, error) {
 		key := joinKey(args.ChainPrefix, member, spec.OutputKey)
 		raw, err := args.CoordStore.Get(key)
 		if err != nil {
+			if errors.Is(err, coordination.ErrKeyNotFound) {
+				// Permissive missing-key path — embed JSON null and let
+				// the gate decide. The composer's contract is "produce
+				// valid JSON"; the gate's contract is "decide pass/fail
+				// from the payload it receives".
+				composed[spec.Name] = json.RawMessage("null")
+				continue
+			}
 			return nil, &GateError{
 				GateName: gate.Name,
 				GateKind: gate.Kind,
@@ -723,8 +742,14 @@ func SwarmGatesFor(specs []GateSpec, when string) []GateSpec {
 // DispatchExt. The shape is intentionally narrow — keep it close to
 // the wire-shape ExtGateRequest exposes so the dispatch switch is a
 // straight projection rather than a translation.
+//
+// SwarmID is included so the ext:* arm can thread it onto the wrapped
+// *GateError DispatchExt synthesises; without it the formatted message
+// renders `swarm ""` and operators cannot correlate the failure with a
+// swarm-run (the 2026-05-18 user report shape).
 type GateInput struct {
 	MemberID string
+	SwarmID  string
 	Payload  []byte
 	Policy   map[string]any
 }
@@ -766,6 +791,8 @@ func RunGate(ctx context.Context, spec GateSpec, in GateInput) error {
 		return runBuiltinGate(ctx, spec, in)
 	case strings.HasPrefix(spec.Kind, gateKindExtPrefix):
 		return DispatchExt(ctx, spec.Kind, ExtGateRequest{
+			GateName: spec.Name,
+			SwarmID:  in.SwarmID,
 			MemberID: in.MemberID,
 			When:     spec.When,
 			Payload:  in.Payload,

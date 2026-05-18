@@ -57,6 +57,52 @@ var _ = Describe("ExtGateRunner registry", func() {
 		Expect(gateErr.Reason).To(Equal("blocked"))
 	})
 
+	// Regression — the 2026-05-18 user report surfaced a relevance-gate
+	// failure formatted as `gate "" (ext:relevance-gate post-member
+	// researcher) failed for member "researcher" in swarm "":
+	// payload is not valid JSON`. The empty `gate ""` and `swarm ""`
+	// slots show that DispatchExt was constructing *GateError without
+	// the GateName and SwarmID fields populated even though the calling
+	// dispatcher (MultiRunner.Run) had both in scope. The wrapper MUST
+	// thread the caller-supplied gate name and swarm id onto the typed
+	// error so log readers and the CLI failure surface can locate the
+	// failing gate without parsing the descriptor.
+	It("DispatchExt populates GateName and SwarmID from the request when wrapping pass:false into a *GateError", func() {
+		Expect(swarm.RegisterExtGateFunc("blocker", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+			return swarm.ExtGateResponse{Pass: false, Reason: "blocked"}, nil
+		})).To(Succeed())
+
+		err := swarm.DispatchExt(context.Background(), "ext:blocker", swarm.ExtGateRequest{
+			GateName: "relevance", SwarmID: "a-team", MemberID: "researcher", When: "post-member",
+		})
+
+		var gateErr *swarm.GateError
+		Expect(errors.As(err, &gateErr)).To(BeTrue())
+		Expect(gateErr.GateName).To(Equal("relevance"),
+			"GateError.GateName MUST be threaded from ExtGateRequest so the formatted error names the failing gate")
+		Expect(gateErr.SwarmID).To(Equal("a-team"),
+			"GateError.SwarmID MUST be threaded from ExtGateRequest so the formatted error names the failing swarm")
+		Expect(gateErr.Error()).To(ContainSubstring(`gate "relevance"`))
+		Expect(gateErr.Error()).To(ContainSubstring(`swarm "a-team"`))
+	})
+
+	It("DispatchExt populates GateName and SwarmID on runner-error wraps too", func() {
+		boom := errors.New("subprocess crashed")
+		Expect(swarm.RegisterExtGateFunc("crasher2", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+			return swarm.ExtGateResponse{}, boom
+		})).To(Succeed())
+
+		err := swarm.DispatchExt(context.Background(), "ext:crasher2", swarm.ExtGateRequest{
+			GateName: "relevance", SwarmID: "a-team", MemberID: "researcher", When: "post-member",
+		})
+
+		var gateErr *swarm.GateError
+		Expect(errors.As(err, &gateErr)).To(BeTrue())
+		Expect(gateErr.GateName).To(Equal("relevance"))
+		Expect(gateErr.SwarmID).To(Equal("a-team"))
+		Expect(gateErr.Cause).To(Equal(boom))
+	})
+
 	It("DispatchExt routes runner errors to *GateError.Cause", func() {
 		boom := errors.New("subprocess crashed")
 		Expect(swarm.RegisterExtGateFunc("crasher", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
