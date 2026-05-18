@@ -2236,21 +2236,30 @@ export const useChatStore = defineStore('chat', {
     // the cause; if no chunks arrived at all the in-flight assistant bubble
     // (if any) stays in-place but is no longer locked.
     //
-    // sessionId is the session whose SSE armed the watchdog. When provided
-    // (every PR-2 caller does), reconcile so a stream that completed
-    // server-side without [DONE] (proxy hang, network glitch) is recovered:
-    // the bubble updates from the partial chunk to the canonical backend
-    // state without the user having to reload. Without the sessionId
-    // argument, the call site is legacy and reconcile is skipped — the
-    // gate-clearing behaviour remains unchanged.
+    // sessionId is the session whose SSE armed the watchdog. Pre-May-2026
+    // this handler called reconcileFromBackend(sessionId) on every trip to
+    // mask "stream completed server-side without [DONE]" failures by
+    // refetching the canonical session state. That masked the underlying
+    // engine-hang bug (May 2026 mid-thinking-halt: engine parked on
+    // <-providerChunks with no Done emitted). The engine now emits a
+    // synthetic Done inside 60s via engineStreamIdleTimeout
+    // (internal/engine/engine.go), so a watchdog trip on the frontend
+    // means either:
+    //
+    //   1. A genuinely dead network (rare; the user reloads anyway), OR
+    //   2. A regression in the engine watchdog (we want this to surface
+    //      loudly, not be masked by a silent backend refetch).
+    //
+    // Keeping the trip log + the error footer + the gate clear lets a
+    // future regression announce itself. The reconcile call was removed
+    // because it papered over the bug class the engine watchdog now
+    // closes; see commits 3408c793 (engine watchdog) and the chat plan
+    // in the FlowState vault.
     handleStreamStall(sessionId?: string): void {
-      this.error = 'Response stalled — the stream produced no activity for 60 seconds. You can send another message.'
+      this.error = 'Response stalled — the stream produced no activity for 65 seconds. You can send another message.'
       // Per-session state (Slice A) — clear flags on the session that
       // armed the watchdog. Pre-slice this cleared the global flag.
       this.setSessionStreaming(sessionId ?? this.currentSessionId, { isLoading: false, isStreaming: false })
-      if (sessionId) {
-        void this.reconcileFromBackend(sessionId)
-      }
     },
 
     applyDelegationEvent(payload: string): void {

@@ -1858,10 +1858,11 @@ describe('chatStore - isLoading watchdog (60s fail-safe)', () => {
   // silently dropped by the gate. Reload is the user's only escape.
   //
   // Contract: a watchdog observes the most recent streaming activity. When
-  // sendMessage is in flight, the watchdog clears isLoading after 60s of
-  // no observed SSE activity, sets a surfacing error, and unwedges the UI.
+  // sendMessage is in flight, the watchdog clears isLoading after 65s of
+  // no observed SSE activity (60s engine idle-watchdog threshold +
+  // 5s buffer), sets a surfacing error, and unwedges the UI.
 
-  it('clears isLoading after 60s of no SSE activity and surfaces a stall error', async () => {
+  it('clears isLoading after 65s of no SSE activity and surfaces a stall error', async () => {
     vi.useFakeTimers()
     try {
       const store = useChatStore()
@@ -1880,8 +1881,9 @@ describe('chatStore - isLoading watchdog (60s fail-safe)', () => {
       await Promise.resolve()
       expect(store.isLoading).toBe(true)
 
-      // Advance 60s with no SSE activity at all.
-      await vi.advanceTimersByTimeAsync(60_000)
+      // Advance 65s with no SSE activity at all — matches the new
+      // unified per-phase threshold (engine idle-watchdog + buffer).
+      await vi.advanceTimersByTimeAsync(65_000)
 
       expect(store.isLoading).toBe(false)
       expect(store.error).toBeTruthy()
@@ -2422,7 +2424,7 @@ describe('chatStore - sendMessage stream-end reconciles with backend (replaces o
   })
 })
 
-describe('chatStore - watchdog trip recovers via reconcile (stall recovery)', () => {
+describe('chatStore - watchdog trip clears gate without masked reconcile (engine-watchdog era)', () => {
   beforeEach(() => {
     installLocalStorageStub()
     vi.clearAllMocks()
@@ -2430,13 +2432,25 @@ describe('chatStore - watchdog trip recovers via reconcile (stall recovery)', ()
     FakeEventSource.instances.length = 0
   })
 
-  // The compounding bug: a stalled SSE (proxy hang or network glitch with
-  // server-side completion) tripped the watchdog at 60s, but pre-fix the
-  // watchdog only cleared isLoading/isStreaming — it never refetched. The
-  // user was left looking at the partial chunk frozen on screen and had to
-  // reload to see the actual completed response.
+  // May 2026 mid-thinking-halt fix: the engine's idle-stream watchdog
+  // (internal/engine/engine.go: engineStreamIdleTimeout = 60s) now emits
+  // a synthetic Done within 60s of provider-stream silence, so a frontend
+  // watchdog trip is no longer a routine "stream completed without [DONE]"
+  // signal. It now means a genuine network failure or a regression in the
+  // engine watchdog — both of which we want to surface to the user as
+  // an error rather than mask with a silent refetch.
+  //
+  // Pre-fix behaviour (NOW REMOVED): handleStreamStall fire-and-forgot
+  // reconcileFromBackend(sessionId) on every trip, papering over the
+  // engine hang by silently refetching the canonical session state. This
+  // hid the underlying engine-park-on-providerChunks bug for months and
+  // produced the "after refresh it polls for changes" user complaint.
+  //
+  // New contract: the stall handler clears the gate, surfaces the error
+  // footer, and does NOT touch the network. Regressions in the engine
+  // watchdog will announce themselves loudly via the error message.
 
-  it('reconciles with the backend after the watchdog trips so the partial bubble updates to canonical', async () => {
+  it('clears isStreaming/isLoading and surfaces the error footer but does NOT reconcile after a stall trip', async () => {
     vi.useFakeTimers()
     try {
       const store = useChatStore()
@@ -2448,7 +2462,11 @@ describe('chatStore - watchdog trip recovers via reconcile (stall recovery)', ()
       vi.mocked(sendSessionMessage).mockImplementationOnce(
         () => new Promise<any>((resolve) => { resolveSend = resolve }),
       )
-      // Backend completed; SSE just stopped delivering.
+
+      // The fetchSessionMessages mock is the canonical reconcile probe:
+      // pre-fix the watchdog called reconcileFromBackend which invoked
+      // this. Post-fix it MUST NOT be called from the stall path. We
+      // assert .not.toHaveBeenCalled() below to pin that contract.
       vi.mocked(fetchSessionMessages).mockResolvedValue([
         { id: 'srv-u1', role: 'user', content: 'long task', timestamp: '' },
         { id: 'srv-a1', role: 'assistant', content: 'completed despite stall', timestamp: '' },
@@ -2461,26 +2479,32 @@ describe('chatStore - watchdog trip recovers via reconcile (stall recovery)', ()
       // Some content arrives, then the stream stalls completely.
       es.fire('message', { content: 'partial frozen' })
 
-      // 60s of zero activity — watchdog must trip.
-      await vi.advanceTimersByTimeAsync(60_000)
+      // 65s of zero activity — the new (engine-watchdog-aligned) per-phase
+      // threshold trips at 65s. Pre-fix this was 60s but the engine now
+      // emits a synthetic Done by 60s, so this client-side trip only
+      // fires when the engine itself is unreachable.
+      await vi.advanceTimersByTimeAsync(65_000)
 
       expect(store.isStreaming).toBe(false)
       expect(store.isLoading).toBe(false)
+      expect(String(store.error)).toMatch(/(stall|stuck|timeout|no response|activity)/i)
 
-      // The watchdog fires handleStreamStall(sessionId) which fire-and-forgets
-      // reconcileFromBackend. Flush the queued microtask chain so the
-      // mocked fetchSessionMessages resolves and updates this.messages.
-      // advanceTimersByTimeAsync already runs queued microtasks, so a few
-      // explicit awaits here are sufficient to settle the await chain
-      // inside reconcileFromBackend.
+      // Flush any queued microtasks so a stray reconcile (if the bug
+      // regresses) would have a chance to land.
       for (let i = 0; i < 8; i++) {
         await vi.advanceTimersByTimeAsync(0)
       }
 
-      // The user-observable outcome: the bubble now reflects the canonical
-      // backend state, not the frozen partial.
-      const assistant = store.messages.find((m) => m.id === 'srv-a1')
-      expect(assistant?.content).toBe('completed despite stall')
+      // The load-bearing assertion: the stall trip does NOT call
+      // fetchSessionMessages. The masked-reconcile recovery has been
+      // removed — the engine's idle-stream watchdog now owns the
+      // "stream stopped emitting" failure mode end-to-end.
+      expect(vi.mocked(fetchSessionMessages)).not.toHaveBeenCalled()
+
+      // The partial bubble is left in place but the gate is open.
+      // The user can send another message; if the engine watchdog
+      // somehow regressed the error footer surfaces loudly.
+      expect(store.error).toBeTruthy()
 
       // Tidy.
       resolveSend({ id: 'session-1', agentId: 'agent-1', messages: [], messageCount: 0, createdAt: '', updatedAt: '' })
@@ -5490,9 +5514,12 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
       // target A's stream, not B's — otherwise A's true stall is masked
       // and B's active stream is interrupted by a spurious stall trip.
       //
-      // We instrument the test by stubbing fetchSessionMessages to record
-      // which session reconcileFromBackend is called for; handleStreamStall
-      // calls reconcile on the session whose watchdog tripped.
+      // Post-May-2026: handleStreamStall no longer calls reconcileFromBackend
+      // (the masking refetch was removed; the engine's idle-stream watchdog
+      // owns that failure mode). The observable proxy for "this session's
+      // watchdog tripped" is therefore the per-session sessionStreaming[id]
+      // state — handleStreamStall clears the flags for the tripped session
+      // only. We pin the routing by asserting which session's flags clear.
       vi.useFakeTimers()
       try {
         const store = useChatStore()
@@ -5523,18 +5550,17 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
         // Both streams are armed (one watchdog per FakeEventSource opened).
         expect(FakeEventSource.instances.length).toBe(2)
 
-        // Track which sessions reconcileFromBackend pulls history for —
-        // handleStreamStall fires reconcile for the session whose watchdog
-        // tripped. We will assert on this list below.
-        const reconciledSessions: string[] = []
-        vi.mocked(fetchSessionMessages).mockImplementation(async (sid: string) => {
-          reconciledSessions.push(sid)
-          return []
-        })
+        // Snapshot: both sessions are mid-send — sendMessage sets
+        // isLoading=true before the SSE stream arms (isStreaming starts
+        // false and only flips true when chunks arrive). We pin which
+        // session's flags get cleared by the trip.
+        expect(store.sessionStreaming['session-A']?.isLoading).toBe(true)
+        expect(store.sessionStreaming['session-B']?.isLoading).toBe(true)
 
         // 30s passes — no stall yet on either session.
         await vi.advanceTimersByTimeAsync(30_000)
-        expect(reconciledSessions).toEqual([])
+        expect(store.sessionStreaming['session-A']?.isLoading).toBe(true)
+        expect(store.sessionStreaming['session-B']?.isLoading).toBe(true)
 
         // A's stream produces a chunk. The C-3 guard would normally drop
         // this at the chunk handler since currentSessionId !== A; we
@@ -5542,20 +5568,24 @@ describe('chatStore - per-session SSE singleton (Slice B)', () => {
         // watchdog re-arm MUST target A (the chunk's session), not B.
         store.applyContentEvent(JSON.stringify({ content: 'late from A' }), 'session-A')
 
-        // 35s further (total 65s on the original watchdog arms for both
-        // sessions). Pre-fix: A's chunk re-armed B's watchdog, so B's
-        // trip is delayed past the 65s mark and reconciliation fires
-        // against A (the bug — A is "active" but its chunk activity was
-        // mis-attributed). Post-fix: A's watchdog was re-armed by A's
-        // chunk; only B's original 60s timer fires, reconciling B.
-        await vi.advanceTimersByTimeAsync(35_000)
-        // Flush microtasks so the reconcile's awaited fetch lands.
+        // 40s further (total 70s on the original watchdog arms for both
+        // sessions, which sits past the 65s threshold). Pre-fix: A's chunk
+        // re-armed B's watchdog, so B's trip was delayed and A's appeared
+        // to trip (the bug — A's chunk activity was mis-attributed).
+        // Post-fix: A's watchdog was re-armed by A's chunk; only B's
+        // original 65s timer fires, clearing B's per-session flags only.
+        await vi.advanceTimersByTimeAsync(40_000)
         await Promise.resolve()
         await Promise.resolve()
 
         // Exactly one stall trip fired — for the session whose watchdog
-        // was NOT re-armed (B). A's was re-armed by its own chunk.
-        expect(reconciledSessions).toEqual(['session-B'])
+        // was NOT re-armed (B). A's was re-armed by its own chunk and is
+        // still mid-stream from the store's perspective. This is the
+        // load-bearing assertion of M7 post-May-2026: the per-session
+        // flag transition pins the watchdog routing without depending
+        // on the masked reconcile call that has been removed.
+        expect(store.sessionStreaming['session-B']?.isLoading).toBe(false)
+        expect(store.sessionStreaming['session-A']?.isLoading).toBe(true)
 
         // Tidy.
         resolveSendA({ id: 'session-A', agentId: 'agent-1', messages: [], messageCount: 0, status: 'active', depth: 0, isStreaming: false, createdAt: '', updatedAt: '' })
