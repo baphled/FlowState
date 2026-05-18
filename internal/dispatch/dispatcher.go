@@ -20,13 +20,17 @@
 //     on stream completion, preserving the async-POST contract from
 //     commit e4bf9632.
 //
-// Phase 1 ships DispatchEphemeral fully wired and leaves DispatchSessioned
-// as a stub; Phase 2 migrates /messages.
+// Phase 1 shipped DispatchEphemeral fully wired with DispatchSessioned
+// as a stub; Phase 2 migrated /messages onto DispatchSessioned and
+// deleted the parallel resolve helpers; Phase 3 (this commit) folds the
+// swarm lifecycle into a per-session handshake gate, closing the back-
+// to-back POST race surface (S2 in the v6 codebase audit).
 package dispatch
 
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/provider"
@@ -126,13 +130,32 @@ type SessionBroker interface {
 // lifecycle. Wiring is constructor-injected; nil-tolerance is per-method
 // because tests for the ephemeral path do not need the session manager
 // and vice versa.
+//
+// sessionLifecycleGates is the per-session handshake (Phase 3 of the v6
+// plan) that closes the back-to-back POST race surface (S2). The map's
+// values are buffered channels (size 1) used as one-shot baton handoffs:
+//   - On `DispatchSessioned(req)` entry, the goroutine load-or-stores
+//     a channel for req.SessionID and BLOCKS on receive until the
+//     prior turn's flush goroutine sends the baton through.
+//   - After the chunks drain AND `FlushSwarmLifecycle + RestoreManifest`
+//     complete, the flush goroutine SENDS on the channel so the NEXT
+//     call for this sessionID can proceed.
+//   - The first call for a sessionID stores an already-loaded channel
+//     (baton pre-sent) so it doesn't block.
+//
+// Per-session keying (anti-pattern note): a single Dispatcher-wide
+// mutex OR a key on dispatchEngine instance would silently serialise
+// ALL `/messages` globally (Dispatcher holds ONE dispatchEngine; per-
+// engine keying degenerates to global). The plan's v6 round-5 fix text
+// is explicit on this — the gate MUST be keyed by req.SessionID.
 type Dispatcher struct {
-	streamer       Streamer
-	dispatchEngine swarm.DispatchEngine
-	swarmRegistry  *swarm.Registry
-	agentRegistry  *agent.Registry
-	sessionManager SessionManager
-	sessionBroker  SessionBroker
+	streamer              Streamer
+	dispatchEngine        swarm.DispatchEngine
+	swarmRegistry         *swarm.Registry
+	agentRegistry         *agent.Registry
+	sessionManager        SessionManager
+	sessionBroker         SessionBroker
+	sessionLifecycleGates sync.Map // map[sessionID string]chan struct{}
 }
 
 // New wires a Dispatcher. All dependencies are nullable for test
@@ -327,13 +350,19 @@ func (d *Dispatcher) DispatchEphemeral(
 //     caller writes the snapshot as JSON and returns 200 OK without
 //     awaiting stream completion.
 //
-// Swarm-lifecycle flush note (Phase 2 vs Phase 3 boundary):
-// the FlushSwarmLifecycle + RestoreManifest pair STAYS racing handler
-// return for this commit. The wrap goroutine is owned by Dispatcher
-// (moved out of the deleted wrapWithSwarmLifecycle helper), but there
-// is NO per-session handshake gating turn N+1 on turn N's flush — that
-// is the load-bearing Phase 3 change. The pre-Phase-2 race surface (S2
-// in the v6 audit) is preserved verbatim for one commit.
+// Swarm-lifecycle flush note (Phase 3 of the v6 plan):
+// the FlushSwarmLifecycle + RestoreManifest pair runs in a Dispatcher-
+// owned wrap goroutine after the chunks channel drains. A PER-SESSION
+// lifecycle gate keyed by req.SessionID (sync.Map[sessionID]chan
+// struct{}, capacity 1, baton semantics) sequences consecutive
+// DispatchSessioned calls for the same sessionID — turn N+1's
+// SetSwarmContext blocks until turn N's flush + restore complete. This
+// closes the S2 race surface from the v6 audit. Per-session keying is
+// load-bearing: a Dispatcher-wide mutex would silently serialise ALL
+// /messages because Dispatcher holds ONE dispatchEngine instance, so
+// any per-engine key degenerates to global. The gate's defer ordering
+// is also load-bearing — release fires AFTER flush + restore so the
+// next turn never observes mid-lifecycle engine state.
 //
 // Expected:
 //   - ctx is the caller's context (typically r.Context()). The handler
@@ -378,6 +407,46 @@ func (d *Dispatcher) DispatchSessioned(
 	if d.sessionManager == nil {
 		return SessionedHandle{}, errors.New("dispatch: sessionManager not configured")
 	}
+
+	// Per-session lifecycle handshake — Phase 3 of the v6 plan. Closes
+	// the S2 race: turn N's FlushSwarmLifecycle + RestoreManifest used
+	// to race turn N+1's SetSwarmContext, leaving the engine carrying
+	// stale manifest state into the next turn. The gate is a baton
+	// channel keyed by sessionID:
+	//   - The map value is `chan struct{}` with capacity 1, initialised
+	//     "charged" (one element pre-loaded) on first call for the
+	//     sessionID.
+	//   - DispatchSessioned receives from the channel — blocking until
+	//     a prior turn returns the baton. The first call's pre-charged
+	//     channel makes the first receive non-blocking.
+	//   - After the flush + restore completes (or the synchronous error
+	//     path returns), the dispatch path sends on the channel,
+	//     returning the baton so the next turn can proceed.
+	//
+	// Per-session keying is load-bearing — a global mutex (or one keyed
+	// on dispatchEngine) would silently serialise ALL /messages because
+	// Dispatcher holds ONE engine instance. The plan's v6 round-5
+	// blocker B1 text mandates the sync.Map[sessionID] shape.
+	gate := d.acquireSessionLifecycleGate(req.SessionID)
+	// gateTransferred is set true the moment the wrap goroutine takes
+	// over baton ownership. The function-exit safety defer only fires
+	// the release when ownership has NOT been transferred — preventing
+	// the outer return from releasing the gate before the wrap
+	// goroutine completes flush + restore.
+	gateTransferred := false
+	releaseGateSync := func() {
+		d.releaseSessionLifecycleGate(req.SessionID, gate)
+	}
+	// Safety net: every error-return path below either calls
+	// releaseGateSync() synchronously OR sets gateTransferred=true to
+	// hand ownership to the wrap goroutine. If the function unwinds
+	// with neither happening (a code path I missed), this defer
+	// releases the baton so the next call doesn't deadlock.
+	defer func() {
+		if !gateTransferred {
+			releaseGateSync()
+		}
+	}()
 
 	// Decouple the streamer's lifetime from the caller's ctx. Pattern
 	// imported from commit 51fb416c (originally applied at the
@@ -451,6 +520,9 @@ func (d *Dispatcher) DispatchSessioned(
 			// identified as the swarm lead for subsequent turns.
 			d.dispatchEngine.RestoreManifest(manifestSnapshot)
 		}
+		// Stream never started — gateTransferred stays false, so the
+		// safety-net defer releases the baton synchronously after we
+		// return. Next call for this sessionID is unblocked.
 		return SessionedHandle{}, err
 	}
 
@@ -468,16 +540,14 @@ func (d *Dispatcher) DispatchSessioned(
 	}
 
 	if chunks != nil {
-		// Wrap chunks with the swarm lifecycle goroutine when active.
-		// Phase 2 preserves the existing race surface (S2): the
-		// FlushSwarmLifecycle + RestoreManifest goroutine runs AFTER
-		// the chunks channel drains, with NO per-session handshake
-		// gating turn N+1 on turn N's flush. Phase 3 of the v6 plan
-		// closes that race by keying a sync.Map[sessionID] gate on
-		// req.SessionID; this commit explicitly defers that.
-		if swarmActive {
-			chunks = d.wrapWithSwarmLifecycle(streamCtx, chunks, manifestSnapshot)
-		}
+		// Hand baton ownership to the wrap goroutine — the safety-net
+		// defer at function exit will skip the release. The wrap's
+		// inner defers run flush → restore → release in LIFO order,
+		// so the gate ONLY drops after the engine is fully restored.
+		gateTransferred = true
+		chunks = d.wrapWithSwarmLifecycle(
+			streamCtx, chunks, manifestSnapshot, swarmActive, releaseGateSync,
+		)
 		if d.sessionBroker != nil {
 			go d.sessionBroker.Publish(req.SessionID, chunks)
 		} else {
@@ -491,12 +561,67 @@ func (d *Dispatcher) DispatchSessioned(
 		}
 	} else if swarmActive {
 		// Nil chunks channel + swarm active — manager returned cleanly
-		// without driving the streamer. Restore the manifest synchronously
-		// so engine state doesn't leak.
+		// without driving the streamer. Restore the manifest
+		// synchronously so engine state doesn't leak.
 		d.dispatchEngine.RestoreManifest(manifestSnapshot)
+		// gateTransferred remains false — the safety-net defer
+		// releases the baton.
 	}
 
 	return SessionedHandle{Snapshot: snap}, nil
+}
+
+// acquireSessionLifecycleGate returns the per-session baton channel for
+// req.SessionID after blocking on receive — proving the prior turn's
+// flush + restore have completed (or this is the first call for this
+// sessionID, in which case the receive returns immediately because the
+// channel was created pre-charged).
+//
+// Channel semantics:
+//   - capacity 1, pre-charged on first creation
+//   - acquire = receive (blocks until baton available)
+//   - release = send (returns the baton to the channel)
+//
+// Side effects:
+//   - LoadOrStore in sessionLifecycleGates; consumes one buffered slot
+//     by receiving the baton from the channel.
+func (d *Dispatcher) acquireSessionLifecycleGate(sessionID string) chan struct{} {
+	// Build the pre-charged channel template; LoadOrStore returns the
+	// existing channel if another goroutine raced us. The "new" channel
+	// gets the baton pre-loaded so the first call for a sessionID
+	// doesn't block.
+	fresh := make(chan struct{}, 1)
+	fresh <- struct{}{}
+	actual, loaded := d.sessionLifecycleGates.LoadOrStore(sessionID, fresh)
+	gate := actual.(chan struct{})
+	if loaded {
+		// The pre-charged channel we built was thrown away; the existing
+		// channel may have its baton in flight if another turn for this
+		// sessionID is still running. Block until the baton arrives.
+		<-gate
+	} else {
+		// We won the race; consume our own pre-charge so we hold the
+		// baton symmetric to the loaded path.
+		<-gate
+	}
+	return gate
+}
+
+// releaseSessionLifecycleGate returns the baton to the per-session
+// channel so the NEXT call for this sessionID can proceed. Idempotency
+// is enforced by the caller's `gateReleased` flag in DispatchSessioned —
+// this method assumes it holds the baton.
+//
+// Side effects:
+//   - Non-blocking send (capacity 1, no contending holder).
+func (d *Dispatcher) releaseSessionLifecycleGate(_ string, gate chan struct{}) {
+	select {
+	case gate <- struct{}{}:
+	default:
+		// Capacity-1 channel already has the baton — should only
+		// happen on a programming error (double-release). Swallowed
+		// silently; the next acquire still works.
+	}
 }
 
 // canDispatchSwarm reports whether the swarm registry + dispatch engine
@@ -509,35 +634,64 @@ func (d *Dispatcher) canDispatchSwarm() bool {
 
 // wrapWithSwarmLifecycle pumps src into a new channel and, after src
 // closes, runs the post-stream swarm dispatch lifecycle
-// (FlushSwarmLifecycle + RestoreManifest) so the engine ends in the
-// same shape Orchestrator.Stream leaves it: swarm context is sticky
-// (the next dispatch overwrites it) but the manifest reverts to the
-// pre-dispatch identity so non-swarm turns don't inherit the swarm
-// lead's persona. Mirrors the deleted server.go::wrapWithSwarmLifecycle
-// at server.go:1409-1431 (pre-Phase-2). Moved INTO Dispatcher per Phase
-// 2 of the v6 plan; Phase 3 reworks this into a handshake-gated
-// surface.
+// (FlushSwarmLifecycle + RestoreManifest when swarmActive) so the engine
+// ends in the same shape Orchestrator.Stream leaves it: swarm context
+// is sticky (the next dispatch overwrites it) but the manifest reverts
+// to the pre-dispatch identity so non-swarm turns don't inherit the
+// swarm lead's persona. Mirrors the deleted server.go::
+// wrapWithSwarmLifecycle at server.go:1409-1431 (pre-Phase-2). Moved
+// INTO Dispatcher per Phase 2; Phase 3 folds the per-session gate
+// release in here so the gate ONLY drops after the lifecycle completes.
+//
+// Defer ordering (load-bearing): the inner defer fires in LIFO order —
+//
+//  1. close(out)         (innermost — emit done to broker)
+//  2. releaseGate()      (drops the per-session baton)
+//  3. RestoreManifest()  (engine state reverted to baseline)
+//  4. FlushSwarmLifecycle() (gates record cleanup)
+//
+// The gate MUST release AFTER FlushSwarmLifecycle + RestoreManifest so
+// turn N+1's SetSwarmContext observes a fully-restored engine. If the
+// release ran first, turn N+1 could SetSwarmContext while the prior
+// turn's RestoreManifest is still in flight, re-introducing the S2
+// race. The spec at "Swarm lifecycle handshake across consecutive
+// POSTs" pins this exact ordering via the event log.
+//
+// Expected:
+//   - swarmActive controls whether flush + restore fire. Non-swarm
+//     turns still take the wrap (so the gate release waits on broker
+//     drain) but skip the lifecycle methods.
+//   - releaseGate is the closure from acquireSessionLifecycleGate's
+//     caller; the wrap goroutine ALWAYS calls it exactly once, whether
+//     swarmActive is true or false.
 //
 // Side effects:
-//   - Starts one goroutine that ranges over src and runs
-//     FlushSwarmLifecycle + RestoreManifest after the range exits.
+//   - Starts one goroutine that ranges over src and runs flush + restore
+//     + gate-release after the range exits.
 func (d *Dispatcher) wrapWithSwarmLifecycle(
 	ctx context.Context,
 	src <-chan provider.StreamChunk,
 	manifestSnapshot any,
+	swarmActive bool,
+	releaseGate func(),
 ) <-chan provider.StreamChunk {
 	out := make(chan provider.StreamChunk, 64)
 	go func() {
+		// LIFO defer order — innermost runs FIRST. Reading top-to-bottom:
+		// the gate is released AFTER flush + restore, so turn N+1's
+		// SetSwarmContext can never land mid-lifecycle.
 		defer close(out)
-		defer func() {
-			// Flush + restore even if the producer panics or src is
-			// drained early. Flush errors are intentionally swallowed
-			// — the post-swarm gates' own observers (event bus, logs)
-			// surface failures; the SSE-side consumer cannot act on a
-			// flush error anyway. RestoreManifest is no-error.
-			_ = d.dispatchEngine.FlushSwarmLifecycle(ctx)
-			d.dispatchEngine.RestoreManifest(manifestSnapshot)
-		}()
+		defer releaseGate()
+		if swarmActive {
+			defer d.dispatchEngine.RestoreManifest(manifestSnapshot)
+			defer func() {
+				// Flush errors are intentionally swallowed — the post-
+				// swarm gates' own observers (event bus, logs) surface
+				// failures; the SSE-side consumer cannot act on a flush
+				// error anyway. RestoreManifest is no-error.
+				_ = d.dispatchEngine.FlushSwarmLifecycle(ctx)
+			}()
+		}
 		for chunk := range src {
 			out <- chunk
 		}
