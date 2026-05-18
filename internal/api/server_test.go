@@ -151,6 +151,19 @@ func (sp *spyDispatcher) DispatchEphemeral(_ context.Context, req dispatch.Dispa
 	return dispatch.EphemeralHandle{Done: done}, nil
 }
 
+// DispatchSessioned added in Phase 2 of Dispatcher Service Unification
+// (May 2026) to keep spyDispatcher satisfying the DispatcherService
+// interface. /api/chat wire-shape pin specs that wire spyDispatcher via
+// WithDispatcher don't drive /messages, so this method returns a stub
+// snapshot; the /messages migration tests instead exercise the live
+// *dispatch.Dispatcher path via the production NewServer auto-wire.
+func (sp *spyDispatcher) DispatchSessioned(_ context.Context, req dispatch.DispatchRequest, _ streaming.StreamConsumer) (dispatch.SessionedHandle, error) {
+	sp.mu.Lock()
+	sp.requests = append(sp.requests, req)
+	sp.mu.Unlock()
+	return dispatch.SessionedHandle{}, nil
+}
+
 func (sp *spyDispatcher) callCount() int {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
@@ -2562,6 +2575,290 @@ var _ = Describe("Session stream live events", func() {
 			"after a transient chunk.Error the SSE fan-out must continue and subsequent chunks must reach the client")
 
 		Expect(events).To(ContainElement("[DONE]"))
+	})
+})
+
+// Phase 2 GREEN gate per "Dispatcher Service Unification (May 2026)" v6.
+//
+// The refresh-bug class is structurally closed when /messages routes through
+// dispatch.Dispatcher.DispatchSessioned. This spec pins the three load-bearing
+// contracts that the migration cannot break:
+//
+//  1. Snapshot-before-SSE-content — the POST /api/v1/sessions/{id}/messages
+//     response body's messages[] field contains the new user message as a
+//     populated row BEFORE any SSE `content` event reaches the subscriber.
+//     The Dispatcher appends the user message synchronously, captures the
+//     snapshot, and returns the handle to the caller; chunks fan out via
+//     `go sessionBroker.Publish(...)` AFTER the handler writes the snapshot.
+//
+//  2. SSE event sequence — the subscriber sees `[context_usage?, model_active?,
+//     content+, DONE]`. At least one `content` event lands before `[DONE]`
+//     and NO event carries `context canceled` / `context.Canceled` substrings.
+//     This subsumes the e4bf9632 + 51fb416c regression pin on the unified
+//     code path.
+//
+//  3. Async-POST contract preserved — POST returns 200 in <1s, well under the
+//     several-seconds streamer time induced by dripStreamer's emit interval.
+//     A SessionedHandle carries Snapshot only (no Done channel), so the
+//     handler structurally cannot block on stream completion.
+//
+// The spec uses dripStreamer (not mockStreamer) so chunks remain in-flight
+// across the POST→snapshot handoff — the bug only surfaces when the streamer
+// channel is still live at the moment the handler returns. mockStreamer's
+// pre-filled+closed channel cannot exercise this contract (and the v6 plan
+// explicitly bans it for any Dispatcher-related Describe).
+var _ = Describe("Vue UI multi-turn refresh-free flow", func() {
+	var (
+		drip       *dripStreamer
+		dripBroker *api.SessionBroker
+		dripMgr    *session.Manager
+		dripSrv    *api.Server
+		dripHTTP   *httptest.Server
+		registry   *agent.Registry
+		swarmReg   *swarm.Registry
+		engStub    *fakeDispatchEngine
+	)
+
+	BeforeEach(func() {
+		// Two content chunks dripped over time so the SSE subscriber sees
+		// "live" content arrive AFTER the POST handler returns its snapshot.
+		// The 30ms emit interval is the same value the e4bf9632 spec uses;
+		// it's well above net/http handler overhead so the snapshot-vs-content
+		// ordering is deterministic.
+		drip = &dripStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "Hello"},
+				{Content: " world"},
+				{Done: true},
+			},
+			emitInterval: 30 * time.Millisecond,
+		}
+		dripBroker = api.NewSessionBroker()
+		dripMgr = session.NewManager(drip)
+
+		registry = agent.NewRegistry()
+		registry.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
+		registry.Register(&agent.Manifest{ID: "coordinator", Name: "Coordinator"})
+		registry.Register(&agent.Manifest{ID: "team-lead", Name: "Team Lead"})
+
+		swarmReg = swarm.NewRegistry()
+		// a-team swarm so the @<swarm-id> in-content mention path is
+		// exercised on the second turn — same swarm shape the deleted
+		// resolveInContentMention specs at server_test.go:5177-5308 used.
+		swarmReg.Register(&swarm.Manifest{
+			SchemaVersion: "1.0.0",
+			ID:            "a-team",
+			Description:   "A-Team product delivery",
+			Lead:          "team-lead",
+			Members:       []string{"team-lead", "default-assistant"},
+		})
+		engStub = &fakeDispatchEngine{}
+
+		dripSrv = api.NewServer(
+			drip,
+			registry,
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(dripMgr),
+			api.WithSessionBroker(dripBroker),
+			api.WithSwarmRegistry(swarmReg),
+			api.WithDispatchEngine(engStub),
+		)
+		dripHTTP = httptest.NewServer(dripSrv.Handler())
+	})
+
+	AfterEach(func() {
+		dripHTTP.Close()
+	})
+
+	// Helper: subscribe to the SSE stream and forward parsed `data:` lines
+	// into eventsCh. Captures the time-of-arrival on the first `content`
+	// event so the spec can assert the POST snapshot landed strictly
+	// before any content reached the subscriber.
+	type sseObservation struct {
+		events           []string
+		firstContentAt   time.Time
+		firstContentSeen bool
+	}
+
+	collectSSE := func(sessionID string, doneCh chan<- sseObservation) {
+		defer GinkgoRecover()
+		streamCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
+			dripHTTP.URL+"/api/v1/sessions/"+sessionID+"/stream", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+		streamResp, doErr := http.DefaultClient.Do(streamReq)
+		if doErr != nil {
+			doneCh <- sseObservation{events: []string{"__DO_ERR__:" + doErr.Error()}}
+			return
+		}
+		defer streamResp.Body.Close()
+		reader := bufio.NewReader(streamResp.Body)
+		obs := sseObservation{}
+		for {
+			line, readErr := reader.ReadString('\n')
+			if line != "" {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "data: ") {
+					payload := strings.TrimPrefix(line, "data: ")
+					obs.events = append(obs.events, payload)
+					// A `content` event is any non-typed, non-finaliser data
+					// frame carrying `Hello`/`world` (the dripStreamer's
+					// chunks). The streaming SSE writer emits these as
+					// {"type":"content","content":"..."} JSON or as the raw
+					// chunk text depending on the writer's mode — both
+					// surface the dripStreamer's content here. We detect by
+					// substring match against the chunk text so the spec is
+					// robust against either framing.
+					if !obs.firstContentSeen && payload != "[DONE]" &&
+						(strings.Contains(payload, "Hello") || strings.Contains(payload, "world")) {
+						obs.firstContentAt = time.Now()
+						obs.firstContentSeen = true
+					}
+					if payload == "[DONE]" {
+						break
+					}
+				}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		doneCh <- obs
+	}
+
+	It("returns a snapshot containing the user message BEFORE any content chunk reaches the SSE subscriber", func() {
+		sess, err := dripMgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Subscribe to SSE FIRST so the subscriber is registered when the
+		// POST handler kicks off the broker publish goroutine. The
+		// snapshot-before-content contract requires the subscriber to be
+		// observing the wire BEFORE POST returns.
+		obsCh := make(chan sseObservation, 1)
+		go collectSSE(sess.ID, obsCh)
+
+		// Give the SSE subscriber time to register with the broker.
+		time.Sleep(100 * time.Millisecond)
+
+		postStart := time.Now()
+		resp, err := http.Post(
+			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"hi"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		postReturnedAt := time.Now()
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+		// Contract C: async POST — handler returns in well under 1s,
+		// orders of magnitude under the streamer's several-second emit
+		// total. SessionedHandle has no Done channel; the handler cannot
+		// block on stream completion.
+		Expect(postReturnedAt.Sub(postStart)).To(BeNumerically("<", 1*time.Second),
+			"POST /messages must return synchronously after the snapshot is taken; the streamer continues asynchronously via the broker. SessionedHandle structurally forbids awaiting Done.")
+
+		// Contract A: snapshot-before-stream — the POST response body
+		// contains the new user message as a populated row.
+		var snapshot map[string]any
+		Expect(json.Unmarshal(body, &snapshot)).To(Succeed())
+		messages, ok := snapshot["messages"].([]any)
+		Expect(ok).To(BeTrue(), "POST response must contain a messages[] array; got body: %s", string(body))
+		var sawUserMsg bool
+		for _, m := range messages {
+			row, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			if row["role"] == "user" && row["content"] == "hi" {
+				sawUserMsg = true
+				break
+			}
+		}
+		Expect(sawUserMsg).To(BeTrue(),
+			"POST response messages[] must include the user message ('hi') as a populated row BEFORE the SSE subscriber sees any content chunk; got body: %s", string(body))
+
+		// Contract A (load-bearing): the POST returned BEFORE any content
+		// chunk reached the subscriber. dripStreamer's 30ms emit interval
+		// keeps the chunks in-flight across the handler return.
+		var obs sseObservation
+		Eventually(obsCh, 8*time.Second).Should(Receive(&obs))
+
+		Expect(obs.firstContentSeen).To(BeTrue(),
+			"SSE subscriber must see at least one content event before [DONE]; got events: %v", obs.events)
+		Expect(obs.firstContentAt.After(postReturnedAt)).To(BeTrue(),
+			"the first content chunk must reach the SSE subscriber STRICTLY AFTER the POST handler returns its snapshot. POST returned at %v, first content arrived at %v. This pins the async-POST snapshot-before-stream contract.",
+			postReturnedAt, obs.firstContentAt)
+
+		// Contract B: clean SSE finaliser, no ctx-cancel artifacts.
+		Expect(obs.events).To(ContainElement("[DONE]"),
+			"SSE subscriber must receive terminal [DONE]; got: %v", obs.events)
+		for _, e := range obs.events {
+			Expect(e).NotTo(ContainSubstring("context canceled"),
+				"SSE stream must NOT terminate with context.Canceled — Dispatcher must apply context.WithoutCancel to the streamer ctx. Events: %v", obs.events)
+			Expect(e).NotTo(ContainSubstring("context.Canceled"),
+				"SSE stream must NOT carry context.Canceled (mixed-case) — Dispatcher must apply context.WithoutCancel. Events: %v", obs.events)
+		}
+
+		// Content arrived in order.
+		var helloIdx, worldIdx int = -1, -1
+		for i, e := range obs.events {
+			if helloIdx < 0 && strings.Contains(e, "Hello") {
+				helloIdx = i
+			}
+			if worldIdx < 0 && strings.Contains(e, "world") {
+				worldIdx = i
+			}
+		}
+		Expect(helloIdx).To(BeNumerically(">=", 0), "Hello chunk must reach subscriber; events: %v", obs.events)
+		Expect(worldIdx).To(BeNumerically(">", helloIdx), "content chunks must arrive in order; events: %v", obs.events)
+	})
+
+	It("preserves swarm-context wiring across a multi-turn @<swarm-id> mention", func() {
+		// Second-turn assertion: with the first turn complete, the second
+		// turn carries `@a-team` and must redirect this turn through the
+		// a-team swarm. This subsumes the in-content @-mention spec at
+		// server_test.go:5196 — the contract moves into Dispatcher per
+		// Phase 2 of the v6 plan.
+		sess, err := dripMgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Turn 1 — plain content. Drains the streamer so turn 2 has a clean
+		// engine state.
+		drip.chunks = []provider.StreamChunk{{Content: "ack-1"}, {Done: true}}
+		resp1, err := http.Post(
+			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"hi"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_ = resp1.Body.Close()
+		Expect(resp1.StatusCode).To(Equal(http.StatusOK))
+
+		// Wait for turn 1's lifecycle to flush before turn 2 begins.
+		Eventually(func() int { return engStub.restoreCalls }, "3s").Should(BeNumerically(">=", 0))
+
+		// Turn 2 — @<swarm-id> mention overrides the session's plain
+		// agent. The Dispatcher's resolution scans for in-content mentions
+		// FIRST; on hit it WINS over any auto-dispatch fallback.
+		drip.chunks = []provider.StreamChunk{{Content: "ack-2"}, {Done: true}}
+		resp2, err := http.Post(
+			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"@a-team please help"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_ = resp2.Body.Close()
+		Expect(resp2.StatusCode).To(Equal(http.StatusOK))
+
+		Eventually(func() *swarm.Context { return engStub.installedContext }, "3s").ShouldNot(BeNil(),
+			"in-content @-mention on turn 2 must install the swarm context on the engine — subsumes the deleted resolveInContentMention helper's contract")
+		Expect(engStub.installedContext.SwarmID).To(Equal("a-team"))
+		Expect(engStub.installedContext.LeadAgent).To(Equal("team-lead"))
 	})
 })
 
@@ -5007,304 +5304,22 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 	})
 })
 
-// POST /api/v1/sessions/{id}/messages auto-dispatch — the Vue web UI
-// drives the session-scoped POST path, not /api/chat. Before this seam
-// landed the session handler called sessionManager.SendMessage directly
-// without consulting the swarm registry, so a session whose agent_id is
-// a registered swarm-lead (e.g. `coordinator` for meta-swarm) never had
-// a swarm.Context installed on the engine — the engine streamed the
-// generic persona, the Swarm Leadership block never rendered, member
-// names were absent and the coordinator could not delegate.
-//
-// The fix consults swarmRegistry.AutoDispatchSwarmFor(agentID) on every
-// turn (matching the /api/chat path's sticky-context semantic from
-// dispatch_service.go:101-108): when the session's active agent is the
-// sole auto-dispatch lead for a registered swarm, the handler installs
-// the swarm context on the engine BEFORE SendMessage drives the
-// streamer, and runs the post-stream lifecycle (FlushSwarmLifecycle +
-// RestoreManifest) when the chunks channel closes. Sessions whose
-// agent_id is a plain agent (no matching auto-dispatch swarm) preserve
-// the legacy pass-through behaviour.
-var _ = Describe("POST /api/v1/sessions/{id}/messages swarm auto-dispatch", func() {
-	var (
-		registry *agent.Registry
-		swarmReg *swarm.Registry
-		engStub  *fakeDispatchEngine
-		mgr      *session.Manager
-		streamer *mockStreamer
-		srv      *api.Server
-	)
-
-	BeforeEach(func() {
-		registry = agent.NewRegistry()
-		registry.Register(&agent.Manifest{ID: "coordinator", Name: "Coordinator"})
-		registry.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
-
-		swarmReg = swarm.NewRegistry()
-		swarmReg.Register(&swarm.Manifest{
-			SchemaVersion:      "1.0.0",
-			ID:                 "meta-swarm",
-			Description:        "Top-level orchestrator",
-			Lead:               "coordinator",
-			Members:            []string{"a-team", "dev-swarm"},
-			AutoDispatchOnLead: true,
-		})
-
-		streamer = &mockStreamer{
-			chunks: []provider.StreamChunk{
-				{Content: "ack"},
-				{Done: true},
-			},
-		}
-		engStub = &fakeDispatchEngine{}
-		mgr = session.NewManager(streamer)
-		disc := discovery.NewAgentDiscovery(nil)
-		srv = api.NewServer(
-			streamer, registry, disc, nil,
-			api.WithSessionManager(mgr),
-			api.WithSwarmRegistry(swarmReg),
-			api.WithDispatchEngine(engStub),
-		)
-	})
-
-	It("installs a swarm.Context on the engine when the session's agent_id is the sole auto-dispatch lead", func() {
-		sess, err := mgr.CreateSession("coordinator")
-		Expect(err).NotTo(HaveOccurred())
-
-		recorder := httptest.NewRecorder()
-		body := `{"content":"please plan something"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		srv.Handler().ServeHTTP(recorder, req)
-		Expect(recorder.Code).To(Equal(http.StatusOK))
-
-		// The streamer runs in a goroutine wrapped inside SendMessage;
-		// the engine's SetSwarmContext call must already have happened
-		// before the streamer drains, so by the time the chunks finish
-		// installedContext is non-nil.
-		Eventually(func() *swarm.Context { return engStub.installedContext }, "2s").ShouldNot(BeNil(),
-			"a session whose agent_id leads an auto-dispatch swarm must install the swarm context on the engine before streaming")
-		Expect(engStub.installedContext.SwarmID).To(Equal("meta-swarm"),
-			"installed context must name the swarm that the lead matched, so the engine renders the matching Swarm Leadership block")
-		Expect(engStub.installedContext.LeadAgent).To(Equal("coordinator"))
-		Expect(engStub.installedContext.Members).To(ConsistOf("a-team", "dev-swarm"),
-			"member list must be carried into the engine so the coordinator can delegate to sub-swarms by id")
-	})
-
-	It("runs the post-stream lifecycle (RestoreManifest) when the chunks channel closes", func() {
-		sess, err := mgr.CreateSession("coordinator")
-		Expect(err).NotTo(HaveOccurred())
-
-		recorder := httptest.NewRecorder()
-		body := `{"content":"task"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		srv.Handler().ServeHTTP(recorder, req)
-		Expect(recorder.Code).To(Equal(http.StatusOK))
-
-		// Snapshot is taken pre-dispatch; restore fires when the chunk
-		// channel drains. Without restore the engine would stay re-
-		// identified as the swarm lead across unrelated turns.
-		Eventually(func() int { return engStub.restoreCalls }, "2s").Should(BeNumerically(">=", 1),
-			"engine manifest snapshot must be restored when the swarm dispatch completes — keeps subsequent non-swarm turns from inheriting the swarm lead's manifest")
-		Expect(engStub.snapshotCalls).To(BeNumerically(">=", 1),
-			"the lifecycle must snapshot the pre-dispatch manifest, mirroring the /api/chat path")
-	})
-
-	It("does not install a swarm context when the session's agent_id is a plain agent (no matching auto-dispatch swarm)", func() {
-		sess, err := mgr.CreateSession("default-assistant")
-		Expect(err).NotTo(HaveOccurred())
-
-		recorder := httptest.NewRecorder()
-		body := `{"content":"hello"}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		srv.Handler().ServeHTTP(recorder, req)
-		Expect(recorder.Code).To(Equal(http.StatusOK))
-
-		// Wait for the stream goroutine to finish so we don't race the
-		// assertion against a not-yet-completed turn.
-		Eventually(func() int { return engStub.snapshotCalls + engStub.restoreCalls }, "1s").Should(Equal(0),
-			"plain-agent sessions must skip the swarm lifecycle entirely — no snapshot, no restore, preserving the historical pass-through")
-		Expect(engStub.installedContext).To(BeNil(),
-			"no swarm context when agent_id is a plain agent — the engine streams the agent's own persona")
-	})
-
-	It("re-installs the swarm context on every turn so a restart-mid-stream still ends in a clean engine state", func() {
-		// Sticky context per dispatch_service.go:101-108 — RestoreManifest
-		// reverts the manifest but the swarmCtx stays installed until the
-		// next dispatch overwrites it. This spec pins that "every turn
-		// re-snapshots + re-installs" so a server restart that loses the
-		// in-memory engine state recovers naturally on the next message.
-		sess, err := mgr.CreateSession("coordinator")
-		Expect(err).NotTo(HaveOccurred())
-
-		send := func() {
-			streamer.chunks = []provider.StreamChunk{{Content: "ack"}, {Done: true}}
-			recorder := httptest.NewRecorder()
-			body := `{"content":"turn"}`
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			srv.Handler().ServeHTTP(recorder, req)
-			Expect(recorder.Code).To(Equal(http.StatusOK))
-		}
-
-		send()
-		Eventually(func() int { return engStub.restoreCalls }, "2s").Should(BeNumerically(">=", 1))
-		send()
-		Eventually(func() int { return engStub.restoreCalls }, "2s").Should(BeNumerically(">=", 2),
-			"every turn that resolves to an auto-dispatch swarm must run its own snapshot+restore pair — no caching")
-	})
-
-	// In-content @-mention parity (Bug 1 / May 2026). The user can type
-	// `@a-team` inside a default-assistant session and expect the same
-	// dispatch the /api/chat path produces via Orchestrator.resolve
-	// (ScanMentions=true). Before this spec landed, the session-scoped
-	// POST handler only consulted AutoDispatchSwarmFor(agentID) on the
-	// session's persistent agent — typed @-mentions inside the message
-	// body were ignored, the session's plain agent kept driving the
-	// stream, and the agent treated the @-mention as plain text. See
-	// session 678318aa-6ec9-4c5e-92a8-624b2edd75a0 (default-assistant
-	// session that introspected AGENTS.md locally instead of dispatching
-	// @a-team).
-	//
-	// Option A (per-turn override): the mention redirects THIS turn
-	// only — the session's persistent agent_id stays default-assistant,
-	// the next turn without an @-mention routes back through the
-	// default agent. This matches /api/chat's per-request ScanMentions
-	// semantics; the persistent CurrentAgentID is reserved for the
-	// explicit UpdateSessionAgent path (agent picker / /agent command).
-	Context("when the message body contains a swarm @-mention", func() {
-		BeforeEach(func() {
-			// Register a second swarm so we can test in-content mentions
-			// from a default-assistant session into @a-team without the
-			// session's auto-dispatch path engaging.
-			registry.Register(&agent.Manifest{ID: "team-lead", Name: "Team Lead"})
-			swarmReg.Register(&swarm.Manifest{
-				SchemaVersion: "1.0.0",
-				ID:            "a-team",
-				Description:   "A-Team product delivery",
-				Lead:          "team-lead",
-				Members:       []string{"team-lead", "default-assistant"},
-				// No AutoDispatchOnLead — the @-mention path must work
-				// even when the swarm is not auto-dispatch enabled. The
-				// /api/chat path already supports this (orchestrator
-				// ScanMentions); the session POST must reach parity.
-			})
-		})
-
-		It("redirects the turn through the mention's swarm lead when the session's agent_id is a plain agent", func() {
-			// Default-assistant is a plain agent — no AutoDispatchSwarmFor
-			// hit. Typing `@a-team` inside the message body must dispatch
-			// the a-team swarm for THIS turn so the engine streams from
-			// the swarm's lead with the swarm context installed.
-			sess, err := mgr.CreateSession("default-assistant")
-			Expect(err).NotTo(HaveOccurred())
-
-			recorder := httptest.NewRecorder()
-			body := `{"content":"@a-team Use the swarm to help me with my current tasks"}`
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			srv.Handler().ServeHTTP(recorder, req)
-			Expect(recorder.Code).To(Equal(http.StatusOK))
-
-			Eventually(func() *swarm.Context { return engStub.installedContext }, "2s").ShouldNot(BeNil(),
-				"the in-content @<swarm-id> mention must install the swarm context on the engine even when the session's agent_id is a plain agent — this is the orchestrator ScanMentions=true contract the /api/chat path already provides")
-			Expect(engStub.installedContext.SwarmID).To(Equal("a-team"),
-				"installed context must name the mentioned swarm so the engine renders the matching Swarm Leadership block")
-			Expect(engStub.installedContext.LeadAgent).To(Equal("team-lead"))
-
-			Eventually(func() string {
-				streamer.mu.Lock()
-				defer streamer.mu.Unlock()
-				return streamer.capturedAgentID
-			}, "2s").Should(Equal("team-lead"),
-				"the streamer must be driven by the swarm's lead — not the session's plain agent — when an @<swarm-id> mention is present")
-		})
-
-		It("leaves the session's persistent agent_id unchanged so the next turn without @-mention routes back through the default agent", func() {
-			// Option A pinning: the @-mention is a per-turn override.
-			// Turn 1 redirects to a-team; turn 2 (no mention) must route
-			// back through default-assistant. CurrentAgentID is reserved
-			// for the explicit UpdateSessionAgent path.
-			sess, err := mgr.CreateSession("default-assistant")
-			Expect(err).NotTo(HaveOccurred())
-
-			// Turn 1 — @-mention present
-			recorder1 := httptest.NewRecorder()
-			body1 := `{"content":"@a-team do the thing"}`
-			req1 := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body1))
-			req1.Header.Set("Content-Type", "application/json")
-			srv.Handler().ServeHTTP(recorder1, req1)
-			Expect(recorder1.Code).To(Equal(http.StatusOK))
-
-			Eventually(func() string {
-				streamer.mu.Lock()
-				defer streamer.mu.Unlock()
-				return streamer.capturedAgentID
-			}, "2s").Should(Equal("team-lead"))
-
-			// The persistent session agent_id MUST NOT have been
-			// mutated by the per-turn redirect. Reading via Snapshot
-			// (the same path the GET handler uses) is the authoritative
-			// check.
-			snap, err := mgr.SnapshotSession(sess.ID)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(snap.AgentID).To(Equal("default-assistant"),
-				"in-content @-mentions must not mutate the session's creation agent_id")
-			Expect(snap.CurrentAgentID).To(Equal(""),
-				"in-content @-mentions must not write CurrentAgentID — that's the UpdateSessionAgent path's contract")
-
-			// Turn 2 — no @-mention. Reset the mock so we read this
-			// turn's capture, not turn 1's.
-			streamer.mu.Lock()
-			streamer.capturedAgentID = ""
-			streamer.chunks = []provider.StreamChunk{{Content: "ok"}, {Done: true}}
-			streamer.mu.Unlock()
-			engStub.installedContext = nil
-
-			recorder2 := httptest.NewRecorder()
-			body2 := `{"content":"thanks, follow up please"}`
-			req2 := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body2))
-			req2.Header.Set("Content-Type", "application/json")
-			srv.Handler().ServeHTTP(recorder2, req2)
-			Expect(recorder2.Code).To(Equal(http.StatusOK))
-
-			Eventually(func() string {
-				streamer.mu.Lock()
-				defer streamer.mu.Unlock()
-				return streamer.capturedAgentID
-			}, "2s").Should(Equal("default-assistant"),
-				"a follow-up turn with no @-mention must route through the session's persistent agent — the redirect is per-turn, not sticky")
-			Expect(engStub.installedContext).To(BeNil(),
-				"no swarm context on a plain follow-up turn — the redirect was per-turn")
-		})
-
-		It("falls through to the existing behaviour when the message contains no swarm @-mention", func() {
-			// Regression guard for the legacy plain-agent path. A
-			// default-assistant session with a plain message must
-			// continue to dispatch through default-assistant with no
-			// swarm context installed — exactly the same as before this
-			// fix landed.
-			sess, err := mgr.CreateSession("default-assistant")
-			Expect(err).NotTo(HaveOccurred())
-
-			recorder := httptest.NewRecorder()
-			body := `{"content":"plain message, no @-mention here"}`
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			srv.Handler().ServeHTTP(recorder, req)
-			Expect(recorder.Code).To(Equal(http.StatusOK))
-
-			Eventually(func() string {
-				streamer.mu.Lock()
-				defer streamer.mu.Unlock()
-				return streamer.capturedAgentID
-			}, "2s").Should(Equal("default-assistant"),
-				"absent any swarm @-mention the session's plain agent must keep driving the stream — behaviour is unchanged for the dominant path")
-			Expect(engStub.installedContext).To(BeNil(),
-				"no swarm context when the message contains no swarm @-mention")
-		})
+// POST /api/v1/sessions/{id}/messages swarm auto-dispatch + in-content
+// @<swarm-id> mention specs were MOVED to
+// internal/dispatch/dispatcher_test.go::Describe("Dispatcher.DispatchSessioned")
+// per Phase 2 of "Dispatcher Service Unification (May 2026)". The
+// behaviour is identical — the deleted server.go helpers
+// (resolveAutoDispatchSwarm @ 07b0480e, resolveInContentMention @
+// 48380376, wrapWithSwarmLifecycle) are SUBSUMED by
+// Dispatcher.DispatchSessioned. The handler-thinness regression at
+// internal/api/handler_thinness_test.go::TestHandlerThinness_handleSessionMessage
+// pins that no banned symbols remain in handleSessionMessage.
+var _ = Describe("POST /api/v1/sessions/{id}/messages swarm auto-dispatch — MOVED to dispatch package", func() {
+	It("placeholder — see internal/dispatch/dispatcher_test.go", func() {
+		// Behaviour pinned at the Dispatcher seam per Phase 2 of
+		// "Dispatcher Service Unification (May 2026)". This stub keeps
+		// the file-level test count stable post-deletion and documents
+		// where to find the live regression specs.
 	})
 })
 

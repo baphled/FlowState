@@ -1188,3 +1188,224 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
     ).toBeGreaterThan(0)
   })
 })
+
+// Phase 2 GREEN gate per "Dispatcher Service Unification (May 2026)" v6.
+//
+// Refresh-free multi-turn: drive two consecutive POST /messages on the SAME
+// session via the Vue UI. The first turn is plain content; the second carries
+// `@coordinator` so the in-content @-mention path is exercised end-to-end
+// through Dispatcher.DispatchSessioned (subsuming the deleted
+// resolveInContentMention helper). Asserts:
+//
+//   1. Each turn produces DOM mutations on the assistant bubble between the
+//      first content chunk and [DONE]. No refresh required.
+//   2. No `window.location.reload` event fires between the two turns. The
+//      session must stay live; refresh is the bug, not the workaround.
+//
+// Backed by default-assistant + zai/glm-4.6 — the exact agent/model pair the
+// user's broken session ran under.
+test.describe('sse live-render probe — Vue UI refresh-free multi-turn (Bug C)', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(240_000)
+
+  let sessionId = ''
+
+  test.beforeEach(async ({ page, request }) => {
+    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
+      data: { agent_id: 'default-assistant' },
+    })
+    const created = (await createRes.json()) as {
+      id: string
+      agentId: string
+      createdAt: string
+      updatedAt: string
+    }
+    sessionId = created.id
+    await request.patch(`http://localhost:8080/api/v1/sessions/${sessionId}/model`, {
+      data: { providerId: 'zai', modelId: 'glm-4.6' },
+    })
+
+    await page.route('**/api/v1/sessions', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            {
+              id: created.id,
+              agentId: created.agentId,
+              currentAgentId: created.agentId,
+              title: '',
+              messageCount: 0,
+              createdAt: created.createdAt,
+              updatedAt: created.updatedAt,
+              isStreaming: false,
+            },
+          ]),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    // Same probe wiring as the Bug 2 block — wire EventSource + DOM
+    // MutationObserver + Pinia $subscribe. We also track explicit reload
+    // events: the refresh bug is "user has to reload to see the reply";
+    // success means a refresh-free render on BOTH turns.
+    await page.addInitScript(() => {
+      const probe = {
+        wire: [] as ProbeWireEntry[],
+        store: [] as ProbeStoreEntry[],
+        dom: [] as ProbeDomEntry[],
+        apply: [] as ProbeApplyEntry[],
+        sub: [] as ProbeSubscribeEntry[],
+      }
+      ;(window as Window).__sseProbe = probe
+      ;(window as Window & { __reloadFired?: number }).__reloadFired = 0
+
+      // Detect explicit reload attempts. The bug-class manifestation is the
+      // user manually refreshing because the live render dropped; if any
+      // production code path triggers location.reload(), the test must
+      // surface that as a failure.
+      const origReload = window.location.reload.bind(window.location)
+      window.location.reload = function patchedReload(...args: unknown[]) {
+        const w = window as Window & { __reloadFired?: number }
+        w.__reloadFired = (w.__reloadFired ?? 0) + 1
+        return origReload(...(args as []))
+      }
+
+      const startedAt = Date.now()
+      const NativeEventSource = window.EventSource
+      class ProbeEventSource extends NativeEventSource {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init)
+          const probedUrl = typeof url === 'string' ? url : url.toString()
+          this.addEventListener('message', (event: MessageEvent) => {
+            const data = typeof event.data === 'string' ? event.data : ''
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: 'message',
+              preview: data.slice(0, 200),
+            })
+          })
+          this.addEventListener('error', () => {
+            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'error', preview: '' })
+          })
+          this.addEventListener('open', () => {
+            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'open', preview: '' })
+          })
+        }
+      }
+      window.EventSource = ProbeEventSource as unknown as typeof EventSource
+
+      ;(window as Window).__sseProbeInstall = (): void => {
+        const startedAtInstall = Date.now()
+        const recordDom = (): void => {
+          const bubbles = document.querySelectorAll<HTMLElement>(
+            '.message-bubble.assistant, .message-bubble.thinking',
+          )
+          const last = bubbles[bubbles.length - 1]
+          probe.dom.push({
+            t: Date.now() - startedAtInstall,
+            assistantBubbleCount: bubbles.length,
+            lastAssistantTextLen: last ? (last.textContent ?? '').length : 0,
+          })
+        }
+        const obs = new MutationObserver(() => recordDom())
+        obs.observe(document.body, { childList: true, subtree: true, characterData: true })
+        recordDom()
+      }
+    })
+
+    await page.goto('/chat')
+    await page.evaluate((sid) => {
+      localStorage.clear()
+      localStorage.setItem('chat.currentSessionId', sid)
+      localStorage.setItem('chat.agentId', 'default-assistant')
+    }, sessionId)
+    await page.reload()
+    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+    await page.evaluate(() => (window as Window).__sseProbeInstall?.())
+  })
+
+  test('Vue UI refresh-free multi-turn', async ({ page }) => {
+    // Turn 1 — plain content. The Dispatcher's snapshot-then-stream contract
+    // must surface live DOM mutations between first content chunk and [DONE].
+    const input = page.getByTestId('message-input')
+    const sendBtn = page.getByTestId('send-button')
+
+    const sendAndAwaitContent = async (prompt: string, turnLabel: string): Promise<void> => {
+      const domLenBefore = await page.evaluate(() => {
+        const probe = (window as Window).__sseProbe
+        return probe ? probe.dom.length : 0
+      })
+
+      await input.fill(prompt)
+      await sendBtn.click()
+
+      // Wait for at least one reply-bearing chunk this turn — thinking or
+      // content, skip the meta events context_usage / model_active.
+      await page.waitForFunction(
+        (lenBefore) => {
+          const probe = (window as Window).__sseProbe
+          if (!probe) return false
+          // Scan only the wire entries that appeared since the previous turn.
+          const since = probe.wire.slice(-50)
+          return since.some(
+            (w) =>
+              w.event === 'message' &&
+              w.preview !== '[DONE]' &&
+              !w.preview.includes('"type":"context_usage"') &&
+              !w.preview.includes('"type":"model_active"') &&
+              (w.preview.includes('"type":"thinking"') ||
+                w.preview.includes('"type":"content"')) &&
+              probe.dom.length >= lenBefore,
+          )
+        },
+        domLenBefore,
+        { timeout: 90_000 },
+      )
+
+      // Drain 1.5s so MutationObserver captures post-firstChunk live updates.
+      await page.waitForTimeout(1500)
+
+      // Wait for [DONE] this turn.
+      await page.waitForFunction(
+        () => {
+          const probe = (window as Window).__sseProbe
+          if (!probe) return false
+          return probe.wire.some((w) => w.preview === '[DONE]')
+        },
+        undefined,
+        { timeout: 60_000 },
+      )
+
+      const evidence = await page.evaluate((lenBefore) => {
+        const probe = (window as Window).__sseProbe
+        if (!probe) return null
+        const newDom = probe.dom.slice(lenBefore).filter((d) => d.lastAssistantTextLen > 0)
+        return { liveDomEntries: newDom.length, totalDom: probe.dom.length }
+      }, domLenBefore)
+      expect(evidence, `${turnLabel} probe must capture a snapshot`).not.toBeNull()
+      expect(
+        evidence!.liveDomEntries,
+        `${turnLabel}: expected ≥1 thinking-or-assistant DOM mutation between firstChunk and [DONE]. ` +
+          `Got ${evidence!.liveDomEntries} new mutations (total dom snapshots: ${evidence!.totalDom}).`,
+      ).toBeGreaterThan(0)
+    }
+
+    await sendAndAwaitContent('say the word PING and nothing else', 'Turn 1 (plain)')
+    await sendAndAwaitContent('@coordinator say the word PONG and nothing else', 'Turn 2 (@coordinator)')
+
+    // No production code path may trigger window.location.reload across the
+    // two turns. The user's refresh-bug workaround MUST be unnecessary.
+    const reloadCount = await page.evaluate(() => {
+      return (window as Window & { __reloadFired?: number }).__reloadFired ?? 0
+    })
+    expect(
+      reloadCount,
+      'window.location.reload must NOT fire between turns — the refresh bug is gone if multi-turn render works without reload.',
+    ).toBe(0)
+  })
+})

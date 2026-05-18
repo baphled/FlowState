@@ -114,11 +114,13 @@ type Server struct {
 // tests can substitute a spy that records the call without spinning
 // up the streamer chain.
 //
-// Per the plan, handleChat routes through DispatchEphemeral; Phase 2
-// extends this interface with DispatchSessioned when /messages
-// migrates.
+// Per the v6 plan, handleChat routes through DispatchEphemeral (Phase
+// 1, commit 49cf9fb7) and handleSessionMessage routes through
+// DispatchSessioned (Phase 2, this commit). Phase 4 extends the WS
+// handler through DispatchSessioned as well.
 type DispatcherService interface {
 	DispatchEphemeral(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.EphemeralHandle, error)
+	DispatchSessioned(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.SessionedHandle, error)
 }
 
 // ServerOption configures an optional Server dependency.
@@ -509,7 +511,24 @@ func NewServer(
 	// goes through DispatchEphemeral so the same context.WithoutCancel
 	// + resolve+dispatch lifecycle applies uniformly.
 	if s.dispatcher == nil && s.streamer != nil {
-		s.dispatcher = dispatch.New(streamingAdapter{s.streamer}, s.dispatchEngine, s.swarmRegistry, s.registry, nil)
+		var (
+			mgrAdapter    dispatch.SessionManager
+			brokerAdapter dispatch.SessionBroker
+		)
+		if s.sessionManager != nil {
+			mgrAdapter = s.sessionManager
+		}
+		if s.sessionBroker != nil {
+			brokerAdapter = s.sessionBroker
+		}
+		s.dispatcher = dispatch.New(
+			streamingAdapter{s.streamer},
+			s.dispatchEngine,
+			s.swarmRegistry,
+			s.registry,
+			mgrAdapter,
+			brokerAdapter,
+		)
 	}
 	s.setupRoutes()
 	return s
@@ -1092,15 +1111,33 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, summaries)
 }
 
-// handleSessionMessage appends a message to a session and returns the updated session.
+// handleSessionMessage appends a message to a session and returns the
+// updated session. Phase 2 of "Dispatcher Service Unification (May
+// 2026)" delegates ALL resolve + dispatch + lifecycle logic to
+// dispatch.Dispatcher.DispatchSessioned. The handler is now a thin
+// adapter: decode body → build DispatchRequest → call
+// DispatchSessioned → write Snapshot as JSON → 200 OK.
+//
+// SessionedHandle has no Done channel, so the handler structurally
+// cannot block on stream completion. This preserves the async-POST
+// contract from commit e4bf9632 by construction rather than by
+// convention: the broker.Publish goroutine fans chunks to live SSE
+// subscribers asynchronously inside Dispatcher.
+//
+// The three local helpers (resolveAutoDispatchSwarm,
+// resolveInContentMention, wrapWithSwarmLifecycle) that grew on this
+// handler in commits 07b0480e + 48380376 are DELETED as of this
+// commit — their logic moved verbatim into Dispatcher.
 //
 // Expected:
 //   - Request path parameter "id" contains the session identifier.
 //   - Request body contains non-empty content.
 //
 // Side effects:
-//   - Appends a message to the session.
-//   - Publishes stream chunks to the session broker if configured.
+//   - Appends a message to the session (via Dispatcher →
+//     sessionManager.SendMessageWithAttachments).
+//   - Spawns the broker.Publish goroutine inside Dispatcher when the
+//     broker is configured.
 //   - Writes the updated session as JSON.
 func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
@@ -1110,12 +1147,7 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	id := r.PathValue("id")
 	type reqBody struct {
-		Content string `json:"content"`
-		// AttachmentIDs is the optional list of attachment ids to thread
-		// onto this turn. Plan "Chat Attachments Backend (May 2026)"
-		// §6 task-04 / task-05. The ids must already exist in the
-		// session's attachment store (via POST .../attachments). Unknown
-		// ids surface as session.ErrAttachmentNotFound → 400.
+		Content       string   `json:"content"`
 		AttachmentIDs []string `json:"attachmentIds,omitempty"`
 	}
 	var req reqBody
@@ -1126,103 +1158,28 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	if s.completionOrchestrator != nil {
 		s.completionOrchestrator.ResetRePromptCount(id)
 	}
-	// Decouple the streamer's lifetime from the HTTP request's lifetime.
-	//
-	// Commit e4bf9632 made the chunks-to-broker publish asynchronous
-	// (`go s.sessionBroker.Publish(id, chunks)`) so the snapshot returns
-	// to the client without waiting for the full assistant turn. The
-	// intent is correct: snapshot fast, stream over SSE. But the
-	// engine streamer is bound to the ctx we pass into SendMessage, and
-	// the manager wraps that ctx with context.WithCancel (manager.go:1297)
-	// keyed by sessionID. When the HTTP handler returns, net/http
-	// cancels r.Context() — which cancels the manager's descendant ctx —
-	// which trips the engine's `<-ctx.Done()` branch (engine.go:3774-3776),
-	// emitting `{Error: context.Canceled, Done: true}` with zero content
-	// chunks. The SSE subscriber sees only Done with no content; the user
-	// gets a failed bubble and no reply.
-	//
-	// context.WithoutCancel propagates request-scoped values (sessionID,
-	// provider/model overrides, prior messages) without inheriting
-	// cancellation. The session manager's own CancelInflight mechanism
-	// (manager.go:1298-1300) remains the correct way to terminate an
-	// in-flight turn — keyed on sessionID, not on the request that kicked
-	// it off. A second concurrent POST or an explicit cancel API can
-	// still cut the turn short; only the request-context coupling is removed.
-	streamCtx := context.WithoutCancel(r.Context())
-
-	// Auto-dispatch swarm wiring (Bug B fix, May 2026).
-	//
-	// /api/chat routes user input through Orchestrator.ProcessUserInput
-	// which calls swarm.DispatchSwarm — snapshot manifest → set swarm
-	// context → stream → flush → restore. The session-scoped POST path
-	// (used by the Vue web UI's chatStore.sendMessage) did NOT consult
-	// the swarm registry, so a session whose agent_id is a registered
-	// swarm-lead (e.g. `coordinator` for meta-swarm) streamed the bare
-	// agent persona with no Swarm Leadership block and no member list —
-	// the coordinator literally could not see what swarm it was in,
-	// could not enumerate members, could not delegate.
-	//
-	// resolveAutoDispatchSwarm runs the same AutoDispatchSwarmFor check
-	// the /api/chat resolver uses, but applies it to the session's
-	// active agent rather than the request body. When it hits, the
-	// pre-stream snapshot + SetSwarmContext lands BEFORE SendMessage so
-	// the engine.Stream call inside the manager sees the swarm context.
-	// The post-stream lifecycle (flush + restore) runs when the chunks
-	// channel drains, mirroring Orchestrator.Stream's pattern.
-	//
-	// Sessions whose agent_id is a plain agent (no matching auto-
-	// dispatch swarm), and test surfaces that construct the Server
-	// without WithSwarmRegistry / WithDispatchEngine, both fall through
-	// to the legacy pass-through path with no behaviour change.
-	//
-	// In-content @-mention dispatch (Bug 1 / May 2026): /api/chat routes
-	// user input through Orchestrator.ProcessUserInput with
-	// ScanMentions=true, so typing `@a-team` inside the message body
-	// dispatches the a-team swarm regardless of which agent the
-	// AgentPicker has selected. The session POST handler must reach the
-	// same parity — without it, a user typing `@a-team` inside a
-	// default-assistant session sees the bare default-assistant agent
-	// react to the literal text "@a-team" (treating it as plain prose),
-	// not the a-team swarm. resolveInContentMention runs the same
-	// shared swarm.ResolveTarget the orchestrator uses; when it hits,
-	// the mention's swarm + lead WINS over any auto-dispatch verdict
-	// because the user explicitly typed it. The redirect is per-turn:
-	// CurrentAgentID stays unchanged and a follow-up turn without a
-	// mention routes back through the session's persistent agent.
-	leadOverride := ""
-	swarmCtx, manifestSnapshot, swarmActive := s.resolveInContentMention(req.Content)
-	if !swarmActive {
-		swarmCtx, manifestSnapshot, swarmActive = s.resolveAutoDispatchSwarm(id)
-	} else {
-		// Mention won — the session's persistent agent does not lead
-		// this turn. The streamer must be driven by the mention's lead
-		// so the assistant message stamps under the swarm's lead (the
-		// UI bubble reads "Team Lead" / "Coordinator" / etc., not
-		// "Default Assistant"). The override flows down through
-		// session.WithStreamAgentOverride to SendMessage where it
-		// replaces the resolved agentID for streamer.Stream and
-		// AccumulateStream. The user-message stamp stays under the
-		// session's persistent agent — that contract is enforced
-		// inside SendMessage (userMessageAgent vs streamAgent split).
-		leadOverride = swarmCtx.LeadAgent
+	// Resolve the agent fallback the same way SendMessage does:
+	// CurrentAgentID overrides AgentID per the agent-stamping-asymmetry
+	// fix at session/manager.go:1217-1220. Dispatcher uses this as the
+	// fallback when no in-content @-mention resolves to a swarm.
+	snap, snapErr := s.sessionManager.SnapshotSession(id)
+	if snapErr != nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
 	}
-	if swarmActive {
-		s.dispatchEngine.SetSwarmContext(swarmCtx)
-	}
-	if leadOverride != "" {
-		streamCtx = session.WithStreamAgentOverride(streamCtx, leadOverride)
+	agentID := snap.AgentID
+	if snap.CurrentAgentID != "" {
+		agentID = snap.CurrentAgentID
 	}
 
-	chunks, err := s.sessionManager.SendMessageWithAttachments(
-		streamCtx, id, req.Content, req.AttachmentIDs,
-	)
+	handle, err := s.dispatcher.DispatchSessioned(r.Context(), dispatch.DispatchRequest{
+		SessionID:     id,
+		AgentID:       agentID,
+		Content:       req.Content,
+		AttachmentIDs: req.AttachmentIDs,
+		ScanMentions:  true,
+	}, nil)
 	if err != nil {
-		if swarmActive {
-			// Stream never started — restore the manifest immediately
-			// so a failed handler doesn't leave the engine
-			// re-identified as the swarm lead for subsequent turns.
-			s.dispatchEngine.RestoreManifest(manifestSnapshot)
-		}
 		if errors.Is(err, session.ErrAttachmentNotFound) {
 			http.Error(w, "attachment id not found in session", http.StatusBadRequest)
 			return
@@ -1230,204 +1187,7 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	if chunks != nil {
-		// Wrap the chunks channel so the post-stream swarm lifecycle
-		// runs exactly once when the engine finishes streaming. When
-		// no swarm dispatch is active, the wrap is the identity
-		// transform and adds no extra hop on the hot path beyond a
-		// single goroutine + buffered chan.
-		if swarmActive {
-			chunks = s.wrapWithSwarmLifecycle(streamCtx, chunks, manifestSnapshot)
-		}
-		if s.sessionBroker != nil {
-			go s.sessionBroker.Publish(id, chunks)
-		} else {
-			go func() {
-				for range chunks {
-				}
-			}()
-		}
-	} else if swarmActive {
-		// No chunks (nil channel) — manager returned successfully but
-		// without a stream. Restore manifest synchronously so engine
-		// state doesn't leak.
-		s.dispatchEngine.RestoreManifest(manifestSnapshot)
-	}
-	// SnapshotSession (not GetSession) so the *Session pointer never
-	// escapes the manager's lock boundary. NewSessionResponse reads
-	// ~10 mutable fields (Messages, Status, CurrentAgentID, ...);
-	// any one of them races with SendMessage / UpdateSession* under
-	// WLock if the caller derefs after RLock drops. See vault note
-	// "Session Messages Data Race in SSE Fast-Path (May 2026)" §
-	// "Sibling races".
-	snap, err := s.sessionManager.SnapshotSession(id)
-	if err != nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-	writeJSON(w, NewSessionResponse(&snap))
-}
-
-// resolveAutoDispatchSwarm consults the swarm registry for the session's
-// active agent (CurrentAgentID || AgentID, matching SendMessage's own
-// resolution) and reports whether a swarm should be installed on the
-// engine for this turn.
-//
-// Expected:
-//   - sessionID identifies an existing session in the manager. An
-//     unknown id degrades silently to (nil, nil, false) so the caller
-//     still produces a 404 on its own SendMessage path.
-//
-// Returns:
-//   - swarmCtx: the *swarm.Context to install via SetSwarmContext when
-//     active is true. Pointer to a value local to this call — callers
-//     must not mutate it (swarm.Context is documented immutable).
-//   - manifestSnapshot: the opaque pre-dispatch manifest token to hand
-//     back to RestoreManifest after the stream lifecycle completes.
-//   - active: true when (i) the swarm registry, dispatch engine and
-//     session manager are all wired AND (ii) AutoDispatchSwarmFor
-//     returns a unique manifest for the session's active agent. False
-//     in all other cases — the caller skips the swarm lifecycle.
-//
-// Side effects:
-//   - Calls dispatchEngine.ManifestSnapshot once when active so the
-//     caller has a token to restore. No SetSwarmContext is called from
-//     this helper; the caller does that after the helper returns so the
-//     install + ensuing SendMessage observe the same code path the
-//     /api/chat handler uses (via DispatchSwarm).
-func (s *Server) resolveAutoDispatchSwarm(sessionID string) (*swarm.Context, any, bool) {
-	if s.swarmRegistry == nil || s.dispatchEngine == nil || s.sessionManager == nil {
-		return nil, nil, false
-	}
-	snap, err := s.sessionManager.SnapshotSession(sessionID)
-	if err != nil {
-		return nil, nil, false
-	}
-	agentID := snap.AgentID
-	if snap.CurrentAgentID != "" {
-		agentID = snap.CurrentAgentID
-	}
-	if agentID == "" {
-		return nil, nil, false
-	}
-	manifest, ok := s.swarmRegistry.AutoDispatchSwarmFor(agentID)
-	if !ok {
-		return nil, nil, false
-	}
-	swarmCtx := swarm.NewContext(manifest.ID, manifest)
-	manifestSnapshot := s.dispatchEngine.ManifestSnapshot()
-	return &swarmCtx, manifestSnapshot, true
-}
-
-// resolveInContentMention scans the message body for @<swarm-id>
-// mentions and, when the first one resolves to a registered swarm,
-// returns the swarm context to install plus the manifest snapshot to
-// restore after the stream completes. Agent @-mentions and unknown
-// mentions are skipped — only swarm mentions redirect (matches
-// Orchestrator.resolve's ScanMentions=true semantics at
-// internal/orchestrator/orchestrator.go:299-315).
-//
-// Expected:
-//   - content is the raw user message body (req.Content). Empty content
-//     short-circuits to (nil, nil, false).
-//
-// Returns:
-//   - swarmCtx: the *swarm.Context to install via SetSwarmContext when
-//     active is true. Built from the mention's manifest with the
-//     mention's id as the swarm id (so the engine's Swarm Leadership
-//     block names the swarm the user typed).
-//   - manifestSnapshot: the opaque pre-dispatch manifest token to hand
-//     back to RestoreManifest after the stream lifecycle completes.
-//   - active: true when (i) the swarm registry, agent registry,
-//     dispatch engine and session manager are all wired AND (ii) at
-//     least one in-content @-mention resolves to a swarm via
-//     swarm.ResolveTarget. False in all other cases.
-//
-// Side effects:
-//   - Calls dispatchEngine.ManifestSnapshot once when active so the
-//     caller has a token to restore. No SetSwarmContext is called from
-//     this helper; the caller does that after the helper returns so
-//     the install + ensuing SendMessage observe the same code path the
-//     /api/chat handler uses.
-func (s *Server) resolveInContentMention(content string) (*swarm.Context, any, bool) {
-	if s.swarmRegistry == nil || s.dispatchEngine == nil || s.sessionManager == nil {
-		return nil, nil, false
-	}
-	if s.registry == nil {
-		// Without an agent registry we can't tell agent mentions from
-		// swarm mentions — swarm.ResolveTarget needs HasAgent to
-		// classify. Fall through to the auto-dispatch path.
-		return nil, nil, false
-	}
-	if content == "" {
-		return nil, nil, false
-	}
-	hasAgent := func(name string) bool {
-		if _, ok := s.registry.Get(name); ok {
-			return true
-		}
-		_, ok := s.registry.GetByNameOrAlias(name)
-		return ok
-	}
-	for _, mention := range swarm.ExtractAtMentions(content) {
-		_, swarmCtx, err := swarm.ResolveTarget(hasAgent, s.swarmRegistry, mention)
-		if err != nil || swarmCtx == nil {
-			// Either unknown id, agent mention, or malformed swarm —
-			// skip and keep scanning. Mirrors
-			// orchestrator.resolve's left-to-right "first swarm wins"
-			// scan at internal/orchestrator/orchestrator.go:302-308.
-			continue
-		}
-		manifestSnapshot := s.dispatchEngine.ManifestSnapshot()
-		return swarmCtx, manifestSnapshot, true
-	}
-	return nil, nil, false
-}
-
-// wrapWithSwarmLifecycle pumps src into a new channel and, after src
-// closes, runs the post-stream swarm dispatch lifecycle
-// (FlushSwarmLifecycle + RestoreManifest) so the engine ends in the
-// same shape Orchestrator.Stream leaves it: swarm context is sticky
-// (the next dispatch overwrites it) but the manifest reverts to the
-// pre-dispatch identity so non-swarm turns don't inherit the swarm
-// lead's persona. Mirrors dispatch_service.go:96-110.
-//
-// Expected:
-//   - ctx is the same context the manager streamed under, so the post-
-//     dispatch flush sees the same cancellation surface.
-//   - src is the chunks channel returned by SendMessage; never nil.
-//   - manifestSnapshot is the opaque token resolveAutoDispatchSwarm
-//     captured via ManifestSnapshot.
-//
-// Returns:
-//   - A new chunks channel that forwards every chunk from src verbatim
-//     and closes when src closes.
-//
-// Side effects:
-//   - Starts one goroutine that ranges over src and runs
-//     FlushSwarmLifecycle + RestoreManifest after the range exits.
-func (s *Server) wrapWithSwarmLifecycle(
-	ctx context.Context,
-	src <-chan provider.StreamChunk,
-	manifestSnapshot any,
-) <-chan provider.StreamChunk {
-	out := make(chan provider.StreamChunk, 64)
-	go func() {
-		defer close(out)
-		defer func() {
-			// Flush + restore even if the producer panics or src is
-			// drained early. Flush errors are intentionally swallowed —
-			// the post-swarm gates' own observers (event bus, logs)
-			// surface failures; the SSE-side consumer cannot act on a
-			// flush error anyway. RestoreManifest is no-error.
-			_ = s.dispatchEngine.FlushSwarmLifecycle(ctx)
-			s.dispatchEngine.RestoreManifest(manifestSnapshot)
-		}()
-		for chunk := range src {
-			out <- chunk
-		}
-	}()
-	return out
+	writeJSON(w, NewSessionResponse(&handle.Snapshot))
 }
 
 // prependChunk returns a new receive-only channel that yields `first` as

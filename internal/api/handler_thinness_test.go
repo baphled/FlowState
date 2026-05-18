@@ -107,22 +107,19 @@ func TestHandlerThinness_handleChat(t *testing.T) {
 	}
 }
 
-// TestHandlerThinness_handleSessionMessage is the Phase 2 GREEN subtest
-// pre-cast as expected-RED in Phase 1. handleSessionMessage still
-// contains the three local helpers + the swarm primitives until Phase 2
-// migrates it through DispatchSessioned and deletes the helpers. We
-// assert RED here so the next phase's GREEN is observable.
-//
-// Expected behaviour: this subtest PASSES today by asserting hits is
-// non-empty. When Phase 2 lands, the assertion flips to "no hits" in
-// the same edit that migrates the handler.
-func TestHandlerThinness_handleSessionMessage_RedUntilPhase2(t *testing.T) {
+// TestHandlerThinness_handleSessionMessage is the Phase 2 GREEN subtest.
+// Phase 2 of "Dispatcher Service Unification (May 2026)" routes
+// /messages through dispatch.Dispatcher.DispatchSessioned, deleting the
+// three local helpers (resolveAutoDispatchSwarm, resolveInContentMention,
+// wrapWithSwarmLifecycle). The handler must make ZERO direct calls to
+// the banned symbols — all resolve + dispatch + lifecycle logic lives
+// once in Dispatcher.
+func TestHandlerThinness_handleSessionMessage(t *testing.T) {
 	body := readHandlerBody(t, serverFile, "handleSessionMessage")
 	hits := bannedSymbolsIn(body)
-	if len(hits) == 0 {
-		t.Fatal("handleSessionMessage no longer contains banned symbols — Phase 2 of Dispatcher Service Unification (May 2026) has landed; flip this assertion to require hits == 0")
+	if len(hits) > 0 {
+		t.Fatalf("handleSessionMessage must not call %v directly — route through dispatch.Dispatcher.DispatchSessioned per Dispatcher Service Unification (May 2026) Phase 2", hits)
 	}
-	t.Logf("Phase 2 pending: handleSessionMessage still calls %v — Dispatcher.DispatchSessioned migration will close this", hits)
 }
 
 // TestHandlerThinness_handleSessionWebSocket is the Phase 4 GREEN
