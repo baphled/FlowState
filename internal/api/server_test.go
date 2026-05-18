@@ -1991,6 +1991,163 @@ var _ = Describe("Session stream live events", func() {
 		Expect(evts).To(ContainElement("[DONE]"))
 	})
 
+	// Regression for the sealed-turn SSE race introduced by the async-POST
+	// shift in commit e4bf9632 (and the chatStore ordering in
+	// chatStore.ts:1949-1992 where SSE is opened BEFORE the POST is
+	// awaited).
+	//
+	// Reproduction shape:
+	//
+	//   1. Session has a prior turn — last message role is "assistant"
+	//      (sealed turn).
+	//   2. Client opens SSE on the sealed session FIRST.
+	//   3. Client THEN POSTs a follow-up /messages.
+	//   4. Server publishes the follow-up turn's chunks via the broker.
+	//
+	// Pre-fix the SSE handler took the sealed-turn fast-path
+	// (SubscribeIfPublishing, no publisher yet → writeSSEDone) before
+	// the POST kicked off the publish goroutine. The fresh SSE subscriber
+	// was never registered and the chunks fanned out to zero subscribers,
+	// so the UI never saw the assistant content for the follow-up turn.
+	//
+	// Contract this spec pins:
+	//
+	//   - A sealed-turn session can have SSE opened FIRST, and a follow-
+	//     up POST will deliver the new turn's content chunks to that
+	//     SSE subscriber.
+	//   - The terminal [DONE] still lands after the new turn drains.
+	//   - The sibling "no content replay" contract at the prior spec
+	//     remains intact (no chunks from turn 1 appear in turn 2's
+	//     subscriber).
+	It("delivers follow-up turn chunks to an SSE subscriber that opened first on a sealed turn (async-POST race)", func() {
+		// dripStreamer keeps the chunks channel live across the HTTP
+		// handler return so the SSE race window is observable. A pre-
+		// filled mockStreamer would already have closed its channel by
+		// the time the SSE handler ran its sealed-turn check, masking
+		// the bug.
+		drip := &dripStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "FOLLOWUP"},
+				{Content: "-CHUNK"},
+				{Done: true},
+			},
+			emitInterval: 30 * time.Millisecond,
+		}
+		raceBroker := api.NewSessionBroker()
+		raceMgr := session.NewManager(drip)
+		raceSrv := api.NewServer(
+			drip,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(raceMgr),
+			api.WithSessionBroker(raceBroker),
+		)
+		raceHTTP := httptest.NewServer(raceSrv.Handler())
+		defer raceHTTP.Close()
+
+		// Seed a sealed session by restoring it with an assistant tail.
+		// RestoreSessions installs the messages without invoking the
+		// streamer, so the first turn's chunks are NOT pending in the
+		// broker and the next POST is the first publish run on this
+		// session.
+		const sessID = "sealed-followup-race"
+		raceMgr.RestoreSessions([]*session.Session{
+			{
+				ID:      sessID,
+				AgentID: "race-agent",
+				Messages: []session.Message{
+					{ID: "u0", Role: "user", Content: "seed"},
+					{ID: "a0", Role: "assistant", Content: "ack"},
+				},
+			},
+		})
+
+		// Step 2: open SSE FIRST. This matches chatStore.sendMessage's
+		// order (chatStore.ts:1949-1992): connect to /stream, THEN
+		// await the POST.
+		streamCtx, streamCancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer streamCancel()
+		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
+			raceHTTP.URL+"/api/v1/sessions/"+sessID+"/stream", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			defer GinkgoRecover()
+			streamResp, doErr := http.DefaultClient.Do(streamReq)
+			if doErr != nil {
+				eventsCh <- []string{"__DO_ERR__:" + doErr.Error()}
+				return
+			}
+			defer streamResp.Body.Close()
+			reader := bufio.NewReader(streamResp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		// Give the SSE GET time to reach the handler. The handler's
+		// sealed-turn fast path runs synchronously on this request
+		// goroutine; once the handler has decided to subscribe (or
+		// fast-path to [DONE]), the POST below cannot influence the
+		// decision. This sleep is the timing model of the actual
+		// browser bug: the FE opens SSE and then awaits a POST — the
+		// gap between the two is non-zero.
+		time.Sleep(150 * time.Millisecond)
+
+		// Step 3: POST the follow-up. The server returns immediately
+		// (async publish per e4bf9632); the publish goroutine drips
+		// chunks over ~90ms.
+		postResp, err := http.Post(
+			raceHTTP.URL+"/api/v1/sessions/"+sessID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"follow up"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_ = postResp.Body.Close()
+		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
+
+		// Collect SSE events.
+		var evts []string
+		Eventually(eventsCh, 6*time.Second).Should(Receive(&evts))
+
+		// Contract A: SSE subscriber receives the follow-up turn's
+		// content chunks. Pre-fix this fails because the SSE handler
+		// took the sealed-turn fast path and emitted [DONE] before the
+		// publish goroutine started.
+		Expect(evts).To(ContainElement(ContainSubstring("FOLLOWUP")),
+			"sealed-turn SSE subscriber must receive the follow-up turn's first content chunk; got: %v", evts)
+		Expect(evts).To(ContainElement(ContainSubstring("-CHUNK")),
+			"sealed-turn SSE subscriber must receive the follow-up turn's second content chunk; got: %v", evts)
+
+		// Contract B: terminal [DONE] still lands AFTER the chunks.
+		Expect(evts).To(ContainElement("[DONE]"),
+			"sealed-turn SSE subscriber must receive a terminal [DONE]; got: %v", evts)
+
+		// Contract C: no replay of turn 1's "ack" assistant content.
+		// The "no historical replay" contract (server_test.go's
+		// sibling sealed-turn spec, broker invariant I6) is preserved.
+		for _, e := range evts {
+			Expect(e).NotTo(ContainSubstring(`"content":"ack"`),
+				"sealed-turn SSE subscriber must NOT see turn 1's assistant content replayed; got: %v", evts)
+		}
+	})
+
 	It("drives concurrent POST /messages and GET /stream without a data race on session.Messages", func() {
 		// Regression for the data race surfaced during Track A's
 		// streaming signal-drop fixes. `go test -race` reported:

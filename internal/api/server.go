@@ -30,6 +30,20 @@ import (
 const (
 	errSessionManagerNotConfigured    = `{"error":"session manager not configured"}`
 	errBackgroundManagerNotConfigured = `{"error":"background manager not configured"}`
+
+	// sealedTurnGrace is the maximum time handleSessionStream waits on a
+	// freshly-opened SSE subscription against a sealed-turn session
+	// before deciding the session is genuinely idle and emitting
+	// [DONE]. Sized to absorb the async-POST window introduced by
+	// commit e4bf9632: the Vue chatStore opens SSE first and then
+	// awaits the POST (chatStore.ts:1949-1992), so the gap between
+	// "SSE handler runs" and "POST kicks off Publish" is non-zero but
+	// typically <50ms on localhost. 250ms is comfortably wider than
+	// the observed gap on a loaded laptop yet short enough that a
+	// truly idle reconnect on a sealed session does not visibly hang
+	// the client. See bug-fix note "Sealed-Turn SSE Race After Async
+	// POST (May 2026)".
+	sealedTurnGrace = 250 * time.Millisecond
 )
 
 // Streamer abstracts the streaming producer for chat responses.
@@ -1253,6 +1267,41 @@ func (s *Server) wrapWithSwarmLifecycle(
 	return out
 }
 
+// prependChunk returns a new receive-only channel that yields `first` as
+// its very next value and then forwards every chunk from `src` until
+// `src` closes. The new channel closes after `src` closes.
+//
+// Used by handleSessionStream's sealed-turn grace probe: when the
+// probe pulls the first chunk off the broker subscription to detect
+// that a publisher has started, the main select loop still needs to
+// dispatch that chunk through the same code path as every subsequent
+// chunk. prependChunk re-injects the consumed value without
+// duplicating the dispatch logic.
+//
+// Expected:
+//   - first is a single StreamChunk value already received from src.
+//   - src is a still-open receive-only chunk channel.
+//
+// Returns:
+//   - A buffered chunk channel with `first` already queued; forwards
+//     all subsequent chunks from src; closes when src closes.
+//
+// Side effects:
+//   - Spawns one goroutine that ranges over src; the goroutine exits
+//     when src closes or the returned channel is no longer being read
+//     (the SSE handler's ctx.Done() path drops the reference).
+func prependChunk(src <-chan provider.StreamChunk, first provider.StreamChunk) <-chan provider.StreamChunk {
+	out := make(chan provider.StreamChunk, 64)
+	out <- first
+	go func() {
+		defer close(out)
+		for chunk := range src {
+			out <- chunk
+		}
+	}()
+	return out
+}
+
 // handleSessionTodos returns the todo list for the given session as JSON.
 //
 // Expected:
@@ -1327,29 +1376,66 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	// Live session — stream new events only.
 	// Historical content is loaded by the client via GET /messages.
 	//
-	// Branch on the session's last-message role to decide which broker
-	// accessor to use:
+	// Subscribe unconditionally and use a brief grace period on sealed
+	// turns to disambiguate "genuinely idle" from "a new turn is about
+	// to start".
 	//
-	//   - Last message non-user (sealed turn) → SubscribeIfPublishing.
-	//     The transactional accessor returns (nil, no-op, false) when
-	//     no Publish is in-flight, in which case we emit [DONE]
-	//     immediately. When (ok == true) a fresh Publish run is
-	//     mid-flight despite the sealed last message (e.g. a recovery
-	//     turn or future multi-publish wiring) — consume from ch.
+	// # The async-POST sealed-turn race
 	//
-	//   - Last message is user / no messages (between turns) →
-	//     unconditional Subscribe. Publish hasn't started for the new
-	//     turn yet; we must register a subscriber and wait for chunks
-	//     to land. (Subscribing before Publish increments the active
-	//     refcount is exactly the case Subscribe is for.)
+	// The pre-fix path branched on LastMessageRole and used
+	// SubscribeIfPublishing for sealed turns: if no publisher was active
+	// at the moment of the GET, the handler emitted [DONE] immediately
+	// and returned. That was sound when POST was synchronous (the
+	// publish completed before the response returned), but commit
+	// e4bf9632 made the broker publish asynchronous — the POST returns
+	// immediately and the publish goroutine runs after the HTTP handler
+	// has already replied. The Vue chatStore (chatStore.ts:1949-1992)
+	// opens SSE FIRST and THEN awaits the POST: on a session with a
+	// prior assistant turn the SSE handler ran its sealed-turn check
+	// BEFORE the POST kicked off the publish, took the fast-path,
+	// emitted [DONE], and the client saw no chunks for the follow-up
+	// turn. See bug-fix note "Sealed-Turn SSE Race After Async POST
+	// (May 2026)".
 	//
-	// This ordering closes the IsPublishing TOCTOU previously surfaced
-	// by the broker concurrency audit: separate Subscribe + IsPublishing
-	// calls observed two different states, and a Publish that started
-	// in the gap fanned chunks into a channel the handler had already
-	// abandoned. The new transactional accessor decides "is there a
-	// publisher AND register me" in one critical section under the
-	// broker mutex.
+	// # The new shape — subscribe first, probe-with-grace second
+	//
+	// Subscribe is now called unconditionally. By the time
+	// SubscribeIfPublishing's TOCTOU window (Subscribe-then-IsPublishing)
+	// concerned us, the subscriber was already in the map; for a sealed
+	// turn we then probed IsPublishing. The new shape inverts that: the
+	// subscriber is registered FIRST (so any Publish run that starts
+	// after this point will fan chunks to us), and we then decide
+	// whether to wait for a chunk or fast-path to [DONE].
+	//
+	// On sealed turns we wait up to sealedTurnGrace for either:
+	//   - A chunk to arrive — a new Publish run started after we
+	//     subscribed; proceed to the normal select loop.
+	//   - The channel to close — a Publish run started and finished
+	//     before the grace expired; emit [DONE] (no replay).
+	//   - The grace timer to expire — the session is genuinely idle.
+	//     Emit [DONE] and return. The "no historical replay" contract
+	//     (broker invariant I6, server_test.go's "emits no content
+	//     events to a fresh subscriber after a sealed turn") is
+	//     preserved because the broker has no replay path and Subscribe
+	//     never observes past chunks; the grace only catches chunks
+	//     emitted strictly AFTER Subscribe returned.
+	//
+	// On non-sealed turns (last message is user / no messages) we skip
+	// the grace and enter the select loop directly: that path matches
+	// the legacy unconditional-Subscribe behaviour. Sealed turns
+	// covered by SubscribeIfPublishing previously did fast-path on no
+	// publisher; we replace that with the grace-then-fast-path shape so
+	// the async-POST window cannot strand a subscriber.
+	//
+	// # Why a grace period, not a transactional accessor
+	//
+	// The TOCTOU SubscribeIfPublishing closes ("read publishing AND
+	// register atomically") was the right shape for a synchronous-POST
+	// world: the publisher was always already active by the time the
+	// SSE handler ran. Under async POST the relevant race window is
+	// "subscribe before the publisher starts" — exactly what plain
+	// Subscribe is for. The grace timer is the cheapest way to bound
+	// the wait for a publisher that arrives shortly after the GET.
 	//
 	// LastMessageRole is used instead of GetSession + freshSess.Messages
 	// because GetSession returns the *Session pointer and releases the
@@ -1361,20 +1447,38 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
 	role, hasMsgs, lastErr := s.sessionManager.LastMessageRole(id)
 	sealed := lastErr == nil && hasMsgs && role != "user"
 
-	var liveCh <-chan provider.StreamChunk
-	var unsubscribe func()
+	liveCh, unsubscribe := s.sessionBroker.Subscribe(id)
+	defer unsubscribe()
+
 	if sealed {
-		ch, unsub, ok := s.sessionBroker.SubscribeIfPublishing(id)
-		if !ok {
+		// Probe for a chunk inside the grace window. If we see one,
+		// fall through to the main select loop which will dispatch
+		// it. If the channel closes (Publish ran and finished before
+		// the grace expired), or the timer fires (truly idle session),
+		// emit [DONE] and return.
+		select {
+		case <-r.Context().Done():
+			return
+		case chunk, ok := <-liveCh:
+			if !ok {
+				writeSSEDone(w, flusher)
+				return
+			}
+			// Re-deliver the chunk to the main loop. The simplest
+			// shape is a one-slot channel that takes precedence in
+			// the select below; we use a goroutine + buffered chan
+			// so the loop's existing chunk-dispatch logic doesn't
+			// need to special-case "first chunk vs subsequent".
+			liveCh = prependChunk(liveCh, chunk)
+		case <-time.After(sealedTurnGrace):
+			// Genuinely idle sealed session. Emit [DONE] without
+			// replaying any historical content (broker has no
+			// replay path; subscribe-after-the-fact never sees
+			// past chunks).
 			writeSSEDone(w, flusher)
 			return
 		}
-		liveCh = ch
-		unsubscribe = unsub
-	} else {
-		liveCh, unsubscribe = s.sessionBroker.Subscribe(id)
 	}
-	defer unsubscribe()
 
 	// Slice 6a — bridge bus events for this session into the SSE
 	// stream. The auto-compactor publishes EventContextCompacted on
