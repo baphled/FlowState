@@ -1321,6 +1321,30 @@ func applyRegistryEnum(schema *tool.Schema, registry *agent.Registry) {
 //   - Streams a request to the target agent's engine.
 //   - Emits DelegationInfo stream chunks when an output channel is available in ctx.
 func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
+	// Meta-Swarm Coordinator Architecture (May 2026) — Phase 3.
+	//
+	// When the active swarm context lists a SWARM id in Members[] (e.g.
+	// meta-swarm whose members are [a-team, dev-swarm, planning-loop,
+	// board-room]) and the caller invokes delegate("<swarm-id>", brief),
+	// route through DispatchSwarmMembers rather than the agent-engine
+	// path. The agent registry has no entry for sub-swarm ids by design
+	// — they're swarms, not agents — so the default resolveAgentID
+	// path would fail with `no agent configured for task type`.
+	//
+	// This branch fires only when:
+	//   1. An active swarm context exists (d.activeSwarmContext() ok).
+	//   2. The target id appears in the active swarm's Members[].
+	//   3. The target id resolves in the swarm registry.
+	//   4. The target id does NOT resolve in the agent registry
+	//      (preserves the agent-target precedence from swarm.Resolve).
+	//
+	// All four conditions must hold; otherwise control falls through to
+	// the existing prepareExecution path so single-agent delegation
+	// stays unchanged.
+	if result, handled, dispErr := d.tryDispatchSwarmTarget(ctx, input); handled {
+		return result, dispErr
+	}
+
 	params, target, err := d.prepareExecution(ctx, input)
 	if err != nil {
 		return tool.Result{}, err
@@ -2430,6 +2454,104 @@ func (d *DelegateTool) manifestForSwarm(swarmID string) *swarm.Manifest {
 		return nil
 	}
 	return m
+}
+
+// tryDispatchSwarmTarget routes delegate calls whose target is a sub-
+// swarm id (listed in the active swarm context's Members[]) through
+// DispatchSwarmMembers. Returns handled=true exactly when this branch
+// took ownership of the call, so Execute can short-circuit and skip
+// the agent-engine path entirely.
+//
+// Meta-Swarm Coordinator Architecture (May 2026) — Phase 3 entry seam.
+//
+// Expected:
+//   - ctx is the lead-side delegation context.
+//   - input is the raw tool.Input as Execute received it.
+//
+// Returns:
+//   - result, true, nil — swarm dispatch succeeded; Execute returns
+//     this directly.
+//   - tool.Result{}, true, err — target IS a swarm but dispatch failed
+//     (in-swarm gate, registry miss, etc.). Execute returns the error
+//     verbatim so the caller's transcript shows the failure on the
+//     swarm-target path rather than reverting to the agent-target
+//     error message.
+//   - tool.Result{}, false, nil — target is NOT a swarm in the active
+//     context; Execute proceeds with the normal agent-target flow.
+//
+// Side effects:
+//   - On the handled=true path, fans out member work through
+//     DispatchSwarmMembers (which streams per-member via the resolved
+//     streamers).
+func (d *DelegateTool) tryDispatchSwarmTarget(ctx context.Context, input tool.Input) (tool.Result, bool, error) {
+	if d.swarmRegistry == nil {
+		return tool.Result{}, false, nil
+	}
+	swarmCtx, ok := d.activeSwarmContext()
+	if !ok || swarmCtx == nil {
+		return tool.Result{}, false, nil
+	}
+	// Lift subagent_type + message off raw input. We deliberately don't
+	// call parseDelegationParams here so a swarm-target dispatch never
+	// triggers the full handoff/category parse: if the caller mixed a
+	// swarm-id target with handoff fields, those are silently dropped
+	// (sub-swarm dispatch carries its own chain-prefix derived from
+	// the manifest, not the parent's handoff). This is intentional —
+	// handoff semantics apply to agent-target calls only.
+	subagentType, _ := input.Arguments["subagent_type"].(string)
+	message, _ := input.Arguments["message"].(string)
+	if subagentType == "" {
+		return tool.Result{}, false, nil
+	}
+	// Agent-target precedence: if the id resolves to an agent in the
+	// registry, the agent-target path wins. Mirrors swarm.Resolve's
+	// agent-first ordering and the validator's collision rejection.
+	if d.registry != nil {
+		if _, found := d.registry.GetByNameOrAlias(subagentType); found {
+			return tool.Result{}, false, nil
+		}
+	}
+	// Must be in the active swarm's Members[] — the in-swarm gate's
+	// shadow rule applies to swarm-id targets identically to agent-id
+	// targets.
+	if !containsAgent(swarmCtx.Members, subagentType) {
+		return tool.Result{}, false, nil
+	}
+	// Must resolve to a swarm in the registry.
+	subSwarm, found := d.swarmRegistry.Get(subagentType)
+	if !found || subSwarm == nil {
+		return tool.Result{}, false, nil
+	}
+
+	// Build the child swarm Context. NestSubSwarm carries the
+	// parent's chain-prefix and depth forward so the inner runner's
+	// errors carry the full parent/child trace.
+	childCtx := swarmCtx.NestSubSwarm(subSwarm.ID)
+	childCtx.SwarmID = subSwarm.ID
+	childCtx.LeadAgent = subSwarm.Lead
+	childCtx.Members = append([]string(nil), subSwarm.Members...)
+	childCtx.Gates = append([]swarm.GateSpec(nil), subSwarm.Harness.Gates...)
+
+	if err := d.DispatchSwarmMembers(ctx, &childCtx, subSwarm.Members, message); err != nil {
+		return tool.Result{}, true, fmt.Errorf("swarm-target dispatch %q failed: %w", subagentType, err)
+	}
+
+	// Synthesised result. The caller (transcript renderer) only needs
+	// confirmation that the swarm fan-out ran; per-member outputs are
+	// streamed through DispatchSwarmMembers' progress hooks and end up
+	// in the parent session's stream chunks via teeToParentStream.
+	return tool.Result{
+		Output: fmt.Sprintf(
+			"Dispatched sub-swarm %q (%d members under %s). Member outputs streamed through the active session.",
+			subSwarm.ID, len(subSwarm.Members), subSwarm.Lead,
+		),
+		Title: "delegate → " + subSwarm.ID,
+		Metadata: map[string]interface{}{
+			"swarm_id":   subSwarm.ID,
+			"lead_agent": subSwarm.Lead,
+			"members":    subSwarm.Members,
+		},
+	}, true, nil
 }
 
 // DispatchSwarmMembers fans out the swarm-context members through
