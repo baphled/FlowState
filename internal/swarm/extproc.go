@@ -16,8 +16,19 @@ import (
 
 // ExtGateRequest is the host-side input shape forwarded to a v0 ext
 // gate. JSON-marshalled onto the gate's stdin by subprocessRunner.
+//
+// GateName and SwarmID are diagnostic context — the gate itself usually
+// ignores them, but they are required on the wrapped *GateError that
+// DispatchExt synthesises on pass:false / runner-error so log readers
+// and the CLI failure surface name both the gate and the swarm. The
+// 2026-05-18 user report (`gate "" ... in swarm ""`) was traced to
+// these slots being unpopulated at the wrap site; threading them onto
+// the request makes the dispatcher self-sufficient — callers only have
+// to populate the request once.
 type ExtGateRequest struct {
 	Kind     string         `json:"kind"`
+	GateName string         `json:"gate_name,omitempty"`
+	SwarmID  string         `json:"swarm_id,omitempty"`
 	MemberID string         `json:"member_id"`
 	When     string         `json:"when"`
 	Payload  []byte         `json:"payload"`
@@ -147,6 +158,10 @@ func ResetExtGateRegistryForTest() {
 // DispatchExt resolves an ext:<name> against the registry and forwards
 // the request. Pass:false maps to *GateError{Reason}; runner errors
 // (subprocess crash, JSON parse, timeout) map to *GateError{Cause}.
+// GateName and SwarmID from the request are threaded onto the wrapped
+// error so the formatted message names the failing gate and swarm —
+// the 2026-05-18 `gate "" ... in swarm ""` user report traced to these
+// slots being left blank at the wrap site.
 func DispatchExt(ctx context.Context, kind string, req ExtGateRequest) error {
 	if !strings.HasPrefix(kind, gateKindExtPrefix) {
 		return fmt.Errorf("DispatchExt: kind %q must start with %s", kind, gateKindExtPrefix)
@@ -159,11 +174,20 @@ func DispatchExt(ctx context.Context, kind string, req ExtGateRequest) error {
 	req.Kind = short
 	resp, err := runner.Evaluate(ctx, req)
 	if err != nil {
-		return &GateError{GateKind: kind, MemberID: req.MemberID, When: req.When, Cause: err}
+		return &GateError{
+			GateName: req.GateName,
+			GateKind: kind,
+			SwarmID:  req.SwarmID,
+			MemberID: req.MemberID,
+			When:     req.When,
+			Cause:    err,
+		}
 	}
 	if !resp.Pass {
 		return &GateError{
+			GateName:    req.GateName,
 			GateKind:    kind,
+			SwarmID:     req.SwarmID,
 			MemberID:    req.MemberID,
 			When:        req.When,
 			Reason:      resp.Reason,

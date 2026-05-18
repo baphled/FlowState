@@ -585,11 +585,19 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			Expect(payload).To(HaveKeyWithValue("research", "raw text not json"))
 		})
 
-		It("fails the dispatch with a typed GateError when a declared input key is missing from coord-store", func() {
-			Expect(swarm.RegisterExtGateFuncWithInputs("relevance-gate", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
-				Fail("ext gate runner should not be invoked when composition fails")
-				return swarm.ExtGateResponse{Pass: true}, nil
-			}, []gates.InputSpec{
+		// A missing declared input is NOT a hard composition failure — the
+		// composer writes a JSON `null` for that key so the dispatched
+		// gate receives a well-formed payload and decides for itself how
+		// to handle a missing upstream output. The previous "fail-fast at
+		// composition time" behaviour surfaced an opaque GateError with
+		// the gate-name and swarm-id stripped (the 2026-05-18 "gate ""
+		// (ext:relevance-gate post-member researcher) failed for member
+		// "researcher" in swarm "": payload is not valid JSON" report); the
+		// gate's own failure_policy gives operators a clearer, gate-
+		// specific reason instead.
+		It("writes JSON null for a declared input that is missing from the coord-store and still invokes the gate", func() {
+			var got swarm.ExtGateRequest
+			Expect(swarm.RegisterExtGateFuncWithInputs("relevance-gate", captureRunner(&got), []gates.InputSpec{
 				{Name: "task_plan", Member: "coordinator", OutputKey: "task-plan"},
 				{Name: "research", Member: "researcher", OutputKey: "output"},
 			})).To(Succeed())
@@ -605,10 +613,53 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
 			})
 
-			var gateErr *swarm.GateError
-			Expect(errors.As(err, &gateErr)).To(BeTrue())
-			Expect(gateErr.Reason).To(ContainSubstring("research"))
-			Expect(gateErr.Reason).To(ContainSubstring("a-team/researcher/output"))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(json.Valid(got.Payload)).To(BeTrue(),
+				"composed payload MUST be valid JSON even when an input is missing; got %q", string(got.Payload))
+			var payload map[string]json.RawMessage
+			Expect(json.Unmarshal(got.Payload, &payload)).To(Succeed())
+			Expect(payload).To(HaveKey("research"))
+			Expect(string(payload["research"])).To(Equal("null"),
+				"missing input MUST embed as JSON null, got %q", string(payload["research"]))
+			Expect(payload).To(HaveKey("task_plan"))
+		})
+
+		// Regression — the 2026-05-18 user report showed the gate receiving
+		// a malformed payload and rejecting with "payload is not valid
+		// JSON". The composer is the only host-side site that builds the
+		// gate's stdin payload; it MUST always emit a valid JSON object so
+		// the gate's decode path never bottoms out on a structural parse
+		// failure. Each value-shape we expect to encounter in a real
+		// coord-store (missing key, empty bytes, valid JSON, raw prose)
+		// must compose into a well-formed payload.
+		It("always emits valid JSON regardless of the coord-store value shape (missing, empty, JSON, prose)", func() {
+			var got swarm.ExtGateRequest
+			Expect(swarm.RegisterExtGateFuncWithInputs("relevance-gate", captureRunner(&got), []gates.InputSpec{
+				{Name: "task_plan", Member: "coordinator", OutputKey: "task-plan"},
+				{Name: "research", Member: "researcher", OutputKey: "output"},
+			})).To(Succeed())
+
+			// task_plan key is seeded with empty bytes (the engine wrote
+			// the key but the upstream member produced no content);
+			// research key is absent entirely. Both shapes have appeared
+			// in production sessions.
+			store := newGateStore(map[string][]byte{
+				"a-team/coordinator/task-plan": []byte{},
+			})
+			multi := swarm.NewMultiRunner()
+			err := multi.Run(context.Background(), swarm.GateSpec{
+				Name: "relevance", Kind: "ext:relevance-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+			}, swarm.GateArgs{
+				SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+			})
+
+			Expect(err).ToNot(HaveOccurred())
+			Expect(json.Valid(got.Payload)).To(BeTrue(),
+				"composed payload MUST be valid JSON for any coord-store value shape; got %q", string(got.Payload))
+			var payload map[string]any
+			Expect(json.Unmarshal(got.Payload, &payload)).To(Succeed())
+			Expect(payload).To(HaveKey("task_plan"))
+			Expect(payload).To(HaveKey("research"))
 		})
 
 		// Regression — pins the gate-inputs registry gap surfaced by the
