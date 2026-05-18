@@ -134,6 +134,15 @@ func (e *Engine) SetHeartbeatIntervalForTest(d time.Duration) {
 	e.heartbeatInterval = d
 }
 
+// SetStreamIdleTimeoutForTest overrides the engine's default 60s idle-
+// stream watchdog inside processStreamChunks so specs can drive the
+// hung-provider scenario at millisecond timescales without sleeping.
+// Setting zero disables the watchdog entirely (matches the disabled-
+// when-unset production gate semantics).
+func (e *Engine) SetStreamIdleTimeoutForTest(d time.Duration) {
+	e.streamIdleTimeout = d
+}
+
 // PublishStreamingHeartbeatForTest exposes the heartbeat publish helper
 // so specs can pin the bus payload shape without standing up a full
 // Stream goroutine + ticker. Mirrors the production publishStreamingHeartbeat

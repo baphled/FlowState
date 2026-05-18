@@ -74,6 +74,58 @@ func (m *mockProvider) Models() ([]provider.Model, error) {
 	return m.models, m.modelsErr
 }
 
+// hangingStreamProvider emits a fixed prelude of chunks, then leaves the
+// chunk channel open forever (no close, no further sends) so the engine's
+// processStreamChunks loop parks on receive. Models the production failure
+// mode where the underlying Anthropic SDK's stream.Next() blocks on a hung
+// HTTP body read with no Done chunk ever arriving. The release channel is
+// closed by the test to let the goroutine exit cleanly at teardown.
+type hangingStreamProvider struct {
+	name            string
+	preludeChunks   []provider.StreamChunk
+	capturedRequest *provider.ChatRequest
+	release         chan struct{}
+}
+
+func (h *hangingStreamProvider) Name() string {
+	if h.name == "" {
+		return "hanging-provider"
+	}
+	return h.name
+}
+
+func (h *hangingStreamProvider) Stream(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	h.capturedRequest = &req
+	if h.release == nil {
+		h.release = make(chan struct{})
+	}
+	ch := make(chan provider.StreamChunk, len(h.preludeChunks))
+	for i := range h.preludeChunks {
+		ch <- h.preludeChunks[i]
+	}
+	// Park a goroutine on release so the channel stays open with no
+	// further sends — the producer side is "hung" until the test signals
+	// teardown. We deliberately do NOT close(ch) — channel close is one
+	// of the production Done-emission paths the watchdog is meant to
+	// backstop.
+	go func() {
+		<-h.release
+	}()
+	return ch, nil
+}
+
+func (h *hangingStreamProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (h *hangingStreamProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+func (h *hangingStreamProvider) Models() ([]provider.Model, error) {
+	return nil, nil
+}
+
 type mockTool struct {
 	name        string
 	description string
@@ -720,6 +772,58 @@ var _ = Describe("Engine", func() {
 			if lastChunk.Error != nil {
 				Expect(lastChunk.Error).To(Equal(context.Canceled))
 			}
+		})
+
+		// Bug: engine hangs indefinitely when the provider's stream goes
+		// silent mid-turn. The user-visible symptom was "halting mid
+		// thinking..." — a 50s live SSE probe captured 103 thinking chunks
+		// followed by no further chunks and no [DONE]. The three Done-
+		// emission paths in processStreamChunks all assume forward
+		// progress: ctx cancellation (decoupled by the dispatcher's
+		// WithoutCancel at internal/dispatch/dispatcher.go:541),
+		// channel close (cannot happen when the underlying HTTP body
+		// read is parked), and a Done chunk from the provider (never
+		// arrives). The idle-stream watchdog adds a fourth: if no chunk
+		// arrives within engineStreamIdleTimeout, emit a synthetic Done
+		// with StopReasonEmptyTurn and return.
+		It("emits a synthetic Done when the provider stream goes silent past the idle timeout", func() {
+			hung := &hangingStreamProvider{
+				name: "hung-provider",
+				preludeChunks: []provider.StreamChunk{
+					{Thinking: "let me think..."},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: hung,
+				Manifest:     manifest,
+			})
+			eng.SetStreamIdleTimeoutForTest(100 * time.Millisecond)
+
+			chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			var done provider.StreamChunk
+			Eventually(func() bool {
+				select {
+				case c, ok := <-chunks:
+					if !ok {
+						return done.Done
+					}
+					if c.Done {
+						done = c
+						return true
+					}
+					return false
+				default:
+					return false
+				}
+			}, "5s", "10ms").Should(BeTrue(), "expected a Done chunk within engineStreamIdleTimeout+buffer once provider stalls")
+
+			Expect(done.Done).To(BeTrue())
+			Expect(done.StopReason).To(Equal(session.StopReasonEmptyTurn))
+
+			close(hung.release)
 		})
 
 		Context("when provider returns error", func() {

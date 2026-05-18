@@ -236,6 +236,21 @@ type Engine struct {
 	// via SetHeartbeatIntervalForTest in export_test.go for fast specs.
 	heartbeatInterval time.Duration
 
+	// streamIdleTimeout bounds the gap between successive chunks on a
+	// single provider stream consumed by processStreamChunks. If the
+	// gap exceeds this threshold, the engine emits a synthetic
+	// Done{StopReason: empty_turn} so SSE / TUI / CLI consumers stop
+	// hanging when the underlying HTTP body read parks on a silent
+	// connection. Zero disables the watchdog (the production default
+	// is engineStreamIdleTimeout). Overridable via
+	// SetStreamIdleTimeoutForTest in export_test.go for fast specs.
+	//
+	// Defence-in-depth backstop for cases where ctx.Done is decoupled
+	// by the dispatcher's WithoutCancel (dispatch/dispatcher.go:541),
+	// the provider channel never closes (silent HTTP body), and no
+	// Done chunk arrives (provider never emits message_stop).
+	streamIdleTimeout time.Duration
+
 	// microCompactor is the RLM Phase A Layer 1 compactor. It applies the
 	// hot/cold tool-result split to the in-flight provider message slice
 	// produced by buildContextWindow. Nil disables Phase A regardless of
@@ -767,6 +782,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		factService:               resolveFactService(cfg),
 		nowFunc:                   resolveNowFunc(cfg),
 		heartbeatInterval:         defaultStreamingHeartbeatInterval,
+		streamIdleTimeout:         engineStreamIdleTimeout,
 	}
 }
 
@@ -777,6 +793,16 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 // to reset adaptive watchdogs without flooding. Per the Streaming
 // Liveness ADR.
 const defaultStreamingHeartbeatInterval = 15 * time.Second
+
+// engineStreamIdleTimeout bounds the gap between consecutive chunks on
+// a single provider stream consumed by processStreamChunks. Long enough
+// that any normal provider stream (including long Anthropic extended-
+// thinking phases) will not trip it; short enough that a hung HTTP body
+// read surfaces as a Done{empty_turn} within a single user-perceptible
+// stall window. Backstop for the Anthropic SDK's stream.Next() parking
+// on a silent connection with no read deadline configured
+// (internal/provider/anthropic/anthropic.go:streamMessages).
+const engineStreamIdleTimeout = 60 * time.Second
 
 // resolveFactService returns the RLM Phase B service the engine should
 // attach. Nil when the feature is disabled in CompactionConfig — the
@@ -3789,13 +3815,91 @@ func (e *Engine) processStreamChunks(
 		}
 	}
 
+	// Idle-stream watchdog (May 2026 mid-thinking-halt fix).
+	//
+	// The three pre-existing Done-emission paths in this loop all assume
+	// forward progress from the provider stream:
+	//
+	//   1. ctx.Done() — but the dispatcher's WithoutCancel
+	//      (internal/dispatch/dispatcher.go:541) decouples streamCtx
+	//      from the request lifecycle, so a client-side disconnect
+	//      never trips this arm.
+	//   2. providerChunks close — cannot happen when the underlying
+	//      HTTP body read parks on a silent connection (Anthropic SDK
+	//      stream.Next() has no read deadline; see
+	//      internal/provider/anthropic/anthropic.go:streamMessages).
+	//   3. chunk.Done == true — never arrives if the provider never
+	//      emits a terminal message_stop frame.
+	//
+	// When all three are blocked, this loop hangs indefinitely. The
+	// user-visible symptom captured in the May 2026 SSE probe (3,240
+	// lines: 103 thinking chunks + heartbeats, no [DONE]) was
+	// "halting mid thinking..." with no recovery short of a page
+	// reload + reconcileFromBackend trip.
+	//
+	// The watchdog adds a fourth arm: if no chunk arrives within
+	// e.streamIdleTimeout, emit a synthetic Done{empty_turn} and
+	// return so consumers can stop hanging. The timer resets on
+	// every chunk received (via Reset on the underlying
+	// *time.Timer) so a long stream of small chunks does not trip
+	// it spuriously — only a genuine gap longer than the threshold
+	// counts. Zero streamIdleTimeout disables the watchdog (defence-
+	// in-depth gate for callers that have not opted in).
+	var idleTimer *time.Timer
+	var idleC <-chan time.Time
+	if e.streamIdleTimeout > 0 {
+		idleTimer = time.NewTimer(e.streamIdleTimeout)
+		idleC = idleTimer.C
+		defer idleTimer.Stop()
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			emitPostTurn()
 			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
+		case <-idleC:
+			// Idle-stream watchdog fired. Emit a synthetic Done so
+			// SSE / TUI / CLI consumers stop hanging. StopReasonEmptyTurn
+			// re-uses the placeholder-assistant path already wired through
+			// the session accumulator (internal/session/accumulator.go:766),
+			// which renders a soft-error bubble rather than a "killed"
+			// state. Post-turn usage emission MUST run before the Done
+			// chunk so the context_usage chip ticks up; the SSE consumer
+			// returns on first Done.
+			emitPostTurn()
+			outChan <- provider.StreamChunk{
+				Done:       true,
+				StopReason: session.StopReasonEmptyTurn,
+				ModelID:    e.LastModel(),
+				ProviderID: e.LastProvider(),
+			}
+			return streamChunkResult{
+				responseContent: responseContent.String(),
+				thinkingContent: thinkingContent.String(),
+				done:            true,
+			}
 		case chunk, ok := <-providerChunks:
+			// Reset the idle-stream watchdog on every chunk (including
+			// channel-close events — the loop's exit on close runs
+			// immediately below, so a Reset here is a no-op for the
+			// close path but keeps the reset rule uniform with the
+			// chunk-received path). The Stop()-then-Reset pattern
+			// follows the time package's documented sequence for
+			// safely resetting an already-fired timer. The drain of
+			// idleC inside the same select arm is unnecessary because
+			// the watchdog only ever fires from its own case, not from
+			// this one.
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(e.streamIdleTimeout)
+			}
 			if !ok {
 				// Channel close handling splits on pending tool calls:
 				//
