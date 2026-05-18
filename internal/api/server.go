@@ -1110,9 +1110,43 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	// dispatch swarm), and test surfaces that construct the Server
 	// without WithSwarmRegistry / WithDispatchEngine, both fall through
 	// to the legacy pass-through path with no behaviour change.
-	swarmCtx, manifestSnapshot, swarmActive := s.resolveAutoDispatchSwarm(id)
+	//
+	// In-content @-mention dispatch (Bug 1 / May 2026): /api/chat routes
+	// user input through Orchestrator.ProcessUserInput with
+	// ScanMentions=true, so typing `@a-team` inside the message body
+	// dispatches the a-team swarm regardless of which agent the
+	// AgentPicker has selected. The session POST handler must reach the
+	// same parity — without it, a user typing `@a-team` inside a
+	// default-assistant session sees the bare default-assistant agent
+	// react to the literal text "@a-team" (treating it as plain prose),
+	// not the a-team swarm. resolveInContentMention runs the same
+	// shared swarm.ResolveTarget the orchestrator uses; when it hits,
+	// the mention's swarm + lead WINS over any auto-dispatch verdict
+	// because the user explicitly typed it. The redirect is per-turn:
+	// CurrentAgentID stays unchanged and a follow-up turn without a
+	// mention routes back through the session's persistent agent.
+	leadOverride := ""
+	swarmCtx, manifestSnapshot, swarmActive := s.resolveInContentMention(req.Content)
+	if !swarmActive {
+		swarmCtx, manifestSnapshot, swarmActive = s.resolveAutoDispatchSwarm(id)
+	} else {
+		// Mention won — the session's persistent agent does not lead
+		// this turn. The streamer must be driven by the mention's lead
+		// so the assistant message stamps under the swarm's lead (the
+		// UI bubble reads "Team Lead" / "Coordinator" / etc., not
+		// "Default Assistant"). The override flows down through
+		// session.WithStreamAgentOverride to SendMessage where it
+		// replaces the resolved agentID for streamer.Stream and
+		// AccumulateStream. The user-message stamp stays under the
+		// session's persistent agent — that contract is enforced
+		// inside SendMessage (userMessageAgent vs streamAgent split).
+		leadOverride = swarmCtx.LeadAgent
+	}
 	if swarmActive {
 		s.dispatchEngine.SetSwarmContext(swarmCtx)
+	}
+	if leadOverride != "" {
+		streamCtx = session.WithStreamAgentOverride(streamCtx, leadOverride)
 	}
 
 	chunks, err := s.sessionManager.SendMessageWithAttachments(
@@ -1219,6 +1253,71 @@ func (s *Server) resolveAutoDispatchSwarm(sessionID string) (*swarm.Context, any
 	swarmCtx := swarm.NewContext(manifest.ID, manifest)
 	manifestSnapshot := s.dispatchEngine.ManifestSnapshot()
 	return &swarmCtx, manifestSnapshot, true
+}
+
+// resolveInContentMention scans the message body for @<swarm-id>
+// mentions and, when the first one resolves to a registered swarm,
+// returns the swarm context to install plus the manifest snapshot to
+// restore after the stream completes. Agent @-mentions and unknown
+// mentions are skipped — only swarm mentions redirect (matches
+// Orchestrator.resolve's ScanMentions=true semantics at
+// internal/orchestrator/orchestrator.go:299-315).
+//
+// Expected:
+//   - content is the raw user message body (req.Content). Empty content
+//     short-circuits to (nil, nil, false).
+//
+// Returns:
+//   - swarmCtx: the *swarm.Context to install via SetSwarmContext when
+//     active is true. Built from the mention's manifest with the
+//     mention's id as the swarm id (so the engine's Swarm Leadership
+//     block names the swarm the user typed).
+//   - manifestSnapshot: the opaque pre-dispatch manifest token to hand
+//     back to RestoreManifest after the stream lifecycle completes.
+//   - active: true when (i) the swarm registry, agent registry,
+//     dispatch engine and session manager are all wired AND (ii) at
+//     least one in-content @-mention resolves to a swarm via
+//     swarm.ResolveTarget. False in all other cases.
+//
+// Side effects:
+//   - Calls dispatchEngine.ManifestSnapshot once when active so the
+//     caller has a token to restore. No SetSwarmContext is called from
+//     this helper; the caller does that after the helper returns so
+//     the install + ensuing SendMessage observe the same code path the
+//     /api/chat handler uses.
+func (s *Server) resolveInContentMention(content string) (*swarm.Context, any, bool) {
+	if s.swarmRegistry == nil || s.dispatchEngine == nil || s.sessionManager == nil {
+		return nil, nil, false
+	}
+	if s.registry == nil {
+		// Without an agent registry we can't tell agent mentions from
+		// swarm mentions — swarm.ResolveTarget needs HasAgent to
+		// classify. Fall through to the auto-dispatch path.
+		return nil, nil, false
+	}
+	if content == "" {
+		return nil, nil, false
+	}
+	hasAgent := func(name string) bool {
+		if _, ok := s.registry.Get(name); ok {
+			return true
+		}
+		_, ok := s.registry.GetByNameOrAlias(name)
+		return ok
+	}
+	for _, mention := range swarm.ExtractAtMentions(content) {
+		_, swarmCtx, err := swarm.ResolveTarget(hasAgent, s.swarmRegistry, mention)
+		if err != nil || swarmCtx == nil {
+			// Either unknown id, agent mention, or malformed swarm —
+			// skip and keep scanning. Mirrors
+			// orchestrator.resolve's left-to-right "first swarm wins"
+			// scan at internal/orchestrator/orchestrator.go:302-308.
+			continue
+		}
+		manifestSnapshot := s.dispatchEngine.ManifestSnapshot()
+		return swarmCtx, manifestSnapshot, true
+	}
+	return nil, nil, false
 }
 
 // wrapWithSwarmLifecycle pumps src into a new channel and, after src
