@@ -47,10 +47,32 @@ const (
 	defaultOutputLimit    = 8192
 	streamChannelBuffSize = 16
 	defaultMaxTokens      = 4096
-	oauthTokenPrefix      = "sk-ant-oat01-"
-	oauthBetaHeader       = "oauth-2025-04-20"
-	oauthUserAgent        = "claude-cli/2.1.2 (external, cli)"
-	oauthAppHeader        = "cli"
+	// defaultStreamRequestTimeout is the wall-clock ceiling we put on
+	// every streaming attempt at the SDK layer. Defence-in-depth
+	// backstop for the May 2026 mid-thinking-halt fix — the load-
+	// bearing fix is the engine's idle-stream watchdog
+	// (internal/engine/engine.go: engineStreamIdleTimeout = 60s)
+	// which fires on the gap between chunks. This 10-minute ceiling
+	// is a hard cap at the underlying HTTP layer so the SDK's
+	// stream.Next() cannot park forever on a silent body read even
+	// if the engine's watchdog is somehow bypassed (e.g. an embedder
+	// that swaps the engine for a thinner consumer). Long enough
+	// that any normal Anthropic extended-thinking response completes
+	// well inside it; short enough that a truly stuck connection
+	// surfaces as an error within a single user-perceptible failure
+	// window.
+	//
+	// Per the Anthropic SDK contract
+	// (internal/requestconfig/requestconfig.go:427-435 in
+	// anthropic-sdk-go@v1.27.0), WithRequestTimeout wraps the
+	// per-attempt ctx with context.WithTimeout, which propagates
+	// into the streaming body read — exactly the seam where the
+	// production hang parks (stream.Next at anthropic.go:385).
+	defaultStreamRequestTimeout = 10 * time.Minute
+	oauthTokenPrefix            = "sk-ant-oat01-"
+	oauthBetaHeader             = "oauth-2025-04-20"
+	oauthUserAgent              = "claude-cli/2.1.2 (external, cli)"
+	oauthAppHeader              = "cli"
 	// oauthBillingHeaderName is the HTTP header name Anthropic's
 	// edge uses to route OAuth requests to the Claude Code billing
 	// pool (no per-token cost on the user). The Claude CLI sends it
@@ -86,6 +108,18 @@ type Provider struct {
 	// stays unchanged; this is an additive observer that lights up
 	// success-path parsing without flipping the error-path contract.
 	responseObserver func(http.Header)
+
+	// streamRequestTimeout caps the per-attempt wall-clock duration
+	// of every streaming HTTP request. Zero falls back to the
+	// constructor default of defaultStreamRequestTimeout (10 minutes).
+	// Overridable via SetStreamRequestTimeoutForTest in export_test.go
+	// for fast specs that drive the hung-body code path at
+	// millisecond timescales.
+	//
+	// Defence-in-depth backstop for the May 2026 mid-thinking-halt
+	// fix; the load-bearing fix is the engine's idle-stream watchdog
+	// (internal/engine/engine.go: engineStreamIdleTimeout = 60s).
+	streamRequestTimeout time.Duration
 }
 
 // SetResponseObserver registers a callback the Provider invokes on
@@ -333,6 +367,22 @@ func (p *Provider) Stream(
 	var rawResp *http.Response
 	streamOpts := append([]option.RequestOption{}, opts...)
 	streamOpts = append(streamOpts, option.WithResponseInto(&rawResp))
+
+	// Defence-in-depth per-attempt wall-clock cap on the streaming
+	// HTTP request. The Anthropic SDK threads this through to a
+	// context.WithTimeout that propagates into the body read, so a
+	// stream.Next() parked on a silent connection will return an
+	// error rather than hanging forever. The engine's idle-stream
+	// watchdog (engineStreamIdleTimeout = 60s) is the load-bearing
+	// fix for the May 2026 mid-thinking-halt; this SDK-layer ceiling
+	// is the secondary backstop. See defaultStreamRequestTimeout
+	// docstring for rationale. Zero p.streamRequestTimeout falls back
+	// to the default; tests can override via export_test.go.
+	streamTimeout := p.streamRequestTimeout
+	if streamTimeout == 0 {
+		streamTimeout = defaultStreamRequestTimeout
+	}
+	streamOpts = append(streamOpts, option.WithRequestTimeout(streamTimeout))
 
 	go p.streamMessages(ctx, params, streamOpts, ch, &rawResp)
 
