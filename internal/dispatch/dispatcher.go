@@ -207,6 +207,18 @@ func New(
 	}
 }
 
+// SetSessionBroker updates the broker reference after construction.
+// Required because production wiring (internal/app/app.go:444-446) creates
+// the broker AFTER NewServer has already auto-constructed the Dispatcher;
+// without this setter the Dispatcher captures a nil broker at construction
+// time and silently drops chunks (no fan-out to SSE subscribers).
+// Discovered via a live curl probe on May 18 2026 — chunks reached the
+// accumulator (assistant message persisted) but never the SSE broker
+// (every refresh-symptom report this session traced back here).
+func (d *Dispatcher) SetSessionBroker(broker SessionBroker) {
+	d.sessionBroker = broker
+}
+
 // errNoTarget fires when DispatchEphemeral is called without a usable
 // AgentID and ScanMentions yielded no swarm hit. Mirrors the
 // orchestrator's errNoTarget shape.

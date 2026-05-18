@@ -166,6 +166,12 @@ func (sp *spyDispatcher) DispatchSessioned(_ context.Context, req dispatch.Dispa
 	return dispatch.SessionedHandle{}, nil
 }
 
+// SetSessionBroker is a no-op for the spy — the spy doesn't fan out
+// chunks to any broker. Added to satisfy the DispatcherService interface
+// (post-bugfix May 2026: production wires broker post-init via
+// Server.SetSessionBroker which propagates to Dispatcher).
+func (sp *spyDispatcher) SetSessionBroker(_ dispatch.SessionBroker) {}
+
 func (sp *spyDispatcher) callCount() int {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
@@ -1023,6 +1029,110 @@ var _ = Describe("Session stream live events", func() {
 			"SSE subscriber must receive the first content chunk; got: %v", evts)
 		Expect(evts).To(ContainElement(ContainSubstring("world")),
 			"SSE subscriber must receive the second content chunk; got: %v", evts)
+	})
+
+	// Regression for the "post-init SetSessionBroker doesn't propagate to
+	// Dispatcher" bug discovered live on May 18 2026. Production wiring
+	// (internal/app/app.go:444-446) calls NewServer WITHOUT a broker option
+	// and then app.API.SetSessionBroker(broker) AFTER. Pre-fix the
+	// Dispatcher was auto-constructed inside NewServer with broker=nil
+	// and never updated by SetSessionBroker — so fanOutSessionedChunks
+	// fell into the drain-to-sink default case. Engine produced chunks,
+	// accumulator persisted them, but SSE subscribers received ZERO
+	// content events. The empirical signature: assistant message
+	// persists with non-empty content, BUT the live SSE only delivers
+	// the session-load context_usage event and no content/done.
+	//
+	// All prior `Session stream live events` specs USE the WithSessionBroker
+	// option, which applies BEFORE the dispatcher auto-construct and so
+	// passes the broker through correctly. This spec mirrors the
+	// production wiring order — broker installed POST-construction — to
+	// catch the bug class.
+	It("propagates post-init SetSessionBroker to the Dispatcher (production wiring order)", func() {
+		drip := &dripStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "PONG"},
+				{Done: true},
+			},
+			emitInterval: 30 * time.Millisecond,
+		}
+		mgrLocal := session.NewManager(drip)
+		// Note: NewServer WITHOUT WithSessionBroker — mirrors production
+		// where api.NewSessionBroker() is created in internal/app/app.go
+		// after NewServer returns.
+		srvLocal := api.NewServer(
+			drip,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(mgrLocal),
+		)
+		// Post-init broker wiring — matches app.API.SetSessionBroker(...)
+		// at internal/app/app.go:445.
+		brokerLocal := api.NewSessionBroker()
+		srvLocal.SetSessionBroker(brokerLocal)
+
+		httpServer := httptest.NewServer(srvLocal.Handler())
+		defer httpServer.Close()
+
+		sess, err := mgrLocal.CreateSession("propagation-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		streamCtx, streamCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer streamCancel()
+		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
+			httpServer.URL+"/api/v1/sessions/"+sess.ID+"/stream", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			defer GinkgoRecover()
+			resp, doErr := http.DefaultClient.Do(streamReq)
+			if doErr != nil {
+				eventsCh <- []string{"__DO_ERR__:" + doErr.Error()}
+				return
+			}
+			defer resp.Body.Close()
+			reader := bufio.NewReader(resp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		time.Sleep(100 * time.Millisecond)
+
+		postResp, err := http.Post(
+			httpServer.URL+"/api/v1/sessions/"+sess.ID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"ping"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_ = postResp.Body.Close()
+		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
+
+		var evts []string
+		Eventually(eventsCh, 8*time.Second).Should(Receive(&evts))
+
+		// LOAD-BEARING ASSERTION: SSE must receive PONG content. Pre-fix
+		// it received ONLY the session-load context_usage and nothing else.
+		Expect(evts).To(ContainElement(ContainSubstring("PONG")),
+			"SSE subscriber received zero content chunks — Dispatcher's broker reference was not propagated by post-init SetSessionBroker. Got: %v", evts)
+		Expect(evts).To(ContainElement("[DONE]"),
+			"SSE subscriber must receive terminal [DONE]; got: %v", evts)
 	})
 
 	It("emits named delegation SSE events when chunk carries DelegationInfo", func() {
