@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -60,6 +61,18 @@ type Orchestrator struct {
 	streamer       streaming.Streamer
 	sessionStore   SessionStore
 	sessionManager SessionManager
+	// dispatcher is the shared "user input → engine stream" service
+	// (`internal/dispatch.Dispatcher`). ProcessUserInput is a thin
+	// wrapper over DispatchEphemeral so CLI / API / TUI cannot drift
+	// on resolution + lifecycle (Phase 5 of "Dispatcher Service
+	// Unification (May 2026)"). Built in New() from the same
+	// dependencies the orchestrator already holds — no public
+	// signature change for CLI callers at
+	// internal/cli/run.go:520 and internal/cli/chat.go:391; the
+	// surface-supplied streaming.StreamConsumer threads through to
+	// DispatchEphemeral verbatim, preserving the consumer pump that
+	// the CLI's writer / JSON adapters depend on.
+	dispatcher *dispatch.Dispatcher
 }
 
 // UserInput is the surface-agnostic input to ProcessUserInput.
@@ -153,6 +166,22 @@ func New(
 	if wider, ok := eng.(Engine); ok {
 		o.engine = wider
 	}
+	// Build the dispatcher from the same dependencies. Phase 5 of the
+	// "Dispatcher Service Unification (May 2026)" plan folds the
+	// orchestrator's "scan → resolve → DispatchSwarm" lifecycle into a
+	// shared service so CLI / API / TUI no longer drift on the
+	// resolution path. sessionManager / sessionBroker are nil here —
+	// ProcessUserInput drives the ephemeral path (no session anchor)
+	// and the sessioned half lives on the API server's own
+	// dispatch.New() composition.
+	o.dispatcher = dispatch.New(
+		streamer,
+		eng,
+		swarmReg,
+		agentReg,
+		nil, // sessionManager: ephemeral path has no session anchor
+		nil, // sessionBroker: ProcessUserInput drives the consumer directly
+	)
 	return o
 }
 
@@ -188,11 +217,31 @@ func (o *Orchestrator) ProcessUserInput(
 	req UserInput,
 	consumer streaming.StreamConsumer,
 ) error {
-	leadID, swarmCtx, err := o.resolve(req)
-	if err != nil {
-		return err
-	}
-	return swarm.DispatchSwarm(ctx, o.dispatchEngine, swarmCtx, o.streamer, consumer, leadID, req.Message)
+	// Phase 5 of "Dispatcher Service Unification (May 2026)" — thin
+	// wrapper over dispatch.Dispatcher.RunEphemeralSync. The CLI's
+	// caller signature is preserved byte-for-byte (`run.go:520`,
+	// `chat.go:391`); the surface-supplied StreamConsumer threads
+	// through verbatim so the existing WriterConsumer / JSONConsumer
+	// adapters keep working. Resolution (@-mention scan + DefaultAgent
+	// fallback) and the snapshot / SetSwarmContext / flush / restore
+	// lifecycle are owned by the shared service — CLI / API / TUI
+	// cannot drift on either half.
+	//
+	// The synchronous-await flavour is load-bearing here: the CLI's
+	// "persists the parent session on context cancellation mid-stream"
+	// regression (internal/cli/run_test.go:528) depends on ctx-cancel
+	// reaching the provider's Stream call so the SIGTERM-driven
+	// goroutine terminates and the defer-save path runs. The async
+	// DispatchEphemeral path applies context.WithoutCancel for HTTP
+	// handlers that return early; using it here would sever ctx and
+	// the provider would block. RunEphemeralSync preserves ctx
+	// propagation while still routing through Dispatcher's shared
+	// resolution + lifecycle so the dedup intent of Phase 5 stands.
+	return o.dispatcher.RunEphemeralSync(ctx, dispatch.DispatchRequest{
+		AgentID:      req.DefaultAgent,
+		Content:      req.Message,
+		ScanMentions: req.ScanMentions,
+	}, consumer)
 }
 
 // Stream is the async cousin of ProcessUserInput. Returns a channel

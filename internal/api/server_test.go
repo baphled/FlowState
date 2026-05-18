@@ -14,6 +14,8 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -6884,5 +6886,100 @@ var _ = Describe("Content-Security-Policy header (task-09)", func() {
 		Expect(csp).NotTo(ContainSubstring("unsafe-eval"))
 		Expect(csp).NotTo(ContainSubstring("script-src"))
 		Expect(csp).NotTo(ContainSubstring("style-src"))
+	})
+})
+
+// Dispatcher fixture discipline — banned-fixture string-scan pin
+// closing out Phase 5 of "Dispatcher Service Unification (May 2026)".
+//
+// The async-POST / refresh-free-flow / WS-outlives-request-context
+// regression specs are load-bearing on dripStreamer because mockStreamer
+// pre-fills AND closes its chunks channel before Stream returns. A pre-
+// filled-and-closed channel cannot reproduce any of:
+//
+//   - the post-handler ordering required by "Vue UI multi-turn
+//     refresh-free flow" (POST returns BEFORE content reaches the SSE
+//     subscriber);
+//   - the cross-POST handshake exercised by "Swarm lifecycle handshake
+//     across consecutive POSTs" (lives in internal/dispatch/
+//     dispatcher_test.go; structurally fenced from mockStreamer because
+//     that package cannot import internal/api's fixture);
+//   - the r.Context() decoupling pinned by "WS streamer outlives request
+//     context" (mockStreamer drains BEFORE the WS handler returns, so
+//     ctx cancellation propagation is invisible to it).
+//
+// This pin reads each api-package test file as a string, extracts the
+// body of the two named Describe blocks that live in this package, and
+// asserts neither body contains the literal `mockStreamer{` constructor.
+// Pre-existing mockStreamer{ sites in unrelated specs (health, metrics,
+// JSON contract, sibling-race detector tests) remain forward-only legal —
+// the discipline is scoped to the three regression Describes that
+// motivated the dripStreamer fixture.
+var _ = Describe("Dispatcher fixture discipline", func() {
+	It("bans mockStreamer in async-POST regression specs", func() {
+		// Resolve the api/ test directory via runtime.Caller so this
+		// works regardless of `go test`'s cwd. Same shape as
+		// readHandlerBodyForTest in websocket_test.go.
+		_, thisFile, _, ok := runtime.Caller(0)
+		Expect(ok).To(BeTrue())
+		apiDir := filepath.Dir(thisFile)
+
+		serverTestPath := filepath.Join(apiDir, "server_test.go")
+		websocketTestPath := filepath.Join(apiDir, "websocket_test.go")
+
+		serverSrc, err := os.ReadFile(serverTestPath)
+		Expect(err).NotTo(HaveOccurred())
+		websocketSrc, err := os.ReadFile(websocketTestPath)
+		Expect(err).NotTo(HaveOccurred())
+
+		// extractDescribeBody returns the body of a top-level
+		// `Describe("<name>"...)` block by scanning for the named
+		// header and brace-balancing the func body until it closes.
+		// Forward-only: pre-existing mockStreamer{ sites OUTSIDE the
+		// named blocks stay legal; only the three named regression
+		// Describes are policed here.
+		extractDescribeBody := func(src, name string) string {
+			needle := `Describe("` + name + `"`
+			start := strings.Index(src, needle)
+			Expect(start).To(BeNumerically(">=", 0),
+				"named Describe %q must exist; rename detection requires updating this discipline pin", name)
+			open := strings.Index(src[start:], "{")
+			Expect(open).To(BeNumerically(">=", 0),
+				"opening brace for Describe %q not found", name)
+			open += start
+			depth := 1
+			i := open + 1
+			for i < len(src) && depth > 0 {
+				switch src[i] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+				i++
+			}
+			Expect(depth).To(Equal(0),
+				"Describe %q has unbalanced braces; cannot extract body", name)
+			return src[open+1 : i-1]
+		}
+
+		vueBody := extractDescribeBody(string(serverSrc), "Vue UI multi-turn refresh-free flow")
+		wsBody := extractDescribeBody(string(websocketSrc), "WS streamer outlives request context")
+
+		Expect(vueBody).NotTo(ContainSubstring("mockStreamer{"),
+			"the 'Vue UI multi-turn refresh-free flow' Describe must use dripStreamer — "+
+				"mockStreamer pre-fills and closes its chunks channel before Stream returns, "+
+				"so it cannot reproduce the async-POST snapshot-before-content ordering")
+		Expect(wsBody).NotTo(ContainSubstring("mockStreamer{"),
+			"the 'WS streamer outlives request context' Describe must use dripStreamer — "+
+				"mockStreamer drains before the WS handler returns, hiding the "+
+				"r.Context() decoupling closure (S1 in the v6 codebase audit)")
+
+		// The third named Describe — "Swarm lifecycle handshake across
+		// consecutive POSTs" — lives in internal/dispatch/dispatcher_test.go.
+		// That package cannot import internal/api's mockStreamer fixture
+		// (the type is unexported to this package), so the discipline is
+		// structurally fenced there; this pin covers the two api-package
+		// blocks where the fixture IS in scope.
 	})
 })
