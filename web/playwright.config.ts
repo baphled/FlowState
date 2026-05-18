@@ -24,7 +24,7 @@ import { defineConfig, devices } from '@playwright/test'
 // `--workers=1` on the command line still works for the whole run if
 // a contributor wants to bypass the split for a debugging session.
 
-const REAL_BACKEND_PATTERN = /(chat-real-backend|manual-session-drive|session-regression)\.spec\.ts/
+const REAL_BACKEND_PATTERN = /(chat-real-backend|manual-session-drive|session-regression|sse-live-render-probe)\.spec\.ts/
 
 export default defineConfig({
   testDir: './e2e',

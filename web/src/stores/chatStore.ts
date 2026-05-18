@@ -1650,7 +1650,56 @@ export const useChatStore = defineStore('chat', {
         (m) => m.id.startsWith('temp-') && !backendIds.has(m.id),
       )
 
-      this.messages = [...sealedBackend, ...optimisticOrphans]
+      // Bug Hunt (May 2026 — live-render race): preserve any in-flight
+      // locally-generated rows (status === 'running') that the backend
+      // has not yet sealed into history. sendMessage's post-POST
+      // reconcile fires as soon as `await sendSessionMessage` resolves,
+      // which on the new async POST path returns BEFORE the SSE stream
+      // delivers all chunks (and well before [DONE] / the canonical
+      // assistant persist). Pre-fix the wholesale replace at
+      // `this.messages = [...sealedBackend, ...orphans]` therefore wiped
+      // the streaming assistant placeholder (id `streaming-*`), the
+      // in-flight thinking row (id `thinking-*`), and any in-flight
+      // delegation card (id `delegation-*`) the SSE chunks were
+      // actively building. The user saw no live response; only the
+      // final canonical row appeared after a manual refresh, because
+      // `handleContentChunk` / `handleThinkingEvent` re-created fresh
+      // placeholders for subsequent chunks but the next reconcile
+      // wiped those too in a tight enough race.
+      //
+      // The preservation is gated TWICE:
+      //
+      //   1. status === 'running' — backend history is sealed to
+      //      'completed' on the `sealedBackend.map` above, so a
+      //      'running' row in `this.messages` can only have come from
+      //      the local streaming pipeline. When [DONE] arrives,
+      //      `handleStreamDone` seals the row to 'completed' and this
+      //      filter no longer matches.
+      //
+      //   2. The backend has NOT yet caught up with the assistant for
+      //      this turn. We probe this by checking whether the
+      //      canonical history's terminal row is the user message
+      //      (turn still in-flight server-side) or an
+      //      assistant/thinking/tool_result row (turn done, the
+      //      backend has the final state). When the backend has
+      //      caught up, the local in-flight rows are obsolete
+      //      placeholders and the test `loadSessions detects
+      //      was-streaming → not-streaming and reconciles` explicitly
+      //      requires them to be wiped so the canonical reply
+      //      surfaces. Without this gate the delegation_started card
+      //      from the parent-watching-child scenario would persist
+      //      alongside the canonical final assistant row, producing a
+      //      duplicate.
+      const lastBackendRow = sealedBackend[sealedBackend.length - 1]
+      const backendTurnInFlight =
+        !lastBackendRow || lastBackendRow.role === 'user'
+      const inFlightLocalOrphans = backendTurnInFlight
+        ? this.messages.filter(
+            (m) => m.status === 'running' && !backendIds.has(m.id),
+          )
+        : []
+
+      this.messages = [...sealedBackend, ...optimisticOrphans, ...inFlightLocalOrphans]
 
       // Refresh the session-level model+provider from the most recent
       // assistant message. The backend's appendSessionMessage promotes
@@ -2629,43 +2678,88 @@ export const useChatStore = defineStore('chat', {
     /**
      * Drop #2 — Thinking handler.
      *
-     * Accumulates the model's private reasoning onto the in-flight
-     * assistant message's `thinkingContent` field. MUST NOT mutate
-     * `content` — the public assistant turn is reserved for the actual
-     * reply, not the model's chain of thought. The UI affordance to
-     * disclose this text on demand is Track B's work; until that lands,
-     * this handler exists so:
+     * Two parallel writes per chunk, anchored to the canonical backend
+     * representation:
      *
-     *   1. The watchdog re-arms during the reasoning phase (any SSE
-     *      event coming through applyContentEvent counts as liveness).
-     *   2. An in-flight assistant placeholder exists for the eventual
-     *      content delta to land on (mirrors handleContentChunk).
-     *   3. The data is captured end-to-end so the renderer addition is
-     *      purely additive when Track B layers UI on top.
+     *   1. A `role: 'thinking'` running message accumulates the chunk
+     *      content. This mirrors how the engine persists thinking
+     *      end-of-turn — `appendSessionMessage` writes a separate
+     *      `role: 'thinking'` row whose `content` carries the full
+     *      reasoning text. MessageBubble's `isThinking` branch
+     *      (`role === 'thinking'` + non-empty content) renders this via
+     *      `ThinkingPanel`, so the live stream now surfaces reasoning
+     *      tokens as they arrive instead of waiting for the post-stream
+     *      reload to materialise the canonical thinking row.
+     *
+     *      Bug Hunt (May 2026) — pre-fix this handler ONLY wrote to
+     *      `target.thinkingContent` on the assistant placeholder, which
+     *      the `assistant`-role render gates explicitly skip ("MUST NOT
+     *      be rendered as the visible reply" per the original Drop #2
+     *      contract). For z.ai glm-4.6 / OpenAI o1 / any reasoning
+     *      provider whose visible response IS the reasoning text, the
+     *      user saw a frozen empty bubble through the entire turn —
+     *      until a reload pulled in the canonical thinking row.
+     *
+     *   2. The legacy `target.thinkingContent` accumulation on the
+     *      assistant placeholder is preserved unchanged so the Track B
+     *      "disclose reasoning on demand" UI (when it ships) reads the
+     *      same field. Future Track B work is purely additive: it can
+     *      either keep reading `target.thinkingContent` OR pivot to the
+     *      thinking row's `content`. Both carry the same string.
+     *
+     * The assistant placeholder is ALSO still created/refreshed here so
+     * `handleContentChunk` has a `running` target to extend when
+     * `"type":"content"` chunks arrive (mixed thinking+content turns).
      */
     handleThinkingEvent(info: { content?: unknown }): void {
       if (typeof info.content !== 'string' || info.content.length === 0) {
         return
       }
 
-      let target = [...this.messages].reverse().find(
-        (message) => message.role === 'assistant' && message.status === 'running',
+      // (1) Thinking row — the load-bearing live-render surface.
+      // Find the most-recent running thinking row; create one if none
+      // exists. Pre-fix this row was never created live, so the user
+      // saw nothing on thinking-only models until a refresh hydrated
+      // the canonical history. status='running' is the load-bearing
+      // discriminator: reconcileFromBackend's in-flight preservation
+      // filter keeps this row alive across the post-POST reconcile so
+      // it isn't wiped mid-stream by the canonical history (which
+      // doesn't have the row yet).
+      let thinkingRow = [...this.messages].reverse().find(
+        (m) => m.role === 'thinking' && m.status === 'running',
       )
+      if (!thinkingRow) {
+        thinkingRow = {
+          id: `thinking-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'thinking',
+          content: '',
+          timestamp: new Date().toISOString(),
+          status: 'running',
+        }
+        this.messages.push(thinkingRow)
+      }
+      thinkingRow.content = (thinkingRow.content ?? '') + info.content
 
-      if (!target) {
-        target = {
+      // (2) Legacy assistant.thinkingContent accumulation — preserved
+      // for Track B compatibility. Reuse / create the assistant
+      // placeholder so handleContentChunk has a target for any
+      // subsequent `"type":"content"` chunk (mixed thinking+content
+      // turns like Anthropic with extended-thinking enabled).
+      let assistantTarget = [...this.messages].reverse().find(
+        (m) => m.role === 'assistant' && m.status === 'running',
+      )
+      if (!assistantTarget) {
+        assistantTarget = {
           id: `streaming-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: 'assistant',
           content: '',
           timestamp: new Date().toISOString(),
           status: 'running',
         }
-        this.messages.push(target)
+        this.messages.push(assistantTarget)
       }
+      assistantTarget.thinkingContent = (assistantTarget.thinkingContent ?? '') + info.content
 
-      target.thinkingContent = (target.thinkingContent ?? '') + info.content
-      // Note: target.content is INTENTIONALLY untouched. The model's private
-      // reasoning is not the assistant's reply.
       // Per-session state (Slice A) — set on the current session's slot.
       this.setSessionStreaming(this.currentSessionId, { isStreaming: true })
     },
