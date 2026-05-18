@@ -3,12 +3,21 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 
+	"github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/coder/websocket"
 )
+
+// errSessionDispatcherUnconfigured is the sentinel surfaced to the WS
+// client when handleSessionWebSocket runs with a nil dispatcher. The
+// auto-wire path in NewServer installs a Dispatcher whenever the
+// streamer is non-nil, so production never trips this; it exists for
+// test-surface compositions that opt out of the streamer entirely.
+var errSessionDispatcherUnconfigured = errors.New("api: dispatcher not configured for WS session")
 
 // wsIncomingMsg represents a message received from a WebSocket client.
 type wsIncomingMsg struct {
@@ -125,21 +134,33 @@ func (s *Server) handleSessionWebSocket(w http.ResponseWriter, r *http.Request) 
 	out := make(chan WSChunkMsg, 128)
 	quit := make(chan struct{})
 	writeDone := make(chan struct{})
-	ctx := r.Context()
+	// Decouple the WS read/write lifecycle from the request context so
+	// the underlying conn.Read does not park on a cancelled ctx after a
+	// hijacked WS connection's request context is cancelled by the
+	// http.Server's connection-state tracker. The Accept doc explicitly
+	// warns "using the http.Request Context after Accept returns may
+	// lead to unexpected behavior (see http.Hijacker)" — so the read
+	// and write loops use a handler-owned context tied to the conn
+	// lifecycle instead. The engine's lifetime is decoupled from BOTH
+	// this handler-owned ctx and the request ctx by
+	// Dispatcher.DispatchSessioned (context.WithoutCancel at the seam),
+	// closing S1 of the v6 Dispatcher Service Unification plan.
+	rwCtx, rwCancel := context.WithCancel(context.Background())
+	defer rwCancel()
 
 	go func() {
-		writeWSLoop(ctx, conn, out, quit)
+		writeWSLoop(rwCtx, conn, out, quit)
 		close(writeDone)
 	}()
 
 	stopBus := s.subscribeSessionBus(id, out)
 
 	for {
-		incoming, ok := readWSMessage(ctx, conn)
+		incoming, ok := readWSMessage(rwCtx, conn)
 		if !ok {
 			break
 		}
-		if !s.serveWSSession(ctx, out, id, incoming) {
+		if !s.serveWSSession(rwCtx, out, quit, id, incoming) {
 			break
 		}
 	}
@@ -242,11 +263,37 @@ func writeWSLoop(ctx context.Context, conn *websocket.Conn, out <-chan WSChunkMs
 	}
 }
 
-// serveWSSession forwards an incoming message to the session engine and streams the response.
+// serveWSSession forwards an incoming message through
+// dispatch.Dispatcher.DispatchSessioned (Phase 4 of the v6 Dispatcher
+// Service Unification plan) and lets the dispatcher's consumer fan-out
+// stream chunks through the WSStreamConsumer wired over `out` + `quit`.
+//
+// The pre-Phase-4 path called the session manager's SendMessage
+// directly with the request ctx, which coupled the engine's lifetime
+// to the handler's ctx
+// (originally r.Context()). On a hijacked WS connection the http.Server
+// may cancel r.Context() unpredictably; before Phase 4 that
+// cancellation cascaded into the engine and emitted `{Error: ctx.Err(),
+// Done: true}` with truncated content. Routing through DispatchSessioned
+// applies context.WithoutCancel at the seam so the engine outlives both
+// the WS request context AND the handler's own rwCtx, closing S1 of
+// the v6 plan and mirroring commit 51fb416c's POST /messages fix.
+//
+// The session manager already appends the user message synchronously
+// inside DispatchSessioned (see Dispatcher.DispatchSessioned step 1).
+// The SessionedHandle.Snapshot return value is unused for WS — the
+// frame writer streams chunks via the consumer, not a JSON snapshot.
+//
+// AgentID resolution mirrors handleSessionMessage:
+// CurrentAgentID || AgentID. Dispatcher uses this as the fallback when
+// no in-content @-mention resolves to a swarm.
 //
 // Expected:
-//   - ctx is a valid context for cancellation.
-//   - out is a channel for sending response chunks to the WebSocket writer goroutine.
+//   - ctx is the handler's read/write context.
+//   - out is the WSChunkMsg fan-out channel drained by writeWSLoop.
+//   - quit is closed by the handler when the connection should drain
+//     and shutdown; the consumer honours quit so the dispatcher's fan-
+//     out goroutine does not park on a dead writer.
 //   - sessionID identifies an existing session.
 //   - msg contains the content to send to the engine.
 //
@@ -254,58 +301,70 @@ func writeWSLoop(ctx context.Context, conn *websocket.Conn, out <-chan WSChunkMs
 //   - true to continue the read loop, false to close the connection.
 //
 // Side effects:
-//   - Calls sessionManager.SendMessage and forwards response chunks to out.
-func (s *Server) serveWSSession(ctx context.Context, out chan<- WSChunkMsg, sessionID string, msg wsIncomingMsg) bool {
+//   - Calls Dispatcher.DispatchSessioned which appends the user message
+//     and spawns the streamer goroutine.
+//   - Sends WSChunkMsg values through `out` via the consumer.
+func (s *Server) serveWSSession(ctx context.Context, out chan<- WSChunkMsg, quit <-chan struct{}, sessionID string, msg wsIncomingMsg) bool {
 	if msg.Content == "" {
 		return true
 	}
 	if s.completionOrchestrator != nil {
 		s.completionOrchestrator.ResetRePromptCount(sessionID)
 	}
-	chunks, err := s.sessionManager.SendMessage(ctx, sessionID, msg.Content)
-	if err != nil {
+
+	if s.dispatcher == nil {
+		// Dispatcher not configured — surface as a transient error
+		// frame so the client can render a soft-error and try again.
+		// The auto-wire in NewServer installs a Dispatcher whenever the
+		// streamer is non-nil; this path is reachable only in tests
+		// that opt out of auto-wire by passing WithDispatcher(nil) (no
+		// such call exists today) or omit the streamer entirely.
+		safeMsg, cid := clientError(errSessionDispatcherUnconfigured, "stream_error")
+		select {
+		case out <- WSChunkMsg{Error: safeMsg, CorrelationID: cid}:
+		case <-quit:
+		}
 		return false
 	}
-	return s.forwardWSChunks(ctx, out, chunks)
-}
 
-// forwardWSChunks reads from a chunk channel and sends each chunk through the out channel.
-//
-// Expected:
-//   - ctx is a valid context for cancellation.
-//   - out is a channel for sending WSChunkMsg values to the writer goroutine.
-//   - chunks is a readable channel of provider.StreamChunk values.
-//
-// Returns:
-//   - true to continue the read loop, false when streaming is complete or an error occurs.
-//
-// Side effects:
-//   - Sends WSChunkMsg values to out.
-func (s *Server) forwardWSChunks(ctx context.Context, out chan<- WSChunkMsg, chunks <-chan provider.StreamChunk) bool {
-	for chunk := range chunks {
-		msg := BuildWSChunkMsg(chunk)
+	// AgentID fallback mirrors handleSessionMessage's resolve. Snapshot
+	// captures CurrentAgentID || AgentID under RLock so Dispatcher's
+	// in-content mention scan + AutoDispatchSwarmFor fallback picks the
+	// session's persistent target when no @-mention hits.
+	snap, snapErr := s.sessionManager.SnapshotSession(sessionID)
+	if snapErr != nil {
+		// Session vanished between Accept and the first message —
+		// surface a transient error and close the WS turn.
+		safeMsg, cid := clientError(snapErr, "session_not_found")
 		select {
-		case out <- msg:
-		case <-ctx.Done():
-			return false
+		case out <- WSChunkMsg{Error: safeMsg, CorrelationID: cid}:
+		case <-quit:
 		}
-		// Gate the loop break on severity, mirroring the SSE
-		// fan-out fix in handleSessionStream. Pre-fix the consumer
-		// always broke on any chunk.Error, so a transient blip
-		// (network reset, rate-limit retry) terminated the WS
-		// turn even when the provider could self-heal and produce
-		// further chunks. Post-fix only critical errors (revoked
-		// OAuth, 401, model-not-found, billing/quota lockout) and
-		// chunk.Done end the loop; transient errors surface as
-		// "stream error" via BuildWSChunkMsg and the consumer
-		// keeps reading from chunks.
-		if chunk.Done {
-			return false
-		}
-		if chunk.Error != nil && provider.IsCriticalStreamError(chunk.Error) {
-			return false
-		}
+		return false
 	}
+	agentID := snap.AgentID
+	if snap.CurrentAgentID != "" {
+		agentID = snap.CurrentAgentID
+	}
+
+	consumer := NewWSStreamConsumer(out, quit)
+	if _, dispatchErr := s.dispatcher.DispatchSessioned(ctx, dispatch.DispatchRequest{
+		SessionID:    sessionID,
+		AgentID:      agentID,
+		Content:      msg.Content,
+		ScanMentions: true,
+	}, consumer); dispatchErr != nil {
+		safeMsg, cid := clientError(dispatchErr, "stream_error")
+		select {
+		case out <- WSChunkMsg{Error: safeMsg, CorrelationID: cid}:
+		case <-quit:
+		}
+		return false
+	}
+	// Dispatcher returned synchronously after appending the user
+	// message; the streamer runs in a Dispatcher-owned goroutine and
+	// streams through the consumer. Continue the read loop so multi-
+	// turn sessions over a single WS connection keep flowing.
 	return true
 }
 
@@ -339,6 +398,271 @@ func closeWebSocket(conn *websocket.Conn) {
 	if err := conn.CloseNow(); err != nil {
 		return
 	}
+}
+
+// WSStreamConsumer is the chunk-fan-out shim wired through
+// dispatch.Dispatcher.DispatchSessioned by handleSessionWebSocket
+// (Phase 4 of the v6 Dispatcher Service Unification plan). It implements
+// streaming.StreamConsumer plus the optional consumer interfaces
+// (DelegationConsumer, ProgressConsumer, EventConsumer,
+// HarnessEventConsumer, ToolCallConsumer, ToolResultConsumer) by
+// mapping each signal onto a WSChunkMsg and pushing it through the
+// handler's existing `out` channel. The handler's writeWSLoop drains
+// `out` exactly as it did pre-Phase-4; the only thing that changes is
+// the producer — chunks now arrive via the Dispatcher's streaming.Run-
+// shaped fan-out (internal/streaming/runner.go) rather than directly
+// from sessionManager.SendMessage.
+//
+// quit is the same signal writeWSLoop watches for shutdown; once quit
+// closes, the consumer takes the default branch on subsequent sends so
+// a slow-or-dead writer does not park the dispatcher's fan-out
+// goroutine indefinitely. The `out` channel is left open (Bug C2's
+// load-bearing invariant — see writeWSLoop's godoc and the cleanup
+// comment at handleSessionWebSocket:147-176): the consumer never
+// closes it.
+type WSStreamConsumer struct {
+	out  chan<- WSChunkMsg
+	quit <-chan struct{}
+	// criticalSeen latches once a critical chunk.Error has surfaced.
+	// Subsequent WriteChunk / WriteDelegation / WriteProgress / etc.
+	// calls become no-ops so chunks the streamer fanned out behind the
+	// failure do not reach the WS client. This mirrors the pre-Phase-4
+	// forwardWSChunks severity gate (websocket.go:295-307 pre-deletion)
+	// which broke the loop on critical errors but continued on
+	// transient ones. The Done frame is still emitted so the WS
+	// connection settles cleanly.
+	//
+	// Single-goroutine access: the Dispatcher's fan-out goroutine
+	// (internal/dispatch/dispatcher.go::driveConsumer) drives every
+	// Write call serially through one consumer instance per WS turn,
+	// so a non-atomic bool is sufficient.
+	criticalSeen bool
+}
+
+// NewWSStreamConsumer wires a WSStreamConsumer over the WS handler's
+// out channel and quit signal. The returned consumer is safe to pass to
+// dispatch.Dispatcher.DispatchSessioned; chunks are mapped onto
+// WSChunkMsg via the same helpers BuildWSChunkMsg uses (severity-gated
+// error category, harness event types, delegation / progress / event
+// fan-out).
+//
+// Expected:
+//   - out is the WS handler's existing buffered WSChunkMsg channel.
+//   - quit is closed by the handler when the connection should drain
+//     and shutdown.
+//
+// Returns:
+//   - A configured *WSStreamConsumer.
+//
+// Side effects:
+//   - None.
+func NewWSStreamConsumer(out chan<- WSChunkMsg, quit <-chan struct{}) *WSStreamConsumer {
+	return &WSStreamConsumer{out: out, quit: quit}
+}
+
+// send pushes a WSChunkMsg into the out channel honouring the quit
+// signal. The default branch on a closed `quit` keeps the dispatcher's
+// fan-out goroutine from parking when the WS connection has already
+// torn down. Pre-Phase-4 the same backpressure surface lived in
+// forwardWSChunks (websocket.go:285-291) — the shape is preserved
+// here.
+//
+// Side effects:
+//   - Sends msg to out when capacity permits; drops msg when quit is
+//     closed and the writer is no longer draining.
+func (c *WSStreamConsumer) send(msg WSChunkMsg) {
+	select {
+	case c.out <- msg:
+	case <-c.quit:
+		return
+	}
+}
+
+// sendUnlessCritical is the post-critical-gate variant of send. Most
+// non-content signals (delegation, progress, tool, harness, typed
+// events) follow the same severity contract as content chunks — once a
+// fatal provider error has surfaced the wire should not continue
+// emitting structured side-events for the failed turn. Error and Done
+// are the two exceptions (they have their own emit paths).
+//
+// Side effects:
+//   - Sends msg only when criticalSeen is false.
+func (c *WSStreamConsumer) sendUnlessCritical(msg WSChunkMsg) {
+	if c.criticalSeen {
+		return
+	}
+	c.send(msg)
+}
+
+// WriteChunk delivers a content fragment to the WS frame writer. After
+// a critical chunk.Error has surfaced (criticalSeen latched), subsequent
+// content frames are dropped so the WS client never sees chunks the
+// streamer fanned out behind a fatal failure — mirrors the pre-Phase-4
+// forwardWSChunks severity gate.
+//
+// Side effects:
+//   - Sends a WSChunkMsg{Content} through out (or drops on quit /
+//     post-critical).
+func (c *WSStreamConsumer) WriteChunk(content string) error {
+	if c.criticalSeen {
+		return nil
+	}
+	c.send(WSChunkMsg{Content: content})
+	return nil
+}
+
+// WriteError surfaces a stream-level error as a WSChunkMsg. The error
+// is sanitised through clientError (which redacts internal details to a
+// stable category + correlation id), and the category is gated by
+// provider.IsCriticalStreamError so the wire continues to distinguish
+// transient blips from fatal provider failures — same shape as
+// BuildWSChunkMsg's pre-Phase-4 error path. A critical error latches
+// the consumer's criticalSeen flag so subsequent WriteChunk calls drop
+// silently; transient errors do not latch and the stream continues.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with Error + CorrelationID through out.
+//   - Latches criticalSeen when the error matches IsCriticalStreamError.
+func (c *WSStreamConsumer) WriteError(err error) {
+	if err == nil {
+		return
+	}
+	category := "stream_error"
+	critical := provider.IsCriticalStreamError(err)
+	if critical {
+		category = "stream_critical"
+	}
+	safeMsg, cid := clientError(err, category)
+	c.send(WSChunkMsg{Error: safeMsg, CorrelationID: cid})
+	if critical {
+		c.criticalSeen = true
+	}
+}
+
+// Done signals the terminal chunk to the WS client by emitting a
+// WSChunkMsg{Done: true}. The pre-Phase-4 path emitted the same shape
+// via BuildWSChunkMsg when chunk.Done was true. Done is emitted even
+// after criticalSeen latches so the WS frame writer settles into a
+// known-terminal state.
+//
+// Side effects:
+//   - Sends a WSChunkMsg{Done: true} through out.
+func (c *WSStreamConsumer) Done() {
+	c.send(WSChunkMsg{Done: true})
+}
+
+// WriteDelegation surfaces a delegation status event as a WSChunkMsg.
+// Mirrors WSConsumer.WriteDelegationToMsg's mapping (same DelegationInfo
+// fields stamped). The WS handler's pre-Phase-4 path got this shape via
+// BuildWSChunkMsg's chunk.DelegationInfo branch.
+//
+// Returns:
+//   - Always nil (the channel send is best-effort under quit).
+//
+// Side effects:
+//   - Sends a WSChunkMsg with Delegation through out.
+func (c *WSStreamConsumer) WriteDelegation(ev streaming.DelegationEvent) error {
+	c.sendUnlessCritical(WSChunkMsg{Delegation: &provider.DelegationInfo{
+		SourceAgent:  ev.SourceAgent,
+		TargetAgent:  ev.TargetAgent,
+		ChainID:      ev.ChainID,
+		Status:       ev.Status,
+		ModelName:    ev.ModelName,
+		ProviderName: ev.ProviderName,
+		Description:  ev.Description,
+		ToolCalls:    ev.ToolCalls,
+		LastTool:     ev.LastTool,
+		StartedAt:    ev.StartedAt,
+		CompletedAt:  ev.CompletedAt,
+	}})
+	return nil
+}
+
+// WriteProgress surfaces a delegation progress event as a WSChunkMsg.
+// Mirrors WSConsumer.WriteProgressToMsg's mapping.
+//
+// Returns:
+//   - Always nil.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with Progress through out.
+func (c *WSStreamConsumer) WriteProgress(ev streaming.ProgressEvent) error {
+	c.sendUnlessCritical(WSChunkMsg{Progress: &ev})
+	return nil
+}
+
+// WriteEvent surfaces a typed streaming Event as a WSChunkMsg. Mirrors
+// WSConsumer.WriteEventToMsg's mapping (event_type + event_data fields).
+//
+// Returns:
+//   - Always nil.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with EventType + EventData through out.
+func (c *WSStreamConsumer) WriteEvent(event streaming.Event) error {
+	c.sendUnlessCritical(WSChunkMsg{
+		EventType: event.Type(),
+		EventData: event,
+	})
+	return nil
+}
+
+// WriteHarnessRetry surfaces a harness retry event as a WSChunkMsg.
+// Mirrors WSConsumer.WriteHarnessRetryToMsg's mapping.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with EventType=harness_retry + Content.
+func (c *WSStreamConsumer) WriteHarnessRetry(content string) {
+	c.sendUnlessCritical(WSChunkMsg{EventType: "harness_retry", Content: content})
+}
+
+// WriteAttemptStart surfaces a harness attempt start event as a
+// WSChunkMsg.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with EventType=harness_attempt_start + Content.
+func (c *WSStreamConsumer) WriteAttemptStart(content string) {
+	c.sendUnlessCritical(WSChunkMsg{EventType: "harness_attempt_start", Content: content})
+}
+
+// WriteComplete surfaces a harness completion event as a WSChunkMsg.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with EventType=harness_complete + Content.
+func (c *WSStreamConsumer) WriteComplete(content string) {
+	c.sendUnlessCritical(WSChunkMsg{EventType: "harness_complete", Content: content})
+}
+
+// WriteCriticFeedback surfaces a harness critic feedback event as a
+// WSChunkMsg.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with EventType=harness_critic_feedback + Content.
+func (c *WSStreamConsumer) WriteCriticFeedback(content string) {
+	c.sendUnlessCritical(WSChunkMsg{EventType: "harness_critic_feedback", Content: content})
+}
+
+// WriteToolCall surfaces a tool invocation as a WSChunkMsg. Mirrors
+// BuildWSChunkMsg's chunk.ToolCall branch (which expects the caller to
+// have stamped the *provider.ToolCall directly on the chunk).
+//
+// Side effects:
+//   - Sends a WSChunkMsg with ToolCall through out.
+func (c *WSStreamConsumer) WriteToolCall(name string) {
+	c.sendUnlessCritical(WSChunkMsg{ToolCall: &provider.ToolCall{Name: name}})
+}
+
+// WriteToolResult surfaces a tool result as a WSChunkMsg's Content
+// field. The pre-Phase-4 chunk.ToolResult path did not have a dedicated
+// JSON field on WSChunkMsg — the result content fed back into the
+// stream as a regular content chunk via the engine's tool_result loop.
+// Preserve that shape so frontends that only watch for content keep
+// working.
+//
+// Side effects:
+//   - Sends a WSChunkMsg with Content through out.
+func (c *WSStreamConsumer) WriteToolResult(content string) {
+	c.sendUnlessCritical(WSChunkMsg{Content: content})
 }
 
 // WSConsumer implements streaming.DelegationConsumer, streaming.DelegationProgressConsumer,
