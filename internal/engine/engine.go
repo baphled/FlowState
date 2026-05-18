@@ -2122,33 +2122,53 @@ func (e *Engine) appendSwarmLeadSectionFor(base string, manifest agent.Manifest)
 	return b.String()
 }
 
-// resolveSwarmMemberDetails looks up a swarm member id in the engine's
-// agent registry and returns its display Name and Metadata.Role. The
-// found flag is false when the registry is nil or the member is not
-// registered, in which case the caller falls back to printing only the
+// resolveSwarmMemberDetails looks up a swarm member id and returns its
+// display Name and role text. The lookup honours the same precedence
+// as swarm.Resolve: the agent registry wins, then the swarm registry.
+// For agent members, returns (Name, Metadata.Role, true). For swarm
+// members (meta-swarm's sub-swarms — `a-team`, `dev-swarm`,
+// `planning-loop`, `board-room`), returns (Description, "swarm",
+// true) so the lead-block renderer can append "(swarm)" as the kind
+// marker and the model can tell at a glance that delegating to this
+// member dispatches a whole sub-swarm rather than a single agent.
+//
+// The found flag is false only when the member resolves to neither
+// registry, in which case the caller falls back to printing only the
 // bare id.
 //
 // Expected:
-//   - memberID is the swarm member's agent id; non-empty in normal use.
+//   - memberID is the swarm member's id; non-empty in normal use.
 //
 // Returns:
-//   - name, role, true when the registry resolved the id.
+//   - name, role, true when either registry resolved the id. Role is
+//     `"swarm"` literal for swarm-id matches so the renderer's parens-
+//     suffix path picks up the kind marker.
 //   - "", "", false otherwise.
 //
 // Side effects:
 //   - None.
 func (e *Engine) resolveSwarmMemberDetails(memberID string) (string, string, bool) {
-	if e.agentRegistry == nil || memberID == "" {
+	if memberID == "" {
 		return "", "", false
 	}
-	manifest, ok := e.agentRegistry.Get(memberID)
-	if !ok || manifest == nil {
-		manifest, ok = e.agentRegistry.GetByNameOrAlias(memberID)
-		if !ok || manifest == nil {
-			return "", "", false
+	if e.agentRegistry != nil {
+		if manifest, ok := e.agentRegistry.Get(memberID); ok && manifest != nil {
+			return manifest.Name, manifest.Metadata.Role, true
+		}
+		if manifest, ok := e.agentRegistry.GetByNameOrAlias(memberID); ok && manifest != nil {
+			return manifest.Name, manifest.Metadata.Role, true
 		}
 	}
-	return manifest.Name, manifest.Metadata.Role, true
+	// Sub-swarm member (meta-swarm pattern). The description is the
+	// swarm manifest's human-readable blurb; the "swarm" kind marker
+	// disambiguates the kind for the model so it knows delegate(memberID)
+	// dispatches a whole sub-swarm, not an agent.
+	if e.swarmRegistry != nil {
+		if manifest, ok := e.swarmRegistry.Get(memberID); ok && manifest != nil {
+			return manifest.Description, "swarm", true
+		}
+	}
+	return "", "", false
 }
 
 // appendDelegationSections builds and appends delegation sections
