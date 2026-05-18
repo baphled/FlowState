@@ -14,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/auth"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/orchestrator"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -93,6 +94,31 @@ type Server struct {
 	// makes both endpoints return 501 so the SPA distinguishes
 	// "feature not wired" from "no providers configured".
 	quotaAggregator QuotaAggregator
+
+	// dispatcher is the unified "user-input → engine-stream" service
+	// per the "Dispatcher Service Unification (May 2026)" plan
+	// (FlowState vault). Phase 1 routes /api/chat through
+	// dispatcher.DispatchEphemeral; Phase 2 will fold /messages;
+	// Phase 4 the WS handler. Wired via WithDispatcher OR auto-
+	// constructed in NewServer when streamer + swarmRegistry +
+	// dispatchEngine are all present, so production wiring through
+	// internal/app gets the unified path by default while
+	// older test surfaces that skip those options fall back to the
+	// pre-Dispatcher orchestrator path.
+	dispatcher DispatcherService
+}
+
+// DispatcherService is the narrow surface the Dispatcher Service
+// Unification plan exposes to the API package. Declared as an
+// interface locally so production wires *dispatch.Dispatcher while
+// tests can substitute a spy that records the call without spinning
+// up the streamer chain.
+//
+// Per the plan, handleChat routes through DispatchEphemeral; Phase 2
+// extends this interface with DispatchSessioned when /messages
+// migrates.
+type DispatcherService interface {
+	DispatchEphemeral(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.EphemeralHandle, error)
 }
 
 // ServerOption configures an optional Server dependency.
@@ -148,6 +174,30 @@ func WithSessionBroker(broker *SessionBroker) ServerOption {
 //   - None.
 func WithSessionManager(mgr *session.Manager) ServerOption {
 	return func(s *Server) { s.sessionManager = mgr }
+}
+
+// WithDispatcher installs an explicit DispatcherService on the API
+// server. When unset, NewServer auto-constructs a *dispatch.Dispatcher
+// from the wired streamer / dispatchEngine / swarm + agent registries
+// so production callers get the unified path without an extra wiring
+// step. Tests that want to record dispatch calls (e.g. wire-shape pin
+// specs) pass a spy implementation via this option.
+//
+// Per the "Dispatcher Service Unification (May 2026)" plan §"Phase 1",
+// the API handler routes through DispatchEphemeral when this surface
+// is non-nil; nil falls back to the pre-Dispatcher orchestrator path
+// for the legacy minimal-Server test compositions.
+//
+// Expected:
+//   - A non-nil DispatcherService implementation.
+//
+// Returns:
+//   - A ServerOption that installs the dispatcher.
+//
+// Side effects:
+//   - None.
+func WithDispatcher(d DispatcherService) ServerOption {
+	return func(s *Server) { s.dispatcher = d }
 }
 
 // WithSessions sets the session store for session API routes.
@@ -448,8 +498,34 @@ func NewServer(
 	for _, opt := range opts {
 		opt(s)
 	}
+	// Auto-construct the Dispatcher whenever a streamer is wired (which
+	// is the case for every API server in this codebase, production or
+	// test). DispatchEphemeral handles the bare-engine pass-through
+	// case internally — a nil swarmRegistry and nil dispatchEngine
+	// degenerate to streaming.Run, matching the pre-Dispatcher legacy
+	// fallback at handleChat. Per "Dispatcher Service Unification
+	// (May 2026)" §"Phase 1", routing /api/chat through the Dispatcher
+	// is the load-bearing change — every code path on this handler
+	// goes through DispatchEphemeral so the same context.WithoutCancel
+	// + resolve+dispatch lifecycle applies uniformly.
+	if s.dispatcher == nil && s.streamer != nil {
+		s.dispatcher = dispatch.New(streamingAdapter{s.streamer}, s.dispatchEngine, s.swarmRegistry, s.registry, nil)
+	}
 	s.setupRoutes()
 	return s
+}
+
+// streamingAdapter bridges the API's local Streamer interface to
+// streaming.Streamer's structurally-identical shape. Both interfaces
+// declare the same single method but Go's nominal interface typing
+// requires an explicit adapter when assigning to a typed interface
+// variable inside the dispatch package's constructor.
+type streamingAdapter struct {
+	inner Streamer
+}
+
+func (a streamingAdapter) Stream(ctx context.Context, agentID, message string) (<-chan provider.StreamChunk, error) {
+	return a.inner.Stream(ctx, agentID, message)
 }
 
 // Handler returns the HTTP handler for this server, wrapped with security headers middleware.
@@ -778,11 +854,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pre-resolve to surface unknown agent_id as HTTP 400 BEFORE we
-	// commit to SSE. The orchestrator (or legacy DispatchSwarm) would
-	// also resolve internally; this duplicate-but-cheap pre-flight
-	// preserves the historical 400-on-unknown-id contract.
-	leadID, swarmCtx, err := s.resolveDispatchTarget(req.AgentID)
-	if err != nil {
+	// commit to SSE. The Dispatcher would also resolve internally;
+	// this duplicate-but-cheap pre-flight preserves the historical
+	// 400-on-unknown-id contract because once SSE headers are sent
+	// the response is committed and cannot return a non-200 status.
+	if _, _, err := s.resolveDispatchTarget(req.AgentID); err != nil {
 		writeJSONError(w, err, "swarm_error", http.StatusBadRequest)
 		return
 	}
@@ -800,47 +876,35 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	verbosityParam := r.URL.Query().Get("verbosity")
 	consumer := streaming.NewVerbosityFilter(sseConsumer, parseVerbosityLevel(verbosityParam))
 
-	// Pre-flight resolution result is consumed inside the orchestrator
-	// path's own resolve; we keep the variables in scope for the
-	// legacy fallback below.
-	_ = leadID
-	_ = swarmCtx
-
-	// Per ADR-001 §"Wrappers not duplicates" + ADR - Session
-	// Orchestrator for Surface Parity, /api/chat routes through the
-	// shared orchestrator when the engine + registries are wired
-	// (production path — every NewServer call from app.go has
-	// these). Tests that construct a Server without the swarm
-	// registry option fall back to legacy plain streaming via the
-	// dispatch helper, preserving the agent-only contract used by
-	// older API consumers.
-	if s.swarmRegistry != nil {
-		orch := orchestrator.New(s.dispatchEngine, s.registry, s.swarmRegistry, s.streamer, nil, s.sessionManager)
-		err := orch.ProcessUserInput(r.Context(), orchestrator.UserInput{
-			Message:      req.Message,
-			DefaultAgent: req.AgentID,
-			// ScanMentions matches TUI parity (Web Swarm Mention Parity,
-			// May 2026): the web chat composer routes typed @-mentions
-			// through the same orchestrator path the TUI's chat intent
-			// uses, so a typed `@<swarm-id>` dispatches the swarm
-			// regardless of which agent the toolbar AgentPicker has
-			// selected. Agent @-mentions and unknown @-mentions still
-			// fall through to req.AgentID — the orchestrator's resolver
-			// only redirects on a swarm hit (see internal/orchestrator/
-			// orchestrator.go::resolve).
-			ScanMentions: true,
-		}, consumer)
-		if err != nil {
-			log.Printf("[api] chat stream error: %v", err)
-		}
+	// Phase 1 of "Dispatcher Service Unification (May 2026)" — route
+	// through the unified Dispatcher. NewServer auto-constructs a
+	// *dispatch.Dispatcher whenever a streamer is wired (including
+	// the bare-engine test compositions) so this branch is always
+	// taken. The Dispatcher applies context.WithoutCancel internally
+	// (preserving 51fb416c's pattern at the seam rather than the
+	// handler edge) and shares its resolve+dispatch logic with the
+	// future /messages migration in Phase 2 + WS handler in Phase 4.
+	//
+	// Pre-flight resolution above keeps the historical 400-on-unknown-
+	// id contract symmetric with the CLI's *swarm.NotFoundError; the
+	// Dispatcher repeats the resolve internally but by then we have
+	// committed to SSE, so the duplicate-but-cheap pre-flight stays.
+	handle, dispatchErr := s.dispatcher.DispatchEphemeral(r.Context(), dispatch.DispatchRequest{
+		AgentID:      req.AgentID,
+		Content:      req.Message,
+		ScanMentions: true,
+	}, consumer)
+	if dispatchErr != nil {
+		log.Printf("[api] chat dispatch error: %v", dispatchErr)
 		return
 	}
-
-	// Legacy path retained for tests that construct Server without
-	// the swarm registry. Pre-flight resolution above produced
-	// (id-verbatim, nil) for this case, so we just stream as agent.
-	if err := swarm.DispatchSwarm(r.Context(), s.dispatchEngine, swarmCtx, s.streamer, consumer, leadID, req.Message); err != nil {
-		log.Printf("[api] chat stream error: %v", err)
+	// Block until the Dispatcher's streamer goroutine completes so the
+	// SSE response finalises after the last chunk drains. The goroutine
+	// inside DispatchEphemeral honours context.WithoutCancel internally
+	// — handler return cannot kill it, and Done emits the terminal
+	// stream error (or nil) before closing.
+	if streamErr := <-handle.Done; streamErr != nil {
+		log.Printf("[api] chat stream error: %v", streamErr)
 	}
 }
 

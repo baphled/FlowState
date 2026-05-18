@@ -25,6 +25,7 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/api"
 	"github.com/baphled/flowstate/internal/discovery"
+	"github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
@@ -115,6 +116,54 @@ func (d *dripStreamer) Stream(ctx context.Context, _ string, _ string) (<-chan p
 		}
 	}()
 	return out, nil
+}
+
+// spyDispatcher records every DispatchEphemeral invocation and replays
+// the supplied content chunk through the caller's consumer so the
+// Phase 1 wire-shape pin spec can observe the full SSE byte sequence
+// without spinning up a real engine + streamer chain.
+//
+// Per the "Dispatcher Service Unification (May 2026)" plan §"Phase 1",
+// the API handler routes through the Dispatcher seam; this spy is the
+// canonical fixture for asserting "handleChat called DispatchEphemeral
+// with the expected request shape".
+type spyDispatcher struct {
+	mu            sync.Mutex
+	requests      []dispatch.DispatchRequest
+	replayContent string
+}
+
+func (sp *spyDispatcher) DispatchEphemeral(_ context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.EphemeralHandle, error) {
+	sp.mu.Lock()
+	sp.requests = append(sp.requests, req)
+	content := sp.replayContent
+	sp.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		defer close(done)
+		if content != "" {
+			_ = consumer.WriteChunk(content)
+		}
+		consumer.Done()
+		done <- nil
+	}()
+	return dispatch.EphemeralHandle{Done: done}, nil
+}
+
+func (sp *spyDispatcher) callCount() int {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	return len(sp.requests)
+}
+
+func (sp *spyDispatcher) lastRequest() dispatch.DispatchRequest {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if len(sp.requests) == 0 {
+		return dispatch.DispatchRequest{}
+	}
+	return sp.requests[len(sp.requests)-1]
 }
 
 // fakeDispatchEngine satisfies swarm.DispatchEngine for the API parity
@@ -589,6 +638,62 @@ var _ = Describe("Server", func() {
 				Expect(streamer.capturedAgentID).To(Equal(""))
 				Expect(engStub.installedContext).To(BeNil())
 				Expect(engStub.flushCalls).To(Equal(0))
+			})
+		})
+
+		// Phase 1 of "Dispatcher Service Unification (May 2026)" —
+		// handleChat now routes through dispatcher.DispatchEphemeral
+		// when a Dispatcher is wired (production wiring via
+		// internal/app + auto-construct in NewServer, or via the
+		// explicit WithDispatcher option). The wire-shape contract
+		// for /api/chat is unchanged byte-for-byte: same response
+		// headers, same SSE event sequence (content+ followed by
+		// [DONE]).
+		Context("when a Dispatcher is wired (Phase 1)", func() {
+			It("routes through Dispatcher.DispatchEphemeral; wire shape unchanged", func() {
+				spy := &spyDispatcher{
+					replayContent: "hello-from-spy",
+				}
+				registry.Register(&testManifest)
+				srv := api.NewServer(streamer, registry, disc, skills,
+					api.WithDispatcher(spy),
+				)
+
+				body := `{"agent_id":"test-agent","message":"hi"}`
+				req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				srv.Handler().ServeHTTP(recorder, req)
+
+				// Spy was called exactly once with the chat request shape.
+				Expect(spy.callCount()).To(Equal(1))
+				lastReq := spy.lastRequest()
+				Expect(lastReq.AgentID).To(Equal("test-agent"))
+				Expect(lastReq.Content).To(Equal("hi"))
+				Expect(lastReq.ScanMentions).To(BeTrue())
+
+				// Response headers unchanged.
+				Expect(recorder.Code).To(Equal(http.StatusOK))
+				Expect(recorder.Header().Get("Content-Type")).To(Equal("text/event-stream"))
+				Expect(recorder.Header().Get("Cache-Control")).To(Equal("no-cache"))
+				Expect(recorder.Header().Get("Connection")).To(Equal("keep-alive"))
+
+				// SSE event sequence: at least one content frame
+				// followed by [DONE]. The spy replays one content
+				// chunk through the supplied consumer so the wire-
+				// shape contract can be observed end-to-end.
+				events := parseSSEEvents(recorder.Body)
+				hasContent := false
+				hasDone := false
+				for _, ev := range events {
+					if strings.Contains(ev, "hello-from-spy") {
+						hasContent = true
+					}
+					if ev == "[DONE]" {
+						hasDone = true
+					}
+				}
+				Expect(hasContent).To(BeTrue(), "spy's content chunk must reach the SSE response")
+				Expect(hasDone).To(BeTrue(), "[DONE] must terminate the SSE stream")
 			})
 		})
 	})
