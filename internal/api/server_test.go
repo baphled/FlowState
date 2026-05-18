@@ -4745,6 +4745,156 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 	})
 })
 
+// POST /api/v1/sessions/{id}/messages auto-dispatch — the Vue web UI
+// drives the session-scoped POST path, not /api/chat. Before this seam
+// landed the session handler called sessionManager.SendMessage directly
+// without consulting the swarm registry, so a session whose agent_id is
+// a registered swarm-lead (e.g. `coordinator` for meta-swarm) never had
+// a swarm.Context installed on the engine — the engine streamed the
+// generic persona, the Swarm Leadership block never rendered, member
+// names were absent and the coordinator could not delegate.
+//
+// The fix consults swarmRegistry.AutoDispatchSwarmFor(agentID) on every
+// turn (matching the /api/chat path's sticky-context semantic from
+// dispatch_service.go:101-108): when the session's active agent is the
+// sole auto-dispatch lead for a registered swarm, the handler installs
+// the swarm context on the engine BEFORE SendMessage drives the
+// streamer, and runs the post-stream lifecycle (FlushSwarmLifecycle +
+// RestoreManifest) when the chunks channel closes. Sessions whose
+// agent_id is a plain agent (no matching auto-dispatch swarm) preserve
+// the legacy pass-through behaviour.
+var _ = Describe("POST /api/v1/sessions/{id}/messages swarm auto-dispatch", func() {
+	var (
+		registry *agent.Registry
+		swarmReg *swarm.Registry
+		engStub  *fakeDispatchEngine
+		mgr      *session.Manager
+		streamer *mockStreamer
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		registry = agent.NewRegistry()
+		registry.Register(&agent.Manifest{ID: "coordinator", Name: "Coordinator"})
+		registry.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
+
+		swarmReg = swarm.NewRegistry()
+		swarmReg.Register(&swarm.Manifest{
+			SchemaVersion:      "1.0.0",
+			ID:                 "meta-swarm",
+			Description:        "Top-level orchestrator",
+			Lead:               "coordinator",
+			Members:            []string{"a-team", "dev-swarm"},
+			AutoDispatchOnLead: true,
+		})
+
+		streamer = &mockStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "ack"},
+				{Done: true},
+			},
+		}
+		engStub = &fakeDispatchEngine{}
+		mgr = session.NewManager(streamer)
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			streamer, registry, disc, nil,
+			api.WithSessionManager(mgr),
+			api.WithSwarmRegistry(swarmReg),
+			api.WithDispatchEngine(engStub),
+		)
+	})
+
+	It("installs a swarm.Context on the engine when the session's agent_id is the sole auto-dispatch lead", func() {
+		sess, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+
+		recorder := httptest.NewRecorder()
+		body := `{"content":"please plan something"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		// The streamer runs in a goroutine wrapped inside SendMessage;
+		// the engine's SetSwarmContext call must already have happened
+		// before the streamer drains, so by the time the chunks finish
+		// installedContext is non-nil.
+		Eventually(func() *swarm.Context { return engStub.installedContext }, "2s").ShouldNot(BeNil(),
+			"a session whose agent_id leads an auto-dispatch swarm must install the swarm context on the engine before streaming")
+		Expect(engStub.installedContext.SwarmID).To(Equal("meta-swarm"),
+			"installed context must name the swarm that the lead matched, so the engine renders the matching Swarm Leadership block")
+		Expect(engStub.installedContext.LeadAgent).To(Equal("coordinator"))
+		Expect(engStub.installedContext.Members).To(ConsistOf("a-team", "dev-swarm"),
+			"member list must be carried into the engine so the coordinator can delegate to sub-swarms by id")
+	})
+
+	It("runs the post-stream lifecycle (RestoreManifest) when the chunks channel closes", func() {
+		sess, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+
+		recorder := httptest.NewRecorder()
+		body := `{"content":"task"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		// Snapshot is taken pre-dispatch; restore fires when the chunk
+		// channel drains. Without restore the engine would stay re-
+		// identified as the swarm lead across unrelated turns.
+		Eventually(func() int { return engStub.restoreCalls }, "2s").Should(BeNumerically(">=", 1),
+			"engine manifest snapshot must be restored when the swarm dispatch completes — keeps subsequent non-swarm turns from inheriting the swarm lead's manifest")
+		Expect(engStub.snapshotCalls).To(BeNumerically(">=", 1),
+			"the lifecycle must snapshot the pre-dispatch manifest, mirroring the /api/chat path")
+	})
+
+	It("does not install a swarm context when the session's agent_id is a plain agent (no matching auto-dispatch swarm)", func() {
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		recorder := httptest.NewRecorder()
+		body := `{"content":"hello"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		// Wait for the stream goroutine to finish so we don't race the
+		// assertion against a not-yet-completed turn.
+		Eventually(func() int { return engStub.snapshotCalls + engStub.restoreCalls }, "1s").Should(Equal(0),
+			"plain-agent sessions must skip the swarm lifecycle entirely — no snapshot, no restore, preserving the historical pass-through")
+		Expect(engStub.installedContext).To(BeNil(),
+			"no swarm context when agent_id is a plain agent — the engine streams the agent's own persona")
+	})
+
+	It("re-installs the swarm context on every turn so a restart-mid-stream still ends in a clean engine state", func() {
+		// Sticky context per dispatch_service.go:101-108 — RestoreManifest
+		// reverts the manifest but the swarmCtx stays installed until the
+		// next dispatch overwrites it. This spec pins that "every turn
+		// re-snapshots + re-installs" so a server restart that loses the
+		// in-memory engine state recovers naturally on the next message.
+		sess, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+
+		send := func() {
+			streamer.chunks = []provider.StreamChunk{{Content: "ack"}, {Done: true}}
+			recorder := httptest.NewRecorder()
+			body := `{"content":"turn"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+		}
+
+		send()
+		Eventually(func() int { return engStub.restoreCalls }, "2s").Should(BeNumerically(">=", 1))
+		send()
+		Eventually(func() int { return engStub.restoreCalls }, "2s").Should(BeNumerically(">=", 2),
+			"every turn that resolves to an auto-dispatch swarm must run its own snapshot+restore pair — no caching")
+	})
+})
+
 // fakeContextUsageProvider records the (provider, model, messages) the
 // api server hands it and returns a deterministic JSON payload so tests
 // pin the wire shape and the call site without standing up the engine.

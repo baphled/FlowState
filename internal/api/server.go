@@ -1071,10 +1071,46 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	// it off. A second concurrent POST or an explicit cancel API can
 	// still cut the turn short; only the request-context coupling is removed.
 	streamCtx := context.WithoutCancel(r.Context())
+
+	// Auto-dispatch swarm wiring (Bug B fix, May 2026).
+	//
+	// /api/chat routes user input through Orchestrator.ProcessUserInput
+	// which calls swarm.DispatchSwarm — snapshot manifest → set swarm
+	// context → stream → flush → restore. The session-scoped POST path
+	// (used by the Vue web UI's chatStore.sendMessage) did NOT consult
+	// the swarm registry, so a session whose agent_id is a registered
+	// swarm-lead (e.g. `coordinator` for meta-swarm) streamed the bare
+	// agent persona with no Swarm Leadership block and no member list —
+	// the coordinator literally could not see what swarm it was in,
+	// could not enumerate members, could not delegate.
+	//
+	// resolveAutoDispatchSwarm runs the same AutoDispatchSwarmFor check
+	// the /api/chat resolver uses, but applies it to the session's
+	// active agent rather than the request body. When it hits, the
+	// pre-stream snapshot + SetSwarmContext lands BEFORE SendMessage so
+	// the engine.Stream call inside the manager sees the swarm context.
+	// The post-stream lifecycle (flush + restore) runs when the chunks
+	// channel drains, mirroring Orchestrator.Stream's pattern.
+	//
+	// Sessions whose agent_id is a plain agent (no matching auto-
+	// dispatch swarm), and test surfaces that construct the Server
+	// without WithSwarmRegistry / WithDispatchEngine, both fall through
+	// to the legacy pass-through path with no behaviour change.
+	swarmCtx, manifestSnapshot, swarmActive := s.resolveAutoDispatchSwarm(id)
+	if swarmActive {
+		s.dispatchEngine.SetSwarmContext(swarmCtx)
+	}
+
 	chunks, err := s.sessionManager.SendMessageWithAttachments(
 		streamCtx, id, req.Content, req.AttachmentIDs,
 	)
 	if err != nil {
+		if swarmActive {
+			// Stream never started — restore the manifest immediately
+			// so a failed handler doesn't leave the engine
+			// re-identified as the swarm lead for subsequent turns.
+			s.dispatchEngine.RestoreManifest(manifestSnapshot)
+		}
 		if errors.Is(err, session.ErrAttachmentNotFound) {
 			http.Error(w, "attachment id not found in session", http.StatusBadRequest)
 			return
@@ -1083,6 +1119,14 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if chunks != nil {
+		// Wrap the chunks channel so the post-stream swarm lifecycle
+		// runs exactly once when the engine finishes streaming. When
+		// no swarm dispatch is active, the wrap is the identity
+		// transform and adds no extra hop on the hot path beyond a
+		// single goroutine + buffered chan.
+		if swarmActive {
+			chunks = s.wrapWithSwarmLifecycle(streamCtx, chunks, manifestSnapshot)
+		}
 		if s.sessionBroker != nil {
 			go s.sessionBroker.Publish(id, chunks)
 		} else {
@@ -1091,6 +1135,11 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 				}
 			}()
 		}
+	} else if swarmActive {
+		// No chunks (nil channel) — manager returned successfully but
+		// without a stream. Restore manifest synchronously so engine
+		// state doesn't leak.
+		s.dispatchEngine.RestoreManifest(manifestSnapshot)
 	}
 	// SnapshotSession (not GetSession) so the *Session pointer never
 	// escapes the manager's lock boundary. NewSessionResponse reads
@@ -1105,6 +1154,103 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, NewSessionResponse(&snap))
+}
+
+// resolveAutoDispatchSwarm consults the swarm registry for the session's
+// active agent (CurrentAgentID || AgentID, matching SendMessage's own
+// resolution) and reports whether a swarm should be installed on the
+// engine for this turn.
+//
+// Expected:
+//   - sessionID identifies an existing session in the manager. An
+//     unknown id degrades silently to (nil, nil, false) so the caller
+//     still produces a 404 on its own SendMessage path.
+//
+// Returns:
+//   - swarmCtx: the *swarm.Context to install via SetSwarmContext when
+//     active is true. Pointer to a value local to this call — callers
+//     must not mutate it (swarm.Context is documented immutable).
+//   - manifestSnapshot: the opaque pre-dispatch manifest token to hand
+//     back to RestoreManifest after the stream lifecycle completes.
+//   - active: true when (i) the swarm registry, dispatch engine and
+//     session manager are all wired AND (ii) AutoDispatchSwarmFor
+//     returns a unique manifest for the session's active agent. False
+//     in all other cases — the caller skips the swarm lifecycle.
+//
+// Side effects:
+//   - Calls dispatchEngine.ManifestSnapshot once when active so the
+//     caller has a token to restore. No SetSwarmContext is called from
+//     this helper; the caller does that after the helper returns so the
+//     install + ensuing SendMessage observe the same code path the
+//     /api/chat handler uses (via DispatchSwarm).
+func (s *Server) resolveAutoDispatchSwarm(sessionID string) (*swarm.Context, any, bool) {
+	if s.swarmRegistry == nil || s.dispatchEngine == nil || s.sessionManager == nil {
+		return nil, nil, false
+	}
+	snap, err := s.sessionManager.SnapshotSession(sessionID)
+	if err != nil {
+		return nil, nil, false
+	}
+	agentID := snap.AgentID
+	if snap.CurrentAgentID != "" {
+		agentID = snap.CurrentAgentID
+	}
+	if agentID == "" {
+		return nil, nil, false
+	}
+	manifest, ok := s.swarmRegistry.AutoDispatchSwarmFor(agentID)
+	if !ok {
+		return nil, nil, false
+	}
+	swarmCtx := swarm.NewContext(manifest.ID, manifest)
+	manifestSnapshot := s.dispatchEngine.ManifestSnapshot()
+	return &swarmCtx, manifestSnapshot, true
+}
+
+// wrapWithSwarmLifecycle pumps src into a new channel and, after src
+// closes, runs the post-stream swarm dispatch lifecycle
+// (FlushSwarmLifecycle + RestoreManifest) so the engine ends in the
+// same shape Orchestrator.Stream leaves it: swarm context is sticky
+// (the next dispatch overwrites it) but the manifest reverts to the
+// pre-dispatch identity so non-swarm turns don't inherit the swarm
+// lead's persona. Mirrors dispatch_service.go:96-110.
+//
+// Expected:
+//   - ctx is the same context the manager streamed under, so the post-
+//     dispatch flush sees the same cancellation surface.
+//   - src is the chunks channel returned by SendMessage; never nil.
+//   - manifestSnapshot is the opaque token resolveAutoDispatchSwarm
+//     captured via ManifestSnapshot.
+//
+// Returns:
+//   - A new chunks channel that forwards every chunk from src verbatim
+//     and closes when src closes.
+//
+// Side effects:
+//   - Starts one goroutine that ranges over src and runs
+//     FlushSwarmLifecycle + RestoreManifest after the range exits.
+func (s *Server) wrapWithSwarmLifecycle(
+	ctx context.Context,
+	src <-chan provider.StreamChunk,
+	manifestSnapshot any,
+) <-chan provider.StreamChunk {
+	out := make(chan provider.StreamChunk, 64)
+	go func() {
+		defer close(out)
+		defer func() {
+			// Flush + restore even if the producer panics or src is
+			// drained early. Flush errors are intentionally swallowed —
+			// the post-swarm gates' own observers (event bus, logs)
+			// surface failures; the SSE-side consumer cannot act on a
+			// flush error anyway. RestoreManifest is no-error.
+			_ = s.dispatchEngine.FlushSwarmLifecycle(ctx)
+			s.dispatchEngine.RestoreManifest(manifestSnapshot)
+		}()
+		for chunk := range src {
+			out <- chunk
+		}
+	}()
+	return out
 }
 
 // handleSessionTodos returns the todo list for the given session as JSON.
