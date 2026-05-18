@@ -4,13 +4,30 @@ export const SSE_RECONNECT_MAX_ATTEMPTS = 5
 
 import { subscribeSessionStream } from '@/api'
 
-export const SSE_STALL_TIMEOUT_MS = 60_000
+// SSE stall watchdog timeout. The engine's idle-stream watchdog
+// (internal/engine/engine.go: engineStreamIdleTimeout = 60s, May 2026
+// fix for the mid-thinking-halt incident) emits a synthetic Done
+// within 60s of provider-stream silence; this client-side watchdog
+// is the local backstop that surfaces the same condition to the user
+// if the engine somehow fails to emit. 65s = 60s engine threshold +
+// 5s scheduling buffer.
+//
+// Pre-May-2026 the per-phase map varied wildly (45s generating /
+// 120s thinking / 180s tool_executing / 300s queued) because the
+// frontend was the only place that could detect a hung stream. With
+// the engine-side watchdog in place that variation is no longer
+// load-bearing: every phase trips off the same 65s contract because
+// the engine guarantees a chunk or a Done within 60s regardless of
+// phase. The per-phase map is preserved as a seam in case future
+// work needs to relax it for a specific phase, but every entry now
+// matches the flat default.
+export const SSE_STALL_TIMEOUT_MS = 65_000
 
 export const SSE_STALL_TIMEOUT_BY_PHASE_MS: Record<string, number> = {
-  generating: 45_000,
-  thinking: 120_000,
-  tool_executing: 180_000,
-  queued: 300_000,
+  generating: 65_000,
+  thinking: 65_000,
+  tool_executing: 65_000,
+  queued: 65_000,
 }
 
 export function stallTimeoutForPhase(phase: string | undefined): number {
