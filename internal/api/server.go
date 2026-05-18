@@ -1048,8 +1048,31 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	if s.completionOrchestrator != nil {
 		s.completionOrchestrator.ResetRePromptCount(id)
 	}
+	// Decouple the streamer's lifetime from the HTTP request's lifetime.
+	//
+	// Commit e4bf9632 made the chunks-to-broker publish asynchronous
+	// (`go s.sessionBroker.Publish(id, chunks)`) so the snapshot returns
+	// to the client without waiting for the full assistant turn. The
+	// intent is correct: snapshot fast, stream over SSE. But the
+	// engine streamer is bound to the ctx we pass into SendMessage, and
+	// the manager wraps that ctx with context.WithCancel (manager.go:1297)
+	// keyed by sessionID. When the HTTP handler returns, net/http
+	// cancels r.Context() — which cancels the manager's descendant ctx —
+	// which trips the engine's `<-ctx.Done()` branch (engine.go:3774-3776),
+	// emitting `{Error: context.Canceled, Done: true}` with zero content
+	// chunks. The SSE subscriber sees only Done with no content; the user
+	// gets a failed bubble and no reply.
+	//
+	// context.WithoutCancel propagates request-scoped values (sessionID,
+	// provider/model overrides, prior messages) without inheriting
+	// cancellation. The session manager's own CancelInflight mechanism
+	// (manager.go:1298-1300) remains the correct way to terminate an
+	// in-flight turn — keyed on sessionID, not on the request that kicked
+	// it off. A second concurrent POST or an explicit cancel API can
+	// still cut the turn short; only the request-context coupling is removed.
+	streamCtx := context.WithoutCancel(r.Context())
 	chunks, err := s.sessionManager.SendMessageWithAttachments(
-		r.Context(), id, req.Content, req.AttachmentIDs,
+		streamCtx, id, req.Content, req.AttachmentIDs,
 	)
 	if err != nil {
 		if errors.Is(err, session.ErrAttachmentNotFound) {

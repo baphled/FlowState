@@ -68,6 +68,55 @@ func (m *mockStreamer) Stream(_ context.Context, agentID string, message string)
 	return ch, nil
 }
 
+// dripStreamer mimics the real engine streamer: it returns the chunks
+// channel IMMEDIATELY (before all chunks have been emitted), drips chunks
+// over time, and honours ctx.Done() — on cancellation it emits
+// `{Error: ctx.Err(), Done: true}` and exits without emitting the remaining
+// content chunks. This matches the engine's behaviour at engine.go:3774-3776
+// where the select on `<-ctx.Done()` produces the regression observed in
+// commit e4bf9632.
+//
+// mockStreamer's pre-filled+closed channel cannot exercise the
+// streamer-vs-request-lifetime contract because the channel is already
+// drained-and-closed by the time Stream returns. dripStreamer keeps the
+// channel live across the handler return so the context propagation can be
+// observed.
+type dripStreamer struct {
+	chunks       []provider.StreamChunk
+	emitInterval time.Duration
+}
+
+func (d *dripStreamer) Stream(ctx context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+	out := make(chan provider.StreamChunk, 1)
+	go func() {
+		defer close(out)
+		for _, c := range d.chunks {
+			select {
+			case <-ctx.Done():
+				// Match the engine: emit Done{Error: ctx.Err()} on
+				// cancellation. See internal/engine/engine.go:3774-3776
+				// for the canonical shape.
+				select {
+				case out <- provider.StreamChunk{Error: ctx.Err(), Done: true}:
+				default:
+				}
+				return
+			case <-time.After(d.emitInterval):
+			}
+			select {
+			case out <- c:
+			case <-ctx.Done():
+				select {
+				case out <- provider.StreamChunk{Error: ctx.Err(), Done: true}:
+				default:
+				}
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
 // fakeDispatchEngine satisfies swarm.DispatchEngine for the API parity
 // tests. Records every SetSwarmContext + FlushSwarmLifecycle call so
 // the test can assert the swarm dispatch path actually went through
@@ -727,6 +776,133 @@ var _ = Describe("Session stream live events", func() {
 
 		Expect(events).To(ContainElement(ContainSubstring("live-chunk")))
 		Expect(events).To(ContainElement("[DONE]"))
+	})
+
+	// Regression for commit e4bf9632 ("fix(api): make POST /messages async,
+	// remove client-side timeout"). That commit switched the in-handler
+	// `s.sessionBroker.Publish(id, chunks)` to `go s.sessionBroker.Publish(...)`
+	// so the snapshot returns immediately. The intent (snapshot fast, stream
+	// over SSE) is correct, but the engine streamer was wired to r.Context().
+	// When the handler returned, net/http cancelled r.Context() and the
+	// engine's `<-ctx.Done()` branch emitted `{Error: context.Canceled, Done: true}`
+	// with zero content chunks. Users saw failed bubbles and no assistant reply.
+	//
+	// Contract: the streamer's lifetime is decoupled from the HTTP request's
+	// lifetime. Once the handler dispatches the chunks to the broker, the
+	// streamer continues running under the session manager's own cancellation
+	// (CancelInflight) keyed on sessionID. The SSE subscriber that connected
+	// before the POST MUST receive the full set of content chunks AND a clean
+	// terminal Done — no Error: context.Canceled.
+	//
+	// The existing "sealed turn" e2e test at this Describe's sibling
+	// (line ~1740) does NOT catch this because mockStreamer pre-fills its
+	// channel and closes it before returning — the bug only surfaces when the
+	// streamer's channel is still live (open chunks pending) at the moment
+	// the HTTP handler returns. This spec uses dripStreamer, which mimics the
+	// real engine: returns the channel before all chunks are emitted, and
+	// honours ctx.Done() by emitting `{Error: ctx.Err(), Done: true}` on
+	// cancellation (matching engine.go:3774-3776).
+	It("delivers full content stream after handler returns (streamer lifetime decoupled from r.Context)", func() {
+		// Replace the BeforeEach broker/mgr/srv with ones wired to a
+		// context-honouring streamer that returns mid-stream. The shared
+		// fixture's mockStreamer pre-fills and closes — we need open chunks.
+		drip := &dripStreamer{
+			chunks: []provider.StreamChunk{
+				{Content: "Hello"},
+				{Content: " world"},
+				{Done: true},
+			},
+			emitInterval: 30 * time.Millisecond,
+		}
+		dripBroker := api.NewSessionBroker()
+		dripMgr := session.NewManager(drip)
+		dripSrv := api.NewServer(
+			drip,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(dripMgr),
+			api.WithSessionBroker(dripBroker),
+		)
+		dripHTTP := httptest.NewServer(dripSrv.Handler())
+		defer dripHTTP.Close()
+
+		sess, err := dripMgr.CreateSession("drip-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Subscribe to SSE FIRST so the subscriber is registered when
+		// the POST handler kicks off the publish goroutine. Drive the
+		// GET in a goroutine because http.Client.Do blocks for headers,
+		// and the SSE handler does not flush until the first chunk
+		// lands — which only happens after POST kicks off the publish.
+		streamCtx, streamCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer streamCancel()
+		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
+			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/stream", http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		eventsCh := make(chan []string, 1)
+		go func() {
+			defer GinkgoRecover()
+			streamResp, doErr := http.DefaultClient.Do(streamReq)
+			if doErr != nil {
+				eventsCh <- []string{"__DO_ERR__:" + doErr.Error()}
+				return
+			}
+			defer streamResp.Body.Close()
+			reader := bufio.NewReader(streamResp.Body)
+			var evts []string
+			for {
+				line, readErr := reader.ReadString('\n')
+				if line != "" {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "data: ") {
+						evts = append(evts, strings.TrimPrefix(line, "data: "))
+					}
+					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
+						break
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			eventsCh <- evts
+		}()
+
+		// Give the SSE subscriber time to register with the broker
+		// before the POST kicks off the publish goroutine.
+		time.Sleep(100 * time.Millisecond)
+
+		// POST returns immediately (async publish per e4bf9632).
+		postResp, err := http.Post(
+			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"ping"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_ = postResp.Body.Close()
+		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
+
+		// Collect SSE events.
+		var evts []string
+		Eventually(eventsCh, 8*time.Second).Should(Receive(&evts))
+
+		// Contract A: clean terminal [DONE] with no Error.
+		Expect(evts).To(ContainElement("[DONE]"),
+			"SSE subscriber must receive terminal [DONE]; got: %v", evts)
+		for _, e := range evts {
+			Expect(e).NotTo(ContainSubstring("context canceled"),
+				"SSE stream must NOT terminate with context.Canceled; the streamer must outlive the HTTP request. Got: %v", evts)
+			Expect(e).NotTo(ContainSubstring("context.Canceled"),
+				"SSE stream must NOT terminate with context.Canceled; got: %v", evts)
+		}
+
+		// Contract B: all content chunks delivered.
+		Expect(evts).To(ContainElement(ContainSubstring("Hello")),
+			"SSE subscriber must receive the first content chunk; got: %v", evts)
+		Expect(evts).To(ContainElement(ContainSubstring("world")),
+			"SSE subscriber must receive the second content chunk; got: %v", evts)
 	})
 
 	It("emits named delegation SSE events when chunk carries DelegationInfo", func() {
@@ -3010,7 +3186,23 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages JSON contract", func() {
 })
 
 var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract", func() {
-	assertAssistantInResponse := func(withBroker bool) {
+	// Commit e4bf9632 ("fix(api): make POST /messages async, remove client-
+	// side timeout") moved chunk publishing into a background goroutine so
+	// the snapshot returns immediately to the client. The previous contract
+	// — drain chunks synchronously so the assistant reply lands BEFORE the
+	// HTTP response is written — was retired by that commit: long replies
+	// blocked the HTTP response for minutes while the engine ran the full
+	// turn, defeating the purpose of having an SSE side-channel.
+	//
+	// The new contract is two-part:
+	//   (a) The user message MUST be appended synchronously and visible in
+	//       the POST response snapshot, so the frontend can render the user
+	//       bubble immediately without polling.
+	//   (b) The assistant reply arrives via the SSE stream side-channel
+	//       (not the snapshot). The full-round-trip "streams all chunks to
+	//       the SSE subscriber and persists the assistant reply before
+	//       returning" spec below pins (b).
+	assertUserMessageInResponse := func(withBroker bool) {
 		recorder := httptest.NewRecorder()
 		streamer := &mockStreamer{chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
 		mgr := session.NewManager(streamer)
@@ -3035,24 +3227,26 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 			Messages     []session.Message `json:"messages"`
 		}
 		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
-		Expect(out.MessageCount).To(BeNumerically(">=", 2), "response must include both user and assistant messages before returning")
+		Expect(out.MessageCount).To(BeNumerically(">=", 1),
+			"response must include the user message synchronously so the frontend renders the user bubble without polling")
 
-		var assistantContent string
+		var userContent string
 		for _, m := range out.Messages {
-			if m.Role == "assistant" {
-				assistantContent = m.Content
+			if m.Role == "user" {
+				userContent = m.Content
 				break
 			}
 		}
-		Expect(assistantContent).To(Equal("ok"), "assistant reply must be appended to the session before the HTTP response is written so the frontend renders it without polling")
+		Expect(userContent).To(Equal("hello"),
+			"user message must be appended to the session before the HTTP response is written")
 	}
 
-	It("includes the assistant reply when no broker is configured", func() {
-		assertAssistantInResponse(false)
+	It("includes the user message when no broker is configured", func() {
+		assertUserMessageInResponse(false)
 	})
 
-	It("includes the assistant reply when a broker is configured", func() {
-		assertAssistantInResponse(true)
+	It("includes the user message when a broker is configured", func() {
+		assertUserMessageInResponse(true)
 	})
 
 	It("streams all chunks to the SSE subscriber and persists the assistant reply before returning", func() {
