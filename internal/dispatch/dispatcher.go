@@ -276,40 +276,113 @@ func (d *Dispatcher) DispatchEphemeral(
 	done := make(chan error, 1)
 	go func() {
 		defer close(done)
-		var dispatchErr error
-		if swarmCtx != nil {
-			dispatchErr = swarm.DispatchSwarm(
-				streamCtx,
-				d.dispatchEngine,
-				swarmCtx,
-				d.streamer,
-				consumer,
-				leadID,
-				req.Content,
-			)
-		} else if d.dispatchEngine != nil {
-			// Plain-agent dispatch through the engine — preserves the
-			// SetSwarmContext(nil) / FlushSwarmLifecycle wind-down that
-			// /api/chat used to get for free via the orchestrator.
-			dispatchErr = swarm.DispatchSwarm(
-				streamCtx,
-				d.dispatchEngine,
-				nil,
-				d.streamer,
-				consumer,
-				leadID,
-				req.Content,
-			)
-		} else {
-			// Bare-engine pass-through: no swarm, no engine. Matches
-			// the legacy /api/chat fallback at server.go::handleChat
-			// when swarmRegistry is unset (test surface).
-			dispatchErr = streaming.Run(streamCtx, d.streamer, consumer, leadID, req.Content)
-		}
-		done <- dispatchErr
+		done <- d.runEphemeralStream(streamCtx, leadID, swarmCtx, req, consumer)
 	}()
 
 	return EphemeralHandle{Done: done}, nil
+}
+
+// RunEphemeralSync is the synchronous-await variant of DispatchEphemeral.
+// Same resolution + lifecycle (snapshot → SetSwarmContext → stream → flush
+// → restore via swarm.DispatchSwarm), but the streamer ctx is NOT
+// decoupled from the caller's ctx — cancellation propagates straight into
+// the provider's Stream call. This is the contract the CLI surfaces
+// (`flowstate run`, `flowstate chat --message`) and the
+// orchestrator.ProcessUserInput wrapper rely on so a SIGTERM-driven ctx
+// cancel mid-stream still reaches the provider and produces the
+// {Error: ctx.Err(), Done: true} chunk the engine surfaces (pinned by the
+// "persists the parent session on context cancellation mid-stream"
+// regression at internal/cli/run_test.go:528).
+//
+// Phase 5 of "Dispatcher Service Unification (May 2026)" folds the
+// orchestrator into a thin wrapper over the Dispatcher; this entrypoint
+// gives the orchestrator a synchronous flavour that preserves CLI
+// ctx-cancel semantics while still routing through Dispatcher's shared
+// resolution + lifecycle. The async DispatchEphemeral path (HTTP
+// handlers that may return before the stream completes) keeps its
+// context.WithoutCancel wrap so HTTP callers don't accidentally re-couple
+// the streamer to r.Context() by forgetting to wrap.
+//
+// Expected:
+//   - ctx is the caller's context. Cancellation DOES propagate into the
+//     streamer — that is the load-bearing semantic for CLI surfaces.
+//   - req carries the message + AgentID + ScanMentions. SessionID is
+//     ignored.
+//   - consumer is the caller's WriterConsumer / JSONConsumer / channel-
+//     pump consumer.
+//
+// Returns:
+//   - The terminal error from swarm.DispatchSwarm / streaming.Run, or
+//     nil on clean completion. The errNoTarget / swarm.NotFoundError
+//     resolution errors are also surfaced here (no goroutine; no Done
+//     channel; the caller sees the error directly).
+//
+// Side effects:
+//   - Drives the streamer + consumer synchronously through
+//     swarm.DispatchSwarm — see that function for the manifest snapshot
+//     / SetSwarmContext / FlushSwarmLifecycle / RestoreManifest side
+//     effects.
+func (d *Dispatcher) RunEphemeralSync(
+	ctx context.Context,
+	req DispatchRequest,
+	consumer streaming.StreamConsumer,
+) error {
+	if d.streamer == nil {
+		return errors.New("dispatch: streamer not configured")
+	}
+
+	leadID, swarmCtx, err := d.resolve(req)
+	if err != nil {
+		return err
+	}
+
+	return d.runEphemeralStream(ctx, leadID, swarmCtx, req, consumer)
+}
+
+// runEphemeralStream is the shared "drive the streamer + consumer to
+// completion" path used by both DispatchEphemeral (under a goroutine
+// + WithoutCancel) and RunEphemeralSync (synchronous + ctx-propagating).
+// Splitting the body lets the two entrypoints make different
+// ctx-handling choices while keeping the dispatch shape identical.
+//
+// Side effects:
+//   - See swarm.DispatchSwarm / streaming.Run.
+func (d *Dispatcher) runEphemeralStream(
+	ctx context.Context,
+	leadID string,
+	swarmCtx *swarm.Context,
+	req DispatchRequest,
+	consumer streaming.StreamConsumer,
+) error {
+	if swarmCtx != nil {
+		return swarm.DispatchSwarm(
+			ctx,
+			d.dispatchEngine,
+			swarmCtx,
+			d.streamer,
+			consumer,
+			leadID,
+			req.Content,
+		)
+	}
+	if d.dispatchEngine != nil {
+		// Plain-agent dispatch through the engine — preserves the
+		// SetSwarmContext(nil) / FlushSwarmLifecycle wind-down that
+		// /api/chat used to get for free via the orchestrator.
+		return swarm.DispatchSwarm(
+			ctx,
+			d.dispatchEngine,
+			nil,
+			d.streamer,
+			consumer,
+			leadID,
+			req.Content,
+		)
+	}
+	// Bare-engine pass-through: no swarm, no engine. Matches the legacy
+	// /api/chat fallback at server.go::handleChat when swarmRegistry is
+	// unset (test surface).
+	return streaming.Run(ctx, d.streamer, consumer, leadID, req.Content)
 }
 
 // DispatchSessioned runs the "user input → engine stream" lifecycle for
