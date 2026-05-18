@@ -3089,7 +3089,31 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, err
 	}
 
-	if len(d.delegation.DelegationAllowlist) > 0 && !containsAgent(d.delegation.DelegationAllowlist, targetAgentID) {
+	// Swarm-context shadowing (May 2026): when a swarm is in flight, the
+	// roster on swarm.Context shadows the lead's static
+	// delegation.allowlist outright — it does not union with it. This
+	// finally enforces the contract documented at engine.go:461-463 and
+	// swarm/context.go:32-34 that the prompt block (engine.go:2086-2123)
+	// already relied on.
+	//
+	// Rationale for narrowing (not unioning): an agent can be a member of
+	// multiple swarms; unioning the static allowlist with each swarm's
+	// roster would grow the effective permissions monotonically across
+	// memberships. Keeping the two concepts separate (static gates
+	// standalone delegation, swarm Members[] gates in-swarm delegation)
+	// preserves containment.
+	//
+	// Empty Members[] inside a swarm is a real zero — we do NOT fall
+	// through to the static allowlist, because that would re-introduce
+	// the bug for swarm configs that legitimately have an empty roster
+	// (broken config) or list only the lead (no delegation targets at
+	// all). The standalone path (no active swarm context) is unchanged.
+	if swarmCtx, ok := d.activeSwarmContext(); ok {
+		if !containsAgent(swarmCtx.Members, targetAgentID) {
+			return delegationTarget{}, fmt.Errorf("%w: %q not in swarm members: %v",
+				errAgentNotInAllowlist, targetAgentID, swarmCtx.Members)
+		}
+	} else if len(d.delegation.DelegationAllowlist) > 0 && !containsAgent(d.delegation.DelegationAllowlist, targetAgentID) {
 		return delegationTarget{}, fmt.Errorf("%w: %q not in allowlist: %v",
 			errAgentNotInAllowlist, targetAgentID, d.delegation.DelegationAllowlist)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -2131,6 +2132,139 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
 			Expect(err.Error()).To(ContainSubstring("message"))
 			Expect(err.Error()).To(ContainSubstring("explorer"))
+		})
+
+		// Swarm-context shadowing contract (May 2026).
+		//
+		// engine.go:461-463 and swarm/context.go:32-34 promise that
+		// swarm.Context.Members shadows (REPLACES, does not union with)
+		// the lead's static delegation.allowlist for the duration of the
+		// swarm run. Pre-fix, resolveTargetWithOptions consulted ONLY the
+		// static allowlist, which contradicted the prompt block rendered
+		// at engine.go:2086-2123 (which lists Members as the roster the
+		// lead should delegate to). The lead's LLM was told "delegate to
+		// Members[]" but the gate rejected every member that wasn't ALSO
+		// in the static allowlist — producing 0 successful delegations
+		// and 173 bash calls on session b62472a2-fa39-47a7-b049-e60f264260fe.
+		//
+		// An agent can belong to multiple swarms; unioning the static
+		// allowlist with each swarm's roster would grow effective
+		// permissions monotonically. Keeping the two concepts separate
+		// (static = standalone, swarm = scoped to that swarm's roster)
+		// preserves containment.
+		Context("when an active swarm context shadows the static allowlist", func() {
+			// makeSwarmLead constructs a lead engine whose static
+			// delegation has the supplied allowlist, plus a single target
+			// engine for the named target, and wires DelegateTool via
+			// WithOwnerEngine so activeSwarmContext() resolves through
+			// the canonical owner-engine path used in production.
+			makeSwarmLead := func(targetID string, staticAllowlist []string, members []string) (*engine.DelegateTool, *engine.Engine) {
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+
+				leadEng := engine.New(engine.Config{
+					Manifest: agent.Manifest{
+						ID:   "lead",
+						Name: "Lead",
+						Delegation: agent.Delegation{
+							CanDelegate:         true,
+							DelegationAllowlist: staticAllowlist,
+						},
+					},
+					AgentRegistry: agent.NewRegistry(),
+					Registry:      providerReg,
+					ChatProvider:  &mockProvider{name: "spy"},
+				})
+
+				targetEng := engine.New(engine.Config{
+					ChatProvider: &mockProvider{
+						name: "target",
+						streamChunks: []provider.StreamChunk{
+							{Content: "Member response", Done: true},
+						},
+					},
+					Manifest: agent.Manifest{
+						ID:                targetID,
+						Name:              targetID,
+						Instructions:      agent.Instructions{SystemPrompt: "target"},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+
+				engines := map[string]*engine.Engine{targetID: targetEng}
+				delegateTool := engine.NewDelegateTool(engines, agent.Delegation{
+					CanDelegate:         true,
+					DelegationAllowlist: staticAllowlist,
+				}, "lead").WithOwnerEngine(leadEng)
+
+				if members != nil {
+					leadEng.SetSwarmContext(&swarm.Context{
+						SwarmID:     "test-swarm",
+						LeadAgent:   "lead",
+						Members:     members,
+						ChainPrefix: "test-swarm",
+					})
+				}
+
+				return delegateTool, leadEng
+			}
+
+			It("(a) admits a member when static allowlist is empty and swarm Members lists the target", func() {
+				delegateTool, _ := makeSwarmLead("Member-A", []string{}, []string{"Member-A"})
+
+				_, err := delegateTool.Execute(context.Background(), tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "Member-A",
+						"message":       "swarm member work",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred(),
+					"swarm Members[] is the roster; static allowlist is empty but the swarm shadows it, so the member is admitted")
+			})
+
+			It("(b) rejects a static-allowlist agent that is NOT in swarm Members (the contradiction the prompt block created)", func() {
+				// Static allowlist permits Senior-Engineer; swarm Members
+				// does not. Under the pre-fix gate, Senior-Engineer would
+				// be admitted (static path). Under the contract, the swarm
+				// shadows the static list and Senior-Engineer must be
+				// rejected.
+				delegateTool, _ := makeSwarmLead("Senior-Engineer", []string{"Senior-Engineer"}, []string{"Member-A"})
+
+				_, err := delegateTool.Execute(context.Background(), tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "Senior-Engineer",
+						"message":       "outside the swarm roster",
+					},
+				})
+
+				Expect(err).To(HaveOccurred(),
+					"swarm Members[] shadows the static allowlist; Senior-Engineer is in the static list but NOT in this swarm's roster, so it must be rejected")
+				Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+				Expect(err.Error()).To(ContainSubstring("Senior-Engineer"))
+				Expect(err.Error()).To(ContainSubstring("Member-A"),
+					"error should cite the swarm roster (Member-A) as the active list, not the shadowed static allowlist")
+			})
+
+			It("(c) preserves static allowlist semantics when no swarm context is active", func() {
+				// Same static allowlist as (b), but no swarm context →
+				// standalone path. Senior-Engineer must be admitted via
+				// the static allowlist.
+				delegateTool, _ := makeSwarmLead("Senior-Engineer", []string{"Senior-Engineer"}, nil)
+
+				_, err := delegateTool.Execute(context.Background(), tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "Senior-Engineer",
+						"message":       "standalone delegation",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred(),
+					"no swarm context → static allowlist still gates the standalone path; Senior-Engineer is admitted as before")
+			})
 		})
 	})
 })
