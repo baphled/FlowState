@@ -16,6 +16,14 @@ description: >
 # manifests (whose aliases include the lowercase ids).
 lead: coordinator
 
+# Auto-dispatch this swarm when the user invokes `@coordinator` by
+# name. Without this, `@coordinator` resolves to KindAgent and the
+# lead's swarm-leadership prompt block silently no-ops — the lead
+# then runs as a standalone agent, never sees the member list or the
+# delegation instructions, and does the work itself. See
+# Registry.AutoDispatchSwarmFor in internal/swarm/registry.go.
+auto_dispatch_on_lead: true
+
 members:
   - researcher
   - strategist

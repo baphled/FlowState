@@ -166,6 +166,26 @@ type Manifest struct {
 	// runner trips when consecutive retryable failures hit Threshold.
 	// Same nil-vs-zero contract as Retry above.
 	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty" yaml:"circuit_breaker,omitempty"`
+
+	// AutoDispatchOnLead, when true, makes invoking this swarm's Lead
+	// agent by name (e.g. `@coordinator`) auto-dispatch the swarm —
+	// equivalent to invoking the swarm by id. Defaults to false so
+	// swarms whose Lead is a worker agent commonly invoked standalone
+	// (e.g. Senior-Engineer leads engineer-swarm but is also invoked
+	// directly for ad-hoc work) keep their KindAgent verdict when the
+	// user types the lead's name.
+	//
+	// The §1 "ids must be globally unique across both registries" rule
+	// prohibits a swarm id and an agent id from colliding, so an opt-in
+	// flag is required to express "an agent name should dispatch a
+	// swarm" — there is no ambiguous-by-default path the resolver can
+	// re-tune without breaking standalone agent invocation.
+	//
+	// Multi-swarm collision: if an agent leads multiple swarms with this
+	// flag true, the resolver falls back to KindAgent (forcing the user
+	// to invoke the desired swarm by id). Today no agent leads multiple
+	// swarms so this guard is defensive only — see Registry.AutoDispatchSwarmFor.
+	AutoDispatchOnLead bool `json:"auto_dispatch_on_lead,omitempty" yaml:"auto_dispatch_on_lead,omitempty"`
 }
 
 // EffectiveRetryPolicy returns the manifest's RetryPolicy with empty

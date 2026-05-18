@@ -15,6 +15,12 @@ description: >
 # changing the planner's prompt.
 lead: planner
 
+# Auto-dispatch this swarm when the user invokes `@planner` by name.
+# Without this, `@planner` resolves to KindAgent and the planning loop
+# never enters swarm mode — the planner runs solo. See internal/
+# swarm/registry.go::AutoDispatchSwarmFor.
+auto_dispatch_on_lead: true
+
 # Explicit roster — agent ids only at this stage. Sub-swarm composition
 # (a member that resolves to another swarm) is supported per §4 of the
 # spec; introduce later when a sub-swarm artifact actually exists.
