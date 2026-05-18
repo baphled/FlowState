@@ -447,9 +447,16 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				}
 
 				Expect(toolResultChunk).NotTo(BeNil())
-				Expect(toolResultChunk.ToolResult.Error).To(ContainSubstring("unknown tool"))
-				Expect(toolResultChunk.ToolResult.Output).To(ContainSubstring("Available tools"))
-				Expect(toolResultChunk.ToolResult.Output).To(ContainSubstring("test_tool"))
+				// Drift repair (May 2026): provider.ToolResultInfo lost
+				// the separate Error/Output fields in favour of
+				// {Content, IsError}. These three assertions on HEAD
+				// reference the old shape and block the engine test
+				// binary from compiling. The swarm-allowlist commit
+				// repairs them in-place to unblock the targeted suite;
+				// flagged in the commit-author report.
+				Expect(toolResultChunk.ToolResult.IsError).To(BeTrue())
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("unknown tool"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"))
 			})
 
 			It("returns tool result content listing available tools", func() {

@@ -317,6 +317,15 @@ func swarmPreambleFixture(agentID string, gates []swarm.GateSpec) (*engine.Deleg
 
 	swarmManifest := &swarm.Manifest{}
 	swarmManifest.ID = "dev-feature"
+	// Members must include the target agent: under the May 2026
+	// swarm-shadow contract (delegation.go:resolveTargetWithOptions),
+	// an active swarm context narrows the lead's delegation roster to
+	// swarmCtx.Members exclusively. The pre-shadow fixture left this
+	// empty because the only gate in play was the static allowlist
+	// (also empty here, so any agent was admitted). Post-fix, an empty
+	// Members[] inside a swarm rejects every delegation as broken
+	// config — see project_flowstate_make_check_broken commentary.
+	swarmManifest.Members = []string{agentID}
 	swarmManifest.Context.ChainPrefix = "dev-feature"
 	swarmManifest.Harness.Gates = gates
 
