@@ -232,6 +232,48 @@ var _ = Describe("swarm.Context", func() {
 			})
 		})
 
+		// Three-tier meta-swarm architecture (May 2026): the bundled
+		// coordinator agent is now the lead of `meta-swarm` whose
+		// members ARE OTHER SWARMS (a-team, dev-swarm, planning-loop,
+		// board-room). The resolver must auto-dispatch meta-swarm —
+		// NOT a-team — when the user invokes `@coordinator`. This is
+		// the regression-pin spec for the rewiring: when only one of
+		// the swarms in the registry has AutoDispatchOnLead=true on
+		// `coordinator`, the resolver returns that swarm's manifest.
+		//
+		// See plan: Meta-Swarm Coordinator Architecture (May 2026).
+		Context("when coordinator leads meta-swarm with AutoDispatchOnLead=true and a-team without it", func() {
+			It("resolves @coordinator to the meta-swarm manifest", func() {
+				reg := swarm.NewRegistry()
+				// meta-swarm: opted in; members are SWARM ids.
+				reg.Register(&swarm.Manifest{
+					ID:                 "meta-swarm",
+					Lead:               "coordinator",
+					Members:            []string{"a-team", "dev-swarm", "planning-loop", "board-room"},
+					AutoDispatchOnLead: true,
+				})
+				// a-team: still has coordinator as lead but opted OUT
+				// of auto-dispatch in the meta-swarm world, so calling
+				// @coordinator must NOT match a-team.
+				reg.Register(&swarm.Manifest{
+					ID:                 "a-team",
+					Lead:               "coordinator",
+					Members:            []string{"researcher", "writer"},
+					AutoDispatchOnLead: false,
+				})
+				hasAgent := func(id string) bool { return id == "coordinator" }
+
+				kind, manifest := swarm.Resolve("coordinator", hasAgent, reg)
+
+				Expect(kind).To(Equal(swarm.KindSwarm))
+				Expect(manifest).NotTo(BeNil())
+				Expect(manifest.ID).To(Equal("meta-swarm"),
+					"@coordinator must auto-dispatch meta-swarm now that coordinator is "+
+						"a generic swarm orchestrator and meta-swarm leads sub-swarms")
+				Expect(manifest.Members).To(ContainElements("a-team", "dev-swarm", "planning-loop", "board-room"))
+			})
+		})
+
 		Context("when an agent leads multiple swarms that all have AutoDispatchOnLead=true", func() {
 			It("returns KindAgent because the auto-dispatch target is ambiguous", func() {
 				// Defensive case: today no agent leads more than one

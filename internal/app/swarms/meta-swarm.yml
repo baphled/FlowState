@@ -1,0 +1,48 @@
+schema_version: "1.0.0"
+id: meta-swarm
+description: >
+  Top-level orchestrator. The coordinator picks the right sub-swarm
+  for the user's task and delegates. Members of meta-swarm ARE OTHER
+  SWARMS — true three-tier orchestration (user → coordinator →
+  sub-swarm → members). Replaces the a-team-specific coordinator
+  persona; the same coordinator agent now leads polymorphically based
+  on the swarm-lead block rendered by the engine.
+
+# `coordinator` is the registered lead agent
+# (internal/app/agents/coordinator.md). Its persona is generic: behaviour
+# is driven by the engine's Swarm Leadership block which lists the
+# members below. When the coordinator delegates to one of these
+# members, the delegate tool dispatches the sub-swarm (not an agent)
+# via DispatchSwarmMembers.
+lead: coordinator
+
+# Auto-dispatch this swarm when the user invokes `@coordinator` by
+# name. With a-team's auto-dispatch flag flipped to false, meta-swarm
+# is the sole auto-dispatch candidate for `coordinator`, so the
+# resolver returns this swarm's manifest unambiguously.
+auto_dispatch_on_lead: true
+
+# Sub-swarm members. Each is a swarm id registered separately —
+# a-team.yml, dev-swarm.yml, planning-loop.yml, board-room.yml. The
+# delegate tool's swarm-target dispatch path (delegation.go) routes
+# `delegate("<sub-swarm-id>", brief)` through DispatchSwarmMembers
+# rather than the agent-engine lookup.
+members:
+  - a-team
+  - dev-swarm
+  - planning-loop
+  - board-room
+
+harness:
+  # Sequential dispatch — the coordinator picks ONE sub-swarm per
+  # task; parallel fan-out across sub-swarms would race chains and
+  # confuse the user. Future work may relax this once sub-swarm
+  # outputs are explicitly composable.
+  parallel: false
+  gates: []
+
+context:
+  # Distinct chain prefix so meta-swarm runs don't collide with
+  # a-team / planning-loop / board-room / dev-swarm namespaces in the
+  # coordination store.
+  chain_prefix: meta

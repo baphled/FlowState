@@ -1,0 +1,85 @@
+schema_version: "1.0.0"
+id: dev-swarm
+description: >
+  Full-lifecycle development swarm. The Team-Lead receives a delivery
+  brief (feature, bug, refactor, review), assembles the squad required
+  for the SDLC stage in scope, and routes through Tech-Lead for task
+  decomposition, the engineer-swarm sub-swarm for implementation
+  (Senior-Engineer leads Mid/Junior through TDD cycles with
+  Principal-Engineer standards gating and QA adversarial verification),
+  Code-Reviewer / Security-Engineer / Performance-Engineer / Writer /
+  DevOps as triggered by the change surface. Researcher precedes any
+  work entering unknown territory; Knowledge-Base-Curator records
+  lasting decisions after merge readiness is declared.
+
+  The swarm honours FlowState's BDD-first discipline (acceptance
+  scenarios before code), the App → Intents → UIKit dependency
+  hierarchy, `make ai-commit` for every commit, and the worktree
+  safety rules that protect `main` and `next`. Quality gates fire on
+  the canonical sign-off points so a malformed verdict halts the
+  swarm with a GateError instead of cascading into a false merge-ready
+  declaration. See `~/vaults/baphled/3. Resources/Knowledge Base/AI
+  Development System/Swarms/Dev Swarm.md` for the full SDLC flow,
+  per-stage responsibilities, gate semantics, and the flexibility
+  rules that govern when specialists may be skipped.
+
+lead: Team-Lead
+
+# Auto-dispatch this swarm when the user invokes `@Team-Lead` by name.
+# Without this, `@Team-Lead` resolves to KindAgent and the Team-Lead
+# runs solo — the regression on session b62472a2 (184 messages, 173
+# bash calls, zero delegate calls) is the canonical evidence. See
+# internal/swarm/registry.go::AutoDispatchSwarmFor.
+auto_dispatch_on_lead: true
+
+# Explicit roster — agent ids and sub-swarm ids. Order is
+# dispatch-irrelevant (Team-Lead delegates dynamically); the roster
+# is the delegation allowlist for the run.
+#
+# engineer-swarm replaces the flat Senior/Mid/Junior entries with a
+# composed sub-swarm. Team-Lead delegates "implementation" as a
+# single unit; Senior-Engineer orchestrates the TDD hierarchy
+# internally with ext: gates on Mid/Junior output.
+members:
+  - Researcher
+  - Tech-Lead
+  - engineer-swarm
+  - Code-Reviewer
+  - Security-Engineer
+  - Performance-Engineer
+  - Accessibility-Engineer
+  - DevOps
+  - Writer
+  - Knowledge-Base-Curator
+
+swarm_type: codegen
+
+harness:
+  parallel: false
+
+  gates:
+    # Researcher gate: evidence bundle must list at least one finding
+    # with a cited file path. Off-spec research is rejected so
+    # downstream implementation doesn't build on hallucinated data.
+    - name: post-member-researcher-evidence-bundle
+      kind: builtin:result-schema
+      schema_ref: evidence-bundle-v1
+      when: post-member
+      target: Researcher
+      output_key: output
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # Code-Reviewer gate: structured verdict shape so Team-Lead's
+    # merge synthesis can read verdict + summary mechanically.
+    - name: post-member-code-reviewer-verdict
+      kind: builtin:result-schema
+      schema_ref: code-review-verdict-v1
+      when: post-member
+      target: Code-Reviewer
+      output_key: output
+      precedence: HIGH
+      failurePolicy: halt
+
+context:
+  chain_prefix: dev-swarm
