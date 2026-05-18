@@ -75,6 +75,45 @@ func PriorMessagesFromContext(ctx context.Context) ([]provider.Message, bool) {
 	return v, true
 }
 
+// StreamAgentOverrideKey is the context key used to redirect a single
+// turn through a different agent than the session's persistent
+// CurrentAgentID || AgentID. When non-empty, SendMessage drives the
+// streamer and stamps the assistant message with this id instead of
+// the session's resolved agent. The user message stamp stays under the
+// session's persistent agent — the override is per-turn only and never
+// mutates the session record.
+//
+// The session-scoped POST handler uses this for in-content @-mention
+// dispatch (Bug 1 / May 2026): typing `@a-team` inside a
+// default-assistant session redirects THIS turn to a-team's lead so
+// the engine streams from the swarm with the matching Swarm Leadership
+// block installed, while CurrentAgentID stays empty so the next turn
+// without a mention routes back through default-assistant.
+//
+// Empty string is the dominant case; both an absent key and an empty
+// value mean "no override, use the session's resolved agent".
+type StreamAgentOverrideKey struct{}
+
+// WithStreamAgentOverride returns a derived context carrying a single-
+// turn agent override. Empty/whitespace agentID short-circuits to the
+// input context unchanged — the override is opt-in and a noop when the
+// caller has no specific agent to redirect to.
+func WithStreamAgentOverride(ctx context.Context, agentID string) context.Context {
+	if agentID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, StreamAgentOverrideKey{}, agentID)
+}
+
+// StreamAgentOverrideFromContext extracts the per-turn agent override
+// from the context. Returns an empty string when no override is set,
+// which is the dominant case for sessions driven by their persistent
+// agent_id.
+func StreamAgentOverrideFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(StreamAgentOverrideKey{}).(string)
+	return v
+}
+
 // AttachmentsKey is the context key used to propagate attachment
 // references for the current turn from the session manager into the
 // engine. The engine reads this on Stream entry and threads the slice

@@ -5050,6 +5050,157 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages swarm auto-dispatch", func
 		Eventually(func() int { return engStub.restoreCalls }, "2s").Should(BeNumerically(">=", 2),
 			"every turn that resolves to an auto-dispatch swarm must run its own snapshot+restore pair — no caching")
 	})
+
+	// In-content @-mention parity (Bug 1 / May 2026). The user can type
+	// `@a-team` inside a default-assistant session and expect the same
+	// dispatch the /api/chat path produces via Orchestrator.resolve
+	// (ScanMentions=true). Before this spec landed, the session-scoped
+	// POST handler only consulted AutoDispatchSwarmFor(agentID) on the
+	// session's persistent agent — typed @-mentions inside the message
+	// body were ignored, the session's plain agent kept driving the
+	// stream, and the agent treated the @-mention as plain text. See
+	// session 678318aa-6ec9-4c5e-92a8-624b2edd75a0 (default-assistant
+	// session that introspected AGENTS.md locally instead of dispatching
+	// @a-team).
+	//
+	// Option A (per-turn override): the mention redirects THIS turn
+	// only — the session's persistent agent_id stays default-assistant,
+	// the next turn without an @-mention routes back through the
+	// default agent. This matches /api/chat's per-request ScanMentions
+	// semantics; the persistent CurrentAgentID is reserved for the
+	// explicit UpdateSessionAgent path (agent picker / /agent command).
+	Context("when the message body contains a swarm @-mention", func() {
+		BeforeEach(func() {
+			// Register a second swarm so we can test in-content mentions
+			// from a default-assistant session into @a-team without the
+			// session's auto-dispatch path engaging.
+			registry.Register(&agent.Manifest{ID: "team-lead", Name: "Team Lead"})
+			swarmReg.Register(&swarm.Manifest{
+				SchemaVersion: "1.0.0",
+				ID:            "a-team",
+				Description:   "A-Team product delivery",
+				Lead:          "team-lead",
+				Members:       []string{"team-lead", "default-assistant"},
+				// No AutoDispatchOnLead — the @-mention path must work
+				// even when the swarm is not auto-dispatch enabled. The
+				// /api/chat path already supports this (orchestrator
+				// ScanMentions); the session POST must reach parity.
+			})
+		})
+
+		It("redirects the turn through the mention's swarm lead when the session's agent_id is a plain agent", func() {
+			// Default-assistant is a plain agent — no AutoDispatchSwarmFor
+			// hit. Typing `@a-team` inside the message body must dispatch
+			// the a-team swarm for THIS turn so the engine streams from
+			// the swarm's lead with the swarm context installed.
+			sess, err := mgr.CreateSession("default-assistant")
+			Expect(err).NotTo(HaveOccurred())
+
+			recorder := httptest.NewRecorder()
+			body := `{"content":"@a-team Use the swarm to help me with my current tasks"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			Eventually(func() *swarm.Context { return engStub.installedContext }, "2s").ShouldNot(BeNil(),
+				"the in-content @<swarm-id> mention must install the swarm context on the engine even when the session's agent_id is a plain agent — this is the orchestrator ScanMentions=true contract the /api/chat path already provides")
+			Expect(engStub.installedContext.SwarmID).To(Equal("a-team"),
+				"installed context must name the mentioned swarm so the engine renders the matching Swarm Leadership block")
+			Expect(engStub.installedContext.LeadAgent).To(Equal("team-lead"))
+
+			Eventually(func() string {
+				streamer.mu.Lock()
+				defer streamer.mu.Unlock()
+				return streamer.capturedAgentID
+			}, "2s").Should(Equal("team-lead"),
+				"the streamer must be driven by the swarm's lead — not the session's plain agent — when an @<swarm-id> mention is present")
+		})
+
+		It("leaves the session's persistent agent_id unchanged so the next turn without @-mention routes back through the default agent", func() {
+			// Option A pinning: the @-mention is a per-turn override.
+			// Turn 1 redirects to a-team; turn 2 (no mention) must route
+			// back through default-assistant. CurrentAgentID is reserved
+			// for the explicit UpdateSessionAgent path.
+			sess, err := mgr.CreateSession("default-assistant")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Turn 1 — @-mention present
+			recorder1 := httptest.NewRecorder()
+			body1 := `{"content":"@a-team do the thing"}`
+			req1 := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body1))
+			req1.Header.Set("Content-Type", "application/json")
+			srv.Handler().ServeHTTP(recorder1, req1)
+			Expect(recorder1.Code).To(Equal(http.StatusOK))
+
+			Eventually(func() string {
+				streamer.mu.Lock()
+				defer streamer.mu.Unlock()
+				return streamer.capturedAgentID
+			}, "2s").Should(Equal("team-lead"))
+
+			// The persistent session agent_id MUST NOT have been
+			// mutated by the per-turn redirect. Reading via Snapshot
+			// (the same path the GET handler uses) is the authoritative
+			// check.
+			snap, err := mgr.SnapshotSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(snap.AgentID).To(Equal("default-assistant"),
+				"in-content @-mentions must not mutate the session's creation agent_id")
+			Expect(snap.CurrentAgentID).To(Equal(""),
+				"in-content @-mentions must not write CurrentAgentID — that's the UpdateSessionAgent path's contract")
+
+			// Turn 2 — no @-mention. Reset the mock so we read this
+			// turn's capture, not turn 1's.
+			streamer.mu.Lock()
+			streamer.capturedAgentID = ""
+			streamer.chunks = []provider.StreamChunk{{Content: "ok"}, {Done: true}}
+			streamer.mu.Unlock()
+			engStub.installedContext = nil
+
+			recorder2 := httptest.NewRecorder()
+			body2 := `{"content":"thanks, follow up please"}`
+			req2 := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body2))
+			req2.Header.Set("Content-Type", "application/json")
+			srv.Handler().ServeHTTP(recorder2, req2)
+			Expect(recorder2.Code).To(Equal(http.StatusOK))
+
+			Eventually(func() string {
+				streamer.mu.Lock()
+				defer streamer.mu.Unlock()
+				return streamer.capturedAgentID
+			}, "2s").Should(Equal("default-assistant"),
+				"a follow-up turn with no @-mention must route through the session's persistent agent — the redirect is per-turn, not sticky")
+			Expect(engStub.installedContext).To(BeNil(),
+				"no swarm context on a plain follow-up turn — the redirect was per-turn")
+		})
+
+		It("falls through to the existing behaviour when the message contains no swarm @-mention", func() {
+			// Regression guard for the legacy plain-agent path. A
+			// default-assistant session with a plain message must
+			// continue to dispatch through default-assistant with no
+			// swarm context installed — exactly the same as before this
+			// fix landed.
+			sess, err := mgr.CreateSession("default-assistant")
+			Expect(err).NotTo(HaveOccurred())
+
+			recorder := httptest.NewRecorder()
+			body := `{"content":"plain message, no @-mention here"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			Eventually(func() string {
+				streamer.mu.Lock()
+				defer streamer.mu.Unlock()
+				return streamer.capturedAgentID
+			}, "2s").Should(Equal("default-assistant"),
+				"absent any swarm @-mention the session's plain agent must keep driving the stream — behaviour is unchanged for the dominant path")
+			Expect(engStub.installedContext).To(BeNil(),
+				"no swarm context when the message contains no swarm @-mention")
+		})
+	})
 })
 
 // fakeContextUsageProvider records the (provider, model, messages) the

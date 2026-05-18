@@ -1218,11 +1218,25 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	if sess.CurrentAgentID != "" {
 		agentID = sess.CurrentAgentID
 	}
+	// userMessageAgent stamps the user message under the session's
+	// persistent agent — even when StreamAgentOverrideKey is set for an
+	// in-content @-mention redirect. The user typed this message inside
+	// the session's persistent agent's context; the redirect only
+	// affects the assistant's reply for this turn (Bug 1 / May 2026 —
+	// Option A per-turn override semantics).
+	userMessageAgent := agentID
+	// streamAgent is the agent that drives the streamer + accumulator
+	// for the assistant turn. The override redirects to a swarm lead
+	// without mutating the session record. Empty override falls through
+	// to the session's resolved agent.
+	if override := StreamAgentOverrideFromContext(ctx); override != "" {
+		agentID = override
+	}
 	sess.Messages = append(sess.Messages, Message{
 		ID:        uuid.New().String(),
 		Role:      "user",
 		Content:   message,
-		AgentID:   agentID,
+		AgentID:   userMessageAgent,
 		Timestamp: time.Now(),
 	})
 	sess.UpdatedAt = time.Now()
