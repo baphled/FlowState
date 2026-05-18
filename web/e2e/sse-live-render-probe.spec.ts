@@ -592,3 +592,299 @@ test.describe('sse live-render probe', () => {
     ).toBeGreaterThan(0)
   })
 })
+
+/**
+ * sse-live-render-probe / coordinator + swarm flow — Bug Hunt (May 2026).
+ *
+ * The Team-Lead probe above exercises the live-render path on the simplest
+ * possible session: plain agent, terse prompt, single content chunk. The
+ * user-reported regression ("I have to refresh before I see updates") fired
+ * on a DIFFERENT shape:
+ *
+ *   - agent_id = `coordinator` (registered as the lead of meta-swarm with
+ *     auto_dispatch_on_lead=true).
+ *   - swarm-dispatchable prompt — anything non-trivial that triggers the
+ *     coordinator's "delegate first, talk later" rule.
+ *   - reasoning model in the default cascade (zai/glm-4.6) — produces
+ *     thinking-only chunks until the delegate tool call lands, then more
+ *     thinking, then tool_result, then potentially more thinking.
+ *
+ * Two surfaces that the Team-Lead probe does not cover sit on this path:
+ *   1. Mixed thinking → tool_call → thinking turn shape. The wire-side
+ *      assertion accepts thinking OR content; a delegated coordinator turn
+ *      starts with thinking. The DOM assertion must catch the live-render
+ *      of EITHER a thinking row OR a delegation_started card.
+ *   2. The coordinator's swarm-context (Bug B, this branch) drives the
+ *      engine into the swarm dispatch lifecycle (snapshot → SetSwarmContext
+ *      → stream → flush → restore). A regression in that lifecycle could
+ *      surface as silent chunk loss — the engine emits chunks but
+ *      manifest-restore mid-stream kills the lead-bound stream.
+ *
+ * This describe block uses a fresh beforeEach so it can pick its own agent
+ * and prompt while sharing the wire/store/DOM probe infrastructure.
+ */
+test.describe('sse live-render probe — coordinator swarm flow', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(120_000)
+
+  test.beforeEach(async ({ page, request }) => {
+    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
+      data: { agent_id: 'coordinator' },
+    })
+    const created = await createRes.json() as {
+      id: string
+      agentId: string
+      createdAt: string
+      updatedAt: string
+    }
+    const sessionId = created.id
+
+    await page.route('**/api/v1/sessions', async (route) => {
+      if (route.request().method() === 'GET') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            {
+              id: created.id,
+              agentId: created.agentId,
+              currentAgentId: created.agentId,
+              title: '',
+              messageCount: 0,
+              createdAt: created.createdAt,
+              updatedAt: created.updatedAt,
+              isStreaming: false,
+            },
+          ]),
+        })
+        return
+      }
+      await route.continue()
+    })
+
+    // Re-use the shared probe wiring from the Team-Lead beforeEach.
+    // (The probe definitions live in window so we install them here too;
+    // each test page is a fresh browser context.)
+    await page.addInitScript(() => {
+      const probe = {
+        wire: [] as ProbeWireEntry[],
+        store: [] as ProbeStoreEntry[],
+        dom: [] as ProbeDomEntry[],
+        apply: [] as ProbeApplyEntry[],
+        sub: [] as ProbeSubscribeEntry[],
+      }
+      ;(window as Window).__sseProbe = probe
+      const startedAt = Date.now()
+
+      const NativeEventSource = window.EventSource
+      class ProbeEventSource extends NativeEventSource {
+        constructor(url: string | URL, init?: EventSourceInit) {
+          super(url, init)
+          const probedUrl = typeof url === 'string' ? url : url.toString()
+          this.addEventListener('message', (event: MessageEvent) => {
+            const data = typeof event.data === 'string' ? event.data : ''
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: 'message',
+              preview: data.slice(0, 200),
+            })
+          })
+          this.addEventListener('error', () => {
+            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'error', preview: '' })
+          })
+          this.addEventListener('open', () => {
+            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'open', preview: '' })
+          })
+        }
+      }
+      window.EventSource = ProbeEventSource as unknown as typeof EventSource
+
+      ;(window as Window).__sseProbeInstall = (): void => {
+        const startedAtInstall = Date.now()
+        const recordDom = (): void => {
+          // Coordinator turns surface ANY of three live bubbles before the
+          // final assistant content lands: a thinking row (reasoning
+          // tokens), a delegation_started card (delegate tool call), or a
+          // tool_call row. Adding `.message-bubble.delegation_started` and
+          // `.message-bubble.tool_call` widens the live-render gate.
+          const bubbles = document.querySelectorAll<HTMLElement>(
+            '.message-bubble.assistant, .message-bubble.thinking, ' +
+            '.message-bubble.delegation_started, .message-bubble.tool_call',
+          )
+          const last = bubbles[bubbles.length - 1]
+          probe.dom.push({
+            t: Date.now() - startedAtInstall,
+            assistantBubbleCount: bubbles.length,
+            lastAssistantTextLen: last ? (last.textContent ?? '').length : 0,
+          })
+        }
+        const obs = new MutationObserver(() => recordDom())
+        obs.observe(document.body, { childList: true, subtree: true, characterData: true })
+        recordDom()
+
+        const findChatStore = (): unknown => {
+          const root = document.getElementById('app') ?? document.body
+          const vueApp = (root as unknown as {
+            __vue_app__?: {
+              config: {
+                globalProperties: {
+                  $pinia?: {
+                    _s?: Map<string, { $state?: Record<string, unknown> } & Record<string, unknown>>
+                    state: { value: Record<string, unknown> }
+                  }
+                }
+              }
+            }
+          }).__vue_app__
+          const pinia = vueApp?.config?.globalProperties?.$pinia
+          if (!pinia) return null
+          const fromRegistry = pinia._s?.get('chat')
+          if (fromRegistry) return fromRegistry
+          return pinia.state.value.chat
+        }
+
+        const recordStore = (): void => {
+          const state = findChatStore() as {
+            messages?: Array<{
+              id: string; role: string; status?: string;
+              content?: string; thinkingContent?: string;
+            }>
+            currentSessionId?: string | null
+            contextUsageBySession?: Record<string, unknown>
+            currentModelId?: string
+          } | null
+          if (!state || !Array.isArray(state.messages)) return
+          const msgs = state.messages
+          const running = msgs.filter((m) => m.status === 'running')
+          let bestStatus: string | null = null
+          let bestLen = 0
+          for (const m of running) {
+            if (m.role === 'assistant' || m.role === 'thinking' ||
+                m.role === 'delegation_started' || m.role === 'tool_call') {
+              const contentLen = (m.content ?? '').length
+              const thinkingLen = (m.thinkingContent ?? '').length
+              const len = Math.max(contentLen, thinkingLen)
+              if (len > bestLen) {
+                bestStatus = m.status ?? null
+                bestLen = len
+              } else if (bestStatus === null) {
+                bestStatus = m.status ?? null
+              }
+            }
+          }
+          probe.store.push({
+            t: Date.now() - startedAtInstall,
+            messageCount: msgs.length,
+            lastAssistantStatus: bestStatus,
+            lastAssistantContentLen: bestLen,
+            currentSessionId: state.currentSessionId ?? null,
+            contextUsageKeys: Object.keys(state.contextUsageBySession ?? {}),
+            currentModelId: state.currentModelId ?? '',
+          })
+        }
+        recordStore()
+        const storePoll = setInterval(recordStore, 50)
+        ;(window as Window & { __ssePoll?: ReturnType<typeof setInterval> }).__ssePoll = storePoll
+      }
+    })
+
+    await page.goto('/chat')
+    await page.evaluate((sid) => {
+      localStorage.clear()
+      localStorage.setItem('chat.currentSessionId', sid)
+      localStorage.setItem('chat.agentId', 'coordinator')
+    }, sessionId)
+    await page.reload()
+    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+
+    await page.evaluate(() => (window as Window).__sseProbeInstall?.())
+  })
+
+  test('coordinator session live-renders thinking chunks before [DONE] arrives', async ({ page }) => {
+    const input = page.getByTestId('message-input')
+    const sendBtn = page.getByTestId('send-button')
+
+    // Coordinator's preferred is claude-opus-4-7 (anthropic). The user
+    // reported the bug on a complex prompt; opus on this prompt typically
+    // emits thinking tokens (extended-thinking on) before the delegate
+    // tool call. Either thinking OR content events satisfy the wire-side
+    // gate; the DOM-side gate accepts ANY of the live-render bubble
+    // shapes (assistant, thinking, delegation_started, tool_call).
+    const PROMPT = 'plan a single concrete task: improve test coverage of internal/auth/store'
+    await input.fill(PROMPT)
+    await sendBtn.click()
+
+    let firstChunkAt: number
+    try {
+      const firstChunkResult = await page.waitForFunction(
+        () => {
+          const probe = (window as Window).__sseProbe
+          if (!probe) return false
+          // Any substantive chunk counts — context_usage / model_active
+          // are metadata that arrive immediately and do NOT carry the
+          // live-render payload, so we skip them. The first chunk that
+          // surfaces the assistant turn — thinking, content, tool_call
+          // (delegate), tool_result — is the pivot.
+          const replyChunk = probe.wire.find(
+            (w) =>
+              w.event === 'message' &&
+              w.preview !== '[DONE]' &&
+              !w.preview.includes('"type":"context_usage"') &&
+              !w.preview.includes('"type":"model_active"') &&
+              (w.preview.includes('"type":"thinking"') ||
+                w.preview.includes('"type":"content"') ||
+                w.preview.includes('"type":"tool_call"') ||
+                w.preview.includes('"type":"delegation"')),
+          )
+          return replyChunk ? { firstChunkAt: replyChunk.t, preview: replyChunk.preview } : false
+        },
+        undefined,
+        { timeout: 90_000 },
+      )
+      ;({ firstChunkAt } = await firstChunkResult.jsonValue() as { firstChunkAt: number; preview: string })
+    } catch (e) {
+      const partial = await page.evaluate(() => {
+        const probe = (window as Window).__sseProbe
+        return probe ? { wire: probe.wire.slice() } : null
+      })
+      throw new Error(
+        `No reply-bearing SSE chunk arrived within 90s of send (coordinator + complex prompt).\n` +
+          `(${(e as Error).message})\n` +
+          `--- WIRE (${partial?.wire.length ?? 0}) ---\n${JSON.stringify(partial?.wire.slice(0, 40) ?? [], null, 2)}`,
+      )
+    }
+
+    await page.waitForTimeout(2000)
+
+    const snapshot = await page.evaluate(() => {
+      const probe = (window as Window).__sseProbe
+      if (!probe) return null
+      return { wire: probe.wire.slice(), store: probe.store.slice(), dom: probe.dom.slice() }
+    })
+    expect(snapshot, 'probe snapshot must have been captured').not.toBeNull()
+    const { wire, store, dom } = snapshot as Pick<ProbeSnapshot, 'wire' | 'store' | 'dom'>
+
+    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0)
+    const liveStoreEntries = store.filter(
+      (s) => s.lastAssistantStatus === 'running' && s.lastAssistantContentLen > 0,
+    )
+
+    expect(
+      liveDomEntries.length,
+      `DOM evidence: expected ≥1 live bubble text mutation post-firstChunk@${firstChunkAt}ms ` +
+        `for the coordinator swarm-dispatched session. Got ${liveDomEntries.length}.\n` +
+        `\n--- WIRE (${wire.length} entries, first 30) ---\n${JSON.stringify(wire.slice(0, 30), null, 2)}\n` +
+        `\n--- STORE (last 10 entries) ---\n${JSON.stringify(store.slice(-10), null, 2)}\n` +
+        `\n--- DOM (${dom.length} entries, last 10) ---\n${JSON.stringify(dom.slice(-10), null, 2)}`,
+    ).toBeGreaterThan(0)
+
+    expect(
+      liveStoreEntries.length,
+      `STORE evidence: chatStore.messages must carry a running thinking/assistant/delegation_started/` +
+        `tool_call message with non-empty content post-firstChunk@${firstChunkAt}ms.\n` +
+        `Got ${liveStoreEntries.length}.\n` +
+        `STORE (last 30): ${JSON.stringify(store.slice(-30), null, 2)}`,
+    ).toBeGreaterThan(0)
+  })
+})
