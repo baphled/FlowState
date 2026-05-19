@@ -555,8 +555,62 @@ func NewServer(
 			brokerAdapter,
 		)
 	}
+	// Phase-4-Commit-1 — wire the polling-side heartbeat subscriber.
+	// The engine's runStreamingHeartbeat ticker publishes
+	// events.EventStreamingHeartbeat on the bus during a Running turn;
+	// this subscriber translates session_id → turn_id via the registry
+	// and writes phase + token_count onto the Turn so GET /turns/{id}
+	// can surface live progress without an SSE side-channel.
+	//
+	// The existing SSE-side bridge at internal/api/event_bridge.go:46
+	// stays live through Commit 2 — both subscribers ship together so
+	// the frontend can migrate without a half-state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+	s.subscribeTurnHeartbeat()
 	s.setupRoutes()
 	return s
+}
+
+// subscribeTurnHeartbeat wires the polling-side heartbeat subscriber
+// (Phase-4-Commit-1). No-op when either the eventBus or the dispatcher's
+// Turn registry is unwired — test fixtures that skip WithEventBus or
+// use a spy dispatcher with TurnRegistry()==nil simply do not get the
+// heartbeat projection.
+//
+// Production wiring: cmd/serve passes WithEventBus(bus) and
+// WithDispatcher / auto-construct gives a real *dispatch.Dispatcher
+// whose TurnRegistry() is always non-nil.
+//
+// Side effects:
+//   - Subscribes a closure to events.EventStreamingHeartbeat on the bus.
+//   - The closure reads turn_id from the running turn for the event's
+//     session_id and writes phase + token_count onto the Turn.
+func (s *Server) subscribeTurnHeartbeat() {
+	if s.eventBus == nil || s.dispatcher == nil {
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		return
+	}
+	s.eventBus.Subscribe(events.EventStreamingHeartbeat, func(msg any) {
+		hb, ok := msg.(*events.StreamingHeartbeatEvent)
+		if !ok {
+			return
+		}
+		// Translate session_id → turn_id via the registry. The
+		// heartbeat event payload carries only session-level data
+		// (the engine pipeline does not thread turn_id onto the bus
+		// payload — the registry is the single source of truth for
+		// "what Turn is this session driving").
+		turnID, ok := registry.FindActiveBySession(hb.Data.SessionID)
+		if !ok {
+			return
+		}
+		registry.SetHeartbeat(turnID, hb.Data.Phase, int(hb.Data.TokenCount))
+	})
 }
 
 // streamingAdapter bridges the API's local Streamer interface to
@@ -1124,6 +1178,11 @@ func defaultModelPairForAgent(registry *agent.Registry, agentID string) (provide
 //   - Writes a JSON array of session summaries.
 //   - Sets IsStreaming on each summary when a broker is configured and
 //     reports an active publish for that session.
+//   - Sets ActiveTurnID on each summary when a dispatcher's Turn
+//     registry has a Running turn for the session (Phase-4-Commit-1).
+//     Both fields ship together — IsStreaming via the broker, ActiveTurnID
+//     via the registry. Commit 2 retires IsStreaming once the frontend
+//     reads only ActiveTurnID.
 func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -1133,9 +1192,20 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	if summaries == nil {
 		summaries = []*session.Summary{}
 	}
-	if s.sessionBroker != nil {
-		for _, sum := range summaries {
+	// Cache the turn registry once outside the loop — dispatcher.TurnRegistry()
+	// is a getter but the indirection is wasted work on every iteration.
+	var turnRegistry *turn.Registry
+	if s.dispatcher != nil {
+		turnRegistry = s.dispatcher.TurnRegistry()
+	}
+	for _, sum := range summaries {
+		if s.sessionBroker != nil {
 			sum.IsStreaming = s.sessionBroker.IsPublishing(sum.ID)
+		}
+		if turnRegistry != nil {
+			if id, ok := turnRegistry.FindActiveBySession(sum.ID); ok {
+				sum.ActiveTurnID = id
+			}
 		}
 	}
 	writeJSON(w, summaries)
@@ -1294,6 +1364,18 @@ type turnResponse struct {
 	Model       turn.ModelInfo    `json:"model"`
 	Error       string            `json:"error,omitempty"`
 	Messages    []session.Message `json:"messages"`
+	// Phase + TokenCount surface the engine's most-recent streaming
+	// heartbeat onto the polling wire (Phase-4-Commit-1). Populated by
+	// the engine bus subscriber via registry.SetHeartbeat. Empty Phase
+	// and zero TokenCount are the pre-first-heartbeat state. Replaces
+	// the SSE side-channel's `streaming.heartbeat` frames once Commit 2
+	// retires the existing event_bridge.go subscriber — Commit 1 ships
+	// both surfaces so the frontend can migrate without a half-state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+	Phase      string `json:"phase"`
+	TokenCount int    `json:"token_count"`
 }
 
 // handleGetTurn returns the current state of a Turn by its UUID.
@@ -1356,6 +1438,8 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		Model:       t.Model,
 		Error:       t.Error,
 		Messages:    msgs,
+		Phase:       t.Phase,
+		TokenCount:  t.TokenCount,
 	})
 }
 

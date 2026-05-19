@@ -1733,11 +1733,20 @@ export const useChatStore = defineStore('chat', {
     /**
      * pollTurnUntilTerminal drives the Phase-3 turn-id poll path. It
      * polls GET /api/v1/sessions/{sessionId}/turns/{turnId} every
-     * POLL_INTERVAL_FAST_MS (1s) until the Turn's status leaves
-     * 'running', then resolves. After POLL_BACKOFF_AFTER_N_CALLS polls
-     * the cadence drops to POLL_INTERVAL_SLOW_MS (2s) and then
-     * POLL_INTERVAL_SLOWER_MS (5s) so a long-running turn does not
+     * POLL_INTERVAL_FAST_MS (250ms) until the Turn's status leaves
+     * 'running', then resolves. After POLL_BACKOFF_AFTER_FAST polls
+     * the cadence drops to POLL_INTERVAL_SLOW_MS (1s) and then
+     * POLL_INTERVAL_SLOWER_MS (3s) so a long-running turn does not
      * pummel the backend.
+     *
+     * Cadence rationale (Phase-4-Commit-1, user May-19 decision option a):
+     * the 250ms fast tick matches Anthropic SDK / OpenAI Assistants
+     * defaults and lands the chip / first-content inside the perceived-
+     * responsiveness window. The 1s/3s backoffs cap per-turn polling
+     * overhead at ~12 polls/minute on long-running turns. Plan ref:
+     *   ~/vaults/baphled/1. Projects/FlowState/Plans/
+     *     Turn-Based Post-Then-Poll Architecture (May 2026).md
+     *     §Constraints + §4d Commit 1.
      *
      * Each poll's `messages` array is merged into local state by id —
      * additive growth, no duplication. The orphan-preservation logic
@@ -1757,15 +1766,11 @@ export const useChatStore = defineStore('chat', {
      *   - Session switch mid-poll: terminate. The local `messages`
      *     array now belongs to a different session and continuing
      *     would corrupt it.
-     *
-     * Plan reference:
-     *   ~/vaults/baphled/1. Projects/FlowState/Plans/
-     *     Turn-Based Post-Then-Poll Architecture (May 2026).md
      */
     async pollTurnUntilTerminal(sessionId: string, turnId: string): Promise<void> {
-      const POLL_INTERVAL_FAST_MS = 1000
-      const POLL_INTERVAL_SLOW_MS = 2000
-      const POLL_INTERVAL_SLOWER_MS = 5000
+      const POLL_INTERVAL_FAST_MS = 250
+      const POLL_INTERVAL_SLOW_MS = 1000
+      const POLL_INTERVAL_SLOWER_MS = 3000
       const POLL_BACKOFF_AFTER_FAST = 10
       const POLL_BACKOFF_AFTER_SLOW = 30
 
@@ -1832,10 +1837,13 @@ export const useChatStore = defineStore('chat', {
           return
         }
 
-        // Adaptive backoff. The first 10 polls run at 1s cadence to
-        // feel "live"; subsequent polls slow to 2s, then 5s after 30
+        // Adaptive backoff (Phase-4-Commit-1 cadence). The first 10
+        // polls run at 250ms cadence to feel "live" — matches the
+        // Anthropic SDK / OpenAI Assistants defaults and lands the
+        // chip / first-content inside the perceived-responsiveness
+        // window. Subsequent polls slow to 1s, then 3s after 30
         // total polls. This caps the polling overhead on long-running
-        // turns at ~12 polls/minute while keeping perceived latency
+        // turns at ~20 polls/minute while keeping perceived latency
         // tight in the common case where a turn completes in a few
         // seconds.
         let delay = POLL_INTERVAL_FAST_MS

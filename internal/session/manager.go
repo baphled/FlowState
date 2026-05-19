@@ -167,6 +167,18 @@ type Summary struct {
 	ChainID      string    `json:"chainId,omitempty"`
 	Title        string    `json:"title"`
 	IsStreaming  bool      `json:"isStreaming"`
+	// ActiveTurnID is the in-flight Turn UUID for this session, or ""
+	// when no Turn is Running. Populated by the API layer (not the
+	// manager) at GET /api/v1/sessions via
+	// turn.Registry.FindActiveBySession so callers can resolve "what
+	// Turn is this session currently driving" in one round-trip.
+	// Always emitted (never omitempty) so clients see a defined string
+	// rather than undefined — matches the SessionResponse.ActiveTurnID
+	// contract on the single-session DTO.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+	ActiveTurnID string    `json:"activeTurnId"`
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	MessageCount int       `json:"messageCount"`

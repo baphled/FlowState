@@ -1207,6 +1207,193 @@ describe('chatStore - sendMessage turn-id poll path (Phase 3)', () => {
   })
 })
 
+// Phase-4-Commit-1 adaptive cadence constants (per User May-19 decision
+// option a — Turn-Based Post-Then-Poll Architecture (May 2026) plan,
+// Constraints section): the fast / slow / slower poll intervals tighten
+// from 1s/2s/5s to 250ms/1s/3s so the chat UI's chip + first-content
+// rendering lands inside the perceived-responsiveness window. Backoff
+// boundaries stay at 10 / 30 polls.
+describe('chatStore - pollTurnUntilTerminal adaptive cadence (Phase 4 Commit 1)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('polls at 250ms cadence for the first 10 polls (fast-window)', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-fast'
+    store.messages = []
+
+    // Build 10 running responses + 1 completed so the loop crosses
+    // the fast-window boundary and then terminates cleanly. The 11th
+    // poll is the completed one (lands after the first slow-window
+    // tick at 1000ms past poll 10).
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    const running = {
+      turn_id: 'turn-cadence',
+      session_id: 'session-fast',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    }
+    for (let i = 0; i < 10; i++) {
+      ft.mockResolvedValueOnce(running as never)
+    }
+    ft.mockResolvedValueOnce({ ...running, status: 'completed', completed_at: '' } as never)
+
+    // Drive the poll loop directly so we can advance the fake clock
+    // between iterations. sendMessage's outer plumbing (POST,
+    // reconcile) is exercised in the prior describe block.
+    const pollPromise = store.pollTurnUntilTerminal('session-fast', 'turn-cadence')
+
+    // First poll fires immediately. Subsequent polls space at 250ms in
+    // the fast window.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ft).toHaveBeenCalledTimes(1)
+
+    // Tick across the fast window. Each 250ms advance should produce
+    // one additional poll while we are inside the first 10.
+    for (let i = 2; i <= 10; i++) {
+      await vi.advanceTimersByTimeAsync(250)
+      expect(ft).toHaveBeenCalledTimes(i)
+    }
+
+    // 10 polls in — cadence transitions to slow (1000ms). A 250ms tick
+    // should NOT fire another poll; only after a full 1000ms does the
+    // 11th poll fire.
+    await vi.advanceTimersByTimeAsync(250)
+    expect(ft).toHaveBeenCalledTimes(10)
+    await vi.advanceTimersByTimeAsync(750)
+    expect(ft).toHaveBeenCalledTimes(11)
+
+    // 11th poll returned status=completed — the loop terminates.
+    await pollPromise
+    expect(ft.mock.calls.length).toBeGreaterThanOrEqual(11)
+  })
+
+  it('uses 1000ms cadence between polls 10 and 30 (slow window)', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-slow'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    const running = {
+      turn_id: 'turn-slow',
+      session_id: 'session-slow',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    }
+    // 20 running polls — drive through the fast→slow boundary and
+    // out the other side. A 21st completed response lets the loop
+    // terminate.
+    for (let i = 0; i < 20; i++) {
+      ft.mockResolvedValueOnce(running as never)
+    }
+    ft.mockResolvedValueOnce({ ...running, status: 'completed', completed_at: '' } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-slow', 'turn-slow')
+
+    // Drain the fast window — 10 polls at 250ms cadence.
+    await vi.advanceTimersByTimeAsync(0)
+    for (let i = 2; i <= 10; i++) {
+      await vi.advanceTimersByTimeAsync(250)
+    }
+    expect(ft).toHaveBeenCalledTimes(10)
+
+    // First slow tick — 1000ms. The chatStore cannot use the OLD
+    // SLOW_MS=2000 here; if it does, this assertion fails after the
+    // 1000ms advance because no poll will have fired.
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(ft).toHaveBeenCalledTimes(11)
+
+    // Another 999ms — no new poll (cadence is 1000ms, not lower).
+    await vi.advanceTimersByTimeAsync(999)
+    expect(ft).toHaveBeenCalledTimes(11)
+
+    // One more ms crosses the second 1000ms gate.
+    await vi.advanceTimersByTimeAsync(1)
+    expect(ft).toHaveBeenCalledTimes(12)
+
+    // Drain remaining polls so the timer queue empties before useRealTimers.
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    await pollPromise
+  })
+
+  it('uses 3000ms cadence after 30 polls (slower window)', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-slower'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    const running = {
+      turn_id: 'turn-slower',
+      session_id: 'session-slower',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    }
+    // 35 running responses + 1 completed lets the loop cross both
+    // boundaries (fast → slow at 10, slow → slower at 30).
+    for (let i = 0; i < 35; i++) {
+      ft.mockResolvedValueOnce(running as never)
+    }
+    ft.mockResolvedValueOnce({ ...running, status: 'completed', completed_at: '' } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-slower', 'turn-slower')
+
+    // Drain the fast window (10 polls at 250ms).
+    await vi.advanceTimersByTimeAsync(0)
+    for (let i = 2; i <= 10; i++) {
+      await vi.advanceTimersByTimeAsync(250)
+    }
+    // Drain the slow window (20 more polls at 1000ms each → 30 total).
+    for (let i = 11; i <= 30; i++) {
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    expect(ft).toHaveBeenCalledTimes(30)
+
+    // 31st poll lands at 3000ms cadence — the chatStore cannot use
+    // the OLD SLOWER_MS=5000 here. 2999ms is not enough; one more
+    // ms crosses the gate.
+    await vi.advanceTimersByTimeAsync(2999)
+    expect(ft).toHaveBeenCalledTimes(30)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(ft).toHaveBeenCalledTimes(31)
+
+    // Drain remaining polls so the timer queue empties.
+    for (let i = 0; i < 20; i++) {
+      await vi.advanceTimersByTimeAsync(3000)
+    }
+    await pollPromise
+  })
+})
+
 describe('chatStore - setAgent', () => {
   beforeEach(() => {
     installLocalStorageStub()
