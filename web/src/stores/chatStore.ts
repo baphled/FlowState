@@ -764,6 +764,44 @@ export const useChatStore = defineStore('chat', {
     // Cleared on session change so a fresh session's first figure
     // is never suppressed by the prior session's last figure.
     lastContextUsageKey: null as string | null,
+    // lastCompactionEventKey is Phase-5 §1c-γ's idempotency gate for
+    // handleContextCompactedEvent. The transitional 1c-γ state has TWO
+    // callers for the same compaction figure — the SSE branch at
+    // chatStore.ts:~2954 and the new poll-diff caller in
+    // pollTurnUntilTerminal. A double-fire for the same
+    // (originalTokens, summaryTokens, latencyMs, trigger) tuple MUST
+    // NOT increment compactionEventCount twice — the chip's flash
+    // watcher observes count-deltas, so a duplicate fire would flash
+    // twice for one event.
+    //
+    // Same pattern as `lastContextUsageKey` / `lastProviderChangeKey`.
+    // Cleared on session change so a fresh session's first compaction
+    // is never suppressed by the prior session's last figure.
+    lastCompactionEventKey: null as string | null,
+    // lastGateFailureKey is Phase-5 §1c-γ's idempotency gate for the
+    // gate_failed dispatch. Same transitional double-caller story —
+    // SSE branch + poll-diff both write `lastGateFailure`; the key
+    // gates the second writer when it sees the same payload.
+    //
+    // Key shape: `<swarmId>:<gateName>:<reason>:<cause>` — the four
+    // fields together uniquely identify a halt within a session.
+    // Cleared on session change.
+    lastGateFailureKey: null as string | null,
+    // lastCriticalErrorCorrelationId is Phase-5 §1c-γ's idempotency
+    // gate for the stream_critical / poll-diff critical_error
+    // transition. Mirrors the brief's prescribed key shape: the
+    // correlation_id IS the unique fingerprint of a critical error
+    // (the dispatcher mints 8 random bytes hex-encoded per stamp; the
+    // SSE writer's clientError uses the same shape). A re-fire with
+    // the same correlation_id must NOT overwrite `criticalError`
+    // (would re-show the banner the user dismissed); a different
+    // correlation_id MUST proceed (a fresh fatal error must replace
+    // the prior banner per the SSE handler's existing overwrite policy).
+    //
+    // Cleared on session change so a fresh session can re-render a
+    // critical event with the SAME id as a prior session's last one
+    // (extremely unlikely, but the dedup must be per-session scoped).
+    lastCriticalErrorCorrelationId: null as string | null,
     // ---- bootstrap singleton (App-level loading-overlay coordination) ----
     //
     // bootstrap() wraps restoreStateFromBackend so the App-level loading
@@ -1596,6 +1634,12 @@ export const useChatStore = defineStore('chat', {
       // misattribute the failure. A fresh halt on the new session
       // repopulates the banner.
       this.lastGateFailure = null
+      // Phase-5 §1c-γ — clear the dedup gates so a fresh session can
+      // accept its first compaction / gate halt / critical error
+      // without being suppressed by the prior session's last key.
+      this.lastCompactionEventKey = null
+      this.lastGateFailureKey = null
+      this.lastCriticalErrorCorrelationId = null
       // Streaming Coherence Slice F — clear stale per-session phase
       // for the target session so its watchdog starts at the legacy
       // 60s default until the next engine heartbeat updates the phase.
@@ -1887,6 +1931,12 @@ export const useChatStore = defineStore('chat', {
       // Initial empty map: first poll with any partitions counts as
       // transitions (empty → real) and routes through the quotaStore.
       const lastPollQuotaKeys: Record<string, string> = {}
+      // Phase-5 §1c-γ — track prior poll's CompactionEvents + GateFailures
+      // slice lengths so the diff can identify NEW entries (positional
+      // indexing past the prior length). The wire shape is append-only;
+      // each new entry routes through its corresponding handler.
+      let lastPollCompactionLen = 0
+      let lastPollGateFailuresLen = 0
 
       // Per-iteration AbortController so a session-switch can wake
       // the server-side wait promptly. Recreated each iteration; the
@@ -2130,6 +2180,80 @@ export const useChatStore = defineStore('chat', {
               notConfigured: nc ? { reason: nc.reason } : null,
             })
             lastPollQuotaKeys[partitionKey] = sig
+          }
+        }
+
+        // Phase-5 §1c-γ — diff CompactionEvents by length. The poll
+        // returns the cumulative slice; positional indexing past the
+        // prior poll's length tells us which entries are NEW. Each new
+        // entry routes through handleContextCompactedEvent — the same
+        // handler the SSE branch at chatStore.ts:~2997 calls — so the
+        // chip's flash + tooltip update without an SSE side-channel.
+        // The handler's `lastCompactionEventKey` dedup (added in 1c-γ
+        // for the SSE+poll transitional double-fire) ensures the chip
+        // only flashes once per real event.
+        const incomingCompactions = state.compaction_events
+        if (Array.isArray(incomingCompactions) && incomingCompactions.length > lastPollCompactionLen) {
+          for (let i = lastPollCompactionLen; i < incomingCompactions.length; i++) {
+            const ev = incomingCompactions[i]
+            this.handleContextCompactedEvent({
+              sessionId: ev.session_id,
+              originalTokens: ev.original_tokens,
+              summaryTokens: ev.summary_tokens,
+              trigger: ev.trigger,
+            })
+          }
+          lastPollCompactionLen = incomingCompactions.length
+        }
+
+        // Phase-5 §1c-γ — diff GateFailures by length. The poll returns
+        // the cumulative slice; new entries past the prior length are
+        // routed onto `lastGateFailure` (the LATEST entry wins, matching
+        // the SSE handler's overwrite-on-fresh-halt policy at
+        // chatStore.ts:~2996). The dedup key gates the within-iteration
+        // re-fire when the slice did not grow.
+        const incomingGates = state.gate_failures
+        if (Array.isArray(incomingGates) && incomingGates.length > lastPollGateFailuresLen) {
+          // Take the LATEST new entry — the banner only shows one at a
+          // time. If multiple halts landed since the prior poll, the
+          // most recent is the operator's signal of the current
+          // halt-class state.
+          const latest = incomingGates[incomingGates.length - 1]
+          const key = `${latest.swarm_id}:${latest.gate_name}:${latest.reason}:${latest.cause}`
+          if (key !== this.lastGateFailureKey) {
+            this.lastGateFailure = {
+              swarmId: latest.swarm_id,
+              lifecycle: latest.lifecycle,
+              memberId: latest.member_id,
+              gateName: latest.gate_name,
+              gateKind: latest.gate_kind,
+              reason: latest.reason,
+              cause: latest.cause,
+              coordStoreKeys: latest.coord_store_keys ?? [],
+            }
+            this.lastGateFailureKey = key
+          }
+          lastPollGateFailuresLen = incomingGates.length
+        }
+
+        // Phase-5 §1c-γ — diff CriticalError. The poll returns the
+        // sanitised payload (or omits it when no critical error has
+        // fired). nil→non-nil transitions populate the persistent
+        // CriticalErrorBanner via `criticalError`; correlation_id is
+        // the dedup key (matches the brief's prescription). Re-fire
+        // with the same id is a no-op (the user-dismissed banner stays
+        // dismissed); a fresh id is a new fatal error and MUST replace
+        // the prior payload per the SSE handler's overwrite policy at
+        // chatStore.ts:~2907.
+        const incomingCE = state.critical_error
+        if (incomingCE) {
+          const cid = incomingCE.correlation_id ?? ''
+          if (cid !== this.lastCriticalErrorCorrelationId) {
+            this.criticalError = {
+              message: incomingCE.message,
+              correlationId: cid,
+            }
+            this.lastCriticalErrorCorrelationId = cid
           }
         }
 
@@ -3510,6 +3634,23 @@ export const useChatStore = defineStore('chat', {
       if (info.sessionId !== '' && this.currentSessionId !== info.sessionId) {
         return
       }
+
+      // Phase-5 §1c-γ idempotency gate. The transitional 1c-γ state has
+      // two callers for the same compaction figure — the SSE branch at
+      // chatStore.ts:~2997 and the new pollTurnUntilTerminal poll-diff
+      // caller. Serialise the four-field tuple and short-circuit when
+      // the prior call matches. Mirrors lastContextUsageKey's pattern
+      // for the chip-flash dedup. Without this gate, the count would
+      // increment twice (chip flashes twice) for one real event.
+      //
+      // The key includes sessionId only when it's non-empty — the SSE
+      // wire always carries it; legacy callers without it fall back to
+      // a fingerprint-only key.
+      const compactionKey = `${info.sessionId ?? ''}:${info.originalTokens}:${info.summaryTokens}:${info.trigger ?? ''}`
+      if (compactionKey === this.lastCompactionEventKey) {
+        return
+      }
+      this.lastCompactionEventKey = compactionKey
 
       this.compactionEventCount += 1
       this.lastCompaction = {

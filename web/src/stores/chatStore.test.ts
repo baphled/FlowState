@@ -6489,6 +6489,544 @@ describe('chatStore - pollTurnUntilTerminal provider_quotas diff (Phase-5 §1c-�
   })
 })
 
+// Phase-5 §1c-γ — the pollTurnUntilTerminal loop now also diffs the
+// turn's compaction_events / gate_failures / critical_error fields and
+// routes new entries through the same handlers + state slots the SSE
+// branch uses. The dedup gates ensure the transitional double-fire
+// (SSE + poll for the same event) only mutates state once.
+describe('chatStore - pollTurnUntilTerminal compaction_events diff (Phase-5 §1c-γ)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('calls handleContextCompactedEvent on the first poll that carries compaction_events', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-c'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleContextCompactedEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-c',
+      session_id: 'session-c',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      compaction_events: [
+        {
+          session_id: 'session-c',
+          agent_id: 'agent-1',
+          original_tokens: 10000,
+          summary_tokens: 2000,
+          latency_ms: 42,
+          trigger: 'ratio',
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-c', 'turn-c')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(1)
+    expect(store.compactionEventCount).toBe(1)
+    expect(store.lastCompaction?.originalTokens).toBe(10000)
+    expect(store.lastCompaction?.trigger).toBe('ratio')
+  })
+
+  it('does NOT call handleContextCompactedEvent on a poll where the slice did not grow', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-c-nodiff'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleContextCompactedEvent')
+
+    const sameSlice = [
+      {
+        session_id: 'session-c-nodiff',
+        agent_id: 'agent-1',
+        original_tokens: 10000,
+        summary_tokens: 2000,
+        latency_ms: 42,
+        trigger: 'ratio',
+      },
+    ]
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-c-nodiff',
+      session_id: 'session-c-nodiff',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      compaction_events: sameSlice,
+    } as never)
+    // Second poll: same slice, no growth — must NOT re-fire.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-c-nodiff',
+      session_id: 'session-c-nodiff',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      compaction_events: sameSlice,
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-c-nodiff', 'turn-c-nodiff')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(1)
+    expect(store.compactionEventCount).toBe(1)
+  })
+
+  it('calls handleContextCompactedEvent again for each NEW entry on a slice that grew', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-c-grow'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleContextCompactedEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-c-grow',
+      session_id: 'session-c-grow',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      compaction_events: [
+        {
+          session_id: 'session-c-grow',
+          agent_id: 'agent-1',
+          original_tokens: 10000,
+          summary_tokens: 2000,
+          latency_ms: 42,
+          trigger: 'ratio',
+        },
+      ],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-c-grow',
+      session_id: 'session-c-grow',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      compaction_events: [
+        {
+          session_id: 'session-c-grow',
+          agent_id: 'agent-1',
+          original_tokens: 10000,
+          summary_tokens: 2000,
+          latency_ms: 42,
+          trigger: 'ratio',
+        },
+        {
+          session_id: 'session-c-grow',
+          agent_id: 'agent-1',
+          original_tokens: 15000,
+          summary_tokens: 3000,
+          latency_ms: 55,
+          trigger: 'gate_proximity',
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-c-grow', 'turn-c-grow')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(2)
+    expect(store.compactionEventCount).toBe(2)
+    expect(store.lastCompaction?.originalTokens).toBe(15000)
+    expect(store.lastCompaction?.trigger).toBe('gate_proximity')
+  })
+})
+
+// Phase-5 §1c-γ — handleContextCompactedEvent idempotency. Same
+// transitional double-caller story: SSE branch + poll-diff both call
+// for the same event during the dual-surface phase. The
+// lastCompactionEventKey gate ensures a double-call mutates state ONCE.
+describe('chatStore.handleContextCompactedEvent idempotency (Phase-5 §1c-γ)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('mutates compactionEventCount exactly ONCE when called twice with the same tuple', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-idem-c'
+    store.compactionEventCount = 0
+
+    store.handleContextCompactedEvent({
+      sessionId: 'session-idem-c',
+      originalTokens: 10000,
+      summaryTokens: 2000,
+      trigger: 'ratio',
+    })
+
+    expect(store.compactionEventCount).toBe(1)
+
+    // Second call — same tuple. The dedup gate must short-circuit.
+    store.handleContextCompactedEvent({
+      sessionId: 'session-idem-c',
+      originalTokens: 10000,
+      summaryTokens: 2000,
+      trigger: 'ratio',
+    })
+
+    expect(store.compactionEventCount).toBe(1)
+  })
+
+  it('mutates again when the tuple differs (a real second compaction)', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-idem-c-diff'
+    store.compactionEventCount = 0
+
+    store.handleContextCompactedEvent({
+      sessionId: 'session-idem-c-diff',
+      originalTokens: 10000,
+      summaryTokens: 2000,
+      trigger: 'ratio',
+    })
+    store.handleContextCompactedEvent({
+      sessionId: 'session-idem-c-diff',
+      originalTokens: 20000,
+      summaryTokens: 4000,
+      trigger: 'gate_proximity',
+    })
+
+    expect(store.compactionEventCount).toBe(2)
+    expect(store.lastCompaction?.originalTokens).toBe(20000)
+  })
+})
+
+describe('chatStore - pollTurnUntilTerminal gate_failures diff (Phase-5 §1c-γ)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('populates lastGateFailure on the first poll that carries gate_failures', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-g'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-g',
+      session_id: 'session-g',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      gate_failures: [
+        {
+          swarm_id: 'a-team',
+          lifecycle: 'post-member',
+          member_id: 'member-1',
+          gate_name: 'relevance',
+          gate_kind: 'ext:relevance-gate',
+          reason: 'off-topic',
+          cause: 'runner exited non-zero',
+          coord_store_keys: ['key-a', 'key-b'],
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-g', 'turn-g')
+
+    expect(store.lastGateFailure).not.toBeNull()
+    expect(store.lastGateFailure?.swarmId).toBe('a-team')
+    expect(store.lastGateFailure?.gateName).toBe('relevance')
+    expect(store.lastGateFailure?.reason).toBe('off-topic')
+    expect(store.lastGateFailure?.coordStoreKeys).toEqual(['key-a', 'key-b'])
+  })
+
+  it('does NOT re-write lastGateFailure on a poll where the gate_failures slice did not grow', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-g-nodiff'
+    store.messages = []
+
+    const sameSlice = [
+      {
+        swarm_id: 'a-team',
+        lifecycle: 'post-member',
+        member_id: 'm',
+        gate_name: 'relevance',
+        gate_kind: 'ext:relevance-gate',
+        reason: 'off-topic',
+        cause: '',
+      },
+    ]
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-g-nodiff',
+      session_id: 'session-g-nodiff',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      gate_failures: sameSlice,
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-g-nodiff',
+      session_id: 'session-g-nodiff',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      gate_failures: sameSlice,
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-g-nodiff', 'turn-g-nodiff')
+
+    // First poll wrote the value; the dedup key prevents the second.
+    // Observable proof: the lastGateFailureKey gate must hold the same
+    // value across both polls — the second poll does NOT overwrite the
+    // first's reference.
+    expect(store.lastGateFailure).not.toBeNull()
+    expect(store.lastGateFailureKey).toBe('a-team:relevance:off-topic:')
+  })
+
+  it('overwrites lastGateFailure when a NEW gate failure entry appends (latest wins)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-g-grow'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-g-grow',
+      session_id: 'session-g-grow',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      gate_failures: [
+        {
+          swarm_id: 'a-team',
+          lifecycle: 'post-member',
+          member_id: 'm',
+          gate_name: 'first',
+          gate_kind: 'ext:first',
+          reason: 'r-first',
+          cause: '',
+        },
+      ],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-g-grow',
+      session_id: 'session-g-grow',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      gate_failures: [
+        {
+          swarm_id: 'a-team',
+          lifecycle: 'post-member',
+          member_id: 'm',
+          gate_name: 'first',
+          gate_kind: 'ext:first',
+          reason: 'r-first',
+          cause: '',
+        },
+        {
+          swarm_id: 'b-team',
+          lifecycle: 'post-member',
+          member_id: 'm2',
+          gate_name: 'second',
+          gate_kind: 'ext:second',
+          reason: 'r-second',
+          cause: '',
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-g-grow', 'turn-g-grow')
+
+    expect(store.lastGateFailure?.gateName).toBe('second')
+    expect(store.lastGateFailure?.swarmId).toBe('b-team')
+  })
+})
+
+describe('chatStore - pollTurnUntilTerminal critical_error diff (Phase-5 §1c-γ)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('populates criticalError on the first poll that carries critical_error (nil→non-nil)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-ce'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-ce',
+      session_id: 'session-ce',
+      status: 'failed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      critical_error: {
+        message: 'critical stream error',
+        correlation_id: 'deadbeef0000abcd',
+        severity: 'critical',
+      },
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-ce', 'turn-ce')
+
+    expect(store.criticalError).not.toBeNull()
+    expect(store.criticalError?.message).toBe('critical stream error')
+    expect(store.criticalError?.correlationId).toBe('deadbeef0000abcd')
+    expect(store.lastCriticalErrorCorrelationId).toBe('deadbeef0000abcd')
+  })
+
+  it('does NOT re-write criticalError on a poll where the correlation_id is unchanged', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-ce-nodiff'
+    store.messages = []
+
+    const sameCE = {
+      message: 'critical stream error',
+      correlation_id: 'id-stable-1234',
+      severity: 'critical',
+    }
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-ce-nodiff',
+      session_id: 'session-ce-nodiff',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      critical_error: sameCE,
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-ce-nodiff',
+      session_id: 'session-ce-nodiff',
+      status: 'failed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      critical_error: sameCE,
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-ce-nodiff', 'turn-ce-nodiff')
+
+    // The dedup gate retains the correlation id; the second poll's
+    // same-id payload must NOT overwrite (preventing a re-show of a
+    // dismissed banner).
+    expect(store.criticalError?.correlationId).toBe('id-stable-1234')
+    expect(store.lastCriticalErrorCorrelationId).toBe('id-stable-1234')
+
+    // Observable proof of dedup: dismissal in between two same-id polls
+    // is preserved.
+    store.dismissCriticalError()
+    expect(store.criticalError).toBeNull()
+  })
+
+  it('overwrites criticalError when a NEW correlation_id arrives (fresh fatal error)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-ce-fresh'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-ce-fresh',
+      session_id: 'session-ce-fresh',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      critical_error: {
+        message: 'critical stream error',
+        correlation_id: 'first-id',
+        severity: 'critical',
+      },
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-ce-fresh',
+      session_id: 'session-ce-fresh',
+      status: 'failed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      critical_error: {
+        message: 'critical stream error',
+        correlation_id: 'second-id',
+        severity: 'critical',
+      },
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-ce-fresh', 'turn-ce-fresh')
+
+    // A fresh correlation_id must replace the prior banner — a new
+    // fatal error is a new event the operator must see.
+    expect(store.criticalError?.correlationId).toBe('second-id')
+    expect(store.lastCriticalErrorCorrelationId).toBe('second-id')
+  })
+})
+
 describe('chatStore - bootstrap (singleton wrapper around restoreStateFromBackend)', () => {
   // bootstrap() exists so the App-level loading overlay has a single
   // reliable "first hydration done" signal it can await — and so the

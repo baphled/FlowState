@@ -23,6 +23,14 @@ import (
 // pin BOTH "non-empty" and "well-formed UUID" with one regex.
 var uuidV4Regex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
+// transientError is a bare-string error used by the Phase-5 §1c-γ
+// "non-critical chunk.Error" pin. provider.severityFromKeywords on
+// "connection refused" yields SeverityTransient — the dispatcher's
+// chunk-tap must NOT stamp CriticalError for such errors.
+type transientError struct{ msg string }
+
+func (e *transientError) Error() string { return e.msg }
+
 // turnProbeStreamer is a dispatcher-shaped Streamer that captures
 // the ctx every Stream call receives. Used by the propagation spec
 // to assert turn.TurnIDFromContext on the engine-facing ctx matches
@@ -551,6 +559,153 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 			t, _ := turns.Get(handle.TurnID)
 			Expect(t.ProviderQuotas).To(BeEmpty(),
 				"malformed provider_quota payload must NOT append to the slice — parse-fail absorbs silently")
+		})
+	})
+
+	// Phase-5 §1c-γ — the wrap goroutine taps chunk.Error and classifies
+	// SeverityCritical via provider.IsCriticalStreamError; when critical,
+	// it stamps a sanitised TurnCriticalError onto the Turn so the
+	// long-poll wire surfaces the persistent banner without an SSE
+	// side-channel.
+	//
+	// The brief asserted chunk.EventType="stream_critical" as the tap
+	// signal, but the actual engine + provider layers signal critical
+	// via chunk.Error classified by provider.IsCriticalStreamError;
+	// there are no chunks with EventType="stream_critical" in
+	// internal/. These specs pin the actual signal path.
+	Context("when the engine emits chunk.Error that classifies as critical (Phase-5 §1c-γ)", func() {
+		It("stamps Turn.CriticalError with sanitised message + correlation_id when chunk.Error is critical", func() {
+			// Use a provider.Error of ErrorTypeAuthFailure — classifies as
+			// SeverityCritical per severityFromProviderErrorType. The
+			// dispatcher's chunk-tap mints the safeMsg + correlation_id
+			// and stamps SetCriticalError BEFORE the terminal Fail.
+			critErr := &provider.Error{
+				Provider:  "anthropic",
+				ErrorType: provider.ErrorTypeAuthFailure,
+				Message:   "401 unauthorized",
+			}
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{Content: "partial"},
+					{Error: critErr, Done: true},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-1c-gamma-crit", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1c-gamma-crit",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Eventually the wrap goroutine drains the error chunk,
+			// classifies it as critical, and stamps CriticalError BEFORE
+			// the terminal Fail. The CriticalError pointer survives the
+			// terminal transition (snapshotLocked deep-copies it).
+			Eventually(func() bool {
+				t, gerr := turns.Get(handle.TurnID)
+				if gerr != nil {
+					return false
+				}
+				return t.CriticalError != nil
+			}, "2s", "10ms").Should(BeTrue(),
+				"the wrap goroutine must tap chunk.Error, classify via IsCriticalStreamError, and call SetCriticalError — the long-poll surface then exposes the banner payload without an SSE side-channel")
+
+			t, _ := turns.Get(handle.TurnID)
+			Expect(t.CriticalError.Message).To(Equal("critical stream error"),
+				"the safeMsg must match clientError's stream_critical category — never the raw provider error text")
+			Expect(t.CriticalError.CorrelationID).To(MatchRegexp(`^[0-9a-f]{16}$`),
+				"correlation_id must be 16 hex chars — matches the 8-random-bytes shape internal/api/errors.go uses")
+			Expect(t.CriticalError.Severity).To(Equal("critical"))
+			// The terminal Fail still fires — the chunk.Error capture and
+			// the CriticalError stamp are independent paths.
+			Expect(t.Status).To(Equal(turn.StatusFailed))
+		})
+
+		It("uses the stream_critical_context_exceeded safeMsg for context-window overflow errors", func() {
+			critErr := &provider.Error{
+				Provider:  "anthropic",
+				ErrorType: provider.ErrorTypeContextWindowExceeded,
+				Message:   "context_length_exceeded",
+			}
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{Error: critErr, Done: true},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-ctx-exceeded", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-ctx-exceeded",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() bool {
+				t, gerr := turns.Get(handle.TurnID)
+				if gerr != nil {
+					return false
+				}
+				return t.CriticalError != nil
+			}, "2s", "10ms").Should(BeTrue())
+
+			t, _ := turns.Get(handle.TurnID)
+			Expect(t.CriticalError.Message).To(ContainSubstring("context window exceeded"),
+				"context-window overflow must surface the user-actionable safeMsg — the user can self-recover by trimming or starting a fresh session")
+		})
+
+		It("does NOT stamp CriticalError for a transient (non-critical) chunk.Error", func() {
+			// A bare-string error classifies through severityFromKeywords;
+			// "connection refused" returns SeverityTransient, NOT critical
+			// (per internal/provider/stream_error_test.go's existing pin).
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{Error: &transientError{msg: "connection refused"}, Done: true},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-transient", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-transient",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for terminal — the turn will Fail with the transient
+			// error, but CriticalError must STAY nil (the banner is for
+			// critical-only signals).
+			Eventually(func() turn.Status {
+				t, _ := turns.Get(handle.TurnID)
+				return t.Status
+			}, "2s", "10ms").Should(Equal(turn.StatusFailed))
+
+			t, _ := turns.Get(handle.TurnID)
+			Expect(t.CriticalError).To(BeNil(),
+				"non-critical errors MUST NOT stamp CriticalError — the persistent banner is for unrecoverable provider errors only")
 		})
 	})
 

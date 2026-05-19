@@ -366,6 +366,94 @@ export interface TurnState {
    * absent slice is treated as no-change.
    */
   provider_quotas?: TurnStateProviderQuotaSnapshot[]
+  /**
+   * compaction_events records each `context_compacted` bus event the
+   * engine published during this Turn (Phase-5 §1c-γ). Populated by the
+   * subscribeTurnContextCompacted bus subscriber in
+   * internal/api/server.go via registry.AppendCompactionEvent.
+   * Append-only — each compaction adds one entry; the FE poll-diff
+   * iterates from `lastPollSnapshot.compaction_events.length` upward
+   * and routes any new entries through handleContextCompactedEvent.
+   *
+   * Optional: pre-1c-γ servers and pre-first-event Turn states omit
+   * the field entirely. The FE's poll-diff treats absent === unchanged.
+   */
+  compaction_events?: TurnStateCompactionEvent[]
+  /**
+   * gate_failures records each halt-class `gate_failed` bus event the
+   * engine published during this Turn (Phase-5 §1c-γ). Populated by
+   * subscribeTurnGateFailed. Append-only — the GateFailureBanner reads
+   * only the latest entry but the slice preserves history.
+   *
+   * Optional: pre-1c-γ servers omit the field entirely.
+   */
+  gate_failures?: TurnStateGateFailure[]
+  /**
+   * critical_error surfaces a fatal provider-error stamp produced by
+   * the dispatcher's wrapWithTurnLifecycle chunk-tap when chunk.Error
+   * classifies as SeverityCritical (Phase-5 §1c-γ). The wire shape
+   * matches the SSE `stream_critical` event's safeMsg + correlation_id
+   * fields so a single FE sink (the persistent CriticalErrorBanner)
+   * can hydrate from either transport.
+   *
+   * null when no critical error has been classified during this Turn
+   * (the common case); non-null transitions populate the banner and
+   * the correlation_id is the idempotency key the FE handler dedups on.
+   */
+  critical_error?: TurnStateCriticalError | null
+}
+
+/**
+ * TurnStateCompactionEvent mirrors the Go `internal/turn.CompactionEvent`
+ * JSON shape (turn.go field tags: session_id, agent_id, original_tokens,
+ * summary_tokens, latency_ms, trigger). The FE's chatStore poll-diff
+ * iterates new entries (length growth since the prior poll) and routes
+ * each through handleContextCompactedEvent — the same handler the SSE
+ * branch calls at chatStore.ts:~2954.
+ *
+ * Phase-5 §1c-γ.
+ */
+export interface TurnStateCompactionEvent {
+  session_id: string
+  agent_id: string
+  original_tokens: number
+  summary_tokens: number
+  latency_ms: number
+  trigger?: string
+}
+
+/**
+ * TurnStateGateFailure mirrors the Go `internal/turn.GateFailure` JSON
+ * shape. The FE's chatStore poll-diff iterates new entries and writes
+ * the LATEST entry onto `lastGateFailure` — same shape the existing SSE
+ * handler at chatStore.ts:~2996 writes.
+ *
+ * Phase-5 §1c-γ.
+ */
+export interface TurnStateGateFailure {
+  swarm_id: string
+  lifecycle: string
+  member_id: string
+  gate_name: string
+  gate_kind: string
+  reason: string
+  cause: string
+  coord_store_keys?: string[]
+}
+
+/**
+ * TurnStateCriticalError mirrors the Go `internal/turn.TurnCriticalError`
+ * JSON shape. The FE's chatStore poll-diff transitions nil→non-nil
+ * populate `criticalError` — same shape the existing SSE handler at
+ * chatStore.ts:~2907 writes (after field-name translation:
+ * `correlation_id` → `correlationId`).
+ *
+ * Phase-5 §1c-γ.
+ */
+export interface TurnStateCriticalError {
+  message: string
+  correlation_id?: string
+  severity?: string
 }
 
 /**

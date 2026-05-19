@@ -29,6 +29,8 @@ package dispatch
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -910,6 +912,40 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 				if terminalErr == nil {
 					terminalErr = chunk.Error
 				}
+				// Phase-5 §1c-γ: when the chunk's error classifies as
+				// SeverityCritical (revoked OAuth, 401, model-not-found,
+				// billing/quota lockout, or the context-window overflow
+				// gate), stamp a sanitised CriticalError onto the Turn so
+				// the long-poll wire can hydrate the FE's persistent
+				// CriticalErrorBanner without an SSE side-channel. The
+				// FE's poll-diff transitions nil→non-nil populate the
+				// banner; the correlation id is the idempotency key the
+				// FE handler dedups on.
+				//
+				// We classify here (not on every chunk) because:
+				//   - The brief asserted chunk.EventType="stream_critical"
+				//     as the chunk-tap signal, but the actual signal
+				//     across the engine + provider layers is chunk.Error
+				//     classified by provider.IsCriticalStreamError —
+				//     there are no chunks with EventType="stream_critical"
+				//     anywhere in internal/. The classification logic
+				//     mirrors internal/api/server.go's existing fan-out
+				//     gate at lines 1841-1879 to keep one source of
+				//     truth for "what is a critical?" across the SSE
+				//     and poll surfaces.
+				//   - safeMsg + correlation_id are minted with the same
+				//     category logic internal/api/errors.go's
+				//     clientError uses so SSE and poll consumers see
+				//     identical wire shapes.
+				//
+				// The SetCriticalError call's no-op gate (non-Running
+				// short-circuit, idempotent on equal-value re-stamp)
+				// makes a duplicate stamp from a redundant {Error,Done}
+				// chunk safe.
+				if provider.IsCriticalStreamError(chunk.Error) {
+					ce := buildTurnCriticalError(chunk.Error)
+					d.turnRegistry.SetCriticalError(turnID, ce)
+				}
 			}
 			out <- chunk
 		}
@@ -928,6 +964,55 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 		})
 	}()
 	return out
+}
+
+// buildTurnCriticalError converts an engine-side critical chunk.Error
+// into the sanitised TurnCriticalError shape the FE consumes (Phase-5
+// §1c-γ). Mirrors internal/api/errors.go::clientError's category logic
+// so the SSE and poll surfaces emit identical wire payloads:
+//
+//   - stream_critical_context_exceeded — when the wrapped error is a
+//     *provider.Error with ErrorType == ErrorTypeContextWindowExceeded.
+//     The user-actionable safeMsg points at "start a fresh session or
+//     trim recent tool results" — the user can self-recover.
+//   - stream_critical — the generic fatal path. The safeMsg is the
+//     opaque "critical stream error"; the underlying message is never
+//     surfaced to the client (logged server-side under the correlation
+//     id when the SSE fan-out fires; not logged here because the poll
+//     surface is read by an already-authenticated session and the SSE
+//     handler will log the same correlation id when its branch fires).
+//
+// correlation_id matches the SSE wire's 16-hex-char shape (8 random
+// bytes hex-encoded). Falling back to a deterministic empty id on
+// rand.Read failure keeps the field optional rather than blocking the
+// stamp.
+//
+// Returns a non-nil pointer; callers can safely dereference. The
+// registry's SetCriticalError copies the pointee, so the dispatcher
+// can reuse this on retry without poisoning the stored value.
+func buildTurnCriticalError(err error) *turn.TurnCriticalError {
+	category := "stream_critical"
+	var pErr *provider.Error
+	if errors.As(err, &pErr) && pErr != nil && pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
+		category = "stream_critical_context_exceeded"
+	}
+	safeMsg := "critical stream error"
+	if category == "stream_critical_context_exceeded" {
+		safeMsg = "context window exceeded — start a fresh session or trim recent tool results before retrying"
+	}
+	// 8 random bytes hex-encoded — matches internal/api/errors.go's
+	// clientError shape so a support ticket from a poll-surface user is
+	// indistinguishable from one from an SSE-surface user.
+	cid := ""
+	b := make([]byte, 8)
+	if _, rerr := rand.Read(b); rerr == nil {
+		cid = hex.EncodeToString(b)
+	}
+	return &turn.TurnCriticalError{
+		Message:       safeMsg,
+		CorrelationID: cid,
+		Severity:      "critical",
+	}
 }
 
 // acquireSessionLifecycleGate returns the per-session baton channel for
