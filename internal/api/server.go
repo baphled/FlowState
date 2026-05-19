@@ -26,6 +26,7 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
+	"github.com/baphled/flowstate/internal/turn"
 )
 
 const (
@@ -126,6 +127,14 @@ type DispatcherService interface {
 	// auto-construct captures it; without propagation the Dispatcher
 	// silently drops chunks. See SetSessionBroker on Server.
 	SetSessionBroker(broker dispatch.SessionBroker)
+	// TurnRegistry exposes the in-memory Turn store the Dispatcher writes
+	// into during DispatchSessioned. Phase 2 of "Turn-Based Post-Then-Poll
+	// Architecture (May 2026)" reads from this registry to serve
+	// GET /api/v1/sessions/{id}/turns/{turn_id}. Always non-nil for the
+	// production *dispatch.Dispatcher. May return nil for test spies that
+	// do not exercise the Turn surface — handleGetTurn treats nil as
+	// "feature unavailable" and returns 501.
+	TurnRegistry() *turn.Registry
 }
 
 // ServerOption configures an optional Server dependency.
@@ -670,6 +679,11 @@ func (s *Server) setupRoutes() {
 	s.registerProtected("POST /api/v1/sessions", s.handleCreateSession)
 	s.registerProtected("GET /api/v1/sessions", s.handleListV1Sessions)
 	s.registerProtected("POST /api/v1/sessions/{id}/messages", s.handleSessionMessage)
+	// Phase 2 of "Turn-Based Post-Then-Poll Architecture (May 2026)".
+	// The frontend polls this endpoint with the turn_id returned from
+	// POST /messages to read the engine-emitted messages and the
+	// running → completed | failed status transition.
+	s.registerProtected("GET /api/v1/sessions/{id}/turns/{turn_id}", s.handleGetTurn)
 	s.registerProtected("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
 	s.registerProtected("DELETE /api/v1/sessions/{id}/stream", s.handleCancelStream)
 	s.registerProtected("GET /api/v1/sessions/{id}/messages", s.handleSessionMessages)
@@ -1200,10 +1214,149 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "attachment id not found in session", http.StatusBadRequest)
 			return
 		}
+		// Phase 2 — Turn-Based Post-Then-Poll Architecture (May 2026).
+		// dispatch.ErrTurnConflict surfaces when a second POST hits a
+		// session whose prior Turn is still StatusRunning. Per the
+		// plan's "User-chosen design" section, v1 supports ONE in-flight
+		// turn per session; the wire contract is HTTP 409 Conflict.
+		if errors.Is(err, dispatch.ErrTurnConflict) {
+			http.Error(w, "a turn is already running for this session", http.StatusConflict)
+			return
+		}
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, NewSessionResponse(&handle.Snapshot))
+	// Phase 2 response shape: legacy SessionResponse fields stay at the
+	// top level (so pre-Phase-3 clients keep working) PLUS two new
+	// additive fields:
+	//   - `turn_id` — the freshly-minted Turn UUID; the Phase 3 frontend
+	//     drives `GET /api/v1/sessions/{id}/turns/{turn_id}` off this.
+	//   - `snapshot` — a nested copy of the same SessionResponse, so
+	//     the Phase 3 frontend can read `snapshot.messages` without
+	//     coupling to the legacy flat shape. Future deprecation of
+	//     the top-level fields lands in Phase 4 once the frontend is
+	//     fully migrated.
+	//
+	// Both shapes ship intentionally — the plan's wire contract calls
+	// for `{turn_id, snapshot}` while the regression-preservation
+	// constraint forbids removing the existing top-level fields. The
+	// additive approach satisfies both without breaking the Vue UI.
+	snapshot := NewSessionResponse(&handle.Snapshot)
+	writeJSON(w, sessionMessageResponse{
+		SessionResponse: snapshot,
+		TurnID:          handle.TurnID,
+		Snapshot:        snapshot,
+	})
+}
+
+// sessionMessageResponse is the Phase-2 wire shape for POST
+// /api/v1/sessions/{id}/messages. It pairs the freshly-minted turn_id
+// (so the client can drive GET /turns/{turn_id}) with the synchronously-
+// returned session snapshot (so the user message renders without a
+// poll round-trip).
+//
+// Backwards compatibility: the embedded *SessionResponse flattens the
+// legacy top-level keys (`messages`, `agentId`, `messageCount`, ...)
+// so pre-Phase-3 callers see the same response shape they always
+// have. The new `turn_id` and `snapshot` keys are additive — unknown
+// to the legacy clients, load-bearing for the Phase 3 frontend.
+type sessionMessageResponse struct {
+	*SessionResponse
+	TurnID   string           `json:"turn_id"`
+	Snapshot *SessionResponse `json:"snapshot"`
+}
+
+// turnResponse is the wire shape for GET /api/v1/sessions/{id}/turns/{turn_id}.
+// Mirrors internal/turn/Turn but with explicit JSON tags so the wire
+// contract is owned by this package and decoupled from the internal
+// type's evolution.
+//
+// Fields:
+//   - turn_id — the Turn UUID minted by DispatchSessioned.
+//   - session_id — the session this turn belongs to.
+//   - status — running | completed | failed.
+//   - started_at — ISO-8601 timestamp of Turn.Start.
+//   - completed_at — ISO-8601 timestamp of Turn.Complete / Turn.Fail;
+//     null when status is running.
+//   - model — {provider, model} pair the turn ran under; populated on
+//     Complete, empty during Running.
+//   - error — non-empty when status is failed; empty otherwise.
+//   - messages — engine-emitted rows persisted during the turn
+//     (assistant, thinking, tool_call, tool_result, delegation).
+//     Excludes the user message that triggered the turn — that lives
+//     in the POST response's snapshot.
+type turnResponse struct {
+	TurnID      string            `json:"turn_id"`
+	SessionID   string            `json:"session_id"`
+	Status      string            `json:"status"`
+	StartedAt   time.Time         `json:"started_at"`
+	CompletedAt *time.Time        `json:"completed_at"`
+	Model       turn.ModelInfo    `json:"model"`
+	Error       string            `json:"error,omitempty"`
+	Messages    []session.Message `json:"messages"`
+}
+
+// handleGetTurn returns the current state of a Turn by its UUID.
+//
+// Phase 2 of "Turn-Based Post-Then-Poll Architecture (May 2026)".
+// The frontend polls this endpoint between POST /messages and the
+// terminal status transition; each poll returns the Turn's current
+// MessagesAdded slice so the client appends the delta to local state.
+//
+// Expected:
+//   - Request path parameter "id" is the session id (kept for route
+//     symmetry with sibling session endpoints — the registry is keyed
+//     by turn_id alone so "id" is not used for the lookup).
+//   - Request path parameter "turn_id" is the Turn UUID returned by
+//     POST /messages.
+//
+// Returns:
+//   - 200 OK with turnResponse JSON when the turn is found.
+//   - 404 Not Found when the turn_id is unknown (predates server
+//     restart OR never existed).
+//   - 501 Not Implemented when the dispatcher's TurnRegistry is nil
+//     (test wiring without a real Dispatcher).
+//
+// Side effects:
+//   - None — read-only against the in-memory Turn registry.
+func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
+	if s.dispatcher == nil {
+		http.Error(w, "dispatcher not configured", http.StatusNotImplemented)
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		http.Error(w, "turn registry not configured", http.StatusNotImplemented)
+		return
+	}
+	turnID := r.PathValue("turn_id")
+	if turnID == "" {
+		http.Error(w, "turn_id required", http.StatusBadRequest)
+		return
+	}
+	t, err := registry.Get(turnID)
+	if err != nil {
+		if errors.Is(err, turn.ErrTurnNotFound) {
+			http.Error(w, "turn not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	msgs := t.MessagesAdded
+	if msgs == nil {
+		msgs = []session.Message{}
+	}
+	writeJSON(w, turnResponse{
+		TurnID:      t.ID,
+		SessionID:   t.SessionID,
+		Status:      string(t.Status),
+		StartedAt:   t.StartedAt,
+		CompletedAt: t.CompletedAt,
+		Model:       t.Model,
+		Error:       t.Error,
+		Messages:    msgs,
+	})
 }
 
 // prependChunk returns a new receive-only channel that yields `first` as
