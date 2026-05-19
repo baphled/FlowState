@@ -200,11 +200,40 @@ export interface SendSessionMessageOptions {
   signal?: AbortSignal
 }
 
+/**
+ * SendSessionMessageResult is the Phase-3 wire-adapted shape returned by
+ * sendSessionMessage. Phase 2 (server commit 9e398807) introduced two
+ * additive fields on the POST /api/v1/sessions/{id}/messages response —
+ * `turn_id` and `snapshot` — alongside the legacy flat Session shape.
+ * Phase 3 (this commit) surfaces both to the chat store so the active-
+ * send path can drive HTTP polling on `turn_id` instead of opening an
+ * SSE stream that drops chunks in production.
+ *
+ * Fields:
+ *   - turnId  — the freshly-minted Turn UUID, or null when the server
+ *               response lacks turn_id (pre-Phase-2 server or operator
+ *               rollback). The chat store branches on null to take the
+ *               legacy SSE path, preserving the rollback contract.
+ *   - snapshot — the synchronously-returned Session shape. The Phase 2
+ *                server embeds the SessionResponse in the wire payload
+ *                AND in `snapshot`, so reading either yields the same
+ *                data; we keep the flat fields as the snapshot for
+ *                pre-Phase-2 server compatibility.
+ *
+ * Plan reference:
+ *   ~/vaults/baphled/1. Projects/FlowState/Plans/
+ *     Turn-Based Post-Then-Poll Architecture (May 2026).md
+ */
+export interface SendSessionMessageResult {
+  turnId: string | null
+  snapshot: Session
+}
+
 export async function sendSessionMessage(
   sessionId: string,
   content: string,
   options?: SendSessionMessageOptions
-): Promise<Session> {
+): Promise<SendSessionMessageResult> {
   if (options?.signal?.aborted) {
     throw new DOMException('This operation was aborted', 'AbortError')
   }
@@ -224,7 +253,87 @@ export async function sendSessionMessage(
   if (!res.ok) {
     throw new Error(await parseError(res))
   }
-  return (await res.json()) as Session
+  // Phase 2 wire shape:
+  //   {
+  //     ...SessionResponse,        // legacy flat fields (id, agentId, messages, ...)
+  //     turn_id: string,           // additive (empty string when feature off)
+  //     snapshot: SessionResponse, // additive nested copy
+  //   }
+  // Pre-Phase-2 servers omit turn_id + snapshot; the body is just the
+  // flat SessionResponse. We normalise both into the same client shape:
+  //   - turn_id present and non-empty → turnId set; the chat store
+  //     polls GET /turns/{turn_id}.
+  //   - turn_id absent or empty       → turnId null; the chat store
+  //     falls back to SSE.
+  // snapshot is the body itself (flat) when no nested snapshot was
+  // provided — the flat fields ARE the Session.
+  const parsed = (await res.json()) as Session & {
+    turn_id?: string
+    snapshot?: Session
+  }
+  const rawTurnId = typeof parsed.turn_id === 'string' ? parsed.turn_id : ''
+  const turnId = rawTurnId.length > 0 ? rawTurnId : null
+  const snapshot = (parsed.snapshot as Session | undefined) ?? (parsed as Session)
+  return { turnId, snapshot }
+}
+
+/**
+ * TurnState is the wire shape returned by
+ * GET /api/v1/sessions/{session_id}/turns/{turn_id}. Mirrors the Go
+ * `turnResponse` struct in internal/api/server.go.
+ *
+ * Phase 3 reads:
+ *   - status — terminal-state discriminant. The chat store polls until
+ *              status transitions away from 'running'.
+ *   - messages — engine-emitted rows persisted during the turn
+ *                (assistant, thinking, tool_call, tool_result,
+ *                delegation). Excludes the user message that triggered
+ *                the turn — that lives in the POST response's snapshot.
+ *   - error — non-empty on status='failed'; surfaced to the user.
+ *
+ * Plan reference:
+ *   ~/vaults/baphled/1. Projects/FlowState/Plans/
+ *     Turn-Based Post-Then-Poll Architecture (May 2026).md
+ */
+export interface TurnStateModel {
+  provider: string
+  model: string
+}
+
+export interface TurnState {
+  turn_id: string
+  session_id: string
+  status: 'running' | 'completed' | 'failed'
+  started_at: string
+  completed_at: string | null
+  model: TurnStateModel
+  error: string
+  messages: Message[]
+}
+
+/**
+ * fetchTurn GETs the current state of a Turn by its UUID. The chat
+ * store polls this endpoint between POST /messages and the terminal
+ * status transition; each poll returns the Turn's current MessagesAdded
+ * slice and the chat store merges the delta into local state by id.
+ *
+ * Error contract:
+ *   - 404 → throws (caller falls back to SSE for defence-in-depth).
+ *   - Any non-OK status → throws with status text.
+ *
+ * Per memory feedback_response_ok_mock_gotcha — fetch mocks in tests
+ * MUST use real Response objects (or include `ok` getter explicitly)
+ * so the `if (!res.ok)` branch resolves correctly.
+ */
+export async function fetchTurn(sessionId: string, turnId: string): Promise<TurnState> {
+  const url = joinBaseURL(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`,
+  )
+  const res = await fetch(url, { credentials: CREDENTIALS_INCLUDE })
+  if (!res.ok) {
+    throw new Error(`Failed to fetch turn: ${res.status} ${res.statusText}`)
+  }
+  return (await res.json()) as TurnState
 }
 
 /**

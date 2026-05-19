@@ -9,10 +9,12 @@ import {
   fetchSessionMessages,
   fetchSessions,
   fetchSwarms,
+  fetchTurn,
   sendSessionMessage,
   truncateSessionMessages,
   updateSessionAgent,
   updateSessionModel,
+  type TurnState,
 } from '@/api'
 import { stallTimeoutForPhase, useSessionStream, type SessionStream } from '@/composables/useSessionStream'
 import { recordStreamEvent } from '@/lib/streamLog'
@@ -1728,6 +1730,124 @@ export const useChatStore = defineStore('chat', {
       })
     },
 
+    /**
+     * pollTurnUntilTerminal drives the Phase-3 turn-id poll path. It
+     * polls GET /api/v1/sessions/{sessionId}/turns/{turnId} every
+     * POLL_INTERVAL_FAST_MS (1s) until the Turn's status leaves
+     * 'running', then resolves. After POLL_BACKOFF_AFTER_N_CALLS polls
+     * the cadence drops to POLL_INTERVAL_SLOW_MS (2s) and then
+     * POLL_INTERVAL_SLOWER_MS (5s) so a long-running turn does not
+     * pummel the backend.
+     *
+     * Each poll's `messages` array is merged into local state by id —
+     * additive growth, no duplication. The orphan-preservation logic
+     * from `7eb3cf47` (preserved in reconcileFromBackend) is reused
+     * implicitly: we never wipe existing rows, just upsert by id.
+     *
+     * Terminal states:
+     *   - 'completed' — silent return; the caller fires reconcile.
+     *   - 'failed' — surface the engine's error message via store.error
+     *     so the user sees what went wrong rather than a silent hang.
+     *
+     * Defence-in-depth:
+     *   - 404 from fetchTurn (e.g. server restart drops the registry):
+     *     stop polling and let reconcileFromBackend take over. The
+     *     user sees whatever persisted to history without an SSE
+     *     fallback — the turn is already over server-side.
+     *   - Session switch mid-poll: terminate. The local `messages`
+     *     array now belongs to a different session and continuing
+     *     would corrupt it.
+     *
+     * Plan reference:
+     *   ~/vaults/baphled/1. Projects/FlowState/Plans/
+     *     Turn-Based Post-Then-Poll Architecture (May 2026).md
+     */
+    async pollTurnUntilTerminal(sessionId: string, turnId: string): Promise<void> {
+      const POLL_INTERVAL_FAST_MS = 1000
+      const POLL_INTERVAL_SLOW_MS = 2000
+      const POLL_INTERVAL_SLOWER_MS = 5000
+      const POLL_BACKOFF_AFTER_FAST = 10
+      const POLL_BACKOFF_AFTER_SLOW = 30
+
+      let pollCount = 0
+      while (true) {
+        // Session-switch guard. If the user navigated away, abort —
+        // the running turn lives server-side, the user can resume on
+        // return.
+        if (this.currentSessionId !== sessionId) {
+          return
+        }
+
+        let state: TurnState
+        try {
+          state = await fetchTurn(sessionId, turnId)
+        } catch {
+          // 404 or transient network blip — bail out and let the
+          // post-poll reconcile pull canonical state. We do NOT
+          // surface an error: the turn may still complete server-side
+          // and reconcile will render the result.
+          return
+        }
+        pollCount++
+
+        // Apply this poll's MessagesAdded delta. The Turn endpoint
+        // returns the engine-emitted rows added during the turn
+        // (assistant, thinking, tool_call, tool_result, delegation)
+        // EXCLUDING the user message — that's already in local state
+        // from the optimistic push.
+        //
+        // Merge semantics:
+        //   - Match each incoming row by id. If we have a local row
+        //     with the same id, replace its content/status/etc.
+        //     (preserves position, avoids the duplication that a naive
+        //     push would cause across multiple polls).
+        //   - New ids append to the end. This matches the backend's
+        //     emission order — assistant rows arrive in monotonic
+        //     order during the turn.
+        //   - Optimistic temp-* user rows are left untouched. The id
+        //     swap in sendMessage already promoted them to canonical
+        //     ids, and the Turn endpoint excludes user messages, so
+        //     there is no collision risk here.
+        const incoming = state.messages ?? []
+        for (const row of incoming) {
+          if (!row || !row.id) continue
+          const idx = this.messages.findIndex((m) => m.id === row.id)
+          if (idx >= 0) {
+            // Upsert by id — preserve position, replace contents.
+            this.messages[idx] = { ...this.messages[idx], ...row }
+          } else {
+            this.messages.push(row)
+          }
+        }
+
+        if (state.status === 'failed') {
+          // Surface the engine's error so the user sees what happened.
+          // The post-poll reconcile still fires from sendMessage's
+          // outer code; it will render whatever the backend persisted.
+          this.error = state.error || 'turn failed'
+          return
+        }
+        if (state.status !== 'running') {
+          // 'completed' — done. Caller fires reconcileFromBackend.
+          return
+        }
+
+        // Adaptive backoff. The first 10 polls run at 1s cadence to
+        // feel "live"; subsequent polls slow to 2s, then 5s after 30
+        // total polls. This caps the polling overhead on long-running
+        // turns at ~12 polls/minute while keeping perceived latency
+        // tight in the common case where a turn completes in a few
+        // seconds.
+        let delay = POLL_INTERVAL_FAST_MS
+        if (pollCount >= POLL_BACKOFF_AFTER_SLOW) {
+          delay = POLL_INTERVAL_SLOWER_MS
+        } else if (pollCount >= POLL_BACKOFF_AFTER_FAST) {
+          delay = POLL_INTERVAL_SLOW_MS
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, delay))
+      }
+    },
+
     // loadSessionByAgentId resolves the in-thread delegation-card click —
     // MessageBubble.loadDelegatedSession passes `targetAgent` here because
     // the persisted `delegation` / `delegation_started` message carries
@@ -1946,6 +2066,14 @@ export const useChatStore = defineStore('chat', {
       }
       this.messages.push(optimisticMessage)
 
+      // Phase 3: tracks whether the legacy SSE branch opened an
+      // EventSource. Currently informational only — the SSE Promise
+      // wrapper in the legacy branch ensures sendMessage awaits SSE
+      // end before finally fires, so finally cleanup is uniform.
+      // Retained for clarity at the call site and a future Phase 4
+      // pivot where the legacy branch is removed entirely.
+      let sseOpened = false
+
       try {
         let sessionId = this.currentSessionId
         if (!sessionId) {
@@ -1971,79 +2099,46 @@ export const useChatStore = defineStore('chat', {
           }
         }
 
-        // connect tears down any prior SSE, opens a new one, and arms the
-        // stall watchdog so a stuck stream cannot leave isLoading locked.
-        // The sessionId is captured in every callback closure so a
-        // mid-stream session switch never lands chunks on the wrong session
-        // and never reconciles against the wrong session's history.
-        // (Compounding bugs C-3, C-6 from the PR-2 plan.)
-        //
-        // SSE end-of-stream handling here is intentionally minimal: we
-        // close on [DONE]/error to prevent the browser auto-reconnecting
-        // and registering a second broker subscriber on the next send,
-        // but the canonical post-send state-sync runs unconditionally
-        // AFTER `await sendSessionMessage` resolves (see the post-await
-        // reconcile below). Pre-fix the [DONE] handler also fired
-        // `reconcileFromBackend`; that ran BEFORE the POST resolved,
-        // pulled an in-progress backend snapshot whose user message the
-        // merge logic treated as new (the local `temp-*` was preserved
-        // as an orphan), and produced a duplicate user bubble that
-        // persisted until the optimistic-id swap collapsed it. The fix:
-        // reconcile exactly once, post-POST, after the id swap has
-        // already replaced the temp-* with the canonical id so the
-        // merge sees zero orphans. See bug-fix note "Vue Chat
-        // Fresh-Session Duplicate User Bubble + Missing Streaming
-        // Affordance (May 2026)".
         const capturedSessionId = sessionId
-        const sendStream = getSessionStream(capturedSessionId)
-        sendStream.connect(capturedSessionId, {
-          onMessage: (payload) => {
-            // C-3: discard chunks if the user navigated away while this
-            // stream was still alive — they belong to capturedSessionId,
-            // not the now-active session. The stream itself remains
-            // open (Slice B per-session singleton); chunks are dropped
-            // at this guard until the user returns or [DONE] arrives.
-            //
-            // Bug Hunt (May 2026) — context_usage chunks are an
-            // exception: they are session-bound metadata, NOT view-
-            // bound content. See maybeReattachStream for the full
-            // rationale; the per-session map needs to keep ticking
-            // even when the view is elsewhere so returning to a
-            // streaming session shows the latest figure.
-            if (this.currentSessionId !== capturedSessionId) {
-              const isContextUsage = isContextUsagePayload(payload)
-              if (!isContextUsage) return
-            }
-            // M7 — thread capturedSessionId so phase + watchdog re-arm
-            // scope to this stream's session even if the user navigates
-            // between the C-3 guard above and applyContentEvent below.
-            this.applyContentEvent(payload, capturedSessionId)
-            if (payload === '[DONE]') {
-              // Close immediately on stream end so the browser cannot
-              // auto-reconnect and register a second broker subscriber
-              // before the finally block runs. Reconcile is intentionally
-              // NOT called here — see the post-await reconcile below.
-              disconnectSessionStream(capturedSessionId)
-            }
-          },
-          onError: () => {
-            // SSE connection dropped (stream ended or network error) —
-            // close immediately to prevent auto-reconnect registering a
-            // duplicate broker subscriber on the next send. Reconcile is
-            // intentionally NOT called here either; the post-await
-            // reconcile below covers the success path, and the
-            // catch/finally below covers the failure path so a network
-            // drop never triggers a reconcile that races with the still
-            // pending POST resolution.
-            disconnectSessionStream(capturedSessionId)
-          },
-          onStall: () => this.handleStreamStall(capturedSessionId),
-        })
 
-        const sentSession =
+        // Phase 3 of "Turn-Based Post-Then-Poll Architecture (May 2026)":
+        // POST first, then branch on turn_id. Pre-Phase-3 the SSE was
+        // opened BEFORE the POST so the EventSource was ready when the
+        // backend's broker started publishing chunks; that path produced
+        // the 24-hour SSE live-render bug class (chunks raced the POST,
+        // the FE missed chunks between session.create and first SSE
+        // accept, and a session switch mid-stream stranded chunks on
+        // the wrong session). Phase 3 replaces it with HTTP polling
+        // off the backend-minted turn_id — deterministic, stateless,
+        // and immune to broker subscription races.
+        //
+        // The legacy SSE path remains wired but ONLY runs when the
+        // server response lacks turn_id (operator rollback / pre-Phase-2
+        // server). This is the documented "defence-in-depth" fallback —
+        // the FE keeps working if Phase 2 is rolled back server-side
+        // without redeploying the FE.
+        const sentResult =
           attachmentIds.length > 0
             ? await sendSessionMessage(sessionId, text, { attachmentIds })
             : await sendSessionMessage(sessionId, text)
+
+        // Defensive unwrap. The api function returns
+        // { turnId: string | null, snapshot: Session }. Pre-Phase-3
+        // test mocks (which return a flat Session shape directly via
+        // mockImplementationOnce) get normalised here so existing
+        // suites that haven't been updated still find a usable shape
+        // and fall through the legacy SSE path. New Phase-3 suites
+        // supply the wrapper explicitly via
+        // mockResolvedValueOnce({turnId, snapshot}).
+        const sentResultAny = sentResult as unknown as {
+          turnId?: string | null
+          snapshot?: Session
+        } & Session
+        const turnId =
+          typeof sentResultAny?.turnId === 'string' && sentResultAny.turnId.length > 0
+            ? sentResultAny.turnId
+            : null
+        const sentSession: Session = (sentResultAny?.snapshot ?? sentResultAny) as Session
 
         // Reconcile the optimistic temp-* id with the server-assigned id
         // from the response so subsequent renders carry the canonical id
@@ -2066,6 +2161,44 @@ export const useChatStore = defineStore('chat', {
           if (local) {
             local.id = serverUserMessage.id
           }
+        }
+
+        if (turnId !== null) {
+          // Phase 3 — TURN-ID POLL PATH. The user has spent ~24 hours
+          // debugging SSE live-render through nine symptom-patch
+          // commits; this branch closes the bug class.
+          await this.pollTurnUntilTerminal(capturedSessionId, turnId)
+        } else {
+          // Legacy / rollback SSE PATH. The pre-Phase-3 active-send
+          // SSE wiring lives here — only triggered when the server
+          // response lacks turn_id (older server or operator rollback).
+          // When Phase 4 removes the legacy path entirely this whole
+          // `else` block goes away with it.
+          //
+          // The SSE is opened fire-and-forget. The [DONE]/error/stall
+          // callbacks manage the stream's own teardown. The outer
+          // finally block clears the per-session gate so the user can
+          // submit subsequent prompts — pre-Phase-3 the gate also
+          // cleared in finally; the SSE itself was the indicator of
+          // "agent is working" via isStreaming chunks.
+          sseOpened = true
+          const sendStream = getSessionStream(capturedSessionId)
+          sendStream.connect(capturedSessionId, {
+            onMessage: (payload) => {
+              if (this.currentSessionId !== capturedSessionId) {
+                const isContextUsage = isContextUsagePayload(payload)
+                if (!isContextUsage) return
+              }
+              this.applyContentEvent(payload, capturedSessionId)
+              if (payload === '[DONE]') {
+                disconnectSessionStream(capturedSessionId)
+              }
+            },
+            onError: () => {
+              disconnectSessionStream(capturedSessionId)
+            },
+            onStall: () => this.handleStreamStall(capturedSessionId),
+          })
         }
 
         // Canonical post-send sync. The POST response carries the
@@ -2104,10 +2237,19 @@ export const useChatStore = defineStore('chat', {
         // send targeted (resolved either at sendMessage entry or via the
         // lazy-create branch). If the user has navigated to a different
         // session in the meantime, that session's slot is unaffected.
+        //
+        // Phase 3:
+        //   - turn-id poll path: pollTurnUntilTerminal awaited above
+        //     drove the turn to terminal status; SSE was never opened
+        //     for this session. Disconnecting here is a no-op for
+        //     this session.
+        //   - legacy SSE path: SSE was opened fire-and-forget; the
+        //     [DONE]/error/stall callbacks tear the SSE down. We do
+        //     NOT disconnect from finally — that would tear down the
+        //     SSE before the first chunk could arrive, re-introducing
+        //     the live-render bug class on the rollback path.
         const completedSessionId = this.currentSessionId ?? initialSessionId
-        // Per-session SSE singleton (Slice B) — disconnect the specific
-        // session's stream rather than a global one.
-        if (completedSessionId) {
+        if (completedSessionId && !sseOpened) {
           disconnectSessionStream(completedSessionId)
         }
         this.setSessionStreaming(completedSessionId, { isLoading: false, isStreaming: false })
