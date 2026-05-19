@@ -230,6 +230,24 @@ type Registry struct {
 	// pin StartedAt / CompletedAt without sleeping. Production
 	// uses time.Now.
 	clock func() time.Time
+	// changeCh is the registry-wide change-broadcast channel for
+	// long-poll waiters. Closed-and-replaced on every Append /
+	// SetHeartbeat / Complete / Fail so concurrent WaitForChange
+	// callers all wake on a single mutation (close broadcasts to
+	// every receiver, unlike a buffered-send which would round-robin
+	// across goroutines).
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d
+	//   Commit 1b (long-poll endpoint).
+	//
+	// Concurrency: read + replaced under r.mu. Callers capture the
+	// channel pointer under lock, drop the lock, then range over
+	// the captured reference. A subsequent mutation re-points
+	// r.changeCh to a fresh channel — the previous channel is
+	// closed and the captured reference fires, then becomes
+	// permanently unreachable once all waiters drop their copy.
+	changeCh chan struct{}
 }
 
 // NewRegistry constructs a Registry wired to production-grade
@@ -272,7 +290,25 @@ func NewRegistryWithIDGen(idGen func() string, clock func() time.Time) *Registry
 		byActiveSession: make(map[string]string),
 		idGen:           idGen,
 		clock:           clock,
+		changeCh:        make(chan struct{}),
 	}
+}
+
+// broadcastChangeLocked closes the current change-notification channel
+// and replaces it with a fresh one so subsequent WaitForChange callers
+// receive a new wait token. MUST be called with r.mu held — the close
+// + reassignment must be atomic w.r.t. peer mutations and w.r.t. the
+// snapshot-then-capture-channel sequence inside WaitForChange.
+//
+// Side effects:
+//   - Closes the existing changeCh. Every waiter blocked on a receive
+//     from that channel wakes simultaneously (the canonical
+//     "broadcast" idiom for close-of-channel).
+//   - Replaces changeCh with a freshly-allocated chan struct{} so the
+//     next WaitForChange call gets a live token.
+func (r *Registry) broadcastChangeLocked() {
+	close(r.changeCh)
+	r.changeCh = make(chan struct{})
 }
 
 // Start mints a fresh turn_id for the supplied sessionID, records
@@ -363,6 +399,9 @@ func (r *Registry) Append(turnID string, msg session.Message) error {
 		return ErrTurnTerminal
 	}
 	t.MessagesAdded = append(t.MessagesAdded, msg)
+	// Wake any long-poll waiters parked on changeCh — MessagesAdded
+	// grew past their captured baseline.
+	r.broadcastChangeLocked()
 	return nil
 }
 
@@ -407,6 +446,9 @@ func (r *Registry) Complete(turnID string, info ModelInfo) error {
 	if active, found := r.byActiveSession[t.SessionID]; found && active == turnID {
 		delete(r.byActiveSession, t.SessionID)
 	}
+	// Wake any long-poll waiters — the Turn just reached a terminal
+	// state and they must observe it without waiting out the timeout.
+	r.broadcastChangeLocked()
 	return nil
 }
 
@@ -452,6 +494,9 @@ func (r *Registry) Fail(turnID string, cause error) error {
 	if active, found := r.byActiveSession[t.SessionID]; found && active == turnID {
 		delete(r.byActiveSession, t.SessionID)
 	}
+	// Wake any long-poll waiters — terminal-state transition; same
+	// reasoning as Complete.
+	r.broadcastChangeLocked()
 	return nil
 }
 
@@ -561,8 +606,148 @@ func (r *Registry) SetHeartbeat(turnID, phase string, tokenCount int) {
 	if t.Status != StatusRunning {
 		return
 	}
+	// Only broadcast when an observable field actually changes.
+	// Spurious heartbeat ticks (engine writes the same phase + tokens
+	// twice during a quiet streaming gap) must NOT wake long-poll
+	// waiters, otherwise the FE long-poll loop spins on no-op snapshots
+	// and the perceived-cadence promise degrades. WaitForChange's
+	// recheck-after-wake path handles spurious wakes correctly even
+	// without this gate, but skipping the broadcast saves wake churn.
+	changed := t.Phase != phase || t.TokenCount != tokenCount
 	t.Phase = phase
 	t.TokenCount = tokenCount
+	if changed {
+		r.broadcastChangeLocked()
+	}
+}
+
+// WaitForChange is the Phase-4-Commit-1b long-poll primitive. Returns
+// when ANY of the following becomes true:
+//   - len(turn.MessagesAdded) > sinceMsgCount
+//   - turn.Phase != lastPhase
+//   - turn.TokenCount != lastTokens
+//   - turn.Status != StatusRunning (terminal-state reached)
+//   - timeout elapses (returns the current snapshot with changed=false)
+//   - ctx is cancelled (returns the zero snapshot with changed=false)
+//
+// Implementation pattern: each iteration takes r.mu, evaluates the
+// watched fields against the caller's baseline, captures the registry's
+// current changeCh reference, then releases r.mu and parks on a select
+// over (changeCh, ctx.Done(), timer.C). When changeCh fires (a peer
+// mutation closed it), the loop re-acquires r.mu and re-evaluates the
+// predicate. The "capture under lock then wait" sequence is the
+// canonical "wait for a new state under fine-grained locking" pattern
+// — it avoids the lost-wakeup race that a "check then wait" without
+// the captured-channel intermediate would exhibit.
+//
+// Expected:
+//   - ctx — caller's context. Cancellation surfaces (zero snapshot,
+//     false). Typically the HTTP handler's r.Context() so a client
+//     disconnect aborts the wait promptly.
+//   - turnID — the Turn UUID. An unknown id returns (zero snapshot,
+//     false) synchronously (no waiting); the handler maps to 404.
+//   - sinceMsgCount — caller's last-observed len(MessagesAdded). Wake
+//     when the registry's len > sinceMsgCount.
+//   - lastPhase — caller's last-observed Phase. Wake when the
+//     registry's Phase != lastPhase.
+//   - lastTokens — caller's last-observed TokenCount. Wake when the
+//     registry's TokenCount != lastTokens.
+//   - timeout — max wait duration. A zero or negative timeout means
+//     "evaluate the predicate once and return immediately".
+//
+// Returns:
+//   - snap — fresh value-typed snapshot of the Turn at the wake
+//     moment. Zero-valued struct when turnID is unknown OR ctx
+//     cancelled. The MessagesAdded slice is copy-safe (a deep copy of
+//     the registry's internal slice).
+//   - changed — true iff the wake came from a real predicate-hit
+//     (mutation OR terminal OR baseline-already-exceeded). False on
+//     timeout, ctx-cancel, or unknown-turnID.
+//
+// Side effects:
+//   - None on the registry. Acquires r.mu briefly on each iteration.
+func (r *Registry) WaitForChange(
+	ctx context.Context,
+	turnID string,
+	sinceMsgCount int,
+	lastPhase string,
+	lastTokens int,
+	timeout time.Duration,
+) (Turn, bool) {
+	// Wall-clock deadline (NOT r.clock()) — the test fakes r.clock to
+	// pin StartedAt / CompletedAt onto deterministic timestamps, but
+	// the timeout budget here must measure real elapsed time so the
+	// long-poll wait actually wakes after the requested wall-clock
+	// duration. r.clock is reserved for "what timestamp do we stamp
+	// onto the Turn?", NOT "how long should we sleep?".
+	deadline := time.Now().Add(timeout)
+	for {
+		r.mu.Lock()
+		t, ok := r.byID[turnID]
+		if !ok {
+			r.mu.Unlock()
+			return Turn{}, false
+		}
+		// Predicate: any baseline exceeded OR terminal status.
+		if len(t.MessagesAdded) > sinceMsgCount ||
+			t.Phase != lastPhase ||
+			t.TokenCount != lastTokens ||
+			t.Status != StatusRunning {
+			snap := r.snapshotLocked(t)
+			r.mu.Unlock()
+			return snap, true
+		}
+		// Capture the change channel BEFORE releasing the lock —
+		// otherwise a mutation could fire between the predicate check
+		// and the receive, leaving us asleep against a stale channel.
+		ch := r.changeCh
+		// Capture a fresh snapshot under lock too, so the timeout
+		// path can return the latest observed state without re-locking.
+		snapAtCheck := r.snapshotLocked(t)
+		r.mu.Unlock()
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			// Caller asked for a zero / past-deadline wait. Return
+			// the snapshot we captured under lock; changed=false.
+			return snapAtCheck, false
+		}
+
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ch:
+			// Mutation broadcast — re-evaluate the predicate on the
+			// next loop iteration. Stop the timer to release its slot.
+			if !timer.Stop() {
+				<-timer.C
+			}
+			continue
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return Turn{}, false
+		case <-timer.C:
+			return snapAtCheck, false
+		}
+	}
+}
+
+// snapshotLocked returns a value-typed copy of t with its slice / pointer
+// fields deep-copied so the caller cannot race the next Append /
+// Complete. MUST be called with r.mu held — the field reads inside
+// would otherwise race a peer mutation.
+//
+// Side effects:
+//   - None — read-only on the input.
+func (r *Registry) snapshotLocked(t *Turn) Turn {
+	out := *t
+	out.MessagesAdded = append([]session.Message(nil), t.MessagesAdded...)
+	if t.CompletedAt != nil {
+		ct := *t.CompletedAt
+		out.CompletedAt = &ct
+	}
+	return out
 }
 
 // Get returns a value-typed snapshot of the turn at the moment of
@@ -587,13 +772,5 @@ func (r *Registry) Get(turnID string) (Turn, error) {
 	if !ok {
 		return Turn{}, ErrTurnNotFound
 	}
-	out := *t
-	out.MessagesAdded = append([]session.Message(nil), t.MessagesAdded...)
-	if t.CompletedAt != nil {
-		// Copy the time so a caller mutating the returned struct
-		// can't observe a shared pointer.
-		ct := *t.CompletedAt
-		out.CompletedAt = &ct
-	}
-	return out, nil
+	return r.snapshotLocked(t), nil
 }

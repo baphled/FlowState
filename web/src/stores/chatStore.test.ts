@@ -1213,7 +1213,21 @@ describe('chatStore - sendMessage turn-id poll path (Phase 3)', () => {
 // from 1s/2s/5s to 250ms/1s/3s so the chat UI's chip + first-content
 // rendering lands inside the perceived-responsiveness window. Backoff
 // boundaries stay at 10 / 30 polls.
-describe('chatStore - pollTurnUntilTerminal adaptive cadence (Phase 4 Commit 1)', () => {
+// Phase-4-Commit-1b ("long-poll Turn endpoint", May 2026). The
+// pre-1b `pollTurnUntilTerminal` looped on a client-side
+// 250ms/1000ms/3000ms cadence; the long-poll path replaces that with a
+// server-side hold. Each iteration calls fetchTurn with
+// `{ wait: true, since: N, signal }` — the await IS the cadence, no
+// client-side setTimeout. The server returns either when a chunk lands
+// (perceived sub-50ms latency), or after 25s (the loop re-issues
+// immediately), or on terminal status. This block pins:
+//   - the wire shape sent to fetchTurn (wait + since + signal)
+//   - the lastMessageCount baseline advancing across iterations
+//   - the AbortController cancelling the in-flight request on session
+//     switch
+//   - the loop firing immediately on each fetchTurn resolution (no
+//     250ms delay between iterations)
+describe('chatStore - pollTurnUntilTerminal long-poll loop (Phase 4 Commit 1b)', () => {
   beforeEach(() => {
     installLocalStorageStub()
     vi.clearAllMocks()
@@ -1224,173 +1238,301 @@ describe('chatStore - pollTurnUntilTerminal adaptive cadence (Phase 4 Commit 1)'
     vi.useRealTimers()
   })
 
-  it('polls at 250ms cadence for the first 10 polls (fast-window)', async () => {
-    vi.useFakeTimers()
+  it('passes wait=true and since=0 on the first iteration', async () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
-    store.currentSessionId = 'session-fast'
+    store.currentSessionId = 'session-longpoll'
     store.messages = []
 
-    // Build 10 running responses + 1 completed so the loop crosses
-    // the fast-window boundary and then terminates cleanly. The 11th
-    // poll is the completed one (lands after the first slow-window
-    // tick at 1000ms past poll 10).
     const ft = vi.mocked(fetchTurn)
     ft.mockReset()
-    const running = {
-      turn_id: 'turn-cadence',
-      session_id: 'session-fast',
-      status: 'running' as const,
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-lp',
+      session_id: 'session-longpoll',
+      status: 'completed',
       started_at: '',
-      completed_at: null,
+      completed_at: '',
       model: { provider: '', model: '' },
       error: '',
       messages: [],
-    }
-    for (let i = 0; i < 10; i++) {
-      ft.mockResolvedValueOnce(running as never)
-    }
-    ft.mockResolvedValueOnce({ ...running, status: 'completed', completed_at: '' } as never)
+    } as never)
 
-    // Drive the poll loop directly so we can advance the fake clock
-    // between iterations. sendMessage's outer plumbing (POST,
-    // reconcile) is exercised in the prior describe block.
-    const pollPromise = store.pollTurnUntilTerminal('session-fast', 'turn-cadence')
+    await store.pollTurnUntilTerminal('session-longpoll', 'turn-lp')
 
-    // First poll fires immediately. Subsequent polls space at 250ms in
-    // the fast window.
-    await vi.advanceTimersByTimeAsync(0)
     expect(ft).toHaveBeenCalledTimes(1)
-
-    // Tick across the fast window. Each 250ms advance should produce
-    // one additional poll while we are inside the first 10.
-    for (let i = 2; i <= 10; i++) {
-      await vi.advanceTimersByTimeAsync(250)
-      expect(ft).toHaveBeenCalledTimes(i)
-    }
-
-    // 10 polls in — cadence transitions to slow (1000ms). A 250ms tick
-    // should NOT fire another poll; only after a full 1000ms does the
-    // 11th poll fire.
-    await vi.advanceTimersByTimeAsync(250)
-    expect(ft).toHaveBeenCalledTimes(10)
-    await vi.advanceTimersByTimeAsync(750)
-    expect(ft).toHaveBeenCalledTimes(11)
-
-    // 11th poll returned status=completed — the loop terminates.
-    await pollPromise
-    expect(ft.mock.calls.length).toBeGreaterThanOrEqual(11)
+    const firstCall = ft.mock.calls[0]
+    expect(firstCall[0]).toBe('session-longpoll')
+    expect(firstCall[1]).toBe('turn-lp')
+    // Third argument carries the long-poll options. The server reads
+    // `wait=true` as the gate into the hold path; absence (or false)
+    // takes the legacy snapshot-read path — which would defeat the
+    // perceived-latency promise of this slice.
+    const opts = firstCall[2] as { wait?: boolean; since?: number } | undefined
+    expect(opts).toBeDefined()
+    expect(opts?.wait).toBe(true)
+    expect(opts?.since).toBe(0)
   })
 
-  it('uses 1000ms cadence between polls 10 and 30 (slow window)', async () => {
-    vi.useFakeTimers()
+  it('advances since=N to len(messages) across iterations (server-side hold baseline)', async () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
-    store.currentSessionId = 'session-slow'
+    store.currentSessionId = 'session-since'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-since',
+      session_id: 'session-since',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        { id: 'asst-1', role: 'assistant', content: 'one', timestamp: '' },
+      ],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-since',
+      session_id: 'session-since',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        { id: 'asst-1', role: 'assistant', content: 'one', timestamp: '' },
+        { id: 'asst-2', role: 'assistant', content: 'two', timestamp: '' },
+      ],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-since',
+      session_id: 'session-since',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        { id: 'asst-1', role: 'assistant', content: 'one', timestamp: '' },
+        { id: 'asst-2', role: 'assistant', content: 'two', timestamp: '' },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-since', 'turn-since')
+
+    expect(ft.mock.calls.length).toBeGreaterThanOrEqual(3)
+    // First call: since=0 — caller has not seen any rows yet.
+    expect((ft.mock.calls[0][2] as { since?: number })?.since).toBe(0)
+    // Second call: the prior response carried 1 message — the server
+    // must hold until len > 1 (or terminal). Anything less means the
+    // server would wake immediately on every iteration and the
+    // long-poll loop degenerates into a tight spin.
+    expect((ft.mock.calls[1][2] as { since?: number })?.since).toBe(1)
+    // Third call: the prior response carried 2 messages.
+    expect((ft.mock.calls[2][2] as { since?: number })?.since).toBe(2)
+  })
+
+  it('fires the next long-poll immediately on each fetchTurn resolution (no client-side delay)', async () => {
+    // Long-poll's perceived-cadence promise: each iteration's await
+    // resolves when the server says so (chunk lands OR 25s timeout),
+    // and the next iteration must re-issue WITHOUT a client-side
+    // setTimeout delay. The legacy 250ms gate is gone.
+    //
+    // We measure by running the loop synchronously over N mocked
+    // resolutions — they all drain via microtask queue without any
+    // real elapsed time. If the impl still has a setTimeout backoff,
+    // the await on the poll promise would hang at 250ms per iteration
+    // and the test wall-clock would inflate to N*250ms.
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-tight'
     store.messages = []
 
     const ft = vi.mocked(fetchTurn)
     ft.mockReset()
     const running = {
-      turn_id: 'turn-slow',
-      session_id: 'session-slow',
+      turn_id: 'turn-tight',
+      session_id: 'session-tight',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [] as never[],
+    }
+    for (let i = 0; i < 15; i++) {
+      ft.mockResolvedValueOnce({ ...running, messages: [] } as never)
+    }
+    ft.mockResolvedValueOnce({
+      ...running,
+      status: 'completed',
+      completed_at: '',
+      messages: [],
+    } as never)
+
+    const start = Date.now()
+    await store.pollTurnUntilTerminal('session-tight', 'turn-tight')
+    const elapsed = Date.now() - start
+
+    expect(ft.mock.calls.length).toBe(16)
+    // 16 iterations against mocked-immediate resolutions must drain in
+    // under ~200ms total wall-clock — a legacy 250ms cadence would
+    // take ~10 polls × 250ms = 2.5s just to clear the fast window.
+    // Strictly bounding at 250ms keeps the test margin tight; the
+    // tight-loop drain typically lands under 50ms on a normal box.
+    expect(elapsed).toBeLessThan(250)
+  })
+
+  it('passes an AbortSignal so session-switch can cancel the in-flight long-poll', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-abort'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-abort',
+      session_id: 'session-abort',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-abort', 'turn-abort')
+
+    expect(ft).toHaveBeenCalledTimes(1)
+    const opts = ft.mock.calls[0][2] as { signal?: AbortSignal } | undefined
+    expect(opts?.signal).toBeDefined()
+    // The signal must be a real AbortSignal so the session-switch
+    // path can fire controller.abort() — a session change while a
+    // long-poll is in-flight would otherwise hang the FE for up to
+    // 25s waiting on a stale server-side wait.
+    expect(opts?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('exits cleanly when fetchTurn rejects with an AbortError (no error surfaced)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-aborted'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    // First fetch resolves so the loop enters; the second is aborted —
+    // simulates a session-switch mid-second-iteration.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-aborted',
+      session_id: 'session-aborted',
       status: 'running' as const,
       started_at: '',
       completed_at: null,
       model: { provider: '', model: '' },
       error: '',
       messages: [],
-    }
-    // 20 running polls — drive through the fast→slow boundary and
-    // out the other side. A 21st completed response lets the loop
-    // terminate.
-    for (let i = 0; i < 20; i++) {
-      ft.mockResolvedValueOnce(running as never)
-    }
-    ft.mockResolvedValueOnce({ ...running, status: 'completed', completed_at: '' } as never)
+    } as never)
+    const abortErr = new DOMException('The operation was aborted', 'AbortError')
+    ft.mockRejectedValueOnce(abortErr)
 
-    const pollPromise = store.pollTurnUntilTerminal('session-slow', 'turn-slow')
-
-    // Drain the fast window — 10 polls at 250ms cadence.
-    await vi.advanceTimersByTimeAsync(0)
-    for (let i = 2; i <= 10; i++) {
-      await vi.advanceTimersByTimeAsync(250)
-    }
-    expect(ft).toHaveBeenCalledTimes(10)
-
-    // First slow tick — 1000ms. The chatStore cannot use the OLD
-    // SLOW_MS=2000 here; if it does, this assertion fails after the
-    // 1000ms advance because no poll will have fired.
-    await vi.advanceTimersByTimeAsync(1000)
-    expect(ft).toHaveBeenCalledTimes(11)
-
-    // Another 999ms — no new poll (cadence is 1000ms, not lower).
-    await vi.advanceTimersByTimeAsync(999)
-    expect(ft).toHaveBeenCalledTimes(11)
-
-    // One more ms crosses the second 1000ms gate.
-    await vi.advanceTimersByTimeAsync(1)
-    expect(ft).toHaveBeenCalledTimes(12)
-
-    // Drain remaining polls so the timer queue empties before useRealTimers.
-    for (let i = 0; i < 20; i++) {
-      await vi.advanceTimersByTimeAsync(1000)
-    }
-    await pollPromise
+    // The loop must NOT throw — AbortError is the well-known
+    // session-switch signal and surfaces as a silent exit, not a
+    // store.error mutation.
+    store.error = null
+    await store.pollTurnUntilTerminal('session-aborted', 'turn-aborted')
+    expect(store.error).toBeNull()
   })
 
-  it('uses 3000ms cadence after 30 polls (slower window)', async () => {
-    vi.useFakeTimers()
+  it('terminates the loop when status transitions to completed (no extra fetchTurn after terminal)', async () => {
     const store = useChatStore()
     store.agentId = 'agent-1'
-    store.currentSessionId = 'session-slower'
+    store.currentSessionId = 'session-terminal'
     store.messages = []
 
     const ft = vi.mocked(fetchTurn)
     ft.mockReset()
-    const running = {
-      turn_id: 'turn-slower',
-      session_id: 'session-slower',
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-terminal',
+      session_id: 'session-terminal',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+    // Subsequent calls would return a fresh running — if the loop
+    // didn't terminate on completed it would call fetchTurn again.
+    ft.mockResolvedValue({
+      turn_id: 'turn-terminal',
+      session_id: 'session-terminal',
       status: 'running' as const,
       started_at: '',
       completed_at: null,
       model: { provider: '', model: '' },
       error: '',
       messages: [],
-    }
-    // 35 running responses + 1 completed lets the loop cross both
-    // boundaries (fast → slow at 10, slow → slower at 30).
-    for (let i = 0; i < 35; i++) {
-      ft.mockResolvedValueOnce(running as never)
-    }
-    ft.mockResolvedValueOnce({ ...running, status: 'completed', completed_at: '' } as never)
+    } as never)
 
-    const pollPromise = store.pollTurnUntilTerminal('session-slower', 'turn-slower')
+    await store.pollTurnUntilTerminal('session-terminal', 'turn-terminal')
 
-    // Drain the fast window (10 polls at 250ms).
-    await vi.advanceTimersByTimeAsync(0)
-    for (let i = 2; i <= 10; i++) {
-      await vi.advanceTimersByTimeAsync(250)
-    }
-    // Drain the slow window (20 more polls at 1000ms each → 30 total).
-    for (let i = 11; i <= 30; i++) {
-      await vi.advanceTimersByTimeAsync(1000)
-    }
-    expect(ft).toHaveBeenCalledTimes(30)
+    // Exactly one call — the first response was 'completed' so the
+    // loop must exit without calling fetchTurn again.
+    expect(ft).toHaveBeenCalledTimes(1)
+  })
 
-    // 31st poll lands at 3000ms cadence — the chatStore cannot use
-    // the OLD SLOWER_MS=5000 here. 2999ms is not enough; one more
-    // ms crosses the gate.
-    await vi.advanceTimersByTimeAsync(2999)
-    expect(ft).toHaveBeenCalledTimes(30)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(ft).toHaveBeenCalledTimes(31)
+  it('terminates the loop when the session changes mid-poll (no orphan fetchTurn calls)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-stay'
+    store.messages = []
 
-    // Drain remaining polls so the timer queue empties.
-    for (let i = 0; i < 20; i++) {
-      await vi.advanceTimersByTimeAsync(3000)
-    }
-    await pollPromise
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    // First resolution: still running. After it resolves, the test
+    // mutates currentSessionId to a different session — the loop's
+    // top-of-iteration guard must exit before the next fetchTurn.
+    ft.mockImplementationOnce(async () => {
+      // Schedule the session switch to happen AFTER this resolution
+      // lands but BEFORE the next iteration's guard runs. Microtask
+      // ordering: this fn resolves → the loop body resumes → the
+      // session-switch fires below → the loop iterates and exits.
+      Promise.resolve().then(() => {
+        store.currentSessionId = 'session-different'
+      })
+      return {
+        turn_id: 'turn-switch',
+        session_id: 'session-stay',
+        status: 'running' as const,
+        started_at: '',
+        completed_at: null,
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [],
+      } as never
+    })
+    ft.mockResolvedValue({
+      turn_id: 'turn-switch',
+      session_id: 'session-stay',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-stay', 'turn-switch')
+
+    // The first iteration ran (one call). After the session switch,
+    // the second iteration's guard must exit without a second
+    // fetchTurn — calling it again would corrupt the new session's
+    // local state.
+    expect(ft).toHaveBeenCalledTimes(1)
   })
 })
 

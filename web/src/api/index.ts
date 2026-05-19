@@ -312,24 +312,82 @@ export interface TurnState {
 }
 
 /**
- * fetchTurn GETs the current state of a Turn by its UUID. The chat
- * store polls this endpoint between POST /messages and the terminal
- * status transition; each poll returns the Turn's current MessagesAdded
- * slice and the chat store merges the delta into local state by id.
+ * FetchTurnOptions enables the Phase-4-Commit-1b long-poll surface.
+ * Default behaviour (no options) is the legacy snapshot-read fetch — a
+ * single GET that returns the Turn's current state and resolves
+ * immediately. Pass `{ wait: true, since: N }` to opt into the
+ * server-side hold: the server holds the request until len(messages) > N
+ * OR phase/token_count changes OR the Turn reaches a terminal state OR
+ * 25s elapses, then returns a fresh snapshot.
  *
- * Error contract:
- *   - 404 → throws (caller falls back to SSE for defence-in-depth).
+ * Fields:
+ *   - wait — when true, ?wait=true is appended to the URL. The server's
+ *     long-poll handler reads this query param and switches to the hold
+ *     path. Default false (legacy snapshot).
+ *   - since — caller's last-observed len(messages). Server waits until
+ *     the registry's len > since. Default 0 (the first long-poll of a
+ *     turn after POST). Ignored when wait=false.
+ *   - signal — AbortController signal. The FE's long-poll loop wires
+ *     this so a session-switch / page-nav cancels the in-flight
+ *     request. The server's r.Context().Done() then fires and the
+ *     handler aborts the wait without writing a stale body.
+ */
+export interface FetchTurnOptions {
+  wait?: boolean
+  since?: number
+  signal?: AbortSignal
+}
+
+/**
+ * fetchTurn GETs the current state of a Turn by its UUID. Two surfaces:
+ *
+ *   - Legacy snapshot (default): `fetchTurn(sessionId, turnId)` —
+ *     single GET, returns immediately with the Turn's current state.
+ *     Used by reconciliation paths and the pre-1b polling fallback.
+ *
+ *   - Long-poll (Phase-4-Commit-1b): `fetchTurn(sessionId, turnId,
+ *     { wait: true, since: N, signal })` — server holds the request
+ *     until a mutation lands OR 25s elapses. The FE's long-poll loop
+ *     re-issues immediately on every return so each chunk surfaces
+ *     within broadcast-latency of the server-side append.
+ *
+ * The long-poll variant overrides the legacy fetch's per-request
+ * implicit timeout — the request must accommodate the server's 25s
+ * hold plus a network buffer. We pass `signal` through unchanged so
+ * the caller's AbortController controls cancellation; without a
+ * signal, the request runs to completion of the server-side wait.
+ *
+ * Error contract (unchanged across surfaces):
+ *   - 404 → throws (caller falls back to SSE / reconcile for
+ *     defence-in-depth).
  *   - Any non-OK status → throws with status text.
+ *   - signal aborted → throws (DOMException 'AbortError' from fetch).
  *
  * Per memory feedback_response_ok_mock_gotcha — fetch mocks in tests
  * MUST use real Response objects (or include `ok` getter explicitly)
  * so the `if (!res.ok)` branch resolves correctly.
  */
-export async function fetchTurn(sessionId: string, turnId: string): Promise<TurnState> {
-  const url = joinBaseURL(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`,
-  )
-  const res = await fetch(url, { credentials: CREDENTIALS_INCLUDE })
+export async function fetchTurn(
+  sessionId: string,
+  turnId: string,
+  opts: FetchTurnOptions = {},
+): Promise<TurnState> {
+  const basePath = `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`
+  let url = joinBaseURL(basePath)
+  if (opts.wait) {
+    // The server reads `wait=true` as a string match — only this exact
+    // value enables the long-poll branch. Pre-1b servers ignore the
+    // query param and fall through to the legacy snapshot path
+    // (acceptable degradation: every long-poll round-trip is a
+    // 250ms-cadence poll on the server we have).
+    const since = Math.max(0, Math.floor(opts.since ?? 0))
+    url = `${url}?wait=true&since=${since}`
+  }
+  const init: RequestInit = { credentials: CREDENTIALS_INCLUDE }
+  if (opts.signal) {
+    init.signal = opts.signal
+  }
+  const res = await fetch(url, init)
   if (!res.ok) {
     throw new Error(`Failed to fetch turn: ${res.status} ${res.statusText}`)
   }

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1401,6 +1402,18 @@ type turnResponse struct {
 //
 // Side effects:
 //   - None — read-only against the in-memory Turn registry.
+// longPollTimeout is the maximum time handleGetTurn holds a wait=true
+// request before returning the current snapshot. Sized at 25s so the
+// handler returns well within the 30s nginx / proxy default keep-alive
+// budget, and matches the canonical long-poll cadence used by
+// Anthropic SDK / OpenAI Assistants polling consumers. The FE's
+// long-poll loop re-issues immediately on every return so a 25s tick
+// without a server-side mutation costs one round-trip per 25s.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1b.
+const longPollTimeout = 25 * time.Second
+
 func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher == nil {
 		http.Error(w, "dispatcher not configured", http.StatusNotImplemented)
@@ -1416,6 +1429,84 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "turn_id required", http.StatusBadRequest)
 		return
 	}
+
+	// Long-poll path (Phase-4-Commit-1b). When ?wait=true is set, the
+	// handler holds the request until ANY of the watched fields move
+	// past the caller's baseline, OR the Turn reaches a terminal state,
+	// OR 25s elapses, OR the client disconnects. The baseline comes from
+	// the ?since query param (last-seen MessagesAdded count); Phase +
+	// TokenCount baselines are read off the current snapshot under lock
+	// so the wait observes any change against the moment the wait starts.
+	//
+	// The default (?wait absent OR != "true") preserves the pre-long-poll
+	// behaviour: snapshot-read, immediate return. The FE's legacy 250ms
+	// loop continues to work against the non-wait path.
+	if r.URL.Query().Get("wait") == "true" {
+		// Headers MUST be set BEFORE writeJSON so proxies see them on
+		// the response that actually carries the body. nginx's default
+		// behaviour buffers responses; without `X-Accel-Buffering: no`
+		// a long-poll response that ships its body quickly after a 25s
+		// hold could still be delayed at the proxy.
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+		// Capture baselines under the registry's lock by reading a fresh
+		// snapshot synchronously. WaitForChange then watches against
+		// these baselines.
+		sinceCount := 0
+		if raw := r.URL.Query().Get("since"); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+				sinceCount = v
+			}
+		}
+		// We need the current Phase + TokenCount as baselines too.
+		// Read the snapshot through Get (which also surfaces the 404
+		// not-found path); this is one extra lock acquisition but the
+		// registry's contention is negligible at v1 scale (a few calls
+		// per second per session).
+		baseline, err := registry.Get(turnID)
+		if err != nil {
+			if errors.Is(err, turn.ErrTurnNotFound) {
+				http.Error(w, "turn not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		t, _ := registry.WaitForChange(
+			r.Context(),
+			turnID,
+			sinceCount,
+			baseline.Phase,
+			baseline.TokenCount,
+			longPollTimeout,
+		)
+		// ctx-cancel path returns the zero snapshot — t.ID == "" iff
+		// the wait aborted via client disconnect. Drop the response
+		// entirely; the client is gone and writing a body would be a
+		// best-effort wasted operation.
+		if t.ID == "" {
+			return
+		}
+		msgs := t.MessagesAdded
+		if msgs == nil {
+			msgs = []session.Message{}
+		}
+		writeJSON(w, turnResponse{
+			TurnID:      t.ID,
+			SessionID:   t.SessionID,
+			Status:      string(t.Status),
+			StartedAt:   t.StartedAt,
+			CompletedAt: t.CompletedAt,
+			Model:       t.Model,
+			Error:       t.Error,
+			Messages:    msgs,
+			Phase:       t.Phase,
+			TokenCount:  t.TokenCount,
+		})
+		return
+	}
+
 	t, err := registry.Get(turnID)
 	if err != nil {
 		if errors.Is(err, turn.ErrTurnNotFound) {

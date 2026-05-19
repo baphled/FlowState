@@ -7702,3 +7702,338 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 			"token_count must grow monotonically across heartbeats — the chat UI's tokens-per-second computation relies on this")
 	})
 })
+
+// Phase-4-Commit-1b RED gate per "Turn-Based Post-Then-Poll Architecture
+// (May 2026)" §4d Commit 1b. The long-poll endpoint shape:
+//
+//   GET /api/v1/sessions/{id}/turns/{turn_id}?wait=true&since=N
+//
+// Replaces the FE's 250ms-cadence polling loop with a server-side hold
+// so each chunk surfaces in the FE within the broadcast latency
+// (sub-50ms perceived) instead of the ~125ms-average polling-window
+// delay.
+//
+// Hold semantics:
+//   - wait=true + since=N — hold until len(MessagesAdded) > N, OR
+//     Phase / TokenCount move, OR Status leaves Running, OR 25s.
+//   - wait absent / wait=false — return the current snapshot
+//     immediately (backwards compat for any pre-1b client).
+//
+// Critical headers for nginx / proxy compat:
+//   - X-Accel-Buffering: no
+//   - Cache-Control: no-cache, no-store, must-revalidate
+//
+// Client-disconnect: handler watches r.Context().Done() — when the FE
+// AbortController fires (session switch, page nav), the wait aborts
+// cleanly without writing a stale body.
+var _ = Describe("Phase-4-Commit-1b — long-poll Turn endpoint (wait=true)", func() {
+	var (
+		drip    *dripStreamer
+		mgr     *session.Manager
+		srv     *api.Server
+		httpSrv *httptest.Server
+		reg     *agent.Registry
+	)
+
+	setup := func(chunks []provider.StreamChunk, interval time.Duration) {
+		drip = &dripStreamer{chunks: chunks, emitInterval: interval}
+		mgr = session.NewManager(drip)
+		reg = agent.NewRegistry()
+		reg.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
+		srv = api.NewServer(
+			drip,
+			reg,
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(api.NewSessionBroker()),
+		)
+		httpSrv = httptest.NewServer(srv.Handler())
+	}
+
+	AfterEach(func() {
+		if httpSrv != nil {
+			httpSrv.Close()
+			httpSrv = nil
+		}
+	})
+
+	postMessage := func(sessionID, content string) (int, map[string]any, []byte) {
+		resp, err := http.Post( //nolint:noctx
+			httpSrv.URL+"/api/v1/sessions/"+sessionID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"`+content+`"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		var out map[string]any
+		if len(raw) > 0 && raw[0] == '{' {
+			_ = json.Unmarshal(raw, &out)
+		}
+		return resp.StatusCode, out, raw
+	}
+
+	// getTurnLongPoll fires a GET with ?wait=true&since=N. Caller-provided
+	// ctx lets specs cancel mid-wait to exercise the client-disconnect
+	// branch. Returns the raw http.Response so headers (X-Accel-Buffering,
+	// Cache-Control) can be asserted on the long-poll path.
+	getTurnLongPoll := func(ctx context.Context, sessionID, turnID string, since int) (*http.Response, []byte, error) {
+		url := fmt.Sprintf("%s/api/v1/sessions/%s/turns/%s?wait=true&since=%d",
+			httpSrv.URL, sessionID, turnID, since)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, nil, err
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, raw, nil
+	}
+
+	It("wait=true holds until a mutation arrives, then returns the fresh snapshot (sub-50ms after broadcast)", func() {
+		// Slow drip — turn stays Running well past the GET's start,
+		// then a chunk lands and the wait must wake within
+		// broadcast-latency (target <50ms perceived).
+		setup([]provider.StreamChunk{
+			{Content: "first"},
+			{Content: "second"},
+			{Done: true},
+		}, 250*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "hi")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Issue the long-poll with since=0. The Turn has 0 engine-emitted
+		// rows at this point (the first chunk arrives 250ms after POST).
+		// The wait must hold, then wake when the accumulator appends the
+		// first assistant row.
+		start := time.Now()
+		resp, raw, err := getTurnLongPoll(context.Background(), sess.ID, turnID, 0)
+		Expect(err).NotTo(HaveOccurred())
+		elapsed := time.Since(start)
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(resp.Header.Get("X-Accel-Buffering")).To(Equal("no"),
+			"long-poll responses must set X-Accel-Buffering: no so nginx / proxies don't buffer the body for an extra round-trip; got headers: %v", resp.Header)
+		Expect(resp.Header.Get("Cache-Control")).To(ContainSubstring("no-cache"),
+			"Cache-Control must include no-cache so intermediate proxies / browsers don't cache the snapshot — every long-poll response is uniquely-keyed by time-of-wake")
+
+		var decoded map[string]any
+		Expect(json.Unmarshal(raw, &decoded)).To(Succeed(),
+			"body must decode as JSON; got: %s", string(raw))
+		msgs, _ := decoded["messages"].([]any)
+		Expect(len(msgs)).To(BeNumerically(">=", 1),
+			"the wake-on-Append snapshot must carry at least one engine-emitted row — the wait predicate is len > since (0)")
+
+		// Long-poll perceived-cadence pin: the wait must wake within
+		// the broadcast-latency window after the chunk arrives, NOT
+		// sit at the 250ms polling-loop boundary. The drip emits the
+		// first chunk 250ms after Stream starts; the broadcast fires
+		// inside Append; we should see the wake within ~50-150ms slack
+		// (250ms drip delay + scheduler jitter + handler return cost).
+		// We assert the elapsed time stays comfortably under the 25s
+		// long-poll timeout to prove the wake came from the broadcast,
+		// not the timeout.
+		Expect(elapsed).To(BeNumerically("<", 2*time.Second),
+			"the long-poll wake must arrive shortly after the first chunk's broadcast (~250ms drip + broadcast latency), NOT at the 25s timeout — elapsed was %v", elapsed)
+	})
+
+	It("wait=true returns the current snapshot at the 25s timeout when no mutation lands", func() {
+		// No chunks emitted — POST mints a turn but the drip never
+		// produces a chunk (interval > the test budget). The wait must
+		// return at the test-shortened timeout with the current snapshot.
+		//
+		// We can't override the server-side longPollTimeout from the
+		// outside; instead we abort the client AFTER a short window so
+		// the test runs in bounded time without depending on the
+		// production 25s constant. The handler's ctx-cancel branch
+		// returns the zero snapshot — we assert that path separately
+		// below ("client disconnects mid-wait").
+		//
+		// For the timeout-elapsed branch specifically, we'd need to
+		// shrink longPollTimeout. The "wait returns idempotent
+		// snapshot on a completed-before-wait turn" spec below covers
+		// the equivalent fast-return path.
+		Skip("server-side longPollTimeout is a constant; the registry-level WaitForChange timeout path is exercised in internal/turn/turn_test.go::WaitForChange::timeout-elapsed")
+	})
+
+	It("wait=true returns immediately (no hang) when the Turn already reached terminal state before the wait started", func() {
+		// Single completing chunk so the Turn is Completed by the time
+		// we issue the long-poll. The wait MUST surface the terminal
+		// snapshot without sitting on the 25s timer.
+		setup([]provider.StreamChunk{
+			{Content: "done-immediately"},
+			{Done: true},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "ping")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Wait for the turn to reach completed state via a fast probe.
+		Eventually(func() string {
+			resp, raw, _ := getTurnLongPoll(context.Background(), sess.ID, turnID, 0)
+			if resp == nil || resp.StatusCode != http.StatusOK {
+				return ""
+			}
+			var decoded map[string]any
+			_ = json.Unmarshal(raw, &decoded)
+			s, _ := decoded["status"].(string)
+			return s
+		}, "3s", "30ms").Should(Equal("completed"))
+
+		// Now the Turn is terminal. A subsequent wait MUST return
+		// immediately (no 25s hang) with the terminal snapshot. We
+		// time this strictly.
+		start := time.Now()
+		resp, raw, err := getTurnLongPoll(context.Background(), sess.ID, turnID, 0)
+		Expect(err).NotTo(HaveOccurred())
+		elapsed := time.Since(start)
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		var decoded map[string]any
+		Expect(json.Unmarshal(raw, &decoded)).To(Succeed())
+		Expect(decoded["status"]).To(Equal("completed"))
+		Expect(elapsed).To(BeNumerically("<", 500*time.Millisecond),
+			"a terminal-state Turn must surface its snapshot synchronously — anything past 500ms means the handler is waiting against a baseline check that doesn't short-circuit on Status != Running. Elapsed: %v", elapsed)
+	})
+
+	It("wait=true aborts cleanly when the client disconnects mid-wait", func() {
+		// Slow drip so the turn stays Running well past our cancel.
+		setup([]provider.StreamChunk{
+			{Content: "slow"},
+			{Done: true},
+		}, 5*time.Second)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "go")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Fire the long-poll in a goroutine, cancel after a short delay.
+		// The wait must abort promptly — well under the 25s timeout.
+		type result struct {
+			err     error
+			elapsed time.Duration
+		}
+		done := make(chan result, 1)
+		go func() {
+			start := time.Now()
+			_, _, err := getTurnLongPoll(ctx, sess.ID, turnID, 0)
+			done <- result{err: err, elapsed: time.Since(start)}
+		}()
+
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+
+		var r result
+		Eventually(done, "2s").Should(Receive(&r))
+		// The client-side request errors with a context-cancelled
+		// transport error; the server-side handler must have observed
+		// r.Context().Done() and returned — we verify by elapsed time.
+		Expect(r.elapsed).To(BeNumerically("<", 1*time.Second),
+			"client disconnect must propagate to the server-side wait via r.Context().Done() — the handler should not hang on the 25s timer after the client is gone. Elapsed: %v, err: %v", r.elapsed, r.err)
+	})
+
+	It("wait=true with since=N returns immediately when len(MessagesAdded) already > N at call time", func() {
+		// Fast drip so engine-emitted rows accumulate quickly.
+		setup([]provider.StreamChunk{
+			{Content: "alpha"},
+			{Content: "beta"},
+			{Content: "gamma"},
+			{Done: true},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "list")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Wait for the Turn to complete and accumulate at least one row.
+		Eventually(func() int {
+			resp, raw, _ := getTurnLongPoll(context.Background(), sess.ID, turnID, 0)
+			if resp == nil || resp.StatusCode != http.StatusOK {
+				return 0
+			}
+			var decoded map[string]any
+			_ = json.Unmarshal(raw, &decoded)
+			msgs, _ := decoded["messages"].([]any)
+			return len(msgs)
+		}, "3s", "30ms").Should(BeNumerically(">=", 1))
+
+		// Now issue a long-poll with since=0. The Turn already has rows;
+		// the wait must return synchronously (not block on the 25s
+		// timer). The wait predicate hits "len > sinceCount" on entry
+		// and exits without parking.
+		start := time.Now()
+		resp, raw, err := getTurnLongPoll(context.Background(), sess.ID, turnID, 0)
+		Expect(err).NotTo(HaveOccurred())
+		elapsed := time.Since(start)
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		var decoded map[string]any
+		Expect(json.Unmarshal(raw, &decoded)).To(Succeed())
+		msgs, _ := decoded["messages"].([]any)
+		Expect(len(msgs)).To(BeNumerically(">=", 1))
+		Expect(elapsed).To(BeNumerically("<", 200*time.Millisecond),
+			"len > since on entry must short-circuit the wait — anything past 200ms suggests the predicate isn't being evaluated synchronously on the first iteration. Elapsed: %v", elapsed)
+	})
+
+	It("wait absent OR wait=false preserves the legacy snapshot-read behaviour (no hang)", func() {
+		// 5s drip — if the handler is wrongly long-polling on the
+		// legacy path, the test would hang. We use a tight client-side
+		// timeout to bound the test runtime.
+		setup([]provider.StreamChunk{
+			{Content: "slow"},
+			{Done: true},
+		}, 5*time.Second)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "go")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Legacy URL — no ?wait, no ?since. Must return the current
+		// snapshot synchronously (turn is Running but the handler
+		// doesn't hold the request).
+		start := time.Now()
+		url := fmt.Sprintf("%s/api/v1/sessions/%s/turns/%s", httpSrv.URL, sess.ID, turnID)
+		resp, err := http.Get(url) //nolint:noctx
+		Expect(err).NotTo(HaveOccurred())
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		elapsed := time.Since(start)
+
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(elapsed).To(BeNumerically("<", 500*time.Millisecond),
+			"legacy snapshot-read MUST NOT hang — pre-1b clients on a Running turn always got an immediate response. Elapsed: %v, body: %s", elapsed, string(raw))
+
+		// Legacy path also must NOT set the long-poll headers — those
+		// are wait=true-specific so a CDN / browser caches the legacy
+		// snapshot correctly. (Caching the snapshot is fine for legacy
+		// because the FE re-polls on a fixed cadence; only the long-
+		// poll surface needs no-cache.)
+		Expect(resp.Header.Get("X-Accel-Buffering")).To(BeEmpty(),
+			"the legacy snapshot path must NOT set X-Accel-Buffering — that header is long-poll-only")
+	})
+})
