@@ -28,6 +28,22 @@ func newTurnRegistryStub() *turnRegistryStub {
 func (s *turnRegistryStub) Append(turnID string, msg session.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Mirror turn.Registry.Append's id-keyed upsert: when the incoming
+	// message carries a non-empty ID that already exists in the slice,
+	// replace in place rather than appending a sibling. Empty-ID
+	// fallback preserves the existing "MessagesAdded grows in arrival
+	// order" pin for unstamped test messages. The production seam
+	// (internal/turn.Registry.Append) implements the same rule; this
+	// stub mirrors the contract so accumulator-level specs can pin
+	// the same outcome the live registry would surface.
+	if msg.ID != "" {
+		for i := range s.appended[turnID] {
+			if s.appended[turnID][i].ID == msg.ID {
+				s.appended[turnID][i] = msg
+				return
+			}
+		}
+	}
 	s.appended[turnID] = append(s.appended[turnID], msg)
 }
 
@@ -163,6 +179,182 @@ var _ = Describe("AccumulateStream Turn integration", func() {
 			// No recorder means no fan-out — proven by the absence of a
 			// stub Get call here; the spec is exercise that the
 			// accumulator doesn't panic on a half-configured ctx.
+		})
+	})
+
+	// Delegation-update fan-out — the regression these specs pin.
+	//
+	// turnAwareAppender.UpdateDelegation used to be a one-line passthrough
+	// to the inner appender: the comment in accumulator.go deferred fan-out
+	// "to Phase 2's GET handler" by merging delegation rows from the session
+	// snapshot. After commit 248345d1 retired the SSE bridge + WebSocket,
+	// the long-poll Turn endpoint became the SOLE live channel for the
+	// in-thread delegation card; the GET-handler merge never landed, so the
+	// Turn's MessagesAdded slice held the frozen `delegation_started`
+	// snapshot forever. The chat UI never observed the
+	// role: "delegation" + status: "completed" flip and the card spun
+	// indefinitely. Sample broken session:
+	// ~/.local/share/flowstate/sessions/3b6ecb2c-1b63-462f-96fc-0f614eca10ef.meta.json.
+	Context("when applyDelegation flips a delegation_started row to its terminal state mid-turn", func() {
+		It("fires the TurnMessageRecorder with the post-mutate snapshot — not just AppendMessage", func() {
+			appender := &fakeAppender{}
+			turnRegistry := newTurnRegistryStub()
+
+			ctx := context.Background()
+			ctx = session.WithAccumulatorTurnID(ctx, "turn-deleg-1")
+			ctx = session.WithTurnRecorder(ctx, func(id string, msg session.Message) {
+				turnRegistry.Append(id, msg)
+			})
+
+			rawCh := make(chan provider.StreamChunk, 4)
+			out := session.AccumulateStream(ctx, appender, "sess-1", "agent-1", rawCh)
+
+			// started → completed for the same ChainID — applyDelegation's
+			// in-flight branch calls appender.UpdateDelegation on the
+			// completed chunk (accumulator.go:673), flipping Role to
+			// "delegation" + Status to "completed" on the same Message.
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "worker", Status: "started", ChainID: "c-flip",
+			}}
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "worker", Status: "completed", ChainID: "c-flip",
+				ToolCalls: 4, LastTool: "Edit",
+			}}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+			for range out {
+			}
+
+			turnMsgs := turnRegistry.Get("turn-deleg-1")
+
+			// The terminal-state row MUST be observable on the turn —
+			// otherwise the long-poll client (the sole live channel
+			// post-248345d1) cannot flip the in-thread delegation card.
+			var terminal *session.Message
+			for i := range turnMsgs {
+				if turnMsgs[i].ChainID == "c-flip" && turnMsgs[i].Role == "delegation" {
+					terminal = &turnMsgs[i]
+					break
+				}
+			}
+			Expect(terminal).NotTo(BeNil(),
+				"turnAwareAppender.UpdateDelegation must fan out the mutated message to the recorder — "+
+					"without it the Turn.MessagesAdded snapshot freezes on delegation_started forever "+
+					"and the chat UI's delegation card never flips to completed")
+			Expect(terminal.Status).To(Equal("completed"))
+			Expect(terminal.ToolCalls).To(Equal(4))
+			Expect(terminal.LastTool).To(Equal("Edit"))
+		})
+
+		It("merges by id rather than appending — a status flip mutates the row, not stacks a sibling", func() {
+			appender := &fakeAppender{}
+			turnRegistry := newTurnRegistryStub()
+
+			ctx := context.Background()
+			ctx = session.WithAccumulatorTurnID(ctx, "turn-deleg-2")
+			ctx = session.WithTurnRecorder(ctx, func(id string, msg session.Message) {
+				turnRegistry.Append(id, msg)
+			})
+
+			rawCh := make(chan provider.StreamChunk, 5)
+			out := session.AccumulateStream(ctx, appender, "sess-1", "agent-1", rawCh)
+
+			// One started + two running + one completed for the same chain.
+			// applyDelegation collapses the in-flight chunks to one
+			// AppendMessage + 3 UpdateDelegation calls on the session
+			// appender; the turn registry's MessagesAdded must also hold
+			// exactly ONE row for chain `c-merge` — the merged terminal
+			// state — not four siblings (one per status emission).
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "worker", Status: "started", ChainID: "c-merge",
+			}}
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "worker", Status: "running", ChainID: "c-merge",
+				ToolCalls: 1, LastTool: "Read",
+			}}
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "worker", Status: "running", ChainID: "c-merge",
+				ToolCalls: 3, LastTool: "Bash",
+			}}
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "worker", Status: "completed", ChainID: "c-merge",
+				ToolCalls: 5, LastTool: "Edit",
+			}}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+			for range out {
+			}
+
+			turnMsgs := turnRegistry.Get("turn-deleg-2")
+
+			count := 0
+			var last *session.Message
+			for i := range turnMsgs {
+				if turnMsgs[i].ChainID == "c-merge" {
+					count++
+					last = &turnMsgs[i]
+				}
+			}
+			Expect(count).To(Equal(1),
+				"id-keyed merge on MessagesAdded: 4 status emissions for one chain must collapse to one row, "+
+					"not stack four siblings — otherwise the FE renders ghost delegation cards")
+			Expect(last).NotTo(BeNil())
+			Expect(last.Role).To(Equal("delegation"))
+			Expect(last.Status).To(Equal("completed"))
+			Expect(last.ToolCalls).To(Equal(5))
+			Expect(last.LastTool).To(Equal("Edit"))
+		})
+
+		It("merges by id across distinct chains in the same turn — each chain occupies exactly one slot", func() {
+			appender := &fakeAppender{}
+			turnRegistry := newTurnRegistryStub()
+
+			ctx := context.Background()
+			ctx = session.WithAccumulatorTurnID(ctx, "turn-deleg-3")
+			ctx = session.WithTurnRecorder(ctx, func(id string, msg session.Message) {
+				turnRegistry.Append(id, msg)
+			})
+
+			rawCh := make(chan provider.StreamChunk, 5)
+			out := session.AccumulateStream(ctx, appender, "sess-1", "agent-1", rawCh)
+
+			// Two interleaved delegations — chain A and chain B both flip
+			// from started → completed within the same turn. The turn
+			// registry must hold exactly two rows (one per chain), each
+			// in its terminal state.
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "a", Status: "started", ChainID: "chain-A",
+			}}
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "b", Status: "started", ChainID: "chain-B",
+			}}
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "a", Status: "completed", ChainID: "chain-A",
+			}}
+			rawCh <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
+				TargetAgent: "b", Status: "completed", ChainID: "chain-B",
+			}}
+			rawCh <- provider.StreamChunk{Done: true}
+			close(rawCh)
+			for range out {
+			}
+
+			turnMsgs := turnRegistry.Get("turn-deleg-3")
+
+			byChain := map[string]int{}
+			roleByChain := map[string]string{}
+			for _, m := range turnMsgs {
+				if m.ChainID == "chain-A" || m.ChainID == "chain-B" {
+					byChain[m.ChainID]++
+					roleByChain[m.ChainID] = m.Role
+				}
+			}
+			Expect(byChain["chain-A"]).To(Equal(1),
+				"chain A's terminal state must collapse onto its own row")
+			Expect(byChain["chain-B"]).To(Equal(1),
+				"chain B's terminal state must collapse onto its own row")
+			Expect(roleByChain["chain-A"]).To(Equal("delegation"))
+			Expect(roleByChain["chain-B"]).To(Equal("delegation"))
 		})
 	})
 })

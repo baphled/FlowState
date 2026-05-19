@@ -688,6 +688,27 @@ func (r *Registry) Append(turnID string, msg session.Message) error {
 	if t.Status != StatusRunning {
 		return ErrTurnTerminal
 	}
+	// Id-keyed upsert: when the incoming message carries a non-empty
+	// ID that already exists in MessagesAdded, replace the existing
+	// row in place rather than appending a sibling. This collapses
+	// the AppendMessage + N UpdateDelegation fan-out (one started +
+	// many running + one completed for the same ChainID) into one
+	// MessagesAdded slot per id. Without it, the long-poll Turn
+	// endpoint (sole live channel post-248345d1) renders ghost
+	// delegation cards — one per status emission — and the original
+	// "delegation_started" copy survives forever, so the in-thread
+	// delegation card never flips to completed. Empty-ID falls through
+	// to naive append to preserve arrival-order pin for unstamped
+	// callers.
+	if msg.ID != "" {
+		for i := range t.MessagesAdded {
+			if t.MessagesAdded[i].ID == msg.ID {
+				t.MessagesAdded[i] = msg
+				r.broadcastChangeLocked()
+				return nil
+			}
+		}
+	}
 	t.MessagesAdded = append(t.MessagesAdded, msg)
 	// Wake any long-poll waiters parked on changeCh — MessagesAdded
 	// grew past their captured baseline.

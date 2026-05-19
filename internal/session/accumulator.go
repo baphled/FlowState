@@ -172,18 +172,31 @@ func (t *turnAwareAppender) AppendMessage(sessionID string, msg Message) {
 }
 
 func (t *turnAwareAppender) UpdateDelegation(sessionID, chainID string, mutate func(*Message)) {
-	t.inner.UpdateDelegation(sessionID, chainID, mutate)
-	// Delegation in-place updates: the Turn registry's MessagesAdded
-	// holds value-typed copies of the Messages that were AppendMessage'd
-	// at the start of the chain (delegation_started). Subsequent
-	// UpdateDelegation mutations land on the session's stored copy
-	// only, not the turn's — so the turn's MessagesAdded surfaces
-	// the FIRST snapshot, not the live state. Phase 2's GET handler
-	// will paper over this by reading delegation rows from the session
-	// snapshot (which is authoritative for in-place mutations) and
-	// merging into the polling client's view of the turn. Sufficient
-	// for Phase 1; revisit if Phase 2's wire-shape audit shows the
-	// stale-delegation problem is user-visible.
+	// Capture the post-mutate snapshot so the Turn registry sees the
+	// live state of the delegation row, not the frozen
+	// delegation_started copy that landed at AppendMessage time.
+	// Wrap the caller's mutate to intercept the mutated *Message after
+	// the inner appender has located it and applied the mutation; this
+	// avoids guessing the chain-row identity from outside the manager.
+	var snapshot Message
+	var captured bool
+	t.inner.UpdateDelegation(sessionID, chainID, func(m *Message) {
+		mutate(m)
+		if m != nil {
+			snapshot = *m
+			captured = true
+		}
+	})
+	// Fan out to the Turn registry recorder. Without this, the
+	// long-poll Turn endpoint (sole live channel post-248345d1)
+	// freezes on the delegation_started snapshot and the in-thread
+	// delegation card never flips to its terminal state. The recorder
+	// is id-keyed in Registry.Append, so repeated UpdateDelegation
+	// calls for the same Message.ID collapse onto a single
+	// MessagesAdded slot.
+	if captured && t.turnID != "" && t.recorder != nil && snapshot.ID != "" {
+		t.recorder(t.turnID, snapshot)
+	}
 }
 
 // AppendMessage appends a message to the session identified by sessionID.

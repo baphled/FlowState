@@ -140,6 +140,70 @@ var _ = Describe("Registry", func() {
 			Expect(err).To(MatchError(turn.ErrTurnTerminal))
 		})
 
+		// Delegation in-flight updates fan out from the accumulator's
+		// turnAwareAppender.UpdateDelegation through the dispatcher's
+		// recorder closure into Registry.Append. The accumulator emits
+		// one AppendMessage at delegation_started followed by N
+		// UpdateDelegation calls — each carrying the SAME Message.ID —
+		// for running / completed transitions. Without id-keyed upsert,
+		// the turn's MessagesAdded would stack N+1 sibling rows for one
+		// delegation and the FE long-poll observer (sole live channel
+		// post-248345d1) would render ghost cards. The upsert collapses
+		// them to one slot per id.
+		//
+		// Sample broken state in production:
+		// ~/.local/share/flowstate/sessions/3b6ecb2c-1b63-462f-96fc-0f614eca10ef.meta.json
+		// (3 terminal delegation rows in session storage; Turn snapshot
+		// pre-fix would freeze on the delegation_started copies).
+		It("upserts by Message.ID — a second Append with a known id replaces in place rather than stacking a sibling", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(reg.Append(id, session.Message{
+				ID: "msg-A", Role: "delegation_started", Content: "started",
+			})).To(Succeed())
+			Expect(reg.Append(id, session.Message{
+				ID: "msg-A", Role: "delegation", Content: "completed", Status: "completed", ToolCalls: 7,
+			})).To(Succeed())
+			// Distinct id falls through to append.
+			Expect(reg.Append(id, session.Message{
+				ID: "msg-B", Role: "assistant", Content: "wrap-up",
+			})).To(Succeed())
+
+			t, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(t.MessagesAdded).To(HaveLen(2),
+				"id-keyed upsert: msg-A's two Appends collapse to one slot; msg-B is independent")
+
+			// msg-A reflects the post-mutate state, not the original.
+			Expect(t.MessagesAdded[0].ID).To(Equal("msg-A"))
+			Expect(t.MessagesAdded[0].Role).To(Equal("delegation"),
+				"upsert replaces in place — the delegation_started copy must not survive once the terminal copy lands")
+			Expect(t.MessagesAdded[0].Status).To(Equal("completed"))
+			Expect(t.MessagesAdded[0].ToolCalls).To(Equal(7))
+
+			Expect(t.MessagesAdded[1].ID).To(Equal("msg-B"))
+		})
+
+		It("falls back to naive append when Message.ID is empty — preserves arrival-order pin for unstamped callers", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Three unstamped messages — no id-keyed merge possible, so
+			// each lands as a sibling in arrival order. This preserves
+			// the existing "arrival order" contract for legacy / test
+			// surfaces that don't pre-stamp ids.
+			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "a"})).To(Succeed())
+			Expect(reg.Append(id, session.Message{Role: "thinking", Content: "b"})).To(Succeed())
+			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "c"})).To(Succeed())
+
+			t, _ := reg.Get(id)
+			Expect(t.MessagesAdded).To(HaveLen(3))
+			Expect(t.MessagesAdded[0].Content).To(Equal("a"))
+			Expect(t.MessagesAdded[1].Content).To(Equal("b"))
+			Expect(t.MessagesAdded[2].Content).To(Equal("c"))
+		})
+
 		It("does NOT route messages across turns on the same session", func() {
 			id1, err := reg.Start("sess-1")
 			Expect(err).NotTo(HaveOccurred())
