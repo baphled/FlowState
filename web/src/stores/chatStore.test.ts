@@ -1394,6 +1394,208 @@ describe('chatStore - pollTurnUntilTerminal adaptive cadence (Phase 4 Commit 1)'
   })
 })
 
+// Phase-4 Commit-2 ("streamed vs dump" UX investigation, May-19 2026).
+//
+// pollTurnUntilTerminal upserts each incoming Turn row into local
+// `messages` by id (lines ~1817-1826 in chatStore.ts). The pre-fix
+// implementation unconditionally re-built the local row via object
+// spread on EVERY poll — even when the backend returned a byte-for-byte
+// identical row (a backoff tick during a quiet phase between content
+// chunks, or after the assistant produced a tool call and the next
+// content chunk hadn't landed yet).
+//
+// That unconditional reassignment triggered Vue's reactivity for every
+// MessageBubble whose row landed in the snapshot:
+//   - MarkdownRenderer re-evaluated `renderedHtml` (full md.render of
+//     the accumulated content + image allow-list filter).
+//   - The ChatView contentLength/status watcher fired, calling
+//     `scheduleInstantScroll` and re-anchoring the viewport.
+//   - v-html replaced the entire `.markdown-body` subtree.
+//
+// All for ZERO new content. The user-visible symptom was a faint
+// re-render flicker every 250ms while the turn was running but
+// quiet — reinforcing the "dump vs streamed" feel because the bubble
+// was visibly redrawing without any actual content change.
+//
+// Fix: skip the upsert when the incoming row is shallow-equal to the
+// existing row. The merge still appends new rows, still mutates rows
+// whose content/status/toolCalls/etc actually changed — only the
+// no-op case short-circuits.
+//
+// These tests pin both branches: identical rows preserve the existing
+// object reference (no reactivity churn), changed rows still merge
+// through.
+describe('chatStore - pollTurnUntilTerminal no-op upsert short-circuit (Phase 4 Commit 2)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('preserves the existing row reference when an incoming poll row is byte-equal', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-noop'
+    const existingAssistant = {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'partial reply so far',
+      timestamp: '2026-05-19T11:00:00Z',
+      status: 'running',
+      toolCalls: 0,
+    }
+    store.messages = [existingAssistant]
+    const refBefore = store.messages[0]
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-noop',
+      session_id: 'session-noop',
+      status: 'running',
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [{ ...existingAssistant }],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-noop',
+      session_id: 'session-noop',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [{ ...existingAssistant }],
+    } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-noop', 'turn-noop')
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(250)
+    await pollPromise
+
+    // Reference identity is the marker for "no reactivity churn fired".
+    // Vue's reactivity wraps the messages array; reassigning an index
+    // (even via object spread of identical fields) creates a NEW object
+    // and triggers every downstream watcher / computed. Preserving the
+    // reference is the contract the no-op branch promises.
+    expect(store.messages[0]).toBe(refBefore)
+    // Sanity: the row's content is still what we set.
+    expect(store.messages[0].content).toBe('partial reply so far')
+  })
+
+  it('still merges rows whose content has grown (the streaming case)', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-grow'
+    store.messages = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'short',
+        timestamp: '2026-05-19T11:00:00Z',
+        status: 'running',
+      },
+    ]
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-grow',
+      session_id: 'session-grow',
+      status: 'running',
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'short and getting longer now',
+          timestamp: '2026-05-19T11:00:00Z',
+          status: 'running',
+        },
+      ],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-grow',
+      session_id: 'session-grow',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-grow', 'turn-grow')
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(250)
+    await pollPromise
+
+    expect(store.messages[0].content).toBe('short and getting longer now')
+  })
+
+  it('still appends rows whose id is new (the new-row case)', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-new'
+    store.messages = [
+      {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'first chunk',
+        timestamp: '2026-05-19T11:00:00Z',
+        status: 'running',
+      },
+    ]
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-new',
+      session_id: 'session-new',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        {
+          id: 'assistant-1',
+          role: 'assistant',
+          content: 'first chunk',
+          timestamp: '2026-05-19T11:00:00Z',
+          status: 'running',
+        },
+        {
+          id: 'tool-1',
+          role: 'tool_call',
+          content: 'tool body',
+          timestamp: '2026-05-19T11:00:01Z',
+          toolName: 'bash',
+        },
+      ],
+    } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-new', 'turn-new')
+    await vi.advanceTimersByTimeAsync(0)
+    await pollPromise
+
+    expect(store.messages).toHaveLength(2)
+    expect(store.messages[1].id).toBe('tool-1')
+  })
+})
+
 describe('chatStore - setAgent', () => {
   beforeEach(() => {
     installLocalStorageStub()
