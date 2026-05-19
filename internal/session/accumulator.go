@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/baphled/flowstate/internal/provider"
 	tooldisplay "github.com/baphled/flowstate/internal/tool/display"
@@ -149,6 +152,19 @@ type turnAwareAppender struct {
 }
 
 func (t *turnAwareAppender) AppendMessage(sessionID string, msg Message) {
+	// Pre-assign id + timestamp so the Turn.MessagesAdded record
+	// agrees with the session-stored copy. The inner appender used to
+	// silently overwrite both fields with its own values (taking msg
+	// by value), so this wrap recorded the pre-assignment empty-id /
+	// zero-time msg to the Turn registry. Pre-assigning here AND
+	// teaching the inner appender (manager.go::appendSessionMessage)
+	// to be id-preserving makes both views agree.
+	if msg.ID == "" {
+		msg.ID = uuid.New().String()
+	}
+	if msg.Timestamp.IsZero() {
+		msg.Timestamp = time.Now()
+	}
 	t.inner.AppendMessage(sessionID, msg)
 	if t.turnID != "" && t.recorder != nil {
 		t.recorder(t.turnID, msg)

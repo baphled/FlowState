@@ -1040,8 +1040,21 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		m.mu.Unlock()
 		return
 	}
-	msg.ID = uuid.New().String()
-	msg.Timestamp = time.Now()
+	// Id-preserving: only assign when empty. Turn-aware callers
+	// (internal/session/accumulator.go::turnAwareAppender) pre-assign
+	// id + timestamp so the Turn.MessagesAdded snapshot agrees with the
+	// session-stored copy. Without this guard the manager would
+	// overwrite the pre-assigned id, leaving the Turn registry holding
+	// rows with empty ids — which the FE's pollTurnUntilTerminal at
+	// chatStore.ts:1813 silently skips via `if (!row.id) continue`,
+	// producing the "loading bar but no content" symptom (May 2026
+	// bug-hunt, Turn-based plan Phase 3 follow-up).
+	if msg.ID == "" {
+		msg.ID = uuid.New().String()
+	}
+	if msg.Timestamp.IsZero() {
+		msg.Timestamp = time.Now()
+	}
 	sess.Messages = append(sess.Messages, msg)
 
 	// When the engine stamps a (model, provider) onto an assistant message
