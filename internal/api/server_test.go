@@ -7751,6 +7751,123 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 		Expect(gotModel).To(Equal("claude-opus-4-7"))
 	})
 
+	// Phase-5 §1c-β: the turnResponse wire surface now also exposes
+	// `context_usage` and `provider_quotas` so the FE's poll loop can pivot
+	// the context-usage chip and the provider-quota chip on the live figure
+	// / per-partition snapshot without an SSE side-channel.
+	It("GET /turns/{turn_id} exposes context_usage after a context_usage chunk lands", func() {
+		setup([]provider.StreamChunk{
+			{
+				EventType: "context_usage",
+				Content:   `{"input_tokens":1234,"output_reserve":8192,"limit":200000,"percentage":1,"provider":"anthropic","model":"claude-opus-4-7"}`,
+			},
+			{Content: "ack", ModelID: "claude-opus-4-7", ProviderID: "anthropic"},
+			{Done: true, ModelID: "claude-opus-4-7", ProviderID: "anthropic"},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		st, body, raw := postMessage(sess.ID, "go")
+		Expect(st).To(Equal(http.StatusOK), "POST raw: %s", string(raw))
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		var (
+			gotInputTokens float64
+			gotLimit       float64
+			lastGetRaw     []byte
+		)
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			cu, ok := gbody["context_usage"].(map[string]interface{})
+			if !ok {
+				return false
+			}
+			inputTokens, _ := cu["input_tokens"].(float64)
+			limit, _ := cu["limit"].(float64)
+			gotInputTokens = inputTokens
+			gotLimit = limit
+			return inputTokens == 1234 && limit == 200000
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must surface context_usage{input_tokens=1234, limit=200000} after the dispatcher's chunk-tap fires SetContextUsage — Phase-5 §1c-β wire contract. Last GET response: %s", string(lastGetRaw))
+
+		Expect(gotInputTokens).To(Equal(float64(1234)))
+		Expect(gotLimit).To(Equal(float64(200000)))
+	})
+
+	It("GET /turns/{turn_id} exposes provider_quotas after two provider_quota chunks (same-key replaces, different-key appends)", func() {
+		setup([]provider.StreamChunk{
+			{
+				EventType: "provider_quota",
+				Content:   `{"provider":"anthropic","account_hash":"acc-1","model":"claude-opus-4-7","observed_at":"2026-05-19T00:00:00Z","variant":"token_spend","token_spend":{"spent_minor":1000,"spent_currency":"USD","period":"monthly","period_start":"2026-05-01T00:00:00Z","period_end":"2026-05-31T23:59:59Z","threshold_amber":70,"threshold_red":90}}`,
+			},
+			{
+				EventType: "provider_quota",
+				Content:   `{"provider":"anthropic","account_hash":"acc-1","model":"claude-opus-4-7","observed_at":"2026-05-19T00:00:01Z","variant":"token_spend","token_spend":{"spent_minor":2500,"spent_currency":"USD","period":"monthly","period_start":"2026-05-01T00:00:00Z","period_end":"2026-05-31T23:59:59Z","threshold_amber":70,"threshold_red":90}}`,
+			},
+			{
+				EventType: "provider_quota",
+				Content:   `{"provider":"zai","account_hash":"acc-z","model":"glm-4.6","observed_at":"2026-05-19T00:00:02Z","variant":"token_spend","token_spend":{"spent_minor":500,"spent_currency":"USD","period":"monthly","period_start":"2026-05-01T00:00:00Z","period_end":"2026-05-31T23:59:59Z","threshold_amber":70,"threshold_red":90}}`,
+			},
+			{Done: true},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "go")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		var (
+			gotLen     int
+			anthSpent  float64
+			zaiSpent   float64
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			rawList, ok := gbody["provider_quotas"].([]interface{})
+			if !ok {
+				return false
+			}
+			gotLen = len(rawList)
+			if gotLen != 2 {
+				return false
+			}
+			for _, raw := range rawList {
+				entry, _ := raw.(map[string]interface{})
+				provider, _ := entry["provider"].(string)
+				ts, _ := entry["token_spend"].(map[string]interface{})
+				if ts == nil {
+					continue
+				}
+				sm, _ := ts["spent_minor"].(float64)
+				if provider == "anthropic" {
+					anthSpent = sm
+				}
+				if provider == "zai" {
+					zaiSpent = sm
+				}
+			}
+			return anthSpent == 2500 && zaiSpent == 500
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must surface provider_quotas with len=2 (same-key REPLACED, different-key APPENDED), anthropic.spent_minor=2500 (latest), zai.spent_minor=500. Phase-5 §1c-β wire contract. Last GET response: %s", string(lastGetRaw))
+
+		Expect(gotLen).To(Equal(2))
+		Expect(anthSpent).To(Equal(float64(2500)))
+		Expect(zaiSpent).To(Equal(float64(500)))
+	})
+
 	It("GET /turns/{turn_id} reflects a mid-stream failover via provider_changed (current_provider pivots)", func() {
 		setup([]provider.StreamChunk{
 			{

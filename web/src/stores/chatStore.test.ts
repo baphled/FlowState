@@ -44,6 +44,7 @@ import {
   describeToolName,
   useChatStore,
 } from './chatStore'
+import { useQuotaStore } from './quotaStore'
 
 class FakeEventSource {
   static instances: FakeEventSource[] = []
@@ -5980,6 +5981,511 @@ describe('chatStore.handleProviderChangedEvent idempotency (Phase-5 §1c-α)', (
     expect(showToastSpy).toHaveBeenCalledTimes(1)
 
     showToastSpy.mockRestore()
+  })
+})
+
+// Phase-5 §1c-β — the long-poll Turn endpoint now surfaces `context_usage`
+// + `provider_quotas` on every snapshot. The chat store's
+// pollTurnUntilTerminal loop diffs these against the prior poll's snapshot
+// and routes changes through handleContextUsageEvent / quotaStore's
+// applyProviderQuotaEvent. Both surfaces stay live during 1c-β; the
+// idempotency guards on both handlers ensure the transitional double-fire
+// (SSE + poll for the same figure) only mutates state once.
+describe('chatStore - pollTurnUntilTerminal context_usage diff (Phase-5 §1c-β)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('calls handleContextUsageEvent on the first poll that carries context_usage', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-cu'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleContextUsageEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-cu',
+      session_id: 'session-cu',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      context_usage: {
+        input_tokens: 1234,
+        output_reserve: 8192,
+        limit: 200000,
+        percentage: 1,
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+      },
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-cu', 'turn-cu')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(1)
+    const callArg = handlerSpy.mock.calls[0][0]
+    expect(callArg.inputTokens).toBe(1234)
+    expect(callArg.outputReserve).toBe(8192)
+    expect(callArg.limit).toBe(200000)
+    expect(callArg.percentage).toBe(1)
+  })
+
+  it('does NOT call handleContextUsageEvent on a poll where context_usage matches the prior poll', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-nodiff-cu'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleContextUsageEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-nodiff',
+      session_id: 'session-nodiff-cu',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      context_usage: {
+        input_tokens: 1234,
+        output_reserve: 8192,
+        limit: 200000,
+        percentage: 1,
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+      },
+    } as never)
+    // Second poll: same context_usage — must be a no-op.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-nodiff',
+      session_id: 'session-nodiff-cu',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      context_usage: {
+        input_tokens: 1234,
+        output_reserve: 8192,
+        limit: 200000,
+        percentage: 1,
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+      },
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-nodiff-cu', 'turn-nodiff')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(1)
+    // Single call from the first transition; second poll's matching figure
+    // must NOT re-fire.
+  })
+
+  it('calls handleContextUsageEvent again when the figure changes on a subsequent poll', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-growing-cu'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleContextUsageEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-growing',
+      session_id: 'session-growing-cu',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      context_usage: {
+        input_tokens: 1000,
+        output_reserve: 8192,
+        limit: 200000,
+        percentage: 0,
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+      },
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-growing',
+      session_id: 'session-growing-cu',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      context_usage: {
+        input_tokens: 5000,
+        output_reserve: 8192,
+        limit: 200000,
+        percentage: 2,
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+      },
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-growing-cu', 'turn-growing')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(2)
+    expect(handlerSpy.mock.calls[0][0].inputTokens).toBe(1000)
+    expect(handlerSpy.mock.calls[1][0].inputTokens).toBe(5000)
+  })
+})
+
+// Phase-5 §1c-β — handleContextUsageEvent idempotency. Same transitional
+// double-caller story as handleProviderChangedEvent: SSE branch + poll-
+// diff both call this with the same figure during the dual-surface phase.
+// The dedup gate on `lastContextUsageKey` ensures a double-call mutates
+// state ONCE.
+describe('chatStore.handleContextUsageEvent idempotency (Phase-5 §1c-β)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('mutates currentContextUsage exactly ONCE when called twice with the same four-field tuple', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-idem-cu'
+    store.contextUsageBySession = {}
+
+    // First call — fresh transition; mutation lands.
+    store.handleContextUsageEvent({
+      inputTokens: 1234,
+      outputReserve: 8192,
+      limit: 200000,
+      percentage: 1,
+    }, 'session-idem-cu')
+
+    const firstSnapshot = store.currentContextUsage
+    expect(firstSnapshot).not.toBeNull()
+    expect(firstSnapshot!.inputTokens).toBe(1234)
+
+    // Second call — same tuple. The dedup gate must short-circuit.
+    // Observable proof: currentContextUsage's object identity is
+    // preserved (a write would build a fresh object even with identical
+    // values).
+    store.handleContextUsageEvent({
+      inputTokens: 1234,
+      outputReserve: 8192,
+      limit: 200000,
+      percentage: 1,
+    }, 'session-idem-cu')
+
+    expect(store.currentContextUsage).toBe(firstSnapshot)
+  })
+
+  it('does NOT short-circuit when any field differs', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-diff-cu'
+    store.contextUsageBySession = {}
+
+    store.handleContextUsageEvent({
+      inputTokens: 1234,
+      outputReserve: 8192,
+      limit: 200000,
+      percentage: 1,
+    }, 'session-diff-cu')
+    const firstSnapshot = store.currentContextUsage
+
+    // Different inputTokens — must NOT short-circuit.
+    store.handleContextUsageEvent({
+      inputTokens: 5000,
+      outputReserve: 8192,
+      limit: 200000,
+      percentage: 2,
+    }, 'session-diff-cu')
+
+    expect(store.currentContextUsage).not.toBe(firstSnapshot)
+    expect(store.currentContextUsage!.inputTokens).toBe(5000)
+  })
+})
+
+// Phase-5 §1c-β — provider_quotas poll-diff. The poll surface emits the
+// full set on every snapshot; the chat store iterates per-partition and
+// routes only the changed snapshots through quotaStore. Mirrors the
+// 1c-α current_provider/current_model diff but for the multi-value
+// partition-keyed slice shape.
+describe('chatStore - pollTurnUntilTerminal provider_quotas diff (Phase-5 §1c-β)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('routes a new partition snapshot through quotaStore.applyProviderQuotaEvent', async () => {
+    const store = useChatStore()
+    const quota = useQuotaStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-q'
+    store.messages = []
+
+    const applySpy = vi.spyOn(quota, 'applyProviderQuotaEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-q',
+      session_id: 'session-q',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      provider_quotas: [
+        {
+          provider: 'anthropic',
+          account_hash: 'acc-1',
+          model: 'claude-opus-4-7',
+          observed_at: '2026-05-19T00:00:00Z',
+          variant: 'token_spend',
+          token_spend: {
+            spent_minor: 1000,
+            spent_currency: 'USD',
+            spent_usd_minor: 1000,
+            period: 'monthly',
+            period_start: '2026-05-01T00:00:00Z',
+            period_end: '2026-05-31T23:59:59Z',
+            threshold_amber: 70,
+            threshold_red: 90,
+          },
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-q', 'turn-q')
+
+    expect(applySpy).toHaveBeenCalledTimes(1)
+    const callArg = applySpy.mock.calls[0][0]
+    expect(callArg.provider).toBe('anthropic')
+    expect(callArg.accountHash).toBe('acc-1')
+    expect(callArg.tokenSpend?.spentMinor).toBe(1000)
+  })
+
+  it('does NOT call applyProviderQuotaEvent on a poll where the partition snapshot is unchanged', async () => {
+    const store = useChatStore()
+    const quota = useQuotaStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-nodiff-q'
+    store.messages = []
+
+    const applySpy = vi.spyOn(quota, 'applyProviderQuotaEvent')
+
+    const sameSnapshot = [
+      {
+        provider: 'anthropic',
+        account_hash: 'acc-1',
+        model: 'claude-opus-4-7',
+        observed_at: '2026-05-19T00:00:00Z',
+        variant: 'token_spend' as const,
+        token_spend: {
+          spent_minor: 1000,
+          spent_currency: 'USD',
+          spent_usd_minor: 1000,
+          period: 'monthly',
+          period_start: '2026-05-01T00:00:00Z',
+          period_end: '2026-05-31T23:59:59Z',
+          threshold_amber: 70,
+          threshold_red: 90,
+        },
+      },
+    ]
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-nodiff-q',
+      session_id: 'session-nodiff-q',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      provider_quotas: sameSnapshot,
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-nodiff-q',
+      session_id: 'session-nodiff-q',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      provider_quotas: sameSnapshot,
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-nodiff-q', 'turn-nodiff-q')
+
+    expect(applySpy).toHaveBeenCalledTimes(1)
+    // The second poll's unchanged snapshot must NOT re-fire.
+  })
+
+  it('calls applyProviderQuotaEvent again when the same partition updates with a new spent figure', async () => {
+    const store = useChatStore()
+    const quota = useQuotaStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-grow-q'
+    store.messages = []
+
+    const applySpy = vi.spyOn(quota, 'applyProviderQuotaEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-grow-q',
+      session_id: 'session-grow-q',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      provider_quotas: [
+        {
+          provider: 'anthropic',
+          account_hash: 'acc-1',
+          model: 'claude-opus-4-7',
+          observed_at: '2026-05-19T00:00:00Z',
+          variant: 'token_spend' as const,
+          token_spend: {
+            spent_minor: 1000,
+            spent_currency: 'USD',
+            spent_usd_minor: 1000,
+            period: 'monthly',
+            period_start: '2026-05-01T00:00:00Z',
+            period_end: '2026-05-31T23:59:59Z',
+            threshold_amber: 70,
+            threshold_red: 90,
+          },
+        },
+      ],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-grow-q',
+      session_id: 'session-grow-q',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      provider_quotas: [
+        {
+          provider: 'anthropic',
+          account_hash: 'acc-1',
+          model: 'claude-opus-4-7',
+          observed_at: '2026-05-19T00:00:01Z',
+          variant: 'token_spend' as const,
+          token_spend: {
+            spent_minor: 2500,
+            spent_currency: 'USD',
+            spent_usd_minor: 2500,
+            period: 'monthly',
+            period_start: '2026-05-01T00:00:00Z',
+            period_end: '2026-05-31T23:59:59Z',
+            threshold_amber: 70,
+            threshold_red: 90,
+          },
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-grow-q', 'turn-grow-q')
+
+    expect(applySpy).toHaveBeenCalledTimes(2)
+    expect(applySpy.mock.calls[0][0].tokenSpend?.spentMinor).toBe(1000)
+    expect(applySpy.mock.calls[1][0].tokenSpend?.spentMinor).toBe(2500)
+  })
+
+  it('routes EACH new partition separately (anthropic + zai = 2 calls)', async () => {
+    const store = useChatStore()
+    const quota = useQuotaStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-multi-q'
+    store.messages = []
+
+    const applySpy = vi.spyOn(quota, 'applyProviderQuotaEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-multi-q',
+      session_id: 'session-multi-q',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'zai', model: 'glm-4.6' },
+      error: '',
+      messages: [],
+      provider_quotas: [
+        {
+          provider: 'anthropic',
+          account_hash: 'acc-1',
+          model: 'claude-opus-4-7',
+          observed_at: '2026-05-19T00:00:00Z',
+          variant: 'token_spend' as const,
+          token_spend: {
+            spent_minor: 1000,
+            spent_currency: 'USD',
+            spent_usd_minor: 1000,
+            period: 'monthly',
+            period_start: '2026-05-01T00:00:00Z',
+            period_end: '2026-05-31T23:59:59Z',
+            threshold_amber: 70,
+            threshold_red: 90,
+          },
+        },
+        {
+          provider: 'zai',
+          account_hash: 'acc-z',
+          model: 'glm-4.6',
+          observed_at: '2026-05-19T00:00:01Z',
+          variant: 'token_spend' as const,
+          token_spend: {
+            spent_minor: 500,
+            spent_currency: 'USD',
+            spent_usd_minor: 500,
+            period: 'monthly',
+            period_start: '2026-05-01T00:00:00Z',
+            period_end: '2026-05-31T23:59:59Z',
+            threshold_amber: 70,
+            threshold_red: 90,
+          },
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-multi-q', 'turn-multi-q')
+
+    expect(applySpy).toHaveBeenCalledTimes(2)
+    const providers = applySpy.mock.calls.map((c) => c[0].provider).sort()
+    expect(providers).toEqual(['anthropic', 'zai'])
   })
 })
 

@@ -84,6 +84,108 @@ type ModelInfo struct {
 	Model    string `json:"model"`
 }
 
+// ContextUsage mirrors the engine's context_usage chunk payload (engine.go
+// contextUsagePayload at engine.go:3237) onto the Turn registry so the
+// long-poll wire surfaces the live context-window saturation figure.
+// Phase-5 §1c-β replaces the SSE side-channel for the chat-UI's usage chip.
+//
+// The struct is defined HERE rather than imported from internal/api because
+// the api package imports internal/turn (handleGetTurn reads turnResponse
+// off the Turn); a reverse import would cycle. The field names + JSON tags
+// mirror sseContextUsage at internal/api/sse_writers.go:142-150 exactly so
+// the FE parser sees the same wire shape whether the payload comes from the
+// turn endpoint or the SSE channel.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+type ContextUsage struct {
+	InputTokens   int    `json:"input_tokens"`
+	OutputReserve int    `json:"output_reserve"`
+	Limit         int    `json:"limit"`
+	Percentage    int    `json:"percentage"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+}
+
+// ProviderQuotaSnapshot mirrors the engine's provider_quota chunk payload
+// (sseProviderQuota at internal/api/sse_writers.go:176-189) onto the Turn
+// registry so the long-poll wire surfaces per-provider quota state.
+// Phase-5 §1c-β — replaces the SSE side-channel for the toolbar quota chip.
+//
+// Multi-value semantics: Turn.ProviderQuotas is a slice rather than a single
+// snapshot because a long stream can carry multiple partitions (anthropic +
+// zai after a failover, anthropic + openai across @-mention swarm hops). The
+// partition key is `Provider:AccountHash:Model` (snapshotKey on the FE side).
+// UpsertProviderQuota replaces an existing partition's snapshot, appends a new
+// one, mirroring the FE's quotaStore.snapshots map shape — Option B in the
+// 1c-β brief.
+//
+// Same import-cycle reasoning as ContextUsage: types live here so the turn
+// package owns the wire shape without dragging internal/api.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+type ProviderQuotaSnapshot struct {
+	Provider      string                     `json:"provider"`
+	AccountHash   string                     `json:"account_hash"`
+	Model         string                     `json:"model,omitempty"`
+	ObservedAt    string                     `json:"observed_at"`
+	Stale         bool                       `json:"stale,omitempty"`
+	StoreBackend  string                     `json:"store_backend,omitempty"`
+	PricingSource string                     `json:"pricing_source,omitempty"`
+	Variant       string                     `json:"variant"`
+	RateLimit     *ProviderQuotaRateLimit    `json:"rate_limit,omitempty"`
+	TokenSpend    *ProviderQuotaTokenSpend   `json:"token_spend,omitempty"`
+	NotConfigured *ProviderQuotaNotConfig    `json:"not_configured,omitempty"`
+}
+
+// ProviderQuotaRateLimit mirrors sseProviderQuotaRateLimit at
+// internal/api/sse_writers.go:193-200.
+type ProviderQuotaRateLimit struct {
+	Requests                 ProviderQuotaWindow `json:"requests"`
+	Tokens                   ProviderQuotaWindow `json:"tokens"`
+	Input                    ProviderQuotaWindow `json:"input"`
+	Output                   ProviderQuotaWindow `json:"output"`
+	TightestPercentRemaining int                 `json:"tightest_percent_remaining"`
+	TightestResetAt          string              `json:"tightest_reset_at,omitempty"`
+}
+
+// ProviderQuotaWindow mirrors sseQuotaWindow at
+// internal/api/sse_writers.go:204-208. -1 sentinel means "not provided".
+type ProviderQuotaWindow struct {
+	Limit     int    `json:"limit"`
+	Remaining int    `json:"remaining"`
+	Reset     string `json:"reset,omitempty"`
+}
+
+// ProviderQuotaTokenSpend mirrors sseProviderQuotaTokenSpend at
+// internal/api/sse_writers.go:212-223.
+type ProviderQuotaTokenSpend struct {
+	SpentMinor     int64  `json:"spent_minor"`
+	SpentCurrency  string `json:"spent_currency"`
+	SpentUSDMinor  int64  `json:"spent_usd_minor"`
+	CapMinor       int64  `json:"cap_minor,omitempty"`
+	CapCurrency    string `json:"cap_currency,omitempty"`
+	Period         string `json:"period"`
+	PeriodStart    string `json:"period_start"`
+	PeriodEnd      string `json:"period_end"`
+	ThresholdAmber int    `json:"threshold_amber"`
+	ThresholdRed   int    `json:"threshold_red"`
+}
+
+// ProviderQuotaNotConfig mirrors sseProviderQuotaNotConfig at
+// internal/api/sse_writers.go:227-229. Reason is operator-visible verbatim.
+type ProviderQuotaNotConfig struct {
+	Reason string `json:"reason"`
+}
+
+// partitionKey returns the partition-key string for a quota snapshot —
+// matches snapshotKey() on the FE side (quotaStore.ts:56-58). The
+// per-partition slice semantics in UpsertProviderQuota dedup on this key.
+func (s ProviderQuotaSnapshot) partitionKey() string {
+	return s.Provider + ":" + s.AccountHash + ":" + s.Model
+}
+
 // Turn is the first-class per-streaming-pass resource. One Turn is
 // minted per POST /messages call (Phase 2 will wire the handler);
 // the engine pipeline tags chunks with the Turn's ID via context.
@@ -146,6 +248,39 @@ type Turn struct {
 	// lifecycle semantics as CurrentProvider — populated by SetProviderModel,
 	// read on every poll, frozen at the last live value post-terminal.
 	CurrentModel string `json:"current_model,omitempty"`
+	// ContextUsage mirrors the most recent `context_usage` chunk payload the
+	// engine emitted during this Turn. Populated by SetContextUsage, wired
+	// off the dispatcher's wrapWithTurnLifecycle chunk-tap on `context_usage`
+	// events. nil during the brief window between Start and the first
+	// context_usage chunk; frozen at the last value once the Turn reaches a
+	// terminal state (per the same Phase + TokenCount + CurrentProvider
+	// "frozen post-terminal" pattern).
+	//
+	// Pointer-typed so the absent state is unambiguously nil (vs a
+	// zero-valued struct which the JSON-marshalled wire would emit with
+	// all-zero fields — confusing to the FE parser that gates on
+	// "non-empty payload"). The omitempty tag drops the field entirely
+	// when nil.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+	ContextUsage *ContextUsage `json:"context_usage,omitempty"`
+	// ProviderQuotas mirrors the cumulative set of `provider_quota` chunk
+	// payloads the engine emitted during this Turn, partitioned by
+	// `Provider:AccountHash:Model`. Populated by UpsertProviderQuota,
+	// wired off the dispatcher's chunk-tap on `provider_quota` events.
+	// Multi-value because a single stream can carry multiple partitions
+	// (anthropic + zai after failover, anthropic + openai across @-mention
+	// swarm hops); each partition's most-recent snapshot wins.
+	//
+	// Empty slice (nil) during the brief window between Start and the
+	// first provider_quota chunk; entries accumulate as the engine emits
+	// per-provider snapshots; frozen at the last set once the Turn
+	// reaches a terminal state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+	ProviderQuotas []ProviderQuotaSnapshot `json:"provider_quotas,omitempty"`
 }
 
 // ErrTurnConflict fires when Start is called on a session that
@@ -691,6 +826,226 @@ func (r *Registry) SetProviderModel(turnID, provider, model string) {
 	}
 }
 
+// SetContextUsage records the most-recent context_usage payload onto a
+// Running Turn. Wired off the dispatcher's wrapWithTurnLifecycle chunk-tap
+// on `context_usage` chunks (the engine emits these as the first artefact
+// of every Stream that has enough information to compute the figure —
+// see engine.go:3262 buildContextUsageChunk). The long-poll wire then
+// surfaces ContextUsage onto the GET /turns/{id} response so the FE's
+// chat-UI usage chip pivots without an SSE side-channel.
+//
+// No-op semantics mirror SetProviderModel — the chunk-tap fires from a
+// goroutine that can race the wrap's terminal Complete/Fail:
+//   - empty turnID — silent return.
+//   - unknown turnID — silent return.
+//   - non-Running turnID — silent return (ContextUsage frozen at the
+//     last Running-state value, matching CurrentProvider/CurrentModel).
+//   - nil cu — silent return (defensive — the dispatcher tap only calls
+//     this with a non-nil pointer when the chunk payload parses; the
+//     guard absorbs a future producer-side bug).
+//
+// Broadcast gate: only fires the change broadcast when the payload's
+// field values DIFFER from the existing stored snapshot. Pointer
+// equality is NOT the gate — a fresh allocation with the same field
+// values must be a no-op so engine restamps during quiet streaming gaps
+// do not spin the long-poll perceived-cadence promise. The dereference-
+// then-equal pattern matches sseContextUsage's six primitive fields
+// (input_tokens, output_reserve, limit, percentage, provider, model).
+//
+// Concurrency: acquires r.mu via Lock. The pointer write is under the
+// same lock peer methods use so readers (Get / WaitForChange) never
+// observe a torn ContextUsage value.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+func (r *Registry) SetContextUsage(turnID string, cu *ContextUsage) {
+	if turnID == "" || cu == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+	// Change-gate: dereference both sides for field-by-field equality so
+	// a fresh allocation with identical primitives stays a no-op. nil-old
+	// vs non-nil-new always counts as a change (the empty → real
+	// transition the chip's first-render path waits on).
+	changed := t.ContextUsage == nil || *t.ContextUsage != *cu
+	// Copy the pointee so the registry owns its memory — callers can
+	// mutate their input after the call without poisoning the snapshot.
+	cuCopy := *cu
+	t.ContextUsage = &cuCopy
+	if changed {
+		r.broadcastChangeLocked()
+	}
+}
+
+// UpsertProviderQuota records a provider_quota snapshot onto a Running
+// Turn's ProviderQuotas slice. Multi-value with partition-key dedup
+// semantics (Option B in the 1c-β brief): if a snapshot with the same
+// `Provider:AccountHash:Model` partition key already exists in the
+// slice, REPLACE it (newest wins); otherwise APPEND. Mirrors the FE
+// quotaStore's snapshots map shape so the FE consumer sees the same
+// data whether it routes via SSE or via this long-poll surface.
+//
+// No-op semantics mirror SetContextUsage / SetProviderModel:
+//   - empty turnID — silent return.
+//   - unknown turnID — silent return.
+//   - non-Running turnID — silent return.
+//
+// Broadcast gate: only fires when the snapshot DIFFERS from the existing
+// entry for the same partition (or no entry exists, which is an append-
+// new-partition transition the FE diff loop must observe). The variant
+// payloads (RateLimit / TokenSpend / NotConfigured) are pointer fields
+// so the deep-equal check must reach inside them — implemented via
+// helper providerQuotaEqual.
+//
+// Concurrency: acquires r.mu via Lock. The slice mutation is under the
+// same lock peer methods use so readers (Get / WaitForChange) never
+// observe a torn slice (mid-append) or a torn snapshot entry.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+func (r *Registry) UpsertProviderQuota(turnID string, snap ProviderQuotaSnapshot) {
+	if turnID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+	// Deep-copy the snapshot so the registry owns its memory — callers
+	// can mutate variant pointer payloads after the call without
+	// poisoning the stored snapshot.
+	stored := deepCopyProviderQuota(snap)
+	key := stored.partitionKey()
+	changed := true
+	replaced := false
+	for i := range t.ProviderQuotas {
+		if t.ProviderQuotas[i].partitionKey() == key {
+			if providerQuotaEqual(t.ProviderQuotas[i], stored) {
+				changed = false
+			}
+			t.ProviderQuotas[i] = stored
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		t.ProviderQuotas = append(t.ProviderQuotas, stored)
+		// Append always counts as a change — new partition the FE
+		// hasn't observed.
+		changed = true
+	}
+	if changed {
+		r.broadcastChangeLocked()
+	}
+}
+
+// deepCopyProviderQuota produces an independent copy of snap including
+// each variant payload. Required so a caller's mutation of e.g.
+// snap.TokenSpend after the Upsert call does not leak into the registry's
+// stored snapshot.
+func deepCopyProviderQuota(snap ProviderQuotaSnapshot) ProviderQuotaSnapshot {
+	out := snap
+	if snap.RateLimit != nil {
+		rl := *snap.RateLimit
+		out.RateLimit = &rl
+	}
+	if snap.TokenSpend != nil {
+		ts := *snap.TokenSpend
+		out.TokenSpend = &ts
+	}
+	if snap.NotConfigured != nil {
+		nc := *snap.NotConfigured
+		out.NotConfigured = &nc
+	}
+	return out
+}
+
+// providerQuotaEqual reports field-equality across two snapshots,
+// including the variant payloads. nil-vs-nil counts as equal; nil-vs-
+// non-nil counts as different. Used by the UpsertProviderQuota broadcast
+// gate to suppress spurious wakes during quiet streaming gaps.
+func providerQuotaEqual(a, b ProviderQuotaSnapshot) bool {
+	if a.Provider != b.Provider ||
+		a.AccountHash != b.AccountHash ||
+		a.Model != b.Model ||
+		a.ObservedAt != b.ObservedAt ||
+		a.Stale != b.Stale ||
+		a.StoreBackend != b.StoreBackend ||
+		a.PricingSource != b.PricingSource ||
+		a.Variant != b.Variant {
+		return false
+	}
+	if (a.RateLimit == nil) != (b.RateLimit == nil) {
+		return false
+	}
+	if a.RateLimit != nil && *a.RateLimit != *b.RateLimit {
+		return false
+	}
+	if (a.TokenSpend == nil) != (b.TokenSpend == nil) {
+		return false
+	}
+	if a.TokenSpend != nil && *a.TokenSpend != *b.TokenSpend {
+		return false
+	}
+	if (a.NotConfigured == nil) != (b.NotConfigured == nil) {
+		return false
+	}
+	if a.NotConfigured != nil && *a.NotConfigured != *b.NotConfigured {
+		return false
+	}
+	return true
+}
+
+// contextUsageDiffers reports whether the live ContextUsage value differs
+// from the caller's baseline. nil-vs-nil is no-difference; nil-vs-non-nil
+// is a difference (the empty → real transition the FE's first-render path
+// waits on); non-nil-vs-non-nil dereferences both sides for field equality.
+// Used by WaitForChange's predicate.
+func contextUsageDiffers(live, baseline *ContextUsage) bool {
+	if live == nil && baseline == nil {
+		return false
+	}
+	if live == nil || baseline == nil {
+		return true
+	}
+	return *live != *baseline
+}
+
+// providerQuotasDiffer reports whether the live ProviderQuotas slice
+// differs from the caller's baseline. Comparison is element-by-element
+// in slice order — UpsertProviderQuota preserves slice order under
+// replace-in-place, so a baseline captured at moment T against a live
+// snapshot at moment T+1 reads the same indices for the same partitions
+// (a fresh partition appends, never inserts mid-slice). Length change OR
+// any element differing by providerQuotaEqual counts as a difference.
+// Used by WaitForChange's predicate.
+func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
+	if len(live) != len(baseline) {
+		return true
+	}
+	for i := range live {
+		if !providerQuotaEqual(live[i], baseline[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // WaitForChange is the Phase-4-Commit-1b long-poll primitive. Returns
 // when ANY of the following becomes true:
 //   - len(turn.MessagesAdded) > sinceMsgCount
@@ -698,6 +1053,9 @@ func (r *Registry) SetProviderModel(turnID, provider, model string) {
 //   - turn.TokenCount != lastTokens
 //   - turn.CurrentProvider != lastProvider (Phase-5 §1c-α)
 //   - turn.CurrentModel != lastModel (Phase-5 §1c-α)
+//   - turn.ContextUsage differs from lastContextUsage by value (Phase-5 §1c-β)
+//   - turn.ProviderQuotas differs from lastProviderQuotas by length OR
+//     any element's value (Phase-5 §1c-β)
 //   - turn.Status != StatusRunning (terminal-state reached)
 //   - timeout elapses (returns the current snapshot with changed=false)
 //   - ctx is cancelled (returns the zero snapshot with changed=false)
@@ -728,6 +1086,12 @@ func (r *Registry) SetProviderModel(turnID, provider, model string) {
 //     the registry's CurrentProvider != lastProvider (Phase-5 §1c-α).
 //   - lastModel — caller's last-observed CurrentModel. Wake when the
 //     registry's CurrentModel != lastModel (Phase-5 §1c-α).
+//   - lastContextUsage — caller's last-observed ContextUsage. nil
+//     baseline + non-nil registry value counts as a change (Phase-5
+//     §1c-β); equal values are a no-wake.
+//   - lastProviderQuotas — caller's last-observed ProviderQuotas slice.
+//     A change is len() growth OR any per-partition snapshot differing
+//     from baseline (Phase-5 §1c-β).
 //   - timeout — max wait duration. A zero or negative timeout means
 //     "evaluate the predicate once and return immediately".
 //
@@ -750,6 +1114,8 @@ func (r *Registry) WaitForChange(
 	lastTokens int,
 	lastProvider string,
 	lastModel string,
+	lastContextUsage *ContextUsage,
+	lastProviderQuotas []ProviderQuotaSnapshot,
 	timeout time.Duration,
 ) (Turn, bool) {
 	// Wall-clock deadline (NOT r.clock()) — the test fakes r.clock to
@@ -772,6 +1138,8 @@ func (r *Registry) WaitForChange(
 			t.TokenCount != lastTokens ||
 			t.CurrentProvider != lastProvider ||
 			t.CurrentModel != lastModel ||
+			contextUsageDiffers(t.ContextUsage, lastContextUsage) ||
+			providerQuotasDiffer(t.ProviderQuotas, lastProviderQuotas) ||
 			t.Status != StatusRunning {
 			snap := r.snapshotLocked(t)
 			r.mu.Unlock()
@@ -826,6 +1194,21 @@ func (r *Registry) snapshotLocked(t *Turn) Turn {
 	if t.CompletedAt != nil {
 		ct := *t.CompletedAt
 		out.CompletedAt = &ct
+	}
+	// Phase-5 §1c-β: deep-copy ContextUsage pointer + ProviderQuotas slice
+	// so callers cannot race the next SetContextUsage / UpsertProviderQuota.
+	// The variant payloads inside each ProviderQuotaSnapshot are pointer
+	// fields — deepCopyProviderQuota walks them.
+	if t.ContextUsage != nil {
+		cu := *t.ContextUsage
+		out.ContextUsage = &cu
+	}
+	if len(t.ProviderQuotas) > 0 {
+		copies := make([]ProviderQuotaSnapshot, len(t.ProviderQuotas))
+		for i, snap := range t.ProviderQuotas {
+			copies[i] = deepCopyProviderQuota(snap)
+		}
+		out.ProviderQuotas = copies
 	}
 	return out
 }

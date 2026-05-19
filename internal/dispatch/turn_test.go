@@ -362,6 +362,198 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 		})
 	})
 
+	// Phase-5 §1c-β: wrapWithTurnLifecycle also taps `context_usage` and
+	// `provider_quota` chunks. The dispatcher parses chunk.Content into the
+	// matching typed payload and calls registry.SetContextUsage /
+	// registry.UpsertProviderQuota so the long-poll wire surfaces the live
+	// figure / per-partition quota state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+	Context("when the engine emits context_usage / provider_quota chunks mid-stream (Phase-5 §1c-β)", func() {
+		It("calls SetContextUsage so the Turn registry exposes ContextUsage during Running", func() {
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{
+						EventType: "context_usage",
+						Content:   `{"input_tokens":1234,"output_reserve":8192,"limit":200000,"percentage":1,"provider":"anthropic","model":"claude-opus-4-7"}`,
+					},
+					{Content: "ack", ModelID: "claude-opus-4-7", ProviderID: "anthropic"},
+					{Done: true, ModelID: "claude-opus-4-7", ProviderID: "anthropic"},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-1c-beta-cu", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1c-beta-cu",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Eventually the wrap goroutine drains the context_usage chunk
+			// and SetContextUsage populates Turn.ContextUsage BEFORE the
+			// terminal Complete fires.
+			Eventually(func() int {
+				t, gerr := turns.Get(handle.TurnID)
+				if gerr != nil || t.ContextUsage == nil {
+					return 0
+				}
+				return t.ContextUsage.InputTokens
+			}, "2s", "10ms").Should(Equal(1234),
+				"the wrap goroutine must tap context_usage chunks, parse chunk.Content, and call SetContextUsage — the long-poll surface then exposes the live figure without an SSE side-channel")
+
+			t, _ := turns.Get(handle.TurnID)
+			Expect(t.ContextUsage.Limit).To(Equal(200000))
+			Expect(t.ContextUsage.Provider).To(Equal("anthropic"))
+			Expect(t.ContextUsage.Model).To(Equal("claude-opus-4-7"))
+		})
+
+		It("silently absorbs a malformed context_usage chunk payload (no panic, no mutation)", func() {
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{EventType: "context_usage", Content: `{not valid json`},
+					{Content: "ack"},
+					{Done: true},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-malformed-cu", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-malformed-cu",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() turn.Status {
+				t, _ := turns.Get(handle.TurnID)
+				return t.Status
+			}, "2s", "10ms").Should(Equal(turn.StatusCompleted),
+				"the wrap goroutine must drain the malformed chunk without panicking and still fire terminal Complete")
+			t, _ := turns.Get(handle.TurnID)
+			Expect(t.ContextUsage).To(BeNil(),
+				"malformed payload must NOT mutate the stored figure — parse-fail absorbs silently to mirror the SSE writer's forward-compat policy")
+		})
+
+		It("calls UpsertProviderQuota — same key REPLACES not duplicates; different key APPENDS", func() {
+			// Drip two provider_quota chunks: same partition key updated
+			// (replaces the prior figure), then a different key (appends a
+			// new partition). The brief calls this out explicitly as the
+			// regression-pin for Option B partition-key semantics.
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{
+						EventType: "provider_quota",
+						Content:   `{"provider":"anthropic","account_hash":"acc-1","model":"claude-opus-4-7","observed_at":"2026-05-19T00:00:00Z","variant":"token_spend","token_spend":{"spent_minor":1000,"spent_currency":"USD","period":"monthly","period_start":"2026-05-01T00:00:00Z","period_end":"2026-05-31T23:59:59Z","threshold_amber":70,"threshold_red":90}}`,
+					},
+					{Content: "mid"},
+					{
+						EventType: "provider_quota",
+						Content:   `{"provider":"anthropic","account_hash":"acc-1","model":"claude-opus-4-7","observed_at":"2026-05-19T00:00:01Z","variant":"token_spend","token_spend":{"spent_minor":2500,"spent_currency":"USD","period":"monthly","period_start":"2026-05-01T00:00:00Z","period_end":"2026-05-31T23:59:59Z","threshold_amber":70,"threshold_red":90}}`,
+					},
+					{
+						EventType: "provider_quota",
+						Content:   `{"provider":"zai","account_hash":"acc-z","model":"glm-4.6","observed_at":"2026-05-19T00:00:02Z","variant":"token_spend","token_spend":{"spent_minor":500,"spent_currency":"USD","period":"monthly","period_start":"2026-05-01T00:00:00Z","period_end":"2026-05-31T23:59:59Z","threshold_amber":70,"threshold_red":90}}`,
+					},
+					{Done: true},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-1c-beta-quota", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1c-beta-quota",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait until two partitions are present (the first replaced, the
+			// second appended). If the dispatcher tap were APPENDing instead
+			// of UPSERTing the same partition key, len would be 3.
+			Eventually(func() int {
+				t, gerr := turns.Get(handle.TurnID)
+				if gerr != nil {
+					return 0
+				}
+				return len(t.ProviderQuotas)
+			}, "2s", "10ms").Should(Equal(2),
+				"after two same-key + one different-key provider_quota chunks, ProviderQuotas must have exactly 2 entries — partition-key dedup REPLACES same-key snapshots in place")
+
+			t, _ := turns.Get(handle.TurnID)
+			// Find the anthropic entry — its TokenSpend must reflect the
+			// LATEST figure (2500), not the original 1000.
+			var anthSpent int64
+			var zaiSpent int64
+			for _, q := range t.ProviderQuotas {
+				if q.Provider == "anthropic" && q.TokenSpend != nil {
+					anthSpent = q.TokenSpend.SpentMinor
+				}
+				if q.Provider == "zai" && q.TokenSpend != nil {
+					zaiSpent = q.TokenSpend.SpentMinor
+				}
+			}
+			Expect(anthSpent).To(Equal(int64(2500)),
+				"same-partition replacement must surface the newest figure — the second anthropic chunk overrides the first")
+			Expect(zaiSpent).To(Equal(int64(500)),
+				"different-partition append must surface the zai chunk's figure")
+		})
+
+		It("silently absorbs a malformed provider_quota chunk payload (no panic, no mutation)", func() {
+			probe := &turnProbeStreamer{
+				chunks: []provider.StreamChunk{
+					{EventType: "provider_quota", Content: `not-json-at-all`},
+					{Content: "ack"},
+					{Done: true},
+				},
+				emitInterval: 5 * time.Millisecond,
+			}
+			mgr := &turnSessionManager{
+				sess:     session.Session{ID: "sess-malformed-quota", AgentID: "default-assistant"},
+				streamer: probe,
+			}
+			turns := turn.NewRegistry()
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+
+			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-malformed-quota",
+				AgentID:      "default-assistant",
+				Content:      "trigger",
+				ScanMentions: false,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() turn.Status {
+				t, _ := turns.Get(handle.TurnID)
+				return t.Status
+			}, "2s", "10ms").Should(Equal(turn.StatusCompleted))
+			t, _ := turns.Get(handle.TurnID)
+			Expect(t.ProviderQuotas).To(BeEmpty(),
+				"malformed provider_quota payload must NOT append to the slice — parse-fail absorbs silently")
+		})
+	})
+
 	Context("when a second DispatchSessioned fires on the same session while the first is still running", func() {
 		It("returns ErrTurnConflict from the second call", func() {
 			probe := &turnProbeStreamer{

@@ -1392,6 +1392,27 @@ type turnResponse struct {
 	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
 	CurrentProvider string `json:"current_provider,omitempty"`
 	CurrentModel    string `json:"current_model,omitempty"`
+	// ContextUsage + ProviderQuotas surface the engine's `context_usage`
+	// and `provider_quota` chunk payloads onto the polling wire
+	// (Phase-5 §1c-β). Populated by the dispatcher's wrapWithTurnLifecycle
+	// chunk-tap on the matching event types via registry.SetContextUsage
+	// and registry.UpsertProviderQuota. Both fields are emitted with
+	// `omitempty` — pre-1c-β servers and pre-first-chunk Turn states
+	// omit them from the JSON entirely so the FE parser sees `undefined`
+	// rather than a misleading zero-valued payload.
+	//
+	// ContextUsage is a pointer because the absent state must be
+	// unambiguously distinguishable from a zero-figure payload. The
+	// FE's chip-gate reads "no payload" vs "limit=0 payload" differently.
+	//
+	// ProviderQuotas is a slice — multiple partitions can accumulate
+	// across a single Turn (failover or @-mention swarm hop), and the
+	// FE's quotaStore subscribes to per-partition updates.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+	ContextUsage   *turn.ContextUsage            `json:"context_usage,omitempty"`
+	ProviderQuotas []turn.ProviderQuotaSnapshot `json:"provider_quotas,omitempty"`
 }
 
 // handleGetTurn returns the current state of a Turn by its UUID.
@@ -1496,6 +1517,8 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			baseline.TokenCount,
 			baseline.CurrentProvider,
 			baseline.CurrentModel,
+			baseline.ContextUsage,
+			baseline.ProviderQuotas,
 			longPollTimeout,
 		)
 		// ctx-cancel path returns the zero snapshot — t.ID == "" iff
@@ -1522,6 +1545,8 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			TokenCount:      t.TokenCount,
 			CurrentProvider: t.CurrentProvider,
 			CurrentModel:    t.CurrentModel,
+			ContextUsage:    t.ContextUsage,
+			ProviderQuotas:  t.ProviderQuotas,
 		})
 		return
 	}
@@ -1552,6 +1577,8 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		TokenCount:      t.TokenCount,
 		CurrentProvider: t.CurrentProvider,
 		CurrentModel:    t.CurrentModel,
+		ContextUsage:    t.ContextUsage,
+		ProviderQuotas:  t.ProviderQuotas,
 	})
 }
 

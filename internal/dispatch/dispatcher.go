@@ -29,6 +29,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 
@@ -865,6 +866,41 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 			if chunk.EventType == "model_active" || chunk.EventType == "provider_changed" {
 				if lastProviderID != "" || lastModelID != "" {
 					d.turnRegistry.SetProviderModel(turnID, lastProviderID, lastModelID)
+				}
+			}
+			// Phase-5 §1c-β: surface the live context_usage figure onto the
+			// Turn registry so the long-poll wire exposes it without an SSE
+			// side-channel. The engine emits a chunk{EventType:"context_usage",
+			// Content:<json>} as the first artefact of every Stream that has
+			// enough information to compute it (engine.go:3262
+			// buildContextUsageChunk + engine.go:2643 Stream). The wire shape
+			// mirrors sseContextUsage at internal/api/sse_writers.go:142-150.
+			//
+			// Parse failure is silently absorbed — a malformed chunk is
+			// already dropped by the existing SSE writer (writeSSEContextUsage
+			// silently drops malformed payloads to keep the chip stable);
+			// the long-poll surface inherits the same forward-compat policy.
+			if chunk.EventType == "context_usage" && chunk.Content != "" {
+				var cu turn.ContextUsage
+				if err := json.Unmarshal([]byte(chunk.Content), &cu); err == nil {
+					d.turnRegistry.SetContextUsage(turnID, &cu)
+				}
+			}
+			// Phase-5 §1c-β: surface provider_quota snapshots onto the Turn
+			// registry. The engine emits a chunk{EventType:"provider_quota",
+			// Content:<json>} inline before reply and post-turn (see
+			// engine.go:2650 Stream + buildProviderQuotaChunk). The wire
+			// shape mirrors sseProviderQuota at internal/api/sse_writers.go:
+			// 176-189. UpsertProviderQuota's partition-key semantics dedup
+			// per-partition so multiple snapshots accumulate (anthropic +
+			// zai after failover, anthropic + openai across @-mention
+			// swarm hops); each partition's most-recent payload wins.
+			//
+			// Parse failure: same silent-absorb policy as context_usage.
+			if chunk.EventType == "provider_quota" && chunk.Content != "" {
+				var snap turn.ProviderQuotaSnapshot
+				if err := json.Unmarshal([]byte(chunk.Content), &snap); err == nil {
+					d.turnRegistry.UpsertProviderQuota(turnID, snap)
 				}
 			}
 			if chunk.Error != nil {

@@ -330,6 +330,123 @@ export interface TurnState {
    * change without waiting for the SSE handler at chatStore.ts:2740.
    */
   current_model?: string
+  /**
+   * context_usage mirrors the engine's `context_usage` chunk payload —
+   * the live context-window saturation figure the chat-UI's usage chip
+   * pivots on (Phase-5 §1c-β). Populated by the dispatcher's
+   * wrapWithTurnLifecycle chunk-tap on `context_usage` events via
+   * registry.SetContextUsage; surfaced on every poll so the chip ticks
+   * up without an SSE side-channel.
+   *
+   * Wire shape mirrors `sseContextUsage` at
+   * internal/api/sse_writers.go:142-150 — same field names + JSON tags
+   * so the same parser can deserialise SSE chunks and poll snapshots.
+   *
+   * Optional: pre-1c-β servers and pre-first-chunk Turn states omit the
+   * field entirely. The FE's poll-diff treats absent === unchanged.
+   */
+  context_usage?: TurnStateContextUsage
+  /**
+   * provider_quotas mirrors the cumulative set of `provider_quota`
+   * chunk payloads the engine emitted during this Turn (Phase-5 §1c-β),
+   * partitioned by `provider:account_hash:model`. Multi-value because a
+   * single stream can carry multiple partitions (anthropic + zai after
+   * failover, anthropic + openai across @-mention swarm hops); each
+   * partition's most-recent snapshot wins on the registry's upsert
+   * semantics.
+   *
+   * Wire shape mirrors `sseProviderQuota` at
+   * internal/api/sse_writers.go:176-189; ProviderQuotaEntry in this
+   * module already mirrors the same shape for the REST aggregator —
+   * we re-use the existing type here so the FE has one shape across
+   * both surfaces.
+   *
+   * Optional: pre-1c-β servers and pre-first-chunk Turn states omit the
+   * field entirely. The FE's poll-diff iterates per-partition; an
+   * absent slice is treated as no-change.
+   */
+  provider_quotas?: TurnStateProviderQuotaSnapshot[]
+}
+
+/**
+ * TurnStateContextUsage mirrors the Go `internal/turn.ContextUsage` JSON
+ * shape (turn.go field tags: input_tokens, output_reserve, limit,
+ * percentage, provider, model). The FE's chatStore poll-diff parses this
+ * verbatim and routes through handleContextUsageEvent — the same handler
+ * the SSE branch calls at chatStore.ts:2795-2806 — so a single sink in
+ * the store covers both transports.
+ *
+ * Phase-5 §1c-β.
+ */
+export interface TurnStateContextUsage {
+  input_tokens: number
+  output_reserve: number
+  limit: number
+  percentage: number
+  provider: string
+  model: string
+}
+
+/**
+ * TurnStateProviderQuotaSnapshot mirrors the Go
+ * `internal/turn.ProviderQuotaSnapshot` JSON shape (snake_case field
+ * tags matching sseProviderQuota at internal/api/sse_writers.go). The
+ * variant discriminator selects which of {rate_limit, token_spend,
+ * not_configured} carries the payload — exactly one is non-null per
+ * snapshot.
+ *
+ * Distinct from ProviderQuotaEntry (the REST aggregator's shape) which
+ * uses camelCase: the turn endpoint emits the snake_case Go-side shape
+ * directly because Go's encoding/json honors the struct tags as-is.
+ * The poll-diff in chatStore normalises this to the camelCase shape
+ * applyProviderQuotaEvent expects.
+ *
+ * Phase-5 §1c-β.
+ */
+export interface TurnStateProviderQuotaSnapshot {
+  provider: string
+  account_hash: string
+  model?: string
+  observed_at: string
+  stale?: boolean
+  store_backend?: string
+  pricing_source?: string
+  variant: 'rate_limit' | 'token_spend' | 'not_configured'
+  rate_limit?: TurnStateProviderQuotaRateLimit | null
+  token_spend?: TurnStateProviderQuotaTokenSpend | null
+  not_configured?: TurnStateProviderQuotaNotConfig | null
+}
+
+export interface TurnStateProviderQuotaRateLimit {
+  requests: TurnStateProviderQuotaWindow
+  tokens: TurnStateProviderQuotaWindow
+  input: TurnStateProviderQuotaWindow
+  output: TurnStateProviderQuotaWindow
+  tightest_percent_remaining: number
+  tightest_reset_at?: string
+}
+
+export interface TurnStateProviderQuotaWindow {
+  limit: number
+  remaining: number
+  reset?: string
+}
+
+export interface TurnStateProviderQuotaTokenSpend {
+  spent_minor: number
+  spent_currency: string
+  spent_usd_minor: number
+  cap_minor?: number
+  cap_currency?: string
+  period: string
+  period_start: string
+  period_end: string
+  threshold_amber: number
+  threshold_red: number
+}
+
+export interface TurnStateProviderQuotaNotConfig {
+  reason: string
 }
 
 /**
