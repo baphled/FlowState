@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -10,10 +11,57 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
+
+// recordingAppender is a session.MessageAppender stub that captures the
+// (sessionID, agentID) pairs every AppendMessage call sees so the
+// sub-swarm dispatch specs can pin "no persona-stamp leakage on the
+// parent session". The leak shape is `AppendMessage(parentSessionID,
+// {AgentID: memberID, ...})` — exactly what session
+// 1e99f552-5223-4c38-8d83-225ea3ba16af.meta.json shows under jq
+// `[.messages[].agentId] | unique` returning five non-coordinator
+// personas on a single coordinator session with zero child sessions
+// in `parent_id=<coord>` view.
+type recordingAppender struct {
+	mu    sync.Mutex
+	stamp []appendedStamp
+}
+
+type appendedStamp struct {
+	sessionID string
+	agentID   string
+	role      string
+}
+
+func newRecordingAppender() *recordingAppender { return &recordingAppender{} }
+
+func (r *recordingAppender) AppendMessage(sessionID string, msg session.Message) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stamp = append(r.stamp, appendedStamp{
+		sessionID: sessionID,
+		agentID:   msg.AgentID,
+		role:      msg.Role,
+	})
+}
+
+func (r *recordingAppender) UpdateDelegation(string, string, func(*session.Message)) {}
+
+func (r *recordingAppender) stampsForSession(id string) []appendedStamp {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]appendedStamp, 0, len(r.stamp))
+	for _, s := range r.stamp {
+		if s.sessionID == id {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // registerTwoLevelSwarm seeds reg with parent-swarm and child-swarm
 // manifests so a member of the parent resolves to the child via
@@ -235,6 +283,198 @@ var _ = Describe("SubSwarmRecursion", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(reviewerCalls.Load()).To(Equal(int32(1)),
 				"the agent-target path must still fire — swarm-dispatch must not capture agent-id targets")
+		})
+	})
+
+	// Delegation Regression Fix (May 2026).
+	//
+	// The swarm-target dispatch path (tryDispatchSwarmTarget →
+	// DispatchSwarmMembers → buildMemberRunner closure → streamAndCollect)
+	// historically routed every member's stream through the COORDINATOR's
+	// ctx without rebinding session.IDKey to a per-member child session.
+	// The accumulator on that path called
+	// AppendMessage(coordinatorSessionID, {AgentID: memberID, ...}),
+	// stamping non-coordinator personas onto coordinator-owned message
+	// rows while no child session was ever spawned.
+	//
+	// Production symptom: session
+	// 1e99f552-5223-4c38-8d83-225ea3ba16af.meta.json (May 2026) where
+	// `jq '[.messages[].agentId] | unique'` returns
+	// [analyst, coordinator, explorer, librarian, plan-reviewer,
+	//  plan-writer] on ONE coordinator session, with
+	// `grep -l '"parent_id":"1e99f552-..."'` returning no child sessions.
+	//
+	// Contract pinned: every member dispatched through the swarm-target
+	// path MUST land on its own child session (parent_id = coordinator's
+	// id, agent_id = memberID) — the coordinator session never sees a
+	// non-coordinator AgentID stamp via AppendMessage.
+	Context("when delegate routes through the swarm-target dispatch path", func() {
+		It("spawns a child session per member with parent_id=coordinator, agent_id=memberID", func() {
+			// Behaviour-Pinned: the swarm-target dispatch path must
+			// spawn a child session per member via the
+			// sessionCreator (the same seam executeSync uses for
+			// agent-target delegations). Previously the swarm-target
+			// path bypassed createChildSession entirely.
+			reg := swarm.NewRegistry()
+			reg.Register(&swarm.Manifest{
+				SchemaVersion: "1.0.0",
+				ID:            "planning-loop",
+				Lead:          "explorer",
+				Members:       []string{"explorer", "librarian"},
+				SwarmType:     swarm.SwarmTypeAnalysis,
+			})
+
+			coord := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "coord"},
+				Manifest: agent.Manifest{
+					ID:                "coordinator",
+					Name:              "Coordinator",
+					Instructions:      agent.Instructions{SystemPrompt: "coord"},
+					Delegation:        agent.Delegation{CanDelegate: true},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			explorer := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "explorer"},
+				Manifest:     agent.Manifest{ID: "explorer", Name: "Explorer", ContextManagement: agent.DefaultContextManagement()},
+			})
+			librarian := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "librarian"},
+				Manifest:     agent.Manifest{ID: "librarian", Name: "Librarian", ContextManagement: agent.DefaultContextManagement()},
+			})
+			engines := map[string]*engine.Engine{
+				"coordinator": coord,
+				"explorer":    explorer,
+				"librarian":   librarian,
+			}
+
+			coordCtx := swarm.NewContext("meta-swarm", &swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "coordinator",
+				Members: []string{"planning-loop"},
+			})
+			coord.SetSwarmContext(&coordCtx)
+
+			streamers := map[string]streaming.Streamer{
+				"explorer":  trivialStreamer(nil),
+				"librarian": trivialStreamer(nil),
+			}
+			mgr := session.NewManager(coord)
+			appender := newRecordingAppender()
+			mgr.RegisterSession("coord-session", "coordinator")
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "coordinator").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg).
+				WithSessionCreator(mgr).
+				WithSessionManager(mgr).
+				WithMessageAppender(appender).
+				WithOwnerEngine(coord)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "coord-session")
+			_, err := delegateTool.Execute(ctx, tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "planning-loop",
+					"message":       "investigate auth-store coverage",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred(),
+				"the swarm-target dispatch must succeed end-to-end")
+
+			children, err := mgr.ChildSessions("coord-session")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).To(HaveLen(2),
+				"every member of planning-loop must spawn a child session anchored to the coordinator (parent_id=coord-session); "+
+					"production session 1e99f552-5223-4c38-8d83-225ea3ba16af.meta.json shows zero child sessions despite five non-coordinator personas streaming")
+
+			childAgents := []string{children[0].AgentID, children[1].AgentID}
+			Expect(childAgents).To(ContainElements("explorer", "librarian"),
+				"each spawned child session must carry agent_id matching the dispatched member id")
+
+			for _, c := range children {
+				Expect(c.ParentID).To(Equal("coord-session"),
+					"every member's child session must be parented to the coordinator's session id")
+			}
+		})
+
+		It("never stamps a non-coordinator agentId on the coordinator session via AppendMessage", func() {
+			// Behaviour-Pinned: the coordinator's persisted message
+			// log must contain ZERO rows with AgentID != "coordinator"
+			// after a swarm-target delegate. Pre-fix the accumulator
+			// on the swarm-target path stamped memberID onto rows
+			// written to the coordinator session.
+			reg := swarm.NewRegistry()
+			reg.Register(&swarm.Manifest{
+				SchemaVersion: "1.0.0",
+				ID:            "planning-loop",
+				Lead:          "explorer",
+				Members:       []string{"explorer", "librarian"},
+				SwarmType:     swarm.SwarmTypeAnalysis,
+			})
+
+			coord := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "coord"},
+				Manifest: agent.Manifest{
+					ID:                "coordinator",
+					Name:              "Coordinator",
+					Delegation:        agent.Delegation{CanDelegate: true},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			explorer := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "explorer"},
+				Manifest:     agent.Manifest{ID: "explorer", Name: "Explorer", ContextManagement: agent.DefaultContextManagement()},
+			})
+			librarian := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "librarian"},
+				Manifest:     agent.Manifest{ID: "librarian", Name: "Librarian", ContextManagement: agent.DefaultContextManagement()},
+			})
+			engines := map[string]*engine.Engine{
+				"coordinator": coord,
+				"explorer":    explorer,
+				"librarian":   librarian,
+			}
+
+			coordCtx := swarm.NewContext("meta-swarm", &swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "coordinator",
+				Members: []string{"planning-loop"},
+			})
+			coord.SetSwarmContext(&coordCtx)
+
+			streamers := map[string]streaming.Streamer{
+				"explorer":  trivialStreamer(nil),
+				"librarian": trivialStreamer(nil),
+			}
+			mgr := session.NewManager(coord)
+			appender := newRecordingAppender()
+			mgr.RegisterSession("coord-session", "coordinator")
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "coordinator").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg).
+				WithSessionCreator(mgr).
+				WithSessionManager(mgr).
+				WithMessageAppender(appender).
+				WithOwnerEngine(coord)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "coord-session")
+			_, err := delegateTool.Execute(ctx, tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "planning-loop",
+					"message":       "investigate auth-store coverage",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			coordStamps := appender.stampsForSession("coord-session")
+			for _, s := range coordStamps {
+				Expect(s.agentID).To(Equal("coordinator"),
+					"AppendMessage to the coordinator session must only carry AgentID=coordinator; "+
+						"pre-fix the swarm-target path stamped member personas (explorer/librarian/...) onto the coordinator's row store because ctx was never re-bound to a per-member child session before wrapWithAccumulator")
+			}
 		})
 	})
 })

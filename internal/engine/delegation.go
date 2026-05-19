@@ -2707,11 +2707,111 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 			ctx, cancelMemberTimeout = context.WithTimeout(ctx, memberTimeout)
 			defer cancelMemberTimeout()
 		}
+		// Delegation Regression Fix (May 2026) — every `delegate()`
+		// invocation from inside the engine MUST result in a child
+		// session with the correct parent_id and agent_id. The
+		// coordinator's session must NEVER have tool calls stamped
+		// with a non-coordinator agentID via AppendMessage.
+		//
+		// Pre-fix, the swarm-target dispatch path (tryDispatchSwarmTarget
+		// → DispatchSwarmMembers → here) bypassed the child-session
+		// bootstrap that executeSync does for agent-target delegations,
+		// so the accumulator (wrapWithAccumulator → AccumulateStream)
+		// called AppendMessage(parentSessionID, {AgentID: memberID,
+		// ...}) — stamping personas onto rows in the coordinator's
+		// session row store with zero spawned children.
+		//
+		// Canonical production symptom: session
+		// 1e99f552-5223-4c38-8d83-225ea3ba16af.meta.json (May 2026)
+		// has tool calls + assistant rows stamped with explorer,
+		// librarian, analyst, plan-writer, plan-reviewer — all on the
+		// coordinator's session, with `grep -l "parent_id":"1e99f552-..."`
+		// returning empty.
+		//
+		// bootstrapMemberSession mirrors executeSync's child-session
+		// resolve+attach+rebind: resolveOrCreateSession spawns the
+		// child via CreateWithParentAndChain with parent_id =
+		// coordinator and agent_id = memberID, persistChildBrief
+		// stamps the brief into the child's row store, attachSessionStore
+		// re-points the member engine's row store at the child,
+		// session.IDKey is rebound so every downstream
+		// sessionIDFromContext(dispatchCtx) call inside streamAndCollect
+		// — most importantly wrapWithAccumulator's sessionID arg —
+		// resolves to the child id, not the parent's.
+		dispatchCtx, cleanup := d.bootstrapMemberSession(ctx, target, swarmCtx.ChainPrefix)
+		defer cleanup()
 		var result delegationResult
-		return runner.Dispatch(ctx, memberID, func(dispatchCtx context.Context, _ string) error {
-			return d.streamAndCollect(dispatchCtx, target, &result)
+		return runner.Dispatch(dispatchCtx, memberID, func(innerCtx context.Context, _ string) error {
+			return d.streamAndCollect(innerCtx, target, &result)
 		})
 	}
+}
+
+// bootstrapMemberSession spawns a per-member child session, persists
+// the parent's brief into the child, attaches the member engine's
+// row store to the child's session id, and returns a ctx rebound to
+// the child sessionID (with masked provider/model overrides so the
+// parent's selection does not leak into the member engine).
+//
+// Mirrors the seam executeSync uses for agent-target delegations
+// (resolveOrCreateSession → persistChildBrief → attachSessionStore →
+// context.WithValue(session.IDKey{}, child)). Pulling this into a
+// helper closes the swarm-target dispatch path's lack of child-session
+// spawn — the Delegation Regression Fix's load-bearing change.
+//
+// Expected:
+//   - ctx is the per-member dispatch ctx carrying the coordinator's
+//     session id under session.IDKey{}.
+//   - target.agentID is the resolved member id.
+//   - target.engine is the member's isolated engine.
+//   - target.message is the brief the coordinator sent to the member.
+//   - chainID is the active swarm's chain prefix; empty falls through
+//     to resolveOrCreateSession's synthetic-id branch.
+//
+// Returns:
+//   - dispatchCtx with session.IDKey rebound to the spawned child id
+//     and provider/model overrides masked.
+//   - cleanup is the closer the caller must defer; it closes the
+//     attached file store (no-op when no factory) and seals the
+//     spawned child session via closeSessionIfManaged.
+//
+// Side effects:
+//   - May call sessionCreator.CreateWithParentAndChain (or sessionManager's
+//     equivalent fallback) — both register a child session in memory and
+//     persist its sidecar when a sessionsDir is configured.
+//   - May call messageAppender.AppendMessage to persist the brief into
+//     the child session row store.
+//   - May call attachSessionStore to swap the member engine's
+//     FileContextStore to the child id (no-op when storeFactory is nil).
+//
+// NOTE: this seam intentionally does NOT publish a `delegation.started`
+// / `delegation.completed` event. The swarm-target path emits its
+// progress through SwarmEvents (DispatchMembers) and the per-chunk
+// transcript via teeToParentStream; layering a second bus event from
+// here would double-count delegation lifecycles. Future refactor:
+// converge executeSync's per-delegation event publishing with the
+// swarm-target path's SwarmEvents under a single emitter — out of
+// scope for this commit's contract-closing fix.
+func (d *DelegateTool) bootstrapMemberSession(
+	ctx context.Context,
+	target delegationTarget,
+	chainID string,
+) (context.Context, func()) {
+	childID := d.resolveOrCreateSession(ctx, target.agentID, "", chainID)
+	d.persistChildBrief(childID, target.agentID, target.message)
+	closeStore := d.attachSessionStore(target.engine, childID)
+	dispatchCtx := context.WithValue(ctx, session.IDKey{}, childID)
+	// The coordinator session's provider/model selection must not
+	// propagate into the member engine — the member uses its own
+	// configured failover preferences. Masking with "" disables the
+	// override check in engine.go. Mirrors executeSync line ~2261-2262.
+	dispatchCtx = context.WithValue(dispatchCtx, session.ProviderOverrideKey{}, "")
+	dispatchCtx = context.WithValue(dispatchCtx, session.ModelOverrideKey{}, "")
+	cleanup := func() {
+		closeStore()
+		d.closeSessionIfManaged(childID)
+	}
+	return dispatchCtx, cleanup
 }
 
 // memberTimeoutForSwarm returns the HarnessConfig.MemberTimeout for
