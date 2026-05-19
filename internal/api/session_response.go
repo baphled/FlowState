@@ -39,6 +39,23 @@ type SessionResponse struct {
 	Messages          []session.Message `json:"messages"`
 	MessageCount      int               `json:"messageCount"`
 	IsStreaming       bool              `json:"isStreaming"`
+	// ActiveTurnID is the Phase-4-Commit-1 sibling to IsStreaming —
+	// the in-flight Turn UUID for this session, or "" when no Turn is
+	// Running. Populated by callers via WithActiveTurnID from
+	// turn.Registry.FindActiveBySession so the frontend can drive
+	// `GET /sessions/{id}/turns/{turn_id}` without an extra round-trip.
+	// IsStreaming is preserved here for backward compatibility; Commit 2
+	// retires it once the frontend migration completes.
+	//
+	// Always emitted as a string (never omitempty) — clients gate on
+	// the presence of the key, not on its truthiness, so an absent key
+	// would break the `if (snapshot.activeTurnId) { startPolling }`
+	// path. The zero value is the empty string, which JSON-marshals as
+	// `"activeTurnId": ""`.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+	ActiveTurnID string `json:"activeTurnId"`
 	// ChainID mirrors Session.ChainID (manager.go:138) and Summary.ChainID
 	// (manager.go:167). Persisted on the Session by the engine's spawn path
 	// to close the cold-reload sibling-confusion hole; surfaced here so any
@@ -56,6 +73,7 @@ type SessionResponse struct {
 // sessionResponseOptions holds functional-option state for NewSessionResponse.
 type sessionResponseOptions struct {
 	isStreaming  bool
+	activeTurnID string
 	contextUsage json.RawMessage
 }
 
@@ -68,6 +86,20 @@ type SessionResponseOption func(*sessionResponseOptions)
 func WithIsStreaming(streaming bool) SessionResponseOption {
 	return func(o *sessionResponseOptions) {
 		o.isStreaming = streaming
+	}
+}
+
+// WithActiveTurnID annotates the response with the in-flight Turn UUID
+// for the session (Phase-4-Commit-1). Pass the result of
+// turn.Registry.FindActiveBySession; an empty string is tolerated and
+// marshals as `"activeTurnId": ""` so the wire shape stays consistent
+// for both idle and running sessions.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+func WithActiveTurnID(turnID string) SessionResponseOption {
+	return func(o *sessionResponseOptions) {
+		o.activeTurnID = turnID
 	}
 }
 
@@ -112,6 +144,7 @@ func NewSessionResponse(sess *session.Session, opts ...SessionResponseOption) *S
 		Messages:          messages,
 		MessageCount:      len(messages),
 		IsStreaming:       o.isStreaming,
+		ActiveTurnID:      o.activeTurnID,
 		ChainID:           sess.ChainID,
 		ContextUsage:      o.contextUsage,
 		CreatedAt:         sess.CreatedAt,

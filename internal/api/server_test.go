@@ -7448,3 +7448,257 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 			"a second POST while turn 1 is StatusRunning must return HTTP 409 Conflict — dispatch.ErrTurnConflict must map to http.StatusConflict in handleSessionMessage. Got body: %s", string(raw2))
 	})
 })
+
+// Phase-4-Commit-1 RED gate per "Turn-Based Post-Then-Poll Architecture
+// (May 2026)" §4d Commit 1. Two surfaces ship in this slice:
+//
+//   - GET /api/v1/sessions exposes `activeTurnId` on each Summary
+//     during a Running turn (populated via registry.FindActiveBySession
+//     at handleListV1Sessions). Empty for idle sessions.
+//   - GET /api/v1/sessions/{id}/turns/{turn_id} carries `phase` +
+//     `token_count` fields the engine's `events.EventStreamingHeartbeat`
+//     bus subscription writes onto the Turn via registry.SetHeartbeat.
+//     `phase` transitions across polls; `token_count` grows monotonically.
+//
+// The new bus subscriber sits ALONGSIDE the existing SSE-side bridge
+// at internal/api/event_bridge.go:46 — Commit 2 retires that bridge,
+// not Commit 1. Tests here exercise the polling-side wiring only.
+var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func() {
+	var (
+		drip    *dripStreamer
+		mgr     *session.Manager
+		bus     *eventbus.EventBus
+		srv     *api.Server
+		httpSrv *httptest.Server
+		reg     *agent.Registry
+	)
+
+	setup := func(chunks []provider.StreamChunk, interval time.Duration) {
+		drip = &dripStreamer{chunks: chunks, emitInterval: interval}
+		mgr = session.NewManager(drip)
+		bus = eventbus.NewEventBus()
+		reg = agent.NewRegistry()
+		reg.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
+		srv = api.NewServer(
+			drip,
+			reg,
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(api.NewSessionBroker()),
+			api.WithEventBus(bus),
+		)
+		httpSrv = httptest.NewServer(srv.Handler())
+	}
+
+	AfterEach(func() {
+		if httpSrv != nil {
+			httpSrv.Close()
+			httpSrv = nil
+		}
+	})
+
+	postMessage := func(sessionID, content string) (int, map[string]any, []byte) {
+		resp, err := http.Post( //nolint:noctx
+			httpSrv.URL+"/api/v1/sessions/"+sessionID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"`+content+`"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		var out map[string]any
+		if len(raw) > 0 && raw[0] == '{' {
+			_ = json.Unmarshal(raw, &out)
+		}
+		return resp.StatusCode, out, raw
+	}
+
+	getTurn := func(sessionID, turnID string) (int, map[string]any, []byte) {
+		resp, err := http.Get( //nolint:noctx
+			httpSrv.URL + "/api/v1/sessions/" + sessionID + "/turns/" + turnID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		var out map[string]any
+		if len(raw) > 0 && raw[0] == '{' {
+			_ = json.Unmarshal(raw, &out)
+		}
+		return resp.StatusCode, out, raw
+	}
+
+	listSessions := func() (int, []map[string]any, []byte) {
+		resp, err := http.Get(httpSrv.URL + "/api/v1/sessions") //nolint:noctx
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		var out []map[string]any
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &out)
+		}
+		return resp.StatusCode, out, raw
+	}
+
+	It("GET /api/v1/sessions exposes activeTurnId matching the in-flight turn's UUID mid-stream", func() {
+		// 250ms drip keeps the turn Running across the POST → list
+		// window. Tool-call mid-stream forces the accumulator to flush
+		// so we know the engine pipeline is mid-turn (same shape the
+		// Phase 2 RED specs use to observe a Running turn).
+		setup([]provider.StreamChunk{
+			{ToolCall: &provider.ToolCall{Name: "search", Arguments: map[string]any{"q": "hi"}}},
+			{Content: "tail"},
+			{Done: true},
+		}, 250*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		st, body, _ := postMessage(sess.ID, "hi")
+		Expect(st).To(Equal(http.StatusOK))
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Poll the list endpoint until the summary surfaces activeTurnId.
+		// The handler reads via registry.FindActiveBySession at L1138.
+		var (
+			gotActive  string
+			lastListRaw []byte
+		)
+		Eventually(func() string {
+			listStatus, summaries, raw := listSessions()
+			lastListRaw = raw
+			if listStatus != http.StatusOK {
+				return ""
+			}
+			for _, sum := range summaries {
+				if sum["id"] != sess.ID {
+					continue
+				}
+				v, _ := sum["activeTurnId"].(string)
+				gotActive = v
+				return v
+			}
+			return ""
+		}, "3s", "20ms").Should(Equal(turnID),
+			"GET /api/v1/sessions must surface activeTurnId matching the POST-returned turn UUID while the turn is Running; last list response: %s", string(lastListRaw))
+		Expect(gotActive).To(Equal(turnID))
+	})
+
+	It("GET /api/v1/sessions exposes activeTurnId as empty string for idle sessions", func() {
+		setup([]provider.StreamChunk{{Done: true}}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		// No POST — session is idle. The list response's summary must
+		// surface activeTurnId="" (NOT missing key). The wire contract
+		// gates polling on `if (snapshot.activeTurnId)` so an absent
+		// key is functionally equivalent — the camelCase key MUST be
+		// present even when empty.
+		listStatus, summaries, raw := listSessions()
+		Expect(listStatus).To(Equal(http.StatusOK))
+
+		var seenIdle bool
+		for _, sum := range summaries {
+			if sum["id"] != sess.ID {
+				continue
+			}
+			seenIdle = true
+			// The Summary's IsStreaming preserves backward-compat —
+			// activeTurnId is the new sibling. Both fields must be
+			// present on the wire.
+			Expect(sum).To(HaveKey("activeTurnId"),
+				"the field must appear on the wire for every summary, even when empty — clients reading sum.activeTurnId must see a defined string, not undefined; got: %s", string(raw))
+			v, _ := sum["activeTurnId"].(string)
+			Expect(v).To(BeEmpty(),
+				"idle session — no running turn — activeTurnId must be \"\"; got: %q. Raw: %s", v, string(raw))
+		}
+		Expect(seenIdle).To(BeTrue(), "session must appear in the list; raw: %s", string(raw))
+	})
+
+	It("GET /turns/{turn_id} surfaces phase + token_count populated by the engine-bus heartbeat subscriber", func() {
+		// dripStreamer with a slow emit so the Turn stays Running
+		// across multiple heartbeat publications. The new bus
+		// subscriber wired in handleSessionMessage / NewServer reads
+		// turnID via registry.FindActiveBySession(sessionID) on every
+		// EventStreamingHeartbeat and calls registry.SetHeartbeat.
+		setup([]provider.StreamChunk{
+			{Content: "step-1"},
+			{Content: "step-2"},
+			{Done: true},
+		}, 250*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		st, body, raw := postMessage(sess.ID, "go")
+		Expect(st).To(Equal(http.StatusOK))
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty(), "POST must return turn_id; raw: %s", string(raw))
+
+		// Publish heartbeats on the bus directly. In production the
+		// engine's runStreamingHeartbeat ticker fires these — the
+		// engine wiring is out of scope for the api package; we drive
+		// the bus from the test to exercise the polling-side wiring
+		// (the new subscriber) deterministically.
+		//
+		// Two ticks at different (phase, tokenCount) values prove the
+		// fields are last-write-wins on Get and that tokenCount can
+		// grow across polls (monotonic semantics).
+		bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+			SessionID:  sess.ID,
+			AgentID:    "default-assistant",
+			Phase:      "thinking",
+			TokenCount: 100,
+		}))
+
+		var (
+			gotPhase   string
+			gotTokens  float64
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			p, _ := gbody["phase"].(string)
+			t, _ := gbody["token_count"].(float64) // json numbers decode as float64
+			gotPhase = p
+			gotTokens = t
+			return gotPhase == "thinking" && gotTokens == 100
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must surface phase=\"thinking\" and token_count=100 after the bus heartbeat publishes; the polling-side subscriber must call registry.SetHeartbeat. Last GET response: %s", string(lastGetRaw))
+
+		// Second heartbeat — different phase, higher token count.
+		// Both fields must update; token_count grows monotonically.
+		bus.Publish(events.EventStreamingHeartbeat, events.NewStreamingHeartbeatEvent(events.StreamingHeartbeatEventData{
+			SessionID:  sess.ID,
+			AgentID:    "default-assistant",
+			Phase:      "generating",
+			TokenCount: 250,
+		}))
+
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			p, _ := gbody["phase"].(string)
+			t, _ := gbody["token_count"].(float64)
+			gotPhase = p
+			gotTokens = t
+			return gotPhase == "generating" && gotTokens == 250
+		}, "3s", "20ms").Should(BeTrue(),
+			"the second heartbeat must overwrite both fields — phase=\"generating\", token_count=250. Polling-side wire must let the chat UI's chip + live counter chrome tick on every poll without an SSE side-channel. Last GET response: %s", string(lastGetRaw))
+
+		Expect(gotTokens).To(BeNumerically(">", float64(100)),
+			"token_count must grow monotonically across heartbeats — the chat UI's tokens-per-second computation relies on this")
+	})
+})

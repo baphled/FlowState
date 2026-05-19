@@ -83,6 +83,62 @@ var _ = Describe("NewSessionResponse model+provider projection", func() {
 	})
 })
 
+// Phase-4-Commit-1 — Turn-Based Post-Then-Poll Architecture (May 2026).
+// The single-session DTO gains `activeTurnId` as a sibling to
+// `isStreaming` so callers reading SessionResponse (POST /messages,
+// PATCH /agent, PATCH /model responses) can resolve the in-flight
+// Turn UUID in the same round-trip as the snapshot — no extra GET
+// /sessions probe. IsStreaming is preserved through Commit 2.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+var _ = Describe("NewSessionResponse activeTurnId field", func() {
+	It("emits activeTurnId: \"\" when no turn is running (sibling to isStreaming)", func() {
+		sess := &session.Session{ID: "sess-active-empty", AgentID: "agent-a"}
+
+		resp := api.NewSessionResponse(sess)
+		Expect(resp).NotTo(BeNil())
+		Expect(resp.ActiveTurnID).To(BeEmpty())
+
+		raw, err := json.Marshal(resp)
+		Expect(err).NotTo(HaveOccurred())
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(raw, &out)).To(Succeed())
+		Expect(out).To(HaveKey("activeTurnId"),
+			"the field must appear on the wire even when empty — clients gate on the presence of the key, not on its truthiness, so an absent key would break the `if (snapshot.activeTurnId) { startPolling }` path")
+		Expect(out["activeTurnId"]).To(Equal(""))
+	})
+
+	It("emits activeTurnId: <id> when WithActiveTurnID option is passed", func() {
+		sess := &session.Session{ID: "sess-active-set", AgentID: "agent-a"}
+
+		resp := api.NewSessionResponse(sess, api.WithActiveTurnID("turn-abc-123"))
+		Expect(resp).NotTo(BeNil())
+		Expect(resp.ActiveTurnID).To(Equal("turn-abc-123"))
+
+		raw, err := json.Marshal(resp)
+		Expect(err).NotTo(HaveOccurred())
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(raw, &out)).To(Succeed())
+		Expect(out).To(HaveKeyWithValue("activeTurnId", "turn-abc-123"))
+	})
+
+	It("preserves IsStreaming alongside ActiveTurnID — Commit 1 keeps both", func() {
+		sess := &session.Session{ID: "sess-both", AgentID: "agent-a"}
+
+		resp := api.NewSessionResponse(sess,
+			api.WithIsStreaming(true),
+			api.WithActiveTurnID("turn-coexist"),
+		)
+		Expect(resp).NotTo(BeNil())
+		Expect(resp.IsStreaming).To(BeTrue(),
+			"isStreaming stays live through Commit 2 — Commit 1 retains it for backward compatibility with existing chatStore consumers")
+		Expect(resp.ActiveTurnID).To(Equal("turn-coexist"))
+	})
+})
+
 var _ = Describe("NewSessionResponse chainId projection", func() {
 	// Parity with Summary.ChainID (manager.go:167). Persisted as
 	// Session.ChainID by 40ad53d2 to close the cold-reload hole on the

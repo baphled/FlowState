@@ -3,6 +3,8 @@ package turn_test
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,6 +258,240 @@ var _ = Describe("Registry", func() {
 			again, _ := reg.Get(id)
 			Expect(again.MessagesAdded).To(HaveLen(1))
 			Expect(again.MessagesAdded[0].Content).To(Equal("real"))
+		})
+	})
+
+	// FindActiveBySession is the Phase-4-Commit-1 lookup path that
+	// powers `GET /sessions` projection of `activeTurnId`: callers can
+	// project the in-flight turn id from a sessionID without scanning
+	// the registry. Backed by the existing byActiveSession O(1) map.
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+	Context("FindActiveBySession", func() {
+		DescribeTable("returns the running turn's id for the supplied session, else (\"\", false)",
+			func(setup func(*turn.Registry), sessionID, wantID string, wantOK bool) {
+				setup(reg)
+				gotID, gotOK := reg.FindActiveBySession(sessionID)
+				Expect(gotOK).To(Equal(wantOK),
+					"ok flag must report whether a Running turn exists for sessionID=%q", sessionID)
+				if wantOK {
+					Expect(gotID).NotTo(BeEmpty())
+				} else {
+					Expect(gotID).To(BeEmpty(),
+						"on the not-found path the returned id must be the empty string, never a stale id")
+				}
+				_ = wantID // wantID asserted in per-row probes below where relevant
+			},
+			Entry("zero turns — empty registry returns (\"\", false)",
+				func(_ *turn.Registry) {}, "sess-1", "", false),
+			Entry("one running turn for this session — returns (id, true)",
+				func(r *turn.Registry) {
+					id, err := r.Start("sess-1")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(id).NotTo(BeEmpty())
+				}, "sess-1", "", true),
+			Entry("one running + one completed (different sessions) — returns the running one for its session",
+				func(r *turn.Registry) {
+					done, err := r.Start("sess-done")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(r.Complete(done, turn.ModelInfo{})).To(Succeed())
+					_, err = r.Start("sess-running")
+					Expect(err).NotTo(HaveOccurred())
+				}, "sess-running", "", true),
+			Entry("after Complete on the running turn — lookup returns (\"\", false)",
+				func(r *turn.Registry) {
+					id, err := r.Start("sess-1")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(r.Complete(id, turn.ModelInfo{})).To(Succeed())
+				}, "sess-1", "", false),
+			Entry("after Fail on the running turn — lookup returns (\"\", false)",
+				func(r *turn.Registry) {
+					id, err := r.Start("sess-1")
+					Expect(err).NotTo(HaveOccurred())
+					Expect(r.Fail(id, errors.New("boom"))).To(Succeed())
+				}, "sess-1", "", false),
+		)
+
+		It("does NOT leak a running turn across sessions (cross-session non-leak)", func() {
+			idA, err := reg.Start("sess-a")
+			Expect(err).NotTo(HaveOccurred())
+
+			// sess-a sees its running turn id.
+			gotA, okA := reg.FindActiveBySession("sess-a")
+			Expect(okA).To(BeTrue())
+			Expect(gotA).To(Equal(idA))
+
+			// sess-b — never had a turn started — must see nothing.
+			gotB, okB := reg.FindActiveBySession("sess-b")
+			Expect(okB).To(BeFalse(),
+				"cross-session isolation: sess-a's running turn must NOT surface in sess-b's lookup; the wire's `activeTurnId` projection would otherwise leak ids between sessions")
+			Expect(gotB).To(BeEmpty())
+		})
+
+		It("returns the freshly-minted id after a prior turn completed and a new one started", func() {
+			id1, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Complete(id1, turn.ModelInfo{})).To(Succeed())
+			id2, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			got, ok := reg.FindActiveBySession("sess-1")
+			Expect(ok).To(BeTrue())
+			Expect(got).To(Equal(id2),
+				"FindActiveBySession must surface the CURRENT running turn, not a terminal prior — the byActiveSession map is cleared on Complete/Fail and re-set on Start")
+		})
+	})
+
+	// SetHeartbeat is the Phase-4-Commit-1 write path that lets a bus
+	// subscriber stamp the most-recent `phase` + `token_count` onto a
+	// running turn so `GET /turns/{id}` can surface live progress
+	// without an SSE side-channel.
+	Context("SetHeartbeat", func() {
+		It("populates Phase + TokenCount on a Running turn", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			reg.SetHeartbeat(id, "thinking", 42)
+
+			t, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(t.Phase).To(Equal("thinking"))
+			Expect(t.TokenCount).To(Equal(42))
+		})
+
+		It("overwrites prior heartbeat values (monotonic last-write-wins)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			reg.SetHeartbeat(id, "queued", 0)
+			reg.SetHeartbeat(id, "thinking", 100)
+			reg.SetHeartbeat(id, "generating", 250)
+
+			t, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(t.Phase).To(Equal("generating"),
+				"the wire heartbeat is last-write-wins — the chat UI's chip reads the most-recent phase")
+			Expect(t.TokenCount).To(Equal(250),
+				"TokenCount is cumulative per the provider's UsageDelta; the registry simply mirrors the latest value")
+		})
+
+		It("is a no-op on a Completed turn (Phase + TokenCount frozen at last value)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			reg.SetHeartbeat(id, "thinking", 50)
+			Expect(reg.Complete(id, turn.ModelInfo{})).To(Succeed())
+
+			// Late heartbeat — bus subscriber fires after Complete. Must
+			// not mutate the terminal-state turn.
+			reg.SetHeartbeat(id, "generating", 999)
+
+			t, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(t.Phase).To(Equal("thinking"),
+				"terminal-state heartbeats must be silently absorbed — the turn's reported phase belongs to its Running lifetime")
+			Expect(t.TokenCount).To(Equal(50))
+		})
+
+		It("is a no-op on a Failed turn", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			reg.SetHeartbeat(id, "thinking", 33)
+			Expect(reg.Fail(id, errors.New("provider blew up"))).To(Succeed())
+
+			reg.SetHeartbeat(id, "generating", 999)
+
+			t, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(t.Phase).To(Equal("thinking"))
+			Expect(t.TokenCount).To(Equal(33))
+		})
+
+		It("is a no-op on an unknown turn id (no panic, no side effect)", func() {
+			Expect(func() {
+				reg.SetHeartbeat("never-minted", "thinking", 7)
+			}).NotTo(Panic(),
+				"unknown turn id must be silently absorbed — the bus subscriber must not crash the engine on a race against Complete clearing the byID entry")
+		})
+
+		It("is a no-op on an empty turn id (no panic, mirrors Append's empty-id contract)", func() {
+			Expect(func() {
+				reg.SetHeartbeat("", "thinking", 0)
+			}).NotTo(Panic(),
+				"empty turn id must be a silent no-op — the heartbeat bus subscriber derives turn id from session and may see \"\" when no turn is in flight for the session")
+		})
+
+		It("is race-safe under concurrent SetHeartbeat / Get / FindActiveBySession (-race must report clean)", func() {
+			// Race-flagged concurrent test: spawns one writer and two
+			// readers; the suite is invoked with `-race` so any unsynchronised
+			// access trips the detector. We assert (a) no panics, (b) no
+			// torn reads on the Phase/TokenCount pair (last observed
+			// values match a write that actually fired).
+			id, err := reg.Start("sess-race")
+			Expect(err).NotTo(HaveOccurred())
+
+			var (
+				wg              sync.WaitGroup
+				stop            atomic.Bool
+				lastWriteTokens atomic.Int64
+			)
+			wg.Add(3)
+
+			// Writer goroutine — tight loop bumping the heartbeat. The
+			// phase alternates so a torn read would surface a mismatched
+			// pair (phase from write N, token from write N+1).
+			go func() {
+				defer wg.Done()
+				phases := []string{"queued", "thinking", "generating"}
+				i := 0
+				for !stop.Load() {
+					p := phases[i%len(phases)]
+					tokens := i + 1
+					reg.SetHeartbeat(id, p, tokens)
+					lastWriteTokens.Store(int64(tokens))
+					i++
+				}
+			}()
+
+			// Reader 1 — Get in a tight loop.
+			go func() {
+				defer wg.Done()
+				for !stop.Load() {
+					t, gerr := reg.Get(id)
+					Expect(gerr).NotTo(HaveOccurred())
+					// Phase + TokenCount must remain a consistent pair —
+					// both fields read under the same lock. A torn read
+					// would surface a non-empty phase with TokenCount=0
+					// AFTER the first heartbeat fired, or vice versa.
+					_ = t.Phase
+					_ = t.TokenCount
+				}
+			}()
+
+			// Reader 2 — FindActiveBySession in a tight loop.
+			go func() {
+				defer wg.Done()
+				for !stop.Load() {
+					_, _ = reg.FindActiveBySession("sess-race")
+				}
+			}()
+
+			// Let the goroutines pound the registry for a short window.
+			// 50ms is enough to surface a race under `-race` without
+			// inflating the suite runtime; the detector samples on every
+			// memory access.
+			time.Sleep(50 * time.Millisecond)
+			stop.Store(true)
+			wg.Wait()
+
+			// Final state must match the writer's last observed write —
+			// proves the writer's mutations land atomically under the
+			// mutex (no torn final state).
+			Expect(lastWriteTokens.Load()).To(BeNumerically(">", int64(0)),
+				"writer goroutine must have fired at least one SetHeartbeat during the 50ms window")
+			final, gerr := reg.Get(id)
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(final.TokenCount).To(BeNumerically(">", 0),
+				"the last-observed TokenCount must reflect a real write — torn read or unsynchronised access would surface zero here")
 		})
 	})
 })

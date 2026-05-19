@@ -106,6 +106,26 @@ type Turn struct {
 	Model         ModelInfo         `json:"model"`
 	Error         string            `json:"error,omitempty"`
 	MessagesAdded []session.Message `json:"messages_added"`
+	// Phase is the most-recent streaming-heartbeat phase observed for
+	// this Turn ("queued" | "thinking" | "generating"). Populated by
+	// SetHeartbeat from the engine's `events.EventStreamingHeartbeat`
+	// bus subscription so `GET /turns/{id}` can surface live progress
+	// without an SSE side-channel. Empty during the brief window
+	// between Start and the first heartbeat; frozen at the last value
+	// once the Turn reaches a terminal state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d
+	//   Commit 1 (heartbeat-on-turn).
+	Phase string `json:"phase,omitempty"`
+	// TokenCount mirrors the in-flight turn's cumulative output_tokens
+	// as reported by the provider's most recent UsageDelta (Anthropic
+	// message_delta, openaicompat trailing-chunk usage). Populated by
+	// SetHeartbeat alongside Phase. Zero is the legitimate pre-first-
+	// UsageDelta value; the chat UI's live-counter chrome gates the
+	// render on >0 so a fresh turn does not flash a misleading "0
+	// tokens".
+	TokenCount int `json:"token_count,omitempty"`
 }
 
 // ErrTurnConflict fires when Start is called on a session that
@@ -433,6 +453,116 @@ func (r *Registry) Fail(turnID string, cause error) error {
 		delete(r.byActiveSession, t.SessionID)
 	}
 	return nil
+}
+
+// FindActiveBySession returns the turn_id of the currently-Running
+// turn for the supplied sessionID, or ("", false) when no Running
+// turn exists. Backed by the existing byActiveSession O(1) map — no
+// map scan. Used by the Phase-4-Commit-1 wire surface to project
+// `activeTurnId` onto session list responses (server.go's
+// handleListV1Sessions) so the chat UI can resolve "is there a
+// live turn for this session and what is its id" in one round-trip.
+//
+// Defence in depth: even though byActiveSession is cleared on
+// Complete/Fail, this method re-verifies the looked-up Turn's
+// Status == StatusRunning before returning. A terminal Turn whose
+// byActiveSession entry survived a Complete/Fail race (shouldn't
+// happen given the lock holds the cleanup atomic, but treat as a
+// stale-entry case) surfaces as ("", false).
+//
+// Concurrency: acquires r.mu via Lock — the Registry's mutex is a
+// sync.Mutex, NOT an RWMutex, so callers serialise against every
+// peer method (Start, Append, Complete, Fail, Get, SetHeartbeat).
+// Upgrading to RWMutex would be gratuitous scope; the registry's
+// expected call rate is at most a few per second per session.
+//
+// Expected:
+//   - sessionID is non-empty. An empty sessionID is accepted
+//     verbatim and looked up; absent entries simply return
+//     ("", false).
+//
+// Returns:
+//   - turnID is the Turn UUID of the running turn for this session,
+//     or "" when none exists.
+//   - ok is true iff a running turn exists for this session.
+//
+// Side effects:
+//   - None — read-only on the byActiveSession + byID maps.
+func (r *Registry) FindActiveBySession(sessionID string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	id, ok := r.byActiveSession[sessionID]
+	if !ok {
+		return "", false
+	}
+	t, found := r.byID[id]
+	if !found || t.Status != StatusRunning {
+		return "", false
+	}
+	return id, true
+}
+
+// SetHeartbeat records the most-recent streaming-heartbeat phase +
+// cumulative output_tokens onto a Running Turn. Wired to the engine's
+// `events.EventStreamingHeartbeat` bus subscription so `GET /turns/{id}`
+// can surface live progress (the chat UI's chip + live token counter)
+// without an SSE side-channel. Per the plan's Phase-4-Commit-1 spec,
+// this is the polling-side replacement for `internal/api/event_bridge.go:46`
+// — both subscribers ship together; the SSE-side bridge is retired in
+// Commit 2.
+//
+// No-op semantics:
+//   - empty turnID — silent return. Bus subscribers derive turnID
+//     from sessionID via FindActiveBySession; a race against
+//     Complete/Fail can surface "" and must not crash.
+//   - unknown turnID — silent return. Same race shape as above; the
+//     registry's byID entry may have been cleared between the
+//     FindActive lookup and this call.
+//   - non-Running turnID — silent return. Late heartbeat firing
+//     after the wrap goroutine called Complete/Fail; the terminal-
+//     state Turn's Phase + TokenCount stay frozen at their last
+//     Running values, which is the correct user-facing semantics
+//     (the chip should not "resume" on a terminal turn).
+//
+// Concurrency: acquires r.mu via Lock. The Phase + TokenCount pair
+// is written under the same lock peer methods use, so readers
+// (Get / FindActiveBySession) never observe a torn pair.
+//
+// Expected:
+//   - turnID is the Turn UUID. Empty is a silent no-op.
+//   - phase is the streaming phase ("queued" | "thinking" |
+//     "generating"). The registry does not validate the closed
+//     vocabulary — the engine's events package owns that contract.
+//   - tokenCount is the cumulative output_tokens from the provider's
+//     most recent UsageDelta. Zero is the legitimate pre-first-
+//     UsageDelta value.
+//
+// Returns:
+//   - None. No error path — every condition that would otherwise
+//     surface an error (absent turn, terminal turn, empty id) is a
+//     race the bus subscriber cannot reasonably handle, so the
+//     registry absorbs them silently.
+//
+// Side effects:
+//   - Mutates the Turn's Phase + TokenCount when the Turn is
+//     Running. Otherwise no observable side effect.
+func (r *Registry) SetHeartbeat(turnID, phase string, tokenCount int) {
+	if turnID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+	t.Phase = phase
+	t.TokenCount = tokenCount
 }
 
 // Get returns a value-typed snapshot of the turn at the moment of
