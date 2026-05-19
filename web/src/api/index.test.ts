@@ -198,4 +198,94 @@ describe('fetchTurn', () => {
     }
     expect(err).toBeInstanceOf(Error)
   })
+
+  // Phase-4-Commit-1b long-poll surface. fetchTurn accepts
+  // `{ wait, since, signal }` so the chat store can drive the
+  // server-side hold endpoint with a session-switch-capable
+  // AbortController.
+  it('appends ?wait=true&since=N when opts.wait is true', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        turn_id: 'turn-lp',
+        session_id: 'sess-1',
+        status: 'running',
+        started_at: '',
+        completed_at: null,
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+
+    await fetchTurn('sess-1', 'turn-lp', { wait: true, since: 5 })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).toMatch(/\/v1\/sessions\/sess-1\/turns\/turn-lp\?wait=true&since=5$/)
+  })
+
+  it('defaults since to 0 when omitted (first long-poll of a turn)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        turn_id: 'turn-zero',
+        session_id: 'sess-1',
+        status: 'running',
+        started_at: '',
+        completed_at: null,
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+
+    await fetchTurn('sess-1', 'turn-zero', { wait: true })
+
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\?wait=true&since=0$/)
+  })
+
+  it('does NOT append wait/since when opts.wait is false (legacy snapshot path)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        turn_id: 'turn-legacy',
+        session_id: 'sess-1',
+        status: 'completed',
+        started_at: '',
+        completed_at: '',
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+
+    await fetchTurn('sess-1', 'turn-legacy', { wait: false })
+
+    const url = String(fetchMock.mock.calls[0][0])
+    expect(url).not.toMatch(/wait=/)
+    expect(url).not.toMatch(/since=/)
+  })
+
+  it('threads the AbortSignal through to fetch so a session-switch can cancel an in-flight long-poll', async () => {
+    const controller = new AbortController()
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({
+        turn_id: 'turn-signal',
+        session_id: 'sess-1',
+        status: 'running',
+        started_at: '',
+        completed_at: null,
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+
+    await fetchTurn('sess-1', 'turn-signal', {
+      wait: true,
+      since: 0,
+      signal: controller.signal,
+    })
+
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined
+    expect(init?.signal).toBe(controller.signal)
+  })
 })

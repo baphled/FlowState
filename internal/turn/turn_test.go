@@ -494,6 +494,326 @@ var _ = Describe("Registry", func() {
 				"the last-observed TokenCount must reflect a real write — torn read or unsynchronised access would surface zero here")
 		})
 	})
+
+	// WaitForChange is the Phase-4-Commit-1b long-poll primitive: callers
+	// snapshot a Turn under lock, capture the baseline (messages-count,
+	// phase, token-count) they observed, then call WaitForChange with
+	// those baselines + a timeout. WaitForChange returns either (a) when
+	// any of the watched fields move past the baseline, (b) when the Turn
+	// transitions to a terminal state, (c) when the timeout elapses, or
+	// (d) when the caller's context is cancelled (handler-side client
+	// disconnect propagation). Returns the fresh value-typed snapshot in
+	// every non-error case.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1b.
+	Context("WaitForChange", func() {
+		It("returns immediately when MessagesAdded grew past the baseline before the call", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			// Append before the wait — the registry already has 1 row,
+			// so a wait with sinceMsgCount=0 must return without
+			// blocking.
+			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "early"})).To(Succeed())
+
+			start := time.Now()
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+			elapsed := time.Since(start)
+
+			Expect(changed).To(BeTrue(),
+				"WaitForChange must report changed=true when MessagesAdded > sinceMsgCount at call time — the caller's last-seen count is stale")
+			Expect(snap.MessagesAdded).To(HaveLen(1))
+			Expect(elapsed).To(BeNumerically("<", 50*time.Millisecond),
+				"the call must return synchronously when the baseline is already exceeded — no sleeping until timeout")
+		})
+
+		It("returns immediately when the Turn is already in a terminal state at call time", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
+
+			start := time.Now()
+			snap, changed := reg.WaitForChange(context.Background(), id, 999, "", 0, 5*time.Second)
+			elapsed := time.Since(start)
+
+			Expect(changed).To(BeTrue(),
+				"a terminal-state Turn must surface changed=true so the caller observes the final snapshot without hanging — even though MessagesAdded did not grow past the (impossibly-large) baseline")
+			Expect(snap.Status).To(Equal(turn.StatusCompleted))
+			Expect(elapsed).To(BeNumerically("<", 50*time.Millisecond),
+				"a completed-before-wait Turn must NOT block — the caller's poll loop would then idle for the full timeout for no reason")
+		})
+
+		It("returns when Append fires DURING the wait (mutation broadcast)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Spawn the wait in a goroutine — the producer fires Append
+			// from another goroutine after a short delay; WaitForChange
+			// must wake within a few ms of the broadcast.
+			type result struct {
+				snap    turn.Turn
+				changed bool
+				elapsed time.Duration
+			}
+			done := make(chan result, 1)
+			go func() {
+				start := time.Now()
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				done <- result{snap: snap, changed: changed, elapsed: time.Since(start)}
+			}()
+
+			// Give the wait a moment to settle on its select; then fire
+			// the broadcast. 20ms is enough for the goroutine to be
+			// parked on the channel without inflating the test runtime.
+			time.Sleep(20 * time.Millisecond)
+			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "live"})).To(Succeed())
+
+			var r result
+			Eventually(done, "2s").Should(Receive(&r))
+			Expect(r.changed).To(BeTrue())
+			Expect(r.snap.MessagesAdded).To(HaveLen(1))
+			Expect(r.snap.MessagesAdded[0].Content).To(Equal("live"))
+			Expect(r.elapsed).To(BeNumerically("<", 200*time.Millisecond),
+				"the wake must arrive within a few ms of Append's broadcast — long-poll's perceived-latency promise is sub-50ms after chunk arrival; we allow 200ms slack for scheduler jitter on a loaded CI box")
+			// Surface the actual wake latency on the test report so the
+			// Phase-4-Commit-1b commit message can quote a concrete
+			// sub-50ms post-broadcast latency rather than just "passed".
+			// The 20ms above is "time-to-park"; the rest is the wake
+			// + return cost from the broadcast.
+			AddReportEntry("perceived_wake_latency_phase4_commit1b",
+				ReportEntryVisibilityAlways,
+				map[string]any{
+					"total_elapsed_from_wait_start": r.elapsed.String(),
+					"approx_post_broadcast_wake":    (r.elapsed - 20*time.Millisecond).String(),
+					"target":                        "<50ms post-broadcast",
+				})
+		})
+
+		It("returns when SetHeartbeat changes Phase or TokenCount DURING the wait", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			type result struct {
+				snap    turn.Turn
+				changed bool
+			}
+			done := make(chan result, 1)
+			go func() {
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				done <- result{snap: snap, changed: changed}
+			}()
+
+			time.Sleep(20 * time.Millisecond)
+			reg.SetHeartbeat(id, "thinking", 42)
+
+			var r result
+			Eventually(done, "2s").Should(Receive(&r))
+			Expect(r.changed).To(BeTrue())
+			Expect(r.snap.Phase).To(Equal("thinking"))
+			Expect(r.snap.TokenCount).To(Equal(42))
+		})
+
+		It("returns when Complete fires DURING the wait (terminal transition)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			type result struct {
+				snap    turn.Turn
+				changed bool
+			}
+			done := make(chan result, 1)
+			go func() {
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				done <- result{snap: snap, changed: changed}
+			}()
+
+			time.Sleep(20 * time.Millisecond)
+			Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
+
+			var r result
+			Eventually(done, "2s").Should(Receive(&r))
+			Expect(r.changed).To(BeTrue())
+			Expect(r.snap.Status).To(Equal(turn.StatusCompleted))
+		})
+
+		It("returns when Fail fires DURING the wait (terminal transition)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			type result struct {
+				snap    turn.Turn
+				changed bool
+			}
+			done := make(chan result, 1)
+			go func() {
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				done <- result{snap: snap, changed: changed}
+			}()
+
+			time.Sleep(20 * time.Millisecond)
+			Expect(reg.Fail(id, errors.New("provider ruptured"))).To(Succeed())
+
+			var r result
+			Eventually(done, "2s").Should(Receive(&r))
+			Expect(r.changed).To(BeTrue())
+			Expect(r.snap.Status).To(Equal(turn.StatusFailed))
+			Expect(r.snap.Error).To(Equal("provider ruptured"))
+		})
+
+		It("returns with changed=false when the timeout elapses without any mutation", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Short timeout — the wait MUST return within the timeout
+			// budget even though no producer ever fires. The caller
+			// re-issues to start a fresh wait.
+			start := time.Now()
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 80*time.Millisecond)
+			elapsed := time.Since(start)
+
+			Expect(changed).To(BeFalse(),
+				"the timeout path must surface changed=false so the long-poll caller knows nothing actually moved — idempotent re-issue is the next step")
+			Expect(snap.Status).To(Equal(turn.StatusRunning),
+				"the snapshot returned on timeout must still be the live Turn — the long-poll handler always writes a body, even on the timeout path")
+			Expect(elapsed).To(BeNumerically(">=", 80*time.Millisecond))
+			Expect(elapsed).To(BeNumerically("<", 300*time.Millisecond),
+				"the timeout must fire within a comfortable slack of the requested 80ms — anything past 300ms suggests a spinning or oversleeping wait loop")
+		})
+
+		It("returns when the caller's context is cancelled DURING the wait (client disconnect)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			ctx, cancel := context.WithCancel(context.Background())
+			type result struct {
+				changed bool
+				elapsed time.Duration
+			}
+			done := make(chan result, 1)
+			go func() {
+				start := time.Now()
+				_, changed := reg.WaitForChange(ctx, id, 0, "", 0, 5*time.Second)
+				done <- result{changed: changed, elapsed: time.Since(start)}
+			}()
+
+			// Settle the wait, then cancel — the wait must wake promptly
+			// off the ctx.Done() branch.
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+
+			var r result
+			Eventually(done, "2s").Should(Receive(&r))
+			Expect(r.changed).To(BeFalse(),
+				"a ctx-cancelled wait must surface changed=false — the wire-side handler then exits without writing a body; the client is gone")
+			Expect(r.elapsed).To(BeNumerically("<", 300*time.Millisecond),
+				"the wake on ctx-cancel must be prompt — anything past 300ms suggests the select is not watching ctx.Done()")
+		})
+
+		It("returns immediately with the zero snapshot when turnID is unknown", func() {
+			// Unknown turnID — the wait must NOT block. Surfaces
+			// changed=false + zero snapshot so the handler can map this
+			// to a 404 / not-found path.
+			start := time.Now()
+			snap, changed := reg.WaitForChange(context.Background(), "never-minted", 0, "", 0, 5*time.Second)
+			elapsed := time.Since(start)
+
+			Expect(changed).To(BeFalse())
+			Expect(snap.ID).To(BeEmpty(),
+				"an unknown turn id must surface a zero-valued snapshot — the handler reads ID==\"\" as the not-found discriminant")
+			Expect(elapsed).To(BeNumerically("<", 50*time.Millisecond),
+				"a not-found wait must NOT hang for the timeout — the registry knows the id is unknown synchronously")
+		})
+
+		It("returns immediately when Phase already moved past the baseline before the call", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			reg.SetHeartbeat(id, "generating", 7)
+
+			start := time.Now()
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 7, 5*time.Second)
+			elapsed := time.Since(start)
+
+			Expect(changed).To(BeTrue(),
+				"Phase moved past the lastPhase baseline — the wait must surface changed=true synchronously")
+			Expect(snap.Phase).To(Equal("generating"))
+			Expect(elapsed).To(BeNumerically("<", 50*time.Millisecond))
+		})
+
+		It("returns immediately when TokenCount already moved past the baseline before the call", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			reg.SetHeartbeat(id, "thinking", 100)
+
+			start := time.Now()
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 50, 5*time.Second)
+			elapsed := time.Since(start)
+
+			Expect(changed).To(BeTrue(),
+				"TokenCount moved past the lastTokens baseline — the wait must surface changed=true synchronously")
+			Expect(snap.TokenCount).To(Equal(100))
+			Expect(elapsed).To(BeNumerically("<", 50*time.Millisecond))
+		})
+
+		It("is race-safe under concurrent waiters + mutations (-race must report clean)", func() {
+			// Race-flagged: spawn N waiters against the same Turn while
+			// a writer pounds Append + SetHeartbeat. -race must report
+			// clean; every waiter must wake within the budget.
+			id, err := reg.Start("sess-race")
+			Expect(err).NotTo(HaveOccurred())
+
+			const waiters = 8
+			var wg sync.WaitGroup
+			wakes := make(chan struct{}, waiters)
+			wg.Add(waiters)
+			for i := 0; i < waiters; i++ {
+				go func() {
+					defer wg.Done()
+					_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 2*time.Second)
+					if changed {
+						wakes <- struct{}{}
+					}
+				}()
+			}
+
+			// Writer — fires a single Append after a short delay; that
+			// single broadcast must wake every waiting goroutine.
+			time.Sleep(20 * time.Millisecond)
+			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "broadcast"})).To(Succeed())
+
+			wg.Wait()
+			Expect(len(wakes)).To(Equal(waiters),
+				"a single mutation broadcast must wake EVERY concurrent waiter — the channel-of-zero-values close pattern must broadcast, not signal one waiter")
+		})
+
+		It("supports re-issuing waits after a timeout (channel is replaced, not exhausted)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			// First wait — short timeout, no mutation. Must surface
+			// changed=false on the timeout path.
+			_, changed1 := reg.WaitForChange(context.Background(), id, 0, "", 0, 50*time.Millisecond)
+			Expect(changed1).To(BeFalse())
+
+			// Second wait against the same Turn — fire a mutation
+			// mid-wait and observe the wake. This proves the notifier
+			// channel is replenished after each broadcast/timeout cycle;
+			// a stale closed channel would either spin synchronously
+			// (returning changed=false) or panic on close-of-closed.
+			type result struct{ changed bool }
+			done := make(chan result, 1)
+			go func() {
+				_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 2*time.Second)
+				done <- result{changed: changed}
+			}()
+			time.Sleep(20 * time.Millisecond)
+			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "after-timeout"})).To(Succeed())
+
+			var r result
+			Eventually(done, "2s").Should(Receive(&r))
+			Expect(r.changed).To(BeTrue(),
+				"the second wait must succeed — the notifier channel MUST be replenished after the prior timeout closed it (or after a prior broadcast); the registry's mutation path replaces the channel under lock")
+		})
+	})
 })
 
 var _ = Describe("Context propagation", func() {

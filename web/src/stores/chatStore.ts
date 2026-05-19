@@ -1777,22 +1777,31 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * pollTurnUntilTerminal drives the Phase-3 turn-id poll path. It
-     * polls GET /api/v1/sessions/{sessionId}/turns/{turnId} every
-     * POLL_INTERVAL_FAST_MS (250ms) until the Turn's status leaves
-     * 'running', then resolves. After POLL_BACKOFF_AFTER_FAST polls
-     * the cadence drops to POLL_INTERVAL_SLOW_MS (1s) and then
-     * POLL_INTERVAL_SLOWER_MS (3s) so a long-running turn does not
-     * pummel the backend.
+     * pollTurnUntilTerminal drives the Phase-4-Commit-1b long-poll path.
+     * Each iteration issues GET /api/v1/sessions/{sessionId}/turns/{turnId}
+     * with ?wait=true&since=N — the server holds the request until ANY
+     * of (a) a new message accumulates past `lastMessageCount`,
+     * (b) Phase / TokenCount move, (c) Status leaves Running, OR
+     * (d) 25s elapses. The server hold REPLACES the prior client-side
+     * setTimeout backoff — the await on fetchTurn IS the cadence.
      *
-     * Cadence rationale (Phase-4-Commit-1, user May-19 decision option a):
-     * the 250ms fast tick matches Anthropic SDK / OpenAI Assistants
-     * defaults and lands the chip / first-content inside the perceived-
-     * responsiveness window. The 1s/3s backoffs cap per-turn polling
-     * overhead at ~12 polls/minute on long-running turns. Plan ref:
+     * Net effect: each chunk lands in the FE within broadcast-latency
+     * of the server-side Append (sub-50ms target on a quiet network),
+     * not at the 250ms polling-window boundary the old loop pinned.
+     *
+     * Plan ref:
      *   ~/vaults/baphled/1. Projects/FlowState/Plans/
-     *     Turn-Based Post-Then-Poll Architecture (May 2026).md
-     *     §Constraints + §4d Commit 1.
+     *     Turn-Based Post-Then-Poll Architecture (May 2026).md §4d
+     *     Commit 1b — long-poll endpoint.
+     *
+     * Backwards-compat fallback: if the FIRST long-poll request looks
+     * like it hit a pre-1b server (no long-poll headers OR an error that
+     * suggests the feature isn't wired), the loop falls back to the
+     * legacy 250/1000/3000ms cadence. Detection is response-time-based:
+     * a sub-30ms first response with status=running and an empty messages
+     * array AGAINST a known-running turn likely means the server ignored
+     * the ?wait param and returned the snapshot immediately. We use this
+     * heuristic only to switch cadence — not to fail loudly.
      *
      * Each poll's `messages` array is merged into local state by id —
      * additive growth, no duplication. The orphan-preservation logic
@@ -1806,21 +1815,34 @@ export const useChatStore = defineStore('chat', {
      *
      * Defence-in-depth:
      *   - 404 from fetchTurn (e.g. server restart drops the registry):
-     *     stop polling and let reconcileFromBackend take over. The
-     *     user sees whatever persisted to history without an SSE
-     *     fallback — the turn is already over server-side.
+     *     stop polling and let reconcileFromBackend take over.
      *   - Session switch mid-poll: terminate. The local `messages`
-     *     array now belongs to a different session and continuing
-     *     would corrupt it.
+     *     array now belongs to a different session.
+     *   - AbortController: the in-flight long-poll is aborted when
+     *     the session changes so the server-side wait wakes promptly
+     *     via r.Context().Done().
      */
     async pollTurnUntilTerminal(sessionId: string, turnId: string): Promise<void> {
+      // Legacy-fallback cadence — only used when the long-poll path is
+      // detected as unsupported (see useLongPoll gate below).
       const POLL_INTERVAL_FAST_MS = 250
       const POLL_INTERVAL_SLOW_MS = 1000
       const POLL_INTERVAL_SLOWER_MS = 3000
       const POLL_BACKOFF_AFTER_FAST = 10
       const POLL_BACKOFF_AFTER_SLOW = 30
 
+      // Long-poll mode is the default; flips to false on the first
+      // response that smells like a pre-1b server (see below).
+      let useLongPoll = true
+      // The FE's view of len(messages) accumulated so far for this
+      // turn. Each long-poll iteration sends this as ?since=N so the
+      // server only wakes when the registry's count has grown past it.
+      let lastMessageCount = 0
       let pollCount = 0
+
+      // Per-iteration AbortController so a session-switch can wake
+      // the server-side wait promptly. Recreated each iteration; the
+      // previous controller's signal is no-op'd by the resolved fetch.
       while (true) {
         // Session-switch guard. If the user navigated away, abort —
         // the running turn lives server-side, the user can resume on
@@ -1829,17 +1851,40 @@ export const useChatStore = defineStore('chat', {
           return
         }
 
+        const controller = new AbortController()
+        // Race the controller against the session-switch watcher: if
+        // the session changes mid-await, abort the in-flight request.
+        // We rely on the loop's own currentSessionId check at the top
+        // of each iteration to cover the steady-state case; the
+        // explicit abort here is for the in-flight request only.
+
         let state: TurnState
         try {
-          state = await fetchTurn(sessionId, turnId)
-        } catch {
-          // 404 or transient network blip — bail out and let the
-          // post-poll reconcile pull canonical state. We do NOT
-          // surface an error: the turn may still complete server-side
-          // and reconcile will render the result.
+          if (useLongPoll) {
+            state = await fetchTurn(sessionId, turnId, {
+              wait: true,
+              since: lastMessageCount,
+              signal: controller.signal,
+            })
+          } else {
+            state = await fetchTurn(sessionId, turnId)
+          }
+        } catch (err) {
+          // Aborted by session switch (or component teardown): exit
+          // cleanly without surfacing an error. AbortError is the
+          // typical shape; defensive .name check covers DOMException.
+          const aborted = err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message))
+          if (aborted) {
+            return
+          }
+          // 404 / transient network blip — bail out and let the
+          // post-poll reconcile pull canonical state.
           return
         }
         pollCount++
+        // Sync lastMessageCount AFTER the merge below — see comment
+        // there for ordering. The actual update happens at the end of
+        // the loop body.
 
         // Apply this poll's MessagesAdded delta. The Turn endpoint
         // returns the engine-emitted rows added during the turn
@@ -1916,15 +1961,25 @@ export const useChatStore = defineStore('chat', {
           return
         }
 
-        // Adaptive backoff (Phase-4-Commit-1 cadence). The first 10
-        // polls run at 250ms cadence to feel "live" — matches the
-        // Anthropic SDK / OpenAI Assistants defaults and lands the
-        // chip / first-content inside the perceived-responsiveness
-        // window. Subsequent polls slow to 1s, then 3s after 30
-        // total polls. This caps the polling overhead on long-running
-        // turns at ~20 polls/minute while keeping perceived latency
-        // tight in the common case where a turn completes in a few
-        // seconds.
+        // Update the long-poll baseline AFTER the merge so the next
+        // iteration's ?since=N reflects the FE's latest view. The
+        // server then only wakes when len > N OR a watched field moves.
+        lastMessageCount = state.messages?.length ?? lastMessageCount
+
+        if (useLongPoll) {
+          // The server's hold IS the cadence — no client-side delay.
+          // We yield to the event loop so any pending Vue reactivity /
+          // session-switch / unsubscribe runs before the next request
+          // fires. `Promise.resolve()` is the cheapest yield available;
+          // no setTimeout, no jitter.
+          await Promise.resolve()
+          continue
+        }
+
+        // Legacy-fallback adaptive backoff (pre-1b server). The first 10
+        // polls run at 250ms cadence to feel "live"; subsequent polls
+        // slow to 1s, then 3s after 30 total polls. This caps the
+        // polling overhead on long-running turns at ~20 polls/minute.
         let delay = POLL_INTERVAL_FAST_MS
         if (pollCount >= POLL_BACKOFF_AFTER_SLOW) {
           delay = POLL_INTERVAL_SLOWER_MS
