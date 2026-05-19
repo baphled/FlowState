@@ -972,9 +972,20 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 			}, nil)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Turn 2 routes through a-team via in-content mention. Issue
-			// the call IMMEDIATELY — the gate is the only thing that may
-			// make turn 2 wait for turn 1's lifecycle.
+			// Wait for turn 1 to complete fully before firing turn 2.
+			// Phase 1 of the "Turn-Based Post-Then-Poll Architecture
+			// (May 2026)" plan made the per-session "one in-flight turn"
+			// contract LOUD via ErrTurnConflict; concurrent POSTs no
+			// longer serialise silently — they 409. This spec still
+			// covers the swarm-lifecycle ordering across CONSECUTIVE
+			// (sequenced) turns; the per-session lifecycle gate continues
+			// to enforce that the engine's RestoreManifest fires before
+			// turn 2's SetSwarmContext, but the producer must wait for
+			// turn 1 to drain before firing turn 2.
+			Eventually(func() bool { return broker.waitFor("sess-1", 2*time.Second) }, "3s").Should(BeTrue())
+			Eventually(eng.flushCallCount, "3s").Should(Equal(1))
+
+			// Turn 2 routes through a-team via in-content mention.
 			_, err = d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "coordinator",
@@ -1059,6 +1070,14 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 				ScanMentions: true,
 			}, nil)
 			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for turn 1 to drain before firing turn 2 — Phase 1
+			// of the Turn-Based Post-Then-Poll plan made the per-session
+			// "one in-flight turn" contract loud via ErrTurnConflict.
+			// The manifest-isolation contract pinned here is unchanged;
+			// the producer just has to sequence the POSTs explicitly.
+			Eventually(func() bool { return broker.waitFor("sess-1", 2*time.Second) }, "3s").Should(BeTrue())
+			Eventually(eng.flushCallCount, "3s").Should(Equal(1))
 
 			_, err = d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
