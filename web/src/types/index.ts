@@ -289,8 +289,20 @@ export interface SessionSummary {
   createdAt: string
   updatedAt: string
   messageCount: number
-  /** True when the backend broker has an active Publish in progress for this session. */
+  /**
+   * True when the session has an active Running Turn in the registry.
+   * Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+   * (May 2026)" retired the SSE broker that previously drove this
+   * field; it now mirrors `activeTurnId != ""`.
+   */
   isStreaming: boolean
+  /**
+   * UUIDv4 of the currently-Running Turn for this session, or "" when
+   * the session is idle. Populated by the backend's Turn registry
+   * via handleListV1Sessions when a Running entry exists. The FE
+   * uses this to drive long-poll reattach in maybeReattachStream.
+   */
+  activeTurnId?: string
 }
 
 export interface ModelInfo {

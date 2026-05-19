@@ -170,17 +170,15 @@ func New(
 	// "Dispatcher Service Unification (May 2026)" plan folds the
 	// orchestrator's "scan → resolve → DispatchSwarm" lifecycle into a
 	// shared service so CLI / API / TUI no longer drift on the
-	// resolution path. sessionManager / sessionBroker are nil here —
-	// ProcessUserInput drives the ephemeral path (no session anchor)
-	// and the sessioned half lives on the API server's own
-	// dispatch.New() composition.
+	// resolution path. sessionManager is nil here — ProcessUserInput
+	// drives the ephemeral path (no session anchor) and the sessioned
+	// half lives on the API server's own dispatch.New() composition.
 	o.dispatcher = dispatch.New(
 		streamer,
 		eng,
 		swarmReg,
 		agentReg,
 		nil, // sessionManager: ephemeral path has no session anchor
-		nil, // sessionBroker: ProcessUserInput drives the consumer directly
 	)
 	return o
 }

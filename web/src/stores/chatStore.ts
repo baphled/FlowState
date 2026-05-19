@@ -16,7 +16,6 @@ import {
   updateSessionModel,
   type TurnState,
 } from '@/api'
-import { stallTimeoutForPhase, useSessionStream, type SessionStream } from '@/composables/useSessionStream'
 import { recordStreamEvent } from '@/lib/streamLog'
 import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEvent'
 import { dismissToast, showToast, updateToast } from '@/composables/useToast'
@@ -171,85 +170,20 @@ function describeFailoverReason(reason: string): string {
   }
 }
 
-// Per-session SSE singleton registry (Slice B — Streaming Coherence May 2026).
+// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+// (May 2026)" retired the per-session SSE infrastructure that used to
+// live here (getSessionStream / disconnectSessionStream /
+// disconnectAllSessionStreams + the closure-captured `streams` map +
+// the `useSessionStream` composable). The FE now drives live state
+// via long-poll on GET /v1/sessions/{id}/turns/{turn_id} — see the
+// `pollTurnUntilTerminal` action below.
 //
-// Pre-slice the store carried ONE module-scoped `useSessionStream()` so
-// every session switch tore down the active SSE — observable as session A
-// going dark the moment the user opened B even though A's turn was still
-// in flight server-side. The fix: a map keyed by sessionId, each entry a
-// fresh `SessionStream` lifecycle. Switching sessions no longer cancels A's
-// stream; A keeps streaming in the background and B opens its own.
-//
-// Lifecycle:
-//   - getSessionStream(sessionId) returns the existing stream for the
-//     session or lazily creates one. Per-test isolation works because
-//     each test calls setActivePinia(createPinia()) and the closure-
-//     captured `streams` map below resets when the module is freshly
-//     loaded by Vitest's test runner via resetModules. (Vitest does NOT
-//     reset module state between tests by default, so we expose
-//     `__resetSessionStreams` for explicit teardown.)
-//   - disconnectSessionStream(sessionId) closes a specific session's
-//     EventSource and drops it from the map. Used on session deletion
-//     and revertToMessage.
-//   - disconnectAllSessionStreams() — defensive teardown for full reset.
-//
-// Why a closure-captured Map rather than a Pinia state field: Pinia's
-// reactivity proxies object identity, but EventSource instances must
-// remain stable references for the FakeEventSource test harness to read
-// `instances.length`. Closure-scoping keeps them out of the reactivity
-// graph, matching the pre-slice single-instance pattern.
-const streams = new Map<string, SessionStream>()
-
-function getSessionStream(sessionId: string): SessionStream {
-  let stream = streams.get(sessionId)
-  if (!stream) {
-    stream = useSessionStream()
-    streams.set(sessionId, stream)
-  }
-  return stream
-}
-
-function disconnectSessionStream(sessionId: string): void {
-  const stream = streams.get(sessionId)
-  if (stream) {
-    stream.disconnect()
-    streams.delete(sessionId)
-  }
-}
-
-function disconnectAllSessionStreams(): void {
-  for (const stream of streams.values()) {
-    stream.disconnect()
-  }
-  streams.clear()
-}
-
-/**
- * isContextUsagePayload — Bug Hunt (May 2026) lightweight discriminator
- * for SSE payloads that carry a `context_usage` event. Used in the
- * stream-onMessage C-3 guard to let context_usage chunks through for
- * inactive sessions (they are session-bound metadata that hydrates
- * `contextUsageBySession`, not view-bound content). All other event
- * types remain gated by the C-3 active-session check.
- *
- * Cheap string-scan rather than a full JSON parse: hot path, called
- * on every SSE chunk. parseSSEPayload (the dispatcher's actual
- * classifier) runs only after this gate lets the payload through.
- */
-function isContextUsagePayload(payload: string): boolean {
-  if (!payload || payload === '[DONE]') return false
-  return payload.includes('"type":"context_usage"')
-}
-
-/**
- * __resetSessionStreams — test-only export so suites that exercise
- * cross-test session-stream isolation can drop all stream references
- * between cases. Vitest does not reset module-scoped state between
- * tests; without this hook a stream from test A would leak into
- * test B's `FakeEventSource.instances`. NOT for production use.
- */
+// `__resetSessionStreams` is retained as a no-op test seam so callers
+// that imported it (chatStore.test.ts) don't break compilation. It
+// can be safely deleted once those imports are pruned.
 export function __resetSessionStreams(): void {
-  disconnectAllSessionStreams()
+  // no-op — retained for backward compat; long-poll has no module-
+  // scoped state to reset.
 }
 
 function getPersistedSessionId(): string | null {
@@ -1174,102 +1108,48 @@ export const useChatStore = defineStore('chat', {
       this.maybeReattachStream(session.id, session.isStreaming ?? false)
     },
 
-    // Re-attach a live SSE consumer when restored history shows the session
-    // was in-flight at reload time. Pre-fix the user could reload mid-stream
-    // and the frontend would never reconnect — every chunk produced after the
-    // reload was dropped silently and the chat looked frozen. This bridges
-    // that gap: if the backend was still streaming when the reload happened,
-    // the consumer attaches and chunks arrive at the UI; if the backend has
-    // already finished the EventSource closes cleanly without ever firing.
+    // maybeReattachStream — Phase-4-Commit-2 successor to the retired
+    // SSE-reattach path. When the user navigates back to a session
+    // whose Turn is still Running (engine produced chunks while the
+    // user was elsewhere), we hand the active turn_id to
+    // pollTurnUntilTerminal so the long-poll surfaces the in-flight
+    // chunks. When no turn is active OR the snapshot says the session
+    // is idle, this is a no-op.
     //
-    // Detection: two complementary signals are checked in order:
-    //   1. backendStreaming (from session summary isStreaming field) — the
-    //      broker reports an active publish; reconnect regardless of message
-    //      state. Covers the gap where the backend is streaming but the last
-    //      persisted message is an assistant entry with no 'running' status
-    //      (e.g. a partial response written mid-stream by the accumulator).
-    //   2. Message heuristic — last message is the user turn, or is an
-    //      assistant with status 'running'. Covers cases where the session
-    //      summary was fetched without an isStreaming flag (e.g. legacy API).
-    //
-    // In all cases, the consumer subscribes; if the backend already finished
-    // (fast-path [DONE] from handleSessionStream), the EventSource closes
-    // cleanly and the fallback fetch fills in the completed response.
-    //
-    // isLoading is set to true so the submit gate keeps blocking new sends
-    // until [DONE] (or the watchdog) clears it.
+    // The session summary's `activeTurnId` field (populated by
+    // handleListV1Sessions when the Turn registry has a Running entry
+    // for the session — see internal/api/server.go) is the canonical
+    // signal. `backendStreaming` is the legacy `isStreaming` flag,
+    // which post-Commit-2 mirrors `activeTurnId != ""`.
     maybeReattachStream(sessionId: string, backendStreaming = false): void {
       if (!sessionId) return
 
-      // Prefer the authoritative backend signal: if the broker reports an
-      // active publish, subscribe unconditionally.
-      if (!backendStreaming) {
-        if (!this.messages.length) return
-        const lastMessage = this.messages[this.messages.length - 1]
-        const needsReattach =
-          lastMessage.role === 'user' ||
-          (lastMessage.role === 'assistant' && lastMessage.status === 'running')
-        if (!needsReattach) return
+      // Look up activeTurnId for the session. The summaries[] list is
+      // populated by loadSessions on app boot and refreshed by
+      // reconcileFromBackend; the activeTurnId field lives on each
+      // SessionSummary.
+      const summary = this.sessions.find((s) => s.id === sessionId)
+      const activeTurnId = summary?.activeTurnId ?? ''
+      if (!activeTurnId) {
+        // No active turn registered — nothing to reattach. The legacy
+        // message-heuristic ("last message is user / status=running")
+        // is no longer relevant because the Turn registry is the
+        // canonical "is this session mid-stream?" signal.
+        return
       }
+      // Defence-in-depth: the backendStreaming flag is also derived
+      // from activeTurnId server-side, so the two should agree. If
+      // they disagree the activeTurnId wins.
+      void backendStreaming
 
       this.setSessionStreaming(sessionId, { isLoading: true, isStreaming: true })
-
-      const capturedSessionId = sessionId
-      const sessionStream = getSessionStream(capturedSessionId)
-      const close = (): void => {
-        disconnectSessionStream(capturedSessionId)
-        this.setSessionStreaming(capturedSessionId, { isLoading: false, isStreaming: false })
-
-        // Reconcile unconditionally — the pre-fix `lastMsg?.role === 'user'`
-        // gate dropped the more common case where chunks had arrived but the
-        // backend had follow-up state SSE didn't surface before close (a
-        // sealed assistant content, a tool_result, a delegation completion).
-        // reconcileFromBackend re-checks currentSessionId before and after
-        // its await so a session switch concurrent with this call is safe.
-        void this.reconcileFromBackend(capturedSessionId)
-      }
-
-      // Per-session stream (Slice B) — connect on the session's own
-      // SessionStream lifecycle. The watchdog onTrip handler is the same
-      // store action used for sendMessage so user-visible recovery
-      // behaviour is identical.
-      sessionStream.connect(capturedSessionId, {
-        onMessage: (payload) => {
-          // C-3: discard chunks if the user navigated away while this
-          // stream was still alive. Pre-Slice-B this also implied the
-          // stream was about to be torn down; in Slice B the stream
-          // keeps running and chunks for the inactive session land
-          // through reconcile when the user returns.
-          //
-          // Bug Hunt (May 2026) — context_usage chunks are an
-          // exception: they are session-bound metadata, NOT view-
-          // bound content. Letting them through to applyContentEvent
-          // updates contextUsageBySession[capturedSessionId] so when
-          // the user returns to this session the chip already shows
-          // the latest figure rather than a stale `—/—`.
-          // applyContentEvent's own per-event handlers gate on the
-          // captured id (the context_usage handler routes into the
-          // per-session map without touching the active chip), so the
-          // active view stays untouched.
-          if (this.currentSessionId !== capturedSessionId) {
-            const isContextUsage = isContextUsagePayload(payload)
-            if (!isContextUsage) return
-          }
-          // M7 — thread capturedSessionId so phase + watchdog re-arm
-          // scope to this stream's session even if the user navigates
-          // between the C-3 guard above and applyContentEvent below.
-          this.applyContentEvent(payload, capturedSessionId)
-          if (payload === '[DONE]') {
-            close()
-          }
-        },
-        // Backend closed or proxy timed out — stop pretending we're still
-        // streaming so the input gate unsticks. The user can fire a new
-        // prompt to resume the conversation.
-        onError: () => {
-          close()
-        },
-        onStall: () => this.handleStreamStall(capturedSessionId),
+      // pollTurnUntilTerminal awaits internally; we fire-and-forget
+      // because the action's own finally block restores the per-
+      // session gate. A session switch concurrent with this poll is
+      // safe — the action re-checks currentSessionId at each iteration.
+      void this.pollTurnUntilTerminal(sessionId, activeTurnId).finally(() => {
+        this.setSessionStreaming(sessionId, { isLoading: false, isStreaming: false })
+        void this.reconcileFromBackend(sessionId)
       })
     },
 
@@ -2047,15 +1927,43 @@ export const useChatStore = defineStore('chat', {
           }
         }
 
+        // Phase-4-Commit-2 — write the heartbeat-projected phase +
+        // token_count onto the per-session FE state every poll. The
+        // adaptive watchdog (now retired alongside SSE) used to read
+        // streamingPhase to pick a per-phase threshold; the live token
+        // counter + t/s display still reads tokenCountBySession +
+        // tokensPerSecondBySession. Phase B re-verification of the
+        // Phase-4-Commit-1 heartbeat-on-turn subscriber confirmed the
+        // wire is fed from the Go side (server.go:543); this is the
+        // FE-side reader the brief asked to wire.
+        if (typeof state.phase === 'string') {
+          this.streamingPhase[sessionId] = state.phase || ''
+        }
+        if (typeof state.token_count === 'number') {
+          const prevCount = this.tokenCountBySession[sessionId]
+          const prevAt = this.lastHeartbeatAtBySession[sessionId]
+          const nowMs = Date.now()
+          this.tokenCountBySession[sessionId] = state.token_count
+          if (typeof prevCount === 'number' && typeof prevAt === 'number') {
+            const deltaTokens = state.token_count - prevCount
+            const deltaSeconds = (nowMs - prevAt) / 1000
+            if (deltaSeconds > 0 && deltaTokens > 0) {
+              this.tokensPerSecondBySession[sessionId] = Math.round(deltaTokens / deltaSeconds)
+            } else {
+              this.tokensPerSecondBySession[sessionId] = 0
+            }
+          } else {
+            this.tokensPerSecondBySession[sessionId] = 0
+          }
+          this.lastHeartbeatAtBySession[sessionId] = nowMs
+        }
+
         // Phase-5 §1c-α — diff the (current_provider, current_model) pair
         // against the prior poll's snapshot. On a real transition, route
-        // through handleProviderChangedEvent (the same handler the SSE
-        // branch at chatStore.ts:~2740 calls) so the chip pivots and the
-        // toast fires. Idempotency on the handler's `lastProviderChange
-        // Key` dedup gate ensures the transitional 1c double-fire (poll
-        // + SSE) emits one toast per transition. Run BEFORE the status-
-        // check returns so a completion-poll that also carries the final
-        // pair still fires the handler.
+        // through handleProviderChangedEvent so the chip pivots and the
+        // toast fires. Run BEFORE the status-check returns so a
+        // completion-poll that also carries the final pair still fires
+        // the handler.
         const incomingProvider =
           typeof state.current_provider === 'string' ? state.current_provider : ''
         const incomingModel =
@@ -2516,14 +2424,6 @@ export const useChatStore = defineStore('chat', {
       }
       this.messages.push(optimisticMessage)
 
-      // Phase 3: tracks whether the legacy SSE branch opened an
-      // EventSource. Currently informational only — the SSE Promise
-      // wrapper in the legacy branch ensures sendMessage awaits SSE
-      // end before finally fires, so finally cleanup is uniform.
-      // Retained for clarity at the call site and a future Phase 4
-      // pivot where the legacy branch is removed entirely.
-      let sseOpened = false
-
       try {
         let sessionId = this.currentSessionId
         if (!sessionId) {
@@ -2614,41 +2514,19 @@ export const useChatStore = defineStore('chat', {
         }
 
         if (turnId !== null) {
-          // Phase 3 — TURN-ID POLL PATH. The user has spent ~24 hours
-          // debugging SSE live-render through nine symptom-patch
-          // commits; this branch closes the bug class.
+          // Phase 3/4 — TURN-ID POLL PATH (the sole live path post-
+          // Commit-2). pollTurnUntilTerminal long-polls
+          // GET /sessions/{id}/turns/{turn_id}?wait=true&since=N and
+          // surfaces engine-emitted chunks via the per-turn poll-diff
+          // branches (provider_changed, context_usage, context_compacted,
+          // gate_failed, provider_quota, critical_error).
           await this.pollTurnUntilTerminal(capturedSessionId, turnId)
         } else {
-          // Legacy / rollback SSE PATH. The pre-Phase-3 active-send
-          // SSE wiring lives here — only triggered when the server
-          // response lacks turn_id (older server or operator rollback).
-          // When Phase 4 removes the legacy path entirely this whole
-          // `else` block goes away with it.
-          //
-          // The SSE is opened fire-and-forget. The [DONE]/error/stall
-          // callbacks manage the stream's own teardown. The outer
-          // finally block clears the per-session gate so the user can
-          // submit subsequent prompts — pre-Phase-3 the gate also
-          // cleared in finally; the SSE itself was the indicator of
-          // "agent is working" via isStreaming chunks.
-          sseOpened = true
-          const sendStream = getSessionStream(capturedSessionId)
-          sendStream.connect(capturedSessionId, {
-            onMessage: (payload) => {
-              if (this.currentSessionId !== capturedSessionId) {
-                const isContextUsage = isContextUsagePayload(payload)
-                if (!isContextUsage) return
-              }
-              this.applyContentEvent(payload, capturedSessionId)
-              if (payload === '[DONE]') {
-                disconnectSessionStream(capturedSessionId)
-              }
-            },
-            onError: () => {
-              disconnectSessionStream(capturedSessionId)
-            },
-            onStall: () => this.handleStreamStall(capturedSessionId),
-          })
+          // Defence-in-depth: a server that returns no turn_id is
+          // structurally broken post-Commit-2 (every POST mints a
+          // Turn). Surface the error so the user retries / reloads.
+          this.error =
+            'Server returned no turn_id — long-poll unavailable. Reload the page or retry.'
         }
 
         // Canonical post-send sync. The POST response carries the
@@ -2688,20 +2566,10 @@ export const useChatStore = defineStore('chat', {
         // lazy-create branch). If the user has navigated to a different
         // session in the meantime, that session's slot is unaffected.
         //
-        // Phase 3:
-        //   - turn-id poll path: pollTurnUntilTerminal awaited above
-        //     drove the turn to terminal status; SSE was never opened
-        //     for this session. Disconnecting here is a no-op for
-        //     this session.
-        //   - legacy SSE path: SSE was opened fire-and-forget; the
-        //     [DONE]/error/stall callbacks tear the SSE down. We do
-        //     NOT disconnect from finally — that would tear down the
-        //     SSE before the first chunk could arrive, re-introducing
-        //     the live-render bug class on the rollback path.
+        // Phase-4-Commit-2: pollTurnUntilTerminal awaited above drove
+        // the turn to a terminal status via long-poll; no SSE was
+        // opened so there is nothing to tear down here.
         const completedSessionId = this.currentSessionId ?? initialSessionId
-        if (completedSessionId && !sseOpened) {
-          disconnectSessionStream(completedSessionId)
-        }
         this.setSessionStreaming(completedSessionId, { isLoading: false, isStreaming: false })
         // Streaming Coherence Slice E (May 2026) — queued-prompt drain.
         // After the outer turn completes, fire the next queued prompt
@@ -2766,29 +2634,17 @@ export const useChatStore = defineStore('chat', {
         }
         this.escapePressCount = 0
 
-        try {
-          // Fire the DELETE endpoint to cancel the in-flight turn
-          const response = await fetch(`/api/v1/sessions/${sessionId}/stream`, {
-            method: 'DELETE',
-          })
-
-          if (response.ok || response.status === 404) {
-            // Cancel succeeded or no turn in flight — close the EventSource
-            disconnectSessionStream(sessionId)
-          }
-        } catch (error) {
-          // Network error; still close the stream to release UI
-          disconnectSessionStream(sessionId)
-        }
-        // UI Parity bug-fix bundle (May 2026). P1-5: pre-fix the
-        // composer's Send/Stop affordance stayed in "Stop" mode until
-        // the outer POST drained server-side (the server has to
-        // propagate cancel through its own pipeline). Users would
-        // click Stop and the UI looked frozen for seconds while the
-        // pulse dot kept pulsing. We clear the per-session streaming
-        // slot here so the composer flips back to Send immediately;
-        // any late-arriving SSE chunks for this session are dropped
-        // by the C-3 cross-session guard upstream of applyContent.
+        // Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+        // (May 2026)" retired the DELETE /api/v1/sessions/{id}/stream
+        // cancel endpoint along with the SSE handler that owned it.
+        // A server-side DELETE /api/v1/sessions/{id}/turns/{turn_id}
+        // cancel endpoint is a follow-on (tracked separately). For
+        // now Escape-Escape clears the per-session UI gate immediately
+        // so the composer flips back to Send; the long-poll itself
+        // continues until the engine drains, and any chunks that
+        // arrive land on a now-cleared streaming slot (no user-visible
+        // re-render). The Turn registry's terminal state still resolves
+        // correctly when the engine completes.
         this.setSessionStreaming(sessionId, { isLoading: false, isStreaming: false })
       }
     },
@@ -2800,27 +2656,15 @@ export const useChatStore = defineStore('chat', {
     // tool call without producing chunks; we only want to trip on "actually
     // dead" streams, not "agent is busy".
     //
-    // sessionId tracks which session armed this watchdog so a trip can
-    // reconcile against the right session (compounding bug C-6 from the
-    // PR-2 plan: a watchdog from session A must not act on session B after
-    // a navigation). When omitted, reconcile is skipped on trip — legacy
-    // call sites still get the gate-clearing behaviour.
-    armStallWatchdog(sessionId?: string): void {
-      // Per-session SSE singleton (Slice B) — arm the watchdog on the
-      // specific session's stream. Falls back to the current session
-      // when caller did not supply one (legacy callers).
-      const target = sessionId ?? this.currentSessionId ?? ''
-      if (!target) return
-      const stream = streams.get(target)
-      if (!stream) return
-      // Streaming Coherence Slice F (May 2026) — adaptive watchdog.
-      // The engine's last heartbeat for this session updated
-      // streamingPhase[sessionId]; pick the per-phase threshold
-      // (generating 45s / thinking 120s / tool_executing 180s /
-      // queued 300s) or fall back to the legacy 60s flat default.
-      const phase = this.streamingPhase[target] || ''
-      const timeoutMs = stallTimeoutForPhase(phase)
-      stream.armWatchdog(() => this.handleStreamStall(target), timeoutMs)
+    // armStallWatchdog — retired in Phase-4-Commit-2 of "Turn-Based
+    // Post-Then-Poll Architecture (May 2026)" alongside the SSE
+    // EventSource it used to arm. The long-poll path has its own
+    // stall behaviour built in (the server's 25s long-poll timeout
+    // releases the FE, which immediately reissues — no client-side
+    // watchdog needed). Retained as a no-op so existing test seam
+    // call sites compile.
+    armStallWatchdog(_sessionId?: string): void {
+      // no-op
     },
 
     // Stall trip handler. Stream stalled — unsticky the input gate so the
@@ -2923,30 +2767,18 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
+    // applyContentEvent — Phase-4-Commit-2 of "Turn-Based Post-Then-Poll
+    // Architecture (May 2026)" retired the production SSE dispatch
+    // pipeline that fed this switch. The function is preserved as a
+    // TEST-ONLY seam so the existing handler-dispatch coverage in
+    // chatStore.test.ts continues to exercise the handler functions
+    // (handleContentChunk, handleStreamDone, handleProviderChangedEvent,
+    // handleContextUsageEvent, handleContextCompactedEvent, etc.) via
+    // a single payload-shaped entry point. Production code never calls
+    // this — every poll-diff site routes through the handler functions
+    // directly (see pollTurnUntilTerminal above).
     applyContentEvent(payload: string, capturedSessionId?: string): void {
-      // Classify into the discriminated union — see web/src/lib/sseEvent.ts
-      // for the source-of-truth list of event variants tracked from the Go
-      // emitter. The exhaustive switch below means a new event type added
-      // server-side without a frontend handler fails compile rather than
-      // being silently swallowed.
-      //
-      // Pre-this-PR the dispatch was a `Record<string, unknown>` switch
-      // with a structural-fallback for delegation events that lacked the
-      // type discriminant. The Go side now ALWAYS tags delegation events
-      // with `type: 'delegation'` (writeSSEDelegationInfo injects the
-      // field even when wrapping a provider DelegationInfo), so the
-      // structural fallback was dead code.
       const event: SSEEvent = parseSSEPayload(payload)
-
-      // M7 — phase + watchdog scoping must follow the chunk's session, NOT
-      // the global currentSessionId. SSE callers thread their captured id
-      // (sendMessage / maybeReattachStream both keep `capturedSessionId`
-      // closure-scoped past the C-3 guard); legacy and test callers
-      // omitting the argument fall back to currentSessionId for backwards
-      // compatibility. Without this, a chunk arriving for session A while
-      // the user has navigated to B writes A's phase under B's key and
-      // re-arms B's watchdog against A's chunk activity — false positives
-      // on B and missed stalls on A.
       const targetSessionId = capturedSessionId ?? this.currentSessionId ?? undefined
 
       // Streaming Coherence Slice F (May 2026) — record the latest
@@ -2958,9 +2790,7 @@ export const useChatStore = defineStore('chat', {
         // UI Parity PR5 (May 2026) — live token counter. Record
         // the engine's reported cumulative output_tokens for this
         // session AND compute the tokens-per-second rate from the
-        // delta against the previous tick. The first tick has no
-        // predecessor so t/s stays 0 and the ChatView counter
-        // suppresses the trailing rate segment.
+        // delta against the previous tick.
         const prevCount = this.tokenCountBySession[targetSessionId]
         const prevAt = this.lastHeartbeatAtBySession[targetSessionId]
         const nowMs = Date.now()
@@ -2979,11 +2809,6 @@ export const useChatStore = defineStore('chat', {
         this.lastHeartbeatAtBySession[targetSessionId] = nowMs
       }
 
-      // Any SSE event counts as "the stream is alive" — re-arm the
-      // watchdog so a slow but progressing stream is never killed.
-      // The watchdog only trips on dead streams. Pass the chunk's own
-      // session so a trip reconciles the right session even if the user
-      // has navigated mid-stream.
       this.armStallWatchdog(targetSessionId)
 
       switch (event.kind) {
@@ -3003,13 +2828,6 @@ export const useChatStore = defineStore('chat', {
           this.handleToolResultEvent({ content: event.content })
           return
         case 'tool_error':
-          // Gap 2 (tool_error SSE wire, May 2026). The Go SSE pipeline
-          // emits this discriminant when chunk.ToolResult.IsError=true.
-          // Distinct from tool_result so the live stream can flip the
-          // matching tool message's status to 'error' — the legacy
-          // handleToolResultEvent unconditionally stamps 'completed'
-          // and would silently hide an in-stream failure until the
-          // post-stream reconcile.
           this.handleToolErrorEvent({ content: event.content })
           return
         case 'delegation':
@@ -3019,15 +2837,6 @@ export const useChatStore = defineStore('chat', {
           this.error = event.error
           return
         case 'stream_critical':
-          // Fatal provider error — the engine has classified this as
-          // SeverityCritical (revoked OAuth, 401, model-not-found,
-          // billing/quota lockout) and the session is unrecoverable
-          // until the operator intervenes. Surface a persistent banner
-          // (CriticalErrorBanner.vue) instead of the transient toast
-          // path used for `error` events. Always overwrite a prior
-          // criticalError — a fresh fatal error must replace any
-          // previously-dismissed banner with the new correlation id so
-          // support can locate the latest server-side log entry.
           this.criticalError = {
             message: event.error,
             correlationId: event.correlationId,
@@ -3037,10 +2846,6 @@ export const useChatStore = defineStore('chat', {
         case 'harness_attempt_start':
         case 'harness_complete':
         case 'harness_critic_feedback':
-          // Harness events are surfaced by the TUI but the Vue chat thread
-          // does not yet render them as bubbles — silently ignored here.
-          // Adding rendering is a future change; the dispatch path is
-          // typed so a renderer addition is a simple new case.
           return
         case 'thinking':
           this.handleThinkingEvent({ content: event.content })
@@ -3063,10 +2868,6 @@ export const useChatStore = defineStore('chat', {
           })
           return
         case 'context_usage':
-          // Bug Hunt (May 2026) — thread the chunk's captured session
-          // id so the per-session map records the figure under its own
-          // key. An emission for an inactive session lands in
-          // contextUsageBySession but does not touch the active chip.
           this.handleContextUsageEvent({
             inputTokens: event.inputTokens,
             outputReserve: event.outputReserve,
@@ -3079,44 +2880,15 @@ export const useChatStore = defineStore('chat', {
             sessionId: event.sessionId,
             originalTokens: event.originalTokens,
             summaryTokens: event.summaryTokens,
-            // Phase-5 Slice δ — surface the Trigger discriminant onto
-            // the chip tooltip. Empty default tolerates historical
-            // events that pre-date the field.
             trigger: event.trigger,
           })
           return
         case 'provider_quota':
-          // Provider Quota and Spend Visibility plan (May 2026) PR4a.
-          // The engine emits provider_quota inline (before reply) and
-          // post-turn (after streamWithToolLoop), mirroring the
-          // context_usage cadence at engine.go:2519-2533 (Stream).
-          // Route to the quotaStore unconditionally — the chip is
-          // provider+model scoped, not session scoped, so a fresh
-          // event for any session updates the same store key the
-          // chip is reading.
           useQuotaStore().applyProviderQuotaEvent(event)
           return
         case 'streaming_heartbeat':
-          // Streaming Coherence Slice F (May 2026) — adaptive watchdog.
-          // The engine's heartbeat ticks every ~15s during a turn so
-          // the stall watchdog re-arms even when content emission
-          // pauses (long thinking, sandboxed tool execution). The
-          // phase write + watchdog re-arm both happened above (before
-          // this switch) under `targetSessionId` so they follow the
-          // chunk's own session, not currentSessionId — see M7. Nothing
-          // else to do here.
           return
         case 'gate_failed':
-          // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
-          // a halt-class swarm-gate failure populates the
-          // session-scoped lastGateFailure slice the
-          // GateFailureBanner reads. Each fresh halt unconditionally
-          // overwrites the prior payload — a new failure is a new
-          // event the operator must see (mirrors CriticalErrorBanner's
-          // overwrite policy). The session-scope guard is
-          // defence-in-depth; the api server scopes the SSE wire to
-          // the active session so in practice another session's halt
-          // never reaches this dispatch.
           this.lastGateFailure = {
             swarmId: event.swarmId,
             lifecycle: event.lifecycle,
@@ -3130,10 +2902,6 @@ export const useChatStore = defineStore('chat', {
           return
         case 'unknown':
         case 'malformed':
-          // Defensive: log structural-only metadata (no chunk content) so a
-          // future emitter mismatch is visible in window.__flowstateStreamLog
-          // without leaking user data. The event.kind is the only payload
-          // we record — never event.raw, which may carry user secrets.
           recordStreamEvent({
             kind: 'event-dropped',
             sessionId: this.currentSessionId ?? '',
@@ -3235,12 +3003,9 @@ export const useChatStore = defineStore('chat', {
       // post-await reconcile resolves; for intermediate DONEs we no
       // longer touch the streaming flag.
       //
-      // The watchdog is still cleared on every Done so a stalled
-      // intermediate round trips correctly.
-      const stream = this.currentSessionId ? streams.get(this.currentSessionId) : undefined
-      if (stream) {
-        stream.clearWatchdog()
-      }
+      // Phase-4-Commit-2 retired the SSE EventSource and its
+      // armed-watchdog — the long-poll path has no client-side
+      // watchdog to clear.
     },
 
     handleContentChunk(info: { content?: unknown }): void {
@@ -3940,9 +3705,9 @@ export const useChatStore = defineStore('chat', {
       // Kill any in-flight stream before truncating — without this, chunks
       // arriving after the slice would re-insert content that was just removed.
       // Per-session SSE singleton (Slice B) — drop the specific session.
-      disconnectSessionStream(this.currentSessionId)
-      // Per-session state (Slice A) — clear in-flight flags on the
-      // session being reverted.
+      // Phase-4-Commit-2 retired the SSE stream; revertToMessage no
+      // longer needs to disconnect an EventSource. The per-session
+      // streaming gate is cleared so the composer flips back to Send.
       this.setSessionStreaming(this.currentSessionId, { isLoading: false, isStreaming: false })
       if (!messageId.startsWith('temp-')) {
         await truncateSessionMessages(this.currentSessionId, messageId)

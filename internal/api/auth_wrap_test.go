@@ -101,11 +101,14 @@ var _ = Describe("PR3 C7 — route wrapping via registerProtected/Public/Login",
 			// Plan §"Endpoint Inventory" Protected list — sample
 			// representative entries; the full set is enumerated by the
 			// 16-row table in the plan.
+			// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+			// (May 2026)" retired the per-session SSE/WebSocket routes;
+			// they no longer appear in this list. The negative-contract
+			// pin at the bottom of server_test.go pins that those paths
+			// 404.
 			protectedGets := []string{
 				"/api/v1/sessions",
 				"/api/v1/sessions/abc/messages",
-				"/api/v1/sessions/abc/stream",
-				"/api/v1/sessions/abc/ws",
 				"/api/v1/sessions/abc/todos",
 				"/api/v1/sessions/abc/children",
 				"/api/v1/sessions/abc/tree",

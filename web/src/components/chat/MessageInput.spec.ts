@@ -599,41 +599,40 @@ describe('chatStore.handleEscapeKey — clears streaming state after cancel (P1-
   })
 
   it('clears isStreaming/isLoading on confirmed escape-twice cancel', async () => {
+    // Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+    // (May 2026)" retired the DELETE /api/v1/sessions/{id}/stream
+    // cancel endpoint along with the SSE handler. Escape-Escape now
+    // clears the per-session UI gate immediately so the composer
+    // flips back to Send; the long-poll itself continues to drain
+    // on its own without a server-side cancel hop.
     const store = useChatStore()
     store.currentSessionId = 'sess-1'
     store.setSessionStreaming('sess-1', { isLoading: true, isStreaming: true })
     expect(store.streamingFor('sess-1')).toEqual({ isLoading: true, isStreaming: true })
 
-    // Mock fetch so the DELETE resolves OK.
-    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200 })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(globalThis as any).fetch = fetchSpy
-
     // First press arms the chord.
     await store.handleEscapeKey()
-    // Second press within window fires the cancel cascade.
+    // Second press within window fires the cancel cascade — local UI
+    // state clears synchronously.
     await store.handleEscapeKey()
 
-    expect(fetchSpy).toHaveBeenCalledWith('/api/v1/sessions/sess-1/stream', { method: 'DELETE' })
     // The streaming slot must have been cleared so the composer's
     // isStreamingNow gate flips back to Send and queued prompts stop
     // accumulating.
     expect(store.streamingFor('sess-1')).toEqual({ isLoading: false, isStreaming: false })
   })
 
-  it('clears streaming state even when the DELETE rejects (network error)', async () => {
+  it('clears streaming state without requiring a backend cancel', async () => {
+    // Phase-4-Commit-2 — the DELETE cancel endpoint is gone; the FE
+    // never fires a network request on Escape-Escape. Local UI state
+    // clears unconditionally so the user can resume composing.
     const store = useChatStore()
     store.currentSessionId = 'sess-2'
     store.setSessionStreaming('sess-2', { isLoading: true, isStreaming: true })
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ;(globalThis as any).fetch = vi.fn().mockRejectedValue(new Error('offline'))
-
     await store.handleEscapeKey()
     await store.handleEscapeKey()
 
-    // Even on network failure the UI must unstick — the stream was
-    // already closed locally by disconnectSessionStream.
     expect(store.streamingFor('sess-2')).toEqual({ isLoading: false, isStreaming: false })
   })
 })

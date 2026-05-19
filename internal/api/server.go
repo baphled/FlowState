@@ -33,20 +33,6 @@ import (
 const (
 	errSessionManagerNotConfigured    = `{"error":"session manager not configured"}`
 	errBackgroundManagerNotConfigured = `{"error":"background manager not configured"}`
-
-	// sealedTurnGrace is the maximum time handleSessionStream waits on a
-	// freshly-opened SSE subscription against a sealed-turn session
-	// before deciding the session is genuinely idle and emitting
-	// [DONE]. Sized to absorb the async-POST window introduced by
-	// commit e4bf9632: the Vue chatStore opens SSE first and then
-	// awaits the POST (chatStore.ts:1949-1992), so the gap between
-	// "SSE handler runs" and "POST kicks off Publish" is non-zero but
-	// typically <50ms on localhost. 250ms is comfortably wider than
-	// the observed gap on a loaded laptop yet short enough that a
-	// truly idle reconnect on a sealed session does not visibly hang
-	// the client. See bug-fix note "Sealed-Turn SSE Race After Async
-	// POST (May 2026)".
-	sealedTurnGrace = 250 * time.Millisecond
 )
 
 // Streamer abstracts the streaming producer for chat responses.
@@ -65,7 +51,6 @@ type Server struct {
 	skills                 []skill.Skill
 	sessions               *ctxstore.FileSessionStore
 	sessionManager         *session.Manager
-	sessionBroker          *SessionBroker
 	todoStore              todo.Store
 	backgroundManager      *engine.BackgroundTaskManager
 	completionOrchestrator *engine.CompletionOrchestrator
@@ -75,13 +60,15 @@ type Server struct {
 	contextUsageProvider   ContextUsageProvider
 	compactionController   CompactionController
 	mux                    *http.ServeMux
-	// originPatterns is the glob allowlist applied to the WebSocket
-	// handshake (passed through to websocket.AcceptOptions.OriginPatterns)
-	// and to PR3's RequireOrigin HTTP middleware. Centralised in PR1/C1
-	// per the API Auth Track plan §"Session Store Interface" → "Rollout
-	// Plan" — see internal/auth.OriginConfig.AllowedOrigins for the type
-	// the auth package consumes. Empty defaults to ["localhost:*"] to
-	// preserve the pre-lift behaviour (websocket.go:106).
+	// originPatterns is the glob allowlist applied to PR3's RequireOrigin
+	// HTTP middleware. Centralised in PR1/C1 per the API Auth Track plan
+	// §"Session Store Interface" → "Rollout Plan" — see
+	// internal/auth.OriginConfig.AllowedOrigins for the type the auth
+	// package consumes. Empty defaults to ["localhost:*"]. Phase 4 /
+	// Commit 2 (Turn-Based Post-Then-Poll, May 2026) retired the
+	// WebSocket handshake that originally consumed this allowlist
+	// alongside the auth middleware; the allowlist now exclusively
+	// gates HTTP requests.
 	originPatterns []string
 	// auth wires the optional PR3 auth track (Origin / Session / CSRF
 	// middleware composition). Installed via WithAuth(bundle); when
@@ -123,11 +110,6 @@ type Server struct {
 type DispatcherService interface {
 	DispatchEphemeral(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.EphemeralHandle, error)
 	DispatchSessioned(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.SessionedHandle, error)
-	// SetSessionBroker propagates a post-init broker reference. Required
-	// because production wiring sets the broker AFTER NewServer's
-	// auto-construct captures it; without propagation the Dispatcher
-	// silently drops chunks. See SetSessionBroker on Server.
-	SetSessionBroker(broker dispatch.SessionBroker)
 	// TurnRegistry exposes the in-memory Turn store the Dispatcher writes
 	// into during DispatchSessioned. Phase 2 of "Turn-Based Post-Then-Poll
 	// Architecture (May 2026)" reads from this registry to serve
@@ -163,20 +145,6 @@ func WithSwarmRegistry(reg *swarm.Registry) ServerOption {
 // *engine.Engine here; tests may pass a fake.
 func WithDispatchEngine(eng swarm.DispatchEngine) ServerOption {
 	return func(s *Server) { s.dispatchEngine = eng }
-}
-
-// WithSessionBroker sets the session broker for live event streaming.
-//
-// Expected:
-//   - A valid session broker is provided.
-//
-// Returns:
-//   - A ServerOption that installs the provided session broker.
-//
-// Side effects:
-//   - None.
-func WithSessionBroker(broker *SessionBroker) ServerOption {
-	return func(s *Server) { s.sessionBroker = broker }
 }
 
 // WithSessionManager sets the session manager for session-scoped API routes.
@@ -259,7 +227,14 @@ func WithBackgroundManager(mgr *engine.BackgroundTaskManager) ServerOption {
 	return func(s *Server) { s.backgroundManager = mgr }
 }
 
-// WithEventBus configures the EventBus for forwarding operational events to WebSocket clients.
+// WithEventBus configures the EventBus the api server subscribes to
+// for the turn-registry projections (subscribeTurnHeartbeat,
+// subscribeTurnContextCompacted, subscribeTurnGateFailed) and for the
+// swarm-events SSE projection at GET /api/swarm/events.
+//
+// Phase-4-Commit-2 retired the per-session SSE/WebSocket bridges that
+// previously consumed this bus; the surviving consumers translate bus
+// events into Turn-registry state so long-poll surfaces them.
 //
 // Expected:
 //   - bus is a non-nil EventBus from the engine.
@@ -268,7 +243,7 @@ func WithBackgroundManager(mgr *engine.BackgroundTaskManager) ServerOption {
 //   - A ServerOption that sets the eventBus field.
 //
 // Side effects:
-//   - None until subscribeSessionBus is called.
+//   - None until NewServer's subscribeTurn* methods are called.
 func WithEventBus(bus *eventbus.EventBus) ServerOption {
 	return func(s *Server) { s.eventBus = bus }
 }
@@ -365,11 +340,11 @@ func WithCompactionController(c CompactionController) ServerOption {
 	return func(s *Server) { s.compactionController = c }
 }
 
-// WithOriginPatterns installs the glob allowlist used by the WebSocket
-// handshake (via websocket.AcceptOptions.OriginPatterns) and — once PR3
-// lands — by the HTTP RequireOrigin middleware. Empty/unset is treated
-// as ["localhost:*"] via originAllowlist(), preserving the pre-PR1
-// behaviour at internal/api/websocket.go:106 (handleSessionWebSocket).
+// WithOriginPatterns installs the glob allowlist used by the HTTP
+// RequireOrigin middleware. Empty/unset is treated as ["localhost:*"]
+// via originAllowlist(). Phase-4-Commit-2 retired the WebSocket
+// handshake that originally consumed this allowlist alongside the
+// HTTP middleware; the allowlist now gates HTTP requests exclusively.
 //
 // Production wires this from cfg.Auth.AllowedOrigins (TOML); tests may
 // pass an explicit list or omit the option entirely.
@@ -438,31 +413,6 @@ func (s *Server) SetBackgroundManager(mgr *engine.BackgroundTaskManager) {
 	s.backgroundManager = mgr
 }
 
-// SetSessionBroker sets the session broker for live event streaming.
-//
-// Expected:
-//   - broker is a non-nil SessionBroker.
-//
-// Returns:
-//   - Nothing.
-//
-// Side effects:
-//   - Updates the server's session broker reference.
-func (s *Server) SetSessionBroker(broker *SessionBroker) {
-	s.sessionBroker = broker
-	// Propagate to Dispatcher — production wires the broker AFTER NewServer
-	// has already auto-constructed the Dispatcher (internal/app/app.go:444-446
-	// calls api.NewSessionBroker() then app.API.SetSessionBroker()). Without
-	// this propagation the Dispatcher's broker reference stays nil and
-	// fanOutSessionedChunks falls into the drain-to-sink default case — SSE
-	// subscribers receive zero content chunks despite the engine producing
-	// them correctly. Diagnosed via live curl probe on May 18 2026; root cause
-	// of every "refresh required" report this session.
-	if s.dispatcher != nil {
-		s.dispatcher.SetSessionBroker(broker)
-	}
-}
-
 // SetCompletionOrchestrator attaches the completion orchestrator so user-
 // initiated messages can reset the autonomous re-prompt budget.
 //
@@ -476,23 +426,6 @@ func (s *Server) SetSessionBroker(broker *SessionBroker) {
 //   - Updates the server's orchestrator reference.
 func (s *Server) SetCompletionOrchestrator(orch *engine.CompletionOrchestrator) {
 	s.completionOrchestrator = orch
-}
-
-// SubscribeSessionBus exposes subscribeSessionBus for external use.
-// It subscribes to EventBus events for the given session, forwarding sanitised
-// summaries to the provided channel. The returned function stops forwarding when called.
-//
-// Expected:
-//   - sessionID is a valid session identifier.
-//   - out is a buffered channel for receiving WSChunkMsg values.
-//
-// Returns:
-//   - An unsubscribe function that stops event forwarding.
-//
-// Side effects:
-//   - Subscribes to EventBus events for the given session when the EventBus is configured.
-func (s *Server) SubscribeSessionBus(sessionID string, out chan<- WSChunkMsg) func() {
-	return s.subscribeSessionBus(sessionID, out)
 }
 
 // NewServer creates a new API server with the given dependencies.
@@ -537,15 +470,9 @@ func NewServer(
 	// goes through DispatchEphemeral so the same context.WithoutCancel
 	// + resolve+dispatch lifecycle applies uniformly.
 	if s.dispatcher == nil && s.streamer != nil {
-		var (
-			mgrAdapter    dispatch.SessionManager
-			brokerAdapter dispatch.SessionBroker
-		)
+		var mgrAdapter dispatch.SessionManager
 		if s.sessionManager != nil {
 			mgrAdapter = s.sessionManager
-		}
-		if s.sessionBroker != nil {
-			brokerAdapter = s.sessionBroker
 		}
 		s.dispatcher = dispatch.New(
 			streamingAdapter{s.streamer},
@@ -553,7 +480,6 @@ func NewServer(
 			s.swarmRegistry,
 			s.registry,
 			mgrAdapter,
-			brokerAdapter,
 		)
 	}
 	// Phase-4-Commit-1 — wire the polling-side heartbeat subscriber.
@@ -561,14 +487,16 @@ func NewServer(
 	// events.EventStreamingHeartbeat on the bus during a Running turn;
 	// this subscriber translates session_id → turn_id via the registry
 	// and writes phase + token_count onto the Turn so GET /turns/{id}
-	// can surface live progress without an SSE side-channel.
+	// can surface live progress.
 	//
-	// The existing SSE-side bridge at internal/api/event_bridge.go:46
-	// stays live through Commit 2 — both subscribers ship together so
-	// the frontend can migrate without a half-state.
+	// Phase-4-Commit-2 retired the SSE-side bridge at
+	// internal/api/event_bridge.go — long-poll on GET /turns/{id} is
+	// now the sole live channel. The three turn-registry subscribers
+	// (heartbeat, context_compacted, gate_failed) feed the poll's
+	// snapshot directly.
 	//
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1/2.
 	s.subscribeTurnHeartbeat()
 	s.subscribeTurnContextCompacted()
 	s.subscribeTurnGateFailed()
@@ -620,12 +548,11 @@ func (s *Server) subscribeTurnHeartbeat() {
 // subscriber (Phase-5 §1c-γ). Mirrors subscribeTurnHeartbeat's shape: the
 // closure resolves the active turn for the event's session_id via the
 // registry, then appends the compaction payload onto the Turn so
-// GET /turns/{id} can surface compaction history without an SSE
-// side-channel.
+// GET /turns/{id} can surface compaction history.
 //
-// The existing SSE-side bridge at internal/api/event_bridge.go (Slice 6a)
-// stays live through Commit 2 — both subscribers ship together so the
-// frontend can migrate without a half-state.
+// Phase-4-Commit-2 retired the SSE-side bridge at event_bridge.go;
+// this subscriber is the sole consumer of EventContextCompacted on
+// the API layer.
 //
 // No-op when either the eventBus or the dispatcher's Turn registry is
 // unwired — test fixtures that skip WithEventBus simply do not get the
@@ -827,10 +754,7 @@ func (s *Server) setupRoutes() {
 	// POST /messages to read the engine-emitted messages and the
 	// running → completed | failed status transition.
 	s.registerProtected("GET /api/v1/sessions/{id}/turns/{turn_id}", s.handleGetTurn)
-	s.registerProtected("GET /api/v1/sessions/{id}/stream", s.handleSessionStream)
-	s.registerProtected("DELETE /api/v1/sessions/{id}/stream", s.handleCancelStream)
 	s.registerProtected("GET /api/v1/sessions/{id}/messages", s.handleSessionMessages)
-	s.registerProtected("GET /api/v1/sessions/{id}/ws", s.handleSessionWebSocket)
 	s.registerProtected("GET /api/v1/sessions/{id}/todos", s.handleSessionTodos)
 	s.registerProtected("GET /api/v1/sessions/{id}/children", s.handleSessionChildren)
 	s.registerProtected("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
@@ -1265,13 +1189,15 @@ func defaultModelPairForAgent(registry *agent.Registry, agentID string) (provide
 //
 // Side effects:
 //   - Writes a JSON array of session summaries.
-//   - Sets IsStreaming on each summary when a broker is configured and
-//     reports an active publish for that session.
-//   - Sets ActiveTurnID on each summary when a dispatcher's Turn
+//   - Sets ActiveTurnID on each summary when the dispatcher's Turn
 //     registry has a Running turn for the session (Phase-4-Commit-1).
-//     Both fields ship together — IsStreaming via the broker, ActiveTurnID
-//     via the registry. Commit 2 retires IsStreaming once the frontend
-//     reads only ActiveTurnID.
+//   - Sets IsStreaming on each summary as a backward-compatibility
+//     mirror of `ActiveTurnID != ""`. Phase-4-Commit-2 retired the
+//     SSE broker so IsStreaming is no longer broker-driven; existing
+//     FE consumers (chatStore.ts wasStreaming→nowStreaming transition
+//     detector) continue to work because the wire field still flips
+//     across the same boundary — when the Turn ends and the registry
+//     no longer reports it as active.
 func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -1288,12 +1214,10 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 		turnRegistry = s.dispatcher.TurnRegistry()
 	}
 	for _, sum := range summaries {
-		if s.sessionBroker != nil {
-			sum.IsStreaming = s.sessionBroker.IsPublishing(sum.ID)
-		}
 		if turnRegistry != nil {
 			if id, ok := turnRegistry.FindActiveBySession(sum.ID); ok {
 				sum.ActiveTurnID = id
+				sum.IsStreaming = true
 			}
 		}
 	}
@@ -1696,41 +1620,6 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// prependChunk returns a new receive-only channel that yields `first` as
-// its very next value and then forwards every chunk from `src` until
-// `src` closes. The new channel closes after `src` closes.
-//
-// Used by handleSessionStream's sealed-turn grace probe: when the
-// probe pulls the first chunk off the broker subscription to detect
-// that a publisher has started, the main select loop still needs to
-// dispatch that chunk through the same code path as every subsequent
-// chunk. prependChunk re-injects the consumed value without
-// duplicating the dispatch logic.
-//
-// Expected:
-//   - first is a single StreamChunk value already received from src.
-//   - src is a still-open receive-only chunk channel.
-//
-// Returns:
-//   - A buffered chunk channel with `first` already queued; forwards
-//     all subsequent chunks from src; closes when src closes.
-//
-// Side effects:
-//   - Spawns one goroutine that ranges over src; the goroutine exits
-//     when src closes or the returned channel is no longer being read
-//     (the SSE handler's ctx.Done() path drops the reference).
-func prependChunk(src <-chan provider.StreamChunk, first provider.StreamChunk) <-chan provider.StreamChunk {
-	out := make(chan provider.StreamChunk, 64)
-	out <- first
-	go func() {
-		defer close(out)
-		for chunk := range src {
-			out <- chunk
-		}
-	}()
-	return out
-}
-
 // handleSessionTodos returns the todo list for the given session as JSON.
 //
 // Expected:
@@ -1751,410 +1640,8 @@ func (s *Server) handleSessionTodos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.todoStore.Get(id))
 }
 
-// handleSessionStream streams *live* session events as SSE.
-//
-// The SSE stream is for events emitted strictly after the subscriber
-// connects. Historical content lives on GET /api/v1/sessions/{id}/messages
-// (the canonical history endpoint) — replaying it here would duplicate the
-// previous turn's content into the next turn's streaming placeholder.
-//
-// Expected:
-//   - Request path parameter "id" contains the session identifier.
-//   - A session broker is configured (production wiring guarantees this
-//     when a session manager is configured; see app.go).
-//
-// Side effects:
-//   - Writes server-sent events to the response.
-//   - Blocks until the broker closes the subscription or the client disconnects.
-func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request) {
-	if s.sessionManager == nil {
-		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
-		return
-	}
-	id := r.PathValue("id")
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-	if _, err := s.sessionManager.GetSession(id); err != nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-
-	// Phase 3 — TUI-cadence parity. Emit a context_usage SSE event
-	// on connect so the chat UI's usage chip hydrates with the
-	// session's current state the moment the SSE connection lands,
-	// matching the TUI's StatusBar which reflects current state on
-	// every redraw (internal/tui/intents/chat/intent.go syncStatusBar).
-	// Pre-fix the chip stayed hidden until the next pre-send event,
-	// so a user reopening a session saw a blank chip until they
-	// started typing.
-	s.emitSessionLoadContextUsage(w, flusher, id)
-
-	if s.sessionBroker == nil {
-		// No live broker — the SSE stream contract is "live events only";
-		// historical content lives on GET /api/v1/sessions/{id}/messages.
-		// Send [DONE] immediately so the client knows the stream is closed.
-		writeSSEDone(w, flusher)
-		return
-	}
-	// Live session — stream new events only.
-	// Historical content is loaded by the client via GET /messages.
-	//
-	// Subscribe unconditionally and use a brief grace period on sealed
-	// turns to disambiguate "genuinely idle" from "a new turn is about
-	// to start".
-	//
-	// # The async-POST sealed-turn race
-	//
-	// The pre-fix path branched on LastMessageRole and used
-	// SubscribeIfPublishing for sealed turns: if no publisher was active
-	// at the moment of the GET, the handler emitted [DONE] immediately
-	// and returned. That was sound when POST was synchronous (the
-	// publish completed before the response returned), but commit
-	// e4bf9632 made the broker publish asynchronous — the POST returns
-	// immediately and the publish goroutine runs after the HTTP handler
-	// has already replied. The Vue chatStore (chatStore.ts:1949-1992)
-	// opens SSE FIRST and THEN awaits the POST: on a session with a
-	// prior assistant turn the SSE handler ran its sealed-turn check
-	// BEFORE the POST kicked off the publish, took the fast-path,
-	// emitted [DONE], and the client saw no chunks for the follow-up
-	// turn. See bug-fix note "Sealed-Turn SSE Race After Async POST
-	// (May 2026)".
-	//
-	// # The new shape — subscribe first, probe-with-grace second
-	//
-	// Subscribe is now called unconditionally. By the time
-	// SubscribeIfPublishing's TOCTOU window (Subscribe-then-IsPublishing)
-	// concerned us, the subscriber was already in the map; for a sealed
-	// turn we then probed IsPublishing. The new shape inverts that: the
-	// subscriber is registered FIRST (so any Publish run that starts
-	// after this point will fan chunks to us), and we then decide
-	// whether to wait for a chunk or fast-path to [DONE].
-	//
-	// On sealed turns we wait up to sealedTurnGrace for either:
-	//   - A chunk to arrive — a new Publish run started after we
-	//     subscribed; proceed to the normal select loop.
-	//   - The channel to close — a Publish run started and finished
-	//     before the grace expired; emit [DONE] (no replay).
-	//   - The grace timer to expire — the session is genuinely idle.
-	//     Emit [DONE] and return. The "no historical replay" contract
-	//     (broker invariant I6, server_test.go's "emits no content
-	//     events to a fresh subscriber after a sealed turn") is
-	//     preserved because the broker has no replay path and Subscribe
-	//     never observes past chunks; the grace only catches chunks
-	//     emitted strictly AFTER Subscribe returned.
-	//
-	// On non-sealed turns (last message is user / no messages) we skip
-	// the grace and enter the select loop directly: that path matches
-	// the legacy unconditional-Subscribe behaviour. Sealed turns
-	// covered by SubscribeIfPublishing previously did fast-path on no
-	// publisher; we replace that with the grace-then-fast-path shape so
-	// the async-POST window cannot strand a subscriber.
-	//
-	// # Why a grace period, not a transactional accessor
-	//
-	// The TOCTOU SubscribeIfPublishing closes ("read publishing AND
-	// register atomically") was the right shape for a synchronous-POST
-	// world: the publisher was always already active by the time the
-	// SSE handler ran. Under async POST the relevant race window is
-	// "subscribe before the publisher starts" — exactly what plain
-	// Subscribe is for. The grace timer is the cheapest way to bound
-	// the wait for a publisher that arrives shortly after the GET.
-	//
-	// LastMessageRole is used instead of GetSession + freshSess.Messages
-	// because GetSession returns the *Session pointer and releases the
-	// manager's RLock on return. Reading sess.Messages outside the lock
-	// races with SendMessage's append under the write lock — confirmed
-	// by `go test -race` triggering on the slice header at server.go:756
-	// vs manager.go:647. LastMessageRole projects the role under RLock
-	// and returns by value, closing the race window.
-	role, hasMsgs, lastErr := s.sessionManager.LastMessageRole(id)
-	sealed := lastErr == nil && hasMsgs && role != "user"
-
-	liveCh, unsubscribe := s.sessionBroker.Subscribe(id)
-	defer unsubscribe()
-
-	if sealed {
-		// Probe for a chunk inside the grace window. If we see one,
-		// fall through to the main select loop which will dispatch
-		// it. If the channel closes (Publish ran and finished before
-		// the grace expired), or the timer fires (truly idle session),
-		// emit [DONE] and return.
-		select {
-		case <-r.Context().Done():
-			return
-		case chunk, ok := <-liveCh:
-			if !ok {
-				writeSSEDone(w, flusher)
-				return
-			}
-			// Re-deliver the chunk to the main loop. The simplest
-			// shape is a one-slot channel that takes precedence in
-			// the select below; we use a goroutine + buffered chan
-			// so the loop's existing chunk-dispatch logic doesn't
-			// need to special-case "first chunk vs subsequent".
-			liveCh = prependChunk(liveCh, chunk)
-		case <-time.After(sealedTurnGrace):
-			// Genuinely idle sealed session. Emit [DONE] without
-			// replaying any historical content (broker has no
-			// replay path; subscribe-after-the-fact never sees
-			// past chunks).
-			writeSSEDone(w, flusher)
-			return
-		}
-	}
-
-	// Slice 6a — bridge bus events for this session into the SSE
-	// stream. The auto-compactor publishes EventContextCompacted on
-	// the engine bus when an L2 compaction succeeds; the bridge
-	// handler in event_bridge.go fans matching events into busCh as
-	// WSChunkMsg values, and the select below multiplexes them with
-	// the broker's stream chunks. The buffer is sized at 16 — bus
-	// events arrive at most once per turn so the handler should
-	// never see backpressure on this channel; the buffer is purely
-	// to absorb a publish that races the SSE write.
-	busCh := make(chan WSChunkMsg, 16)
-	stopBus := s.subscribeSessionBus(id, busCh)
-	defer stopBus()
-
-	ctx := r.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev, ok := <-busCh:
-			if !ok {
-				continue
-			}
-			s.dispatchSessionBusEventSSE(w, flusher, ev)
-			continue
-		case chunk, ok := <-liveCh:
-			if !ok {
-				// M1 — SSE [DONE] race (May 2026 bug-hunt). The
-				// select-loop multiplexes liveCh with busCh; when
-				// both are ready in the same iteration Go picks one
-				// branch non-deterministically. Pre-fix the terminal
-				// branches (liveCh close, chunk.Done, critical
-				// chunk.Error) wrote [DONE] and returned immediately,
-				// silently dropping any already-enqueued bus event
-				// (context_compacted, gate_failed, streaming.heartbeat)
-				// that lost the race. Draining busCh of all
-				// already-enqueued events onto the wire BEFORE
-				// emitting [DONE] removes the timing dependency:
-				// [DONE] is the terminal frame, so anything written
-				// after it would be unreachable.
-				s.drainPendingBusEventsSSE(w, flusher, busCh)
-				writeSSEDone(w, flusher)
-				return
-			}
-			if chunk.Error != nil {
-				// Gate on severity so fatal provider errors (revoked
-				// OAuth, 401, model-not-found, billing/quota lockout)
-				// stop the SSE fan-out instead of being treated as
-				// self-healing blips. Pre-fix the consumer always
-				// `continue`d on chunk.Error, so the loop kept
-				// reading subsequent chunks from the live channel
-				// and emitting whatever landed — even after the
-				// provider was definitively dead. The chunk-error
-				// helper IsCriticalStreamError has been wired here
-				// so the fix is one branch and one early return,
-				// not a refactor of the surrounding dispatcher.
-				//
-				// The proactive context-window overflow gate
-				// (engine.checkContextWindowOverflow) shares this
-				// path: it wraps a *provider.Error with
-				// ErrorTypeContextWindowExceeded which classifies as
-				// SeverityCritical, so the gate fires here. The
-				// distinct safeMsg category routes a user-actionable
-				// recovery copy through the same banner instead of
-				// the generic "critical stream error" wording fatal
-				// errors share.
-				if provider.IsCriticalStreamError(chunk.Error) {
-					category := "stream_critical"
-					var pErr *provider.Error
-					if errors.As(chunk.Error, &pErr) && pErr != nil &&
-						pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
-						category = "stream_critical_context_exceeded"
-					}
-					writeSSEClientError(w, flusher, chunk.Error, category)
-					// M1 — drain queued bus events before terminating
-					// the stream so a heartbeat / context_compacted
-					// published moments before the critical error is
-					// never lost to the [DONE] race.
-					s.drainPendingBusEventsSSE(w, flusher, busCh)
-					writeSSEDone(w, flusher)
-					return
-				}
-				writeSSEClientError(w, flusher, chunk.Error, "stream_error")
-				continue
-			}
-			if chunk.Done {
-				// M1 — drain queued bus events before terminating
-				// the stream so a heartbeat / context_compacted /
-				// gate_failed published moments before chunk.Done
-				// is never silently dropped to the select race.
-				s.drainPendingBusEventsSSE(w, flusher, busCh)
-				writeSSEDone(w, flusher)
-				return
-			}
-			if chunk.DelegationInfo != nil {
-				writeSSEDelegationInfo(w, flusher, chunk.DelegationInfo)
-			}
-			if chunk.ToolCall != nil {
-				name := chunk.ToolCall.Name
-				if strings.HasPrefix(name, "skill:") {
-					writeSSESkillLoad(w, flusher, strings.TrimPrefix(name, "skill:"))
-				} else {
-					argsJSON := ""
-					if b, err := json.Marshal(chunk.ToolCall.Arguments); err == nil {
-						argsJSON = string(b)
-					}
-					writeSSEToolCall(w, flusher, name, argsJSON)
-				}
-			}
-			// Drop #2 — Thinking SSE dispatch. Anthropic's streaming.go
-			// already emits StreamChunk{Thinking: <text>} for thinking_delta
-			// blocks, and the openaicompat reasoning_content fix (Drop #1)
-			// emits the same shape for glm-4.6 / DeepSeek-R1 reasoning. Pre
-			// this branch the wire dropped both — the chat UI saw a 52-second
-			// silent gap during the model's reasoning phase.
-			if chunk.Thinking != "" {
-				writeSSEThinking(w, flusher, chunk.Thinking)
-			}
-			// Typed event chunks MUST route to their typed SSE writer rather
-			// than fall through to writeSSEContent. Pre-this-fix the
-			// dispatcher emitted a plain {"content":"..."} chunk for
-			// harness_* events, leaking raw JSON like
-			// {"valid":...,"score":...,"attemptCount":2,...} into the assistant
-			// bubble (visible to non-technical users in chat).
-			//
-			// The contract: when EventType is set, the chunk is observability
-			// metadata, not assistant content. Content is dispatched as plain
-			// text only when EventType is empty.
-			switch chunk.EventType {
-			case "tool_result":
-				if chunk.ToolResult != nil {
-					// Gap 2 (tool_error SSE wire, May 2026). The engine
-					// stamps ToolResult.IsError=true on tool_result chunks
-					// when the executor returns a non-nil err (see
-					// internal/engine/engine.go:storeToolResult dispatch
-					// at the appendToolResultsBatch site). Route those to
-					// the additive `tool_error` typed event so the Vue
-					// chatStore can flip the matching tool message to
-					// status='error' in-stream — without this branch the
-					// frontend's handleToolResultEvent hard-set
-					// status='completed' and the failure stayed hidden
-					// until the post-stream history reconcile.
-					if chunk.ToolResult.IsError {
-						writeSSEToolError(w, flusher, chunk.ToolResult.Content)
-					} else {
-						writeSSEToolResult(w, flusher, chunk.ToolResult.Content)
-					}
-				}
-			case "harness_retry":
-				writeSSEHarnessRetry(w, flusher, chunk.Content)
-			case "harness_attempt_start":
-				writeSSEAttemptStart(w, flusher, chunk.Content)
-			case "harness_complete":
-				writeSSEHarnessComplete(w, flusher, chunk.Content)
-			case "harness_critic_feedback":
-				writeSSECriticFeedback(w, flusher, chunk.Content)
-			case "provider_changed":
-				// Track B — failover transition affordance. The failover
-				// StreamHook prepends a chunk{EventType:"provider_changed",
-				// Content:<json>} when a fallback candidate succeeds after
-				// a previous candidate failed. Content is the marshalled
-				// providerChangedPayload (from / to / reason). The wire
-				// passes the JSON through verbatim — the frontend
-				// discriminated union's "provider_changed" branch parses
-				// from/to/reason and renders the toast.
-				writeSSEProviderChanged(w, flusher, chunk.Content)
-			case "model_active":
-				// Always-on actual-model affordance (May 2026 chip-shows-
-				// selection-not-actual fix). The failover StreamHook prepends
-				// a chunk{EventType:"model_active", Content:<json>} on EVERY
-				// successful stream — not just on failover. Content is the
-				// marshalled modelActivePayload (provider / model). The
-				// frontend's discriminated union "model_active" branch
-				// updates currentProviderId / currentModelId so the toolbar
-				// chip pivots from the user's selection to the actual model
-				// the moment streaming starts.
-				writeSSEModelActive(w, flusher, chunk.Content)
-			case "context_usage":
-				// Always-on context-window usage affordance (May 2026
-				// output-reserve fix). The engine emits a chunk{EventType:
-				// "context_usage", Content:<json>} as the first artefact of
-				// every Stream that has enough information to compute it.
-				// Content is the marshalled contextUsagePayload (input /
-				// reserve / limit / percentage / provider / model). The
-				// frontend's discriminated union "context_usage" branch
-				// updates the toolbar usage chip so the user sees how
-				// close the request is to saturating the model's window.
-				writeSSEContextUsage(w, flusher, chunk.Content)
-			case "provider_quota":
-				// Per-provider quota chip event registered by PR1 of the
-				// Provider Quota and Spend Visibility plan (May 2026).
-				// PR1 freezes the wire contract — server fan-out + SSE
-				// writer + Vue Pinia subscription land together so the
-				// chip Pinia store (web/src/stores/quotaStore.ts) has a
-				// stable surface to bind to. PR4 lights up the engine's
-				// buildProviderQuotaChunk emitter; PR1 server-side is
-				// "wired but dormant" — this case will not fire until
-				// PR4 ships, but the dispatch table is correct from
-				// merge of PR1.
-				writeSSEProviderQuota(w, flusher, chunk.Content)
-			case "":
-				if chunk.Content != "" {
-					writeSSEContent(w, flusher, chunk.Content)
-				}
-			default:
-				// Forward-compatible: an unknown EventType chunk falls
-				// through to a plain content emission only when the
-				// frontend can render it as text. Absent that signal the
-				// chunk is dropped on the wire — the client's discriminated
-				// union 'unknown' bucket will record any genuinely-new
-				// typed events (see web/src/lib/sseEvent.ts) without
-				// affecting state.
-				if chunk.Content != "" {
-					writeSSEContent(w, flusher, chunk.Content)
-				}
-			}
-		}
-	}
-}
-
 // handleListSessions writes all available sessions as JSON to the response.
 //
-// handleCancelStream cancels an in-flight streaming turn for a session.
-//
-// Expected:
-//   - Request path parameter "id" identifies an existing session.
-//
-// Returns:
-//   - 204 No Content when a cancel was fired for an in-flight turn.
-//   - 404 Not Found when no in-flight turn exists for the session.
-//
-// Side effects:
-//   - Fires the context cancellation for the session's streaming turn,
-//     propagating cancellation through the entire turn pipeline.
-func (s *Server) handleCancelStream(w http.ResponseWriter, r *http.Request) {
-	if s.sessionManager == nil {
-		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
-		return
-	}
-	id := r.PathValue("id")
-	if s.sessionManager.CancelInflight(id) {
-		w.WriteHeader(http.StatusNoContent)
-	} else {
-		http.Error(w, "no in-flight turn", http.StatusNotFound)
-	}
-}
-
 // Expected:
 //   - None.
 //
@@ -3166,153 +2653,6 @@ func (s *Server) contextUsageForSnapshot(snap *session.Session) []byte {
 		return nil
 	}
 	return []byte(payload)
-}
-
-// emitSessionLoadContextUsage writes a typed context_usage SSE event
-// to the response if the api server has a ContextUsageProvider wired
-// AND the provider returns a payload for the session's current state.
-// No-op otherwise — the chat UI's chip falls back to its empty-state
-// affordance until the next streamed context_usage event lands.
-//
-// The payload reflects the session's CurrentProviderID +
-// CurrentModelID and the snapshot's persisted message history, so the
-// chip's input-token estimate accounts for prior turns (the figure
-// the user wants to see on session-load: "if I sent another turn now
-// this is the cost").
-//
-// session.Message → provider.Message projection mirrors
-// session.Manager.SendMessage's projection: Role, Content,
-// ThinkingBlocks, StopReason are propagated; ToolCalls/ToolResults
-// the manager rebuilds inline are not relevant for the input-token
-// estimate.
-//
-// Expected:
-//   - sessionID identifies a session known to the manager.
-//
-// Side effects:
-//   - On a successful payload: writes one SSE data line carrying the
-//     `{"type":"context_usage", ...}` JSON and flushes.
-//   - On absence of a provider OR a degraded payload: no write.
-func (s *Server) emitSessionLoadContextUsage(w http.ResponseWriter, flusher http.Flusher, sessionID string) {
-	if s == nil || s.contextUsageProvider == nil || s.sessionManager == nil {
-		return
-	}
-	snap, err := s.sessionManager.SnapshotSession(sessionID)
-	if err != nil {
-		return
-	}
-	payload := s.contextUsageForSnapshot(&snap)
-	if len(payload) == 0 {
-		return
-	}
-	writeSSEContextUsage(w, flusher, string(payload))
-}
-
-// drainPendingBusEventsSSE non-blockingly drains every event already
-// enqueued on the bus channel and dispatches each onto the SSE wire.
-//
-// M1 — SSE [DONE] race (May 2026 bug-hunt). The SSE main loop's
-// select multiplexes liveCh (provider chunks) and busCh (session-
-// scoped bus events). When both are ready in the same iteration Go's
-// select picks one non-deterministically. Pre-fix, the terminal
-// branches (liveCh close, chunk.Done, critical chunk.Error) wrote
-// [DONE] and returned immediately — silently discarding any pending
-// bus event that lost the race. Bus events enqueued AFTER [DONE] are
-// unreachable because [DONE] is the terminal frame, so the only safe
-// place to surface a "queued at termination" event is BEFORE [DONE].
-//
-// The drain is non-blocking by design: it reads only what is already
-// in the buffer at the moment of the terminal branch firing. It does
-// NOT wait for in-flight publishers; the goal is "do not lose what
-// the bus already delivered" not "wait for late publishers to land".
-// Late publishers (publishing after the terminal branch fires) hit
-// the buffered channel which is then orphaned when the handler
-// returns — the same drop-on-close-window the WebSocket path
-// accepts (see C2 fix documentation).
-//
-// Expected:
-//   - busCh has been allocated by the SSE handler; the handler is
-//     the sole receiver so no other goroutine competes for receives.
-//   - flusher supports HTTP flushing.
-//
-// Side effects:
-//   - For each event already buffered on busCh, calls
-//     dispatchSessionBusEventSSE which writes one SSE frame and
-//     flushes. Stops at the first non-ready receive (default branch).
-func (s *Server) drainPendingBusEventsSSE(w http.ResponseWriter, flusher http.Flusher, busCh <-chan WSChunkMsg) {
-	for {
-		select {
-		case ev, ok := <-busCh:
-			if !ok {
-				return
-			}
-			s.dispatchSessionBusEventSSE(w, flusher, ev)
-		default:
-			return
-		}
-	}
-}
-
-// dispatchSessionBusEventSSE routes a session-scoped bus event from
-// subscribeSessionBus onto the SSE wire. Slice 6a wires
-// EventContextCompacted; future bus events that should mirror onto
-// SSE add a case here. Bus events that aren't intended for SSE (the
-// existing tool.execute.* / provider.rate_limited family, which
-// only WS clients consume today) fall through to the default branch
-// and are silently dropped — adding new SSE surfaces is opt-in here.
-//
-// Expected:
-//   - ev is a WSChunkMsg produced by one of the handlers in
-//     event_bridge.go.
-//   - flusher supports HTTP flushing.
-//
-// Side effects:
-//   - Writes one SSE data line per event whose EventType has a case
-//     below; flushes after every successful write.
-//   - Drops events without an SSE counterpart silently — they remain
-//     visible to WebSocket clients via the same bridge.
-func (s *Server) dispatchSessionBusEventSSE(w http.ResponseWriter, flusher http.Flusher, ev WSChunkMsg) {
-	switch ev.EventType {
-	case events.EventContextCompacted:
-		// Slice 6a — bridge the engine's L2 auto-compactor telemetry
-		// onto the SSE wire. The bridge handler produces a
-		// map[string]any payload with the canonical fields; the
-		// writer adds the `"type":"context_compacted"` discriminant.
-		data, ok := ev.EventData.(map[string]any)
-		if !ok {
-			return
-		}
-		writeSSEContextCompacted(w, flusher, data)
-	case events.EventGateFailed:
-		// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
-		// project the engine's gate.failed bus event onto the SSE
-		// wire as `"type":"gate_failed"` so the Vue chat surface
-		// renders the persistent gate-failed banner. Halt-class only;
-		// continue/warn-class failures never reach this dispatch.
-		data, ok := ev.EventData.(map[string]any)
-		if !ok {
-			return
-		}
-		writeSSEGateFailed(w, flusher, data)
-	case events.EventStreamingHeartbeat:
-		// Streaming Coherence Slice F follow-up (Bug Fix #62, May
-		// 2026): project the engine's streaming.heartbeat bus event
-		// onto the SSE wire as `"type":"streaming.heartbeat"` so the
-		// Vue chat surface's adaptive stall watchdog re-arms on
-		// every tick. Before this case the engine published the
-		// typed event with zero subscribers — the catalog claim that
-		// api.subscribeSessionBus bridged it onto the wire was a
-		// documentation lie (corrected at fe071507); this case wires
-		// the bridge for real.
-		data, ok := ev.EventData.(map[string]any)
-		if !ok {
-			return
-		}
-		writeSSEStreamingHeartbeat(w, flusher, data)
-	default:
-		// Bus event without an SSE binding — safely no-op. WebSocket
-		// clients still receive it via the same bridge.
-	}
 }
 
 // parseVerbosityLevel converts a verbosity query parameter string to a streaming.VerbosityLevel.

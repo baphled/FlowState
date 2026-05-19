@@ -432,22 +432,16 @@ func configureApplicationAfterBuild(
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
-	// Always wire the SSE session broker when an API and session manager are
-	// configured. The broker is required by handleSessionStream to deliver
-	// live chunks for the in-progress turn — without it, fresh subscribers on
-	// an idle session previously fell back to history replay, leaking a stale
-	// "ghost" of the previous assistant message into the next turn's
-	// streaming placeholder. The broker is independent of background tasks
-	// and the completion orchestrator, so create it unconditionally.
-	var broker engine.SessionBrokerPublisher
-	if app.API != nil && app.sessionManager != nil {
-		sessionBroker := api.NewSessionBroker()
-		app.API.SetSessionBroker(sessionBroker)
-		broker = sessionBroker
-	}
+	// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+	// (May 2026)" retired the SSE session broker. The CompletionOrchestrator
+	// previously published re-prompt chunks to the broker so live SSE
+	// subscribers picked them up; with the broker gone, re-prompt chunks
+	// drain to a sink while the Turn registry (fed by the accumulator
+	// inside the engine pipeline) captures the persisted assistant rows
+	// and long-poll surfaces them.
 	if app.backgroundManager != nil && app.sessionManager != nil && eng.EventBus() != nil {
 		app.completionOrchestrator = engine.NewCompletionOrchestrator(
-			app.backgroundManager, app.sessionManager, eng.EventBus(), broker,
+			app.backgroundManager, app.sessionManager, eng.EventBus(), nil,
 		)
 		app.completionOrchestrator.Start()
 		if app.API != nil {

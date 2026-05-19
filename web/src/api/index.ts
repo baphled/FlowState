@@ -310,6 +310,23 @@ export interface TurnState {
   error: string
   messages: Message[]
   /**
+   * phase surfaces the engine's most-recent streaming heartbeat phase
+   * (Phase-4-Commit-1). Values: 'generating', 'thinking',
+   * 'tool_executing', 'queued'. Empty pre-first-heartbeat.
+   *
+   * Phase-4-Commit-2 made this the canonical phase signal for the
+   * chip's adaptive watchdog — the FE writes it onto
+   * `chatStore.streamingPhase[sessionId]` on every poll-diff.
+   */
+  phase?: string
+  /**
+   * token_count is the engine's most-recent cumulative
+   * output_tokens-so-far on this turn (Phase-4-Commit-1). Monotonically
+   * non-decreasing within a turn; resets at the start of each new turn.
+   * Powers the live token counter + tokens-per-second display.
+   */
+  token_count?: number
+  /**
    * current_provider mirrors the provider id the engine is CURRENTLY
    * streaming under (Phase-5 §1c-α). Populated by the dispatcher's
    * wrapWithTurnLifecycle chunk-tap on `model_active` /
@@ -683,31 +700,19 @@ export async function fetchSessionMessages(sessionId: string): Promise<Message[]
   return data ?? []
 }
 
-// subscribeSessionStream opens a same-origin EventSource for the given session.
+// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture (May 2026)"
+// retired the per-session SSE subscription endpoint. The FE now drives
+// live state via long-poll on
+// GET /v1/sessions/{id}/turns/{turn_id}?wait=true&since=N — see the
+// pollTurnUntilTerminal action on the chatStore.
 //
-// Same-origin assumption: this app is served from the same origin as the
-// FlowState API (the Vite dev server proxies /api to the Go server, and the
-// production build is served alongside the Go server). EventSource follows
-// the page's CORS policy and does not send cookies cross-origin by default.
-//
-// Cross-origin support path: when the API moves to a different origin (e.g.
-// api.flowstate.app while the SPA is at app.flowstate.app), constructing
-// `new EventSource(url, { withCredentials: true })` is the minimum change —
-// the Go server must additionally emit `Access-Control-Allow-Origin: <origin>`
-// (NOT `*`, which is rejected when withCredentials is true) and
-// `Access-Control-Allow-Credentials: true`. See MDN:
-// https://developer.mozilla.org/en-US/docs/Web/API/EventSource/EventSource
-export function subscribeSessionStream(sessionId: string): EventSource {
-  // PR3/C8 — withCredentials: true so the EventSource sends the
-  // `flowstate_session` cookie on the SSE handshake. Without it the
-  // protected stream endpoint returns 401 once features.auth_v1 flips
-  // on (PR5). Per MDN, the Go server must additionally emit
-  // `Access-Control-Allow-Origin: <origin>` (NOT `*`) and
-  // `Access-Control-Allow-Credentials: true` for cross-origin
-  // deployments; same-origin SSE works without server-side CORS.
-  return new EventSource(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/stream`), {
-    withCredentials: true,
-  })
+// subscribeSessionStream is retained as a deprecated test-only export so
+// existing test mocks compile while the test suite migrates to long-
+// poll fixtures. Calling it in production throws — the route is gone.
+export function subscribeSessionStream(_sessionId: string): EventSource {
+  throw new Error(
+    'subscribeSessionStream retired in Phase-4-Commit-2 of Turn-Based Post-Then-Poll Architecture (May 2026). Use long-poll on GET /v1/sessions/{id}/turns/{turn_id} via pollTurnUntilTerminal.',
+  )
 }
 
 export async function updateSessionAgent(sessionId: string, agentId: string): Promise<Session> {
