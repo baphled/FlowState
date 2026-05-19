@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/baphled/flowstate/internal/agent"
 	ctxstore "github.com/baphled/flowstate/internal/context"
 	"github.com/baphled/flowstate/internal/delegation"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
@@ -14,6 +15,18 @@ import (
 // CollectWithProgressForTest exposes collectWithProgress for white-box testing of goroutine lifecycle.
 func CollectWithProgressForTest(ctx context.Context, d *DelegateTool, chunks <-chan provider.StreamChunk, startedAt time.Time) (delegationResult, error) {
 	return d.collectWithProgress(ctx, chunks, startedAt)
+}
+
+// BuildAllowedToolSetForTest exposes buildAllowedToolSetFor so the
+// tool-filtering specs (commit 3 — Gap B) can pin the delegate-bundle
+// narrowing directly on the allowed-set membership without going
+// through the full Stream → schema path. The schema-level pins in
+// tool_filtering_test.go only catch tools registered in the fixture's
+// allTools slice; this helper exposes the raw map so the spec can
+// pin "autoresearch_run is not in the allowed set even when the engine
+// has no autoresearch tool registered".
+func (e *Engine) BuildAllowedToolSetForTest(manifest agent.Manifest) map[string]bool {
+	return e.buildAllowedToolSetFor(manifest)
 }
 
 // BuildContextWindowForTest exposes buildContextWindow for white-box testing of context assembly with RecallBroker.

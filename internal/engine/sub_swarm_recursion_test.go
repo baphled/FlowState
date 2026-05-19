@@ -2,13 +2,16 @@ package engine_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	delegationpkg "github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
@@ -475,6 +478,224 @@ var _ = Describe("SubSwarmRecursion", func() {
 					"AppendMessage to the coordinator session must only carry AgentID=coordinator; "+
 						"pre-fix the swarm-target path stamped member personas (explorer/librarian/...) onto the coordinator's row store because ctx was never re-bound to a per-member child session before wrapWithAccumulator")
 			}
+		})
+	})
+
+	// Commit 3 — Gap C: the swarm-target dispatch path
+	// (tryDispatchSwarmTarget at delegation.go:1344) historically fired
+	// BEFORE prepareExecution, so a coordinator could route a swarm-id
+	// delegate without hitting the shared gates the agent-target path
+	// honours (circuit-breaker, can-delegate, spawn-limit). The fix
+	// hoists circuit-breaker + can-delegate + spawn-limit checks into
+	// a shared pre-flight that runs first; rejection-tracker stays
+	// post-resolve on the agent path because it needs the resolved
+	// target's chain id.
+	//
+	// The audit cited this gap; commit 1's engineer explicitly noted
+	// it was deferred to commit 3.
+	Context("when the swarm-target dispatch path is hit with gate-relevant input", func() {
+		It("rejects with the same budget-limit error shape when spawn-limit is exhausted", func() {
+			reg := swarm.NewRegistry()
+			reg.Register(&swarm.Manifest{
+				SchemaVersion: "1.0.0",
+				ID:            "planning-loop",
+				Lead:          "explorer",
+				Members:       []string{"explorer"},
+				SwarmType:     swarm.SwarmTypeAnalysis,
+			})
+
+			coord := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "coord"},
+				Manifest: agent.Manifest{
+					ID:                "coordinator",
+					Name:              "Coordinator",
+					Delegation:        agent.Delegation{CanDelegate: true},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			explorer := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "explorer"},
+				Manifest:     agent.Manifest{ID: "explorer", Name: "Explorer", ContextManagement: agent.DefaultContextManagement()},
+			})
+			coordCtx := swarm.NewContext("meta-swarm", &swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "coordinator",
+				Members: []string{"planning-loop"},
+			})
+			coord.SetSwarmContext(&coordCtx)
+
+			engines := map[string]*engine.Engine{
+				"coordinator": coord,
+				"explorer":    explorer,
+			}
+			bgManager := engine.NewBackgroundTaskManager()
+			delegateTool := engine.NewDelegateToolWithBackground(engines, agent.Delegation{CanDelegate: true}, "coordinator", bgManager, nil).
+				WithStreamers(map[string]streaming.Streamer{"explorer": trivialStreamer(nil)}).
+				WithSwarmRegistry(reg).
+				WithOwnerEngine(coord)
+
+			limits := delegationpkg.DefaultSpawnLimits()
+			limits.MaxTotalBudget = 1
+			delegateTool.WithSpawnLimits(limits)
+
+			// Fill the budget with a long-running background task so the
+			// next delegate call hits the budget gate.
+			bgManager.Launch(context.Background(), "blocking-task", "test-agent", "test", func(ctx context.Context) (string, error) {
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(10 * time.Second):
+					return "done", nil
+				}
+			})
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "planning-loop",
+					"message":       "go",
+				},
+			})
+
+			Expect(err).To(HaveOccurred(),
+				"swarm-target dispatch must honour the spawn-limit gate that the agent-target path enforces — pre-commit-3 it bypassed every gate by firing before prepareExecution")
+			Expect(err.Error()).To(ContainSubstring("budget limit exceeded"),
+				"the error message must match the agent-target path's failure shape so operator triage stays uniform regardless of which dispatch branch was hit")
+		})
+
+		It("rejects with circuit-breaker error after enough failures consecutively pop the breaker", func() {
+			// Drive the breaker by exhausting it via the agent-target
+			// path's recorded-failure seam (runStreamWithLegacyBreaker,
+			// delegation.go:2458-2479) — note this seam fires only when
+			// NO swarm context is active, so we pop the breaker first
+			// and only then install the swarm context for the swarm-
+			// target call. The breaker is a per-tool piece of state, so
+			// any path that calls preFlightSharedGates must observe its
+			// Allow() verdict regardless of swarm-context state.
+			reg := swarm.NewRegistry()
+			reg.Register(&swarm.Manifest{
+				SchemaVersion: "1.0.0",
+				ID:            "planning-loop",
+				Lead:          "explorer",
+				Members:       []string{"explorer"},
+				SwarmType:     swarm.SwarmTypeAnalysis,
+			})
+
+			coord := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "coord"},
+				Manifest: agent.Manifest{
+					ID:                "coordinator",
+					Name:              "Coordinator",
+					Delegation:        agent.Delegation{CanDelegate: true},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+
+			// Failing agent for the breaker-pop phase.
+			failProvider := &mockProvider{name: "fail-provider", streamErr: fmt.Errorf("always fails")}
+			failEngine := engine.New(engine.Config{
+				ChatProvider: failProvider,
+				Manifest: agent.Manifest{
+					ID:                "fail-agent",
+					Name:              "Fail Agent",
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			engines := map[string]*engine.Engine{
+				"coordinator": coord,
+				"fail-agent":  failEngine,
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "coordinator").
+				WithSwarmRegistry(reg).
+				WithOwnerEngine(coord).
+				WithStreamers(map[string]streaming.Streamer{"explorer": trivialStreamer(nil)})
+
+			// Phase 1: pop the breaker via agent-target failures
+			// (swarm-context not yet set so RecordFailure fires on the
+			// historical no-swarm seam).
+			agentInput := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "fail-agent",
+					"message":       "fail please",
+				},
+			}
+			for range 3 {
+				_, _ = delegateTool.Execute(context.Background(), agentInput)
+			}
+
+			// Phase 2: install the swarm context so the swarm-target
+			// branch can fire.
+			coordCtx := swarm.NewContext("meta-swarm", &swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "coordinator",
+				Members: []string{"planning-loop"},
+			})
+			coord.SetSwarmContext(&coordCtx)
+
+			// Pre-commit-3 this skipped the open breaker entirely.
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "planning-loop",
+					"message":       "go",
+				},
+			})
+
+			Expect(err).To(HaveOccurred(),
+				"once the breaker is open, EVERY delegate call must short-circuit regardless of dispatch path; pre-commit-3 the swarm-target path silently bypassed the open breaker")
+			Expect(err.Error()).To(ContainSubstring("circuit breaker open"),
+				"the error message must match the agent-target path's failure shape — operators triage breaker incidents off this exact substring")
+		})
+
+		It("rejects with delegation-not-allowed when can_delegate is false even on the swarm-target path", func() {
+			// Pre-commit-3 the swarm-target path bypassed the
+			// d.delegation.CanDelegate check too. A coordinator that
+			// somehow had CanDelegate=false should NOT be able to
+			// dispatch a swarm-id delegate.
+			reg := swarm.NewRegistry()
+			reg.Register(&swarm.Manifest{
+				SchemaVersion: "1.0.0",
+				ID:            "planning-loop",
+				Lead:          "explorer",
+				Members:       []string{"explorer"},
+				SwarmType:     swarm.SwarmTypeAnalysis,
+			})
+
+			coord := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "coord"},
+				Manifest: agent.Manifest{
+					ID:                "coordinator",
+					Name:              "Coordinator",
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			coordCtx := swarm.NewContext("meta-swarm", &swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "coordinator",
+				Members: []string{"planning-loop"},
+			})
+			coord.SetSwarmContext(&coordCtx)
+
+			engines := map[string]*engine.Engine{"coordinator": coord}
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: false}, "coordinator").
+				WithStreamers(map[string]streaming.Streamer{"explorer": trivialStreamer(nil)}).
+				WithSwarmRegistry(reg).
+				WithOwnerEngine(coord)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "planning-loop",
+					"message":       "go",
+				},
+			})
+
+			Expect(err).To(HaveOccurred(),
+				"can_delegate=false must veto swarm-target dispatch too; pre-commit-3 the swarm-target branch fired without consulting d.delegation.CanDelegate")
+			Expect(err.Error()).To(ContainSubstring("delegation not allowed"),
+				"the error message must match the agent-target path's failure shape so operators triage delegation-policy incidents off the same substring")
 		})
 	})
 })

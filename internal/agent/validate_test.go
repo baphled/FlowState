@@ -97,11 +97,43 @@ var _ = Describe("ValidateManifestSet", func() {
 			Expect(violations).To(BeEmpty())
 		})
 
-		It("accepts the bundle aliases file and delegate", func() {
+		It("accepts the bundle aliases file and delegate on a non-orchestration manifest", func() {
+			// Behaviour-Pinned: the pre-commit-3 pin asserted that an
+			// orchestration manifest declaring `[delegate, file]` was a
+			// no-op. Commit 3 Gap A FLIPS that — `file` expands to
+			// read+write, which is exactly what orchestrators must NOT
+			// declare. The bundle-alias acceptance contract still holds,
+			// it just moves to a non-orchestration category.
 			fs := manifestFS(map[string]string{
 				"agents/Bundle-User.md": "---\n" +
 					"id: Bundle-User\n" +
 					"name: Bundle User\n" +
+					"orchestrator_meta:\n" +
+					"  category: implementation\n" +
+					"delegation:\n" +
+					"  can_delegate: true\n" +
+					"capabilities:\n" +
+					"  tools: [delegate, file, bash, edit, grep, glob]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(violations).To(BeEmpty())
+		})
+
+		// Behaviour-Pinned: commit 3 Gap A — the original "accepts the
+		// bundle aliases file and delegate" spec allowed `[delegate, file]`
+		// on an orchestration manifest. The new upper-bound rule fires on
+		// `file` because it expands to read + write at runtime, which
+		// orchestrators must not hold. The spec above was rewritten to
+		// move the bundle-alias contract onto an implementation manifest;
+		// this companion spec pins the new orchestration rejection.
+		It("rejects the file bundle alias on an orchestration manifest because file expands to read+write", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Bundle-Cheat.md": "---\n" +
+					"id: Bundle-Cheat\n" +
+					"name: Bundle Cheat\n" +
 					"orchestrator_meta:\n" +
 					"  category: orchestration\n" +
 					"delegation:\n" +
@@ -113,7 +145,11 @@ var _ = Describe("ValidateManifestSet", func() {
 
 			violations, err := agent.ValidateManifestSet(fs, "agents")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(violations).To(BeEmpty())
+			ruleNames := violationRules(violations)
+			Expect(ruleNames).To(ContainElement("category-forbidden-tool"),
+				"the file alias is an end-run around the upper-bound rule — it must be flagged so operators don't slip implementation surfaces onto orchestrators via the bundle alias")
+			detail := concatDetails(violations, "category-forbidden-tool")
+			Expect(detail).To(ContainSubstring("file"))
 		})
 
 		// D3 (Agent Runtime Quality plan, May 2026).
@@ -251,6 +287,132 @@ var _ = Describe("ValidateManifestSet", func() {
 			// for missing "write", but the role check itself must not fire.
 			ruleNames := violationRules(violations)
 			Expect(ruleNames).NotTo(ContainElement("role-write-capability-mismatch"))
+		})
+	})
+
+	// Commit 3 — Gap A: upper-bound role enforcement (orchestration /
+	// coordination categories must NOT declare implementation surfaces).
+	// The lower-bound rule above (orchestration requires `delegate`)
+	// proves the agent CAN delegate; the upper-bound rule below proves
+	// it doesn't ALSO hold bash / read / write / edit / grep / glob /
+	// autoresearch_run / autoresearch_prune. Without the upper bound, a
+	// coordinator could declare bash and silently shell out instead of
+	// delegating, which is the failure mode commits f35162a9 + 92d52fdc
+	// closed at the runtime + UI layer; this rule closes it at the CI
+	// gate so the next regression surfaces before ship.
+	Context("when an orchestration-category manifest declares a forbidden implementation tool", func() {
+		It("reports a category-forbidden-tool violation naming the offending tool", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Naughty-Coordinator.md": "---\n" +
+					"id: Naughty-Coordinator\n" +
+					"name: Naughty Coordinator\n" +
+					"orchestrator_meta:\n" +
+					"  category: orchestration\n" +
+					"delegation:\n" +
+					"  can_delegate: true\n" +
+					"capabilities:\n" +
+					"  tools: [delegate, bash, skill_load]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(violations).NotTo(BeEmpty())
+
+			ruleNames := violationRules(violations)
+			Expect(ruleNames).To(ContainElement("category-forbidden-tool"))
+			detail := concatDetails(violations, "category-forbidden-tool")
+			Expect(detail).To(ContainSubstring("bash"))
+			Expect(detail).To(ContainSubstring("orchestration"))
+		})
+
+		It("reports the forbidden tool when the coordination category declares autoresearch_run", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Greedy-Coordinator.md": "---\n" +
+					"id: Greedy-Coordinator\n" +
+					"name: Greedy Coordinator\n" +
+					"orchestrator_meta:\n" +
+					"  category: coordination\n" +
+					"delegation:\n" +
+					"  can_delegate: true\n" +
+					"capabilities:\n" +
+					"  tools: [delegate, autoresearch_run]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+
+			ruleNames := violationRules(violations)
+			Expect(ruleNames).To(ContainElement("category-forbidden-tool"))
+			detail := concatDetails(violations, "category-forbidden-tool")
+			Expect(detail).To(ContainSubstring("autoresearch_run"))
+		})
+
+		It("reports every forbidden tool listed (not just the first)", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Tool-Hoarder.md": "---\n" +
+					"id: Tool-Hoarder\n" +
+					"name: Tool Hoarder\n" +
+					"orchestrator_meta:\n" +
+					"  category: orchestration\n" +
+					"delegation:\n" +
+					"  can_delegate: true\n" +
+					"capabilities:\n" +
+					"  tools: [delegate, bash, read, write, edit, grep, glob]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+
+			detail := concatDetails(violations, "category-forbidden-tool")
+			for _, forbidden := range []string{"bash", "read", "write", "edit", "grep", "glob"} {
+				Expect(detail).To(ContainSubstring(forbidden),
+					"every forbidden tool the manifest declares should appear in the detail so operators can fix all of them in one pass")
+			}
+		})
+	})
+
+	Context("when an orchestration-category manifest declares only delegate + permitted coordination tools", func() {
+		It("returns no violations (the upper-bound rule is scoped, not blanket)", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Clean-Coordinator.md": "---\n" +
+					"id: Clean-Coordinator\n" +
+					"name: Clean Coordinator\n" +
+					"orchestrator_meta:\n" +
+					"  category: orchestration\n" +
+					"delegation:\n" +
+					"  can_delegate: true\n" +
+					"capabilities:\n" +
+					"  tools: [delegate, coordination_store, skill_load, todowrite]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(violations).To(BeEmpty())
+		})
+	})
+
+	Context("when a non-orchestration manifest declares bash and the other forbidden tools", func() {
+		It("returns no category-forbidden-tool violation (the rule is scoped to orchestration / coordination)", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Real-Engineer.md": "---\n" +
+					"id: Real-Engineer\n" +
+					"name: Real Engineer\n" +
+					"orchestrator_meta:\n" +
+					"  category: implementation\n" +
+					"capabilities:\n" +
+					"  tools: [bash, read, write, edit, grep, glob, autoresearch_run]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+			ruleNames := violationRules(violations)
+			Expect(ruleNames).NotTo(ContainElement("category-forbidden-tool"),
+				"implementation agents need bash + filesystem surfaces; the rule must not fire on them")
 		})
 	})
 

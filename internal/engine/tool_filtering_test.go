@@ -167,6 +167,70 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				Expect(names).NotTo(ContainElement("write"))
 				Expect(names).NotTo(ContainElement("web"))
 			})
+
+			// Commit 3 — Gap B: the pre-commit-3 `delegate` bundle silently
+			// expanded to include autoresearch_run + autoresearch_prune.
+			// This let a coordinator with `tools: [delegate]` do its own
+			// background research instead of delegating a researcher
+			// member. The bundle is now narrowed to the lifecycle tools
+			// (delegate + background_output + background_cancel + the
+			// always-on suggest_delegate); autoresearch_* requires
+			// explicit declaration.
+			//
+			// The schema-based test above does not catch this directly
+			// because the fixture's allTools slice does not register
+			// autoresearch_run/_prune as tools, so they would never reach
+			// the schema even if `allowed[]` contained them. The white-
+			// box assertion below uses buildAllowedToolSetFor through the
+			// new export to pin the `allowed[]` membership directly.
+			It("does NOT expand the delegate bundle to autoresearch_run or autoresearch_prune", func() {
+				manifest := agent.Manifest{
+					ID:   "narrow-coordinator",
+					Name: "Narrow Coordinator",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"delegate"},
+					},
+				}
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+				})
+
+				allowed := eng.BuildAllowedToolSetForTest(manifest)
+
+				Expect(allowed).To(HaveKey("delegate"))
+				Expect(allowed).To(HaveKey("background_output"))
+				Expect(allowed).To(HaveKey("background_cancel"))
+				Expect(allowed).NotTo(HaveKey("autoresearch_run"),
+					"declaring `delegate` must not implicitly grant background-research surfaces — coordinators that need autoresearch must declare it explicitly")
+				Expect(allowed).NotTo(HaveKey("autoresearch_prune"),
+					"declaring `delegate` must not implicitly grant autoresearch_prune — paired with autoresearch_run, this surface is a delete-by-the-orchestrator hazard if granted silently")
+			})
+
+			It("DOES grant autoresearch_run + background_* when the manifest declares autoresearch_run explicitly", func() {
+				manifest := agent.Manifest{
+					ID:   "explicit-researcher",
+					Name: "Explicit Researcher",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"autoresearch_run"},
+					},
+				}
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+				})
+
+				allowed := eng.BuildAllowedToolSetForTest(manifest)
+
+				Expect(allowed).To(HaveKey("autoresearch_run"))
+				Expect(allowed).To(HaveKey("background_output"),
+					"autoresearch_run still needs its lifecycle pair — the bundle expansion for autoresearch_run is unchanged")
+				Expect(allowed).To(HaveKey("background_cancel"))
+				Expect(allowed).NotTo(HaveKey("delegate"),
+					"the autoresearch_run alias does not back-fill delegate; the dependency arrow runs the other way")
+			})
 		})
 
 		Context("when manifest has empty tools list", func() {

@@ -2333,7 +2333,13 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 //     not declare these three tools previously stuck on the universal
 //     surfaces; the base set restores the floor. The bundle aliases
 //     "file" / "delegate" / "autoresearch_run" expand into individual
-//     tool names exactly as before.
+//     tool names — see below. Commit 3 (May 2026, Gap B): the
+//     `delegate` bundle was narrowed to lifecycle tools only
+//     (delegate + background_output + background_cancel). Pre-commit-3
+//     it silently included autoresearch_run + autoresearch_prune,
+//     which let a coordinator declaring `[delegate]` do its own
+//     background research instead of delegating a researcher member.
+//     Agents that need autoresearch_* must now declare it explicitly.
 //   - MCP tools are gated by Capabilities.MCPServers: each declared
 //     server name has its tools merged into the allowed set. Unknown
 //     server names are silently ignored. See ADR - MCP Tool Gating
@@ -2345,8 +2351,19 @@ func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool
 	// D1: inherit-by-default base toolset. EffectiveTools computes
 	// union(Capabilities.Tools, DefaultBaseTools) − Capabilities.ToolsDeny.
 	// We then expand bundle aliases the same way the pre-D1 loop did so
-	// the runtime surface (read/write from "file", autoresearch+background
+	// the runtime surface (read/write from "file", lifecycle tools
 	// from "delegate", etc.) stays identical.
+	//
+	// Commit 3 (May 2026, Gap B) — the `delegate` bundle was narrowed
+	// to lifecycle tools only (delegate + background_output +
+	// background_cancel). Pre-commit-3 it also silently expanded into
+	// autoresearch_run + autoresearch_prune, letting a coordinator
+	// declaring `tools: [delegate]` do its own background research
+	// instead of delegating a researcher member. Agents that need
+	// autoresearch_* now declare it explicitly (the autoresearch_run
+	// alias still back-fills background_output + background_cancel,
+	// because those are the lifecycle pair for the autoresearch task
+	// itself, not for delegation).
 	effective := manifest.EffectiveTools()
 	allowed := make(map[string]bool, len(effective)+1)
 	for _, mt := range effective {
@@ -2358,8 +2375,6 @@ func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool
 			allowed["delegate"] = true
 			allowed["background_output"] = true
 			allowed["background_cancel"] = true
-			allowed["autoresearch_run"] = true
-			allowed["autoresearch_prune"] = true
 		case "autoresearch_run":
 			allowed["autoresearch_run"] = true
 			allowed["background_output"] = true

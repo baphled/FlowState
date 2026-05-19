@@ -28,6 +28,7 @@ type Violation struct {
 	//   - delegate-tool-required
 	//   - role-write-capability-mismatch
 	//   - category-required-tool
+	//   - category-forbidden-tool
 	Rule string
 	// Detail is a one-line human-readable elaboration. Free-form;
 	// CLI renders it after the manifest + rule columns.
@@ -109,6 +110,7 @@ func validateOneManifest(name string, data []byte) []Violation {
 	out = append(out, ruleDelegateToolRequired(name, probe)...)
 	out = append(out, ruleRoleWriteCapability(name, probe)...)
 	out = append(out, ruleCategoryRequired(name, probe)...)
+	out = append(out, ruleCategoryForbidden(name, probe)...)
 	return out
 }
 
@@ -141,7 +143,10 @@ type validatorManifestProbe struct {
 //
 //   - "file"      — engine bundle alias expanding to read+write.
 //   - "delegate"  — engine bundle alias expanding to delegate +
-//     background_output + background_cancel + autoresearch_run.
+//     background_output + background_cancel. (Pre-commit-3 it also
+//     silently expanded into autoresearch_run + autoresearch_prune;
+//     commit 3 Gap B narrowed the bundle so coordinators that need
+//     autoresearch_* declare it explicitly.)
 //
 // MCP tools are accepted via the mcp_* prefix rather than being
 // enumerated — the MCP set is discovered at runtime and any static
@@ -256,6 +261,30 @@ var (
 	infrastructureRequired = []string{"bash", "read", "grep", "glob"}
 	orchestrationRequired  = []string{"delegate"}
 )
+
+// orchestrationForbidden is the upper-bound rule table for the
+// orchestration / coordination categories. These agents exist to route
+// work onward via `delegate`; declaring an implementation surface
+// (bash, filesystem, autoresearch) lets the model do the work itself
+// instead of delegating — the exact failure mode that motivated commits
+// f35162a9 (swarm-target dispatch fix) and 92d52fdc (UI fix). The lower-
+// bound rule (orchestrationRequired) proves the agent CAN delegate; the
+// upper-bound rule below proves it doesn't ALSO hold the tools that
+// would let it bypass delegation entirely.
+//
+// Categories outside this table are unenforced — implementation /
+// documentation / quality / infrastructure agents need these surfaces
+// to do their work, and any blanket upper bound would over-fit.
+var orchestrationForbidden = []string{
+	"bash",
+	"read",
+	"write",
+	"edit",
+	"grep",
+	"glob",
+	"autoresearch_run",
+	"autoresearch_prune",
+}
 
 // ruleToolCanonical fires on any tool name not in canonicalTools and
 // not prefixed mcp_. One violation per offending name keeps the
@@ -402,6 +431,56 @@ func ruleCategoryRequired(name string, probe validatorManifestProbe) []Violation
 		Detail: fmt.Sprintf(
 			"category %q requires %v but tools[] is missing %v",
 			cat, required, missing,
+		),
+	}}
+}
+
+// ruleCategoryForbidden fires when the orchestrator_meta.category is
+// orchestration or coordination AND capabilities.tools declares one of
+// the implementation surfaces that an orchestrator should never need
+// (bash / read / write / edit / grep / glob / autoresearch_run /
+// autoresearch_prune). Pairs with ruleCategoryRequired's lower bound
+// to close the "coordinator silently shells out" failure mode at the
+// CI gate.
+//
+// Categories outside the orchestration / coordination set are
+// unenforced — the file alias and other implementation surfaces are
+// expected on implementation / documentation agents.
+//
+// One violation per offending tool keeps the detail string greppable
+// and the operator's fix mechanical (the detail enumerates every
+// forbidden tool the manifest declares so the next loader-cycle pass
+// can resolve them all together).
+func ruleCategoryForbidden(name string, probe validatorManifestProbe) []Violation {
+	cat := strings.TrimSpace(probe.OrchestratorMeta.Category)
+	if cat != "orchestration" && cat != "coordination" {
+		return nil
+	}
+	forbiddenSet := make(map[string]bool, len(orchestrationForbidden))
+	for _, f := range orchestrationForbidden {
+		forbiddenSet[f] = true
+	}
+	// Also flag the file bundle alias — it expands to read + write at
+	// runtime, which would defeat the rule if accepted verbatim.
+	forbiddenSet["file"] = true
+
+	var offenders []string
+	for _, t := range probe.Capabilities.Tools {
+		if forbiddenSet[t] {
+			offenders = append(offenders, t)
+		}
+	}
+	if len(offenders) == 0 {
+		return nil
+	}
+	return []Violation{{
+		Manifest: name,
+		Rule:     "category-forbidden-tool",
+		Detail: fmt.Sprintf(
+			"category %q must not declare implementation surfaces; offending tools: %v "+
+				"(orchestrators route work onward via delegate, never invoke implementation "+
+				"surfaces themselves)",
+			cat, offenders,
 		),
 	}}
 }

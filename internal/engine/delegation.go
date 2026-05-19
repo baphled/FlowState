@@ -1341,6 +1341,24 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 	// All four conditions must hold; otherwise control falls through to
 	// the existing prepareExecution path so single-agent delegation
 	// stays unchanged.
+	// Commit 3 — Gap C: route both dispatch branches through the same
+	// pre-flight gate set (circuit-breaker, can-delegate, spawn-limit).
+	// Pre-commit-3 these checks lived ONLY inside prepareExecution,
+	// which fires only on the agent-target path; the swarm-target
+	// branch below short-circuited before any gate ran. The fix hoists
+	// the gates that don't require a resolved target into a shared
+	// helper that runs first. Rejection-tracker stays inside
+	// prepareExecution because it needs the resolved target's chain id.
+	//
+	// preFlightSharedGates re-runs inside prepareExecution on the agent-
+	// target path; that's intentional and idempotent — circuit.Allow()
+	// is a read, can_delegate is a read, and checkSpawnLimits has no
+	// state mutation. The duplication keeps the agent-target path's
+	// error ordering unchanged and avoids a wider refactor.
+	if gateErr := d.preFlightSharedGates(input); gateErr != nil {
+		return tool.Result{}, gateErr
+	}
+
 	if result, handled, dispErr := d.tryDispatchSwarmTarget(ctx, input); handled {
 		return result, dispErr
 	}
@@ -1439,6 +1457,60 @@ func (d *DelegateTool) prepareExecution(
 		return delegationParams{}, delegationTarget{}, rejErr
 	}
 	return params, target, nil
+}
+
+// preFlightSharedGates runs the pre-resolve gate set that applies to
+// BOTH the agent-target and swarm-target dispatch paths: circuit
+// breaker, delegation policy, and spawn limit. Commit 3 (May 2026,
+// Gap C) introduces this helper so the swarm-target branch
+// (tryDispatchSwarmTarget) cannot bypass the gates the agent-target
+// branch enforces — pre-commit-3 the swarm branch fired before
+// prepareExecution, so a coordinator could route a swarm-id delegate
+// while the breaker was open or the budget was exhausted.
+//
+// Rejection-tracker is NOT in the shared set: it keys on the resolved
+// target's chain id, which is only available after resolveTargetWithOptions
+// (agent-target path) or after sub-swarm registry lookup (swarm-target
+// path uses its own chain prefix derived from the manifest). Keep that
+// gate inside prepareExecution where it has the chain id to assert
+// against.
+//
+// Expected:
+//   - input may carry a handoff with depth metadata used by
+//     checkSpawnLimits.
+//
+// Returns:
+//   - errCircuitBreakerOpen / errDelegationNotAllowed / a spawn-limit
+//     error when any gate refuses the call.
+//   - A parse error if the handoff is malformed (so the swarm-target
+//     branch surfaces the same parse failure shape as the agent-target
+//     branch would).
+//   - nil when all gates allow the call to proceed.
+//
+// Side effects:
+//   - circuitBreaker.Allow() is a read; no breaker-state mutation here.
+//   - checkSpawnLimits is a read against d.backgroundManager.ActiveCount().
+func (d *DelegateTool) preFlightSharedGates(input tool.Input) error {
+	if !d.circuitBreaker.Allow() {
+		return errCircuitBreakerOpen
+	}
+	if !d.delegation.CanDelegate {
+		return errDelegationNotAllowed
+	}
+	// The handoff parse is needed only for depth extraction. Mirror
+	// parseDelegationParams's narrow handoff-only path: skip the full
+	// params parse so swarm-target callers (which deliberately don't
+	// parse handoff fields, per tryDispatchSwarmTarget's documented
+	// contract) don't surface a routing-required error from this helper.
+	var handoff *delegation.Handoff
+	if raw, ok := input.Arguments["handoff"]; ok && raw != nil {
+		h, parseErr := d.parseHandoff(raw)
+		if parseErr != nil {
+			return fmt.Errorf("parsing handoff: %w", parseErr)
+		}
+		handoff = h
+	}
+	return d.checkSpawnLimits(handoff)
 }
 
 // buildDelegationInfo assembles the provider.DelegationInfo emitted on
