@@ -38,7 +38,7 @@ func main() {
 
 	start := time.Now()
 	resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
-		MemberID: "smoke", When: "post-member", Payload: []byte("hello world"),
+		MemberID: "smoke", When: "post-member", Payload: []byte(`"hello world"`),
 	})
 	must("evaluate", err)
 

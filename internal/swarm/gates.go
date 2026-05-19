@@ -424,7 +424,17 @@ func gateInputFromArgs(gate GateSpec, args GateArgs) (GateInput, error) {
 	if err != nil {
 		return GateInput{}, newGateFailure(gate, args, err.Error(), err)
 	}
-	in.Payload = payload
+	// embedAsJSONValue wraps non-JSON bytes (typically the member's
+	// prose / markdown output) as a JSON-encoded string and passes JSON
+	// bytes through verbatim. The wire format (ExtGateRequest.Payload as
+	// json.RawMessage) requires valid JSON; assigning raw prose bytes
+	// here would corrupt the marshalled stdin and trip the subprocess
+	// gate's `json.load` with a parse error. The 2026-05-18 user report
+	// surfaced exactly this failure mode for the multi-key path before
+	// composeMultiKeyPayload was the dispatcher's primary surface;
+	// pinning the wrapping rule on both composition paths guarantees the
+	// invariant "Payload bytes are always valid JSON" across the host.
+	in.Payload = []byte(embedAsJSONValue(payload))
 	return in, nil
 }
 

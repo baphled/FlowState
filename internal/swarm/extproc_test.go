@@ -2,6 +2,7 @@ package swarm_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"runtime"
@@ -37,7 +38,7 @@ var _ = Describe("ExtGateRunner registry", func() {
 		runner, ok := swarm.LookupExtGate("echo-pass")
 		Expect(ok).To(BeTrue())
 		resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
-			MemberID: "x", When: "post-member", Payload: []byte("hi"),
+			MemberID: "x", When: "post-member", Payload: json.RawMessage(`"hi"`),
 		})
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resp.Pass).To(BeTrue())
@@ -170,7 +171,7 @@ var _ = Describe("Gate runner — ext: routing", func() {
 
 		err := swarm.RunGateForTest(context.Background(), swarm.GateSpec{
 			Name: "g", Kind: "ext:blocker", When: "post-member", Target: "x",
-		}, swarm.GateInput{MemberID: "x", Payload: []byte("p")})
+		}, swarm.GateInput{MemberID: "x", Payload: []byte(`"p"`)})
 
 		Expect(err).To(HaveOccurred())
 		var gateErr *swarm.GateError
@@ -193,6 +194,220 @@ var _ = Describe("Gate runner — ext: routing", func() {
 		}, swarm.GateInput{MemberID: "explorer", Payload: []byte(`{"summary":"ok","findings":[]}`)})
 
 		Expect(err).ToNot(HaveOccurred())
+	})
+})
+
+// ExtGateRequest wire-format invariants.
+//
+// Regression — the 2026-05-18 user report (`gate
+// "post-member-researcher-relevance" (ext:relevance-gate post-member
+// researcher) failed for member "researcher" in swarm "a-team": payload
+// is not valid JSON`) traced to a wire-format defect on the host side.
+// Go's `encoding/json` marshals a `[]byte` field as a base64-encoded
+// string, so an `ExtGateRequest{Payload: []byte(jsonObject)}` rendered
+// on stdin as `{"payload":"eyJ0...="}` — a base64 string, not a JSON
+// object. The seeded gate.py shipped to the user's runtime (~/.config/
+// flowstate/gates/relevance-gate/gate.py, mtime 7 May 2026) does
+// `json.loads` on the payload, fails, and emits the "payload is not
+// valid JSON" reason without ever seeing the real composed object.
+//
+// The fix changes `ExtGateRequest.Payload` to `json.RawMessage` so the
+// composed JSON bytes embed verbatim into the marshalled stdin —
+// `{"payload":{"task_plan":...,"research":...}}`. The framework now
+// owns the invariant that Payload bytes are valid JSON; this also
+// retroactively unbreaks the stale seeded gate.py without a re-seed
+// because the new wire format produces a parsed dict (not a string)
+// and the stale code's `isinstance(payload, str)` branch never fires.
+//
+// These specs pin three invariants together so a regression in any
+// surfaces as a precise failure rather than the opaque "payload is not
+// valid JSON" the user originally hit:
+//
+//   - The marshalled ExtGateRequest embeds the payload verbatim (no
+//     base64 transform observable in the JSON bytes a subprocess
+//     receives on stdin).
+//   - The empty/zero Payload marshals as JSON null (not as the
+//     empty-string "" base64 produced).
+//   - A live subprocessRunner round-trip drops a composed JSON object
+//     into the subprocess as a parsed dict (probed via a shell gate
+//     that echoes back its stdin).
+var _ = Describe("ExtGateRequest wire format (host -> subprocess stdin)", func() {
+	It("marshals Payload as verbatim JSON bytes — no base64 transform observable", func() {
+		composed := []byte(`{"task_plan":"investigate","research":"on-topic"}`)
+		req := swarm.ExtGateRequest{
+			GateName: "relevance",
+			SwarmID:  "a-team",
+			MemberID: "researcher",
+			When:     "post-member",
+			Payload:  composed,
+		}
+
+		body, err := json.Marshal(req)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Decode the wire shape and assert payload arrived as a parsed
+		// JSON object. The Go `[]byte`-as-base64 behaviour would land
+		// here as a string field instead.
+		var wire struct {
+			Payload json.RawMessage `json:"payload"`
+		}
+		Expect(json.Unmarshal(body, &wire)).To(Succeed())
+		Expect(json.Valid(wire.Payload)).To(BeTrue(),
+			"wire payload MUST be valid JSON, got %q", string(wire.Payload))
+
+		var asObject map[string]any
+		Expect(json.Unmarshal(wire.Payload, &asObject)).To(Succeed(),
+			"wire payload MUST decode as a JSON object — base64 transform would land here as a string")
+		Expect(asObject).To(HaveKeyWithValue("task_plan", "investigate"))
+		Expect(asObject).To(HaveKeyWithValue("research", "on-topic"))
+	})
+
+	It("marshals a nil/empty Payload as JSON null rather than the empty base64 string", func() {
+		req := swarm.ExtGateRequest{
+			GateName: "relevance",
+			MemberID: "researcher",
+			When:     "post-member",
+			// Payload omitted -> nil
+		}
+
+		body, err := json.Marshal(req)
+		Expect(err).ToNot(HaveOccurred())
+
+		// The base64 behaviour would emit `"payload":""` (empty string);
+		// the RawMessage behaviour emits `"payload":null`. Either way it
+		// MUST be valid JSON and decodable to a Go nil interface so the
+		// subprocess can branch on absence cleanly.
+		Expect(body).To(ContainSubstring(`"payload":null`),
+			"empty Payload MUST marshal as JSON null, got %s", string(body))
+	})
+
+	It("subprocessRunner sends the composed JSON object to gate stdin as a parsed dict (not a base64 string)", func() {
+		if runtime.GOOS == "windows" {
+			Skip("subprocess runner uses POSIX shell")
+		}
+
+		// echo-stdin gate.sh forwards a JSON response whose `reason`
+		// field carries the verbatim stdin payload-field shape so the
+		// test can assert the wire-format invariant end-to-end. The
+		// gate.sh exists under testdata/echo-stdin.
+		Expect(swarm.RegisterExtGateFromManifest(gates.Manifest{
+			Name:    "echo-stdin",
+			Dir:     testdataDir("echo-stdin"),
+			Exec:    "./gate.sh",
+			Timeout: 5 * time.Second,
+		})).To(Succeed())
+		DeferCleanup(swarm.ResetExtGateRegistryForTest)
+
+		runner, ok := swarm.LookupExtGate("echo-stdin")
+		Expect(ok).To(BeTrue())
+
+		composed := []byte(`{"task_plan":"investigate","research":"on-topic"}`)
+		resp, err := runner.Evaluate(context.Background(), swarm.ExtGateRequest{
+			GateName: "relevance",
+			SwarmID:  "a-team",
+			MemberID: "researcher",
+			When:     "post-member",
+			Payload:  composed,
+		})
+		Expect(err).ToNot(HaveOccurred())
+
+		// The echo gate returns pass:false with reason = stdin payload
+		// field's type after `json.loads`. Expectation: "dict" (the
+		// composed object decoded as a Python dict), NOT "str" (the
+		// base64 transform).
+		Expect(resp.Reason).To(Equal("dict"),
+			"subprocess gate MUST see payload as a parsed JSON object; reason=%q indicates the host still base64-encodes []byte", resp.Reason)
+	})
+})
+
+// ExtGateRequest legacy single-key composition.
+//
+// Regression — the legacy fallback path (gates.go gateInputFromArgs) reads
+// the raw member-output bytes from the coord-store and assigns them to
+// `GateInput.Payload`. After the wire-format change, those bytes are
+// embedded verbatim into the marshalled stdin — but a member's output is
+// typically markdown / prose, not JSON. The host MUST wrap those bytes
+// into a valid JSON value (a JSON-encoded string when the raw bytes
+// don't parse as JSON; the raw bytes verbatim when they do) before
+// assigning to the request. Otherwise the marshalled stdin becomes
+// malformed and the subprocess fails to parse it.
+//
+// These specs run alongside the multi-key composition specs in
+// gates_test.go; the multi-key path already wraps via
+// embedAsJSONValue (commit `0cb50144`), so the wrapping invariant is
+// shared. The legacy path MUST follow the same rule post-fix.
+var _ = Describe("ExtGateRequest legacy single-key composition (wire-format wrapping)", func() {
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+	})
+
+	It("wraps non-JSON readMemberOutput bytes as a JSON-encoded string before forwarding to the gate", func() {
+		// The captured request's marshalled bytes must be valid JSON
+		// end-to-end. A subprocess gate doing `json.load(sys.stdin)`
+		// on the marshalled request body MUST see a well-formed
+		// document with a parseable payload field — even when the
+		// underlying member-output bytes were prose / markdown.
+		var got swarm.ExtGateRequest
+		captureRunner := func(_ context.Context, req swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+			got = req
+			return swarm.ExtGateResponse{Pass: true}, nil
+		}
+		Expect(swarm.RegisterExtGateFuncWithInputs("legacy-gate", captureRunner, nil)).To(Succeed())
+
+		store := newGateStore(map[string][]byte{
+			// raw prose — not JSON.
+			"a-team/researcher/output": []byte(`# Findings\n\nThe race lives in dispatch.go:142.`),
+		})
+		multi := swarm.NewMultiRunner()
+		err := multi.Run(context.Background(), swarm.GateSpec{
+			Name: "legacy", Kind: "ext:legacy-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+		}, swarm.GateArgs{
+			SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+		})
+
+		Expect(err).ToNot(HaveOccurred())
+
+		// The captured Payload MUST be valid JSON (a JSON-encoded
+		// string of the original prose). Marshal the full request and
+		// assert it round-trips through json.Unmarshal without error —
+		// that proves the wire shape is well-formed for a subprocess
+		// runner to consume.
+		Expect(json.Valid(got.Payload)).To(BeTrue(),
+			"legacy single-key Payload MUST be valid JSON for the wire format; got %q", string(got.Payload))
+
+		var asString string
+		Expect(json.Unmarshal(got.Payload, &asString)).To(Succeed(),
+			"non-JSON member-output bytes MUST embed as a JSON-encoded string")
+		Expect(asString).To(ContainSubstring("dispatch.go:142"))
+	})
+
+	It("preserves JSON readMemberOutput bytes verbatim (parses as the same JSON value)", func() {
+		var got swarm.ExtGateRequest
+		captureRunner := func(_ context.Context, req swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+			got = req
+			return swarm.ExtGateResponse{Pass: true}, nil
+		}
+		Expect(swarm.RegisterExtGateFuncWithInputs("legacy-gate", captureRunner, nil)).To(Succeed())
+
+		store := newGateStore(map[string][]byte{
+			"a-team/researcher/output": []byte(`{"summary":"hello"}`),
+		})
+		multi := swarm.NewMultiRunner()
+		err := multi.Run(context.Background(), swarm.GateSpec{
+			Name: "legacy", Kind: "ext:legacy-gate", When: swarm.LifecyclePostMember, Target: "researcher",
+		}, swarm.GateArgs{
+			SwarmID: "a-team", ChainPrefix: "a-team", MemberID: "researcher", CoordStore: store,
+		})
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(json.Valid(got.Payload)).To(BeTrue())
+
+		// JSON in -> JSON out, semantically equal. We do not require
+		// byte-identity (whitespace normalisation is acceptable) — only
+		// that the value re-decodes to the same structure.
+		var asObject map[string]any
+		Expect(json.Unmarshal(got.Payload, &asObject)).To(Succeed())
+		Expect(asObject).To(HaveKeyWithValue("summary", "hello"))
 	})
 })
 
