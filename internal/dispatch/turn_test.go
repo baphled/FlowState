@@ -168,7 +168,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
@@ -200,14 +200,14 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "default-assistant",
 				Content:      "probe",
 				ScanMentions: false,
-			}, nil)
+			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 
 			// The streamCtx the dispatcher passed into the session
@@ -276,7 +276,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1c",
@@ -334,7 +334,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-failover",
@@ -396,7 +396,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1c-beta-cu",
@@ -438,7 +438,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-malformed-cu",
@@ -487,7 +487,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1c-beta-quota",
@@ -542,7 +542,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-malformed-quota",
@@ -596,7 +596,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1c-gamma-crit",
@@ -647,7 +647,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-ctx-exceeded",
@@ -685,7 +685,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				streamer: probe,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-transient",
@@ -727,7 +727,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				holdGate: holdGate,
 			}
 			turns := turn.NewRegistry()
-			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, broker, turns)
+			d := dispatch.NewWithTurns(probe, eng, swarmer, reg, mgr, turns)
 
 			// First call: spawn in a goroutine, parked by holdGate
 			// until the spec releases it post-second-call.
@@ -741,7 +741,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 					AgentID:      "default-assistant",
 					Content:      "first turn",
 					ScanMentions: false,
-				}, nil)
+				}, broker)
 			}()
 
 			// Wait for turn 1 to register in the Turn registry —

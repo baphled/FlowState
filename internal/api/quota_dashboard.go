@@ -32,10 +32,15 @@ import (
 )
 
 // quotaDashboardEntry is the JSON wire shape one row of the
-// aggregator returns. Mirrors sseProviderQuota field-for-field
-// (sse_writers.go:152-189) so the SPA can deserialise an array
-// element with the same TypeScript discriminated-union types it
-// uses for the SSE event.
+// aggregator returns. The SPA deserialises these into its
+// discriminated-union types.
+//
+// Phase 4 / Commit 2 (Turn-Based Post-Then-Poll, May 2026) — the
+// nested types lived in sse_writers.go before the SSE bridge was
+// retired. They are inlined here now that the dashboard endpoint is
+// the sole owner of this JSON wire surface; the field-for-field
+// shape (snake_case JSON tags) is preserved so the SPA's existing
+// TypeScript types deserialise unchanged.
 type quotaDashboardEntry struct {
 	Provider      string                       `json:"provider"`
 	AccountHash   string                       `json:"account_hash"`
@@ -45,9 +50,50 @@ type quotaDashboardEntry struct {
 	StoreBackend  string                       `json:"store_backend,omitempty"`
 	PricingSource string                       `json:"pricing_source,omitempty"`
 	Variant       string                       `json:"variant"`
-	RateLimit     *sseProviderQuotaRateLimit   `json:"rate_limit,omitempty"`
-	TokenSpend    *sseProviderQuotaTokenSpend  `json:"token_spend,omitempty"`
-	NotConfigured *sseProviderQuotaNotConfig   `json:"not_configured,omitempty"`
+	RateLimit     *dashboardProviderQuotaRateLimit  `json:"rate_limit,omitempty"`
+	TokenSpend    *dashboardProviderQuotaTokenSpend `json:"token_spend,omitempty"`
+	NotConfigured *dashboardProviderQuotaNotConfig  `json:"not_configured,omitempty"`
+}
+
+// dashboardProviderQuotaRateLimit is the rate-limit variant of a
+// dashboard quota row. JSON wire shape mirrors the pre-Commit-2
+// sseProviderQuotaRateLimit field-for-field so existing SPA code
+// deserialises unchanged.
+type dashboardProviderQuotaRateLimit struct {
+	Requests                 dashboardQuotaWindow `json:"requests"`
+	Tokens                   dashboardQuotaWindow `json:"tokens"`
+	Input                    dashboardQuotaWindow `json:"input"`
+	Output                   dashboardQuotaWindow `json:"output"`
+	TightestPercentRemaining int                  `json:"tightest_percent_remaining"`
+	TightestResetAt          string               `json:"tightest_reset_at,omitempty"`
+}
+
+// dashboardQuotaWindow is one rate-limit window (requests / tokens /
+// input / output). JSON wire shape preserved from sseQuotaWindow.
+type dashboardQuotaWindow struct {
+	Limit     int    `json:"limit"`
+	Remaining int    `json:"remaining"`
+	Reset     string `json:"reset,omitempty"`
+}
+
+// dashboardProviderQuotaTokenSpend is the token-spend variant of a
+// dashboard quota row. JSON wire shape preserved.
+type dashboardProviderQuotaTokenSpend struct {
+	SpentMinor     int64  `json:"spent_minor"`
+	SpentCurrency  string `json:"spent_currency"`
+	SpentUSDMinor  int64  `json:"spent_usd_minor"`
+	CapMinor       int64  `json:"cap_minor,omitempty"`
+	CapCurrency    string `json:"cap_currency,omitempty"`
+	Period         string `json:"period"`
+	PeriodStart    string `json:"period_start"`
+	PeriodEnd      string `json:"period_end"`
+	ThresholdAmber int    `json:"threshold_amber"`
+	ThresholdRed   int    `json:"threshold_red"`
+}
+
+// dashboardProviderQuotaNotConfig is the not-configured variant.
+type dashboardProviderQuotaNotConfig struct {
+	Reason string `json:"reason"`
 }
 
 // quotaResetRequest is the JSON request body for POST .../quota/reset.
@@ -207,7 +253,7 @@ func snapshotToDashboardEntry(snap quota.Snapshot) (quotaDashboardEntry, bool) {
 	switch {
 	case snap.RateLimit != nil:
 		row.Variant = "rate_limit"
-		row.RateLimit = &sseProviderQuotaRateLimit{
+		row.RateLimit = &dashboardProviderQuotaRateLimit{
 			Requests:                 dashboardWindow(snap.RateLimit.Requests),
 			Tokens:                   dashboardWindow(snap.RateLimit.Tokens),
 			Input:                    dashboardWindow(snap.RateLimit.Input),
@@ -219,7 +265,7 @@ func snapshotToDashboardEntry(snap quota.Snapshot) (quotaDashboardEntry, bool) {
 		}
 	case snap.TokenSpend != nil:
 		row.Variant = "token_spend"
-		row.TokenSpend = &sseProviderQuotaTokenSpend{
+		row.TokenSpend = &dashboardProviderQuotaTokenSpend{
 			SpentMinor:     snap.TokenSpend.Spent.Amount,
 			SpentCurrency:  snap.TokenSpend.Spent.Currency,
 			SpentUSDMinor:  snap.TokenSpend.SpentUSD.Amount,
@@ -233,13 +279,13 @@ func snapshotToDashboardEntry(snap quota.Snapshot) (quotaDashboardEntry, bool) {
 		}
 	case snap.NotConfigured != nil:
 		row.Variant = "not_configured"
-		row.NotConfigured = &sseProviderQuotaNotConfig{Reason: snap.NotConfigured.Reason}
+		row.NotConfigured = &dashboardProviderQuotaNotConfig{Reason: snap.NotConfigured.Reason}
 	}
 	return row, true
 }
 
-func dashboardWindow(w quota.Window) sseQuotaWindow {
-	out := sseQuotaWindow{Limit: w.Limit, Remaining: w.Remaining}
+func dashboardWindow(w quota.Window) dashboardQuotaWindow {
+	out := dashboardQuotaWindow{Limit: w.Limit, Remaining: w.Remaining}
 	if !w.Reset.IsZero() {
 		out.Reset = w.Reset.UTC().Format(timeRFC3339)
 	}

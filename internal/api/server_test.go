@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -166,12 +167,6 @@ func (sp *spyDispatcher) DispatchSessioned(_ context.Context, req dispatch.Dispa
 	sp.mu.Unlock()
 	return dispatch.SessionedHandle{}, nil
 }
-
-// SetSessionBroker is a no-op for the spy — the spy doesn't fan out
-// chunks to any broker. Added to satisfy the DispatcherService interface
-// (post-bugfix May 2026: production wires broker post-init via
-// Server.SetSessionBroker which propagates to Dispatcher).
-func (sp *spyDispatcher) SetSessionBroker(_ dispatch.SessionBroker) {}
 
 // TurnRegistry returns nil — the spy does not exercise the Turn surface.
 // handleGetTurn maps a nil registry to HTTP 501 so callers that wire the
@@ -823,1879 +818,6 @@ var _ = Describe("GET /api/v1/sessions/{id}/todos", func() {
 	})
 })
 
-var _ = Describe("Session stream live events", func() {
-	var (
-		broker     *api.SessionBroker
-		mgr        *session.Manager
-		srv        *api.Server
-		httpServer *httptest.Server
-	)
-
-	BeforeEach(func() {
-		broker = api.NewSessionBroker()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "hi", Done: true}}})
-		registry := agent.NewRegistry()
-		disc := discovery.NewAgentDiscovery(nil)
-		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
-			registry,
-			disc,
-			nil,
-			api.WithSessionManager(mgr),
-			api.WithSessionBroker(broker),
-		)
-		httpServer = httptest.NewServer(srv.Handler())
-	})
-
-	AfterEach(func() {
-		httpServer.Close()
-	})
-
-	It("forwards live chunks from broker to SSE subscriber", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		source <- provider.StreamChunk{Content: "live-chunk"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var events []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						events = append(events, strings.TrimPrefix(line, "data: "))
-					}
-					if len(events) > 0 && events[len(events)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- events
-		}()
-
-		var events []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&events))
-
-		Expect(events).To(ContainElement(ContainSubstring("live-chunk")))
-		Expect(events).To(ContainElement("[DONE]"))
-	})
-
-	// Regression for commit e4bf9632 ("fix(api): make POST /messages async,
-	// remove client-side timeout"). That commit switched the in-handler
-	// `s.sessionBroker.Publish(id, chunks)` to `go s.sessionBroker.Publish(...)`
-	// so the snapshot returns immediately. The intent (snapshot fast, stream
-	// over SSE) is correct, but the engine streamer was wired to r.Context().
-	// When the handler returned, net/http cancelled r.Context() and the
-	// engine's `<-ctx.Done()` branch emitted `{Error: context.Canceled, Done: true}`
-	// with zero content chunks. Users saw failed bubbles and no assistant reply.
-	//
-	// Contract: the streamer's lifetime is decoupled from the HTTP request's
-	// lifetime. Once the handler dispatches the chunks to the broker, the
-	// streamer continues running under the session manager's own cancellation
-	// (CancelInflight) keyed on sessionID. The SSE subscriber that connected
-	// before the POST MUST receive the full set of content chunks AND a clean
-	// terminal Done — no Error: context.Canceled.
-	//
-	// The existing "sealed turn" e2e test at this Describe's sibling
-	// (line ~1740) does NOT catch this because mockStreamer pre-fills its
-	// channel and closes it before returning — the bug only surfaces when the
-	// streamer's channel is still live (open chunks pending) at the moment
-	// the HTTP handler returns. This spec uses dripStreamer, which mimics the
-	// real engine: returns the channel before all chunks are emitted, and
-	// honours ctx.Done() by emitting `{Error: ctx.Err(), Done: true}` on
-	// cancellation (matching engine.go:3774-3776).
-	It("delivers full content stream after handler returns (streamer lifetime decoupled from r.Context)", func() {
-		// Replace the BeforeEach broker/mgr/srv with ones wired to a
-		// context-honouring streamer that returns mid-stream. The shared
-		// fixture's mockStreamer pre-fills and closes — we need open chunks.
-		drip := &dripStreamer{
-			chunks: []provider.StreamChunk{
-				{Content: "Hello"},
-				{Content: " world"},
-				{Done: true},
-			},
-			emitInterval: 30 * time.Millisecond,
-		}
-		dripBroker := api.NewSessionBroker()
-		dripMgr := session.NewManager(drip)
-		dripSrv := api.NewServer(
-			drip,
-			agent.NewRegistry(),
-			discovery.NewAgentDiscovery(nil),
-			nil,
-			api.WithSessionManager(dripMgr),
-			api.WithSessionBroker(dripBroker),
-		)
-		dripHTTP := httptest.NewServer(dripSrv.Handler())
-		defer dripHTTP.Close()
-
-		sess, err := dripMgr.CreateSession("drip-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		// Subscribe to SSE FIRST so the subscriber is registered when
-		// the POST handler kicks off the publish goroutine. Drive the
-		// GET in a goroutine because http.Client.Do blocks for headers,
-		// and the SSE handler does not flush until the first chunk
-		// lands — which only happens after POST kicks off the publish.
-		streamCtx, streamCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer streamCancel()
-		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
-			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/stream", http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			defer GinkgoRecover()
-			streamResp, doErr := http.DefaultClient.Do(streamReq)
-			if doErr != nil {
-				eventsCh <- []string{"__DO_ERR__:" + doErr.Error()}
-				return
-			}
-			defer streamResp.Body.Close()
-			reader := bufio.NewReader(streamResp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		// Give the SSE subscriber time to register with the broker
-		// before the POST kicks off the publish goroutine.
-		time.Sleep(100 * time.Millisecond)
-
-		// POST returns immediately (async publish per e4bf9632).
-		postResp, err := http.Post(
-			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
-			"application/json",
-			strings.NewReader(`{"content":"ping"}`),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		_ = postResp.Body.Close()
-		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
-
-		// Collect SSE events.
-		var evts []string
-		Eventually(eventsCh, 8*time.Second).Should(Receive(&evts))
-
-		// Contract A: clean terminal [DONE] with no Error.
-		Expect(evts).To(ContainElement("[DONE]"),
-			"SSE subscriber must receive terminal [DONE]; got: %v", evts)
-		for _, e := range evts {
-			Expect(e).NotTo(ContainSubstring("context canceled"),
-				"SSE stream must NOT terminate with context.Canceled; the streamer must outlive the HTTP request. Got: %v", evts)
-			Expect(e).NotTo(ContainSubstring("context.Canceled"),
-				"SSE stream must NOT terminate with context.Canceled; got: %v", evts)
-		}
-
-		// Contract B: all content chunks delivered.
-		Expect(evts).To(ContainElement(ContainSubstring("Hello")),
-			"SSE subscriber must receive the first content chunk; got: %v", evts)
-		Expect(evts).To(ContainElement(ContainSubstring("world")),
-			"SSE subscriber must receive the second content chunk; got: %v", evts)
-	})
-
-	// Regression for the "post-init SetSessionBroker doesn't propagate to
-	// Dispatcher" bug discovered live on May 18 2026. Production wiring
-	// (internal/app/app.go:444-446) calls NewServer WITHOUT a broker option
-	// and then app.API.SetSessionBroker(broker) AFTER. Pre-fix the
-	// Dispatcher was auto-constructed inside NewServer with broker=nil
-	// and never updated by SetSessionBroker — so fanOutSessionedChunks
-	// fell into the drain-to-sink default case. Engine produced chunks,
-	// accumulator persisted them, but SSE subscribers received ZERO
-	// content events. The empirical signature: assistant message
-	// persists with non-empty content, BUT the live SSE only delivers
-	// the session-load context_usage event and no content/done.
-	//
-	// All prior `Session stream live events` specs USE the WithSessionBroker
-	// option, which applies BEFORE the dispatcher auto-construct and so
-	// passes the broker through correctly. This spec mirrors the
-	// production wiring order — broker installed POST-construction — to
-	// catch the bug class.
-	It("propagates post-init SetSessionBroker to the Dispatcher (production wiring order)", func() {
-		drip := &dripStreamer{
-			chunks: []provider.StreamChunk{
-				{Content: "PONG"},
-				{Done: true},
-			},
-			emitInterval: 30 * time.Millisecond,
-		}
-		mgrLocal := session.NewManager(drip)
-		// Note: NewServer WITHOUT WithSessionBroker — mirrors production
-		// where api.NewSessionBroker() is created in internal/app/app.go
-		// after NewServer returns.
-		srvLocal := api.NewServer(
-			drip,
-			agent.NewRegistry(),
-			discovery.NewAgentDiscovery(nil),
-			nil,
-			api.WithSessionManager(mgrLocal),
-		)
-		// Post-init broker wiring — matches app.API.SetSessionBroker(...)
-		// at internal/app/app.go:445.
-		brokerLocal := api.NewSessionBroker()
-		srvLocal.SetSessionBroker(brokerLocal)
-
-		httpServer := httptest.NewServer(srvLocal.Handler())
-		defer httpServer.Close()
-
-		sess, err := mgrLocal.CreateSession("propagation-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		streamCtx, streamCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer streamCancel()
-		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
-			httpServer.URL+"/api/v1/sessions/"+sess.ID+"/stream", http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			defer GinkgoRecover()
-			resp, doErr := http.DefaultClient.Do(streamReq)
-			if doErr != nil {
-				eventsCh <- []string{"__DO_ERR__:" + doErr.Error()}
-				return
-			}
-			defer resp.Body.Close()
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		time.Sleep(100 * time.Millisecond)
-
-		postResp, err := http.Post(
-			httpServer.URL+"/api/v1/sessions/"+sess.ID+"/messages",
-			"application/json",
-			strings.NewReader(`{"content":"ping"}`),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		_ = postResp.Body.Close()
-		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
-
-		var evts []string
-		Eventually(eventsCh, 8*time.Second).Should(Receive(&evts))
-
-		// LOAD-BEARING ASSERTION: SSE must receive PONG content. Pre-fix
-		// it received ONLY the session-load context_usage and nothing else.
-		Expect(evts).To(ContainElement(ContainSubstring("PONG")),
-			"SSE subscriber received zero content chunks — Dispatcher's broker reference was not propagated by post-init SetSessionBroker. Got: %v", evts)
-		Expect(evts).To(ContainElement("[DONE]"),
-			"SSE subscriber must receive terminal [DONE]; got: %v", evts)
-	})
-
-	It("emits named delegation SSE events when chunk carries DelegationInfo", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		source <- provider.StreamChunk{DelegationInfo: &provider.DelegationInfo{
-			SourceAgent: "orchestrator",
-			TargetAgent: "hephaestus",
-			ToolCalls:   3,
-			LastTool:    "write",
-			Status:      "running",
-		}}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		bodyCh := make(chan string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var sb strings.Builder
-			for {
-				line, readErr := reader.ReadString('\n')
-				sb.WriteString(line)
-				if strings.Contains(sb.String(), "[DONE]") {
-					break
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			bodyCh <- sb.String()
-		}()
-
-		var body string
-		Eventually(bodyCh, 4*time.Second).Should(Receive(&body))
-
-		Expect(body).To(ContainSubstring(`"type":"delegation"`))
-		Expect(body).To(ContainSubstring(`"target_agent":"hephaestus"`))
-		Expect(body).To(ContainSubstring(`"tool_calls":3`))
-		Expect(body).To(ContainSubstring(`"last_tool":"write"`))
-	})
-
-	// Regression for the harness-JSON-leak bug. Before the fix,
-	// handleSessionStream ignored chunk.EventType for harness_* events and
-	// fell through to the unconditional `if chunk.Content != ""` branch,
-	// emitting a plain {"content":"..."} SSE event whose payload was the
-	// raw JSON marshalled by emitHarnessComplete (`{"valid":...,"score":...,
-	// "attemptCount":2,...}`). The frontend's parseSSEPayload classified that
-	// as a content chunk and appended the raw JSON string into the live
-	// assistant bubble — non-technical users saw a wall of JSON in chat.
-	//
-	// Contract: harness_* event chunks MUST be emitted as their typed SSE
-	// events (writeSSEHarness*) so the frontend's discriminated union
-	// dispatch (`case 'harness_complete': ...`) handles them as observability
-	// metadata, not assistant content. The Content field on a typed event
-	// chunk MUST NOT be re-emitted as a plain content chunk.
-	DescribeTable("emits typed SSE events for harness_* event chunks (no raw JSON in content)",
-		func(eventType, content, expectedTypeField string) {
-			sess, err := mgr.CreateSession("test-agent")
-			Expect(err).NotTo(HaveOccurred())
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-			Expect(err).NotTo(HaveOccurred())
-
-			respCh := make(chan *http.Response, 1)
-			go func() {
-				resp, doErr := http.DefaultClient.Do(req)
-				if doErr == nil {
-					respCh <- resp
-				}
-			}()
-
-			time.Sleep(50 * time.Millisecond)
-
-			source := make(chan provider.StreamChunk, 3)
-			source <- provider.StreamChunk{EventType: eventType, Content: content}
-			source <- provider.StreamChunk{Done: true}
-			close(source)
-			go broker.Publish(sess.ID, source)
-
-			var resp *http.Response
-			Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-			defer resp.Body.Close()
-
-			eventsCh := make(chan []string, 1)
-			go func() {
-				reader := bufio.NewReader(resp.Body)
-				var evts []string
-				for {
-					line, readErr := reader.ReadString('\n')
-					if line != "" {
-						line = strings.TrimSpace(line)
-						if strings.HasPrefix(line, "data: ") {
-							evts = append(evts, strings.TrimPrefix(line, "data: "))
-						}
-						if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-							break
-						}
-					}
-					if readErr != nil {
-						break
-					}
-				}
-				eventsCh <- evts
-			}()
-
-			var evts []string
-			Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-			// MUST emit the typed event (e.g. {"type":"harness_complete",...}).
-			Expect(evts).To(ContainElement(ContainSubstring(`"type":"`+expectedTypeField+`"`)),
-				"expected typed SSE event for %s; got: %v", eventType, evts)
-
-			// MUST NOT emit a raw {"content":"..."} chunk carrying the typed
-			// event's payload — that's the JSON-leak the user reported.
-			for _, e := range evts {
-				if strings.Contains(e, `"content":`) && !strings.Contains(e, `"type":`) {
-					Fail("plain content chunk leaked harness payload — non-technical users would see raw JSON in chat: " + e)
-				}
-			}
-			Expect(evts).To(ContainElement("[DONE]"))
-		},
-		Entry("harness_complete with attemptCount JSON",
-			"harness_complete",
-			`{"valid":true,"score":0.95,"attemptCount":2,"errors":[],"warnings":[]}`,
-			"harness_complete",
-		),
-		Entry("harness_retry with reason content",
-			"harness_retry",
-			"validation failed: schema mismatch on attempt 1",
-			"harness_retry",
-		),
-		Entry("harness_attempt_start with attempt label",
-			"harness_attempt_start",
-			"attempt 2 of 3",
-			"harness_attempt_start",
-		),
-		Entry("harness_critic_feedback with critic notes",
-			"harness_critic_feedback",
-			"critic verdict: REJECT — missing acceptance criteria",
-			"harness_critic_feedback",
-		),
-	)
-
-	// Gap 2 (tool_error SSE wire, May 2026). The engine already emits
-	// chunk{EventType:"tool_result", ToolResult:{Content, IsError:true}}
-	// when a tool execution fails, but the SSE dispatcher serialised
-	// every such chunk as a plain `tool_result` — the frontend's
-	// handleToolResultEvent hard-set status='completed' regardless,
-	// so tool failures only surfaced post-stream via the canonical
-	// history reconcile. The contract: when chunk.ToolResult.IsError
-	// is true, the wire MUST emit a distinct typed event
-	// {"type":"tool_error","content":"<error text>"} so the frontend
-	// can flip the matching tool message to status='error' in-stream
-	// and the ToolBubble watcher force-opens the card on the live
-	// error transition. The legacy `tool_result` shape stays untouched
-	// for the success branch — `tool_error` is purely additive.
-	It("emits a tool_error SSE event when chunk.ToolResult.IsError is true", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		source <- provider.StreamChunk{
-			EventType:  "tool_result",
-			ToolCallID: "call-err-1",
-			ToolResult: &provider.ToolResultInfo{
-				Content: "Error: bash exited non-zero",
-				IsError: true,
-			},
-		}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		// MUST emit the typed tool_error event with the error content.
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"tool_error"`)),
-			"a chunk with IsError=true MUST route to writeSSEToolError, not writeSSEToolResult")
-		Expect(evts).To(ContainElement(ContainSubstring(`"content":"Error: bash exited non-zero"`)))
-
-		// MUST NOT emit a plain tool_result chunk for the same payload —
-		// the frontend's handleToolResultEvent unconditionally stamps
-		// status='completed', so emitting tool_result for an error chunk
-		// silently hides the failure.
-		for _, e := range evts {
-			if strings.Contains(e, `"type":"tool_result"`) {
-				Fail("an IsError chunk leaked as a tool_result event — frontend would mark the tool message as completed: " + e)
-			}
-		}
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	// Regression catcher: the SUCCESS branch must keep emitting
-	// `tool_result`. The additive nature of `tool_error` means the
-	// legacy wire shape stays untouched for IsError=false. Without
-	// this pin a future refactor that always-routes through the new
-	// writer would silently break every healthy tool execution.
-	It("keeps emitting tool_result when chunk.ToolResult.IsError is false", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		source <- provider.StreamChunk{
-			EventType:  "tool_result",
-			ToolCallID: "call-ok-1",
-			ToolResult: &provider.ToolResultInfo{
-				Content: "ok output",
-				IsError: false,
-			},
-		}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"tool_result"`)),
-			"the success branch keeps the legacy wire shape — only IsError chunks route to tool_error")
-		Expect(evts).To(ContainElement(ContainSubstring(`"content":"ok output"`)))
-		for _, e := range evts {
-			if strings.Contains(e, `"type":"tool_error"`) {
-				Fail("a non-error tool_result chunk leaked as tool_error: " + e)
-			}
-		}
-	})
-
-	// Drop #2 — Thinking SSE dispatch.
-	//
-	// Pre-fix the dispatcher in handleSessionStream had no branch for
-	// chunk.Thinking. The Anthropic adapter at internal/provider/anthropic/
-	// streaming.go:142 already emits provider.StreamChunk{Thinking: "..."},
-	// and the Drop #1 fix to openaicompat will make zai/glm-4.6 emit it too,
-	// but the wire silently swallowed the data. The end result was the live
-	// 92-second silent gap we instrumented in Phase 1d (586 reasoning_content
-	// deltas dropped end-to-end).
-	//
-	// Contract: a chunk with Thinking populated MUST emit a typed SSE event
-	// {"type":"thinking","content":"<thinking text>"} so the watchdog re-arms
-	// and the frontend can route it through its discriminated union without a
-	// bespoke channel. Thinking content MUST NOT leak into a plain
-	// {"content":"..."} chunk where the chat store would render it as the
-	// assistant's reply.
-	It("emits a typed thinking SSE event when chunk.Thinking is populated", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		source <- provider.StreamChunk{Thinking: "let me reason about this..."}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"thinking"`)),
-			"expected typed thinking SSE event; got: %v", evts)
-		Expect(evts).To(ContainElement(ContainSubstring(`"content":"let me reason about this..."`)),
-			"thinking event must carry the model's reasoning text; got: %v", evts)
-
-		// Thinking MUST NOT leak into a plain content chunk — that would
-		// render the model's private reasoning as the assistant's reply.
-		for _, e := range evts {
-			if strings.Contains(e, `"content":"let me reason`) && !strings.Contains(e, `"type":"thinking"`) {
-				Fail("thinking content leaked into a plain content chunk: " + e)
-			}
-		}
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	// Track B — provider_changed SSE round-trip.
-	//
-	// When the failover hook switches providers mid-request (e.g. anthropic
-	// 429s and zai/glm-4.6 takes over), the user must be alerted: the
-	// answer they're now seeing was produced by a DIFFERENT MODEL than the
-	// one selected, which can change quality / style / format. Prior to
-	// this branch the failover was silent — the EventBus fired
-	// "provider.error" but no SSE consumer subscribed to it, so the chat
-	// UI showed no signal at all.
-	//
-	// Wire contract: the failover hook prepends a synthetic StreamChunk
-	// with EventType "provider_changed" and Content carrying a JSON
-	// payload {from, to, reason} (see internal/plugin/failover/stream_hook.go
-	// providerChangedPayload). The dispatcher in handleSessionStream
-	// routes that chunk to writeSSEProviderChanged, which injects the
-	// "type":"provider_changed" discriminant the frontend's
-	// parseSSEPayload union dispatches on.
-	//
-	// Forward-compat note: the original {from, to, reason} payload is the
-	// failover hook's wire format (no type field). The SSE writer must
-	// re-marshal with the type field injected — same pattern as
-	// writeSSEDelegationInfo at server.go:1599. A bare pass-through would
-	// land as "unknown" in the frontend's discriminated union.
-	It("emits a typed provider_changed SSE event when the failover hook prepends a transition chunk", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		// Mirrors what failover.prependProviderChangedChunk emits when
-		// anthropic+claude-sonnet-4-6 is rate-limited and zai+glm-4.6
-		// takes over.
-		source <- provider.StreamChunk{
-			EventType: "provider_changed",
-			Content:   `{"from":"anthropic+claude-sonnet-4-6","to":"zai+glm-4.6","reason":"rate_limited"}`,
-		}
-		source <- provider.StreamChunk{Content: "answer from glm-4.6"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		// MUST emit the typed provider_changed event with all three
-		// payload fields visible to the frontend dispatcher.
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"provider_changed"`)),
-			"expected typed provider_changed SSE event; got: %v", evts)
-		Expect(evts).To(ContainElement(ContainSubstring(`"from":"anthropic+claude-sonnet-4-6"`)),
-			"from must carry the previous provider+model so the toast can show what was retired")
-		Expect(evts).To(ContainElement(ContainSubstring(`"to":"zai+glm-4.6"`)),
-			"to must carry the new provider+model the user is now talking to")
-		Expect(evts).To(ContainElement(ContainSubstring(`"reason":"rate_limited"`)),
-			"reason must be a stable machine-readable token the frontend maps to plain language")
-
-		// MUST NOT leak the raw provider_changed JSON as a plain content
-		// chunk — that would render the JSON inside the assistant bubble.
-		// The dispatcher at server.go:816 routes EventType-tagged chunks
-		// AWAY from the plain content emitter; this guard pins that
-		// invariant against accidental fall-through during refactors.
-		for _, e := range evts {
-			if strings.Contains(e, `"from":"anthropic`) && !strings.Contains(e, `"type":"provider_changed"`) {
-				Fail("provider_changed payload leaked into a plain content chunk: " + e)
-			}
-		}
-
-		// The real assistant content from the new provider must still
-		// arrive intact — the transition is metadata, not a stream
-		// terminator.
-		Expect(evts).To(ContainElement(ContainSubstring("answer from glm-4.6")))
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	// M3-adjacent — provider_changed wire shape mirrors model_active.
-	//
-	// The legacy provider_changed payload ships {from, to} as
-	// "<provider>+<model>" joined strings, mirrored on the SSE wire. The
-	// sibling sseModelActive event already split provider/model into
-	// separate JSON fields exactly to avoid the "+" parse-hop and the
-	// off-by-one bugs around model ids that themselves contain "+"
-	// (rare; openrouter).
-	//
-	// This contract pins the migrated shape: the SSE writer MUST ship
-	// BOTH the legacy joined fields (from/to) AND the new split fields
-	// (from_provider/from_model/to_provider/to_model) on every emit.
-	// Backward compat is preserved — any consumer still on the joined
-	// shape keeps working — while new consumers can read the split
-	// fields directly and skip the "+" parse-hop.
-	It("emits provider_changed with split provider/model fields alongside the legacy joined fields", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		// The failover hook's marshalled payload — both joined and split
-		// fields. The SSE writer re-marshals and ships both on the wire.
-		source <- provider.StreamChunk{
-			EventType: "provider_changed",
-			Content: `{` +
-				`"from":"anthropic+claude-sonnet-4-6",` +
-				`"to":"zai+glm-4.6",` +
-				`"from_provider":"anthropic",` +
-				`"from_model":"claude-sonnet-4-6",` +
-				`"to_provider":"zai",` +
-				`"to_model":"glm-4.6",` +
-				`"reason":"rate_limited"}`,
-		}
-		source <- provider.StreamChunk{Content: "answer"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		// Legacy joined fields MUST still be on the wire — the migration
-		// is purely additive, no consumer of the old shape regresses.
-		Expect(evts).To(ContainElement(ContainSubstring(`"from":"anthropic+claude-sonnet-4-6"`)))
-		Expect(evts).To(ContainElement(ContainSubstring(`"to":"zai+glm-4.6"`)))
-		Expect(evts).To(ContainElement(ContainSubstring(`"reason":"rate_limited"`)))
-
-		// New split fields MUST appear on the wire — the migration target.
-		Expect(evts).To(ContainElement(ContainSubstring(`"from_provider":"anthropic"`)),
-			"split from_provider must appear so the chip skips the '+' parse hop")
-		Expect(evts).To(ContainElement(ContainSubstring(`"from_model":"claude-sonnet-4-6"`)),
-			"split from_model must appear so the toast skips the '+' parse hop")
-		Expect(evts).To(ContainElement(ContainSubstring(`"to_provider":"zai"`)),
-			"split to_provider must appear so the chip skips the '+' parse hop")
-		Expect(evts).To(ContainElement(ContainSubstring(`"to_model":"glm-4.6"`)),
-			"split to_model must appear so the chip skips the '+' parse hop")
-	})
-
-	// model_active SSE round-trip.
-	//
-	// The user reported (May 2026) that the persistent toolbar chip
-	// "shows what was selected, not what actually ran". Until this event
-	// existed, the chip stayed at the user's selection until the
-	// post-stream reconcile pulled the engine-stamped (model, provider)
-	// pair from the persisted assistant message — which arrives AFTER
-	// the answer has already streamed in.
-	//
-	// Wire contract: the failover hook prepends a synthetic StreamChunk
-	// with EventType "model_active" and Content carrying a JSON payload
-	// {provider, model} on EVERY successful stream (not only on failover).
-	// The dispatcher in handleSessionStream routes that chunk to
-	// writeSSEModelActive, which injects the "type":"model_active"
-	// discriminant the frontend's parseSSEPayload union dispatches on.
-	// The chip then pivots from selection to actual immediately, before
-	// the first user-visible token arrives.
-	It("emits a typed model_active SSE event when the failover hook prepends an active-model chunk", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		// Mirrors what failover.prependModelActiveChunk emits at the
-		// start of EVERY stream — selection-vs-actual divergence is
-		// the common case the chip needs to pivot on.
-		source <- provider.StreamChunk{
-			EventType: "model_active",
-			Content:   `{"provider":"zai","model":"glm-4.6"}`,
-		}
-		source <- provider.StreamChunk{Content: "answer body"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"model_active"`)),
-			"expected typed model_active SSE event; got: %v", evts)
-		Expect(evts).To(ContainElement(ContainSubstring(`"provider":"zai"`)),
-			"provider must carry the actual provider id so the chip can render it")
-		Expect(evts).To(ContainElement(ContainSubstring(`"model":"glm-4.6"`)),
-			"model must carry the actual model id so the chip can render `<model> · <provider>` truthfully")
-
-		// MUST NOT leak the JSON payload as a plain content chunk —
-		// that would render `{"provider":"zai","model":"glm-4.6"}`
-		// inside the assistant bubble.
-		for _, e := range evts {
-			if strings.Contains(e, `"provider":"zai"`) && !strings.Contains(e, `"type":"model_active"`) {
-				Fail("model_active payload leaked into a plain content chunk: " + e)
-			}
-		}
-
-		Expect(evts).To(ContainElement(ContainSubstring("answer body")))
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	// context_usage SSE round-trip.
-	//
-	// Phase 2 of the May 2026 context-window saturation fix. The engine
-	// emits a chunk{EventType:"context_usage", Content:<json>} as the
-	// first artefact of every Stream. Content is the marshalled
-	// engine.contextUsagePayload (input_tokens / output_reserve / limit
-	// / percentage / provider / model). The dispatcher in
-	// handleSessionStream routes that chunk to writeSSEContextUsage,
-	// which injects the "type":"context_usage" discriminant the
-	// frontend's parseSSEPayload union dispatches on. The chip then
-	// renders the live usage figure alongside the model picker.
-	It("emits a typed context_usage SSE event when the engine prepends a usage chunk", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		source := make(chan provider.StreamChunk, 3)
-		source <- provider.StreamChunk{
-			EventType: "context_usage",
-			Content: `{"input_tokens":1234,"output_reserve":4096,"limit":100000,` +
-				`"percentage":1,"provider":"zai","model":"glm-4.6"}`,
-		}
-		source <- provider.StreamChunk{Content: "answer body"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"context_usage"`)),
-			"expected typed context_usage SSE event; got: %v", evts)
-		Expect(evts).To(ContainElement(ContainSubstring(`"input_tokens":1234`)),
-			"input_tokens must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"output_reserve":4096`)),
-			"output_reserve must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"limit":100000`)),
-			"limit must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"provider":"zai"`)),
-			"provider must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"model":"glm-4.6"`)),
-			"model must round-trip onto the wire")
-
-		// MUST NOT leak the JSON payload as a plain content chunk.
-		for _, e := range evts {
-			if strings.Contains(e, `"input_tokens":1234`) && !strings.Contains(e, `"type":"context_usage"`) {
-				Fail("context_usage payload leaked into a plain content chunk: " + e)
-			}
-		}
-
-		Expect(evts).To(ContainElement(ContainSubstring("answer body")))
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	It("does not replay history when broker is live — only broker-published events appear", func() {
-		// Regression guard for the SSE duplication bug: when handleSessionStream
-		// is connected to a live broker, it must NOT replay sess.Messages before
-		// subscribing. Historical content is loaded by the client via
-		// GET /messages; replaying it here caused the streaming placeholder to
-		// accumulate historical content inside the new response bubble.
-
-		// Restore a session with pre-populated messages directly — avoids the
-		// CreateSession→RestoreSessions conflict (RestoreSessions skips existing IDs).
-		sessID := "sse-replay-regression-test"
-		mgr.RestoreSessions([]*session.Session{
-			{
-				ID:      sessID,
-				AgentID: "test-agent",
-				Messages: []session.Message{
-					{ID: "m1", Role: "assistant", Content: "historical-msg-one"},
-					{ID: "m2", Role: "assistant", Content: "historical-msg-two"},
-					// A new user message was appended by POST /messages before SSE opens.
-					// The fast-path only fires when the last message is non-user, so this
-					// correctly models the real-app flow where a new Publish is pending.
-					{ID: "m3", Role: "user", Content: "new-user-prompt"},
-				},
-			},
-		})
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sessID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		// Publish a single live chunk then close the broker channel.
-		source := make(chan provider.StreamChunk, 2)
-		source <- provider.StreamChunk{Content: "live-only-chunk"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sessID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		// The live-published chunk must appear.
-		Expect(evts).To(ContainElement(ContainSubstring("live-only-chunk")))
-		// Historical messages must NOT appear — they would duplicate content
-		// already rendered by the frontend via GET /messages.
-		Expect(evts).NotTo(ContainElement(ContainSubstring("historical-msg-one")))
-		Expect(evts).NotTo(ContainElement(ContainSubstring("historical-msg-two")))
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	It("emits no content events to a fresh subscriber on an idle session even when no broker is wired", func() {
-		// Regression for SSE replay-on-subscribe bug. The bug: when handleSessionStream
-		// was hit on a server with sessionBroker == nil (production wiring previously
-		// gated broker creation on backgroundManager being non-nil, which it isn't for
-		// non-delegating agents), the handler iterated sess.Messages and emitted every
-		// assistant content as an SSE chunk, then [DONE]. A fresh subscriber on an
-		// idle session would therefore receive a "ghost" of the previous turn — which
-		// the Vue frontend rendered as a duplicate bubble inside the next turn's
-		// streaming placeholder.
-		//
-		// Contract: the SSE stream is for events emitted strictly after subscription.
-		// Historical content lives on GET /messages. A fresh subscriber on an idle
-		// session must receive zero content events.
-		brokerlessMgr := session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
-		brokerlessSrv := api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
-			agent.NewRegistry(),
-			discovery.NewAgentDiscovery(nil),
-			nil,
-			api.WithSessionManager(brokerlessMgr),
-			// NOTE: deliberately no WithSessionBroker — mirrors the
-			// pre-fix production wiring where the broker stayed nil for
-			// agents without delegation. The handler must not replay
-			// sess.Messages even in this configuration.
-		)
-		brokerlessHTTP := httptest.NewServer(brokerlessSrv.Handler())
-		defer brokerlessHTTP.Close()
-
-		brokerlessMgr.RestoreSessions([]*session.Session{
-			{
-				ID:      "sse-no-broker-replay",
-				AgentID: "test-agent",
-				Messages: []session.Message{
-					{ID: "u1", Role: "user", Content: "ping"},
-					{ID: "a1", Role: "assistant", Content: "PONG"},
-				},
-			},
-		})
-
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-
-		streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
-			brokerlessHTTP.URL+"/api/v1/sessions/sse-no-broker-replay/stream", http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		resp, err := http.DefaultClient.Do(streamReq)
-		Expect(err).NotTo(HaveOccurred())
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		// MUST receive only [DONE]; never any historical content.
-		for _, e := range evts {
-			Expect(e).NotTo(ContainSubstring(`"content"`),
-				"fresh subscriber on idle session must receive zero content events; got: %v", evts)
-			Expect(e).NotTo(ContainSubstring("PONG"),
-				"fresh subscriber must not see prior assistant message replayed; got: %v", evts)
-		}
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	It("emits no content events to a fresh subscriber after a sealed turn (real broker, full POST→stream flow)", func() {
-		// End-to-end regression: drive the real Server through POST /messages
-		// to seal a turn, then subscribe with a fresh GET /stream and assert
-		// no content is replayed. This mirrors the production curl reproduction
-		// without involving any provider-layer mocks beyond the streamer.
-		realBroker := api.NewSessionBroker()
-		realStreamer := &mockStreamer{chunks: []provider.StreamChunk{
-			{Content: "PONG"},
-			{Done: true},
-		}}
-		realMgr := session.NewManager(realStreamer)
-		realSrv := api.NewServer(
-			realStreamer,
-			agent.NewRegistry(),
-			discovery.NewAgentDiscovery(nil),
-			nil,
-			api.WithSessionManager(realMgr),
-			api.WithSessionBroker(realBroker),
-		)
-		realHTTP := httptest.NewServer(realSrv.Handler())
-		defer realHTTP.Close()
-
-		sess, err := realMgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		// Seal turn 1: POST blocks until the broker drains the chunks.
-		postResp, err := http.Post(
-			realHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
-			"application/json",
-			strings.NewReader(`{"content":"hi"}`),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		_ = postResp.Body.Close()
-		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
-		Expect(realBroker.IsPublishing(sess.ID)).To(BeFalse(),
-			"broker must not still be publishing after POST returned")
-
-		// Fresh SSE subscriber on the now-idle session.
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-
-		streamReq, err := http.NewRequestWithContext(ctx, http.MethodGet,
-			realHTTP.URL+"/api/v1/sessions/"+sess.ID+"/stream", http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		streamResp, err := http.DefaultClient.Do(streamReq)
-		Expect(err).NotTo(HaveOccurred())
-		defer streamResp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(streamResp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		for _, e := range evts {
-			Expect(e).NotTo(ContainSubstring(`"content"`),
-				"fresh subscriber after sealed turn must receive zero content events; got: %v", evts)
-		}
-		Expect(evts).To(ContainElement("[DONE]"))
-	})
-
-	// Regression for the sealed-turn SSE race introduced by the async-POST
-	// shift in commit e4bf9632 (and the chatStore ordering in
-	// chatStore.ts:1949-1992 where SSE is opened BEFORE the POST is
-	// awaited).
-	//
-	// Reproduction shape:
-	//
-	//   1. Session has a prior turn — last message role is "assistant"
-	//      (sealed turn).
-	//   2. Client opens SSE on the sealed session FIRST.
-	//   3. Client THEN POSTs a follow-up /messages.
-	//   4. Server publishes the follow-up turn's chunks via the broker.
-	//
-	// Pre-fix the SSE handler took the sealed-turn fast-path
-	// (SubscribeIfPublishing, no publisher yet → writeSSEDone) before
-	// the POST kicked off the publish goroutine. The fresh SSE subscriber
-	// was never registered and the chunks fanned out to zero subscribers,
-	// so the UI never saw the assistant content for the follow-up turn.
-	//
-	// Contract this spec pins:
-	//
-	//   - A sealed-turn session can have SSE opened FIRST, and a follow-
-	//     up POST will deliver the new turn's content chunks to that
-	//     SSE subscriber.
-	//   - The terminal [DONE] still lands after the new turn drains.
-	//   - The sibling "no content replay" contract at the prior spec
-	//     remains intact (no chunks from turn 1 appear in turn 2's
-	//     subscriber).
-	It("delivers follow-up turn chunks to an SSE subscriber that opened first on a sealed turn (async-POST race)", func() {
-		// dripStreamer keeps the chunks channel live across the HTTP
-		// handler return so the SSE race window is observable. A pre-
-		// filled mockStreamer would already have closed its channel by
-		// the time the SSE handler ran its sealed-turn check, masking
-		// the bug.
-		drip := &dripStreamer{
-			chunks: []provider.StreamChunk{
-				{Content: "FOLLOWUP"},
-				{Content: "-CHUNK"},
-				{Done: true},
-			},
-			emitInterval: 30 * time.Millisecond,
-		}
-		raceBroker := api.NewSessionBroker()
-		raceMgr := session.NewManager(drip)
-		raceSrv := api.NewServer(
-			drip,
-			agent.NewRegistry(),
-			discovery.NewAgentDiscovery(nil),
-			nil,
-			api.WithSessionManager(raceMgr),
-			api.WithSessionBroker(raceBroker),
-		)
-		raceHTTP := httptest.NewServer(raceSrv.Handler())
-		defer raceHTTP.Close()
-
-		// Seed a sealed session by restoring it with an assistant tail.
-		// RestoreSessions installs the messages without invoking the
-		// streamer, so the first turn's chunks are NOT pending in the
-		// broker and the next POST is the first publish run on this
-		// session.
-		const sessID = "sealed-followup-race"
-		raceMgr.RestoreSessions([]*session.Session{
-			{
-				ID:      sessID,
-				AgentID: "race-agent",
-				Messages: []session.Message{
-					{ID: "u0", Role: "user", Content: "seed"},
-					{ID: "a0", Role: "assistant", Content: "ack"},
-				},
-			},
-		})
-
-		// Step 2: open SSE FIRST. This matches chatStore.sendMessage's
-		// order (chatStore.ts:1949-1992): connect to /stream, THEN
-		// await the POST.
-		streamCtx, streamCancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer streamCancel()
-		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
-			raceHTTP.URL+"/api/v1/sessions/"+sessID+"/stream", http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			defer GinkgoRecover()
-			streamResp, doErr := http.DefaultClient.Do(streamReq)
-			if doErr != nil {
-				eventsCh <- []string{"__DO_ERR__:" + doErr.Error()}
-				return
-			}
-			defer streamResp.Body.Close()
-			reader := bufio.NewReader(streamResp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		// Give the SSE GET time to reach the handler. The handler's
-		// sealed-turn fast path runs synchronously on this request
-		// goroutine; once the handler has decided to subscribe (or
-		// fast-path to [DONE]), the POST below cannot influence the
-		// decision. This sleep is the timing model of the actual
-		// browser bug: the FE opens SSE and then awaits a POST — the
-		// gap between the two is non-zero.
-		time.Sleep(150 * time.Millisecond)
-
-		// Step 3: POST the follow-up. The server returns immediately
-		// (async publish per e4bf9632); the publish goroutine drips
-		// chunks over ~90ms.
-		postResp, err := http.Post(
-			raceHTTP.URL+"/api/v1/sessions/"+sessID+"/messages",
-			"application/json",
-			strings.NewReader(`{"content":"follow up"}`),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		_ = postResp.Body.Close()
-		Expect(postResp.StatusCode).To(Equal(http.StatusOK))
-
-		// Collect SSE events.
-		var evts []string
-		Eventually(eventsCh, 6*time.Second).Should(Receive(&evts))
-
-		// Contract A: SSE subscriber receives the follow-up turn's
-		// content chunks. Pre-fix this fails because the SSE handler
-		// took the sealed-turn fast path and emitted [DONE] before the
-		// publish goroutine started.
-		Expect(evts).To(ContainElement(ContainSubstring("FOLLOWUP")),
-			"sealed-turn SSE subscriber must receive the follow-up turn's first content chunk; got: %v", evts)
-		Expect(evts).To(ContainElement(ContainSubstring("-CHUNK")),
-			"sealed-turn SSE subscriber must receive the follow-up turn's second content chunk; got: %v", evts)
-
-		// Contract B: terminal [DONE] still lands AFTER the chunks.
-		Expect(evts).To(ContainElement("[DONE]"),
-			"sealed-turn SSE subscriber must receive a terminal [DONE]; got: %v", evts)
-
-		// Contract C: no replay of turn 1's "ack" assistant content.
-		// The "no historical replay" contract (server_test.go's
-		// sibling sealed-turn spec, broker invariant I6) is preserved.
-		for _, e := range evts {
-			Expect(e).NotTo(ContainSubstring(`"content":"ack"`),
-				"sealed-turn SSE subscriber must NOT see turn 1's assistant content replayed; got: %v", evts)
-		}
-	})
-
-	It("drives concurrent POST /messages and GET /stream without a data race on session.Messages", func() {
-		// Regression for the data race surfaced during Track A's
-		// streaming signal-drop fixes. `go test -race` reported:
-		//
-		//   Write at 0x... by goroutine N: session/manager.go:647
-		//     (sess.Messages = append(...) under WLock in SendMessage)
-		//   Previous read at 0x... by goroutine M: api/server.go:756
-		//     (msgs := freshSess.Messages outside any lock in
-		//      handleSessionStream's idle-session fast-path)
-		//
-		// The read site held no lock because GetSession returns the
-		// *Session pointer and releases its RLock on return. The fix
-		// replaces the dereference with Manager.LastMessageRole, which
-		// projects the role value under RLock — no pointer leaks past
-		// the lock boundary. This spec drives both code paths in
-		// parallel against a real Server and httptest backend so the
-		// race detector flags any future regression.
-		raceBroker := api.NewSessionBroker()
-		raceStreamer := &mockStreamer{chunks: []provider.StreamChunk{
-			{Content: "ack"},
-			{Done: true},
-		}}
-		raceMgr := session.NewManager(raceStreamer)
-		raceSrv := api.NewServer(
-			raceStreamer,
-			agent.NewRegistry(),
-			discovery.NewAgentDiscovery(nil),
-			nil,
-			api.WithSessionManager(raceMgr),
-			api.WithSessionBroker(raceBroker),
-		)
-		raceHTTP := httptest.NewServer(raceSrv.Handler())
-		defer raceHTTP.Close()
-
-		// Seed via RestoreSessions so the session has an assistant
-		// message as its tail, exercising the SSE fast-path's
-		// "last message role != user" branch on each GET. The fast
-		// path is exactly where the pre-fix dereference of
-		// freshSess.Messages raced with SendMessage's append.
-		const sessID = "race-session-id"
-		raceMgr.RestoreSessions([]*session.Session{
-			{
-				ID:      sessID,
-				AgentID: "race-agent",
-				Messages: []session.Message{
-					{ID: "u0", Role: "user", Content: "seed"},
-					{ID: "a0", Role: "assistant", Content: "ack"},
-				},
-			},
-		})
-
-		const iterations = 20
-		var wg sync.WaitGroup
-		wg.Add(2)
-
-		// Writer goroutine: fires POSTs that flow through
-		// SendMessage's sess.Messages = append under WLock.
-		go func() {
-			defer GinkgoRecover()
-			defer wg.Done()
-			for range iterations {
-				resp, postErr := http.Post(
-					raceHTTP.URL+"/api/v1/sessions/"+sessID+"/messages",
-					"application/json",
-					strings.NewReader(`{"content":"hello"}`),
-				)
-				if postErr == nil {
-					_ = resp.Body.Close()
-				}
-			}
-		}()
-
-		// Reader goroutine: fires GETs that flow through
-		// handleSessionStream's idle-session fast-path which used to
-		// read sess.Messages outside the lock.
-		go func() {
-			defer GinkgoRecover()
-			defer wg.Done()
-			for range iterations {
-				ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-				req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet,
-					raceHTTP.URL+"/api/v1/sessions/"+sessID+"/stream", http.NoBody)
-				if reqErr == nil {
-					if resp, doErr := http.DefaultClient.Do(req); doErr == nil {
-						_, _ = io.Copy(io.Discard, resp.Body)
-						_ = resp.Body.Close()
-					}
-				}
-				cancel()
-			}
-		}()
-
-		wg.Wait()
-		// The spec passes if `go test -race` does not abort. No
-		// content assertions — the contract under test is purely
-		// concurrency: both endpoints stay race-free under load.
-	})
-
-	// Critical-stream-error severity gating regression specs.
-	//
-	// Pre-fix the SSE fan-out at handleSessionStream's chunk.Error
-	// branch wrote a sanitized "stream_error" event and then
-	// `continue`d the receive loop unconditionally. That meant a
-	// fatal provider error (revoked OAuth token, 401, model-not-
-	// found, billing/quota lockout) was treated indistinguishably
-	// from a transient blip: the loop kept reading subsequent
-	// chunks from the live channel and emitting whatever landed,
-	// and the UI had no signal that the session had reached an
-	// unrecoverable state.
-	//
-	// internal/provider/stream_error.go has classified error
-	// severities since P18a, but IsCriticalStreamError had zero
-	// production callers — the broker fan-out never consulted it.
-	//
-	// The contract these specs pin:
-	//
-	//   1. When chunk.Error classifies as SeverityCritical, the
-	//      fan-out emits a typed critical-class SSE error event,
-	//      writes [DONE], and breaks the loop. NO further chunks
-	//      from the live channel reach the client after the
-	//      critical signal — even chunks the broker has already
-	//      buffered for fan-out.
-	//
-	//   2. When chunk.Error classifies as transient/user (the
-	//      non-critical path), the fan-out emits the existing
-	//      "stream_error" event and continues the loop. Subsequent
-	//      chunks on the live channel still flow through to the
-	//      client.
-	//
-	// Both specs assert behaviour on the wire (the bytes the SSE
-	// reader observes), not internal function names. The
-	// behaviour-pinning shape is the same as the
-	// "forwards live chunks" spec above — same fixture, same
-	// SSE reader pattern.
-	It("breaks the SSE fan-out and emits a critical-class error when chunk.Error is critical, with no further chunks reaching the client", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		// "401 unauthorized" matches the criticalKeywords list in
-		// internal/provider/stream_error.go ("401" and "unauthori"),
-		// so ClassifyStreamError returns SeverityCritical without
-		// needing a structured *provider.Error wrapper. The post-
-		// critical chunks ("after-critical-content" and Done) are
-		// pushed into the broker before Publish runs so the broker
-		// fans them out promptly — pre-fix, the consumer's
-		// continue-loop would surface them on the wire.
-		source := make(chan provider.StreamChunk, 4)
-		source <- provider.StreamChunk{Content: "pre-error-content"}
-		source <- provider.StreamChunk{Error: errors.New("401 unauthorized")}
-		source <- provider.StreamChunk{Content: "after-critical-content"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var events []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						events = append(events, strings.TrimPrefix(line, "data: "))
-					}
-					if len(events) > 0 && events[len(events)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- events
-		}()
-
-		var events []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&events))
-
-		// Pre-error content must reach the client (we did not
-		// regress the happy path before the critical chunk).
-		Expect(events).To(ContainElement(ContainSubstring("pre-error-content")),
-			"chunks emitted before the critical error must still reach the client")
-
-		// The critical signal must surface on the wire as a
-		// distinct event from the non-critical "stream error".
-		// The exact category text comes from clientError's
-		// "stream_critical" branch in errors.go.
-		Expect(events).To(ContainElement(ContainSubstring("critical stream error")),
-			"a critical chunk.Error must surface as a critical-class SSE event, not as the non-critical 'stream error' message")
-
-		// The fan-out must terminate after the critical signal.
-		// Chunks the broker fans out after the critical error —
-		// "after-critical-content" here — must NOT reach the
-		// client. This is the bug the gate fixes.
-		Expect(events).NotTo(ContainElement(ContainSubstring("after-critical-content")),
-			"after a critical chunk.Error the SSE fan-out must break and emit no further chunks to the client")
-
-		// The session settles into a recoverable closed state:
-		// the client always sees the [DONE] sentinel so it can
-		// re-render and resume.
-		Expect(events).To(ContainElement("[DONE]"),
-			"the SSE handler must always close the stream with [DONE] after a critical error so the client can settle")
-	})
-
-	It("continues the SSE fan-out on a non-critical chunk.Error and lets subsequent chunks flow to the client", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		// "connection refused" matches the transientKeywords list,
-		// so ClassifyStreamError returns SeverityTransient and
-		// IsCriticalStreamError reports false. The gate must NOT
-		// fire — subsequent chunks must still surface on the wire,
-		// preserving today's behaviour for self-healing errors.
-		source := make(chan provider.StreamChunk, 4)
-		source <- provider.StreamChunk{Content: "before-transient-error"}
-		source <- provider.StreamChunk{Error: errors.New("connection refused")}
-		source <- provider.StreamChunk{Content: "after-transient-error"}
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var events []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						events = append(events, strings.TrimPrefix(line, "data: "))
-					}
-					if len(events) > 0 && events[len(events)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- events
-		}()
-
-		var events []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&events))
-
-		// Pre-error content reaches the client.
-		Expect(events).To(ContainElement(ContainSubstring("before-transient-error")),
-			"chunks emitted before a transient error must reach the client")
-
-		// The non-critical event surfaces with the existing
-		// "stream error" message — NOT the critical-class one.
-		Expect(events).To(ContainElement(ContainSubstring("stream error")),
-			"a transient chunk.Error must surface as the existing 'stream error' SSE event")
-		Expect(events).NotTo(ContainElement(ContainSubstring("critical stream error")),
-			"a transient chunk.Error must NOT escalate to the critical-class SSE event")
-
-		// The contract: the fan-out keeps reading and chunks
-		// after a non-critical error still reach the client.
-		// This is the regression-resistance assertion — without
-		// it, a future change that always-breaks on chunk.Error
-		// would silently drop transient-error sessions.
-		Expect(events).To(ContainElement(ContainSubstring("after-transient-error")),
-			"after a transient chunk.Error the SSE fan-out must continue and subsequent chunks must reach the client")
-
-		Expect(events).To(ContainElement("[DONE]"))
-	})
-})
 
 // Phase 2 GREEN gate per "Dispatcher Service Unification (May 2026)" v6.
 //
@@ -2726,284 +848,16 @@ var _ = Describe("Session stream live events", func() {
 // channel is still live at the moment the handler returns. mockStreamer's
 // pre-filled+closed channel cannot exercise this contract (and the v6 plan
 // explicitly bans it for any Dispatcher-related Describe).
-var _ = Describe("Vue UI multi-turn refresh-free flow", func() {
-	var (
-		drip       *dripStreamer
-		dripBroker *api.SessionBroker
-		dripMgr    *session.Manager
-		dripSrv    *api.Server
-		dripHTTP   *httptest.Server
-		registry   *agent.Registry
-		swarmReg   *swarm.Registry
-		engStub    *fakeDispatchEngine
-	)
-
-	BeforeEach(func() {
-		// Two content chunks dripped over time so the SSE subscriber sees
-		// "live" content arrive AFTER the POST handler returns its snapshot.
-		// The 30ms emit interval is the same value the e4bf9632 spec uses;
-		// it's well above net/http handler overhead so the snapshot-vs-content
-		// ordering is deterministic.
-		drip = &dripStreamer{
-			chunks: []provider.StreamChunk{
-				{Content: "Hello"},
-				{Content: " world"},
-				{Done: true},
-			},
-			emitInterval: 30 * time.Millisecond,
-		}
-		dripBroker = api.NewSessionBroker()
-		dripMgr = session.NewManager(drip)
-
-		registry = agent.NewRegistry()
-		registry.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
-		registry.Register(&agent.Manifest{ID: "coordinator", Name: "Coordinator"})
-		registry.Register(&agent.Manifest{ID: "team-lead", Name: "Team Lead"})
-
-		swarmReg = swarm.NewRegistry()
-		// a-team swarm so the @<swarm-id> in-content mention path is
-		// exercised on the second turn — same swarm shape the deleted
-		// resolveInContentMention specs at server_test.go:5177-5308 used.
-		swarmReg.Register(&swarm.Manifest{
-			SchemaVersion: "1.0.0",
-			ID:            "a-team",
-			Description:   "A-Team product delivery",
-			Lead:          "team-lead",
-			Members:       []string{"team-lead", "default-assistant"},
-		})
-		engStub = &fakeDispatchEngine{}
-
-		dripSrv = api.NewServer(
-			drip,
-			registry,
-			discovery.NewAgentDiscovery(nil),
-			nil,
-			api.WithSessionManager(dripMgr),
-			api.WithSessionBroker(dripBroker),
-			api.WithSwarmRegistry(swarmReg),
-			api.WithDispatchEngine(engStub),
-		)
-		dripHTTP = httptest.NewServer(dripSrv.Handler())
-	})
-
-	AfterEach(func() {
-		dripHTTP.Close()
-	})
-
-	// Helper: subscribe to the SSE stream and forward parsed `data:` lines
-	// into eventsCh. Captures the time-of-arrival on the first `content`
-	// event so the spec can assert the POST snapshot landed strictly
-	// before any content reached the subscriber.
-	type sseObservation struct {
-		events           []string
-		firstContentAt   time.Time
-		firstContentSeen bool
-	}
-
-	collectSSE := func(sessionID string, doneCh chan<- sseObservation) {
-		defer GinkgoRecover()
-		streamCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet,
-			dripHTTP.URL+"/api/v1/sessions/"+sessionID+"/stream", http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-		streamResp, doErr := http.DefaultClient.Do(streamReq)
-		if doErr != nil {
-			doneCh <- sseObservation{events: []string{"__DO_ERR__:" + doErr.Error()}}
-			return
-		}
-		defer streamResp.Body.Close()
-		reader := bufio.NewReader(streamResp.Body)
-		obs := sseObservation{}
-		for {
-			line, readErr := reader.ReadString('\n')
-			if line != "" {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "data: ") {
-					payload := strings.TrimPrefix(line, "data: ")
-					obs.events = append(obs.events, payload)
-					// A `content` event is any non-typed, non-finaliser data
-					// frame carrying `Hello`/`world` (the dripStreamer's
-					// chunks). The streaming SSE writer emits these as
-					// {"type":"content","content":"..."} JSON or as the raw
-					// chunk text depending on the writer's mode — both
-					// surface the dripStreamer's content here. We detect by
-					// substring match against the chunk text so the spec is
-					// robust against either framing.
-					if !obs.firstContentSeen && payload != "[DONE]" &&
-						(strings.Contains(payload, "Hello") || strings.Contains(payload, "world")) {
-						obs.firstContentAt = time.Now()
-						obs.firstContentSeen = true
-					}
-					if payload == "[DONE]" {
-						break
-					}
-				}
-			}
-			if readErr != nil {
-				break
-			}
-		}
-		doneCh <- obs
-	}
-
-	It("returns a snapshot containing the user message BEFORE any content chunk reaches the SSE subscriber", func() {
-		sess, err := dripMgr.CreateSession("default-assistant")
-		Expect(err).NotTo(HaveOccurred())
-
-		// Subscribe to SSE FIRST so the subscriber is registered when the
-		// POST handler kicks off the broker publish goroutine. The
-		// snapshot-before-content contract requires the subscriber to be
-		// observing the wire BEFORE POST returns.
-		obsCh := make(chan sseObservation, 1)
-		go collectSSE(sess.ID, obsCh)
-
-		// Give the SSE subscriber time to register with the broker.
-		time.Sleep(100 * time.Millisecond)
-
-		postStart := time.Now()
-		resp, err := http.Post(
-			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
-			"application/json",
-			strings.NewReader(`{"content":"hi"}`),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		postReturnedAt := time.Now()
-		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(resp.StatusCode).To(Equal(http.StatusOK))
-
-		// Contract C: async POST — handler returns in well under 1s,
-		// orders of magnitude under the streamer's several-second emit
-		// total. SessionedHandle has no Done channel; the handler cannot
-		// block on stream completion.
-		Expect(postReturnedAt.Sub(postStart)).To(BeNumerically("<", 1*time.Second),
-			"POST /messages must return synchronously after the snapshot is taken; the streamer continues asynchronously via the broker. SessionedHandle structurally forbids awaiting Done.")
-
-		// Contract A: snapshot-before-stream — the POST response body
-		// contains the new user message as a populated row.
-		var snapshot map[string]any
-		Expect(json.Unmarshal(body, &snapshot)).To(Succeed())
-		messages, ok := snapshot["messages"].([]any)
-		Expect(ok).To(BeTrue(), "POST response must contain a messages[] array; got body: %s", string(body))
-		var sawUserMsg bool
-		for _, m := range messages {
-			row, ok := m.(map[string]any)
-			if !ok {
-				continue
-			}
-			if row["role"] == "user" && row["content"] == "hi" {
-				sawUserMsg = true
-				break
-			}
-		}
-		Expect(sawUserMsg).To(BeTrue(),
-			"POST response messages[] must include the user message ('hi') as a populated row BEFORE the SSE subscriber sees any content chunk; got body: %s", string(body))
-
-		// Contract A (load-bearing): the POST returned BEFORE any content
-		// chunk reached the subscriber. dripStreamer's 30ms emit interval
-		// keeps the chunks in-flight across the handler return.
-		var obs sseObservation
-		Eventually(obsCh, 8*time.Second).Should(Receive(&obs))
-
-		Expect(obs.firstContentSeen).To(BeTrue(),
-			"SSE subscriber must see at least one content event before [DONE]; got events: %v", obs.events)
-		Expect(obs.firstContentAt.After(postReturnedAt)).To(BeTrue(),
-			"the first content chunk must reach the SSE subscriber STRICTLY AFTER the POST handler returns its snapshot. POST returned at %v, first content arrived at %v. This pins the async-POST snapshot-before-stream contract.",
-			postReturnedAt, obs.firstContentAt)
-
-		// Contract B: clean SSE finaliser, no ctx-cancel artifacts.
-		Expect(obs.events).To(ContainElement("[DONE]"),
-			"SSE subscriber must receive terminal [DONE]; got: %v", obs.events)
-		for _, e := range obs.events {
-			Expect(e).NotTo(ContainSubstring("context canceled"),
-				"SSE stream must NOT terminate with context.Canceled — Dispatcher must apply context.WithoutCancel to the streamer ctx. Events: %v", obs.events)
-			Expect(e).NotTo(ContainSubstring("context.Canceled"),
-				"SSE stream must NOT carry context.Canceled (mixed-case) — Dispatcher must apply context.WithoutCancel. Events: %v", obs.events)
-		}
-
-		// Content arrived in order.
-		var helloIdx, worldIdx int = -1, -1
-		for i, e := range obs.events {
-			if helloIdx < 0 && strings.Contains(e, "Hello") {
-				helloIdx = i
-			}
-			if worldIdx < 0 && strings.Contains(e, "world") {
-				worldIdx = i
-			}
-		}
-		Expect(helloIdx).To(BeNumerically(">=", 0), "Hello chunk must reach subscriber; events: %v", obs.events)
-		Expect(worldIdx).To(BeNumerically(">", helloIdx), "content chunks must arrive in order; events: %v", obs.events)
-	})
-
-	It("preserves swarm-context wiring across a multi-turn @<swarm-id> mention", func() {
-		// Second-turn assertion: with the first turn complete, the second
-		// turn carries `@a-team` and must redirect this turn through the
-		// a-team swarm. This subsumes the in-content @-mention spec at
-		// server_test.go:5196 — the contract moves into Dispatcher per
-		// Phase 2 of the v6 plan.
-		sess, err := dripMgr.CreateSession("default-assistant")
-		Expect(err).NotTo(HaveOccurred())
-
-		// Turn 1 — plain content. Drains the streamer so turn 2 has a clean
-		// engine state.
-		drip.chunks = []provider.StreamChunk{{Content: "ack-1"}, {Done: true}}
-		resp1, err := http.Post(
-			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
-			"application/json",
-			strings.NewReader(`{"content":"hi"}`),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		_ = resp1.Body.Close()
-		Expect(resp1.StatusCode).To(Equal(http.StatusOK))
-
-		// Wait for turn 1's lifecycle to flush before turn 2 begins.
-		Eventually(func() int { return engStub.restoreCalls }, "3s").Should(BeNumerically(">=", 0))
-
-		// Turn 2 — @<swarm-id> mention overrides the session's plain
-		// agent. The Dispatcher's resolution scans for in-content mentions
-		// FIRST; on hit it WINS over any auto-dispatch fallback.
-		drip.chunks = []provider.StreamChunk{{Content: "ack-2"}, {Done: true}}
-		resp2, err := http.Post(
-			dripHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
-			"application/json",
-			strings.NewReader(`{"content":"@a-team please help"}`),
-		)
-		Expect(err).NotTo(HaveOccurred())
-		_ = resp2.Body.Close()
-		Expect(resp2.StatusCode).To(Equal(http.StatusOK))
-
-		Eventually(func() *swarm.Context { return engStub.installedContext }, "3s").ShouldNot(BeNil(),
-			"in-content @-mention on turn 2 must install the swarm context on the engine — subsumes the deleted resolveInContentMention helper's contract")
-		Expect(engStub.installedContext.SwarmID).To(Equal("a-team"))
-		Expect(engStub.installedContext.LeadAgent).To(Equal("team-lead"))
-	})
-})
-
-// Sibling races to the SSE-fast-path data race fixed in commit aaa6f1f:
-// every handler that called GetSession and then dereferenced fields on
-// the returned *Session held no lock during the read. SendMessage's
-// `sess.Messages = append(...)` under WLock raced each of those reads.
-// These specs drive concurrent POST /messages (the writer) against each
-// affected reader handler under `-race` so the race detector flags any
-// future regression.
-//
-// All four specs share the same shape: seed a session via
-// RestoreSessions, fire iterations of POSTs in one goroutine, fire
-// iterations of GET/PATCH against the targeted handler in a second
-// goroutine, wait. No content assertions — the contract under test is
-// purely "no race detected".
 var _ = Describe("GetSession-deref-after-lock-release sibling races", func() {
 	const (
 		sessID     = "sibling-race-session"
 		iterations = 20
 	)
 
-	// raceSetup builds an httptest server with a real Manager + Broker
-	// and seeds one session. Returned closer must be invoked.
+	// raceSetup builds an httptest server with a real Manager and seeds
+	// one session. Returned closer must be invoked. Phase-4-Commit-2
+	// retired the SessionBroker — race specs no longer require it.
 	raceSetup := func() (*session.Manager, *httptest.Server, func()) {
-		broker := api.NewSessionBroker()
 		streamer := &mockStreamer{chunks: []provider.StreamChunk{
 			{Content: "ack"},
 			{Done: true},
@@ -3015,7 +869,6 @@ var _ = Describe("GetSession-deref-after-lock-release sibling races", func() {
 			discovery.NewAgentDiscovery(nil),
 			nil,
 			api.WithSessionManager(mgr),
-			api.WithSessionBroker(broker),
 		)
 		ts := httptest.NewServer(srv.Handler())
 		mgr.RestoreSessions([]*session.Session{
@@ -3478,23 +1331,11 @@ var _ = Describe("Session manager nil-safety", func() {
 		})
 	})
 
-	Describe("GET /api/v1/sessions/{id}/stream", func() {
-		It("returns 501 when session manager is nil", func() {
-			req := httptest.NewRequest("GET", "/api/v1/sessions/sess-1/stream", http.NoBody)
-			w := httptest.NewRecorder()
-			server.Handler().ServeHTTP(w, req)
-			Expect(w.Code).To(Equal(http.StatusNotImplemented))
-		})
-	})
-
-	Describe("GET /api/v1/sessions/{id}/ws", func() {
-		It("returns 501 when session manager is nil", func() {
-			req := httptest.NewRequest("GET", "/api/v1/sessions/sess-1/ws", http.NoBody)
-			w := httptest.NewRecorder()
-			server.Handler().ServeHTTP(w, req)
-			Expect(w.Code).To(Equal(http.StatusNotImplemented))
-		})
-	})
+	// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+	// (May 2026)" retired the per-session SSE/WebSocket routes
+	// (handleSessionStream, handleSessionWebSocket). The nil-safety
+	// pins they previously had moved to the negative-contract spec at
+	// the bottom of this file ("retired routes return 404").
 
 	Describe("DELETE /api/v1/sessions/{id}", func() {
 		It("returns 501 when session manager is nil", func() {
@@ -3673,43 +1514,71 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 			Expect(rows[0]["isStreaming"]).To(BeFalse())
 		})
 
-		It("emits isStreaming: true for a session whose broker is actively publishing", func() {
-			broker := api.NewSessionBroker()
-			srvWithBroker := api.NewServer(
-				&mockStreamer{chunks: []provider.StreamChunk{}},
-				agent.NewRegistry(),
+		It("emits isStreaming: true for a session whose Turn registry has an active Running turn", func() {
+			// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+			// (May 2026)" retired the SessionBroker; the isStreaming
+			// field is now sourced from the dispatcher's Turn registry
+			// — equivalent to `activeTurnId != ""`. The fixture below
+			// drives a slow drip so the registry's Running entry is
+			// observable across the GET /api/v1/sessions call.
+			drip := &dripStreamer{
+				chunks: []provider.StreamChunk{
+					{Content: "running"},
+					{Done: true},
+				},
+				emitInterval: 250 * time.Millisecond,
+			}
+			localMgr := session.NewManager(drip)
+			localReg := agent.NewRegistry()
+			localReg.Register(&agent.Manifest{ID: "agent-streaming", Name: "Agent Streaming"})
+			srvWithTurn := api.NewServer(
+				drip,
+				localReg,
 				discovery.NewAgentDiscovery(nil),
 				nil,
-				api.WithSessionManager(mgr),
-				api.WithSessionBroker(broker),
+				api.WithSessionManager(localMgr),
 			)
-			sess, err := mgr.CreateSession("agent-streaming")
+			localHTTP := httptest.NewServer(srvWithTurn.Handler())
+			defer localHTTP.Close()
+
+			sess, err := localMgr.CreateSession("agent-streaming")
 			Expect(err).NotTo(HaveOccurred())
 
-			// Start publishing in the background so the broker marks the session active.
-			chunks := make(chan provider.StreamChunk)
-			go broker.Publish(sess.ID, chunks)
+			// Fire a POST /messages — this Starts the Turn in the registry.
+			postResp, err := http.Post( //nolint:noctx
+				localHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
+				"application/json",
+				strings.NewReader(`{"content":"hi"}`),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			postResp.Body.Close()
+			Expect(postResp.StatusCode).To(Equal(http.StatusOK))
 
-			// Give the goroutine time to set active before the request.
+			// Eventually the GET returns isStreaming: true while the
+			// Turn is still Running.
 			Eventually(func() bool {
-				return broker.IsPublishing(sess.ID)
-			}).Should(BeTrue())
-
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
-			w := httptest.NewRecorder()
-			srvWithBroker.Handler().ServeHTTP(w, req)
-
-			Expect(w.Code).To(Equal(http.StatusOK))
-			var rows []map[string]interface{}
-			Expect(json.Unmarshal(w.Body.Bytes(), &rows)).To(Succeed())
-			Expect(rows).To(HaveLen(1))
-			Expect(rows[0]["id"]).To(Equal(sess.ID))
-			Expect(rows[0]).To(HaveKey("isStreaming"))
-			Expect(rows[0]["isStreaming"]).To(BeTrue(),
-				"session list must expose isStreaming: true when the broker has an active publish for the session")
-
-			// Clean up: close the channel to end the publish goroutine.
-			close(chunks)
+				getResp, getErr := http.Get(localHTTP.URL + "/api/v1/sessions") //nolint:noctx
+				if getErr != nil {
+					return false
+				}
+				defer getResp.Body.Close()
+				if getResp.StatusCode != http.StatusOK {
+					return false
+				}
+				raw, _ := io.ReadAll(getResp.Body)
+				var rows []map[string]interface{}
+				if err := json.Unmarshal(raw, &rows); err != nil {
+					return false
+				}
+				for _, row := range rows {
+					if row["id"] == sess.ID {
+						b, _ := row["isStreaming"].(bool)
+						return b
+					}
+				}
+				return false
+			}, "2s", "50ms").Should(BeTrue(),
+				"session list must expose isStreaming: true while the Turn registry has a Running entry for the session")
 		})
 	})
 })
@@ -3869,28 +1738,25 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 	// the snapshot returns immediately to the client. The previous contract
 	// — drain chunks synchronously so the assistant reply lands BEFORE the
 	// HTTP response is written — was retired by that commit: long replies
-	// blocked the HTTP response for minutes while the engine ran the full
-	// turn, defeating the purpose of having an SSE side-channel.
+	// blocked the HTTP response for minutes.
 	//
-	// The new contract is two-part:
+	// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+	// (May 2026)" retired the SSE side-channel that previously surfaced
+	// the assistant reply. The surviving contract is:
 	//   (a) The user message MUST be appended synchronously and visible in
 	//       the POST response snapshot, so the frontend can render the user
 	//       bubble immediately without polling.
-	//   (b) The assistant reply arrives via the SSE stream side-channel
-	//       (not the snapshot). The full-round-trip "streams all chunks to
-	//       the SSE subscriber and persists the assistant reply before
-	//       returning" spec below pins (b).
-	assertUserMessageInResponse := func(withBroker bool) {
+	//   (b) The POST response also carries `turn_id` so the frontend can
+	//       long-poll GET /api/v1/sessions/{id}/turns/{turn_id} for the
+	//       assistant reply. The "Turn-based poll endpoints" Describe pins
+	//       (b) including the §AC#13 and §AC#11 SLOs.
+	It("includes the user message in the POST response snapshot synchronously", func() {
 		recorder := httptest.NewRecorder()
 		streamer := &mockStreamer{chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
 		mgr := session.NewManager(streamer)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
-		opts := []api.ServerOption{api.WithSessionManager(mgr)}
-		if withBroker {
-			opts = append(opts, api.WithSessionBroker(api.NewSessionBroker()))
-		}
-		srv := api.NewServer(streamer, registry, disc, nil, opts...)
+		srv := api.NewServer(streamer, registry, disc, nil, api.WithSessionManager(mgr))
 
 		sess, err := mgr.CreateSession("agent-x")
 		Expect(err).NotTo(HaveOccurred())
@@ -3900,16 +1766,22 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 		srv.Handler().ServeHTTP(recorder, req)
 		Expect(recorder.Code).To(Equal(http.StatusOK))
 
+		// Phase 4 POST response shape: {turn_id, snapshot}. The snapshot
+		// carries messageCount + the user message; turn_id is the
+		// long-poll handle for the assistant reply.
 		var out struct {
-			MessageCount int               `json:"messageCount"`
-			Messages     []session.Message `json:"messages"`
+			TurnID   string `json:"turn_id"`
+			Snapshot struct {
+				MessageCount int               `json:"messageCount"`
+				Messages     []session.Message `json:"messages"`
+			} `json:"snapshot"`
 		}
 		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
-		Expect(out.MessageCount).To(BeNumerically(">=", 1),
+		Expect(out.Snapshot.MessageCount).To(BeNumerically(">=", 1),
 			"response must include the user message synchronously so the frontend renders the user bubble without polling")
 
 		var userContent string
-		for _, m := range out.Messages {
+		for _, m := range out.Snapshot.Messages {
 			if m.Role == "user" {
 				userContent = m.Content
 				break
@@ -3917,138 +1789,8 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 		}
 		Expect(userContent).To(Equal("hello"),
 			"user message must be appended to the session before the HTTP response is written")
-	}
-
-	It("includes the user message when no broker is configured", func() {
-		assertUserMessageInResponse(false)
 	})
 
-	It("includes the user message when a broker is configured", func() {
-		assertUserMessageInResponse(true)
-	})
-
-	It("streams all chunks to the SSE subscriber and persists the assistant reply before returning", func() {
-		// Full round-trip: POST /messages → broker publishes → SSE client
-		// receives chunks → GET /messages confirms persistence.
-		//
-		// This exercises the three behaviours added by the May 2026 fixes:
-		//   1. The handler streams every chunk to the live SSE subscriber.
-		//   2. AccumulateStream persists the assistant reply before returning.
-		//   3. GET /messages reflects the completed reply immediately after
-		//      the POST response is received — no polling required.
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{
-			{Content: "Hello"},
-			{Content: " there!"},
-			{Done: true},
-		}}
-		broker := api.NewSessionBroker()
-		mgr := session.NewManager(streamer)
-		registry := agent.NewRegistry()
-		disc := discovery.NewAgentDiscovery(nil)
-		srv := api.NewServer(
-			streamer, registry, disc, nil,
-			api.WithSessionManager(mgr),
-			api.WithSessionBroker(broker),
-		)
-		httpSrv := httptest.NewServer(srv.Handler())
-		defer httpSrv.Close()
-
-		sess, err := mgr.CreateSession("agent-x")
-		Expect(err).NotTo(HaveOccurred())
-
-		// Step 1: subscribe to the SSE stream endpoint before POSTing so
-		// broker.Publish finds a live subscriber to forward chunks to.
-		streamCtx, cancelStream := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancelStream()
-
-		streamURL := httpSrv.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet, streamURL, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		streamRespCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(streamReq)
-			if doErr == nil {
-				streamRespCh <- resp
-			}
-		}()
-
-		// Give the SSE subscriber time to register before we trigger the POST.
-		time.Sleep(50 * time.Millisecond)
-
-		// Step 2: POST the message. The handler runs broker.Publish synchronously
-		// inside handleSessionMessage, blocking until AccumulateStream closes the
-		// channel (i.e., until all chunks are drained and the reply is persisted).
-		postURL := httpSrv.URL + "/api/v1/sessions/" + sess.ID + "/messages"
-		postDone := make(chan struct{})
-		go func() {
-			defer close(postDone)
-			postResp, postErr := http.Post(postURL, "application/json", strings.NewReader(`{"content":"hello"}`)) //nolint:noctx
-			if postErr == nil {
-				postResp.Body.Close()
-			}
-		}()
-
-		// Step 3: collect SSE events from the stream connection.
-		var streamResp *http.Response
-		Eventually(streamRespCh, 3*time.Second).Should(Receive(&streamResp))
-		defer streamResp.Body.Close()
-
-		sseEventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(streamResp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "data: ") {
-						evts = append(evts, strings.TrimPrefix(line, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			sseEventsCh <- evts
-		}()
-
-		var sseEvts []string
-		Eventually(sseEventsCh, 4*time.Second).Should(Receive(&sseEvts))
-
-		// Step 4: assert SSE content chunks and [DONE] arrived.
-		Expect(sseEvts).To(ContainElement(ContainSubstring("Hello")),
-			"first content chunk must appear in the SSE stream")
-		Expect(sseEvts).To(ContainElement(ContainSubstring("there!")),
-			"second content chunk must appear in the SSE stream")
-		Expect(sseEvts).To(ContainElement("[DONE]"),
-			"stream must terminate with [DONE]")
-
-		// Wait for the POST goroutine to finish so the reply is persisted.
-		Eventually(postDone, 3*time.Second).Should(BeClosed())
-
-		// Step 5: GET /messages and assert the assistant reply is persisted.
-		getResp, err := http.Get(httpSrv.URL + "/api/v1/sessions/" + sess.ID + "/messages") //nolint:noctx
-		Expect(err).NotTo(HaveOccurred())
-		defer getResp.Body.Close()
-		Expect(getResp.StatusCode).To(Equal(http.StatusOK))
-
-		var messages []session.Message
-		Expect(json.NewDecoder(getResp.Body).Decode(&messages)).To(Succeed())
-
-		var assistantContent string
-		for _, m := range messages {
-			if m.Role == "assistant" {
-				assistantContent = m.Content
-				break
-			}
-		}
-		Expect(assistantContent).To(Equal("Hello there!"),
-			"assistant reply must be persisted in session.Messages before GET /messages is served")
-	})
 })
 
 var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
@@ -5473,170 +3215,6 @@ func (f *fakeContextUsageProvider) ContextUsageJSONForSession(providerID, modelI
 // completed turn (engine emission), and on agent/model switch
 // (PATCH response carries the figure).
 var _ = Describe("Phase 3 — context_usage cadence parity", func() {
-	Describe("GET /api/v1/sessions/{id}/stream emits a context_usage SSE event on connect", func() {
-		var (
-			broker     *api.SessionBroker
-			mgr        *session.Manager
-			srv        *api.Server
-			httpServer *httptest.Server
-			usage      *fakeContextUsageProvider
-		)
-
-		BeforeEach(func() {
-			broker = api.NewSessionBroker()
-			mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
-			usage = &fakeContextUsageProvider{
-				hasUsage: true,
-				staticPayload: `{"input_tokens":1234,"output_reserve":4096,"limit":100000,` +
-					`"percentage":1,"provider":"zai","model":"glm-4.6"}`,
-			}
-			registry := agent.NewRegistry()
-			disc := discovery.NewAgentDiscovery(nil)
-			srv = api.NewServer(
-				&mockStreamer{chunks: []provider.StreamChunk{}},
-				registry,
-				disc,
-				nil,
-				api.WithSessionManager(mgr),
-				api.WithSessionBroker(broker),
-				api.WithContextUsageProvider(usage),
-			)
-			httpServer = httptest.NewServer(srv.Handler())
-		})
-
-		AfterEach(func() {
-			httpServer.Close()
-		})
-
-		It("writes a typed context_usage SSE event before any broker chunk on session-load", func() {
-			// Session with no live publisher — the SSE handler still
-			// emits a context_usage event upfront so the chip
-			// hydrates the moment the user opens the session,
-			// matching the TUI's StatusBar which reads
-			// LastContextResult on every redraw.
-			sessID := "phase3-session-load"
-			mgr.RestoreSessions([]*session.Session{
-				{
-					ID:                sessID,
-					AgentID:           "test-agent",
-					CurrentProviderID: "zai",
-					CurrentModelID:    "glm-4.6",
-					Messages: []session.Message{
-						{ID: "m1", Role: "assistant", Content: "previous reply"},
-					},
-				},
-			})
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			url := httpServer.URL + "/api/v1/sessions/" + sessID + "/stream"
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-			Expect(err).NotTo(HaveOccurred())
-
-			resp, err := http.DefaultClient.Do(req)
-			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
-
-			eventsCh := make(chan []string, 1)
-			go func() {
-				reader := bufio.NewReader(resp.Body)
-				var evts []string
-				for {
-					line, readErr := reader.ReadString('\n')
-					if line != "" {
-						trimmed := strings.TrimSpace(line)
-						if strings.HasPrefix(trimmed, "data: ") {
-							evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-						}
-						if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-							break
-						}
-					}
-					if readErr != nil {
-						break
-					}
-				}
-				eventsCh <- evts
-			}()
-
-			var evts []string
-			Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-			Expect(evts).NotTo(BeEmpty(), "SSE handler must emit at least one event on session-load")
-			Expect(evts).To(ContainElement(ContainSubstring(`"type":"context_usage"`)),
-				"SSE handler must emit a context_usage event on connect so the chip hydrates immediately")
-			Expect(evts).To(ContainElement(ContainSubstring(`"limit":100000`)),
-				"context_usage payload must round-trip onto the wire")
-
-			Expect(usage.calls).To(BeNumerically(">=", 1),
-				"the SSE handler must call the context-usage provider with the session's current state")
-			Expect(usage.lastProvider).To(Equal("zai"))
-			Expect(usage.lastModel).To(Equal("glm-4.6"))
-			Expect(usage.lastMsgCount).To(BeNumerically(">=", 1),
-				"the helper must receive the session's current messages so the input-token estimate reflects accumulated history")
-		})
-
-		It("falls back gracefully when the context-usage provider has nothing to compute", func() {
-			usage.hasUsage = false
-
-			// Sealed session: last message is non-user. The handler
-			// uses SubscribeIfPublishing which fast-paths to [DONE]
-			// when no broker run is in flight, giving the test a
-			// deterministic terminator without a publisher.
-			sessID := "phase3-no-usage"
-			mgr.RestoreSessions([]*session.Session{
-				{
-					ID:      sessID,
-					AgentID: "test-agent",
-					Messages: []session.Message{
-						{ID: "m1", Role: "assistant", Content: "previous reply"},
-					},
-				},
-			})
-
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-
-			url := httpServer.URL + "/api/v1/sessions/" + sessID + "/stream"
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-			Expect(err).NotTo(HaveOccurred())
-
-			resp, err := http.DefaultClient.Do(req)
-			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
-
-			eventsCh := make(chan []string, 1)
-			go func() {
-				reader := bufio.NewReader(resp.Body)
-				var evts []string
-				for {
-					line, readErr := reader.ReadString('\n')
-					if line != "" {
-						trimmed := strings.TrimSpace(line)
-						if strings.HasPrefix(trimmed, "data: ") {
-							evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-						}
-						if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-							break
-						}
-					}
-					if readErr != nil {
-						break
-					}
-				}
-				eventsCh <- evts
-			}()
-
-			var evts []string
-			Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-			for _, e := range evts {
-				Expect(e).NotTo(ContainSubstring(`"type":"context_usage"`),
-					"no usage event when provider can't compute — chip stays on prior state")
-			}
-		})
-	})
 
 	Describe("PATCH /api/v1/sessions/{id}/agent includes contextUsage in response", func() {
 		var (
@@ -5754,638 +3332,6 @@ var _ = Describe("Phase 3 — context_usage cadence parity", func() {
 // untyped JSON bodies, the SSE writer injects the
 // `"type":"context_compacted"` discriminant, and the frontend's
 // discriminated union routes on that field.
-var _ = Describe("Slice 6a — SSE bridge for EventContextCompacted", func() {
-	var (
-		broker     *api.SessionBroker
-		mgr        *session.Manager
-		bus        *eventbus.EventBus
-		srv        *api.Server
-		httpServer *httptest.Server
-	)
-
-	BeforeEach(func() {
-		broker = api.NewSessionBroker()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
-		bus = eventbus.NewEventBus()
-		registry := agent.NewRegistry()
-		disc := discovery.NewAgentDiscovery(nil)
-		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
-			registry,
-			disc,
-			nil,
-			api.WithSessionManager(mgr),
-			api.WithSessionBroker(broker),
-			api.WithEventBus(bus),
-		)
-		httpServer = httptest.NewServer(srv.Handler())
-	})
-
-	AfterEach(func() {
-		httpServer.Close()
-	})
-
-	It("forwards EventContextCompacted onto the SSE wire as a typed context_compacted event", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		// Give the SSE handler a chance to subscribe to the bus
-		// before we publish the event. Without this race window
-		// the publish can land before any subscriber is wired and
-		// the event is silently dropped.
-		time.Sleep(50 * time.Millisecond)
-
-		bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
-			SessionID:      sess.ID,
-			AgentID:        "Tech-Lead",
-			OriginalTokens: 50_000,
-			SummaryTokens:  5_000,
-			LatencyMS:      420,
-		}))
-
-		// Close the broker channel to terminate the SSE stream after
-		// the bus event has had a chance to flush. A no-content
-		// stream chunk pinned by Done lets the existing dispatcher
-		// emit [DONE] without polluting the wire with content.
-		source := make(chan provider.StreamChunk, 1)
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "data: ") {
-						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"context_compacted"`)),
-			"SSE handler must emit a context_compacted event when EventContextCompacted fires for this session")
-		Expect(evts).To(ContainElement(ContainSubstring(`"original_tokens":50000`)),
-			"original_tokens must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"summary_tokens":5000`)),
-			"summary_tokens must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"latency_ms":420`)),
-			"latency_ms must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"agent_id":"Tech-Lead"`)),
-			"agent_id must round-trip onto the wire so the chip can attribute the compaction")
-		Expect(evts).To(ContainElement(ContainSubstring(`"session_id":"`+sess.ID+`"`)),
-			"session_id must round-trip onto the wire so the frontend can correlate state")
-
-		// MUST NOT leak the JSON payload as a plain content chunk —
-		// otherwise the assistant bubble would render the raw JSON.
-		for _, e := range evts {
-			if strings.Contains(e, `"original_tokens":50000`) && !strings.Contains(e, `"type":"context_compacted"`) {
-				Fail("context_compacted payload leaked into a plain content chunk: " + e)
-			}
-		}
-	})
-
-	It("does not forward EventContextCompacted from a different session", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		// Different session id — MUST NOT reach this subscriber.
-		bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
-			SessionID:      "sess-other",
-			AgentID:        "Tech-Lead",
-			OriginalTokens: 50_000,
-			SummaryTokens:  5_000,
-			LatencyMS:      420,
-		}))
-
-		// Terminate the stream.
-		source := make(chan provider.StreamChunk, 1)
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "data: ") {
-						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		for _, e := range evts {
-			Expect(e).NotTo(ContainSubstring(`"type":"context_compacted"`),
-				"compaction events from a different session must not reach this SSE subscriber")
-		}
-	})
-
-	// M1 — SSE [DONE] race (May 2026 bug-hunt). The SSE main loop
-	// multiplexes liveCh (provider chunks) with busCh (session-scoped
-	// bus events). When a bus event sits in busCh AND chunk.Done lands
-	// on liveCh in the same iteration, Go's select picks one branch
-	// non-deterministically. Pre-fix the Done branch wrote [DONE] and
-	// returned immediately — discarding the pending bus event. Post-fix
-	// the terminal branches (Done, channel-close, critical-error) MUST
-	// drain busCh of every already-enqueued event onto the wire BEFORE
-	// emitting [DONE], so a heartbeat / context_compacted / gate_failed
-	// published moments before Done is never silently dropped.
-	//
-	// Repro: publish the bus event, wait for the bridge handler to
-	// enqueue it on busCh, then drive Done from the same goroutine.
-	// Both branches are now ready at the same loop iteration; the spec
-	// asserts the bus event reaches the wire BEFORE [DONE].
-	It("drains pending bus events before emitting [DONE] when chunk.Done arrives concurrently (M1)", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		// Wait for the SSE handler to subscribe to the bus.
-		time.Sleep(50 * time.Millisecond)
-
-		// Force the race deterministically by interleaving the bus
-		// publishes WITHIN the broker.Publish lifecycle, using a
-		// goroutine that holds the producer channel open. Sequence:
-		//   1. Launch broker.Publish in a goroutine driven by a source
-		//      channel we control. The SSE handler subscribes to liveCh
-		//      and parks in its select.
-		//   2. Publish N bus events synchronously — bridge handlers
-		//      enqueue each onto busCh. busCh now holds N pending
-		//      events.
-		//   3. Push Done into source and close it. broker.Publish fans
-		//      Done into liveCh and runs the terminal close.
-		// At this point, on the SSE handler's next select iteration,
-		// BOTH liveCh (Done) and busCh (N events) are ready —  this
-		// is the M1 race window. Pre-fix the Done branch returned
-		// without draining busCh, dropping every queued bus event.
-		source := make(chan provider.StreamChunk, 1)
-		publishDone := make(chan struct{})
-		go func() {
-			broker.Publish(sess.ID, source)
-			close(publishDone)
-		}()
-		// Wait briefly for broker.Publish to register on liveCh.
-		time.Sleep(10 * time.Millisecond)
-		for i := 0; i < 8; i++ {
-			bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
-				SessionID:      sess.ID,
-				AgentID:        "Tech-Lead",
-				OriginalTokens: 12345 + i,
-				SummaryTokens:  6789,
-				LatencyMS:      111,
-			}))
-		}
-		// NOW push Done so liveCh AND busCh are both ready in the same
-		// select iteration.
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		<-publishDone
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		// Read events to EOF (not just up to first [DONE]) so the
-		// assertions can see the FULL wire sequence — pre-fix the bus
-		// events were silently dropped, post-fix all appear BEFORE [DONE].
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "data: ") {
-						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		// Count compacted events and locate [DONE]. ALL 8 published
-		// events MUST land BEFORE [DONE] — pre-fix any that lost the
-		// select race to Done were dropped, so the count would be < 8
-		// and any that did land would interleave non-deterministically.
-		doneIdx := -1
-		compactedCount := 0
-		lastCompactedIdx := -1
-		for i, e := range evts {
-			if e == "[DONE]" {
-				doneIdx = i
-			}
-			if strings.Contains(e, `"type":"context_compacted"`) {
-				compactedCount++
-				lastCompactedIdx = i
-			}
-		}
-		Expect(doneIdx).To(BeNumerically(">=", 0), "the SSE stream must terminate with [DONE]")
-		Expect(compactedCount).To(Equal(8),
-			"all 8 bus events enqueued before chunk.Done must reach the SSE wire — pre-fix the Done branch dropped any that lost the select race")
-		Expect(lastCompactedIdx).To(BeNumerically("<", doneIdx),
-			"every pending bus event MUST be flushed BEFORE [DONE] so the client receives it; [DONE] is the terminal frame and any event written after it is unreachable")
-	})
-
-	// M1 — channel-close terminal branch (defensive twin of the Done
-	// branch). When the broker closes liveCh without a Done:true chunk
-	// (recovery / abnormal-exit path) and a bus event is queued, the
-	// same drain-before-terminate invariant applies. Pre-fix the close
-	// branch wrote [DONE] and returned immediately; post-fix it drains
-	// busCh first.
-	It("drains pending bus events before emitting [DONE] when liveCh closes without a Done chunk (M1)", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		// Force the race deterministically. Sequence:
-		//   1. broker.Publish runs synchronously over an empty closed
-		//      source channel; the terminal close fires and closes the
-		//      SSE handler's liveCh subscriber channel. liveCh's `ok`
-		//      receive in the SSE select now returns false on next
-		//      iteration — the close-terminal branch is armed.
-		//   2. We immediately publish a burst of bus events. Bridge
-		//      handlers enqueue them on busCh.
-		// On the next select iteration BOTH busCh and (closed)liveCh are
-		// ready; pre-fix the close-branch returned without draining
-		// busCh, dropping every queued bus event.
-		source := make(chan provider.StreamChunk)
-		close(source)
-		broker.Publish(sess.ID, source)
-		for i := 0; i < 8; i++ {
-			bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
-				SessionID:      sess.ID,
-				AgentID:        "Tech-Lead",
-				OriginalTokens: 22222 + i,
-				SummaryTokens:  3333,
-				LatencyMS:      77,
-			}))
-		}
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "data: ") {
-						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		doneIdx := -1
-		compactedCount := 0
-		lastCompactedIdx := -1
-		for i, e := range evts {
-			if e == "[DONE]" {
-				doneIdx = i
-			}
-			if strings.Contains(e, `"type":"context_compacted"`) {
-				compactedCount++
-				lastCompactedIdx = i
-			}
-		}
-		Expect(doneIdx).To(BeNumerically(">=", 0))
-		Expect(compactedCount).To(Equal(8),
-			"all 8 bus events enqueued before liveCh close must reach the SSE wire — the close branch must drain busCh before [DONE]")
-		Expect(lastCompactedIdx).To(BeNumerically("<", doneIdx),
-			"every pending bus event MUST be flushed BEFORE [DONE] on the channel-close terminal branch too")
-	})
-})
-
-// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
-// the engine publishes gate.failed when runSwarmGates /
-// dispatchMemberGates halts. The api-side bridge in
-// internal/api/event_bridge.go routes the bus payload onto the
-// SSE wire via a typed writer that injects the canonical
-// `"type":"gate_failed"` discriminant. The Vue surface consumes
-// this on a discriminated-union branch and renders a persistent
-// banner (companion plan: Vue surface in C4).
-var _ = Describe("Gate Bus Bridge — SSE bridge for EventGateFailed", func() {
-	var (
-		broker     *api.SessionBroker
-		mgr        *session.Manager
-		bus        *eventbus.EventBus
-		srv        *api.Server
-		httpServer *httptest.Server
-	)
-
-	BeforeEach(func() {
-		broker = api.NewSessionBroker()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
-		bus = eventbus.NewEventBus()
-		registry := agent.NewRegistry()
-		disc := discovery.NewAgentDiscovery(nil)
-		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
-			registry,
-			disc,
-			nil,
-			api.WithSessionManager(mgr),
-			api.WithSessionBroker(broker),
-			api.WithEventBus(bus),
-		)
-		httpServer = httptest.NewServer(srv.Handler())
-	})
-
-	AfterEach(func() {
-		httpServer.Close()
-	})
-
-	It("forwards EventGateFailed onto the SSE wire as a typed gate_failed event", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		// Race window: give the SSE handler a chance to subscribe to
-		// the bus before publishing. Same pattern as the slice-6a SSE
-		// bridge test for context.compacted above.
-		time.Sleep(50 * time.Millisecond)
-
-		bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
-			SwarmID:        "a-team",
-			SessionID:      sess.ID,
-			Lifecycle:      "post-member",
-			MemberID:       "researcher",
-			GateName:       "post-member-researcher-relevance-gate",
-			GateKind:       "ext:relevance-gate",
-			Reason:         "off-topic",
-			Cause:          "score 0.31 < threshold 0.5",
-			CoordStoreKeys: []string{"chain/researcher/output", "chain/topic/spec"},
-		}))
-
-		// Terminate the stream so the SSE response closes cleanly.
-		source := make(chan provider.StreamChunk, 1)
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "data: ") {
-						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		Expect(evts).To(ContainElement(ContainSubstring(`"type":"gate_failed"`)),
-			"SSE handler must emit a gate_failed event when EventGateFailed fires for this session")
-		Expect(evts).To(ContainElement(ContainSubstring(`"swarm_id":"a-team"`)),
-			"swarm_id must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"lifecycle":"post-member"`)),
-			"lifecycle must round-trip onto the wire so the banner can attribute the halt")
-		Expect(evts).To(ContainElement(ContainSubstring(`"member_id":"researcher"`)),
-			"member_id must round-trip onto the wire")
-		Expect(evts).To(ContainElement(ContainSubstring(`"gate_name":"post-member-researcher-relevance-gate"`)),
-			"gate_name must round-trip onto the wire so the banner title can name the failing gate")
-		Expect(evts).To(ContainElement(ContainSubstring(`"gate_kind":"ext:relevance-gate"`)))
-		Expect(evts).To(ContainElement(ContainSubstring(`"reason":"off-topic"`)))
-		// Go's json.Marshal escapes `<` `>` `&` to their unicode escape forms
-		// by default for HTML-safety; the wire carries `<` rather than
-		// the raw `<`. The Vue parser unescapes transparently because
-		// JSON.parse does the right thing.
-		Expect(evts).To(ContainElement(ContainSubstring("\"cause\":\"score 0.31 \\u003c threshold 0.5\"")))
-		Expect(evts).To(ContainElement(ContainSubstring(`"coord_store_keys":["chain/researcher/output","chain/topic/spec"]`)))
-
-		// Defence: gate_failed payload must never leak as a plain
-		// content chunk — otherwise the assistant bubble would render
-		// the raw JSON in the chat surface.
-		for _, e := range evts {
-			if strings.Contains(e, `"swarm_id":"a-team"`) && !strings.Contains(e, `"type":"gate_failed"`) {
-				Fail("gate_failed payload leaked into a plain content chunk: " + e)
-			}
-		}
-	})
-
-	It("does NOT forward EventGateEvaluating onto the SSE wire (pass-event policy: failures only)", func() {
-		sess, err := mgr.CreateSession("test-agent")
-		Expect(err).NotTo(HaveOccurred())
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		url := httpServer.URL + "/api/v1/sessions/" + sess.ID + "/stream"
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
-		Expect(err).NotTo(HaveOccurred())
-
-		respCh := make(chan *http.Response, 1)
-		go func() {
-			resp, doErr := http.DefaultClient.Do(req)
-			if doErr == nil {
-				respCh <- resp
-			}
-		}()
-
-		time.Sleep(50 * time.Millisecond)
-
-		bus.Publish(events.EventGateEvaluating, events.NewGateEvaluatingEvent(events.GateEventData{
-			SwarmID:   "a-team",
-			SessionID: sess.ID,
-			Lifecycle: "pre",
-			GateCount: 3,
-		}))
-
-		source := make(chan provider.StreamChunk, 1)
-		source <- provider.StreamChunk{Done: true}
-		close(source)
-		go broker.Publish(sess.ID, source)
-
-		var resp *http.Response
-		Eventually(respCh, 3*time.Second).Should(Receive(&resp))
-		defer resp.Body.Close()
-
-		eventsCh := make(chan []string, 1)
-		go func() {
-			reader := bufio.NewReader(resp.Body)
-			var evts []string
-			for {
-				line, readErr := reader.ReadString('\n')
-				if line != "" {
-					trimmed := strings.TrimSpace(line)
-					if strings.HasPrefix(trimmed, "data: ") {
-						evts = append(evts, strings.TrimPrefix(trimmed, "data: "))
-					}
-					if len(evts) > 0 && evts[len(evts)-1] == "[DONE]" {
-						break
-					}
-				}
-				if readErr != nil {
-					break
-				}
-			}
-			eventsCh <- evts
-		}()
-
-		var evts []string
-		Eventually(eventsCh, 4*time.Second).Should(Receive(&evts))
-
-		for _, e := range evts {
-			Expect(e).NotTo(ContainSubstring(`"type":"gate_evaluating"`),
-				"web SSE wire must not carry gate_evaluating events; pass-event policy is gate_failed-only")
-			Expect(e).NotTo(ContainSubstring(`"type":"gate_passed"`),
-				"web SSE wire must not carry gate_passed events; pass-event policy is gate_failed-only")
-		}
-	})
-})
-
-// POST /api/v1/sessions/{id}/attachments — plan "Chat Attachments
-// Backend (May 2026)" §6 task-03. Extends the existing server_test.go
-// seam per memory feedback_extend_existing_specs.
 var _ = Describe("POST /api/v1/sessions/{id}/attachments", func() {
 	var (
 		mgr *session.Manager
@@ -7006,100 +3952,6 @@ var _ = Describe("Content-Security-Policy header (task-09)", func() {
 	})
 })
 
-// Dispatcher fixture discipline — banned-fixture string-scan pin
-// closing out Phase 5 of "Dispatcher Service Unification (May 2026)".
-//
-// The async-POST / refresh-free-flow / WS-outlives-request-context
-// regression specs are load-bearing on dripStreamer because mockStreamer
-// pre-fills AND closes its chunks channel before Stream returns. A pre-
-// filled-and-closed channel cannot reproduce any of:
-//
-//   - the post-handler ordering required by "Vue UI multi-turn
-//     refresh-free flow" (POST returns BEFORE content reaches the SSE
-//     subscriber);
-//   - the cross-POST handshake exercised by "Swarm lifecycle handshake
-//     across consecutive POSTs" (lives in internal/dispatch/
-//     dispatcher_test.go; structurally fenced from mockStreamer because
-//     that package cannot import internal/api's fixture);
-//   - the r.Context() decoupling pinned by "WS streamer outlives request
-//     context" (mockStreamer drains BEFORE the WS handler returns, so
-//     ctx cancellation propagation is invisible to it).
-//
-// This pin reads each api-package test file as a string, extracts the
-// body of the two named Describe blocks that live in this package, and
-// asserts neither body contains the literal `mockStreamer{` constructor.
-// Pre-existing mockStreamer{ sites in unrelated specs (health, metrics,
-// JSON contract, sibling-race detector tests) remain forward-only legal —
-// the discipline is scoped to the three regression Describes that
-// motivated the dripStreamer fixture.
-var _ = Describe("Dispatcher fixture discipline", func() {
-	It("bans mockStreamer in async-POST regression specs", func() {
-		// Resolve the api/ test directory via runtime.Caller so this
-		// works regardless of `go test`'s cwd. Same shape as
-		// readHandlerBodyForTest in websocket_test.go.
-		_, thisFile, _, ok := runtime.Caller(0)
-		Expect(ok).To(BeTrue())
-		apiDir := filepath.Dir(thisFile)
-
-		serverTestPath := filepath.Join(apiDir, "server_test.go")
-		websocketTestPath := filepath.Join(apiDir, "websocket_test.go")
-
-		serverSrc, err := os.ReadFile(serverTestPath)
-		Expect(err).NotTo(HaveOccurred())
-		websocketSrc, err := os.ReadFile(websocketTestPath)
-		Expect(err).NotTo(HaveOccurred())
-
-		// extractDescribeBody returns the body of a top-level
-		// `Describe("<name>"...)` block by scanning for the named
-		// header and brace-balancing the func body until it closes.
-		// Forward-only: pre-existing mockStreamer{ sites OUTSIDE the
-		// named blocks stay legal; only the three named regression
-		// Describes are policed here.
-		extractDescribeBody := func(src, name string) string {
-			needle := `Describe("` + name + `"`
-			start := strings.Index(src, needle)
-			Expect(start).To(BeNumerically(">=", 0),
-				"named Describe %q must exist; rename detection requires updating this discipline pin", name)
-			open := strings.Index(src[start:], "{")
-			Expect(open).To(BeNumerically(">=", 0),
-				"opening brace for Describe %q not found", name)
-			open += start
-			depth := 1
-			i := open + 1
-			for i < len(src) && depth > 0 {
-				switch src[i] {
-				case '{':
-					depth++
-				case '}':
-					depth--
-				}
-				i++
-			}
-			Expect(depth).To(Equal(0),
-				"Describe %q has unbalanced braces; cannot extract body", name)
-			return src[open+1 : i-1]
-		}
-
-		vueBody := extractDescribeBody(string(serverSrc), "Vue UI multi-turn refresh-free flow")
-		wsBody := extractDescribeBody(string(websocketSrc), "WS streamer outlives request context")
-
-		Expect(vueBody).NotTo(ContainSubstring("mockStreamer{"),
-			"the 'Vue UI multi-turn refresh-free flow' Describe must use dripStreamer — "+
-				"mockStreamer pre-fills and closes its chunks channel before Stream returns, "+
-				"so it cannot reproduce the async-POST snapshot-before-content ordering")
-		Expect(wsBody).NotTo(ContainSubstring("mockStreamer{"),
-			"the 'WS streamer outlives request context' Describe must use dripStreamer — "+
-				"mockStreamer drains before the WS handler returns, hiding the "+
-				"r.Context() decoupling closure (S1 in the v6 codebase audit)")
-
-		// The third named Describe — "Swarm lifecycle handshake across
-		// consecutive POSTs" — lives in internal/dispatch/dispatcher_test.go.
-		// That package cannot import internal/api's mockStreamer fixture
-		// (the type is unexported to this package), so the discipline is
-		// structurally fenced there; this pin covers the two api-package
-		// blocks where the fixture IS in scope.
-	})
-})
 
 // Phase 2 RED gate per "Turn-Based Post-Then-Poll Architecture
 // (May 2026)". These specs pin the HTTP surface that exposes the Turn
@@ -7143,7 +3995,6 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 			discovery.NewAgentDiscovery(nil),
 			nil,
 			api.WithSessionManager(mgr),
-			api.WithSessionBroker(api.NewSessionBroker()),
 		)
 		httpSrv = httptest.NewServer(srv.Handler())
 	}
@@ -7447,6 +4298,168 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 		Expect(st2).To(Equal(http.StatusConflict),
 			"a second POST while turn 1 is StatusRunning must return HTTP 409 Conflict — dispatch.ErrTurnConflict must map to http.StatusConflict in handleSessionMessage. Got body: %s", string(raw2))
 	})
+
+	// §AC#13 absolute (active-send SLO). Phase 4 / Phase B re-verification
+	// note: the original plan-text SLO was a Playwright spec asserting
+	// "time-from-submit to first SSE chunk <500ms". Playwright runs against
+	// a real backend with real provider TTFB (5-30s); the SLO is not
+	// measurable at that surface. The bottleneck on the poll path is the
+	// backend's chunk-to-broadcast latency, which dripStreamer reproduces
+	// faithfully (in-process Go-only — the Vue commit phase is sub-16ms
+	// and not on this critical path). Promoting the SLO to Go-level keeps
+	// the mechanical guarantee while making the measurement deterministic
+	// in CI. The §AC#13 budget: <600ms p95 from POST 200 to first
+	// non-empty GET /turns/{id} messages[] payload, measured across 50
+	// trials.
+	//
+	// Commit 2 of "Turn-Based Post-Then-Poll Architecture (May 2026)" —
+	// once SSE / WS / broker are retired, long-poll is the sole live
+	// channel. This spec pins the perceived-cadence SLO at the seam that
+	// matters: the time between POST returning and the FE having a
+	// renderable chunk via the poll path.
+	It("§AC#13 — active-send first-chunk SLO: <600ms p95 from POST→first non-empty GET poll across 50 trials", func() {
+		const trials = 50
+		samples := make([]time.Duration, 0, trials)
+		for i := 0; i < trials; i++ {
+			// Fresh fixture per trial — dripStreamer state is per-instance
+			// and a shared instance would emit each chunk only once across
+			// the whole loop. 30ms interval is the canonical broker-side
+			// "first chunk lands in ~30-130ms" shape from the production
+			// envelope; the SLO targets the broadcast-to-visible window,
+			// not the streamer's emit interval itself.
+			setup([]provider.StreamChunk{
+				{Content: "first"},
+				{Content: "second"},
+				{Done: true},
+			}, 30*time.Millisecond)
+
+			sess, err := mgr.CreateSession("default-assistant")
+			Expect(err).NotTo(HaveOccurred())
+
+			postStart := time.Now()
+			status, body, _ := postMessage(sess.ID, fmt.Sprintf("trial-%d", i))
+			Expect(status).To(Equal(http.StatusOK))
+			turnID, _ := body["turn_id"].(string)
+			Expect(turnID).NotTo(BeEmpty())
+
+			// Tight cadence GET loop so the measurement reflects "as fast
+			// as the FE could possibly observe a non-empty messages[]".
+			// 5ms is well under the 30ms drip interval so the timing
+			// resolution is dominated by the broadcast latency, not the
+			// poll cadence.
+			var firstChunkAt time.Time
+			Eventually(func() bool {
+				_, getBody, _ := getTurn(sess.ID, turnID)
+				msgs, _ := getBody["messages"].([]any)
+				if len(msgs) >= 1 {
+					firstChunkAt = time.Now()
+					return true
+				}
+				return false
+			}, "3s", "5ms").Should(BeTrue(),
+				"trial %d: poll path must surface a non-empty messages[] within 3s for a 30ms drip; otherwise the SLO measurement is meaningless", i)
+
+			samples = append(samples, firstChunkAt.Sub(postStart))
+
+			// Tear down the per-trial httptest.Server so the next trial's
+			// setup() builds a fresh server bound to a fresh mux. Without
+			// this each trial leaks a goroutine + listening socket.
+			httpSrv.Close()
+			httpSrv = nil
+		}
+
+		sort.Slice(samples, func(a, b int) bool { return samples[a] < samples[b] })
+		// p95 index: ceil(0.95 * N) - 1 on a sorted slice. For N=50:
+		// ceil(47.5) = 48, index 47 — the 48th-smallest sample.
+		p95 := samples[47]
+		// Surface the distribution for the post-task report. Logged via
+		// GinkgoWriter so it shows under `--v` without polluting normal
+		// runs.
+		GinkgoWriter.Printf("§AC#13 active-send first-chunk SLO: p50=%v p95=%v p100=%v across %d trials\n",
+			samples[trials/2], p95, samples[trials-1], trials)
+		Expect(p95).To(BeNumerically("<", 600*time.Millisecond),
+			"§AC#13 SLO: time from POST /messages 200 to first non-empty GET /turns/{id} messages[] must be <600ms at p95 across %d trials. Got p95=%v, p100=%v",
+			trials, p95, samples[trials-1])
+	})
+
+	// §AC#11 absolute (reattach SLO). The original plan-text SLO was a
+	// Playwright spec asserting "open SSE against an in-flight session
+	// → first chunk within 1.5s". Promoted to Go-level for the same
+	// reason as §AC#13 above. The reattach surface in the post-Commit-2
+	// world is: GET /turns/{id} against an in-flight Turn started ~500ms
+	// ago — the response MUST surface the accumulated messages[] within
+	// 1.5s p95 across 50 trials. This pins the refresh-mid-stream UX:
+	// a fresh page nav while a turn is running must render the partial
+	// reply within a perceptible window.
+	It("§AC#11 — reattach first-chunk SLO: <1.5s p95 from in-flight reattach GET to first non-empty messages[] across 50 trials", func() {
+		const trials = 50
+		samples := make([]time.Duration, 0, trials)
+		for i := 0; i < trials; i++ {
+			// Long enough turn that the reattach GET fires WHILE the turn
+			// is still Running. 200ms drip with 3 chunks = ~600ms total
+			// turn duration; the reattach lands at the ~500ms mark when
+			// at least one chunk has accumulated AND the turn is still
+			// Running. Done:true is intentionally last so terminal-state
+			// short-circuit on getTurnLongPoll is exercised only as a
+			// fallback.
+			setup([]provider.StreamChunk{
+				{Content: "alpha"},
+				{Content: "beta"},
+				{Content: "gamma"},
+				{Done: true},
+			}, 200*time.Millisecond)
+
+			sess, err := mgr.CreateSession("default-assistant")
+			Expect(err).NotTo(HaveOccurred())
+
+			_, body, _ := postMessage(sess.ID, fmt.Sprintf("trial-%d", i))
+			turnID, _ := body["turn_id"].(string)
+			Expect(turnID).NotTo(BeEmpty())
+
+			// Wait 500ms — this is the "user refreshed the page mid-stream"
+			// simulacrum. At ~500ms the dripStreamer has emitted ~2 chunks,
+			// the Turn is still Running, and a fresh GET represents the
+			// reattach surface.
+			time.Sleep(500 * time.Millisecond)
+
+			reattachStart := time.Now()
+			var firstReattachAt time.Time
+			Eventually(func() bool {
+				_, getBody, _ := getTurn(sess.ID, turnID)
+				msgs, _ := getBody["messages"].([]any)
+				if len(msgs) >= 1 {
+					firstReattachAt = time.Now()
+					return true
+				}
+				return false
+			}, "3s", "5ms").Should(BeTrue(),
+				"trial %d: reattach GET must surface a non-empty messages[] within 3s", i)
+
+			samples = append(samples, firstReattachAt.Sub(reattachStart))
+
+			// Wait for the turn to finish before closing — otherwise the
+			// closed httptest.Server pulls the rug out from under the
+			// in-flight Publish goroutine and produces spurious test-only
+			// teardown noise that doesn't affect production semantics but
+			// pollutes the run output.
+			Eventually(func() string {
+				_, b, _ := getTurn(sess.ID, turnID)
+				s, _ := b["status"].(string)
+				return s
+			}, "5s", "30ms").Should(Or(Equal("completed"), Equal("failed")))
+
+			httpSrv.Close()
+			httpSrv = nil
+		}
+
+		sort.Slice(samples, func(a, b int) bool { return samples[a] < samples[b] })
+		p95 := samples[47]
+		GinkgoWriter.Printf("§AC#11 reattach first-chunk SLO: p50=%v p95=%v p100=%v across %d trials\n",
+			samples[trials/2], p95, samples[trials-1], trials)
+		Expect(p95).To(BeNumerically("<", 1500*time.Millisecond),
+			"§AC#11 SLO: reattach GET against an in-flight turn started ~500ms ago must surface a non-empty messages[] within 1.5s at p95 across %d trials. Got p95=%v, p100=%v",
+			trials, p95, samples[trials-1])
+	})
 })
 
 // Phase-4-Commit-1 RED gate per "Turn-Based Post-Then-Poll Architecture
@@ -7485,7 +4498,6 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 			discovery.NewAgentDiscovery(nil),
 			nil,
 			api.WithSessionManager(mgr),
-			api.WithSessionBroker(api.NewSessionBroker()),
 			api.WithEventBus(bus),
 		)
 		httpSrv = httptest.NewServer(srv.Handler())
@@ -8142,7 +5154,6 @@ var _ = Describe("Phase-4-Commit-1b — long-poll Turn endpoint (wait=true)", fu
 			discovery.NewAgentDiscovery(nil),
 			nil,
 			api.WithSessionManager(mgr),
-			api.WithSessionBroker(api.NewSessionBroker()),
 		)
 		httpSrv = httptest.NewServer(srv.Handler())
 	}
@@ -8431,5 +5442,139 @@ var _ = Describe("Phase-4-Commit-1b — long-poll Turn endpoint (wait=true)", fu
 		// poll surface needs no-cache.)
 		Expect(resp.Header.Get("X-Accel-Buffering")).To(BeEmpty(),
 			"the legacy snapshot path must NOT set X-Accel-Buffering — that header is long-poll-only")
+	})
+})
+
+// Phase-4-Commit-2 negative-contract pin per "Turn-Based Post-Then-Poll
+// Architecture (May 2026)". The session-scoped SSE and WebSocket
+// surfaces are retired; long-poll on
+// GET /api/v1/sessions/{id}/turns/{turn_id} is the sole live channel.
+// This Describe pins that neither retired route can be matched by the
+// mux — any future reintroduction must remove this spec deliberately.
+//
+// We probe both "GET" requests (the original verbs on the deleted
+// routes) against a fresh server with a real session manager so the
+// 404 doesn't get masked by the 501 "session manager not configured"
+// branch — that branch was the previous handler's pre-flight and is
+// gone with the handler. With the mux not matching the path, net/http
+// falls through to the SPA index handler which 200s for "/" but
+// redirects unknown /api/v1/* paths via the SPA shell. We assert the
+// route is NOT one of the registered API endpoints (response is NOT
+// 200 with a JSON content-type) which proves the mux didn't register
+// it.
+var _ = Describe("Phase-4-Commit-2 — retired SSE / WebSocket routes return 404", func() {
+	var (
+		mgr     *session.Manager
+		srv     *api.Server
+		httpSrv *httptest.Server
+	)
+
+	BeforeEach(func() {
+		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+		reg := agent.NewRegistry()
+		reg.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
+		srv = api.NewServer(
+			&mockStreamer{chunks: []provider.StreamChunk{}},
+			reg,
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(mgr),
+		)
+		httpSrv = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		if httpSrv != nil {
+			httpSrv.Close()
+			httpSrv = nil
+		}
+	})
+
+	// Client that does not follow redirects — the SPA index handler
+	// 302s to /chat which would otherwise produce a redirect loop.
+	noRedirectClient := func() *http.Client {
+		return &http.Client{
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	}
+
+	It("GET /api/v1/sessions/{id}/stream is not registered on the mux", func() {
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+		req, _ := http.NewRequestWithContext(context.Background(),
+			http.MethodGet, httpSrv.URL+"/api/v1/sessions/"+sess.ID+"/stream", nil)
+		resp, err := noRedirectClient().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		// A retired API route must NOT serve a successful JSON
+		// response. The mux either returns 404 directly or falls
+		// through to the SPA-index handler which serves the HTML
+		// shell. Either way: NOT a JSON API response, and not the
+		// SSE wire (text/event-stream).
+		ct := resp.Header.Get("Content-Type")
+		Expect(ct).NotTo(ContainSubstring("application/json"),
+			"GET /api/v1/sessions/{id}/stream must be retired (not a registered JSON API endpoint). Got Content-Type=%q, status=%d", ct, resp.StatusCode)
+		Expect(ct).NotTo(ContainSubstring("text/event-stream"),
+			"GET /api/v1/sessions/{id}/stream must be retired (not an SSE endpoint). Got Content-Type=%q, status=%d", ct, resp.StatusCode)
+	})
+
+	It("DELETE /api/v1/sessions/{id}/stream is not registered on the mux", func() {
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+		req, _ := http.NewRequestWithContext(context.Background(),
+			http.MethodDelete, httpSrv.URL+"/api/v1/sessions/"+sess.ID+"/stream", nil)
+		resp, err := noRedirectClient().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		// The handleCancelStream handler is gone. The mux either 404s
+		// or matches the SPA-index handler (which would reject the
+		// non-GET method). Critical contract: the canonical 204
+		// "in-flight turn cancelled" response is no longer produced.
+		Expect(resp.StatusCode).NotTo(Equal(http.StatusNoContent),
+			"DELETE /api/v1/sessions/{id}/stream must be retired — the 204 cancel response is gone. Got status=%d", resp.StatusCode)
+	})
+
+	It("GET /api/v1/sessions/{id}/ws is not registered on the mux", func() {
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+		req, _ := http.NewRequestWithContext(context.Background(),
+			http.MethodGet, httpSrv.URL+"/api/v1/sessions/"+sess.ID+"/ws", nil)
+		resp, err := noRedirectClient().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		// WebSocket upgrade handshakes return 101 Switching Protocols
+		// on success. A retired WS route must NOT return 101.
+		Expect(resp.StatusCode).NotTo(Equal(http.StatusSwitchingProtocols),
+			"GET /api/v1/sessions/{id}/ws must be retired — no Switching Protocols upgrade. Got status=%d", resp.StatusCode)
+		ct := resp.Header.Get("Content-Type")
+		Expect(ct).NotTo(ContainSubstring("application/json"),
+			"GET /api/v1/sessions/{id}/ws must be retired (not a registered JSON API endpoint). Got Content-Type=%q, status=%d", ct, resp.StatusCode)
+	})
+
+	It("source-level: server.go no longer registers /stream or /ws routes", func() {
+		// Belt-and-braces source-level pin — if the mux registration
+		// is re-added inadvertently, the source-level scan catches it
+		// even if the runtime behaviour above slips through (e.g. a
+		// future SPA-shell change).
+		_, thisFile, _, ok := runtime.Caller(0)
+		Expect(ok).To(BeTrue())
+		serverPath := filepath.Join(filepath.Dir(thisFile), "server.go")
+		src, err := os.ReadFile(serverPath)
+		Expect(err).NotTo(HaveOccurred())
+		body := string(src)
+		Expect(body).NotTo(ContainSubstring("/api/v1/sessions/{id}/stream"),
+			"server.go must not register the retired /stream route — Phase-4-Commit-2 of 'Turn-Based Post-Then-Poll Architecture (May 2026)' retired session-scoped SSE")
+		Expect(body).NotTo(ContainSubstring("/api/v1/sessions/{id}/ws"),
+			"server.go must not register the retired /ws route — Phase-4-Commit-2 retired session-scoped WebSocket")
+		Expect(body).NotTo(ContainSubstring("handleSessionStream"),
+			"server.go must not define handleSessionStream — Phase-4-Commit-2 retired the SSE bridge")
+		Expect(body).NotTo(ContainSubstring("handleSessionWebSocket"),
+			"server.go must not define handleSessionWebSocket — Phase-4-Commit-2 retired the WS handler")
+		Expect(body).NotTo(ContainSubstring("handleCancelStream"),
+			"server.go must not define handleCancelStream — Phase-4-Commit-2 retired the cancel-stream handler")
+		Expect(body).NotTo(ContainSubstring("sessionBroker"),
+			"server.go must not reference sessionBroker — Phase-4-Commit-2 retired the broker entirely")
 	})
 })

@@ -254,7 +254,7 @@ var _ = Describe("Dispatcher.DispatchEphemeral", func() {
 				},
 				emitInterval: 1 * time.Millisecond,
 			}
-			d := dispatch.New(drip, eng, swarmer, reg, nil, nil)
+			d := dispatch.New(drip, eng, swarmer, reg, nil)
 			cons := &recordingConsumer{}
 
 			handle, err := d.DispatchEphemeral(context.Background(), dispatch.DispatchRequest{
@@ -281,7 +281,7 @@ var _ = Describe("Dispatcher.DispatchEphemeral", func() {
 				},
 				emitInterval: 5 * time.Millisecond,
 			}
-			d := dispatch.New(drip, eng, swarmer, reg, nil, nil)
+			d := dispatch.New(drip, eng, swarmer, reg, nil)
 			cons := &recordingConsumer{}
 
 			callerCtx, cancel := context.WithCancel(context.Background())
@@ -324,7 +324,7 @@ var _ = Describe("Dispatcher.DispatchEphemeral", func() {
 				},
 				emitInterval: 1 * time.Millisecond,
 			}
-			d := dispatch.New(drip, eng, swarmer, reg, nil, nil)
+			d := dispatch.New(drip, eng, swarmer, reg, nil)
 			cons := &recordingConsumer{}
 
 			handle, err := d.DispatchEphemeral(context.Background(), dispatch.DispatchRequest{
@@ -345,7 +345,7 @@ var _ = Describe("Dispatcher.DispatchEphemeral", func() {
 	Context("when no agent target resolves", func() {
 		It("returns an error synchronously without spawning the streamer goroutine", func() {
 			drip := &dripStreamer{}
-			d := dispatch.New(drip, eng, swarmer, reg, nil, nil)
+			d := dispatch.New(drip, eng, swarmer, reg, nil)
 			cons := &recordingConsumer{}
 
 			handle, err := d.DispatchEphemeral(context.Background(), dispatch.DispatchRequest{
@@ -360,7 +360,7 @@ var _ = Describe("Dispatcher.DispatchEphemeral", func() {
 	Context("when AgentID is unknown to both registries", func() {
 		It("returns a NotFoundError without driving the streamer", func() {
 			drip := &dripStreamer{}
-			d := dispatch.New(drip, eng, swarmer, reg, nil, nil)
+			d := dispatch.New(drip, eng, swarmer, reg, nil)
 			cons := &recordingConsumer{}
 
 			_, err := d.DispatchEphemeral(context.Background(), dispatch.DispatchRequest{
@@ -429,10 +429,17 @@ func (f *fakeSessionManager) SendMessageWithAttachments(
 	return streamer.Stream(ctx, "fake-agent", message)
 }
 
-// fakeBroker satisfies dispatch.SessionBroker. Captures the published
-// chunks so the spec can pin (a) Publish was called, (b) every chunk
-// the streamer produced reached the broker (no swarm-lifecycle wrap
-// dropouts).
+// fakeBroker is a streaming.StreamConsumer used by these specs to pin
+// "chunks flowed through the dispatch lifecycle" assertions.
+//
+// Pre-Commit-2 of "Turn-Based Post-Then-Poll Architecture (May 2026)"
+// this type satisfied dispatch.SessionBroker and Dispatcher fanned
+// chunks into it via broker.Publish. Commit 2 retired the broker;
+// the same pins now route through the consumer parameter of
+// DispatchSessioned, which still receives every chunk via WriteChunk /
+// Done. The fixture retains its name and surface (publishCount /
+// collectedChunks / done) so the original behaviour pins still read
+// naturally — only the dispatch wiring shape changed.
 type fakeBroker struct {
 	mu             sync.Mutex
 	publishedCount int
@@ -444,15 +451,39 @@ func newFakeBroker() *fakeBroker {
 	return &fakeBroker{done: make(chan struct{}, 1)}
 }
 
-func (b *fakeBroker) Publish(_ string, chunks <-chan provider.StreamChunk) {
+// WriteChunk records a content chunk. On the first WriteChunk for a
+// turn the publishedCount increments so existing
+// `Eventually(broker.publishCount, ...).Should(Equal(1))` pins
+// continue to mean "the first chunk reached this consumer".
+func (b *fakeBroker) WriteChunk(content string) error {
 	b.mu.Lock()
-	b.publishedCount++
-	b.mu.Unlock()
-	for c := range chunks {
-		b.mu.Lock()
-		b.collected = append(b.collected, c)
-		b.mu.Unlock()
+	if b.publishedCount == 0 {
+		b.publishedCount = 1
 	}
+	b.collected = append(b.collected, provider.StreamChunk{Content: content})
+	b.mu.Unlock()
+	return nil
+}
+
+// WriteError records the error as a chunk so the
+// "no chunk may carry a context.Canceled error" pin still has a
+// chunk-shaped slot to assert on.
+func (b *fakeBroker) WriteError(err error) {
+	b.mu.Lock()
+	b.collected = append(b.collected, provider.StreamChunk{Error: err})
+	b.mu.Unlock()
+}
+
+// Done signals stream completion — the pin
+// `Eventually(broker.done, ...).Should(Receive())` reads this.
+func (b *fakeBroker) Done() {
+	b.mu.Lock()
+	if b.publishedCount == 0 {
+		// No content arrived, but Done still fired — pin the publish
+		// count so the "publish was called" assertion sees the turn.
+		b.publishedCount = 1
+	}
+	b.mu.Unlock()
 	select {
 	case b.done <- struct{}{}:
 	default:
@@ -546,14 +577,14 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 		})
 
 		It("installs the swarm context on the engine and snapshots the manifest before streaming", func() {
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "coordinator",
 				Content:      "please plan something",
 				ScanMentions: true,
-			}, nil)
+			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Snapshot returns synchronously WITH the new user message
@@ -587,14 +618,14 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 
 	Context("given a session whose agent_id is a plain agent", func() {
 		It("skips the swarm lifecycle entirely and forwards chunks to the broker", func() {
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "default-assistant",
 				Content:      "hello",
 				ScanMentions: true,
-			}, nil)
+			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(handle.Snapshot.Messages).To(HaveLen(1))
 
@@ -614,14 +645,14 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 		// into Dispatcher per Phase 2 of the v6 plan.
 
 		It("redirects this turn through the mention's swarm lead", func() {
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "default-assistant",
 				Content:      "@a-team please help",
 				ScanMentions: true,
-			}, nil)
+			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(handle.Snapshot.Messages).To(HaveLen(1))
 
@@ -641,14 +672,14 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 		})
 
 		It("does NOT mutate the session's persistent agent_id (Option A per-turn semantics)", func() {
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "default-assistant",
 				Content:      "@a-team do the thing",
 				ScanMentions: true,
-			}, nil)
+			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 
 			// The Dispatcher must NOT have written CurrentAgentID on
@@ -663,14 +694,14 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 		})
 
 		It("falls back to the session's persistent agent when no swarm mention resolves", func() {
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			handle, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "default-assistant",
 				Content:      "plain message, no @-mention here",
 				ScanMentions: true,
-			}, nil)
+			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(handle.Snapshot.Messages).To(HaveLen(1))
 
@@ -693,7 +724,7 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 				{Done: true},
 			}
 			drip.emitInterval = 5 * time.Millisecond
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			callerCtx, cancel := context.WithCancel(context.Background())
 			handle, err := d.DispatchSessioned(callerCtx, dispatch.DispatchRequest{
@@ -701,7 +732,7 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 				AgentID:      "default-assistant",
 				Content:      "hi",
 				ScanMentions: false,
-			}, nil)
+			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Cancel the caller's ctx IMMEDIATELY — simulates the
@@ -734,14 +765,14 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 		It("returns the error synchronously and restores the manifest when swarm was already active", func() {
 			mgr.sess.AgentID = "coordinator"
 			mgr.streamErr = errors.New("simulated attachment not found")
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "coordinator",
 				Content:      "x",
 				ScanMentions: true,
-			}, nil)
+			}, broker)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("simulated attachment"))
 
@@ -756,7 +787,7 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 
 	Context("when no session manager is wired", func() {
 		It("returns an explicit error so test-surface compositions fail loudly", func() {
-			d := dispatch.New(drip, eng, swarmer, reg, nil, nil)
+			d := dispatch.New(drip, eng, swarmer, reg, nil)
 			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{}, nil)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("sessionManager not configured"))
@@ -854,64 +885,6 @@ func (m *multiSessionManager) sessionAgentID(id string) string {
 	return ""
 }
 
-// recordingBroker captures published chunks per session and signals
-// completion via a per-session done channel so consecutive-POST specs
-// can wait for turn N's broker.Publish drain before issuing turn N+1.
-type recordingBroker struct {
-	mu       sync.Mutex
-	published map[string]int
-	doneBy    map[string]chan struct{}
-}
-
-func newRecordingBroker() *recordingBroker {
-	return &recordingBroker{
-		published: make(map[string]int),
-		doneBy:    make(map[string]chan struct{}),
-	}
-}
-
-func (b *recordingBroker) Publish(sessionID string, chunks <-chan provider.StreamChunk) {
-	b.mu.Lock()
-	b.published[sessionID]++
-	// One done channel per session, replaced per turn so callers can
-	// await the LATEST turn's drain.
-	done := make(chan struct{}, 1)
-	b.doneBy[sessionID] = done
-	b.mu.Unlock()
-
-	for range chunks {
-	}
-	select {
-	case done <- struct{}{}:
-	default:
-	}
-}
-
-func (b *recordingBroker) waitFor(sessionID string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		b.mu.Lock()
-		done, ok := b.doneBy[sessionID]
-		b.mu.Unlock()
-		if ok {
-			select {
-			case <-done:
-				return true
-			case <-time.After(10 * time.Millisecond):
-				continue
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
-}
-
-func (b *recordingBroker) publishedCount(sessionID string) int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.published[sessionID]
-}
-
 // Phase 3 GREEN gate per "Dispatcher Service Unification (May 2026)"
 // v6. Closes S2: the swarm-lifecycle race surface that preserves through
 // Phase 2. DispatchSessioned for the SAME sessionID must serialise
@@ -959,9 +932,8 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 				{Done: true},
 			})
 			mgr.seedSession("sess-1", "coordinator")
-			broker := newRecordingBroker()
 
-			d := dispatch.New(nil, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(nil, eng, swarmer, reg, mgr)
 
 			// Turn 1 routes through meta-swarm (auto-dispatch on coordinator).
 			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
@@ -981,8 +953,11 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 			// (sequenced) turns; the per-session lifecycle gate continues
 			// to enforce that the engine's RestoreManifest fires before
 			// turn 2's SetSwarmContext, but the producer must wait for
-			// turn 1 to drain before firing turn 2.
-			Eventually(func() bool { return broker.waitFor("sess-1", 2*time.Second) }, "3s").Should(BeTrue())
+			// turn 1 to drain before firing turn 2. Phase-4-Commit-2 of
+			// the same plan retired the SessionBroker; eng.flushCallCount
+			// is now the sole drain-completion sync primitive (it fires
+			// after the lifecycle wrap goroutine drains chunks and
+			// FlushSwarmLifecycle returns).
 			Eventually(eng.flushCallCount, "3s").Should(Equal(1))
 
 			// Turn 2 routes through a-team via in-content mention.
@@ -994,10 +969,7 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 			}, nil)
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for both turns' broker drains to complete so the
-			// lifecycle event log is final.
-			Eventually(func() int { return broker.publishedCount("sess-1") }, "3s").Should(Equal(2))
-			Eventually(func() bool { return broker.waitFor("sess-1", 2*time.Second) }, "3s").Should(BeTrue())
+			// Wait for turn 2's lifecycle to drain.
 			Eventually(eng.flushCallCount, "3s").Should(Equal(2))
 
 			// The recorded lifecycle event log MUST show turn 1's full
@@ -1059,9 +1031,8 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 				{Done: true},
 			})
 			mgr.seedSession("sess-1", "coordinator")
-			broker := newRecordingBroker()
 
-			d := dispatch.New(nil, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(nil, eng, swarmer, reg, mgr)
 
 			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
@@ -1076,7 +1047,8 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 			// "one in-flight turn" contract loud via ErrTurnConflict.
 			// The manifest-isolation contract pinned here is unchanged;
 			// the producer just has to sequence the POSTs explicitly.
-			Eventually(func() bool { return broker.waitFor("sess-1", 2*time.Second) }, "3s").Should(BeTrue())
+			// Phase-4-Commit-2 retired the broker; flushCallCount is the
+			// sole drain-completion sync primitive.
 			Eventually(eng.flushCallCount, "3s").Should(Equal(1))
 
 			_, err = d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
@@ -1136,7 +1108,6 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 			mgr := newMultiSessionManager(500*time.Millisecond, chunks)
 			mgr.seedSession("sess-A", "coordinator")
 			mgr.seedSession("sess-B", "coordinator")
-			broker := newRecordingBroker()
 
 			fakeEng := &fakeDispatchEngine{}
 			times := make(map[string]time.Time)
@@ -1165,7 +1136,7 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 				},
 			}
 
-			d := dispatch.New(nil, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(nil, eng, swarmer, reg, mgr)
 
 			var wg sync.WaitGroup
 			wg.Add(2)
@@ -1230,8 +1201,7 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 				streamer:  drip,
 				streamErr: errors.New("simulated swarm.ErrNotFound"),
 			}
-			broker := newFakeBroker()
-			d := dispatch.New(drip, eng, swarmer, reg, mgr, broker)
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
 
 			// First call: fails on the synchronous error path. The gate
 			// MUST close via defer so the SECOND call doesn't deadlock.

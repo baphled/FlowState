@@ -142,16 +142,6 @@ type SessionManager interface {
 	SendMessageWithAttachments(ctx context.Context, sessionID, message string, attachmentIDs []string) (<-chan provider.StreamChunk, error)
 }
 
-// SessionBroker is the slice of internal/api.SessionBroker that
-// DispatchSessioned needs to fan chunks out to live SSE / WS
-// subscribers. The Dispatcher invokes Publish in its OWN goroutine so
-// the caller's handler returns immediately after the snapshot is
-// captured — there is no Done channel to await on, and the broker
-// owns subscriber bookkeeping.
-type SessionBroker interface {
-	Publish(sessionID string, chunks <-chan provider.StreamChunk)
-}
-
 // Dispatcher is the single owner of the "user input → engine stream"
 // lifecycle. Wiring is constructor-injected; nil-tolerance is per-method
 // because tests for the ephemeral path do not need the session manager
@@ -180,7 +170,6 @@ type Dispatcher struct {
 	swarmRegistry         *swarm.Registry
 	agentRegistry         *agent.Registry
 	sessionManager        SessionManager
-	sessionBroker         SessionBroker
 	sessionLifecycleGates sync.Map // map[sessionID string]chan struct{}
 	// turnRegistry is the in-memory store of live + terminal Turns
 	// (Phase 1 of the "Turn-Based Post-Then-Poll Architecture
@@ -199,11 +188,12 @@ type Dispatcher struct {
 //     dispatchEngine are nil-tolerant (a nil swarmRegistry short-circuits
 //     to plain-agent streaming via streaming.Run, matching the API's
 //     legacy fallback at internal/api/server.go::handleChat).
-//   - DispatchSessioned requires sessionManager. sessionBroker is
-//     optional — when nil the Dispatcher drains the chunks channel into
-//     a sink so the streamer goroutine still terminates cleanly (mirrors
-//     the pre-Phase-2 handler's nil-broker fallback at
-//     internal/api/server.go::handleSessionMessage).
+//   - DispatchSessioned requires sessionManager. Phase-4-Commit-2
+//     retired the SessionBroker / SSE / WS fan-out surfaces; the
+//     Dispatcher now drains chunks into a sink after the Turn
+//     accumulator drives them through `turnRegistry.Append`. Live
+//     surfacing happens via long-poll on
+//     GET /api/v1/sessions/{id}/turns/{turn_id}.
 //
 // Expected:
 //   - streamer is the underlying producer. Typically *engine.Engine.
@@ -215,8 +205,6 @@ type Dispatcher struct {
 //     pass-through contract through swarm.ResolveTarget (see
 //     internal/swarm/resolve_target.go:42).
 //   - sessionManager is the session anchor for DispatchSessioned.
-//   - sessionBroker fans chunks to live SSE / WS subscribers; nil
-//     drains chunks into a sink for test-surface compositions.
 //
 // Returns:
 //   - A configured *Dispatcher.
@@ -229,9 +217,8 @@ func New(
 	swarmRegistry *swarm.Registry,
 	agentRegistry *agent.Registry,
 	sessionManager SessionManager,
-	sessionBroker SessionBroker,
 ) *Dispatcher {
-	return NewWithTurns(streamer, dispatchEngine, swarmRegistry, agentRegistry, sessionManager, sessionBroker, nil)
+	return NewWithTurns(streamer, dispatchEngine, swarmRegistry, agentRegistry, sessionManager, nil)
 }
 
 // NewWithTurns wires a Dispatcher with an externally-supplied Turn
@@ -258,7 +245,6 @@ func NewWithTurns(
 	swarmRegistry *swarm.Registry,
 	agentRegistry *agent.Registry,
 	sessionManager SessionManager,
-	sessionBroker SessionBroker,
 	turnRegistry *turn.Registry,
 ) *Dispatcher {
 	if turnRegistry == nil {
@@ -270,7 +256,6 @@ func NewWithTurns(
 		swarmRegistry:  swarmRegistry,
 		agentRegistry:  agentRegistry,
 		sessionManager: sessionManager,
-		sessionBroker:  sessionBroker,
 		turnRegistry:   turnRegistry,
 	}
 }
@@ -280,18 +265,6 @@ func NewWithTurns(
 // construction.
 func (d *Dispatcher) TurnRegistry() *turn.Registry {
 	return d.turnRegistry
-}
-
-// SetSessionBroker updates the broker reference after construction.
-// Required because production wiring (internal/app/app.go:444-446) creates
-// the broker AFTER NewServer has already auto-constructed the Dispatcher;
-// without this setter the Dispatcher captures a nil broker at construction
-// time and silently drops chunks (no fan-out to SSE subscribers).
-// Discovered via a live curl probe on May 18 2026 — chunks reached the
-// accumulator (assistant message persisted) but never the SSE broker
-// (every refresh-symptom report this session traced back here).
-func (d *Dispatcher) SetSessionBroker(broker SessionBroker) {
-	d.sessionBroker = broker
 }
 
 // errNoTarget fires when DispatchEphemeral is called without a usable
@@ -501,11 +474,10 @@ func (d *Dispatcher) runEphemeralStream(
 //     outlives the caller's handler return. Same pattern as
 //     DispatchEphemeral / commit 51fb416c, centralised at the Dispatcher
 //     seam rather than at every handler edge.
-//  5. Spawn the broker publish goroutine
-//     (go sessionBroker.Publish(sessionID, chunks)) so chunks fan out to
-//     live SSE subscribers asynchronously. A nil broker drains the
-//     channel into a sink so the streamer goroutine terminates cleanly
-//     (test-surface compositions).
+//  5. Spawn the chunk-drain goroutine — Phase-4-Commit-2 retired the
+//     SessionBroker fan-out; chunks now drain to a sink while the
+//     accumulator independently feeds turnRegistry.Append. Long-poll on
+//     GET /turns/{id} surfaces them to the FE.
 //  6. Return SessionedHandle{Snapshot} to the caller IMMEDIATELY. The
 //     caller writes the snapshot as JSON and returns 200 OK without
 //     awaiting stream completion.
@@ -1143,38 +1115,21 @@ func (d *Dispatcher) wrapWithSwarmLifecycle(
 	return out
 }
 
-// fanOutSessionedChunks routes the post-lifecycle chunks channel to all
-// live subscribers of the sessioned dispatch: the broker (existing SSE
-// path) and the consumer (Phase 4 WS direct tee).
+// fanOutSessionedChunks routes the post-lifecycle chunks channel to the
+// optional consumer and otherwise drains chunks to a sink.
 //
-// Combinations:
-//   - broker non-nil, consumer nil   — broker.Publish in a goroutine
-//     (legacy Phase 2 behaviour).
-//   - broker nil, consumer non-nil   — single goroutine ranges over
-//     chunks and routes each chunk through the consumer interface
-//     (WriteChunk / WriteError / Done). Bare-engine test surfaces and
-//     WS-only deployments take this path.
-//   - broker non-nil, consumer non-nil — single goroutine ranges over
-//     chunks; each chunk fans BOTH to a buffered re-channel feeding
-//     broker.Publish AND to the consumer. The broker re-channel is
-//     buffered (capacity 64) so a slow subscriber cannot back-pressure
-//     the consumer (and vice versa). The goroutine closes the broker
-//     re-channel after src drains so broker.Publish's terminal close
-//     fires under its existing invariants.
-//   - broker nil, consumer nil       — chunks drain to a sink so the
-//     streamer goroutine terminates. Matches the pre-Phase-2 server.go
-//     nil-broker fallback.
+// Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
+// (May 2026)" retired the SessionBroker fan-out and the WebSocket
+// handler that consumed live chunks via a StreamConsumer. The Turn
+// registry is now the live-state authority: turnRegistry.Append (from
+// the accumulator inside the engine pipeline) drives every chunk into
+// the registry and long-poll on GET /turns/{id} surfaces it to the FE.
 //
-// Why route content chunks through StreamConsumer.WriteChunk for the
-// consumer-only path: WSStreamConsumer's WriteChunk implementation
-// (internal/api/websocket.go) maps the content to a WSChunkMsg with the
-// content field set and delivers it through the out channel, preserving
-// the existing forwardWSChunks shape. Done chunks call consumer.Done()
-// so the WS client receives a final {done: true} frame, mirroring the
-// pre-fix BuildWSChunkMsg behaviour for chunk.Done. Error chunks call
-// consumer.WriteError so the WS surface still distinguishes critical-
-// vs-transient via the existing BuildWSChunkMsg severity gate at the
-// consumer seam.
+// The consumer parameter is retained for backwards compatibility with
+// pre-Commit-2 test fixtures that pass a recording consumer (e.g.
+// orchestrator wraps for CLI driving). When consumer is nil — the
+// production case after Commit 2 — chunks drain to sink so the streamer
+// goroutine terminates cleanly.
 //
 // Side effects:
 //   - Spawns one goroutine that consumes src to completion.
@@ -1183,35 +1138,18 @@ func (d *Dispatcher) fanOutSessionedChunks(
 	src <-chan provider.StreamChunk,
 	consumer streaming.StreamConsumer,
 ) {
-	switch {
-	case d.sessionBroker != nil && consumer == nil:
-		go d.sessionBroker.Publish(sessionID, src)
-	case d.sessionBroker == nil && consumer != nil:
+	_ = sessionID // retained for symmetry / future use
+	if consumer != nil {
 		go d.driveConsumer(src, consumer)
-	case d.sessionBroker != nil && consumer != nil:
-		// Tee: re-channel feeds broker; same goroutine drives consumer.
-		brokerCh := make(chan provider.StreamChunk, 64)
-		go d.sessionBroker.Publish(sessionID, brokerCh)
-		go func() {
-			defer close(brokerCh)
-			for chunk := range src {
-				// Broker first — the broker delivers with a bounded
-				// grace period; the consumer is the WS handler's local
-				// out channel and is essentially non-blocking with a
-				// 128-slot buffer (websocket.go:125).
-				brokerCh <- chunk
-				d.deliverChunkToConsumer(chunk, consumer)
-			}
-		}()
-	default:
-		// No broker, no consumer — drain to sink so the streamer
-		// goroutine terminates. Matches the pre-Phase-2 server.go
-		// nil-broker fallback (server.go pre-deletion :1244-1248).
-		go func() {
-			for range src {
-			}
-		}()
+		return
 	}
+	// No consumer — drain to sink so the streamer goroutine terminates.
+	// Turn registry is fed independently via the accumulator's
+	// turnRegistry.Append callback (see runSessionedStream).
+	go func() {
+		for range src {
+		}
+	}()
 }
 
 // driveConsumer ranges over src and delivers each chunk through the

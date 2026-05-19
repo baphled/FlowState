@@ -26,8 +26,7 @@ import (
 // observable).
 
 const (
-	serverFile    = "server.go"
-	websocketFile = "websocket.go"
+	serverFile = "server.go"
 )
 
 var bannedSymbols = []string{
@@ -122,33 +121,9 @@ func TestHandlerThinness_handleSessionMessage(t *testing.T) {
 	}
 }
 
-// TestHandlerThinness_handleSessionWebSocket is the Phase 4 GREEN
-// subtest. Phase 4 of "Dispatcher Service Unification (May 2026)"
-// routes handleSessionWebSocket through dispatch.Dispatcher.DispatchSessioned,
-// inheriting the same context.WithoutCancel + resolve+dispatch +
-// per-session lifecycle gate the POST path already gets. The handler
-// must make ZERO direct calls to the banned symbols AND must no longer
-// pass the request context into sessionManager.SendMessage — that
-// coupling was the S1 surface area Phase 4 closes (same shape commit
-// 51fb416c fixed on POST /messages).
-//
-// Pre-Phase-4 this subtest soft-logged hits as expected-RED; Phase 4
-// promotes it to a hard fail-on-hit assertion. The ctx-binding ban is
-// asserted alongside the banned-symbol grep so a future regression
-// re-introducing either form is caught at this seam.
-func TestHandlerThinness_handleSessionWebSocket(t *testing.T) {
-	body := readHandlerBody(t, websocketFile, "handleSessionWebSocket")
-	hits := bannedSymbolsIn(body)
-	if len(hits) > 0 {
-		t.Fatalf("handleSessionWebSocket must not call %v directly — route through dispatch.Dispatcher.DispatchSessioned per Dispatcher Service Unification (May 2026) Phase 4", hits)
-	}
-	// Ctx-binding ban — the two substrings the v6 plan's Phase 4
-	// verification step calls out. Both being present is the pre-fix
-	// signature; both being absent is the Phase 4 GREEN invariant.
-	if strings.Contains(body, "r.Context()") {
-		t.Fatal("handleSessionWebSocket must not use r.Context() directly — Dispatcher.DispatchSessioned wraps it with context.WithoutCancel at the seam (S1 closure)")
-	}
-	if strings.Contains(body, "sessionManager.SendMessage(ctx") {
-		t.Fatal("handleSessionWebSocket must not call sessionManager.SendMessage(ctx, …) — route through dispatch.Dispatcher.DispatchSessioned so the engine outlives the WS request (S1 closure)")
-	}
-}
+// TestHandlerThinness_handleSessionWebSocket retired in Phase-4-Commit-2
+// of "Turn-Based Post-Then-Poll Architecture (May 2026)" — the
+// handleSessionWebSocket handler and its source file were deleted with
+// the session-scoped WebSocket route. The negative-contract spec at
+// internal/api/server_test.go pins that the route is no longer
+// registered on the mux.
