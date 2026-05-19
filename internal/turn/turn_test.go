@@ -517,7 +517,7 @@ var _ = Describe("Registry", func() {
 			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "early"})).To(Succeed())
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -533,7 +533,7 @@ var _ = Describe("Registry", func() {
 			Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 999, "", 0, 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 999, "", 0, "", "", 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -558,7 +558,7 @@ var _ = Describe("Registry", func() {
 			done := make(chan result, 1)
 			go func() {
 				start := time.Now()
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
 				done <- result{snap: snap, changed: changed, elapsed: time.Since(start)}
 			}()
 
@@ -599,7 +599,7 @@ var _ = Describe("Registry", func() {
 			}
 			done := make(chan result, 1)
 			go func() {
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
 				done <- result{snap: snap, changed: changed}
 			}()
 
@@ -623,7 +623,7 @@ var _ = Describe("Registry", func() {
 			}
 			done := make(chan result, 1)
 			go func() {
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
 				done <- result{snap: snap, changed: changed}
 			}()
 
@@ -646,7 +646,7 @@ var _ = Describe("Registry", func() {
 			}
 			done := make(chan result, 1)
 			go func() {
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
 				done <- result{snap: snap, changed: changed}
 			}()
 
@@ -668,7 +668,7 @@ var _ = Describe("Registry", func() {
 			// budget even though no producer ever fires. The caller
 			// re-issues to start a fresh wait.
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 80*time.Millisecond)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 80*time.Millisecond)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeFalse(),
@@ -692,7 +692,7 @@ var _ = Describe("Registry", func() {
 			done := make(chan result, 1)
 			go func() {
 				start := time.Now()
-				_, changed := reg.WaitForChange(ctx, id, 0, "", 0, 5*time.Second)
+				_, changed := reg.WaitForChange(ctx, id, 0, "", 0, "", "", 5*time.Second)
 				done <- result{changed: changed, elapsed: time.Since(start)}
 			}()
 
@@ -714,7 +714,7 @@ var _ = Describe("Registry", func() {
 			// changed=false + zero snapshot so the handler can map this
 			// to a 404 / not-found path.
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), "never-minted", 0, "", 0, 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), "never-minted", 0, "", 0, "", "", 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeFalse())
@@ -730,7 +730,7 @@ var _ = Describe("Registry", func() {
 			reg.SetHeartbeat(id, "generating", 7)
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 7, 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 7, "", "", 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -745,7 +745,7 @@ var _ = Describe("Registry", func() {
 			reg.SetHeartbeat(id, "thinking", 100)
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 50, 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 50, "", "", 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -768,7 +768,7 @@ var _ = Describe("Registry", func() {
 			for i := 0; i < waiters; i++ {
 				go func() {
 					defer wg.Done()
-					_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 2*time.Second)
+					_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 2*time.Second)
 					if changed {
 						wakes <- struct{}{}
 					}
@@ -785,13 +785,272 @@ var _ = Describe("Registry", func() {
 				"a single mutation broadcast must wake EVERY concurrent waiter — the channel-of-zero-values close pattern must broadcast, not signal one waiter")
 		})
 
+		// SetProviderModel populates CurrentProvider + CurrentModel onto a
+		// Running Turn so the long-poll wire surfaces the (provider, model)
+		// pair the engine is currently streaming under — distinct from
+		// Turn.Model which is the post-Complete frozen snapshot. The
+		// dispatcher's wrap goroutine taps `provider_changed` and
+		// `model_active` chunks and calls this method so a mid-stream
+		// failover surfaces on the next poll without waiting for the
+		// terminal Complete to fire.
+		//
+		// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+		//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
+		Context("SetProviderModel (Phase-5 §1c-α)", func() {
+			It("populates CurrentProvider + CurrentModel on a Running turn", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+
+				t, getErr := reg.Get(id)
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(t.CurrentProvider).To(Equal("anthropic"))
+				Expect(t.CurrentModel).To(Equal("claude-opus-4-7"))
+			})
+
+			It("overwrites prior values across calls (mid-stream failover lands on the latest pair)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+				reg.SetProviderModel(id, "zai", "glm-4.6")
+
+				t, _ := reg.Get(id)
+				Expect(t.CurrentProvider).To(Equal("zai"),
+					"failover: the most recent (provider, model) pair must overwrite the prior — clients reading CurrentProvider see the active provider, not the original")
+				Expect(t.CurrentModel).To(Equal("glm-4.6"))
+			})
+
+			It("broadcasts changeCh so long-poll waiters wake on a real transition", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				type result struct {
+					snap    turn.Turn
+					changed bool
+				}
+				done := make(chan result, 1)
+				go func() {
+					snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
+					done <- result{snap: snap, changed: changed}
+				}()
+
+				time.Sleep(20 * time.Millisecond)
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeTrue(),
+					"a SetProviderModel call on a transition (empty → real pair) MUST broadcast — the FE's long-poll wakes off this channel to learn the new model without polling on a tight loop")
+				Expect(r.snap.CurrentProvider).To(Equal("anthropic"))
+				Expect(r.snap.CurrentModel).To(Equal("claude-opus-4-7"))
+			})
+
+			It("does NOT broadcast when the pair is unchanged (spurious tap absorbed)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Seed the registry with the pair so the second call is a no-op.
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+
+				type result struct {
+					changed bool
+					elapsed time.Duration
+				}
+				done := make(chan result, 1)
+				go func() {
+					start := time.Now()
+					_, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0,
+						"anthropic", "claude-opus-4-7", 80*time.Millisecond,
+					)
+					done <- result{changed: changed, elapsed: time.Since(start)}
+				}()
+
+				// Fire two no-op SetProviderModel calls during the wait. If
+				// the registry broadcast on every call (instead of gating on
+				// actual change), the wait would wake with changed=true
+				// against the matched baseline. The correct semantics: the
+				// wait should time out.
+				time.Sleep(20 * time.Millisecond)
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeFalse(),
+					"a SetProviderModel call that doesn't actually move the pair must NOT broadcast — every chunk in a long stream carries provider/model, so an unconditional broadcast would degrade the long-poll's perceived-cadence promise to spin")
+			})
+
+			It("is a no-op on a Completed turn (CurrentProvider + CurrentModel frozen at last value)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+				Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
+
+				// Late tap — wrap goroutine's chunk drain post-Complete (a
+				// race shape the registry must absorb silently).
+				reg.SetProviderModel(id, "zai", "glm-4.6")
+
+				t, _ := reg.Get(id)
+				Expect(t.CurrentProvider).To(Equal("anthropic"),
+					"terminal-state taps must be silently absorbed — the live (provider, model) pair belongs to the Running lifetime")
+				Expect(t.CurrentModel).To(Equal("claude-opus-4-7"))
+			})
+
+			It("is a no-op on a Failed turn", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+				Expect(reg.Fail(id, errors.New("boom"))).To(Succeed())
+
+				reg.SetProviderModel(id, "zai", "glm-4.6")
+
+				t, _ := reg.Get(id)
+				Expect(t.CurrentProvider).To(Equal("anthropic"))
+				Expect(t.CurrentModel).To(Equal("claude-opus-4-7"))
+			})
+
+			It("is a no-op on an unknown turn id (no panic)", func() {
+				Expect(func() {
+					reg.SetProviderModel("never-minted", "anthropic", "claude-opus-4-7")
+				}).NotTo(Panic())
+			})
+
+			It("is a no-op on an empty turn id (mirrors Append's contract)", func() {
+				Expect(func() {
+					reg.SetProviderModel("", "anthropic", "claude-opus-4-7")
+				}).NotTo(Panic())
+			})
+
+			It("is race-safe under concurrent SetProviderModel + Get + WaitForChange (-race must report clean)", func() {
+				id, err := reg.Start("sess-race")
+				Expect(err).NotTo(HaveOccurred())
+
+				var (
+					wg   sync.WaitGroup
+					stop atomic.Bool
+				)
+				wg.Add(2)
+
+				// Writer goroutine — alternating pairs so a torn read would
+				// surface a (anthropic, glm-4.6) mismatched pair.
+				go func() {
+					defer wg.Done()
+					pairs := [][2]string{
+						{"anthropic", "claude-opus-4-7"},
+						{"zai", "glm-4.6"},
+					}
+					i := 0
+					for !stop.Load() {
+						p := pairs[i%len(pairs)]
+						reg.SetProviderModel(id, p[0], p[1])
+						i++
+					}
+				}()
+
+				// Reader goroutine — tight Get loop. Verifies the (Provider,
+				// Model) pair is read atomically under the same mutex.
+				go func() {
+					defer wg.Done()
+					for !stop.Load() {
+						t, _ := reg.Get(id)
+						// A torn read would surface e.g. CurrentProvider=zai
+						// with CurrentModel=claude-opus-4-7 — the assertion
+						// below would fail. Pinned pairs verify atomicity.
+						if t.CurrentProvider == "anthropic" {
+							Expect(t.CurrentModel).To(Or(Equal("claude-opus-4-7"), Equal("")),
+								"torn read — provider=anthropic must be paired with claude-opus-4-7 or empty (initial state); got %q", t.CurrentModel)
+						}
+						if t.CurrentProvider == "zai" {
+							Expect(t.CurrentModel).To(Equal("glm-4.6"),
+								"torn read — provider=zai must be paired with glm-4.6; got %q", t.CurrentModel)
+						}
+					}
+				}()
+
+				time.Sleep(50 * time.Millisecond)
+				stop.Store(true)
+				wg.Wait()
+			})
+		})
+
+		// WaitForChange — Phase-5 §1c-α extension: the predicate now also
+		// wakes on CurrentProvider / CurrentModel transitions past the
+		// caller's baseline. Mirrors the existing Phase / TokenCount
+		// baseline contract; the test below pins both immediate-return and
+		// during-wait wake paths.
+		Context("WaitForChange (Phase-5 §1c-α — provider/model baseline)", func() {
+			It("returns immediately when CurrentProvider already moved past the baseline before the call", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetProviderModel(id, "zai", "glm-4.6")
+
+				start := time.Now()
+				snap, changed := reg.WaitForChange(
+					context.Background(), id, 0, "", 0,
+					"anthropic", "claude-opus-4-7", 5*time.Second,
+				)
+				elapsed := time.Since(start)
+
+				Expect(changed).To(BeTrue(),
+					"CurrentProvider moved past the lastProvider baseline — the wait must surface changed=true synchronously")
+				Expect(snap.CurrentProvider).To(Equal("zai"))
+				Expect(snap.CurrentModel).To(Equal("glm-4.6"))
+				Expect(elapsed).To(BeNumerically("<", 50*time.Millisecond))
+			})
+
+			It("returns immediately when CurrentModel moved past the baseline (same provider, model swap)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+
+				snap, changed := reg.WaitForChange(
+					context.Background(), id, 0, "", 0,
+					"anthropic", "claude-sonnet-4-6", 5*time.Second,
+				)
+				Expect(changed).To(BeTrue(),
+					"CurrentModel moved past lastModel — even with provider unchanged the wait must wake (e.g. anthropic Opus → Sonnet switch within the same provider)")
+				Expect(snap.CurrentModel).To(Equal("claude-opus-4-7"))
+			})
+
+			It("returns when SetProviderModel changes the pair DURING the wait", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetProviderModel(id, "anthropic", "claude-opus-4-7")
+
+				type result struct {
+					snap    turn.Turn
+					changed bool
+				}
+				done := make(chan result, 1)
+				go func() {
+					snap, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0,
+						"anthropic", "claude-opus-4-7", 5*time.Second,
+					)
+					done <- result{snap: snap, changed: changed}
+				}()
+
+				time.Sleep(20 * time.Millisecond)
+				reg.SetProviderModel(id, "zai", "glm-4.6")
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeTrue())
+				Expect(r.snap.CurrentProvider).To(Equal("zai"))
+				Expect(r.snap.CurrentModel).To(Equal("glm-4.6"))
+			})
+		})
+
 		It("supports re-issuing waits after a timeout (channel is replaced, not exhausted)", func() {
 			id, err := reg.Start("sess-1")
 			Expect(err).NotTo(HaveOccurred())
 
 			// First wait — short timeout, no mutation. Must surface
 			// changed=false on the timeout path.
-			_, changed1 := reg.WaitForChange(context.Background(), id, 0, "", 0, 50*time.Millisecond)
+			_, changed1 := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 50*time.Millisecond)
 			Expect(changed1).To(BeFalse())
 
 			// Second wait against the same Turn — fire a mutation
@@ -802,7 +1061,7 @@ var _ = Describe("Registry", func() {
 			type result struct{ changed bool }
 			done := make(chan result, 1)
 			go func() {
-				_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, 2*time.Second)
+				_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 2*time.Second)
 				done <- result{changed: changed}
 			}()
 			time.Sleep(20 * time.Millisecond)

@@ -846,6 +846,27 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 			if chunk.ProviderID != "" {
 				lastProviderID = chunk.ProviderID
 			}
+			// Phase-5 §1c-α: surface the live (provider, model) pair onto
+			// the Turn registry as soon as the engine announces it via
+			// `model_active` (every successful stream) or `provider_changed`
+			// (mid-stream failover). The pre-1c path only stamped the pair
+			// onto Turn.Model on Complete, which left the long-poll surface
+			// blank during the entire Running lifetime — the chat-UI's
+			// toolbar chip couldn't observe a failover until terminal.
+			//
+			// The registry's own change-gate suppresses spurious broadcasts
+			// when the pair is unchanged, so calling SetProviderModel on
+			// every announcement chunk is safe; gating by EventType here
+			// keeps the dispatcher tap deliberate (each event type's
+			// semantics is the documented contract — see internal/engine).
+			//
+			// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+			//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
+			if chunk.EventType == "model_active" || chunk.EventType == "provider_changed" {
+				if lastProviderID != "" || lastModelID != "" {
+					d.turnRegistry.SetProviderModel(turnID, lastProviderID, lastModelID)
+				}
+			}
 			if chunk.Error != nil {
 				// Capture the FIRST non-nil error — subsequent chunks
 				// may carry the same error redundantly (engine's

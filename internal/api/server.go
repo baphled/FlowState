@@ -1377,6 +1377,21 @@ type turnResponse struct {
 	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
 	Phase      string `json:"phase"`
 	TokenCount int    `json:"token_count"`
+	// CurrentProvider + CurrentModel surface the engine's live (provider,
+	// model) pair onto the polling wire (Phase-5 §1c-α). Populated by the
+	// dispatcher's wrapWithTurnLifecycle chunk-tap on `model_active` and
+	// `provider_changed` events via registry.SetProviderModel. Empty
+	// during the brief window between Start and the first model_active
+	// chunk; frozen at the last live value once the Turn reaches a
+	// terminal state. Distinct from Model — Model is the post-Complete
+	// snapshot; CurrentProvider/CurrentModel surface the value DURING
+	// Running so the chat-UI's toolbar chip pivots without an SSE
+	// side-channel.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
+	CurrentProvider string `json:"current_provider,omitempty"`
+	CurrentModel    string `json:"current_model,omitempty"`
 }
 
 // handleGetTurn returns the current state of a Turn by its UUID.
@@ -1479,6 +1494,8 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			sinceCount,
 			baseline.Phase,
 			baseline.TokenCount,
+			baseline.CurrentProvider,
+			baseline.CurrentModel,
 			longPollTimeout,
 		)
 		// ctx-cancel path returns the zero snapshot — t.ID == "" iff
@@ -1493,16 +1510,18 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			msgs = []session.Message{}
 		}
 		writeJSON(w, turnResponse{
-			TurnID:      t.ID,
-			SessionID:   t.SessionID,
-			Status:      string(t.Status),
-			StartedAt:   t.StartedAt,
-			CompletedAt: t.CompletedAt,
-			Model:       t.Model,
-			Error:       t.Error,
-			Messages:    msgs,
-			Phase:       t.Phase,
-			TokenCount:  t.TokenCount,
+			TurnID:          t.ID,
+			SessionID:       t.SessionID,
+			Status:          string(t.Status),
+			StartedAt:       t.StartedAt,
+			CompletedAt:     t.CompletedAt,
+			Model:           t.Model,
+			Error:           t.Error,
+			Messages:        msgs,
+			Phase:           t.Phase,
+			TokenCount:      t.TokenCount,
+			CurrentProvider: t.CurrentProvider,
+			CurrentModel:    t.CurrentModel,
 		})
 		return
 	}
@@ -1521,16 +1540,18 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		msgs = []session.Message{}
 	}
 	writeJSON(w, turnResponse{
-		TurnID:      t.ID,
-		SessionID:   t.SessionID,
-		Status:      string(t.Status),
-		StartedAt:   t.StartedAt,
-		CompletedAt: t.CompletedAt,
-		Model:       t.Model,
-		Error:       t.Error,
-		Messages:    msgs,
-		Phase:       t.Phase,
-		TokenCount:  t.TokenCount,
+		TurnID:          t.ID,
+		SessionID:       t.SessionID,
+		Status:          string(t.Status),
+		StartedAt:       t.StartedAt,
+		CompletedAt:     t.CompletedAt,
+		Model:           t.Model,
+		Error:           t.Error,
+		Messages:        msgs,
+		Phase:           t.Phase,
+		TokenCount:      t.TokenCount,
+		CurrentProvider: t.CurrentProvider,
+		CurrentModel:    t.CurrentModel,
 	})
 }
 

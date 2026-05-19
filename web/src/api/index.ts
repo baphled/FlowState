@@ -309,6 +309,27 @@ export interface TurnState {
   model: TurnStateModel
   error: string
   messages: Message[]
+  /**
+   * current_provider mirrors the provider id the engine is CURRENTLY
+   * streaming under (Phase-5 §1c-α). Populated by the dispatcher's
+   * wrapWithTurnLifecycle chunk-tap on `model_active` /
+   * `provider_changed` events; surfaced on every poll so the chat-UI's
+   * toolbar chip pivots without an SSE side-channel.
+   *
+   * Distinct from `model.provider` — `model` is the post-Complete frozen
+   * snapshot; `current_provider` surfaces the live pair WHILE running.
+   * Empty during the brief window between POST and the first
+   * model_active chunk; pre-1c servers omit the field entirely (the
+   * absent key is functionally equivalent to "").
+   */
+  current_provider?: string
+  /**
+   * current_model is the model id paired with current_provider. Same
+   * lifecycle semantics — Phase-5 §1c-α adds this so the FE's poll loop
+   * can diff against the prior snapshot and pivot the chip on a real
+   * change without waiting for the SSE handler at chatStore.ts:2740.
+   */
+  current_model?: string
 }
 
 /**
