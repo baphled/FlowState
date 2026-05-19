@@ -1,0 +1,469 @@
+// Package turn is the canonical Turn resource for FlowState's
+// post-then-poll wire shape ("Turn-Based Post-Then-Poll Architecture
+// (May 2026)"). Each user-message-driven streaming pass produces ONE
+// Turn — a first-class entity with a stable UUID id, a transient
+// status (`running` → `completed` | `failed`), a snapshot of the
+// model/provider pair the turn ran under, and the list of
+// engine-emitted messages persisted during the turn (assistant,
+// thinking, tool_call, tool_result, delegation rows).
+//
+// Phase 1 (this commit) ships the in-memory `Registry` plus context-
+// propagation primitives (`TurnIDFromContext` / `WithTurnID`) so the
+// dispatcher can mint a turn_id at POST-handler entry and the
+// accumulator can append engine-emitted messages onto the
+// `Turn.MessagesAdded` slice as they persist. Phase 2 adds the HTTP
+// surface (`POST /messages` returns `{turn_id, snapshot}`,
+// `GET /turns/{turn_id}` reads turn state); Phase 3 migrates the
+// frontend off the SSE active-send path onto polling. Phase 4 decides
+// SSE-keep-vs-remove.
+//
+// Live-package boundary: this package is referenced by both
+// `internal/dispatch` (Start + WithTurnID at POST entry) and
+// `internal/session` (accumulator's TurnIDFromContext + Append at
+// each persisted message). Splitting it out of `internal/session`
+// avoids a circular import — `dispatch` already imports `session`,
+// so the registry has to live elsewhere. Keeping it under
+// `internal/turn/` also lets Phase 2's HTTP handler import the
+// registry without dragging the full `session` surface.
+//
+// Concurrency: `Registry` is goroutine-safe under a single
+// `sync.Mutex`. Every method acquires the mutex for the duration of
+// the call; copies are returned by value so callers never observe
+// shared slice/map state. The expected per-Registry call rate is at
+// most a few per second (one per POST handler entry + a few per
+// streaming chunk), so mutex contention is not a concern at v1
+// scale. Per-session sharding is a v2 concern if the chunk-rate ever
+// pushes the mutex into a hot path.
+//
+// Persistence: in-memory only at v1. Turns predating server restart
+// return `ErrTurnNotFound` from `Get`. The Phase 2 HTTP handler maps
+// that error to 404. Persistence across restarts is out of scope per
+// the plan's Constraints section.
+package turn
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"time"
+
+	"github.com/baphled/flowstate/internal/session"
+)
+
+// Status is the lifecycle stage of a Turn. Transitions are
+// monotonic: a Turn starts in StatusRunning and ends in either
+// StatusCompleted (clean stream completion) or StatusFailed
+// (provider error / engine error). Once terminal, the Turn is
+// frozen — subsequent Append / Complete / Fail calls return an
+// error rather than silently mutating the row.
+type Status string
+
+const (
+	// StatusRunning is the initial state. Set by Start, cleared by
+	// Complete or Fail. Polls in this state return MessagesAdded as
+	// it grows; the client SHOULD keep polling.
+	StatusRunning Status = "running"
+	// StatusCompleted is the clean-completion terminal state. Set by
+	// Complete. The Turn's CompletedAt is non-nil; Error is empty.
+	StatusCompleted Status = "completed"
+	// StatusFailed is the error terminal state. Set by Fail. The
+	// Turn's CompletedAt is non-nil; Error carries the engine /
+	// provider failure message that surfaced the failover-or-otherwise
+	// terminal failure. Per the plan's acceptance criterion #7,
+	// mid-stream provider FAILOVER is NOT a Failed turn — only a
+	// genuine engine error after failover exhaustion is.
+	StatusFailed Status = "failed"
+)
+
+// ModelInfo carries the (provider, model) pair the Turn ran under.
+// Populated when Complete fires so the frontend can label the turn
+// with the actual model that produced it (e.g. "glm-4.6 via z.ai").
+// Empty during StatusRunning.
+type ModelInfo struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// Turn is the first-class per-streaming-pass resource. One Turn is
+// minted per POST /messages call (Phase 2 will wire the handler);
+// the engine pipeline tags chunks with the Turn's ID via context.
+// Every message the accumulator persists during the turn lands in
+// MessagesAdded, in arrival order, and grows monotonically until the
+// turn reaches a terminal state.
+//
+// MessagesAdded MUST hold engine-emitted rows only (assistant,
+// thinking, tool_call, tool_result, delegation). The user message
+// that triggered the turn is NOT duplicated here — it lives in the
+// POST response's `snapshot` field (Phase 2 wires this). Polling on
+// `GET /turns/{turn_id}` returns MessagesAdded as it stands at poll
+// time; clients append the delta to local state.
+type Turn struct {
+	ID            string            `json:"id"`
+	SessionID     string            `json:"session_id"`
+	Status        Status            `json:"status"`
+	StartedAt     time.Time         `json:"started_at"`
+	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
+	Model         ModelInfo         `json:"model"`
+	Error         string            `json:"error,omitempty"`
+	MessagesAdded []session.Message `json:"messages_added"`
+}
+
+// ErrTurnConflict fires when Start is called on a session that
+// already has a Turn in StatusRunning. Phase 2's HTTP handler maps
+// this to 409 Conflict; the wire contract from the plan's "User-
+// chosen design" section is explicit on this: only one in-flight
+// turn per session at v1. Multi-turn parallelism is v2.
+var ErrTurnConflict = errors.New("turn: conflict — a turn is already running for this session")
+
+// ErrTurnNotFound fires when Get is called for a turn_id that the
+// registry does not hold. Phase 2's HTTP handler maps this to 404.
+// At v1, turn_ids predating server restart return this error.
+var ErrTurnNotFound = errors.New("turn: not found")
+
+// ErrTurnTerminal fires when Append / Complete / Fail is called on
+// a turn that has already reached StatusCompleted or StatusFailed.
+// Indicates a producer-side ordering bug (e.g. the accumulator
+// appending after the dispatcher's wrap goroutine already called
+// Complete). Surfaced rather than silently swallowed so the bug is
+// observable in test output.
+var ErrTurnTerminal = errors.New("turn: already in terminal state")
+
+// turnIDKey is the unexported context-key type for turn_id
+// propagation. Per the Go context-key convention (an unexported
+// zero-sized type prevents key collisions across packages), only
+// this package can write the value — callers use WithTurnID /
+// TurnIDFromContext as the typed gate.
+type turnIDKey struct{}
+
+// WithTurnID returns a context carrying the supplied turn_id.
+// Called by the dispatcher at POST-handler entry — the resulting
+// context is then handed to the streamer so every downstream
+// consumer (engine, accumulator) can read the turn_id with
+// TurnIDFromContext without any explicit plumbing.
+//
+// Expected:
+//   - parent is the caller's context.
+//   - id is the freshly-minted turn UUID. Empty strings are stored
+//     verbatim — a downstream TurnIDFromContext call surfaces the
+//     empty string and ok=false, mirroring an absent value.
+//
+// Returns:
+//   - A derived context carrying the turn_id under turnIDKey{}.
+//
+// Side effects:
+//   - None.
+func WithTurnID(parent context.Context, id string) context.Context {
+	return context.WithValue(parent, turnIDKey{}, id)
+}
+
+// TurnIDFromContext extracts the turn_id stored under turnIDKey{}.
+// Returns ("", false) when no turn_id is set OR when an empty
+// string was stored (treated as absent for symmetry with the
+// "value not present" path).
+//
+// Expected:
+//   - ctx is any context — typically the streamer ctx threaded
+//     through the engine into the accumulator.
+//
+// Returns:
+//   - id is the turn_id; "" when absent.
+//   - ok is true iff a non-empty turn_id was stored.
+//
+// Side effects:
+//   - None.
+func TurnIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	v := ctx.Value(turnIDKey{})
+	if v == nil {
+		return "", false
+	}
+	id, _ := v.(string)
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+// Registry is the in-memory store of live + terminal turns. A
+// single Registry instance is shared across the Dispatcher and the
+// accumulator (wired in app construction). All state lives under a
+// single mutex; the value semantics on Get/Snapshot mean callers
+// never observe shared internal state.
+//
+// Internal layout:
+//   - byID maps turn_id → *Turn for O(1) Get/Append/Complete/Fail
+//     lookup.
+//   - byActiveSession maps sessionID → turn_id, populated when a
+//     turn is StatusRunning and cleared on Complete/Fail. Used by
+//     Start to detect the ErrTurnConflict case.
+type Registry struct {
+	mu              sync.Mutex
+	byID            map[string]*Turn
+	byActiveSession map[string]string
+	// idGen mints fresh turn UUIDs. Unexported so production
+	// always uses google/uuid.NewString while tests can swap in
+	// a deterministic generator via NewRegistryWithIDGen.
+	idGen func() string
+	// clock returns the current time. Unexported so tests can
+	// pin StartedAt / CompletedAt without sleeping. Production
+	// uses time.Now.
+	clock func() time.Time
+}
+
+// NewRegistry constructs a Registry wired to production-grade
+// dependencies (google/uuid for turn ids; time.Now for timestamps).
+// Test fakes use NewRegistryWithIDGen to inject a deterministic
+// generator and clock.
+//
+// Returns:
+//   - A configured Registry. The zero value is NOT usable —
+//     internal maps must be initialised, which only this
+//     constructor (and NewRegistryWithIDGen) does.
+//
+// Side effects:
+//   - None.
+func NewRegistry() *Registry {
+	return NewRegistryWithIDGen(defaultIDGen, time.Now)
+}
+
+// NewRegistryWithIDGen constructs a Registry with a custom id
+// generator + clock. Phase 1 callers in production use NewRegistry;
+// tests use this variant so turn ids are predictable and CompletedAt
+// stamps line up with assertions. nil-tolerant: a nil idGen falls
+// back to the production generator; a nil clock falls back to
+// time.Now.
+//
+// Returns:
+//   - A configured Registry.
+//
+// Side effects:
+//   - None.
+func NewRegistryWithIDGen(idGen func() string, clock func() time.Time) *Registry {
+	if idGen == nil {
+		idGen = defaultIDGen
+	}
+	if clock == nil {
+		clock = time.Now
+	}
+	return &Registry{
+		byID:            make(map[string]*Turn),
+		byActiveSession: make(map[string]string),
+		idGen:           idGen,
+		clock:           clock,
+	}
+}
+
+// Start mints a fresh turn_id for the supplied sessionID, records
+// the turn in StatusRunning, and returns the new id. When the
+// session already has a Running turn, returns ErrTurnConflict —
+// the Phase 2 HTTP handler maps that to 409 Conflict per the
+// plan's "v1 supports ONE in-flight turn per session" rule.
+//
+// Expected:
+//   - sessionID is non-empty. An empty sessionID is accepted
+//     verbatim (the registry doesn't validate) but the conflict
+//     check still applies — two empty-sessionID Starts will
+//     conflict.
+//
+// Returns:
+//   - turnID is the freshly-minted UUID. Empty on error.
+//   - err is ErrTurnConflict when the session already has a
+//     Running turn; nil otherwise.
+//
+// Side effects:
+//   - Inserts a fresh Turn into byID and byActiveSession.
+func (r *Registry) Start(sessionID string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if existingID, ok := r.byActiveSession[sessionID]; ok {
+		// Verify the existing turn is genuinely Running — if a
+		// terminal-transition raced an active-map cleanup we should
+		// not block the new Start. Defence in depth; the production
+		// path always clears byActiveSession on Complete/Fail.
+		if existing, found := r.byID[existingID]; found && existing.Status == StatusRunning {
+			return "", ErrTurnConflict
+		}
+		// Stale entry — clear it so a clean Start can proceed.
+		delete(r.byActiveSession, sessionID)
+	}
+
+	id := r.idGen()
+	t := &Turn{
+		ID:            id,
+		SessionID:     sessionID,
+		Status:        StatusRunning,
+		StartedAt:     r.clock(),
+		MessagesAdded: []session.Message{},
+	}
+	r.byID[id] = t
+	r.byActiveSession[sessionID] = id
+	return id, nil
+}
+
+// Append records a message persisted during the turn into
+// MessagesAdded, in arrival order. No-op when turnID is empty
+// (matches the "no turn_id in ctx" path so the accumulator can
+// call Append unconditionally without a nil check at every site).
+// Returns ErrTurnNotFound when the turnID is unknown and
+// ErrTurnTerminal when the turn has already transitioned to
+// Completed / Failed.
+//
+// Expected:
+//   - turnID is the turn_id from TurnIDFromContext. Empty is a
+//     no-op (returns nil).
+//   - msg is the engine-emitted message the accumulator just
+//     persisted. The plan's "MessagesAdded precise definition"
+//     section restricts this to assistant / thinking / tool_call /
+//     tool_result / delegation rows — the accumulator already
+//     filters by chunk type before calling Append, so the registry
+//     does not re-check the Role field.
+//
+// Returns:
+//   - nil on success or empty turnID.
+//   - ErrTurnNotFound when turnID is unknown.
+//   - ErrTurnTerminal when the turn is in a terminal state.
+//
+// Side effects:
+//   - Appends msg to the turn's MessagesAdded slice.
+func (r *Registry) Append(turnID string, msg session.Message) error {
+	if turnID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return ErrTurnNotFound
+	}
+	if t.Status != StatusRunning {
+		return ErrTurnTerminal
+	}
+	t.MessagesAdded = append(t.MessagesAdded, msg)
+	return nil
+}
+
+// Complete transitions a Running turn to StatusCompleted, stamps
+// CompletedAt, captures the (provider, model) pair, and clears
+// the byActiveSession entry so the next Start for this sessionID
+// proceeds without an ErrTurnConflict. No-op on empty turnID for
+// symmetric ergonomics with Append.
+//
+// Expected:
+//   - turnID is the turn_id from TurnIDFromContext.
+//   - info is the (provider, model) pair the turn ran under.
+//     Empty fields are tolerated — the frontend renders them as
+//     "unknown" when missing.
+//
+// Returns:
+//   - nil on success.
+//   - ErrTurnNotFound when turnID is unknown.
+//   - ErrTurnTerminal when the turn is already in a terminal state.
+//
+// Side effects:
+//   - Mutates the Turn's Status, CompletedAt, Model.
+//   - Removes the byActiveSession entry for this turn's sessionID.
+func (r *Registry) Complete(turnID string, info ModelInfo) error {
+	if turnID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return ErrTurnNotFound
+	}
+	if t.Status != StatusRunning {
+		return ErrTurnTerminal
+	}
+	now := r.clock()
+	t.Status = StatusCompleted
+	t.CompletedAt = &now
+	t.Model = info
+	if active, found := r.byActiveSession[t.SessionID]; found && active == turnID {
+		delete(r.byActiveSession, t.SessionID)
+	}
+	return nil
+}
+
+// Fail transitions a Running turn to StatusFailed, stamps
+// CompletedAt, captures the failure cause as Error, and clears
+// the byActiveSession entry. Mirrors Complete's semantics —
+// either Complete or Fail fires exactly once per turn.
+//
+// Expected:
+//   - turnID is the turn_id from TurnIDFromContext.
+//   - cause is the engine / provider error. A nil cause is
+//     tolerated (records an empty Error); the typical wire path
+//     always carries a non-nil cause.
+//
+// Returns:
+//   - nil on success.
+//   - ErrTurnNotFound when turnID is unknown.
+//   - ErrTurnTerminal when the turn is already in a terminal state.
+//
+// Side effects:
+//   - Mutates the Turn's Status, CompletedAt, Error.
+//   - Removes the byActiveSession entry for this turn's sessionID.
+func (r *Registry) Fail(turnID string, cause error) error {
+	if turnID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return ErrTurnNotFound
+	}
+	if t.Status != StatusRunning {
+		return ErrTurnTerminal
+	}
+	now := r.clock()
+	t.Status = StatusFailed
+	t.CompletedAt = &now
+	if cause != nil {
+		t.Error = cause.Error()
+	}
+	if active, found := r.byActiveSession[t.SessionID]; found && active == turnID {
+		delete(r.byActiveSession, t.SessionID)
+	}
+	return nil
+}
+
+// Get returns a value-typed snapshot of the turn at the moment of
+// the call. The MessagesAdded slice is copied so the caller cannot
+// race the next Append. Returns ErrTurnNotFound when turnID is
+// unknown.
+//
+// Expected:
+//   - turnID is a turn_id previously returned by Start.
+//
+// Returns:
+//   - A copy of the Turn. Zero value on error.
+//   - ErrTurnNotFound when turnID is unknown.
+//
+// Side effects:
+//   - None.
+func (r *Registry) Get(turnID string) (Turn, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return Turn{}, ErrTurnNotFound
+	}
+	out := *t
+	out.MessagesAdded = append([]session.Message(nil), t.MessagesAdded...)
+	if t.CompletedAt != nil {
+		// Copy the time so a caller mutating the returned struct
+		// can't observe a shared pointer.
+		ct := *t.CompletedAt
+		out.CompletedAt = &ct
+	}
+	return out, nil
+}

@@ -26,6 +26,150 @@ type MessageAppender interface {
 	UpdateDelegation(sessionID, chainID string, mutate func(*Message))
 }
 
+// TurnMessageRecorder is the accumulator-to-Turn-registry seam from
+// Phase 1 of the "Turn-Based Post-Then-Poll Architecture (May 2026)"
+// plan. The Dispatcher constructs a recorder closure that wraps
+// turn.Registry.Append and threads it through the streamCtx via
+// WithTurnRecorder; the accumulator pulls it from ctx and calls
+// RecordTurnMessage at every persistence site (assistant, thinking,
+// tool_call, tool_result, delegation_started, delegation).
+//
+// The function-typed interface keeps `internal/session` free of any
+// `internal/turn` import — turn imports session (for Message), so a
+// reverse import would cycle. Defining the seam here means the
+// Dispatcher (which already imports both) owns the wiring; the
+// accumulator only knows about the function signature.
+//
+// Expected:
+//   - turnID identifies the live Turn the message belongs to. Empty
+//     turnID is a no-op (the accumulator skips the call entirely
+//     when ctx carries no turn_id, so this branch is defensive).
+//   - msg is the engine-emitted message being persisted (assistant,
+//     thinking, tool_call, tool_result, delegation_started,
+//     delegation). User-message rows are NEVER passed here — they
+//     belong to the POST snapshot, not Turn.MessagesAdded.
+//
+// Side effects:
+//   - Implementations append the message to the Turn registry's
+//     per-turn MessagesAdded slice.
+type TurnMessageRecorder func(turnID string, msg Message)
+
+// turnRecorderCtxKey is the unexported context-key type for the
+// TurnMessageRecorder seam. Mirrors the unexported-zero-sized-type
+// convention from internal/turn's turnIDKey.
+type turnRecorderCtxKey struct{}
+
+// turnIDCtxKey is the unexported context-key type for the turn id
+// the accumulator reads off the streamCtx. Kept symmetric with
+// internal/turn.WithTurnID — but defined here too so the accumulator
+// can read the value without importing internal/turn (which would
+// cycle: turn imports session for Message). The Dispatcher writes
+// to BOTH keys (turn.WithTurnID + session.WithAccumulatorTurnID) so
+// both consumers see the same id.
+type turnIDCtxKey struct{}
+
+// WithTurnRecorder returns ctx carrying the supplied recorder. The
+// Dispatcher calls this once at DispatchSessioned entry; the
+// accumulator extracts the recorder from the threaded ctx and calls
+// it at each persistence site.
+//
+// Expected:
+//   - parent is the streamCtx the Dispatcher is about to hand to the
+//     session manager.
+//   - rec is the recorder closure; nil-tolerant — TurnRecorderFromContext
+//     returns (nil, false) when no recorder was set.
+//
+// Returns:
+//   - A derived ctx carrying the recorder under turnRecorderCtxKey{}.
+//
+// Side effects:
+//   - None.
+func WithTurnRecorder(parent context.Context, rec TurnMessageRecorder) context.Context {
+	return context.WithValue(parent, turnRecorderCtxKey{}, rec)
+}
+
+// TurnRecorderFromContext extracts the recorder threaded via
+// WithTurnRecorder. Returns (nil, false) when no recorder is set OR
+// when a nil recorder was stored (treated as absent for symmetry
+// with the no-value path).
+func TurnRecorderFromContext(ctx context.Context) (TurnMessageRecorder, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	v := ctx.Value(turnRecorderCtxKey{})
+	if v == nil {
+		return nil, false
+	}
+	rec, _ := v.(TurnMessageRecorder)
+	if rec == nil {
+		return nil, false
+	}
+	return rec, true
+}
+
+// WithAccumulatorTurnID returns ctx carrying the supplied turn id.
+// The Dispatcher writes BOTH this key AND internal/turn's turnIDKey
+// so consumers in both packages can read the value without taking
+// the cycling import. The accumulator reads this key.
+func WithAccumulatorTurnID(parent context.Context, id string) context.Context {
+	return context.WithValue(parent, turnIDCtxKey{}, id)
+}
+
+// AccumulatorTurnIDFromContext extracts the turn id stored under
+// turnIDCtxKey{}. Returns ("", false) when absent or empty.
+func AccumulatorTurnIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	v := ctx.Value(turnIDCtxKey{})
+	if v == nil {
+		return "", false
+	}
+	id, _ := v.(string)
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+// turnAwareAppender wraps a MessageAppender so AppendMessage calls
+// ALSO fire the TurnMessageRecorder when ctx carries one. Decoupling
+// the wrap from the accumulator's inner switch keeps the existing
+// applyChunk / applyToolCall / applyToolResult sites untouched — they
+// continue to call appender.AppendMessage, the wrap fans out to both
+// the session sink AND the turn registry.
+//
+// The wrap is set up inside AccumulateStream once per turn (cheap
+// closure capture of turnID + recorder from ctx) so no per-call
+// ctx-read overhead lands on the hot persistence path.
+type turnAwareAppender struct {
+	inner    MessageAppender
+	turnID   string
+	recorder TurnMessageRecorder
+}
+
+func (t *turnAwareAppender) AppendMessage(sessionID string, msg Message) {
+	t.inner.AppendMessage(sessionID, msg)
+	if t.turnID != "" && t.recorder != nil {
+		t.recorder(t.turnID, msg)
+	}
+}
+
+func (t *turnAwareAppender) UpdateDelegation(sessionID, chainID string, mutate func(*Message)) {
+	t.inner.UpdateDelegation(sessionID, chainID, mutate)
+	// Delegation in-place updates: the Turn registry's MessagesAdded
+	// holds value-typed copies of the Messages that were AppendMessage'd
+	// at the start of the chain (delegation_started). Subsequent
+	// UpdateDelegation mutations land on the session's stored copy
+	// only, not the turn's — so the turn's MessagesAdded surfaces
+	// the FIRST snapshot, not the live state. Phase 2's GET handler
+	// will paper over this by reading delegation rows from the session
+	// snapshot (which is authoritative for in-place mutations) and
+	// merging into the polling client's view of the turn. Sufficient
+	// for Phase 1; revisit if Phase 2's wire-shape audit shows the
+	// stale-delegation problem is user-visible.
+}
+
 // AppendMessage appends a message to the session identified by sessionID.
 //
 // Expected:
@@ -222,6 +366,24 @@ func AccumulateStream(
 	sessionID, agentID string,
 	rawCh <-chan provider.StreamChunk,
 ) <-chan provider.StreamChunk {
+	// Phase 1 — Turn-Based Post-Then-Poll Architecture (May 2026).
+	// If the streamCtx carries a turn_id + a TurnMessageRecorder (the
+	// Dispatcher injects both at DispatchSessioned entry), wrap the
+	// appender so every AppendMessage call ALSO records into the Turn
+	// registry's MessagesAdded slice for this turn. Absent either
+	// value (CLI/orchestrator callers that don't drive sessioned
+	// dispatch, accumulator unit tests), the wrap is skipped entirely
+	// and the appender is used verbatim — zero behavioural change
+	// for non-sessioned callers.
+	if turnID, ok := AccumulatorTurnIDFromContext(ctx); ok {
+		if rec, recOK := TurnRecorderFromContext(ctx); recOK {
+			appender = &turnAwareAppender{
+				inner:    appender,
+				turnID:   turnID,
+				recorder: rec,
+			}
+		}
+	}
 	accumCh := make(chan provider.StreamChunk, 64)
 	go func() {
 		defer close(accumCh)

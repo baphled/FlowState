@@ -37,7 +37,16 @@ import (
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
+	"github.com/baphled/flowstate/internal/turn"
 )
+
+// ErrTurnConflict surfaces from DispatchSessioned when a second POST
+// arrives for a session whose prior Turn is still StatusRunning. The
+// /messages HTTP handler maps this to 409 Conflict — Phase 2 of the
+// "Turn-Based Post-Then-Poll Architecture (May 2026)" plan. Re-
+// exported through the dispatch package so callers don't need to
+// import internal/turn just to compare the sentinel.
+var ErrTurnConflict = turn.ErrTurnConflict
 
 // DispatchRequest is the surface-agnostic input to a dispatch call. The
 // SessionID field is populated for sessioned dispatch and empty for
@@ -73,10 +82,24 @@ type DispatchRequest struct {
 // completion. Compile-time guarantee: a /messages handler holding this
 // type cannot await the stream because there is no field to await on.
 // Preserves the async-POST contract from commit e4bf9632.
+//
+// TurnID was added in Phase 1 of the "Turn-Based Post-Then-Poll
+// Architecture (May 2026)" plan: every sessioned dispatch mints a
+// fresh UUID turn id which the HTTP handler returns to the client
+// (Phase 2 wires the response shape) so the client can poll
+// `GET /turns/{turn_id}` for the eventual outcome — decoupling the
+// client from the SSE wire's lifetime. The id also threads through
+// the engine pipeline via ctx (turn.WithTurnID) so the accumulator
+// can append engine-emitted messages onto the turn's MessagesAdded
+// list. Existing callers that ignore TurnID see no behavioural
+// change.
 type SessionedHandle struct {
 	// Snapshot is the session as it stood AFTER appending the user
 	// message and BEFORE the assistant turn streams.
 	Snapshot session.Session
+	// TurnID is the freshly-minted UUID for this dispatch's Turn.
+	// Non-empty for every successful DispatchSessioned call.
+	TurnID string
 }
 
 // EphemeralHandle is what DispatchEphemeral returns. There is no
@@ -156,6 +179,14 @@ type Dispatcher struct {
 	sessionManager        SessionManager
 	sessionBroker         SessionBroker
 	sessionLifecycleGates sync.Map // map[sessionID string]chan struct{}
+	// turnRegistry is the in-memory store of live + terminal Turns
+	// (Phase 1 of the "Turn-Based Post-Then-Poll Architecture
+	// (May 2026)" plan). DispatchSessioned calls Start at entry,
+	// injects turn_id into the streamCtx via turn.WithTurnID, and
+	// hands ownership of Complete/Fail to the wrap goroutine that
+	// drains the chunks channel. Never nil — New / NewWithTurns
+	// always wire a registry instance.
+	turnRegistry *turn.Registry
 }
 
 // New wires a Dispatcher. All dependencies are nullable for test
@@ -197,6 +228,39 @@ func New(
 	sessionManager SessionManager,
 	sessionBroker SessionBroker,
 ) *Dispatcher {
+	return NewWithTurns(streamer, dispatchEngine, swarmRegistry, agentRegistry, sessionManager, sessionBroker, nil)
+}
+
+// NewWithTurns wires a Dispatcher with an externally-supplied Turn
+// registry. The production wiring uses this constructor so Phase 2's
+// HTTP handler (GET /turns/{id}) can share the SAME registry instance
+// the Dispatcher writes into — without sharing the instance the
+// handler would read from an empty store. A nil turnRegistry falls
+// back to a fresh per-Dispatcher registry (matches the test surface
+// and lets the legacy New() constructor stay byte-compatible).
+//
+// Expected:
+//   - turnRegistry is the shared registry. nil constructs a fresh
+//     internal registry — useful for tests and pre-Phase-2 wiring
+//     where the HTTP handler doesn't read from it yet.
+//
+// Returns:
+//   - A configured *Dispatcher with the registry wired.
+//
+// Side effects:
+//   - None.
+func NewWithTurns(
+	streamer Streamer,
+	dispatchEngine swarm.DispatchEngine,
+	swarmRegistry *swarm.Registry,
+	agentRegistry *agent.Registry,
+	sessionManager SessionManager,
+	sessionBroker SessionBroker,
+	turnRegistry *turn.Registry,
+) *Dispatcher {
+	if turnRegistry == nil {
+		turnRegistry = turn.NewRegistry()
+	}
 	return &Dispatcher{
 		streamer:       streamer,
 		dispatchEngine: dispatchEngine,
@@ -204,7 +268,15 @@ func New(
 		agentRegistry:  agentRegistry,
 		sessionManager: sessionManager,
 		sessionBroker:  sessionBroker,
+		turnRegistry:   turnRegistry,
 	}
+}
+
+// TurnRegistry returns the Dispatcher's Turn registry so Phase 2's
+// HTTP handler can read Turn state by id. Always non-nil after
+// construction.
+func (d *Dispatcher) TurnRegistry() *turn.Registry {
+	return d.turnRegistry
 }
 
 // SetSessionBroker updates the broker reference after construction.
@@ -493,6 +565,37 @@ func (d *Dispatcher) DispatchSessioned(
 		return SessionedHandle{}, errors.New("dispatch: sessionManager not configured")
 	}
 
+	// Phase 1 — Turn-Based Post-Then-Poll Architecture (May 2026).
+	//
+	// Mint a fresh turn_id BEFORE acquiring the lifecycle gate. The
+	// conflict check (registry.Start returns ErrTurnConflict when a
+	// prior turn for this sessionID is still Running) MUST fire
+	// synchronously so the HTTP handler returns 409 IMMEDIATELY
+	// rather than blocking on the gate until turn 1 drains. The
+	// gate's job is to serialise swarm lifecycle ordering on the
+	// happy path; the Turn registry's job is to enforce the v1
+	// "one in-flight turn per session" contract loudly.
+	//
+	// Ordering: Start → gate acquire → resolve → send → wrap. If
+	// Start succeeds but a downstream step errors, the error-return
+	// paths below MUST call turnRegistry.Fail so the conflict gate
+	// clears for the next call. The wrap goroutine takes ownership
+	// of Complete on the happy path.
+	turnID, turnErr := d.turnRegistry.Start(req.SessionID)
+	if turnErr != nil {
+		return SessionedHandle{}, turnErr
+	}
+	// turnOwnedByWrap is set true the moment the wrap goroutine
+	// takes ownership of the terminal Complete/Fail call. Mirrors
+	// the gateTransferred pattern below — every synchronous-error
+	// return below must Fail() the turn so the conflict gate clears.
+	turnOwnedByWrap := false
+	failTurnIfOwned := func(cause error) {
+		if !turnOwnedByWrap {
+			_ = d.turnRegistry.Fail(turnID, cause)
+		}
+	}
+
 	// Per-session lifecycle handshake — Phase 3 of the v6 plan. Closes
 	// the S2 race: turn N's FlushSwarmLifecycle + RestoreManifest used
 	// to race turn N+1's SetSwarmContext, leaving the engine carrying
@@ -539,6 +642,30 @@ func (d *Dispatcher) DispatchSessioned(
 	// means every sessioned caller inherits the fix without needing to
 	// re-apply context.WithoutCancel at the handler edge.
 	streamCtx := context.WithoutCancel(ctx)
+	// Phase 1 — inject the freshly-minted turn_id so every downstream
+	// consumer (engine, accumulator) can read it via
+	// turn.TurnIDFromContext / session.AccumulatorTurnIDFromContext
+	// without explicit plumbing.
+	//
+	// Two keys, one id: the turn id is written under BOTH
+	// internal/turn's turnIDKey (for engine-level consumers and
+	// public callers) AND internal/session's turnIDCtxKey (for the
+	// accumulator inside the session package). Both keys point to
+	// the same id — the dual-key avoidance is purely a Go import-
+	// cycle workaround (turn imports session for Message, so a
+	// reverse import would cycle).
+	//
+	// We also inject the TurnMessageRecorder closure that wraps
+	// turnRegistry.Append — the accumulator extracts the closure
+	// from ctx and calls it at each persistence site so every
+	// engine-emitted message (assistant, thinking, tool_call,
+	// tool_result, delegation) lands on the Turn registry's
+	// per-turn MessagesAdded slice.
+	streamCtx = turn.WithTurnID(streamCtx, turnID)
+	streamCtx = session.WithAccumulatorTurnID(streamCtx, turnID)
+	streamCtx = session.WithTurnRecorder(streamCtx, func(id string, msg session.Message) {
+		_ = d.turnRegistry.Append(id, msg)
+	})
 
 	// Resolution: in-content @<swarm-id> mention wins over auto-dispatch.
 	// Both passes are guarded by full registry wiring (swarm + agent +
@@ -608,6 +735,9 @@ func (d *Dispatcher) DispatchSessioned(
 		// Stream never started — gateTransferred stays false, so the
 		// safety-net defer releases the baton synchronously after we
 		// return. Next call for this sessionID is unblocked.
+		// turnOwnedByWrap stays false — Fail the turn now so the
+		// per-session conflict gate clears synchronously.
+		failTurnIfOwned(err)
 		return SessionedHandle{}, err
 	}
 
@@ -621,6 +751,7 @@ func (d *Dispatcher) DispatchSessioned(
 		if swarmActive {
 			d.dispatchEngine.RestoreManifest(manifestSnapshot)
 		}
+		failTurnIfOwned(snapErr)
 		return SessionedHandle{}, snapErr
 	}
 
@@ -630,6 +761,13 @@ func (d *Dispatcher) DispatchSessioned(
 		// inner defers run flush → restore → release in LIFO order,
 		// so the gate ONLY drops after the engine is fully restored.
 		gateTransferred = true
+		// Hand Turn ownership to the wrap goroutine too — Complete
+		// fires after the chunks channel drains cleanly, Fail fires
+		// if the terminal chunk carries an Error. The wrap goroutine
+		// MUST call exactly one of {Complete, Fail} so the per-session
+		// conflict gate clears.
+		turnOwnedByWrap = true
+		chunks = d.wrapWithTurnLifecycle(chunks, turnID)
 		chunks = d.wrapWithSwarmLifecycle(
 			streamCtx, chunks, manifestSnapshot, swarmActive, releaseGateSync,
 		)
@@ -652,10 +790,87 @@ func (d *Dispatcher) DispatchSessioned(
 		// synchronously so engine state doesn't leak.
 		d.dispatchEngine.RestoreManifest(manifestSnapshot)
 		// gateTransferred remains false — the safety-net defer
-		// releases the baton.
+		// releases the baton. Complete the turn synchronously since
+		// no chunks will ever drain; an empty MessagesAdded turn is
+		// a valid "completed with no engine output" terminal state.
+		_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{})
+	} else {
+		// Nil chunks + no swarm — same Complete-synchronously path so
+		// the conflict gate clears.
+		_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{})
 	}
 
-	return SessionedHandle{Snapshot: snap}, nil
+	return SessionedHandle{Snapshot: snap, TurnID: turnID}, nil
+}
+
+// wrapWithTurnLifecycle observes the chunks channel as it drains and
+// fires the terminal turn.Registry transition exactly once when src
+// closes. The terminal call is Fail when the last chunk carried a
+// non-nil Error (engine surface for provider errors and ctx-cancel),
+// Complete otherwise. The wrap also captures the (provider, model)
+// pair from every chunk that carries it so a mid-stream failover —
+// where the engine restamps ProviderID/ModelID after switching
+// candidates — surfaces the FINAL pair on the Turn record, matching
+// the accumulator's lastModelID / lastProviderID tracking pattern
+// (internal/session/accumulator.go:296-309).
+//
+// Ordering note: this wrap is the INNERMOST in the chunk pipeline —
+// wrapWithSwarmLifecycle wraps THIS, so the terminal Turn call fires
+// BEFORE the swarm lifecycle's FlushSwarmLifecycle / RestoreManifest
+// (LIFO defer order in wrapWithSwarmLifecycle's goroutine puts
+// RestoreManifest LAST). This is load-bearing for the conflict gate
+// — turn.Complete clears byActiveSession synchronously, so by the
+// time the per-session lifecycle gate releases (which the wrap goroutine
+// fires AFTER FlushSwarmLifecycle), the NEXT turn's Start has the
+// active-session entry cleared and can proceed without ErrTurnConflict.
+//
+// Side effects:
+//   - Spawns one goroutine that consumes src to completion.
+//   - Calls turnRegistry.Complete OR turnRegistry.Fail exactly once.
+func (d *Dispatcher) wrapWithTurnLifecycle(
+	src <-chan provider.StreamChunk,
+	turnID string,
+) <-chan provider.StreamChunk {
+	out := make(chan provider.StreamChunk, 64)
+	go func() {
+		defer close(out)
+		var (
+			lastModelID    string
+			lastProviderID string
+			terminalErr    error
+		)
+		for chunk := range src {
+			if chunk.ModelID != "" {
+				lastModelID = chunk.ModelID
+			}
+			if chunk.ProviderID != "" {
+				lastProviderID = chunk.ProviderID
+			}
+			if chunk.Error != nil {
+				// Capture the FIRST non-nil error — subsequent chunks
+				// may carry the same error redundantly (engine's
+				// Done-on-error path emits {Error, Done} together).
+				if terminalErr == nil {
+					terminalErr = chunk.Error
+				}
+			}
+			out <- chunk
+		}
+		// Terminal transition — exactly one of {Fail, Complete} fires.
+		// Errors from the registry call are swallowed: an ErrTurnTerminal
+		// would only happen if a producer-side bug already transitioned
+		// the turn (e.g. a future test injecting a Complete) and is not
+		// actionable from this seam.
+		if terminalErr != nil {
+			_ = d.turnRegistry.Fail(turnID, terminalErr)
+			return
+		}
+		_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{
+			Provider: lastProviderID,
+			Model:    lastModelID,
+		})
+	}()
+	return out
 }
 
 // acquireSessionLifecycleGate returns the per-session baton channel for
