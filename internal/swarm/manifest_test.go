@@ -1,6 +1,8 @@
 package swarm_test
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -198,6 +200,65 @@ var _ = Describe("Manifest.Validate", func() {
 			err := m.Validate(v)
 
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	// Member-timeout bounds the per-delegate await loop so a stalled
+	// child cannot hang the parent coordinator forever. Mirrors the
+	// GateSpec.Timeout precedent (zero = no deadline, positive = applied,
+	// negative = rejected).
+	//
+	// Symptom this guards against: session 3255e2ee-12a8-4cda-b0c6-
+	// 8be5ade06cad — coordinator dispatched two members in parallel; the
+	// executor went silent mid-stream and the parent's session stayed
+	// active indefinitely because DelegateTool.collectWithProgress had no
+	// time.After branch in its select.
+	Context("with harness.member_timeout", func() {
+		It("accepts a manifest where member_timeout is omitted (zero — no deadline)", func() {
+			m := validBase()
+
+			err := m.Validate(nil)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(m.Harness.MemberTimeout).To(BeZero())
+		})
+
+		It("accepts a manifest with a positive member_timeout", func() {
+			m := validBase()
+			m.Harness.MemberTimeout = 5 * time.Minute
+
+			err := m.Validate(nil)
+
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("rejects a manifest with a negative member_timeout", func() {
+			m := validBase()
+			m.Harness.MemberTimeout = -1 * time.Second
+
+			err := m.Validate(nil)
+
+			Expect(err).To(HaveOccurred())
+			var verr *swarm.ValidationError
+			Expect(err).To(BeAssignableToTypeOf(verr))
+			Expect(err.Error()).To(ContainSubstring("harness.member_timeout"))
+		})
+
+		It("parses harness.member_timeout from a duration scalar via YAML", func() {
+			body := []byte(`schema_version: "1.0.0"
+id: timeout-swarm
+lead: planner
+members:
+  - reviewer
+harness:
+  parallel: true
+  member_timeout: 90s
+`)
+
+			m, err := swarm.UnmarshalManifest(body)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(m.Harness.MemberTimeout).To(Equal(90 * time.Second))
 		})
 	})
 })

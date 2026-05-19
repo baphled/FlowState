@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -167,6 +168,29 @@ func parallelManifest(id string, members []string, parallel bool, maxParallel in
 	}
 }
 
+// stallingStreamer returns a streamer that opens a channel but never
+// emits anything (and never closes it) until the per-call ctx is
+// cancelled. Models a delegate child that goes silent mid-stream — the
+// exact symptom the per-member timeout guards against. The returned
+// signal channel closes once ctx.Done() fires so the test can prove
+// the cancellation observed by the streamer was deadline-driven.
+func stallingStreamer() (streaming.Streamer, <-chan context.Context) {
+	cancelled := make(chan context.Context, 4)
+	s := streamerFunc(func(ctx context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		ch := make(chan provider.StreamChunk)
+		go func() {
+			<-ctx.Done()
+			select {
+			case cancelled <- ctx:
+			default:
+			}
+			close(ch)
+		}()
+		return ch, nil
+	})
+	return s, cancelled
+}
+
 // buildLeadAndMemberEngines creates a lead plus N member engines and
 // returns the engines map ready for DelegateTool wiring.
 func buildLeadAndMemberEngines(memberIDs []string) (*engine.Engine, map[string]*engine.Engine) {
@@ -282,6 +306,78 @@ var _ = Describe("SwarmParallelDispatch", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(probe.snapshotMax()).To(BeNumerically("<=", 2))
+		})
+	})
+
+	// Per-member timeout guards the parent against a stalled child
+	// hanging the coordinator forever. Symptom: session 3255e2ee — a
+	// coordinator dispatched researcher + executor in parallel; the
+	// executor went silent mid-stream and the parent's
+	// collectWithProgress await loop had no time.After branch, so the
+	// parent session stayed active indefinitely. Fix: HarnessConfig
+	// gains MemberTimeout; the per-member dispatch ctx is wrapped with
+	// WithTimeout (zero = no deadline preserves current behaviour).
+	Context("with Harness.MemberTimeout set and a stalled member stream", func() {
+		It("returns the deadline error and cancels the sibling member", func() {
+			members := []string{"stalls", "sibling"}
+			lead, engines := buildLeadAndMemberEngines(members)
+			manifest := parallelManifest("timeout-swarm", members, true, 2)
+			manifest.Harness.MemberTimeout = 100 * time.Millisecond
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			stallStreamer, stallCancels := stallingStreamer()
+			siblingStreamer, siblingCancels := stallingStreamer()
+			streamers := map[string]streaming.Streamer{
+				"stalls":  stallStreamer,
+				"sibling": siblingStreamer,
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			start := time.Now()
+			err := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, members, "go")
+			elapsed := time.Since(start)
+
+			Expect(err).To(HaveOccurred(), "stalled member must surface as an error, not a forever-hang")
+			Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(),
+				"expected DeadlineExceeded in the error chain; got %v", err)
+			Expect(elapsed).To(BeNumerically("<", 5*time.Second),
+				"with MemberTimeout=100ms the dispatch must unwind well before any default; got %s", elapsed)
+
+			// Both streamer goroutines must observe their per-call ctx
+			// firing — the stalled member from its own deadline, the
+			// sibling from dispatchParallel's first-error cancel cascade.
+			Eventually(stallCancels, "1s").Should(Receive())
+			Eventually(siblingCancels, "1s").Should(Receive())
+		})
+
+		It("does not fire when MemberTimeout is zero (the default) and the streamer completes", func() {
+			members := []string{"alpha"}
+			lead, engines := buildLeadAndMemberEngines(members)
+			manifest := parallelManifest("no-timeout-swarm", members, true, 1)
+			// MemberTimeout left at zero — backwards-compatible default.
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			probe := newProbe()
+			streamers := map[string]streaming.Streamer{
+				"alpha": boundedHoldStreamer(probe, 25*time.Millisecond),
+			}
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, members, "go")
+
+			Expect(err).NotTo(HaveOccurred(),
+				"zero MemberTimeout must preserve the no-deadline contract")
 		})
 	})
 })

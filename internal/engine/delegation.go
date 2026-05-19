@@ -2260,6 +2260,19 @@ func (d *DelegateTool) executeSync(
 	// preferences. Masking with "" disables the override check in engine.go.
 	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, "")
 	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, "")
+	// HarnessConfig.MemberTimeout caps the delegate-await loop so a
+	// stalled child cannot hang the parent forever. Zero (the default)
+	// preserves the historical no-deadline contract; a positive value
+	// wraps the per-call ctx so DeadlineExceeded flows back through the
+	// existing dispatch-failure branch below (and through
+	// dispatchParallel's first-error cancel cascade in the swarm path).
+	// Symptom: session 3255e2ee — coordinator hung indefinitely on a
+	// silent executor child.
+	if memberTimeout := d.activeMemberTimeout(); memberTimeout > 0 {
+		var cancelMemberTimeout context.CancelFunc
+		delegateCtx, cancelMemberTimeout = context.WithTimeout(delegateCtx, memberTimeout)
+		defer cancelMemberTimeout()
+	}
 
 	var result delegationResult
 	dispatchErr := d.runStreamThroughRunner(delegateCtx, target, &result)
@@ -2658,8 +2671,14 @@ func (d *DelegateTool) clampMaxParallelToBudget(manifestMax, rosterSize int) int
 //   - On invocation: resolves the target engine OR recurses into a
 //     nested DispatchSwarmMembers call.
 func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string) swarm.MemberRunner {
+	memberTimeout := d.memberTimeoutForSwarm(swarmCtx.SwarmID)
 	return func(ctx context.Context, memberID string) error {
 		if subSwarm := d.resolveSubSwarm(memberID); subSwarm != nil {
+			// Sub-swarm recursion: the child swarm carries its own
+			// HarnessConfig (and thus its own MemberTimeout). The
+			// per-leaf wrap inside the recursive DispatchSwarmMembers
+			// owns the deadline; wrapping here would double-cap the
+			// child's members with the parent's budget.
 			child := swarmCtx.NestSubSwarm(memberID)
 			child.LeadAgent = subSwarm.Lead
 			child.Members = append([]string(nil), subSwarm.Members...)
@@ -2676,11 +2695,68 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 			engine:  eng,
 			message: message,
 		}
+		// HarnessConfig.MemberTimeout caps the per-member await so a
+		// stalled child surfaces as context.DeadlineExceeded rather
+		// than hanging the parent forever. Zero preserves the
+		// historical no-deadline contract; positive wraps the
+		// per-member ctx so the error flows out through streamAndCollect
+		// and dispatchParallel's first-error cancel cascade unwinds
+		// any siblings still in flight. Symptom: session 3255e2ee.
+		if memberTimeout > 0 {
+			var cancelMemberTimeout context.CancelFunc
+			ctx, cancelMemberTimeout = context.WithTimeout(ctx, memberTimeout)
+			defer cancelMemberTimeout()
+		}
 		var result delegationResult
 		return runner.Dispatch(ctx, memberID, func(dispatchCtx context.Context, _ string) error {
 			return d.streamAndCollect(dispatchCtx, target, &result)
 		})
 	}
+}
+
+// memberTimeoutForSwarm returns the HarnessConfig.MemberTimeout for
+// the given swarm id, or zero when no manifest is registered. Pulled
+// into a helper so the buildMemberRunner closure can capture the
+// duration once at construction time rather than re-resolving the
+// manifest on every member invocation.
+//
+// Expected:
+//   - swarmID is the active swarm context id.
+//
+// Returns:
+//   - The configured MemberTimeout, or zero when no registry / no
+//     manifest / no field set (the no-deadline default).
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) memberTimeoutForSwarm(swarmID string) time.Duration {
+	m := d.manifestForSwarm(swarmID)
+	if m == nil {
+		return 0
+	}
+	return m.Harness.MemberTimeout
+}
+
+// activeMemberTimeout returns the HarnessConfig.MemberTimeout from the
+// active swarm context's manifest, or zero when no swarm context is
+// active. Used by the single-target Execute path so a delegation
+// invoked from inside a swarm (the common case) inherits the swarm's
+// configured per-member deadline; standalone delegations (no swarm
+// context) keep the historical no-deadline contract.
+//
+// Returns:
+//   - The configured MemberTimeout, or zero in any of: no swarm
+//     context active, no registry installed, no manifest registered,
+//     MemberTimeout unset.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) activeMemberTimeout() time.Duration {
+	swarmCtx, ok := d.activeSwarmContext()
+	if !ok || swarmCtx == nil {
+		return 0
+	}
+	return d.memberTimeoutForSwarm(swarmCtx.SwarmID)
 }
 
 // resolveSubSwarm returns the manifest for memberID when the swarm
