@@ -358,6 +358,52 @@ function persistProviderId(providerId: string | null): void {
 //
 // New actions choose A when there is no caller that benefits from the
 // thrown error; B when there is. Don't introduce a third pattern.
+
+// rowsShallowEqual compares two Message objects field-by-field for the
+// keys that actually drive UI re-render (content, status, tool counters,
+// model attribution, thinking content). Returns true when the incoming
+// row has nothing new to say about the existing row, so the caller can
+// skip the object spread + array-slot reassignment that would otherwise
+// trigger Vue's reactivity for zero observable change.
+//
+// Scoped to the union of fields the Turn endpoint emits + the fields
+// the chat UI binds to. Conservative on the "different" side: any
+// missing field on `incoming` that differs from `existing` (e.g.
+// `incoming.toolCalls === undefined` vs `existing.toolCalls === 3`) is
+// treated as "different" so we don't accidentally erase state via a
+// short-circuit. The Turn endpoint's row payloads carry every field
+// they care about, so this branch is largely a defence-in-depth.
+//
+// thinkingBlocks is compared by reference: the engine emits a NEW
+// array when it grows, so reference equality is sufficient and avoids
+// a deep walk on every poll.
+function rowsShallowEqual(existing: Message, incoming: Partial<Message>): boolean {
+  const keys: (keyof Message)[] = [
+    'content',
+    'status',
+    'role',
+    'toolCalls',
+    'lastTool',
+    'targetAgent',
+    'chainId',
+    'modelName',
+    'providerName',
+    'thinkingContent',
+    'thinkingBlocks',
+    'stopReason',
+    'toolName',
+    'toolInput',
+    'agentId',
+    'timestamp',
+  ]
+  for (const k of keys) {
+    if (k in incoming && existing[k] !== incoming[k]) {
+      return false
+    }
+  }
+  return true
+}
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
     availableAgentDetails: [] as Agent[],
@@ -1818,8 +1864,41 @@ export const useChatStore = defineStore('chat', {
           if (!row || !row.id) continue
           const idx = this.messages.findIndex((m) => m.id === row.id)
           if (idx >= 0) {
-            // Upsert by id — preserve position, replace contents.
-            this.messages[idx] = { ...this.messages[idx], ...row }
+            // Upsert by id — preserve position, replace contents IF
+            // anything actually changed.
+            //
+            // Phase-4 Commit-2 (May-19 2026, "streamed vs dump" UX
+            // investigation). The pre-fix path unconditionally spread
+            // `{ ...existing, ...row }` and reassigned the array slot
+            // on every poll, including no-op ticks where the backend
+            // returned a byte-equal row during a quiet phase (between
+            // content chunks, during a tool call, mid-thinking-block,
+            // or after the cadence backed off to 1s/3s while the turn
+            // was still "running"). That triggered the full Vue
+            // reactivity cascade — MarkdownRenderer re-parsed the
+            // whole accumulated content via md.render and v-html
+            // replaced the entire `.markdown-body` subtree — for zero
+            // observable change.
+            //
+            // The shallow-equal check skips the spread when every
+            // incoming-row field already matches what we have. Net
+            // effect at 250ms cadence on a long-running turn: the
+            // MessageBubble for the active assistant row only
+            // re-renders when its content / status / tool counters
+            // genuinely move.
+            //
+            // Limits of this fix:
+            //   - This does NOT make polling feel like a token stream.
+            //     Each poll still delivers a fully-accumulated content
+            //     string and the bubble still grows in 250ms jumps when
+            //     content does arrive — that's structural to snapshot
+            //     polling and only a transport change can address it.
+            //   - This only short-circuits the no-op case. Real growth
+            //     ticks still pay the same md.render cost as before.
+            const existing = this.messages[idx]
+            if (!rowsShallowEqual(existing, row)) {
+              this.messages[idx] = { ...existing, ...row }
+            }
           } else {
             this.messages.push(row)
           }
