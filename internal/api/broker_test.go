@@ -413,6 +413,183 @@ var _ = Describe("SessionBroker", func() {
 		})
 	})
 
+	// Done-releases-active contract (May 2026 — isStreaming-stuck bug).
+	//
+	// User-visible symptom: GET /api/v1/sessions reported isStreaming:true
+	// for coordinator session 3b6ecb2c indefinitely, while a fresh SSE
+	// subscription returned [DONE] within ~250ms (sealed-turn grace).
+	// IsPublishing returns true iff active[sessionID] > 0, which means
+	// some broker.Publish run is mid-flight; the apparent state was
+	// "publisher goroutine is alive but its source channel will not
+	// close in any sensible time".
+	//
+	// Root cause class: any upstream stage that emits a terminal
+	// Done{...} chunk and then fails to close the chunks channel leaks
+	// the broker publisher state. The chain from engine outChan →
+	// accumulator → session manager → dispatcher wrap → broker is fully
+	// linked by `defer close(out)` on each goroutine, so a single
+	// regression on any one of those defers leaves active leaked.
+	//
+	// Contract fix: the broker treats chunk.Done == true as the
+	// authoritative terminal signal for IsPublishing accounting. The
+	// first Done observed in a Publish run decrements active
+	// immediately (so IsPublishing flips false). Publish continues
+	// consuming the source channel and fanning out subsequent chunks
+	// (the engine emits a post-Done provider_quota chunk via
+	// makePostTurnQuotaEmitter — engine.go:2720 — that subscribers
+	// must still receive). Subscriber close happens at source-close
+	// only.
+	//
+	// Why "any Done shape" rather than gating on StopReason: the user
+	// reported the synthetic Done{StopReasonEmptyTurn} from the
+	// engine's idle-stream watchdog (commit 3408c793) as the trigger,
+	// but the contract MUST be StopReason-agnostic. Provider
+	// `message_stop`, dispatcher cancel, tool-execute error path, and
+	// the watchdog all set chunk.Done = true; the broker has no
+	// business inspecting WHY the stream ended.
+	Describe("Done releases active accounting (isStreaming-stuck bug)", func() {
+		It("flips IsPublishing to false when a Done chunk is observed, even if the source channel never closes", func() {
+			b := api.NewSessionBroker()
+			const sessionID = "sess-done-terminal"
+
+			// Subscriber receives the chunks for observability — the
+			// real bug surfaced because IsPublishing stayed true even
+			// when no one was producing chunks anymore.
+			ch, unsub := b.Subscribe(sessionID)
+			defer unsub()
+
+			// Source emits a content chunk, then a Done chunk
+			// (mimicking the engine's synthetic Done{StopReasonEmptyTurn}
+			// from the idle-stream watchdog), then BLOCKS forever
+			// without closing. Pre-fix Publish parks on
+			// `for chunk := range chunks` waiting for a close that
+			// never arrives, holding active > 0.
+			source := make(chan provider.StreamChunk, 4)
+			source <- provider.StreamChunk{Content: "partial response"}
+			source <- provider.StreamChunk{
+				Done:       true,
+				StopReason: "empty_turn",
+			}
+			// Deliberately do NOT close(source) — this is the
+			// regression shape we are pinning. Any upstream stage
+			// that synthesises a Done without closing the channel
+			// surfaces here.
+
+			go b.Publish(sessionID, source)
+
+			// Drain the subscriber until we see Done so we know the
+			// chunk reached the fan-out — Publish observed it.
+			Eventually(func() bool {
+				select {
+				case c := <-ch:
+					return c.Done
+				default:
+					return false
+				}
+			}, "2s", "10ms").Should(BeTrue(), "subscriber must receive the Done chunk before the broker honours its terminal signal")
+
+			// The load-bearing assertion: IsPublishing MUST flip to
+			// false shortly after the Done chunk fans out, regardless
+			// of whether the source channel is ever closed. Pre-fix
+			// this Eventually times out — active stays > 0 until
+			// source-close, and the stuck upstream never closes.
+			Eventually(func() bool { return b.IsPublishing(sessionID) }, "2s", "10ms").
+				Should(BeFalse(),
+					"after Done fans out, broker.IsPublishing MUST flip to false even when the source channel never closes; "+
+						"otherwise GET /api/v1/sessions reports isStreaming:true forever (May 2026 stuck-coordinator bug)")
+		})
+
+		It("flips IsPublishing to false on Done from an idle-watchdog synthetic Done shape (StopReason=empty_turn)", func() {
+			b := api.NewSessionBroker()
+			const sessionID = "sess-empty-turn"
+
+			ch, unsub := b.Subscribe(sessionID)
+			defer unsub()
+
+			source := make(chan provider.StreamChunk, 2)
+			// Exact shape from engine.go:3872 — the synthetic Done
+			// the idle-stream watchdog emits when the provider HTTP
+			// body hangs silent for engineStreamIdleTimeout (60s
+			// production, overridable in test).
+			source <- provider.StreamChunk{
+				Done:       true,
+				StopReason: "empty_turn",
+				ModelID:    "test-model",
+				ProviderID: "test-provider",
+			}
+			// Source stays open — mimicking any cascade-break where
+			// the engine's outChan is somehow held open after the
+			// goroutine that owns its defer close has returned (the
+			// production failure mode the user observed).
+
+			go b.Publish(sessionID, source)
+
+			Eventually(ch).Should(Receive(),
+				"subscriber must receive the watchdog's synthetic Done")
+			Eventually(func() bool { return b.IsPublishing(sessionID) }, "2s", "10ms").
+				Should(BeFalse(),
+					"the idle-watchdog's synthetic Done MUST clear the publishing state — "+
+						"the contract is 'stream is done' regardless of StopReason")
+		})
+
+		It("continues fanning out post-Done chunks to subscribers (engine post-turn provider_quota emission)", func() {
+			// The engine emits a post-terminal provider_quota chunk
+			// via makePostTurnQuotaEmitter (engine.go:2720) AFTER the
+			// terminal Done. The broker's Done-releases-active fix
+			// MUST NOT strand those — IsPublishing flips false on
+			// Done but the receive loop continues so subscribers
+			// still see the quota chip update.
+			b := api.NewSessionBroker()
+			const sessionID = "sess-post-done-quota"
+
+			ch, unsub := b.Subscribe(sessionID)
+			defer unsub()
+
+			source := make(chan provider.StreamChunk, 4)
+			source <- provider.StreamChunk{Done: true, StopReason: "end_turn"}
+			source <- provider.StreamChunk{
+				EventType: "provider_quota",
+				Content:   `{"spent_usd":0.42}`,
+			}
+			close(source)
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				b.Publish(sessionID, source)
+			}()
+
+			// Collect both chunks: the terminal Done AND the post-
+			// Done provider_quota. Subscriber must see both.
+			var doneSeen, quotaSeen bool
+			Eventually(func() bool {
+				select {
+				case c, ok := <-ch:
+					if !ok {
+						return doneSeen && quotaSeen
+					}
+					if c.Done {
+						doneSeen = true
+					}
+					if c.EventType == "provider_quota" {
+						quotaSeen = true
+					}
+					return doneSeen && quotaSeen
+				default:
+					return false
+				}
+			}, "2s", "10ms").Should(BeTrue(),
+				"the broker MUST continue fanning out post-Done chunks (e.g. provider_quota) so subscribers still see the quota chip update; "+
+					"otherwise the engine post-turn quota emission lands in a black hole")
+
+			// And the active accounting still dropped on Done.
+			Expect(b.IsPublishing(sessionID)).To(BeFalse(),
+				"active accounting MUST have released on first Done; post-Done chunks ride the same Publish run but do not extend the active window")
+
+			<-done
+		})
+	})
+
 	// Concurrency audit (May 2026) — comprehensive lifecycle invariants.
 	//
 	// Background: three prior race fixes landed reactively in the same
