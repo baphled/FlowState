@@ -416,15 +416,75 @@ func (b *SessionBroker) Subscribe(sessionID string) (<-chan provider.StreamChunk
 //   - Nothing. Synchronous; returns when the source channel closes.
 //
 // Side effects:
-//   - Reads all chunks from the source channel.
+//   - Reads chunks from the source channel until close. Late chunks
+//     that arrive AFTER the terminal Done still fan out to current
+//     subscribers (the engine emits a post-Done provider_quota chunk
+//     via makePostTurnQuotaEmitter — engine.go:2720 — and other
+//     post-terminal observability chunks may follow).
 //   - Sends each chunk to every active subscriber channel for the
 //     session via deliverWithBackpressure.
-//   - On last-out exit: removes the session's entries from active and
-//     subscribers maps, and closes every captured subscriber channel.
+//   - On observing a chunk with Done == true: decrements the per-
+//     session active refcount IMMEDIATELY so IsPublishing reports
+//     false from that point onward, even though Publish continues
+//     consuming the source. See "Done releases active accounting"
+//     below.
+//   - On source close (last out, after the post-Done drain finishes):
+//     removes the session's entries from active and subscribers maps
+//     (when not already removed by the Done branch), and closes every
+//     captured subscriber channel.
+//
+// # Done releases active accounting (May 2026 isStreaming-stuck fix)
+//
+// Before this fix Publish decremented active ONLY when the source
+// channel closed. Any upstream stage that synthesised a terminal
+// Done{...} chunk and then failed to close its outgoing channel
+// promptly (engine outChan, session manager finalCh, dispatcher wrap
+// out — every stage has a `defer close(...)` but any cascade defect
+// holds the close open) left active[sessionID] > 0 indefinitely. GET
+// /api/v1/sessions reported isStreaming:true long after the actual
+// stream completed.
+//
+// The bug originally surfaced via the engine idle-stream watchdog
+// (commit 3408c793): on a stalled provider HTTP body the engine
+// emits a synthetic Done{StopReason: empty_turn} from
+// processStreamChunks. The user-observed coordinator session
+// 3b6ecb2c-1b63-462f-96fc-0f614eca10ef sat at isStreaming:true while a
+// fresh SSE subscription returned [DONE] within the 250ms sealed-turn
+// grace — proof the publisher was alive but not producing chunks even
+// though IsPublishing reported true.
+//
+// Fix shape: split the receive-loop exit from the active-refcount
+// decrement. The refcount drops to zero on first Done observed,
+// so IsPublishing reports false immediately. The receive loop
+// continues to fan out any post-Done chunks (engine post-turn quota
+// emission, late observability chunks) but accounts as inactive for
+// the API surface that builds session summaries.
+//
+// The contract is StopReason-agnostic on purpose: provider
+// `message_stop`, dispatcher ctx-cancel emission, tool-execute error
+// path, and the watchdog all set chunk.Done = true; the broker has
+// no business inspecting WHY the stream ended. Any Done is the
+// terminal signal for IsPublishing accounting.
+//
+// # Last-out / terminal-close interaction
+//
+// The last-out branch runs at source-close as before. When Done has
+// already decremented active, the branch is a no-op for active map
+// management; the terminal close still fires to close every subscriber
+// channel. The subscriber-close MUST run at source-close (not at Done)
+// because post-Done chunks still need to fan out to subscribers
+// (engine's makePostTurnQuotaEmitter emits provider_quota chunks
+// AFTER the terminal Done) — closing on Done would strand those.
 func (b *SessionBroker) Publish(sessionID string, chunks <-chan provider.StreamChunk) {
 	b.mu.Lock()
 	b.active[sessionID]++
 	b.mu.Unlock()
+
+	// activeReleased flips to true on the first Done chunk so the
+	// source-close branch does not double-decrement active. The fan-
+	// out of post-Done chunks continues; only the IsPublishing
+	// accounting is affected.
+	activeReleased := false
 
 	for chunk := range chunks {
 		b.mu.Lock()
@@ -435,25 +495,85 @@ func (b *SessionBroker) Publish(sessionID string, chunks <-chan provider.StreamC
 		for _, sub := range subs {
 			b.deliverWithBackpressure(sessionID, sub, chunk)
 		}
+
+		// Done-releases-active: the terminal frame has fanned out to
+		// every current subscriber. Drop the active accounting NOW so
+		// GET /api/v1/sessions stops reporting isStreaming:true,
+		// regardless of how long the upstream takes to close the
+		// source. Post-Done chunks (engine post-turn quota, late
+		// observability) still flow through the receive loop and fan
+		// out — but the publisher is no longer "active" by the broker
+		// contract.
+		if chunk.Done && !activeReleased {
+			b.releaseActive(sessionID)
+			activeReleased = true
+		}
 	}
 
+	// Source closed. Run the terminal-close branch. When Done already
+	// released active, the b.releaseActive call is a no-op for active
+	// accounting (already removed); the subscriber-close still fires
+	// from the last-out path below.
+	if !activeReleased {
+		b.releaseActive(sessionID)
+	}
+	b.terminalCloseIfLastOut(sessionID)
+}
+
+// releaseActive decrements active[sessionID] under b.mu. When the
+// count drops to zero, the entry is removed from the map so a
+// subsequent Subscribe sees a fresh map state.
+//
+// Subscribers are NOT closed here — that happens at terminal close
+// only after the source channel has fully drained (so post-Done
+// chunks reach subscribers). The split between active accounting and
+// subscriber close is the load-bearing shape of the May 2026 fix:
+// IsPublishing flips on Done; subscribers stay live until source
+// close.
+//
+// Side effects:
+//   - Decrements active[sessionID].
+//   - When count reaches zero, deletes the active map entry.
+func (b *SessionBroker) releaseActive(sessionID string) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.active[sessionID] <= 0 {
+		// Defensive — should not happen given Publish increments at
+		// entry and releases at most once per call. Idempotent guard
+		// so a future double-call cannot push active negative.
+		return
+	}
 	b.active[sessionID]--
+	if b.active[sessionID] == 0 {
+		delete(b.active, sessionID)
+	}
+}
+
+// terminalCloseIfLastOut performs the subscriber-close branch when
+// this Publish call is the last out (no other Publish run is in
+// flight for the same sessionID). Called at source-close — never on
+// Done — so post-Done chunks still reach subscribers via the receive
+// loop's fan-out.
+//
+// Side effects:
+//   - When no other Publish run is in flight: captures the current
+//     subscriber slice, removes it from the subscribers map, and
+//     closes every captured channel under b.mu.
+//   - When another Publish run is still active: no-op.
+func (b *SessionBroker) terminalCloseIfLastOut(sessionID string) {
+	b.mu.Lock()
 	if b.active[sessionID] > 0 {
 		// Another Publish run is still in flight for this session.
-		// It owns the terminal close — we just exit. No close, no
-		// map mutation other than the decrement above.
+		// It owns the terminal close.
 		b.mu.Unlock()
 		return
 	}
-	// Last out — own the terminal close.
-	delete(b.active, sessionID)
 	subs := b.subscribers[sessionID]
 	delete(b.subscribers, sessionID)
-	// Close inside the lock. See the godoc above for why this is the
-	// right shape (eliminates the Subscribe-during-terminal-close
-	// orphan window) and why it is deadlock-free (close is constant-
-	// time, no callback into broker code).
+	// Close inside the lock. The godoc on Publish explains why this
+	// is the right shape (eliminates the Subscribe-during-terminal-
+	// close orphan window) and why it is deadlock-free (close is
+	// constant-time, no callback into broker code).
 	for _, sub := range subs {
 		close(sub)
 	}
