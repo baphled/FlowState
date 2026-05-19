@@ -95,4 +95,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterAdultingMemorySteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)
+	registerDemoInstallSteps(ctx)
 }

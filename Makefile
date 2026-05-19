@@ -1,4 +1,4 @@
-.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status demo-bootstrap demo-qdrant-up demo-check demo-run
 
 # Binary name
 BINARY_NAME=flowstate
@@ -357,6 +357,25 @@ qdrant-status: ## Show Qdrant health and list collections
 	@echo "Collections:"
 	@curl -fsS http://127.0.0.1:6333/collections | jq -r '.result.collections[].name' 2>/dev/null \
 		|| echo "(curl/jq failed — is Qdrant up?)"
+
+#
+# Demo Install (FS NPR onboarding PoC)
+#
+
+demo-bootstrap: ## Bootstrap the first-time local demo path
+	bash scripts/bootstrap-demo.sh
+
+demo-qdrant-up: qdrant-up ## Start Qdrant for the demo
+
+demo-check: ## Check demo prerequisites without changing config or starting services
+	bash scripts/bootstrap-demo.sh --check-only
+
+demo-run: build ## Run the FlowState service for the demo
+	@if [ -f .env.demo ]; then \
+		set -a; . ./.env.demo; set +a; \
+	fi; \
+	echo "Starting FlowState demo service on $${FLOWSTATE_HOST:-127.0.0.1}:$${PORT:-8080}..."; \
+	./build/flowstate serve --host "$${FLOWSTATE_HOST:-127.0.0.1}" --port "$${PORT:-8080}"
 
 #
 # Web Frontend (Vue 3 + TypeScript)

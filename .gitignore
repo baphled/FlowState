@@ -45,6 +45,7 @@ Thumbs.db
 .flowstate/autoresearch/
 .env
 .env.*
+!.env.demo.example
 
 # Build artifacts
 dist/
