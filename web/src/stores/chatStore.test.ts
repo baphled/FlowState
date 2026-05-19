@@ -5790,6 +5790,199 @@ describe('chatStore.handleProviderChangedEvent records a dedup key for the follo
   })
 })
 
+// Phase-5 §1c-α — the long-poll Turn endpoint now surfaces
+// `current_provider` + `current_model` on every snapshot. The chat store's
+// pollTurnUntilTerminal loop diffs the new pair against the prior poll's
+// snapshot and, when the pair moves, calls the same
+// handleProviderChangedEvent path the SSE handler uses (chatStore.ts:2740-
+// 2756). Both surfaces stay live during 1c-α; idempotency is required so
+// the transitional double-fire (SSE + poll for the same transition) doesn't
+// emit two toasts.
+//
+// What this block pins:
+//   1. Initial poll-with-current-pair → calls handleProviderChangedEvent with
+//      the (provider, model) pair.
+//   2. Same pair on a subsequent poll → no second call (no-diff).
+//   3. Pair pivots mid-stream → second call with the NEW pair.
+//   4. Idempotency: calling the handler twice with same args fires ONE toast
+//      (and mutates state ONCE — no double-toast on SSE+poll co-fire).
+describe('chatStore - pollTurnUntilTerminal current_provider/current_model diff (Phase-5 §1c-α)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('calls handleProviderChangedEvent on the first poll that carries current_provider + current_model', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-pdiff'
+    store.messages = []
+    // Seed the chip differently so the diff is observable.
+    store.currentProviderId = 'anthropic'
+    store.currentModelId = 'claude-opus-4-7'
+
+    const handlerSpy = vi.spyOn(store, 'handleProviderChangedEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-pdiff',
+      session_id: 'session-pdiff',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'zai', model: 'glm-4.6' },
+      error: '',
+      messages: [],
+      current_provider: 'zai',
+      current_model: 'glm-4.6',
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-pdiff', 'turn-pdiff')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(1)
+    const callArg = handlerSpy.mock.calls[0][0]
+    expect(callArg.toProvider).toBe('zai')
+    expect(callArg.toModel).toBe('glm-4.6')
+  })
+
+  it('does NOT call handleProviderChangedEvent on a poll where (current_provider, current_model) matches the prior poll', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-nodiff'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleProviderChangedEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-nodiff',
+      session_id: 'session-nodiff',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      current_provider: 'anthropic',
+      current_model: 'claude-opus-4-7',
+    } as never)
+    // Second poll: same pair — must be a no-op for the handler.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-nodiff',
+      session_id: 'session-nodiff',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      current_provider: 'anthropic',
+      current_model: 'claude-opus-4-7',
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-nodiff', 'turn-nodiff')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(1)
+    // The single call came from the first poll's transition (empty → real
+    // pair). The second poll's matching pair must NOT re-fire.
+  })
+
+  it('calls handleProviderChangedEvent again when the pair pivots on a subsequent poll (mid-stream failover)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-failover'
+    store.messages = []
+
+    const handlerSpy = vi.spyOn(store, 'handleProviderChangedEvent')
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    // First poll — initial pair lands. handler call #1.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-failover',
+      session_id: 'session-failover',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      current_provider: 'anthropic',
+      current_model: 'claude-opus-4-7',
+    } as never)
+    // Second poll — pair pivots (failover). handler call #2.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-failover',
+      session_id: 'session-failover',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'zai', model: 'glm-4.6' },
+      error: '',
+      messages: [],
+      current_provider: 'zai',
+      current_model: 'glm-4.6',
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-failover', 'turn-failover')
+
+    expect(handlerSpy).toHaveBeenCalledTimes(2)
+    const firstArg = handlerSpy.mock.calls[0][0]
+    expect(firstArg.toProvider).toBe('anthropic')
+    expect(firstArg.toModel).toBe('claude-opus-4-7')
+    const secondArg = handlerSpy.mock.calls[1][0]
+    expect(secondArg.toProvider).toBe('zai')
+    expect(secondArg.toModel).toBe('glm-4.6')
+  })
+})
+
+// Phase-5 §1c-α — handleProviderChangedEvent idempotency. The transitional
+// state during 1c-α has TWO callers: the SSE handler (chatStore.ts:2740-
+// 2756) and the new poll-diff caller. A double-fire for the same
+// (toProvider, toModel) pair MUST NOT emit two toasts. This pins the
+// idempotency guard the new caller relies on.
+describe('chatStore.handleProviderChangedEvent idempotency (Phase-5 §1c-α)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('fires the "Model changed" toast exactly ONCE when called twice with the same (toProvider, toModel) pair', async () => {
+    const toastModule = await import('@/composables/useToast')
+    const showToastSpy = vi.spyOn(toastModule, 'showToast').mockImplementation(() => 0)
+
+    const store = useChatStore()
+
+    // First call — fresh transition; toast fires.
+    store.handleProviderChangedEvent({
+      toProvider: 'zai',
+      toModel: 'glm-4.6',
+      reason: 'rate_limited',
+    })
+
+    // Second call — same target pair (the transitional 1c-α double-fire:
+    // poll-diff sees the new pair while the SSE handler also fires for the
+    // same transition). Must short-circuit on the dedup gate.
+    store.handleProviderChangedEvent({
+      toProvider: 'zai',
+      toModel: 'glm-4.6',
+      reason: 'rate_limited',
+    })
+
+    expect(showToastSpy).toHaveBeenCalledTimes(1)
+
+    showToastSpy.mockRestore()
+  })
+})
+
 describe('chatStore - bootstrap (singleton wrapper around restoreStateFromBackend)', () => {
   // bootstrap() exists so the App-level loading overlay has a single
   // reliable "first hydration done" signal it can await — and so the

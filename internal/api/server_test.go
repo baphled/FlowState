@@ -7701,6 +7701,96 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 		Expect(gotTokens).To(BeNumerically(">", float64(100)),
 			"token_count must grow monotonically across heartbeats — the chat UI's tokens-per-second computation relies on this")
 	})
+
+	// Phase-5 §1c-α: the turnResponse wire surface now exposes
+	// `current_provider` + `current_model` so the FE's poll loop can pivot
+	// the toolbar chip on the live (provider, model) pair without waiting
+	// for the SSE side-channel. The dispatcher's wrapWithTurnLifecycle taps
+	// `model_active` and `provider_changed` chunks and calls
+	// registry.SetProviderModel; the long-poll Get path surfaces those
+	// fields verbatim on every snapshot.
+	It("GET /turns/{turn_id} exposes current_provider + current_model after model_active lands", func() {
+		setup([]provider.StreamChunk{
+			{
+				EventType:  "model_active",
+				ModelID:    "claude-opus-4-7",
+				ProviderID: "anthropic",
+			},
+			{Content: "ack", ModelID: "claude-opus-4-7", ProviderID: "anthropic"},
+			{Done: true, ModelID: "claude-opus-4-7", ProviderID: "anthropic"},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		st, body, raw := postMessage(sess.ID, "go")
+		Expect(st).To(Equal(http.StatusOK), "POST raw: %s", string(raw))
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		var (
+			gotProvider string
+			gotModel    string
+			lastGetRaw  []byte
+		)
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			p, _ := gbody["current_provider"].(string)
+			m, _ := gbody["current_model"].(string)
+			gotProvider = p
+			gotModel = m
+			return p == "anthropic" && m == "claude-opus-4-7"
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must surface current_provider=anthropic + current_model=claude-opus-4-7 after the dispatcher's chunk-tap fires SetProviderModel — Phase-5 §1c-α wire contract. Last GET response: %s", string(lastGetRaw))
+
+		Expect(gotProvider).To(Equal("anthropic"))
+		Expect(gotModel).To(Equal("claude-opus-4-7"))
+	})
+
+	It("GET /turns/{turn_id} reflects a mid-stream failover via provider_changed (current_provider pivots)", func() {
+		setup([]provider.StreamChunk{
+			{
+				EventType:  "model_active",
+				ModelID:    "claude-opus-4-7",
+				ProviderID: "anthropic",
+			},
+			{Content: "primary-ack", ModelID: "claude-opus-4-7", ProviderID: "anthropic"},
+			{
+				EventType:  "provider_changed",
+				ModelID:    "glm-4.6",
+				ProviderID: "zai",
+			},
+			{Content: "fallback-ack", ModelID: "glm-4.6", ProviderID: "zai"},
+			{Done: true, ModelID: "glm-4.6", ProviderID: "zai"},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "trigger-failover")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Wait for the FINAL pair to land — the wrap drains both
+		// announcements in order, the registry's broadcast wakes long-poll
+		// waiters on each transition.
+		var lastGetRaw []byte
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			p, _ := gbody["current_provider"].(string)
+			m, _ := gbody["current_model"].(string)
+			return p == "zai" && m == "glm-4.6"
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must reflect the POST-FAILOVER provider/model — current_provider pivots from anthropic to zai when the engine emits provider_changed; the chip then pivots without an SSE side-channel. Last GET response: %s", string(lastGetRaw))
+	})
 })
 
 // Phase-4-Commit-1b RED gate per "Turn-Based Post-Then-Poll Architecture

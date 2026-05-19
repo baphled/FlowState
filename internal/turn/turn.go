@@ -126,6 +126,26 @@ type Turn struct {
 	// render on >0 so a fresh turn does not flash a misleading "0
 	// tokens".
 	TokenCount int `json:"token_count,omitempty"`
+	// CurrentProvider mirrors the provider id the engine is CURRENTLY
+	// streaming under (e.g. "anthropic", "zai", "openai"). Distinct from
+	// Model.Provider — Model is the post-Complete frozen snapshot stamped
+	// by the wrap goroutine's terminal call, whereas CurrentProvider
+	// surfaces the live pair WHILE the Turn is Running so long-poll
+	// consumers (the chat UI's toolbar chip) can react to a mid-stream
+	// failover without waiting for the terminal transition.
+	//
+	// Populated by SetProviderModel, wired off the dispatcher's chunk-tap
+	// for `provider_changed` and `model_active` event chunks. Empty during
+	// the brief window between Start and the first model_active chunk;
+	// frozen at the last live value once the Turn reaches a terminal state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
+	CurrentProvider string `json:"current_provider,omitempty"`
+	// CurrentModel mirrors the model id paired with CurrentProvider. Same
+	// lifecycle semantics as CurrentProvider — populated by SetProviderModel,
+	// read on every poll, frozen at the last live value post-terminal.
+	CurrentModel string `json:"current_model,omitempty"`
 }
 
 // ErrTurnConflict fires when Start is called on a session that
@@ -621,11 +641,63 @@ func (r *Registry) SetHeartbeat(turnID, phase string, tokenCount int) {
 	}
 }
 
+// SetProviderModel records the engine's live (provider, model) pair onto
+// a Running Turn. Wired off the dispatcher's wrapWithTurnLifecycle chunk-
+// tap so `provider_changed` and `model_active` chunks land on the Turn's
+// `CurrentProvider` + `CurrentModel` fields, which the long-poll wire
+// surfaces as `current_provider` + `current_model`. The FE's poll-diff
+// loop reads those fields and pivots the chat-UI's toolbar chip without
+// waiting for the SSE side-channel.
+//
+// No-op semantics (mirrors SetHeartbeat — the chunk-tap fires from a
+// goroutine that can race the wrap's Complete/Fail):
+//   - empty turnID — silent return.
+//   - unknown turnID — silent return.
+//   - non-Running turnID — silent return (Phase + TokenCount + CurrentX
+//     all freeze at their last Running values).
+//
+// Broadcast gate: this method only broadcasts when the (provider, model)
+// pair ACTUALLY moves past what the registry already holds. Every chunk
+// in a long stream carries ProviderID/ModelID; an unconditional broadcast
+// would degrade the long-poll's perceived-cadence promise to spin on
+// every chunk. The change-gate matches SetHeartbeat's identical pattern
+// at the Phase + TokenCount fields.
+//
+// Concurrency: acquires r.mu via Lock. The pair is written under the
+// same lock peer methods use so readers (Get / WaitForChange) never
+// observe a torn pair.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
+func (r *Registry) SetProviderModel(turnID, provider, model string) {
+	if turnID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+	changed := t.CurrentProvider != provider || t.CurrentModel != model
+	t.CurrentProvider = provider
+	t.CurrentModel = model
+	if changed {
+		r.broadcastChangeLocked()
+	}
+}
+
 // WaitForChange is the Phase-4-Commit-1b long-poll primitive. Returns
 // when ANY of the following becomes true:
 //   - len(turn.MessagesAdded) > sinceMsgCount
 //   - turn.Phase != lastPhase
 //   - turn.TokenCount != lastTokens
+//   - turn.CurrentProvider != lastProvider (Phase-5 §1c-α)
+//   - turn.CurrentModel != lastModel (Phase-5 §1c-α)
 //   - turn.Status != StatusRunning (terminal-state reached)
 //   - timeout elapses (returns the current snapshot with changed=false)
 //   - ctx is cancelled (returns the zero snapshot with changed=false)
@@ -652,6 +724,10 @@ func (r *Registry) SetHeartbeat(turnID, phase string, tokenCount int) {
 //     registry's Phase != lastPhase.
 //   - lastTokens — caller's last-observed TokenCount. Wake when the
 //     registry's TokenCount != lastTokens.
+//   - lastProvider — caller's last-observed CurrentProvider. Wake when
+//     the registry's CurrentProvider != lastProvider (Phase-5 §1c-α).
+//   - lastModel — caller's last-observed CurrentModel. Wake when the
+//     registry's CurrentModel != lastModel (Phase-5 §1c-α).
 //   - timeout — max wait duration. A zero or negative timeout means
 //     "evaluate the predicate once and return immediately".
 //
@@ -672,6 +748,8 @@ func (r *Registry) WaitForChange(
 	sinceMsgCount int,
 	lastPhase string,
 	lastTokens int,
+	lastProvider string,
+	lastModel string,
 	timeout time.Duration,
 ) (Turn, bool) {
 	// Wall-clock deadline (NOT r.clock()) — the test fakes r.clock to
@@ -692,6 +770,8 @@ func (r *Registry) WaitForChange(
 		if len(t.MessagesAdded) > sinceMsgCount ||
 			t.Phase != lastPhase ||
 			t.TokenCount != lastTokens ||
+			t.CurrentProvider != lastProvider ||
+			t.CurrentModel != lastModel ||
 			t.Status != StatusRunning {
 			snap := r.snapshotLocked(t)
 			r.mu.Unlock()

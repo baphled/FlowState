@@ -1839,6 +1839,19 @@ export const useChatStore = defineStore('chat', {
       // server only wakes when the registry's count has grown past it.
       let lastMessageCount = 0
       let pollCount = 0
+      // Phase-5 §1c-α — track the prior poll's (current_provider,
+      // current_model) pair so the loop can diff each new snapshot
+      // against the prior one and fire handleProviderChangedEvent on a
+      // real transition. The SSE handler at chatStore.ts:2740-2756 also
+      // calls handleProviderChangedEvent for the same transition during
+      // the transitional 1c-α surface; the handler's lastProviderChange
+      // Key dedup gate ensures only one toast fires per transition.
+      //
+      // Initial value: empty strings. The first poll that carries a
+      // non-empty current_provider counts as a transition (empty → real)
+      // — the chip pivots once the engine announces the live pair.
+      let lastPollProvider = ''
+      let lastPollModel = ''
 
       // Per-iteration AbortController so a session-switch can wake
       // the server-side wait promptly. Recreated each iteration; the
@@ -1947,6 +1960,31 @@ export const useChatStore = defineStore('chat', {
           } else {
             this.messages.push(row)
           }
+        }
+
+        // Phase-5 §1c-α — diff the (current_provider, current_model) pair
+        // against the prior poll's snapshot. On a real transition, route
+        // through handleProviderChangedEvent (the same handler the SSE
+        // branch at chatStore.ts:~2740 calls) so the chip pivots and the
+        // toast fires. Idempotency on the handler's `lastProviderChange
+        // Key` dedup gate ensures the transitional 1c double-fire (poll
+        // + SSE) emits one toast per transition. Run BEFORE the status-
+        // check returns so a completion-poll that also carries the final
+        // pair still fires the handler.
+        const incomingProvider =
+          typeof state.current_provider === 'string' ? state.current_provider : ''
+        const incomingModel =
+          typeof state.current_model === 'string' ? state.current_model : ''
+        if (
+          (incomingProvider !== '' || incomingModel !== '') &&
+          (incomingProvider !== lastPollProvider || incomingModel !== lastPollModel)
+        ) {
+          this.handleProviderChangedEvent({
+            toProvider: incomingProvider,
+            toModel: incomingModel,
+          })
+          lastPollProvider = incomingProvider
+          lastPollModel = incomingModel
         }
 
         if (state.status === 'failed') {
@@ -3337,6 +3375,39 @@ export const useChatStore = defineStore('chat', {
       const toProviderField = typeof info.toProvider === 'string' ? info.toProvider : ''
       const toModelField = typeof info.toModel === 'string' ? info.toModel : ''
       const reason = typeof info.reason === 'string' ? info.reason : ''
+
+      // Phase-5 §1c-α — idempotency guard. The transitional 1c surface has
+      // TWO callers for the same pair: the existing SSE handler at the
+      // switch case (chatStore.ts ~line 2740) and the new poll-diff caller
+      // in pollTurnUntilTerminal. When both fire for the SAME transition
+      // (which they will during 1c-α), the second call must NOT re-toast
+      // or re-mutate state — the user would otherwise see two back-to-
+      // back "Model changed" toasts for one transition. The dedup key is
+      // the target pair: if it matches lastProviderChangeKey we already
+      // processed this transition and short-circuit.
+      //
+      // Computed BEFORE the parse/mutation block so the short-circuit
+      // applies to both the split-field and the joined-`to` paths.
+      const candidateKey = (() => {
+        if (toProviderField !== '' || toModelField !== '') {
+          return `${toProviderField}+${toModelField}`
+        }
+        if (to.length > 0) {
+          const sep = to.indexOf('+')
+          if (sep === -1) return `${to}+`
+          return `${to.slice(0, sep)}+${to.slice(sep + 1)}`
+        }
+        return ''
+      })()
+      if (
+        candidateKey !== '' &&
+        candidateKey === this.lastProviderChangeKey
+      ) {
+        // We already processed this exact transition (SSE branch or a
+        // prior poll-diff fire). Both branches stay live during 1c-α; the
+        // dedup gate keeps the user-visible behaviour single-fire.
+        return
+      }
 
       // Prefer the split fields when the wire carries them — they skip
       // the "+" parse hop and the off-by-one bugs around model ids that
