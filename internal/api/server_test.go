@@ -38,6 +38,7 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
+	"github.com/baphled/flowstate/internal/turn"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -171,6 +172,12 @@ func (sp *spyDispatcher) DispatchSessioned(_ context.Context, req dispatch.Dispa
 // (post-bugfix May 2026: production wires broker post-init via
 // Server.SetSessionBroker which propagates to Dispatcher).
 func (sp *spyDispatcher) SetSessionBroker(_ dispatch.SessionBroker) {}
+
+// TurnRegistry returns nil — the spy does not exercise the Turn surface.
+// handleGetTurn maps a nil registry to HTTP 501 so callers that wire the
+// spy can still observe the route's other behaviours. Phase 2 of "Turn-
+// Based Post-Then-Poll Architecture (May 2026)".
+func (sp *spyDispatcher) TurnRegistry() *turn.Registry { return nil }
 
 func (sp *spyDispatcher) callCount() int {
 	sp.mu.Lock()
@@ -7091,5 +7098,353 @@ var _ = Describe("Dispatcher fixture discipline", func() {
 		// (the type is unexported to this package), so the discipline is
 		// structurally fenced there; this pin covers the two api-package
 		// blocks where the fixture IS in scope.
+	})
+})
+
+// Phase 2 RED gate per "Turn-Based Post-Then-Poll Architecture
+// (May 2026)". These specs pin the HTTP surface that exposes the Turn
+// resource introduced in Phase 1 (internal/turn package + dispatcher
+// integration, commit 6ce8048d):
+//
+//   - POST /api/v1/sessions/{id}/messages returns {turn_id, snapshot}
+//     so the frontend can drive GET /turns/{turn_id}.
+//   - GET /api/v1/sessions/{id}/turns/{turn_id} returns the Turn's
+//     status, started_at / completed_at, model, error, and
+//     engine-emitted messages.
+//   - dispatch.ErrTurnConflict maps to HTTP 409 Conflict — v1
+//     supports ONE in-flight turn per session.
+//
+// All specs use dripStreamer through the production NewServer
+// auto-construct path so the real *dispatch.Dispatcher writes into
+// the registry — the spy bypasses the registry and would hide
+// integration bugs.
+var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_id})", func() {
+	var (
+		drip     *dripStreamer
+		mgr      *session.Manager
+		srv      *api.Server
+		httpSrv  *httptest.Server
+		reg      *agent.Registry
+	)
+
+	// uuidV4Regex matches the google/uuid library's default canonical
+	// form so the spec can pin both "non-empty" and "well-formed
+	// UUID" on handle.TurnID.
+	uuidV4Regex := `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`
+
+	setup := func(chunks []provider.StreamChunk, interval time.Duration) {
+		drip = &dripStreamer{chunks: chunks, emitInterval: interval}
+		mgr = session.NewManager(drip)
+		reg = agent.NewRegistry()
+		reg.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
+		srv = api.NewServer(
+			drip,
+			reg,
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithSessionBroker(api.NewSessionBroker()),
+		)
+		httpSrv = httptest.NewServer(srv.Handler())
+	}
+
+	AfterEach(func() {
+		if httpSrv != nil {
+			httpSrv.Close()
+			httpSrv = nil
+		}
+	})
+
+	// Helper that POSTs a message and decodes the response. Returns
+	// (statusCode, decoded-body, raw-body) so individual specs can
+	// assert on whichever shape they care about.
+	postMessage := func(sessionID, content string) (int, map[string]any, []byte) {
+		resp, err := http.Post( //nolint:noctx
+			httpSrv.URL+"/api/v1/sessions/"+sessionID+"/messages",
+			"application/json",
+			strings.NewReader(`{"content":"`+content+`"}`),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		var out map[string]any
+		if len(raw) > 0 && raw[0] == '{' {
+			_ = json.Unmarshal(raw, &out)
+		}
+		return resp.StatusCode, out, raw
+	}
+
+	getTurn := func(sessionID, turnID string) (int, map[string]any, []byte) {
+		resp, err := http.Get( //nolint:noctx
+			httpSrv.URL + "/api/v1/sessions/" + sessionID + "/turns/" + turnID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+		var out map[string]any
+		if len(raw) > 0 && raw[0] == '{' {
+			_ = json.Unmarshal(raw, &out)
+		}
+		return resp.StatusCode, out, raw
+	}
+
+	It("POST /messages returns {turn_id, snapshot}", func() {
+		setup([]provider.StreamChunk{{Content: "ok"}, {Done: true}}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		status, body, raw := postMessage(sess.ID, "hello")
+		Expect(status).To(Equal(http.StatusOK))
+		Expect(body).To(HaveKey("turn_id"), "POST response must include turn_id; got: %s", string(raw))
+		Expect(body).To(HaveKey("snapshot"), "POST response must include snapshot; got: %s", string(raw))
+
+		tid, ok := body["turn_id"].(string)
+		Expect(ok).To(BeTrue(), "turn_id must decode as string; got: %s", string(raw))
+		Expect(tid).To(MatchRegexp(uuidV4Regex),
+			"turn_id must be a well-formed UUIDv4 minted by the registry; got %q", tid)
+
+		snapshot, ok := body["snapshot"].(map[string]any)
+		Expect(ok).To(BeTrue(), "snapshot must decode as object; got: %s", string(raw))
+		msgs, ok := snapshot["messages"].([]any)
+		Expect(ok).To(BeTrue(), "snapshot.messages must be a JSON array; got: %s", string(raw))
+
+		var sawUser bool
+		for _, m := range msgs {
+			row, _ := m.(map[string]any)
+			if row["role"] == "user" && row["content"] == "hello" {
+				sawUser = true
+				break
+			}
+		}
+		Expect(sawUser).To(BeTrue(),
+			"snapshot.messages must include the user message appended synchronously by Dispatcher; got: %s", string(raw))
+	})
+
+	It("GET /turns/{turn_id} returns turn state with status=running mid-stream", func() {
+		// dripStreamer with a slow emit so the Turn stays Running
+		// across the POST → GET window. 200ms per chunk is well above
+		// the GET's round-trip overhead, making the mid-stream
+		// observation deterministic.
+		//
+		// The chunks shape forces an intermediate AppendMessage call:
+		// applyToolCall (accumulator.go:559) flushes any pending content
+		// and persists a tool_call row immediately. Without an
+		// intermediate flush, the accumulator would buffer content
+		// until terminal Done and Turn.MessagesAdded would stay empty
+		// mid-stream. The tool_call chunk is the canonical intermediate-
+		// flush signal in production engine output (every multi-round
+		// tool loop produces one).
+		setup([]provider.StreamChunk{
+			{ToolCall: &provider.ToolCall{Name: "search", Arguments: map[string]any{"q": "hi"}}},
+			{Content: "tail"},
+			{Done: true},
+		}, 200*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		status, body, _ := postMessage(sess.ID, "hi")
+		Expect(status).To(Equal(http.StatusOK))
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Poll until the registry has at least one engine-emitted row
+		// for this turn. The Phase 1 accumulator integration appends
+		// on every persisted chunk, so a Running turn with content
+		// emitted will surface messages > 0 within the drip interval.
+		var (
+			gotStatus  string
+			gotMsgs    []any
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			getStatus, getBody, getRaw := getTurn(sess.ID, turnID)
+			lastGetRaw = getRaw
+			if getStatus != http.StatusOK {
+				return false
+			}
+			gotStatus, _ = getBody["status"].(string)
+			gotMsgs, _ = getBody["messages"].([]any)
+			return gotStatus == "running" && len(gotMsgs) >= 1
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} mid-stream must surface status=running with engine-emitted messages accumulating; last response: %s", string(lastGetRaw))
+
+		Expect(gotStatus).To(Equal("running"))
+		Expect(gotMsgs).NotTo(BeEmpty(),
+			"engine-emitted rows must appear on Turn.MessagesAdded as they persist")
+	})
+
+	It("GET /turns/{turn_id} transitions to status=completed after stream finishes", func() {
+		setup([]provider.StreamChunk{
+			{Content: "done"},
+			{Done: true},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "ping")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Poll for terminal state. The dispatcher's wrap goroutine
+		// calls turnRegistry.Complete after the streamer's Done chunk
+		// drains; within the drip's emit interval this happens in
+		// well under a second.
+		var (
+			gotStatus  string
+			gotCompAt  any
+			gotMsgs    []any
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			st, getBody, raw := getTurn(sess.ID, turnID)
+			lastGetRaw = raw
+			if st != http.StatusOK {
+				return false
+			}
+			gotStatus, _ = getBody["status"].(string)
+			gotCompAt = getBody["completed_at"]
+			gotMsgs, _ = getBody["messages"].([]any)
+			return gotStatus == "completed"
+		}, "5s", "30ms").Should(BeTrue(),
+			"Turn must transition to status=completed after the streamer's Done chunk drains; last response: %s", string(lastGetRaw))
+
+		Expect(gotCompAt).NotTo(BeNil(),
+			"completed_at must be non-null once the turn reaches a terminal state")
+		Expect(gotMsgs).NotTo(BeEmpty(),
+			"a completed turn must surface its accumulated engine-emitted rows on messages[]")
+	})
+
+	It("GET /turns/{turn_id} reports status=failed on provider error", func() {
+		// Streamer emits an error chunk so the wrap goroutine maps it
+		// onto turnRegistry.Fail. Done:true with non-nil Error is the
+		// canonical engine-side failure shape (see engine.go:3774-3776
+		// and the dripStreamer ctx-cancel branch).
+		failErr := errors.New("provider blew up")
+		setup([]provider.StreamChunk{
+			{Error: failErr, Done: true},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "fail-me")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		var (
+			gotStatus  string
+			gotErr     string
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			st, getBody, raw := getTurn(sess.ID, turnID)
+			lastGetRaw = raw
+			if st != http.StatusOK {
+				return false
+			}
+			gotStatus, _ = getBody["status"].(string)
+			gotErr, _ = getBody["error"].(string)
+			return gotStatus == "failed"
+		}, "5s", "30ms").Should(BeTrue(),
+			"Turn must transition to status=failed when the streamer emits an error chunk; last response: %s", string(lastGetRaw))
+
+		Expect(gotErr).NotTo(BeEmpty(),
+			"a failed turn must carry the provider/engine error cause on error")
+	})
+
+	It("GET /turns/{unknown_id} returns 404", func() {
+		setup([]provider.StreamChunk{{Done: true}}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Use a well-formed UUID that the registry has never seen.
+		unknown := "00000000-0000-4000-8000-000000000000"
+		st, _, _ := getTurn(sess.ID, unknown)
+		Expect(st).To(Equal(http.StatusNotFound),
+			"GET /turns/{turn_id} must 404 when the registry has never seen the id; pre-restart turn_ids are explicitly out-of-scope at v1")
+	})
+
+	It("MessagesAdded excludes the user message that triggered the turn", func() {
+		setup([]provider.StreamChunk{
+			{Content: "reply"},
+			{Done: true},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "hello-user-trigger")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		// Wait for the turn to reach a terminal state so all
+		// engine-emitted rows are accumulated.
+		var msgs []any
+		Eventually(func() string {
+			_, getBody, _ := getTurn(sess.ID, turnID)
+			msgs, _ = getBody["messages"].([]any)
+			s, _ := getBody["status"].(string)
+			return s
+		}, "5s", "30ms").Should(Equal("completed"))
+
+		for _, m := range msgs {
+			row, ok := m.(map[string]any)
+			if !ok {
+				continue
+			}
+			Expect(row["role"]).NotTo(Equal("user"),
+				"Turn.MessagesAdded MUST exclude the user message that triggered the turn — the user row lives in the POST snapshot, not the turn payload. Got row: %v", row)
+			content, _ := row["content"].(string)
+			Expect(content).NotTo(Equal("hello-user-trigger"),
+				"the user-content trigger string MUST NOT appear in Turn.MessagesAdded")
+		}
+	})
+
+	It("Concurrent POST during running turn returns HTTP 409", func() {
+		// Slow drip so turn 1 stays Running while turn 2 fires. The
+		// dispatcher's registry.Start is the gate: turn 2 sees a
+		// Running entry for the sessionID and surfaces
+		// dispatch.ErrTurnConflict, which the HTTP handler maps to 409.
+		// This is the load-bearing predecessor pin for the ErrTurnConflict
+		// → 409 mapping added in this commit.
+		setup([]provider.StreamChunk{
+			{Content: "slow-1"},
+			{Content: "slow-2"},
+			{Content: "slow-3"},
+			{Done: true},
+		}, 250*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Fire POST 1 — returns immediately (async POST per e4bf9632)
+		// while the streamer continues to drip.
+		st1, body1, _ := postMessage(sess.ID, "first")
+		Expect(st1).To(Equal(http.StatusOK))
+		turnID1, _ := body1["turn_id"].(string)
+		Expect(turnID1).NotTo(BeEmpty())
+
+		// Probe the registry: confirm turn 1 is Running before the
+		// second POST fires, so the conflict-gate has something to
+		// observe. Without this gate the race window can be empty
+		// and POST 2 succeeds.
+		Eventually(func() string {
+			_, b, _ := getTurn(sess.ID, turnID1)
+			s, _ := b["status"].(string)
+			return s
+		}, "2s", "10ms").Should(Equal("running"),
+			"turn 1 must register as Running in the Turn registry before the conflict-POST fires; otherwise the conflict-gate has nothing to observe")
+
+		// POST 2 — must surface 409 Conflict because turn 1 is
+		// still Running. v1 supports ONE in-flight turn per session.
+		st2, _, raw2 := postMessage(sess.ID, "second")
+		Expect(st2).To(Equal(http.StatusConflict),
+			"a second POST while turn 1 is StatusRunning must return HTTP 409 Conflict — dispatch.ErrTurnConflict must map to http.StatusConflict in handleSessionMessage. Got body: %s", string(raw2))
 	})
 })
