@@ -742,6 +742,28 @@ export const useChatStore = defineStore('chat', {
     // shared reset path) so a model_active on a fresh session is not
     // accidentally suppressed by a key from a prior session.
     lastProviderChangeKey: null as string | null,
+    // lastContextUsageKey is Phase-5 §1c-β's idempotency gate for
+    // handleContextUsageEvent. The transitional 1c-β state has TWO
+    // callers for the same context_usage figure — the SSE branch at
+    // chatStore.ts:2795-2806 and the new poll-diff caller in
+    // pollTurnUntilTerminal. A double-fire for the same (inputTokens,
+    // outputReserve, limit, percentage) tuple MUST NOT mutate state
+    // twice (the chip's reactivity would re-render; the per-session
+    // map would re-write with an identical figure causing a needless
+    // proxy mutation Vue's `ref` watchers observe).
+    //
+    // The key is a `<inputTokens>:<outputReserve>:<limit>:<percentage>`
+    // string serialised at handler entry. A matching key short-circuits
+    // the mutation; a differing key proceeds and updates the gate. Same
+    // pattern as `lastProviderChangeKey` above for the failover toast
+    // dedup. Per-session keyed inside the contextUsageBySession map
+    // would be heavier — the chip reads currentContextUsage off the
+    // active session, so a single gate covers the FE's observable
+    // semantic.
+    //
+    // Cleared on session change so a fresh session's first figure
+    // is never suppressed by the prior session's last figure.
+    lastContextUsageKey: null as string | null,
     // ---- bootstrap singleton (App-level loading-overlay coordination) ----
     //
     // bootstrap() wraps restoreStateFromBackend so the App-level loading
@@ -1852,6 +1874,19 @@ export const useChatStore = defineStore('chat', {
       // — the chip pivots once the engine announces the live pair.
       let lastPollProvider = ''
       let lastPollModel = ''
+      // Phase-5 §1c-β — track prior poll's context_usage figure for diff.
+      // We serialise the four observable fields into a string key so the
+      // diff is a cheap string compare and avoids per-field deep checks.
+      // Empty initial value: the first poll that carries a context_usage
+      // payload counts as a transition (empty → real) and routes through
+      // handleContextUsageEvent.
+      let lastPollContextUsageKey = ''
+      // Phase-5 §1c-β — track prior poll's per-partition provider_quota
+      // snapshots so the diff fires applyProviderQuotaEvent only on a
+      // real change (new partition OR per-partition value move).
+      // Initial empty map: first poll with any partitions counts as
+      // transitions (empty → real) and routes through the quotaStore.
+      const lastPollQuotaKeys: Record<string, string> = {}
 
       // Per-iteration AbortController so a session-switch can wake
       // the server-side wait promptly. Recreated each iteration; the
@@ -1985,6 +2020,117 @@ export const useChatStore = defineStore('chat', {
           })
           lastPollProvider = incomingProvider
           lastPollModel = incomingModel
+        }
+
+        // Phase-5 §1c-β — diff the context_usage figure against the prior
+        // poll. On change, route through handleContextUsageEvent — the same
+        // handler the SSE branch at chatStore.ts:~2795 calls — so the chip
+        // ticks up without an SSE side-channel. The handler's
+        // `lastContextUsageKey` dedup gate (added in 1c-β) ensures the
+        // transitional double-fire (poll + SSE for the same figure) only
+        // mutates state once.
+        const incomingCU = state.context_usage
+        if (incomingCU) {
+          const cuKey = `${incomingCU.input_tokens}:${incomingCU.output_reserve}:${incomingCU.limit}:${incomingCU.percentage}`
+          if (cuKey !== lastPollContextUsageKey) {
+            this.handleContextUsageEvent({
+              inputTokens: incomingCU.input_tokens,
+              outputReserve: incomingCU.output_reserve,
+              limit: incomingCU.limit,
+              percentage: incomingCU.percentage,
+            }, sessionId)
+            lastPollContextUsageKey = cuKey
+          }
+        }
+
+        // Phase-5 §1c-β — diff each provider_quota partition. The poll
+        // returns the full set; we compare each partition's snapshot
+        // signature against the prior poll's view and route only the
+        // changed partitions through quotaStore.applyProviderQuotaEvent.
+        // The action's own structural-equal guard (Phase-5 §1c-β) means
+        // a double-fire with the SSE branch is also safe — the second
+        // call sees the existing snapshot and short-circuits.
+        const incomingQuotas = state.provider_quotas
+        if (Array.isArray(incomingQuotas)) {
+          for (const snap of incomingQuotas) {
+            const partitionKey = `${snap.provider}:${snap.account_hash}:${snap.model ?? ''}`
+            // Signature = observedAt + variant's primary figure. Mirrors
+            // the quotaStore.providerQuotaSnapshotEqual gate.
+            let figure: string | number = 'na'
+            if (snap.variant === 'token_spend') {
+              figure = snap.token_spend?.spent_minor ?? -1
+            } else if (snap.variant === 'rate_limit') {
+              figure = snap.rate_limit?.tightest_percent_remaining ?? -1
+            } else if (snap.variant === 'not_configured') {
+              figure = snap.not_configured?.reason ?? ''
+            }
+            const sig = `${snap.observed_at}:${snap.variant}:${figure}`
+            if (sig === lastPollQuotaKeys[partitionKey]) {
+              continue
+            }
+            // Route through quotaStore via the existing SSE event shape.
+            // The poll wire surfaces snake_case (matching the engine's
+            // SSE chunk); the quotaStore action expects camelCase via
+            // SSEProviderQuotaEvent. Translate variant payloads at this
+            // seam — the field-rename matrix mirrors the Go-side
+            // `json:"..."` tags on sseProviderQuota* structs.
+            const rl = snap.rate_limit
+            const ts = snap.token_spend
+            const nc = snap.not_configured
+            useQuotaStore().applyProviderQuotaEvent({
+              kind: 'provider_quota',
+              provider: snap.provider,
+              accountHash: snap.account_hash,
+              model: snap.model ?? '',
+              observedAt: snap.observed_at,
+              stale: snap.stale ?? false,
+              storeBackend: snap.store_backend ?? '',
+              pricingSource: snap.pricing_source ?? '',
+              variant: snap.variant,
+              rateLimit: rl
+                ? {
+                    requests: {
+                      limit: rl.requests.limit,
+                      remaining: rl.requests.remaining,
+                      reset: rl.requests.reset ?? '',
+                    },
+                    tokens: {
+                      limit: rl.tokens.limit,
+                      remaining: rl.tokens.remaining,
+                      reset: rl.tokens.reset ?? '',
+                    },
+                    input: {
+                      limit: rl.input.limit,
+                      remaining: rl.input.remaining,
+                      reset: rl.input.reset ?? '',
+                    },
+                    output: {
+                      limit: rl.output.limit,
+                      remaining: rl.output.remaining,
+                      reset: rl.output.reset ?? '',
+                    },
+                    tightestPercentRemaining: rl.tightest_percent_remaining,
+                    tightestResetAt: rl.tightest_reset_at ?? '',
+                  }
+                : null,
+              tokenSpend: ts
+                ? {
+                    spentMinor: ts.spent_minor,
+                    spentCurrency: ts.spent_currency,
+                    spentUsdMinor: ts.spent_usd_minor,
+                    capMinor: ts.cap_minor ?? 0,
+                    capCurrency: ts.cap_currency ?? '',
+                    period: ts.period,
+                    periodStart: ts.period_start,
+                    periodEnd: ts.period_end,
+                    thresholdAmber: ts.threshold_amber,
+                    thresholdRed: ts.threshold_red,
+                  }
+                : null,
+              notConfigured: nc ? { reason: nc.reason } : null,
+            })
+            lastPollQuotaKeys[partitionKey] = sig
+          }
         }
 
         if (state.status === 'failed') {
@@ -3264,6 +3410,23 @@ export const useChatStore = defineStore('chat', {
       ) {
         return
       }
+
+      // Phase-5 §1c-β idempotency gate. The transitional state has two
+      // callers for the same figure — the SSE branch at
+      // chatStore.ts:2795-2806 and the new pollTurnUntilTerminal poll-
+      // diff caller. Serialise the four-field tuple and short-circuit
+      // when the prior call matches. Mirrors lastProviderChangeKey's
+      // same-pair dedup pattern for failover toasts.
+      //
+      // The key reflects the observable figure only — capturedSessionId
+      // is NOT included because a cross-session figure update is a
+      // separate user-facing action (return to a stale session re-hydrates
+      // the chip from contextUsageBySession, not via this handler).
+      const key = `${info.inputTokens}:${info.outputReserve}:${info.limit}:${info.percentage}`
+      if (key === this.lastContextUsageKey) {
+        return
+      }
+      this.lastContextUsageKey = key
 
       const figure = {
         inputTokens: info.inputTokens,

@@ -57,6 +57,49 @@ export function snapshotKey(provider: string, accountHash: string, model: string
   return `${provider}:${accountHash}:${model}`
 }
 
+/**
+ * providerQuotaSnapshotEqual reports structural equality across two
+ * snapshots for the same partition. Used by applyProviderQuotaEvent's
+ * idempotency gate (Phase-5 §1c-β): the SSE handler + poll-diff caller
+ * both invoke the action with the same snapshot during the transitional
+ * dual-surface phase, and a structural-equal short-circuit prevents Vue
+ * reactivity from observing a fresh object reference as a state change.
+ *
+ * Field comparison walks the discriminator (`variant`) + observedAt +
+ * the variant payload's primary figure (spent_minor / tightest_percent /
+ * reason). The full nested structure (RateLimit windows etc.) is not
+ * deep-compared field-by-field — observed_at moves on every refresh and
+ * is the canonical "this is a new emission" signal; if observed_at is
+ * identical, the upstream emitter produced the same value-set.
+ */
+export function providerQuotaSnapshotEqual(
+  a: ProviderQuotaSnapshot,
+  b: ProviderQuotaSnapshot,
+): boolean {
+  if (
+    a.provider !== b.provider ||
+    a.accountHash !== b.accountHash ||
+    a.model !== b.model ||
+    a.observedAt !== b.observedAt ||
+    a.stale !== b.stale ||
+    a.storeBackend !== b.storeBackend ||
+    a.pricingSource !== b.pricingSource ||
+    a.variant !== b.variant
+  ) {
+    return false
+  }
+  // Variant-specific primary figure comparison. Each variant has
+  // exactly one non-null payload (the discriminator guarantee).
+  if (a.variant === 'token_spend') {
+    if (a.tokenSpend?.spentMinor !== b.tokenSpend?.spentMinor) return false
+  } else if (a.variant === 'rate_limit') {
+    if (a.rateLimit?.tightestPercentRemaining !== b.rateLimit?.tightestPercentRemaining) return false
+  } else if (a.variant === 'not_configured') {
+    if (a.notConfigured?.reason !== b.notConfigured?.reason) return false
+  }
+  return true
+}
+
 interface QuotaStoreState {
   /**
    * snapshots — most recent ProviderQuotaSnapshot per
@@ -137,6 +180,23 @@ export const useQuotaStore = defineStore('quota', {
         notConfigured: event.notConfigured,
       }
       const key = snapshotKey(event.provider, event.accountHash, event.model)
+      // Phase-5 §1c-β idempotency gate. The transitional state has two
+      // callers for the same partition's snapshot — the SSE branch at
+      // chatStore.ts:2818-2828 and the new pollTurnUntilTerminal poll-
+      // diff caller. Without this gate every poll's matching snapshot
+      // would re-write the `snapshots` map with `{ ...this.snapshots,
+      // [key]: snap }` — a fresh object reference Vue's reactivity
+      // observes as a state change even when the snapshot value is
+      // identical, triggering needless chip re-renders.
+      //
+      // Compare against the existing snapshot for the partition key
+      // by structural equality on the four primitives that move per
+      // emission (observedAt, stale + the variant payload's primary
+      // figure). Identical → short-circuit; differing → write.
+      const existing = this.snapshots[key]
+      if (existing !== undefined && providerQuotaSnapshotEqual(existing, snap)) {
+        return
+      }
       this.snapshots = { ...this.snapshots, [key]: snap }
     },
 

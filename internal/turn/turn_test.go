@@ -517,7 +517,7 @@ var _ = Describe("Registry", func() {
 			Expect(reg.Append(id, session.Message{Role: "assistant", Content: "early"})).To(Succeed())
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -533,7 +533,7 @@ var _ = Describe("Registry", func() {
 			Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 999, "", 0, "", "", 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 999, "", 0, "", "", nil, nil, 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -558,7 +558,7 @@ var _ = Describe("Registry", func() {
 			done := make(chan result, 1)
 			go func() {
 				start := time.Now()
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 5*time.Second)
 				done <- result{snap: snap, changed: changed, elapsed: time.Since(start)}
 			}()
 
@@ -599,7 +599,7 @@ var _ = Describe("Registry", func() {
 			}
 			done := make(chan result, 1)
 			go func() {
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 5*time.Second)
 				done <- result{snap: snap, changed: changed}
 			}()
 
@@ -623,7 +623,7 @@ var _ = Describe("Registry", func() {
 			}
 			done := make(chan result, 1)
 			go func() {
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 5*time.Second)
 				done <- result{snap: snap, changed: changed}
 			}()
 
@@ -646,7 +646,7 @@ var _ = Describe("Registry", func() {
 			}
 			done := make(chan result, 1)
 			go func() {
-				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
+				snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 5*time.Second)
 				done <- result{snap: snap, changed: changed}
 			}()
 
@@ -668,7 +668,7 @@ var _ = Describe("Registry", func() {
 			// budget even though no producer ever fires. The caller
 			// re-issues to start a fresh wait.
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 80*time.Millisecond)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 80*time.Millisecond)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeFalse(),
@@ -692,7 +692,7 @@ var _ = Describe("Registry", func() {
 			done := make(chan result, 1)
 			go func() {
 				start := time.Now()
-				_, changed := reg.WaitForChange(ctx, id, 0, "", 0, "", "", 5*time.Second)
+				_, changed := reg.WaitForChange(ctx, id, 0, "", 0, "", "", nil, nil, 5*time.Second)
 				done <- result{changed: changed, elapsed: time.Since(start)}
 			}()
 
@@ -714,7 +714,7 @@ var _ = Describe("Registry", func() {
 			// changed=false + zero snapshot so the handler can map this
 			// to a 404 / not-found path.
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), "never-minted", 0, "", 0, "", "", 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), "never-minted", 0, "", 0, "", "", nil, nil, 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeFalse())
@@ -730,7 +730,7 @@ var _ = Describe("Registry", func() {
 			reg.SetHeartbeat(id, "generating", 7)
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 7, "", "", 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 7, "", "", nil, nil, 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -745,7 +745,7 @@ var _ = Describe("Registry", func() {
 			reg.SetHeartbeat(id, "thinking", 100)
 
 			start := time.Now()
-			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 50, "", "", 5*time.Second)
+			snap, changed := reg.WaitForChange(context.Background(), id, 0, "thinking", 50, "", "", nil, nil, 5*time.Second)
 			elapsed := time.Since(start)
 
 			Expect(changed).To(BeTrue(),
@@ -768,7 +768,7 @@ var _ = Describe("Registry", func() {
 			for i := 0; i < waiters; i++ {
 				go func() {
 					defer wg.Done()
-					_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 2*time.Second)
+					_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 2*time.Second)
 					if changed {
 						wakes <- struct{}{}
 					}
@@ -832,7 +832,7 @@ var _ = Describe("Registry", func() {
 				}
 				done := make(chan result, 1)
 				go func() {
-					snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 5*time.Second)
+					snap, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 5*time.Second)
 					done <- result{snap: snap, changed: changed}
 				}()
 
@@ -863,7 +863,7 @@ var _ = Describe("Registry", func() {
 					start := time.Now()
 					_, changed := reg.WaitForChange(
 						context.Background(), id, 0, "", 0,
-						"anthropic", "claude-opus-4-7", 80*time.Millisecond,
+						"anthropic", "claude-opus-4-7", nil, nil, 80*time.Millisecond,
 					)
 					done <- result{changed: changed, elapsed: time.Since(start)}
 				}()
@@ -990,7 +990,7 @@ var _ = Describe("Registry", func() {
 				start := time.Now()
 				snap, changed := reg.WaitForChange(
 					context.Background(), id, 0, "", 0,
-					"anthropic", "claude-opus-4-7", 5*time.Second,
+					"anthropic", "claude-opus-4-7", nil, nil, 5*time.Second,
 				)
 				elapsed := time.Since(start)
 
@@ -1008,7 +1008,7 @@ var _ = Describe("Registry", func() {
 
 				snap, changed := reg.WaitForChange(
 					context.Background(), id, 0, "", 0,
-					"anthropic", "claude-sonnet-4-6", 5*time.Second,
+					"anthropic", "claude-sonnet-4-6", nil, nil, 5*time.Second,
 				)
 				Expect(changed).To(BeTrue(),
 					"CurrentModel moved past lastModel — even with provider unchanged the wait must wake (e.g. anthropic Opus → Sonnet switch within the same provider)")
@@ -1028,7 +1028,7 @@ var _ = Describe("Registry", func() {
 				go func() {
 					snap, changed := reg.WaitForChange(
 						context.Background(), id, 0, "", 0,
-						"anthropic", "claude-opus-4-7", 5*time.Second,
+						"anthropic", "claude-opus-4-7", nil, nil, 5*time.Second,
 					)
 					done <- result{snap: snap, changed: changed}
 				}()
@@ -1044,13 +1044,522 @@ var _ = Describe("Registry", func() {
 			})
 		})
 
+		// SetContextUsage records the most-recent context_usage payload onto
+		// a Running Turn. Wired off the dispatcher's wrapWithTurnLifecycle
+		// chunk-tap on `context_usage` chunks so the long-poll wire surfaces
+		// the live figure without an SSE side-channel.
+		//
+		// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+		//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+		Context("SetContextUsage (Phase-5 §1c-β)", func() {
+			It("populates ContextUsage on a Running turn", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				cu := &turn.ContextUsage{
+					InputTokens:   1234,
+					OutputReserve: 8192,
+					Limit:         200000,
+					Percentage:    1,
+					Provider:      "anthropic",
+					Model:         "claude-opus-4-7",
+				}
+				reg.SetContextUsage(id, cu)
+
+				t, getErr := reg.Get(id)
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(t.ContextUsage).NotTo(BeNil(),
+					"ContextUsage must be populated on the Turn after a SetContextUsage call — the long-poll wire reads this off the Turn")
+				Expect(t.ContextUsage.InputTokens).To(Equal(1234))
+				Expect(t.ContextUsage.Limit).To(Equal(200000))
+				Expect(t.ContextUsage.Provider).To(Equal("anthropic"))
+				Expect(t.ContextUsage.Model).To(Equal("claude-opus-4-7"))
+			})
+
+			It("overwrites prior values across calls (mid-stream growth lands on the latest figure)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 1000, Limit: 200000, Percentage: 0, Provider: "anthropic", Model: "claude-opus-4-7"})
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 5000, Limit: 200000, Percentage: 2, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				t, _ := reg.Get(id)
+				Expect(t.ContextUsage.InputTokens).To(Equal(5000),
+					"each new context_usage chunk overwrites the prior — the chip ticks up monotonically as the prompt grows")
+			})
+
+			It("broadcasts changeCh so long-poll waiters wake on a real transition", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				type result struct {
+					snap    turn.Turn
+					changed bool
+				}
+				done := make(chan result, 1)
+				go func() {
+					snap, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0, "", "", nil, nil, 5*time.Second,
+					)
+					done <- result{snap: snap, changed: changed}
+				}()
+
+				time.Sleep(20 * time.Millisecond)
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Percentage: 1, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeTrue(),
+					"a SetContextUsage call on a transition (nil → real figure) MUST broadcast — the FE's long-poll wakes off this channel to learn the new figure")
+				Expect(r.snap.ContextUsage).NotTo(BeNil())
+				Expect(r.snap.ContextUsage.InputTokens).To(Equal(1234))
+			})
+
+			It("does NOT broadcast when the figure is unchanged (spurious tap absorbed)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Seed the registry with the figure so the second call is a no-op.
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Percentage: 1, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				type result struct {
+					changed bool
+				}
+				done := make(chan result, 1)
+				baseline := &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Percentage: 1, Provider: "anthropic", Model: "claude-opus-4-7"}
+				go func() {
+					_, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0,
+						"", "", baseline, nil, 80*time.Millisecond,
+					)
+					done <- result{changed: changed}
+				}()
+
+				// Fire two no-op SetContextUsage calls during the wait. If the
+				// registry broadcast on every call (instead of gating on actual
+				// change), the wait would wake with changed=true against the
+				// matched baseline. Correct semantics: wait should time out.
+				time.Sleep(20 * time.Millisecond)
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Percentage: 1, Provider: "anthropic", Model: "claude-opus-4-7"})
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Percentage: 1, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeFalse(),
+					"a SetContextUsage call that doesn't actually move the figure must NOT broadcast — every chunk could carry the same figure, and an unconditional broadcast would degrade the long-poll's perceived-cadence promise to spin")
+			})
+
+			It("is a no-op on a Completed turn (ContextUsage frozen at last value)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Percentage: 1, Provider: "anthropic", Model: "claude-opus-4-7"})
+				Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
+
+				// Late tap — wrap goroutine's chunk drain post-Complete (a
+				// race the registry must absorb silently).
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 9999, Limit: 200000, Percentage: 4, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				t, _ := reg.Get(id)
+				Expect(t.ContextUsage.InputTokens).To(Equal(1234),
+					"terminal-state taps must be silently absorbed — the live figure belongs to the Running lifetime")
+			})
+
+			It("is a no-op on an unknown turn id (no panic)", func() {
+				Expect(func() {
+					reg.SetContextUsage("never-minted", &turn.ContextUsage{InputTokens: 1, Limit: 100, Provider: "x", Model: "y"})
+				}).NotTo(Panic())
+			})
+
+			It("is a no-op on an empty turn id (mirrors Append's contract)", func() {
+				Expect(func() {
+					reg.SetContextUsage("", &turn.ContextUsage{InputTokens: 1, Limit: 100, Provider: "x", Model: "y"})
+				}).NotTo(Panic())
+			})
+
+			It("is a no-op on a nil cu pointer (defensive — chunk-tap parse failure surface)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(func() {
+					reg.SetContextUsage(id, nil)
+				}).NotTo(Panic())
+				t, _ := reg.Get(id)
+				Expect(t.ContextUsage).To(BeNil(),
+					"nil cu must NOT mutate the stored figure — a parse failure at the tap site must absorb silently")
+			})
+
+			It("is race-safe under concurrent SetContextUsage + Get + WaitForChange (-race must report clean)", func() {
+				id, err := reg.Start("sess-race-cu")
+				Expect(err).NotTo(HaveOccurred())
+
+				var (
+					wg   sync.WaitGroup
+					stop atomic.Bool
+				)
+				wg.Add(2)
+
+				go func() {
+					defer wg.Done()
+					i := 0
+					for !stop.Load() {
+						reg.SetContextUsage(id, &turn.ContextUsage{
+							InputTokens: i, Limit: 200000, Percentage: 0,
+							Provider: "anthropic", Model: "claude-opus-4-7",
+						})
+						i++
+					}
+				}()
+
+				go func() {
+					defer wg.Done()
+					for !stop.Load() {
+						_, _ = reg.Get(id)
+					}
+				}()
+
+				time.Sleep(50 * time.Millisecond)
+				stop.Store(true)
+				wg.Wait()
+			})
+		})
+
+		// UpsertProviderQuota records a provider_quota snapshot onto a
+		// Running Turn's ProviderQuotas slice with partition-key dedup
+		// semantics (Option B). Each partition's most-recent payload wins.
+		// Plan ref: Phase-5 §1c-β.
+		Context("UpsertProviderQuota (Phase-5 §1c-β)", func() {
+			seedSnap := func(provider, model string, spent int64) turn.ProviderQuotaSnapshot {
+				return turn.ProviderQuotaSnapshot{
+					Provider:    provider,
+					AccountHash: "acc-hash-1",
+					Model:       model,
+					ObservedAt:  "2026-05-19T00:00:00Z",
+					Variant:     "token_spend",
+					TokenSpend: &turn.ProviderQuotaTokenSpend{
+						SpentMinor:    spent,
+						SpentCurrency: "USD",
+						Period:        "monthly",
+					},
+				}
+			}
+
+			It("appends the first snapshot onto an empty ProviderQuotas slice", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+
+				t, getErr := reg.Get(id)
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(t.ProviderQuotas).To(HaveLen(1))
+				Expect(t.ProviderQuotas[0].Provider).To(Equal("anthropic"))
+				Expect(t.ProviderQuotas[0].TokenSpend.SpentMinor).To(Equal(int64(1000)))
+			})
+
+			It("REPLACES a snapshot with the same partition key (Provider:AccountHash:Model) — no duplicate appends", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 2500))
+
+				t, _ := reg.Get(id)
+				Expect(t.ProviderQuotas).To(HaveLen(1),
+					"same partition key must REPLACE not APPEND — the FE quotaStore's snapshots map is keyed by partition, and a duplicated slice entry would surface mixed historical figures")
+				Expect(t.ProviderQuotas[0].TokenSpend.SpentMinor).To(Equal(int64(2500)),
+					"newest wins — the registry tracks the most recent quota figure per partition, not a history")
+			})
+
+			It("APPENDS a snapshot with a different partition key (different provider OR model OR account_hash)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+				reg.UpsertProviderQuota(id, seedSnap("zai", "glm-4.6", 500))
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-sonnet-4-6", 100))
+
+				t, _ := reg.Get(id)
+				Expect(t.ProviderQuotas).To(HaveLen(3),
+					"different partition keys MUST append — the chip renders one row per (provider, account_hash, model) tuple")
+			})
+
+			It("does NOT broadcast when the partition's snapshot is unchanged (spurious tap absorbed)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				// Seed the registry with the snapshot so the second call is a no-op.
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+
+				baseline := []turn.ProviderQuotaSnapshot{seedSnap("anthropic", "claude-opus-4-7", 1000)}
+
+				type result struct {
+					changed bool
+				}
+				done := make(chan result, 1)
+				go func() {
+					_, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0,
+						"", "", nil, baseline, 80*time.Millisecond,
+					)
+					done <- result{changed: changed}
+				}()
+
+				time.Sleep(20 * time.Millisecond)
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeFalse(),
+					"a no-op UpsertProviderQuota call must NOT broadcast — the engine emits provider_quota pre-reply AND post-turn at the same cadence as context_usage, and an unconditional broadcast would degrade the long-poll's perceived-cadence promise to spin")
+			})
+
+			It("broadcasts when a new partition key appears (FE diff loop must observe append)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+
+				baseline := []turn.ProviderQuotaSnapshot{seedSnap("anthropic", "claude-opus-4-7", 1000)}
+
+				type result struct {
+					snap    turn.Turn
+					changed bool
+				}
+				done := make(chan result, 1)
+				go func() {
+					snap, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0,
+						"", "", nil, baseline, 5*time.Second,
+					)
+					done <- result{snap: snap, changed: changed}
+				}()
+
+				time.Sleep(20 * time.Millisecond)
+				reg.UpsertProviderQuota(id, seedSnap("zai", "glm-4.6", 500))
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeTrue(),
+					"a new partition key MUST broadcast — the FE quotaStore's per-partition diff fires applyProviderQuotaEvent once on append")
+				Expect(r.snap.ProviderQuotas).To(HaveLen(2))
+			})
+
+			It("is a no-op on a Completed turn (ProviderQuotas frozen at last value)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 1000))
+				Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
+
+				reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", 9999))
+				reg.UpsertProviderQuota(id, seedSnap("zai", "glm-4.6", 1))
+
+				t, _ := reg.Get(id)
+				Expect(t.ProviderQuotas).To(HaveLen(1),
+					"terminal-state taps must NOT append fresh partitions — the live set belongs to the Running lifetime")
+				Expect(t.ProviderQuotas[0].TokenSpend.SpentMinor).To(Equal(int64(1000)),
+					"terminal-state taps must NOT mutate existing partitions either")
+			})
+
+			It("is a no-op on empty / unknown turn id", func() {
+				snap := seedSnap("anthropic", "claude-opus-4-7", 1)
+				Expect(func() { reg.UpsertProviderQuota("", snap) }).NotTo(Panic())
+				Expect(func() { reg.UpsertProviderQuota("never-minted", snap) }).NotTo(Panic())
+			})
+
+			It("is race-safe under concurrent UpsertProviderQuota writers on different partition keys (-race must report clean)", func() {
+				id, err := reg.Start("sess-race-quota")
+				Expect(err).NotTo(HaveOccurred())
+
+				var (
+					wg   sync.WaitGroup
+					stop atomic.Bool
+				)
+				wg.Add(3)
+
+				// Writer 1 — anthropic partition.
+				go func() {
+					defer wg.Done()
+					i := int64(0)
+					for !stop.Load() {
+						reg.UpsertProviderQuota(id, seedSnap("anthropic", "claude-opus-4-7", i))
+						i++
+					}
+				}()
+				// Writer 2 — zai partition.
+				go func() {
+					defer wg.Done()
+					i := int64(0)
+					for !stop.Load() {
+						reg.UpsertProviderQuota(id, seedSnap("zai", "glm-4.6", i))
+						i++
+					}
+				}()
+				// Reader.
+				go func() {
+					defer wg.Done()
+					for !stop.Load() {
+						_, _ = reg.Get(id)
+					}
+				}()
+
+				time.Sleep(50 * time.Millisecond)
+				stop.Store(true)
+				wg.Wait()
+
+				t, _ := reg.Get(id)
+				Expect(t.ProviderQuotas).To(HaveLen(2),
+					"two distinct partitions must coexist without slice corruption — partition-key dedup must NOT collapse different keys")
+			})
+		})
+
+		// WaitForChange — Phase-5 §1c-β extension: the predicate now also
+		// wakes on ContextUsage / ProviderQuotas transitions past the
+		// caller's baseline. Pins both immediate-return and during-wait wake.
+		Context("WaitForChange (Phase-5 §1c-β — ContextUsage / ProviderQuotas baseline)", func() {
+			It("returns immediately when ContextUsage moved past a nil baseline before the call", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				snap, changed := reg.WaitForChange(
+					context.Background(), id, 0, "", 0,
+					"", "", nil, nil, 5*time.Second,
+				)
+				Expect(changed).To(BeTrue(),
+					"ContextUsage moved past the nil baseline — the wait must surface changed=true synchronously")
+				Expect(snap.ContextUsage).NotTo(BeNil())
+			})
+
+			It("returns immediately when ContextUsage figure differs from a non-nil baseline", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 5000, Limit: 200000, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				baseline := &turn.ContextUsage{InputTokens: 1234, Limit: 200000, Provider: "anthropic", Model: "claude-opus-4-7"}
+				snap, changed := reg.WaitForChange(
+					context.Background(), id, 0, "", 0,
+					"", "", baseline, nil, 5*time.Second,
+				)
+				Expect(changed).To(BeTrue(),
+					"ContextUsage's InputTokens moved — the wait must surface the new figure synchronously")
+				Expect(snap.ContextUsage.InputTokens).To(Equal(5000))
+			})
+
+			It("returns immediately when ProviderQuotas length grew past the baseline", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				snap1 := turn.ProviderQuotaSnapshot{
+					Provider: "anthropic", AccountHash: "h", Model: "claude-opus-4-7",
+					Variant: "token_spend",
+					TokenSpend: &turn.ProviderQuotaTokenSpend{
+						SpentMinor: 100, SpentCurrency: "USD", Period: "monthly",
+					},
+				}
+				reg.UpsertProviderQuota(id, snap1)
+
+				snap, changed := reg.WaitForChange(
+					context.Background(), id, 0, "", 0,
+					"", "", nil, nil, 5*time.Second,
+				)
+				Expect(changed).To(BeTrue(),
+					"a non-empty ProviderQuotas against an empty baseline must surface synchronously")
+				Expect(snap.ProviderQuotas).To(HaveLen(1))
+			})
+
+			It("returns immediately when a ProviderQuotas entry differs from baseline (replace-in-place)", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+				snap := turn.ProviderQuotaSnapshot{
+					Provider: "anthropic", AccountHash: "h", Model: "claude-opus-4-7",
+					Variant: "token_spend",
+					TokenSpend: &turn.ProviderQuotaTokenSpend{
+						SpentMinor: 500, SpentCurrency: "USD", Period: "monthly",
+					},
+				}
+				reg.UpsertProviderQuota(id, snap)
+
+				baseline := []turn.ProviderQuotaSnapshot{{
+					Provider: "anthropic", AccountHash: "h", Model: "claude-opus-4-7",
+					Variant: "token_spend",
+					TokenSpend: &turn.ProviderQuotaTokenSpend{
+						SpentMinor: 100, SpentCurrency: "USD", Period: "monthly",
+					},
+				}}
+				out, changed := reg.WaitForChange(
+					context.Background(), id, 0, "", 0,
+					"", "", nil, baseline, 5*time.Second,
+				)
+				Expect(changed).To(BeTrue(),
+					"a replace-in-place that changes the TokenSpend payload must surface — the FE diff loop pivots on per-partition value change, not just length")
+				Expect(out.ProviderQuotas[0].TokenSpend.SpentMinor).To(Equal(int64(500)))
+			})
+
+			It("wakes during the wait when SetContextUsage fires", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				type result struct {
+					snap    turn.Turn
+					changed bool
+				}
+				done := make(chan result, 1)
+				go func() {
+					snap, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0,
+						"", "", nil, nil, 5*time.Second,
+					)
+					done <- result{snap: snap, changed: changed}
+				}()
+
+				time.Sleep(20 * time.Millisecond)
+				reg.SetContextUsage(id, &turn.ContextUsage{InputTokens: 7777, Limit: 200000, Provider: "anthropic", Model: "claude-opus-4-7"})
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeTrue())
+				Expect(r.snap.ContextUsage.InputTokens).To(Equal(7777))
+			})
+
+			It("wakes during the wait when UpsertProviderQuota fires a new partition", func() {
+				id, err := reg.Start("sess-1")
+				Expect(err).NotTo(HaveOccurred())
+
+				type result struct {
+					snap    turn.Turn
+					changed bool
+				}
+				done := make(chan result, 1)
+				go func() {
+					snap, changed := reg.WaitForChange(
+						context.Background(), id, 0, "", 0,
+						"", "", nil, nil, 5*time.Second,
+					)
+					done <- result{snap: snap, changed: changed}
+				}()
+
+				time.Sleep(20 * time.Millisecond)
+				reg.UpsertProviderQuota(id, turn.ProviderQuotaSnapshot{
+					Provider: "anthropic", AccountHash: "h", Model: "claude-opus-4-7",
+					Variant: "token_spend",
+					TokenSpend: &turn.ProviderQuotaTokenSpend{
+						SpentMinor: 1, SpentCurrency: "USD", Period: "monthly",
+					},
+				})
+
+				var r result
+				Eventually(done, "2s").Should(Receive(&r))
+				Expect(r.changed).To(BeTrue())
+				Expect(r.snap.ProviderQuotas).To(HaveLen(1))
+			})
+		})
+
 		It("supports re-issuing waits after a timeout (channel is replaced, not exhausted)", func() {
 			id, err := reg.Start("sess-1")
 			Expect(err).NotTo(HaveOccurred())
 
 			// First wait — short timeout, no mutation. Must surface
 			// changed=false on the timeout path.
-			_, changed1 := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 50*time.Millisecond)
+			_, changed1 := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 50*time.Millisecond)
 			Expect(changed1).To(BeFalse())
 
 			// Second wait against the same Turn — fire a mutation
@@ -1061,7 +1570,7 @@ var _ = Describe("Registry", func() {
 			type result struct{ changed bool }
 			done := make(chan result, 1)
 			go func() {
-				_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", 2*time.Second)
+				_, changed := reg.WaitForChange(context.Background(), id, 0, "", 0, "", "", nil, nil, 2*time.Second)
 				done <- result{changed: changed}
 			}()
 			time.Sleep(20 * time.Millisecond)

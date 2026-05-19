@@ -192,6 +192,65 @@ describe('quotaStore', () => {
     })
   })
 
+  // Phase-5 §1c-β — idempotency gate. The transitional state has two
+  // callers for the same partition's snapshot (the SSE handler and the
+  // new pollTurnUntilTerminal poll-diff). A structural-equal short-
+  // circuit prevents Vue reactivity from observing a fresh object
+  // reference as a state change on duplicate emissions.
+  describe('applyProviderQuotaEvent idempotency (Phase-5 §1c-β)', () => {
+    it('does NOT rewrite the snapshots map when the same partition is re-applied with an identical figure', () => {
+      const store = useQuotaStore()
+      store.applyProviderQuotaEvent(buildTokenSpendEvent())
+
+      const firstMap = store.snapshots
+      // Apply the IDENTICAL event again — the dedup gate must short-circuit
+      // so the snapshots map keeps its previous object reference.
+      store.applyProviderQuotaEvent(buildTokenSpendEvent())
+
+      expect(store.snapshots).toBe(firstMap)
+    })
+
+    it('DOES rewrite when the partition variant figure moves (spentMinor delta)', () => {
+      const store = useQuotaStore()
+      store.applyProviderQuotaEvent(buildTokenSpendEvent())
+      const firstMap = store.snapshots
+
+      // Different spentMinor — must NOT short-circuit; map identity changes.
+      store.applyProviderQuotaEvent({
+        ...buildTokenSpendEvent(),
+        tokenSpend: {
+          spentMinor: 999,
+          spentCurrency: 'USD',
+          spentUsdMinor: 999,
+          capMinor: 5000,
+          capCurrency: 'USD',
+          period: 'monthly',
+          periodStart: '2026-05-01T00:00:00Z',
+          periodEnd: '2026-06-01T00:00:00Z',
+          thresholdAmber: 80,
+          thresholdRed: 95,
+        },
+      })
+
+      expect(store.snapshots).not.toBe(firstMap)
+      const snap = store.currentQuotaFor('anthropic', 'deadbeef', 'claude-opus-4-7')
+      expect(snap?.tokenSpend?.spentMinor).toBe(999)
+    })
+
+    it('DOES rewrite when observedAt moves (same figure, new emission timestamp)', () => {
+      const store = useQuotaStore()
+      store.applyProviderQuotaEvent(buildTokenSpendEvent())
+      const firstMap = store.snapshots
+
+      store.applyProviderQuotaEvent({
+        ...buildTokenSpendEvent(),
+        observedAt: '2026-05-19T00:00:01Z',
+      })
+
+      expect(store.snapshots).not.toBe(firstMap)
+    })
+  })
+
   describe('currentQuotaFor', () => {
     it('returns null when no snapshot has been seen for the tuple', () => {
       const store = useQuotaStore()
