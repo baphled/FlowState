@@ -56,7 +56,13 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("prepends lean skill names to the system message", func() {
+		// Behaviour-Pinned: D1/Item 2 (Agent Runtime Quality plan, May 2026)
+		// flips the lean injection from "Your load_skills:" prose to a
+		// <system-reminder><available_skills> XML block. The prose was a
+		// known hallucination vector (`task-tracker(...)` invented as a
+		// tool call); the block + Claude Code anti-hallucination clause
+		// pins the model to listed skills only.
+		It("prepends a <system-reminder><available_skills> block to the system message", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -64,11 +70,16 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(HavePrefix("Your load_skills:"))
-			Expect(systemContent).To(ContainSubstring("pre-action"))
-			Expect(systemContent).To(ContainSubstring("memory-keeper"))
-			Expect(systemContent).To(ContainSubstring("Use skill_load(name) to invoke."))
+			Expect(systemContent).To(HavePrefix("<system-reminder>"))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action"`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="memory-keeper"`))
+			Expect(systemContent).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
+			Expect(systemContent).To(ContainSubstring("Never guess or invent a skill name from training data"))
 			Expect(systemContent).To(ContainSubstring("You are a helpful assistant."))
+			// Behaviour-Pinned: the old prose format MUST NOT survive.
+			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).NotTo(ContainSubstring("load when relevant"))
 		})
 
 		It("includes baseline skills regardless of prompt content", func() {
@@ -130,7 +141,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("creates a system message with lean injection", func() {
+		It("creates a system message with the <available_skills> block", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -139,8 +150,9 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			Expect(capturedRequest.Messages).To(HaveLen(2))
 			Expect(capturedRequest.Messages[0].Role).To(Equal("system"))
-			Expect(capturedRequest.Messages[0].Content).To(HavePrefix("Your load_skills:"))
-			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring("Use skill_load(name) to invoke."))
+			Expect(capturedRequest.Messages[0].Content).To(HavePrefix("<system-reminder>"))
+			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring("<available_skills>"))
+			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
 		})
 	})
 
@@ -191,7 +203,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("uses the expected lean format", func() {
+		It("uses the <available_skills> system-reminder format", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -199,26 +211,27 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
-			Expect(systemContent).To(ContainSubstring("Use skill_load(name) to invoke."))
-			for _, skill := range config.BaselineSkills {
-				Expect(systemContent).To(ContainSubstring(skill))
+			Expect(systemContent).To(ContainSubstring("<system-reminder>"))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			Expect(systemContent).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
+			for _, skillName := range config.BaselineSkills {
+				Expect(systemContent).To(ContainSubstring(fmt.Sprintf(`<skill name=%q`, skillName)))
 			}
-			Expect(systemContent).To(ContainSubstring("clean-code"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="clean-code"`))
 		})
 	})
 
-	Context("when system message already contains load_skills", func() {
+	Context("when the system message already contains an <available_skills> block", func() {
 		BeforeEach(func() {
 			request = &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "Your load_skills: session start — invoke before first response: [pre-action, memory-keeper, token-cost-estimation, retrospective, note-taking, knowledge-base, discipline, skill-discovery, agent-discovery]; load when relevant: [clean-code]. Use skill_load(name) to invoke.\n\nYou are a helpful assistant."},
+					{Role: "system", Content: "<system-reminder>\n<available_skills>\n  <skill name=\"pre-action\" tier=\"session-start\" />\n</available_skills>\nCall skill_load(name=\"<exact-name>\") to invoke.\n</system-reminder>\n\nYou are a helpful assistant."},
 					{Role: "user", Content: "follow-up after tool call"},
 				},
 			}
 		})
 
-		It("does not double-inject skills into the system message", func() {
+		It("does not double-inject the block into the system message", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -226,7 +239,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			occurrences := strings.Count(systemContent, "Your load_skills:")
+			occurrences := strings.Count(systemContent, "<available_skills>")
 			Expect(occurrences).To(Equal(1))
 		})
 	})
@@ -252,7 +265,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(Equal("You are a helpful assistant."))
-			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).NotTo(ContainSubstring("<available_skills>"))
 		})
 
 		It("does not modify the system message when baseline skills are empty", func() {
@@ -313,7 +326,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("injects skills as normal", func() {
+		It("injects skills as normal via the <available_skills> block", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -321,8 +334,8 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
-			Expect(systemContent).To(ContainSubstring("pre-action"))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action"`))
 		})
 	})
 
@@ -361,7 +374,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(Equal("You are a helpful assistant."))
-			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).NotTo(ContainSubstring("<available_skills>"))
 		})
 
 		It("still calls through to the next handler", func() {
@@ -384,7 +397,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 	})
 
-	Context("when system message contains a static 'Your load_skills:' placeholder (no bracket)", func() {
+	Context("when system message contains legacy 'Your load_skills:' prose but no <available_skills> block", func() {
 		BeforeEach(func() {
 			request = &provider.ChatRequest{
 				Messages: []provider.Message{
@@ -394,7 +407,14 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("still injects the dynamic skills list because static placeholder lacks opening bracket", func() {
+		// Behaviour-Pinned: the dedupe key is now the <available_skills>
+		// XML marker — legacy "Your load_skills:" prose in a pre-existing
+		// system message does NOT short-circuit injection, so the
+		// dynamic block lands alongside whatever legacy prose the host
+		// carried in. This is intentional: the new format is the source
+		// of truth and the legacy prose is harmless leftover noise that
+		// will age out as agent manifests rebuild.
+		It("injects the <available_skills> block even when legacy prose is present", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -402,8 +422,8 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Use skill_load(name) to invoke."),
-				"dynamic injection should replace static placeholder")
+			Expect(systemContent).To(ContainSubstring("<available_skills>"),
+				"dynamic injection should not be suppressed by legacy prose")
 		})
 	})
 
@@ -434,9 +454,9 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
-			for _, skill := range config.BaselineSkills {
-				Expect(systemContent).To(ContainSubstring(skill))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			for _, skillName := range config.BaselineSkills {
+				Expect(systemContent).To(ContainSubstring(fmt.Sprintf(`<skill name=%q tier="session-start"`, skillName)))
 			}
 			Expect(systemContent).NotTo(ContainSubstring("golang-testing"))
 			Expect(systemContent).NotTo(ContainSubstring("pragmatic-problem-solving"))
@@ -465,7 +485,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(Equal("You are a helpful assistant."))
-			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).NotTo(ContainSubstring("<available_skills>"))
 		})
 	})
 
@@ -522,7 +542,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).To(ContainSubstring("</skill>"))
 		})
 
-		It("falls back to lean injection when cache is nil", func() {
+		It("falls back to <available_skills> lean injection when cache is nil", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -530,8 +550,13 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
-			Expect(systemContent).NotTo(ContainSubstring(`<skill name=`))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			// The lean fallback emits structured <skill name="..." tier="..." />
+			// entries inside <available_skills>; the cache-driven content
+			// path emits free-standing <skill name="..."> blocks with content
+			// bodies. The two are distinguishable by the trailing `/>` of the
+			// self-closing form.
+			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a" tier=`))
 		})
 	})
 
@@ -588,8 +613,14 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			blockCount := strings.Count(systemContent, "<skill name=")
-			Expect(blockCount).To(Equal(3))
+			// D1/Item 2 (Agent Runtime Quality plan, May 2026): the lean
+			// header now emits `<skill name="X" tier="..." />` entries for
+			// every selected skill BEFORE the cache content blocks, so a
+			// naive `<skill name=` count would double-count. Cache content
+			// blocks use `<skill name="X">` (no `tier=` attribute, immediate
+			// `>` after the closing quote); we count those specifically.
+			contentBlockCount := strings.Count(systemContent, `">`+"\n")
+			Expect(contentBlockCount).To(Equal(3))
 		})
 	})
 
@@ -692,7 +723,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("prepends lean header before skill content blocks", func() {
+		It("prepends the <available_skills> header before skill content blocks", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, cache)
 			wrapped := autoloader(passthrough)
 
@@ -700,11 +731,16 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
 			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a">`))
 
-			leanIdx := strings.Index(systemContent, "Your load_skills:")
-			blockIdx := strings.Index(systemContent, `<skill name="skill-a">`)
+			leanIdx := strings.Index(systemContent, "<available_skills>")
+			// The cache-driven content block uses the same `<skill name=`
+			// prefix as the lean fallback; pick a distinct opening match
+			// via `<skill name="skill-a">\n# Skill A` (the content body
+			// follows the open tag immediately under the cache path).
+			blockIdx := strings.Index(systemContent, `<skill name="skill-a">`+"\n# Skill A")
+			Expect(blockIdx).To(BeNumerically(">", 0))
 			Expect(leanIdx).To(BeNumerically("<", blockIdx))
 		})
 	})
@@ -733,7 +769,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("still injects session-start for baseline skills even when all are baked", func() {
+		It("still injects session-start tier entries for baseline skills even when all are baked", func() {
 			baked := []string{"pre-action", "memory-keeper", "token-cost-estimation"}
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, baked, nil)
 			wrapped := autoloader(passthrough)
@@ -742,10 +778,10 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("session start"))
-			Expect(systemContent).To(ContainSubstring("pre-action"))
-			Expect(systemContent).To(ContainSubstring("memory-keeper"))
-			Expect(systemContent).NotTo(ContainSubstring("load when relevant"))
+			Expect(systemContent).To(ContainSubstring(`tier="session-start"`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" tier="session-start"`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="memory-keeper" tier="session-start"`))
+			Expect(systemContent).NotTo(ContainSubstring(`tier="contextual"`))
 		})
 	})
 
@@ -775,7 +811,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("keeps baseline in session-start and strips baked contextual skills from load-when-relevant", func() {
+		It("keeps baseline in the session-start tier and strips baked contextual entries from the contextual tier", func() {
 			baked := []string{"pre-action", "token-cost-estimation"}
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, baked, nil)
 			wrapped := autoloader(passthrough)
@@ -784,12 +820,11 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			// Baseline skills always appear in session-start even when baked
-			Expect(systemContent).To(ContainSubstring("session start"))
-			Expect(systemContent).To(ContainSubstring("pre-action"))
-			Expect(systemContent).To(ContainSubstring("token-cost-estimation"))
-			// Contextual (keyword-matched) skill still injected under load-when-relevant
-			Expect(systemContent).To(ContainSubstring("golang-testing"))
+			// Baseline skills always appear with tier="session-start" even when baked
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" tier="session-start"`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="token-cost-estimation" tier="session-start"`))
+			// Contextual (keyword-matched) skill still injected under contextual tier
+			Expect(systemContent).To(ContainSubstring(`<skill name="golang-testing" tier="contextual"`))
 		})
 	})
 
@@ -817,7 +852,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("injects every selected skill into the lean header", func() {
+		It("injects every selected skill into the <available_skills> block", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -825,10 +860,64 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring("Your load_skills:"))
-			Expect(systemContent).To(ContainSubstring("pre-action"))
-			Expect(systemContent).To(ContainSubstring("memory-keeper"))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action"`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="memory-keeper"`))
 		})
 	})
 
+	// D1/Item 2 (Agent Runtime Quality plan, May 2026) format pin —
+	// asserts the exact <available_skills> XML shape so subsequent
+	// edits cannot silently drift the format that the model has been
+	// trained on.
+	Context("when the manifest produces session-start + contextual skills", func() {
+		BeforeEach(func() {
+			config = hook.DefaultSkillAutoLoaderConfig()
+			manifest = agent.Manifest{
+				ID:         "format-pin-agent",
+				Name:       "Format Pin",
+				Complexity: "quick",
+				Capabilities: agent.Capabilities{
+					AlwaysActiveSkills: []string{"clean-code"},
+				},
+			}
+			request = &provider.ChatRequest{
+				Messages: []provider.Message{
+					{Role: "system", Content: "You are a helpful assistant."},
+					{Role: "user", Content: "Hello"},
+				},
+			}
+		})
+
+		It("emits the expected <system-reminder> + <available_skills> shape with tier attributes", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			// Open tag pins
+			Expect(systemContent).To(HavePrefix("<system-reminder>"))
+			Expect(systemContent).To(ContainSubstring("<available_skills>"))
+			Expect(systemContent).To(ContainSubstring("</available_skills>"))
+			Expect(systemContent).To(ContainSubstring("</system-reminder>"))
+
+			// Tier attribute pins
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" tier="session-start" />`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="clean-code" tier="contextual" />`))
+
+			// Anti-hallucination clause pin (verbatim Claude Code text)
+			Expect(systemContent).To(ContainSubstring("Names are case-sensitive and must match exactly."))
+			Expect(systemContent).To(ContainSubstring("Skills are NOT tools — do not attempt to call them directly."))
+			Expect(systemContent).To(ContainSubstring("Only invoke a skill that appears in the <available_skills> list"))
+			Expect(systemContent).To(ContainSubstring("Never guess or invent a skill name from training data"))
+
+			// Behaviour-Pinned: legacy prose surface is gone.
+			Expect(systemContent).NotTo(ContainSubstring("Your load_skills:"))
+			Expect(systemContent).NotTo(ContainSubstring("Use skill_load(name) to invoke."))
+			Expect(systemContent).NotTo(ContainSubstring("load when relevant:"))
+			Expect(systemContent).NotTo(ContainSubstring("session start — invoke before first response"))
+		})
+	})
 })

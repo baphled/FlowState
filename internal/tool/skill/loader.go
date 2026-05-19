@@ -47,13 +47,23 @@ func (t *Tool) Name() string {
 
 // Description returns a human-readable description of the skill_load tool.
 //
+// The description carries the verbatim Claude Code anti-hallucination
+// clause (Agent Runtime Quality plan Item 2, May 2026). Models occasionally
+// invent skill names from training data ("task-tracker", "parallel-execution"
+// hallucinated as tool calls); the clause pins the model to the
+// <available_skills> system-reminder block emitted by the autoloader hook.
+//
 // Returns:
-//   - A string describing the tool's purpose.
+//   - A string describing the tool's purpose, including the anti-
+//     hallucination clause.
 //
 // Side effects:
 //   - None.
 func (t *Tool) Description() string {
-	return "Load a skill's full markdown content by name for runtime guidance"
+	return "Load a skill's full markdown content by name for runtime guidance. " +
+		"Available skills are listed in system-reminder messages in the conversation. " +
+		"Only invoke a skill that appears in that list, or one the user explicitly typed as `/<name>` in their message. " +
+		"Never guess or invent a skill name from training data; otherwise do not call this tool."
 }
 
 // Schema returns the JSON schema for the skill_load tool arguments.

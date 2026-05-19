@@ -80,13 +80,54 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash", "read", "write", "web"))
-				Expect(names).NotTo(ContainElement("skill_load"))
-				Expect(names).NotTo(ContainElement("todowrite"))
+				// D1 (Agent Runtime Quality plan, May 2026): every
+				// manifest inherits {todowrite, todo_update, skill_load}.
+				// Of those, only todowrite + skill_load are registered
+				// on this fixture's `allTools` slice — todo_update is
+				// not — so the intersection adds those two.
+				// Behaviour-Pinned: the pre-D1 NotTo(ContainElement) pins
+				// on skill_load/todowrite are FLIPPED — those tools now
+				// appear by inheritance unless explicitly denied.
+				Expect(names).To(ConsistOf("bash", "read", "write", "web", "skill_load", "todowrite"))
 				Expect(names).NotTo(ContainElement("delegate"))
 				Expect(names).NotTo(ContainElement("background_output"))
 				Expect(names).NotTo(ContainElement("background_cancel"))
 				Expect(names).NotTo(ContainElement("coordination_store"))
+			})
+		})
+
+		Context("when manifest declares specific tools and uses ToolsDeny to opt out of base tools", func() {
+			It("inherits the base set minus the deny entries", func() {
+				manifest := agent.Manifest{
+					ID:   "deny-base",
+					Name: "Deny Base",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a deny-base executor.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools:     []string{"bash", "file", "web"},
+						ToolsDeny: []string{"todowrite"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				// D3 (Agent Runtime Quality plan, May 2026): ToolsDeny
+				// subtracts entries from the effective set. todowrite
+				// is denied; skill_load remains inherited from the base.
+				Expect(names).To(ConsistOf("bash", "read", "write", "web", "skill_load"))
+				Expect(names).NotTo(ContainElement("todowrite"))
 			})
 		})
 
@@ -118,7 +159,9 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("delegate", "background_output", "background_cancel"))
+				// D1: base tools inherited. todo_update is not registered
+				// on this fixture's allTools, so it does not appear.
+				Expect(names).To(ConsistOf("delegate", "background_output", "background_cancel", "skill_load", "todowrite"))
 				Expect(names).NotTo(ContainElement("bash"))
 				Expect(names).NotTo(ContainElement("read"))
 				Expect(names).NotTo(ContainElement("write"))
@@ -127,7 +170,14 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 		})
 
 		Context("when manifest has empty tools list", func() {
-			It("exposes only suggest_delegate (fail-closed)", func() {
+			// Behaviour-Pinned: pre-D1 this was "fail-closed → only
+			// suggest_delegate". After D1 (Agent Runtime Quality plan,
+			// May 2026), every manifest inherits the base toolset, so
+			// the agent gets {skill_load, todowrite} from the registered
+			// fixture (todo_update is not in allTools). Implementation
+			// surfaces (bash/read/write/web/delegate) still absent
+			// because the manifest did not declare them.
+			It("exposes the inherited base toolset, no implementation surfaces", func() {
 				manifest := agent.Manifest{
 					ID:   "legacy-agent",
 					Name: "Legacy Agent",
@@ -153,6 +203,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ConsistOf("skill_load", "todowrite"))
 				Expect(names).NotTo(ContainElement("bash"))
 				Expect(names).NotTo(ContainElement("read"))
 				Expect(names).NotTo(ContainElement("write"))
@@ -162,7 +213,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 		})
 
 		Context("when manifest has nil tools list", func() {
-			It("exposes only suggest_delegate (fail-closed)", func() {
+			// Behaviour-Pinned: same flip as the empty-tools case above.
+			It("exposes the inherited base toolset, no implementation surfaces", func() {
 				manifest := agent.Manifest{
 					ID:   "nil-tools-agent",
 					Name: "Nil Tools Agent",
@@ -186,6 +238,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ConsistOf("skill_load", "todowrite"))
 				Expect(names).NotTo(ContainElement("bash"))
 				Expect(names).NotTo(ContainElement("read"))
 				Expect(names).NotTo(ContainElement("write"))
@@ -221,7 +274,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				firstNames := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(firstNames).To(ConsistOf("bash"))
+				// D1: base tools inherited.
+				Expect(firstNames).To(ConsistOf("bash", "skill_load", "todowrite"))
 
 				expandedManifest := agent.Manifest{
 					ID:   "expanded",
@@ -243,7 +297,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				secondNames := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(secondNames).To(ConsistOf("bash", "web"))
+				// D1: base tools inherited.
+				Expect(secondNames).To(ConsistOf("bash", "web", "skill_load", "todowrite"))
 			})
 		})
 
@@ -275,7 +330,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash", "read", "write", "coordination_store"))
+				// D1: base tools inherited.
+				Expect(names).To(ConsistOf("bash", "read", "write", "coordination_store", "skill_load", "todowrite"))
 			})
 		})
 	})
@@ -312,7 +368,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash", "create_entities", "search_nodes"))
+				// D1: base tools inherited.
+				Expect(names).To(ConsistOf("bash", "create_entities", "search_nodes", "skill_load", "todowrite"))
 				Expect(names).NotTo(ContainElement("web"))
 				Expect(names).NotTo(ContainElement("read"))
 				Expect(names).NotTo(ContainElement("write"))
@@ -351,15 +408,20 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash"))
+				// D1: base tools inherited.
+				Expect(names).To(ConsistOf("bash", "skill_load", "todowrite"))
 				Expect(names).NotTo(ContainElement("create_entities"))
 				Expect(names).NotTo(ContainElement("search_nodes"))
 				Expect(names).NotTo(ContainElement("query_vault"))
 			})
 		})
 
-		Context("when the manifest tools list is empty (fail-closed)", func() {
-			It("exposes no built-in tools and no MCP tools (suggest_delegate aside)", func() {
+		Context("when the manifest tools list is empty (legacy fail-closed semantics)", func() {
+			// Behaviour-Pinned: pre-D1 this was "no built-in tools and
+			// no MCP tools (suggest_delegate aside)". After D1, every
+			// manifest inherits the base toolset, so {skill_load,
+			// todowrite} appear from the registered fixture.
+			It("exposes only the inherited base toolset, no MCP tools, no built-ins", func() {
 				manifest := agent.Manifest{
 					ID:   "legacy-permissive-agent",
 					Name: "Legacy Permissive Agent",
@@ -389,6 +451,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).To(ConsistOf("skill_load", "todowrite"))
 				Expect(names).NotTo(ContainElement("bash"))
 				Expect(names).NotTo(ContainElement("create_entities"))
 				Expect(names).NotTo(ContainElement("search_nodes"))
@@ -424,7 +487,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash"))
+				// D1: base tools inherited.
+				Expect(names).To(ConsistOf("bash", "skill_load", "todowrite"))
 			})
 		})
 
@@ -461,7 +525,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash", "create_entities", "search_nodes"))
+				// D1: base tools inherited.
+				Expect(names).To(ConsistOf("bash", "create_entities", "search_nodes", "skill_load", "todowrite"))
 			})
 		})
 
@@ -496,7 +561,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(names).To(ConsistOf("bash"))
+				// D1: base tools inherited.
+				Expect(names).To(ConsistOf("bash", "skill_load", "todowrite"))
 			})
 		})
 
@@ -532,7 +598,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				delegatorNames := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(delegatorNames).To(ConsistOf("bash", "create_entities", "search_nodes"))
+				// D1: base tools inherited.
+				Expect(delegatorNames).To(ConsistOf("bash", "create_entities", "search_nodes", "skill_load", "todowrite"))
 				Expect(delegatorNames).NotTo(ContainElement("query_vault"))
 
 				// Hand off to a child whose manifest opts into vault-rag only.
@@ -556,7 +623,8 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				childNames := toolNames(chatProvider.capturedRequest.Tools)
-				Expect(childNames).To(ConsistOf("web", "query_vault"))
+				// D1: base tools inherited.
+				Expect(childNames).To(ConsistOf("web", "query_vault", "skill_load", "todowrite"))
 				Expect(childNames).NotTo(ContainElement("bash"))
 				Expect(childNames).NotTo(ContainElement("create_entities"))
 				Expect(childNames).NotTo(ContainElement("search_nodes"))

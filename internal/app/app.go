@@ -639,6 +639,12 @@ type engineParams struct {
 	// engine.New so propagateSystemPromptBudget can apply the same cap
 	// to the supplied TokenCounter and FailoverManager.
 	systemPromptBudget int
+	// todoStrictMode mirrors cfg.Features.TodoStrictMode (D9 in the
+	// Agent Runtime Quality plan, May 2026). Default false ships the
+	// soft-nudge-only contract; flip in config.yaml to opt in to the
+	// hard-gate that rejects non-todowrite tool calls after >3 calls
+	// without invoking todowrite.
+	todoStrictMode bool
 	// compaction carries the RLM Phase A Layer 1 settings parsed from
 	// cfg.Compaction. The store directory is the active sessions dir so
 	// per-session cold storage lands at <sessionsDir>/<sid>/compacted/.
@@ -897,6 +903,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		toolTimeout:             in.setup.cfg.ParsedToolTimeout(),
 		backgroundOutputTimeout: in.setup.cfg.ParsedBackgroundOutputTimeout(),
 		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
+		todoStrictMode:          in.setup.cfg.Features.TodoStrictMode,
 		compaction:              in.setup.cfg.Compaction,
 		compactionStoreDir:      sessionsDirFromCfg(in.setup.cfg),
 		swarmRegistry:           in.swarmRegistry,
@@ -1262,6 +1269,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		StreamTimeout:             params.streamTimeout,
 		ToolTimeout:               params.toolTimeout,
 		SystemPromptBudget:        params.systemPromptBudget,
+		TodoStrictMode:            params.todoStrictMode,
 		CompactionConfig:          params.compaction,
 		CompactionStoreDir:        params.compactionStoreDir,
 		SwarmRegistry:             params.swarmRegistry,
@@ -1885,6 +1893,7 @@ func (a *App) createDelegateEngine(
 		StreamTimeout:             a.Config.ParsedStreamTimeout(),
 		ToolTimeout:               a.Config.ParsedToolTimeout(),
 		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
+		TodoStrictMode:            a.Config.Features.TodoStrictMode,
 		CompactionConfig:          a.delegateCompactionConfig(),
 		CompactionStoreDir:        a.delegateCompactionStoreDir(),
 	})

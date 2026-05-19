@@ -5,7 +5,11 @@
 // CI gate rather than at runtime when an agent silently can't act
 // (see ecbe59d3 / b17038c2 — the embedded engineering and
 // documentation manifests previously shipped with no tools and went
-// stuck because the engine's tool-gating is fail-closed).
+// stuck because the engine's tool-gating was fail-closed). Under D1
+// (Agent Runtime Quality plan, May 2026) the engine inherits the
+// DefaultBaseTools floor; the validator rule persists because empty
+// tools[] still signals missing implementation surfaces, but the
+// detail text now reflects the post-D1 reality.
 //
 // Validator contract (held by these specs):
 //   - Pure function over an fs.FS rooted at agent-manifest directory.
@@ -110,6 +114,47 @@ var _ = Describe("ValidateManifestSet", func() {
 			violations, err := agent.ValidateManifestSet(fs, "agents")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(violations).To(BeEmpty())
+		})
+
+		// D3 (Agent Runtime Quality plan, May 2026).
+		It("accepts a canonical tool name listed in capabilities.tools_deny", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Deny-User.md": "---\n" +
+					"id: Deny-User\n" +
+					"name: Deny User\n" +
+					"orchestrator_meta:\n" +
+					"  category: implementation\n" +
+					"capabilities:\n" +
+					"  tools: [bash, read, write, edit, grep, glob]\n" +
+					"  tools_deny: [todowrite]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(violations).To(BeEmpty())
+		})
+
+		It("reports an unknown-tool violation when capabilities.tools_deny names a non-canonical tool", func() {
+			fs := manifestFS(map[string]string{
+				"agents/Typo-Deny.md": "---\n" +
+					"id: Typo-Deny\n" +
+					"name: Typo Deny\n" +
+					"orchestrator_meta:\n" +
+					"  category: implementation\n" +
+					"capabilities:\n" +
+					"  tools: [bash, read, write, edit, grep, glob]\n" +
+					"  tools_deny: [bashh]\n" +
+					"---\n",
+			})
+
+			violations, err := agent.ValidateManifestSet(fs, "agents")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(violations).To(HaveLen(1))
+			Expect(violations[0].Manifest).To(Equal("Typo-Deny.md"))
+			Expect(violations[0].Rule).To(Equal("tool-canonical"))
+			Expect(violations[0].Detail).To(ContainSubstring("bashh"))
+			Expect(violations[0].Detail).To(ContainSubstring("tool_deny"))
 		})
 	})
 

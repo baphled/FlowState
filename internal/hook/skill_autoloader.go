@@ -13,7 +13,8 @@ import (
 //
 // When cache is non-nil, skill content is injected directly as XML-style <skill> blocks,
 // respecting MaxAutoSkillsBytes for non-baseline skills. When cache is nil, the hook
-// falls back to the lean "Your load_skills: [...]" injection format.
+// falls back to the lean <available_skills> system-reminder block (Agent Runtime
+// Quality plan, Item 2 — May 2026).
 //
 // Expected:
 //   - config is a non-nil SkillAutoLoaderConfig.
@@ -255,32 +256,58 @@ func containsAssistantMessage(messages []provider.Message) bool {
 	return false
 }
 
-// buildLeanInjection formats a two-tier skill injection string.
-// sessionStartSkills are mandatory and must be invoked before the first response.
-// contextualSkills are optional and should be loaded when relevant.
+// availableSkillsBlockMarker is the substring stable across both the
+// session-start and contextual tiers that downstream code uses to
+// detect an already-injected block. Kept short so the dedupe check
+// stays cheap; the full open tag would be just as correct but more
+// expensive to compare on every request.
+const availableSkillsBlockMarker = "<available_skills>"
+
+// buildLeanInjection renders the Item 2 <available_skills>
+// system-reminder block (Agent Runtime Quality plan, May 2026). The
+// pre-D1 prose format ("Your load_skills: session start...; load when
+// relevant: [...]") was a known hallucination vector: the model treated
+// listed names as inlineable tool calls (`task-tracker(...)`) instead
+// of skills to be loaded via skill_load. The XML-style block mirrors
+// Claude Code's <system-reminder> + <available_skills> shape, which
+// the verbatim anti-hallucination clause refers to ("Available skills
+// are listed in system-reminder messages").
+//
+// sessionStartSkills carry the "must invoke before first response"
+// semantic; contextualSkills carry the "load when relevant" semantic.
+// Both tiers are surfaced inside the same <available_skills> element
+// to keep the block compact, with the always-active marker carried as
+// an inline attribute on each skill entry.
 //
 // Expected:
 //   - sessionStartSkills is the baseline (always-active) skill list; may be empty.
 //   - contextualSkills is the agent/keyword skill list; may be empty.
+//   - At least one tier must be non-empty; an all-empty call returns
+//     the empty string so callers can short-circuit injection.
 //
 // Returns:
-//   - A formatted string with mandatory session-start and/or optional contextual tiers.
+//   - A formatted <system-reminder><available_skills>...</available_skills>...</system-reminder>
+//     block, or the empty string when both tiers are empty.
 //
 // Side effects:
 //   - None.
 func buildLeanInjection(sessionStartSkills, contextualSkills []string) string {
+	if len(sessionStartSkills) == 0 && len(contextualSkills) == 0 {
+		return ""
+	}
 	var sb strings.Builder
-	sb.WriteString("Your load_skills:")
-	if len(sessionStartSkills) > 0 {
-		fmt.Fprintf(&sb, " session start — invoke before first response: [%s]", strings.Join(sessionStartSkills, ", "))
+	sb.WriteString("<system-reminder>\n")
+	sb.WriteString("The following skills are available for use with the skill_load tool:\n\n")
+	sb.WriteString("<available_skills>\n")
+	for _, name := range sessionStartSkills {
+		fmt.Fprintf(&sb, "  <skill name=%q tier=\"session-start\" />\n", name)
 	}
-	if len(contextualSkills) > 0 {
-		if len(sessionStartSkills) > 0 {
-			sb.WriteString(";")
-		}
-		fmt.Fprintf(&sb, " load when relevant: [%s]", strings.Join(contextualSkills, ", "))
+	for _, name := range contextualSkills {
+		fmt.Fprintf(&sb, "  <skill name=%q tier=\"contextual\" />\n", name)
 	}
-	sb.WriteString(". Use skill_load(name) to invoke.")
+	sb.WriteString("</available_skills>\n\n")
+	sb.WriteString("Call skill_load(name=\"<exact-name>\") to invoke. Names are case-sensitive and must match exactly. Skills are NOT tools — do not attempt to call them directly. Only invoke a skill that appears in the <available_skills> list, or one the user explicitly typed as `/<name>` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool.\n")
+	sb.WriteString("</system-reminder>")
 	return sb.String()
 }
 
@@ -288,16 +315,21 @@ func buildLeanInjection(sessionStartSkills, contextualSkills []string) string {
 //
 // Expected:
 //   - req is a non-nil ChatRequest.
-//   - lean is the formatted lean injection string.
+//   - lean is the formatted lean injection string. Empty strings are
+//     ignored (callers can pass the empty result from buildLeanInjection
+//     and rely on this no-op).
 //
 // Returns:
 //   - None.
 //
 // Side effects:
 //   - Mutates the first system message, or prepends a new system message if none exists.
-//   - No-ops when the system message already contains a load_skills directive.
+//   - No-ops when the system message already contains an <available_skills> block.
 func injectLeanSkills(req *provider.ChatRequest, lean string) {
-	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, "Use skill_load(name) to invoke.") {
+	if lean == "" {
+		return
+	}
+	if len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, availableSkillsBlockMarker) {
 		return
 	}
 	if len(req.Messages) == 0 || req.Messages[0].Role != "system" {

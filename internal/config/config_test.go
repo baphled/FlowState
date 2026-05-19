@@ -1069,3 +1069,48 @@ providers:
 		})
 	})
 })
+
+// D9 (Agent Runtime Quality plan, May 2026): opt-in feature flag for
+// the todo strict-mode hard-gate. Defaults to false so upgrading
+// deployments inherit the historical soft-nudge-only behaviour from
+// D6 without configuration churn.
+var _ = Describe("AppConfig.Features (D9 todo_strict_mode)", func() {
+	var tempDir string
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "features-config-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { os.RemoveAll(tempDir) })
+	})
+
+	It("defaults Features.TodoStrictMode to false on an empty config", func() {
+		configPath := filepath.Join(tempDir, "config.yaml")
+		Expect(os.WriteFile(configPath, []byte("log_level: info\n"), 0o600)).To(Succeed())
+
+		cfg, err := config.LoadConfigFromPath(configPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Features.TodoStrictMode).To(BeFalse(),
+			"D9 ships off so existing deployments stay on the soft-nudge default")
+	})
+
+	It("parses features.todo_strict_mode: true from YAML", func() {
+		configContent := "features:\n  todo_strict_mode: true\n"
+		configPath := filepath.Join(tempDir, "config.yaml")
+		Expect(os.WriteFile(configPath, []byte(configContent), 0o600)).To(Succeed())
+
+		cfg, err := config.LoadConfigFromPath(configPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Features.TodoStrictMode).To(BeTrue())
+	})
+
+	It("parses features.todo_strict_mode: false from YAML (explicit opt-out)", func() {
+		configContent := "features:\n  todo_strict_mode: false\n"
+		configPath := filepath.Join(tempDir, "config.yaml")
+		Expect(os.WriteFile(configPath, []byte(configContent), 0o600)).To(Succeed())
+
+		cfg, err := config.LoadConfigFromPath(configPath)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Features.TodoStrictMode).To(BeFalse())
+	})
+})

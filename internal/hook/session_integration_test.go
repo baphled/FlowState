@@ -56,7 +56,7 @@ var _ = Describe("SkillAutoLoaderHook session integration", Label("integration")
 			}
 		})
 
-		It("injects agent skills into the system prompt during stream", func() {
+		It("injects agent skills as contextual <skill> entries inside <available_skills>", func() {
 			req := &provider.ChatRequest{
 				Messages: []provider.Message{
 					{Role: "system", Content: "You are helpful."},
@@ -66,7 +66,8 @@ var _ = Describe("SkillAutoLoaderHook session integration", Label("integration")
 			captured, called := runSessionHook(context.Background(), req)
 
 			Expect(called).To(BeTrue())
-			Expect(captured.Messages[0].Content).To(ContainSubstring("load when relevant: [golang, testing]"))
+			Expect(captured.Messages[0].Content).To(ContainSubstring(`<skill name="golang" tier="contextual"`))
+			Expect(captured.Messages[0].Content).To(ContainSubstring(`<skill name="testing" tier="contextual"`))
 		})
 	})
 
@@ -153,22 +154,22 @@ var _ = Describe("SkillAutoLoaderHook session resumption", Label("integration"),
 			}
 			captured := runSessionHook(req)
 
-			Expect(captured.Messages[0].Content).NotTo(ContainSubstring("Your load_skills:"))
+			Expect(captured.Messages[0].Content).NotTo(ContainSubstring("<available_skills>"))
 			Expect(captured.Messages[0].Content).To(Equal("You are helpful."))
 		})
 	})
 
-	Context("when system message already contains load_skills (tool-call follow-up)", func() {
+	Context("when system message already contains an <available_skills> block (tool-call follow-up)", func() {
 		It("does not double-inject", func() {
 			req := &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "Your load_skills: load when relevant: [golang]. Use skill_load(name) to invoke.\n\nYou are helpful."},
+					{Role: "system", Content: "<system-reminder>\n<available_skills>\n  <skill name=\"golang\" tier=\"contextual\" />\n</available_skills>\nCall skill_load(name=\"<exact-name>\") to invoke.\n</system-reminder>\n\nYou are helpful."},
 					{Role: "user", Content: "Continue working"},
 				},
 			}
 			captured := runSessionHook(req)
 
-			count := strings.Count(captured.Messages[0].Content, "Your load_skills:")
+			count := strings.Count(captured.Messages[0].Content, "<available_skills>")
 			Expect(count).To(Equal(1))
 		})
 	})

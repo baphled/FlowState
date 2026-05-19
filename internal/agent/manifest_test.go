@@ -109,6 +109,92 @@ var _ = Describe("Manifest", func() {
 			Expect(err.Error()).To(ContainSubstring("id"))
 		})
 	})
+
+	// D1 (Agent Runtime Quality plan, May 2026): inherit-by-default
+	// base toolset. A manifest's EffectiveTools is the union of its
+	// declared capabilities.tools and the package-level
+	// DefaultBaseTools, minus capabilities.tools_deny. Existing
+	// manifests that omit tools_deny (the zero-valued nil slice) are
+	// forward-compatible.
+	Describe("EffectiveTools (D1)", func() {
+		It("returns just the default base toolset for a manifest with no declared tools", func() {
+			manifest := &agent.Manifest{ID: "bare", Name: "Bare"}
+			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "skill_load"))
+		})
+
+		It("unions the manifest tools with the default base toolset", func() {
+			manifest := &agent.Manifest{
+				ID:   "with-bash",
+				Name: "With Bash",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash"},
+				},
+			}
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "skill_load"))
+		})
+
+		It("returns a sorted slice so callers get a stable ordering", func() {
+			manifest := &agent.Manifest{
+				Capabilities: agent.Capabilities{Tools: []string{"write", "bash", "read"}},
+			}
+			tools := manifest.EffectiveTools()
+			sorted := make([]string, len(tools))
+			copy(sorted, tools)
+			// EffectiveTools sort is alphabetical; this asserts the contract.
+			Expect(sorted).To(Equal([]string{"bash", "read", "skill_load", "todo_update", "todowrite", "write"}))
+		})
+
+		It("is idempotent — declaring a base tool explicitly does not duplicate it", func() {
+			manifest := &agent.Manifest{
+				Capabilities: agent.Capabilities{Tools: []string{"todowrite", "bash"}},
+			}
+			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "skill_load", "bash"))
+		})
+
+		It("subtracts capabilities.tools_deny entries — even base tools", func() {
+			manifest := &agent.Manifest{
+				Capabilities: agent.Capabilities{
+					Tools:     []string{"bash"},
+					ToolsDeny: []string{"todowrite"},
+				},
+			}
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todo_update", "skill_load"))
+		})
+
+		It("returns the base set when called on a nil receiver", func() {
+			var manifest *agent.Manifest
+			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "skill_load"))
+		})
+
+		It("ignores empty string entries in capabilities.tools", func() {
+			manifest := &agent.Manifest{
+				Capabilities: agent.Capabilities{Tools: []string{"", "bash", ""}},
+			}
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "skill_load"))
+		})
+
+		It("survives a tools_deny that includes a tool the manifest never declared", func() {
+			manifest := &agent.Manifest{
+				Capabilities: agent.Capabilities{
+					Tools:     []string{"bash"},
+					ToolsDeny: []string{"not-in-the-set", "skill_load"},
+				},
+			}
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update"))
+		})
+	})
+
+	Describe("DefaultBaseTools (D1)", func() {
+		It("exposes the three-tool floor every manifest inherits", func() {
+			Expect(agent.DefaultBaseTools()).To(ConsistOf("todowrite", "todo_update", "skill_load"))
+		})
+
+		It("returns a fresh copy so callers cannot mutate the package constant", func() {
+			first := agent.DefaultBaseTools()
+			first[0] = "mutated"
+			Expect(agent.DefaultBaseTools()).To(ConsistOf("todowrite", "todo_update", "skill_load"))
+		})
+	})
 })
 
 var _ = Describe("Manifest JSON deserialisation", func() {
@@ -361,6 +447,28 @@ var _ = Describe("ValidationError", func() {
 			}
 
 			Expect(err.Error()).To(Equal("test_field: test message"))
+		})
+	})
+})
+
+// D3 (Agent Runtime Quality plan, May 2026): Capabilities gains the
+// sibling key tools_deny. New manifests opt in by listing tool names;
+// pre-D3 manifests have the zero-valued nil slice and are fully
+// forward-compatible.
+var _ = Describe("Capabilities.ToolsDeny (D3) parsing", func() {
+	Context("JSON deserialisation", func() {
+		It("parses capabilities.tools_deny from JSON", func() {
+			raw := `{"id":"x","name":"X","capabilities":{"tools":["bash"],"tools_deny":["todowrite"]}}`
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+			Expect(m.Capabilities.ToolsDeny).To(ConsistOf("todowrite"))
+		})
+
+		It("defaults to an empty slice when tools_deny is omitted (backward compat)", func() {
+			raw := `{"id":"x","name":"X","capabilities":{"tools":["bash"]}}`
+			var m agent.Manifest
+			Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+			Expect(m.Capabilities.ToolsDeny).To(BeEmpty())
 		})
 	})
 })

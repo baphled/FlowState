@@ -75,10 +75,11 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 			}
 		})
 
-		It("injects lean format with load_skills directive", func() {
+		It("injects the <available_skills> system-reminder block", func() {
 			req := runHook("Hello")
-			Expect(req.Messages[0].Content).To(ContainSubstring("Your load_skills:"))
-			Expect(req.Messages[0].Content).To(ContainSubstring("Use skill_load(name) to invoke."))
+			Expect(req.Messages[0].Content).To(ContainSubstring("<system-reminder>"))
+			Expect(req.Messages[0].Content).To(ContainSubstring("<available_skills>"))
+			Expect(req.Messages[0].Content).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
 		})
 	})
 
@@ -99,18 +100,11 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 			req := runHook("golang database testing")
 			content := req.Messages[0].Content
 
-			// Non-baseline skills appear in the "load when relevant: [...]" tier.
-			const marker = "load when relevant: ["
-			idx := strings.Index(content, marker)
-			if idx == -1 {
-				// No contextual skills injected — cap is trivially respected.
-				return
-			}
-			closeIdx := strings.Index(content[idx:], "]")
-			Expect(closeIdx).NotTo(Equal(-1))
-			skillList := content[idx+len(marker) : idx+closeIdx]
-			skills := strings.Split(skillList, ", ")
-			nonBaselineCount := len(skills)
+			// Non-baseline skills appear in the <available_skills> block
+			// with tier="contextual" (D1/Item 2 Agent Runtime Quality plan,
+			// May 2026). Count distinct contextual skill entries.
+			const contextualMarker = `tier="contextual"`
+			nonBaselineCount := strings.Count(content, contextualMarker)
 			Expect(nonBaselineCount).To(BeNumerically("<=", cfg.MaxAutoSkills))
 		})
 	})

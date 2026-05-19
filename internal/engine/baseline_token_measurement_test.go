@@ -58,7 +58,22 @@ var _ = Describe("WriteBaselineTokenMeasurementEvidence", func() {
 		systemPromptTokens := counter.Count(systemPrompt)
 
 		autoloadCfg := hook.DefaultSkillAutoLoaderConfig()
-		leanHeader := "Your load_skills: session start — invoke before first response: [" + strings.Join(autoloadCfg.BaselineSkills, ", ") + "]. Use skill_load(name) to invoke."
+		// D1/Item 2 (Agent Runtime Quality plan, May 2026): the lean
+		// injection now ships a <system-reminder><available_skills>
+		// XML block plus the verbatim Claude Code anti-hallucination
+		// clause. The token count is captured for the same baseline
+		// purpose as before — proxy a representative session-start
+		// injection — but with a shape that matches what runtime
+		// actually emits.
+		var leanHeaderBuilder strings.Builder
+		leanHeaderBuilder.WriteString("<system-reminder>\nThe following skills are available for use with the skill_load tool:\n\n<available_skills>\n")
+		for _, name := range autoloadCfg.BaselineSkills {
+			leanHeaderBuilder.WriteString(`  <skill name="` + name + `" tier="session-start" />` + "\n")
+		}
+		leanHeaderBuilder.WriteString(`</available_skills>` + "\n\n")
+		leanHeaderBuilder.WriteString(`Call skill_load(name="<exact-name>") to invoke. Names are case-sensitive and must match exactly. Skills are NOT tools — do not attempt to call them directly. Only invoke a skill that appears in the <available_skills> list, or one the user explicitly typed as ` + "`/<name>`" + ` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool.` + "\n")
+		leanHeaderBuilder.WriteString("</system-reminder>")
+		leanHeader := leanHeaderBuilder.String()
 		skillHeaderTokens := counter.Count(leanHeader)
 
 		request := &provider.ChatRequest{
@@ -82,7 +97,7 @@ var _ = Describe("WriteBaselineTokenMeasurementEvidence", func() {
 		_, err = wrapped(context.Background(), request)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(captured.Messages).To(HaveLen(2))
-		Expect(captured.Messages[0].Content).To(ContainSubstring("Your load_skills:"))
+		Expect(captured.Messages[0].Content).To(ContainSubstring("<available_skills>"))
 
 		skillCount, totalSkillBytes, err := countSkillFiles(appCfg.SkillDir)
 		Expect(err).NotTo(HaveOccurred())

@@ -438,7 +438,23 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			Expect(capture.capturedRequest).NotTo(BeNil())
 			Expect(capture.capturedRequest.Messages).NotTo(BeEmpty())
 			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring("# Skill: pre-action"))
-			Expect(capture.capturedRequest.Messages[0].Content).NotTo(ContainSubstring("Your load_skills: [pre-action"))
+			// Behaviour-Pinned: the pre-D1 assertion
+			//   NotTo(ContainSubstring("Your load_skills: [pre-action"))
+			// was a vacuous pin — the literal "Your load_skills: [pre-action"
+			// substring never appeared because baseline tier always opens with
+			// "session start — invoke before first response: [..." per the
+			// old format. The actual contract (asserted by
+			// skill_autoloader_test.go's "still injects session-start for
+			// baseline skills even when all are baked") is that BASELINE
+			// skills always get the lean session-start entry, baked or not;
+			// only CONTEXTUAL skills are stripped when baked. Under D1/Item 2
+			// (Agent Runtime Quality plan, May 2026) that contract carries
+			// over: pre-action appears as both the full content block
+			// (BuildSystemPrompt) AND as a <skill name="pre-action"
+			// tier="session-start" /> entry inside the lean header. The
+			// two coexist by design — the lean entry is a directive to
+			// invoke; the full block is the loaded content.
+			Expect(capture.capturedRequest.Messages[0].Content).To(ContainSubstring(`<skill name="pre-action" tier="session-start"`))
 		})
 
 		It("retains skills after SetManifest invalidates the prompt cache", func() {

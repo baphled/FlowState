@@ -42,6 +42,20 @@ var _ = Describe("Tool", func() {
 		It("returns a non-empty string", func() {
 			Expect(skillTool.Description()).NotTo(BeEmpty())
 		})
+
+		// D1/Item 2 (Agent Runtime Quality plan, May 2026): the
+		// skill_load tool description carries the verbatim Claude
+		// Code anti-hallucination clause so providers that surface
+		// the description directly to the model receive the same
+		// guard rail as the <available_skills> system-reminder
+		// block emitted by the autoloader hook.
+		It("includes the anti-hallucination clause naming the available_skills source of truth", func() {
+			desc := skillTool.Description()
+			Expect(desc).To(ContainSubstring("Available skills are listed in system-reminder messages in the conversation."))
+			Expect(desc).To(ContainSubstring("Only invoke a skill that appears in that list"))
+			Expect(desc).To(ContainSubstring("user explicitly typed as `/<name>` in their message"))
+			Expect(desc).To(ContainSubstring("Never guess or invent a skill name from training data"))
+		})
 	})
 
 	Describe("Schema", func() {

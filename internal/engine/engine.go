@@ -133,6 +133,24 @@ type Engine struct {
 	// seeded we skip future calls so that the messages are not duplicated
 	// across turns.
 	seededSessions map[string]struct{}
+
+	// todoStrictMode mirrors config.FeaturesConfig.TodoStrictMode (D9
+	// in the Agent Runtime Quality plan, May 2026). When true, the
+	// executeToolCall dispatch path rejects non-todowrite tool calls
+	// once todoNonTodowriteToolCalls[sessionID] > 3, returning a
+	// structured tool.Result with IsError=true. Default false honours
+	// the soft-nudge-only v1 contract from D6.
+	todoStrictMode bool
+
+	// todoNonTodowriteToolCalls counts non-todowrite tool calls per
+	// session since the last todowrite invocation. Reset on every
+	// todowrite call, incremented on every non-todowrite call. The
+	// strict-mode gate compares against the >3 threshold from D9.
+	// Per-session because the chain-state contract is "this agent's
+	// task lifetime", and FlowState's sessionID is the closest
+	// observable proxy at the executeToolCall seam. Protected by e.mu
+	// like every other per-session map on the engine.
+	todoNonTodowriteToolCalls map[string]int
 	// compressionMetrics, when non-nil, is shared with the window
 	// builder (via WithMetrics) and bumped by maybeAutoCompact on every
 	// successful L2 compaction so operators have a single counter set
@@ -496,6 +514,15 @@ type Config struct {
 	// and FailoverManager so every fallback site shares the same cap.
 	SystemPromptBudget int
 
+	// TodoStrictMode mirrors config.FeaturesConfig.TodoStrictMode
+	// (D9 in the Agent Runtime Quality plan, May 2026). When true,
+	// the engine rejects non-todowrite tool calls once a session has
+	// fired more than 3 tool calls without invoking todowrite. The
+	// rejection is a structured tool.Result with IsError=true whose
+	// output instructs the model to call todowrite first. Default
+	// false honours the soft-nudge-only v1 contract (D6).
+	TodoStrictMode bool
+
 	// RecallEmbeddingModel is the embedding-model identifier the recall
 	// pipeline is currently configured against (typically the value from
 	// cfg.ResolvedEmbeddingModel() at app wiring time). The RecallBroker
@@ -769,6 +796,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:         make(map[string]struct{}),
 		seededSessions:            make(map[string]struct{}),
+		todoStrictMode:            cfg.TodoStrictMode,
+		todoNonTodowriteToolCalls: make(map[string]int),
 		lastUsagePayload:          make(map[string]string),
 		sessionOutputTokens:       make(map[string]int64),
 		quotaTracker:              cfg.QuotaTracker,
@@ -2295,24 +2324,32 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 //     names.
 //
 // Returns:
-//   - A non-nil map of allowed tool names. Empty/nil Capabilities.Tools is
-//     treated as "no tools allowed" (fail-closed) — manifests that do not
-//     declare tools get nothing beyond the always-on suggest_delegate
-//     escape hatch. Legacy manifests without an explicit tools list now
-//     surface as "stuck" agents rather than silently inheriting the full
-//     toolbelt; the loader emits a warning when such a manifest loads.
-//   - When Capabilities.Tools is non-empty, MCP tools are gated by
-//     Capabilities.MCPServers: each declared server name has its tools
-//     merged into the allowed set. Unknown server names are silently
-//     ignored. See ADR - MCP Tool Gating by Agent Manifest for the full
-//     contract.
+//   - A non-nil map of allowed tool names. D1 (Agent Runtime Quality,
+//     May 2026): every manifest implicitly inherits the
+//     agent.DefaultBaseTools() floor (todowrite, todo_update,
+//     skill_load), unioned with the manifest's declared tools, then
+//     subtracted by manifest.Capabilities.ToolsDeny. Empty/nil
+//     Capabilities.Tools no longer fails closed — agents that did
+//     not declare these three tools previously stuck on the universal
+//     surfaces; the base set restores the floor. The bundle aliases
+//     "file" / "delegate" / "autoresearch_run" expand into individual
+//     tool names exactly as before.
+//   - MCP tools are gated by Capabilities.MCPServers: each declared
+//     server name has its tools merged into the allowed set. Unknown
+//     server names are silently ignored. See ADR - MCP Tool Gating
+//     by Agent Manifest for the full contract.
 //
 // Side effects:
 //   - None.
 func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool {
-	manifestTools := manifest.Capabilities.Tools
-	allowed := make(map[string]bool, len(manifestTools)+1)
-	for _, mt := range manifestTools {
+	// D1: inherit-by-default base toolset. EffectiveTools computes
+	// union(Capabilities.Tools, DefaultBaseTools) − Capabilities.ToolsDeny.
+	// We then expand bundle aliases the same way the pre-D1 loop did so
+	// the runtime surface (read/write from "file", autoresearch+background
+	// from "delegate", etc.) stays identical.
+	effective := manifest.EffectiveTools()
+	allowed := make(map[string]bool, len(effective)+1)
+	for _, mt := range effective {
 		switch mt {
 		case "file":
 			allowed["read"] = true
@@ -2340,13 +2377,25 @@ func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool
 		}
 	}
 
+	// D1: re-apply ToolsDeny over the expanded set so deny entries
+	// take effect even on bundle-alias-expanded tool names (e.g. a
+	// manifest that lists `tools: [delegate]` and `tools_deny: [bash]`
+	// still gets the delegate fan-out but never sees bash). This is
+	// strictly cosmetic for the base set (todowrite/todo_update/
+	// skill_load don't expand to anything else) but matters for the
+	// general deny case so the field's semantics are predictable.
+	for _, denied := range manifest.Capabilities.ToolsDeny {
+		delete(allowed, denied)
+	}
+
 	// P12: suggest_delegate is a read-only escape hatch wired into every
 	// non-delegating agent's engine. It must always be visible to the
 	// model, even when the manifest restricts capabilities.tools to a
 	// fixed list — otherwise the model has no legitimate way to signal
 	// "the user wants me to delegate but I cannot". The corresponding
 	// tool is only attached to the engine for CanDelegate=false agents,
-	// so this flag is a no-op when the tool is absent.
+	// so this flag is a no-op when the tool is absent. Not subject to
+	// ToolsDeny on purpose — escape hatches do not honour denials.
 	allowed["suggest_delegate"] = true
 
 	return allowed
@@ -4169,6 +4218,69 @@ func (e *Engine) deriveToolCtx(parent context.Context, t tool.Tool) (context.Con
 	return context.WithTimeout(parent, e.toolTimeout)
 }
 
+// todoStrictModeThreshold is the >N threshold from D9. When the
+// per-session non-todowrite tool-call counter exceeds this value and
+// TodoStrictMode is true, the gate fires. Picked at 3 per the plan's
+// "multi-step turn" definition (≥3 tool calls in a single agent turn);
+// the strict mode rejects the FOURTH non-todowrite call.
+const todoStrictModeThreshold = 3
+
+// todoStrictGate is the D9 hard-gate enforcement point (Agent Runtime
+// Quality plan, May 2026). Called at the very top of executeToolCall
+// so it sees every tool dispatch before any registry lookup or
+// execution side-effect.
+//
+// Semantics:
+//   - When TodoStrictMode is false (the v1 default): always returns
+//     (zero Result, false). The counter is still tracked so flipping
+//     the flag mid-session takes effect on the next call; this is
+//     cheap and avoids a behavioural cliff at flag-flip time.
+//   - When TodoStrictMode is true and toolName == "todowrite": reset
+//     the per-session counter to 0 and let the call through. The
+//     reset is the contract: a todowrite anywhere in the chain
+//     re-arms the gate for the next batch of tool calls.
+//   - When TodoStrictMode is true and the counter is at or beyond
+//     todoStrictModeThreshold: return a structured tool.Result with
+//     IsError=true whose output instructs the model to call
+//     todowrite first. Counter is NOT incremented on the rejected
+//     call — the user-facing surface should not penalise the model
+//     for the gate's own emission.
+//   - When TodoStrictMode is true and the counter is below the
+//     threshold: increment and let through.
+//
+// Returns:
+//   - tool.Result populated with the rejection payload when blocked=true.
+//   - blocked=true when the call should be rejected without dispatch.
+//
+// Side effects:
+//   - Mutates e.todoNonTodowriteToolCalls[sessionID] under e.mu.
+func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if toolName == "todowrite" {
+		// Reset on every todowrite, regardless of strict mode, so the
+		// counter never drifts when the flag is flipped between
+		// invocations.
+		delete(e.todoNonTodowriteToolCalls, sessionID)
+		return tool.Result{}, false
+	}
+	current := e.todoNonTodowriteToolCalls[sessionID]
+	if e.todoStrictMode && current >= todoStrictModeThreshold {
+		msg := fmt.Sprintf(
+			"todo_strict_mode: this chain has made %d tool calls without invoking todowrite. "+
+				"Call todowrite with the task breakdown before running '%s' (or any other tool). "+
+				"Rationale: features.todo_strict_mode is enabled — see Agent Runtime Quality plan D9.",
+			current, toolName,
+		)
+		return tool.Result{
+			Output:  msg,
+			IsError: true,
+		}, true
+	}
+	e.todoNonTodowriteToolCalls[sessionID] = current + 1
+	return tool.Result{}, false
+}
+
 // executeToolCall finds and executes the specified tool with the given arguments.
 //
 // Expected:
@@ -4181,7 +4293,13 @@ func (e *Engine) deriveToolCtx(parent context.Context, t tool.Tool) (context.Con
 //
 // Side effects:
 //   - Executes the tool, which may have its own side effects.
+//   - When TodoStrictMode is enabled (D9), maintains a per-session
+//     counter of non-todowrite tool calls and rejects calls that
+//     cross the >3 threshold with a structured tool_result error.
 func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall *provider.ToolCall) (tool.Result, error) {
+	if gate, blocked := e.todoStrictGate(sessionID, toolCall.Name); blocked {
+		return gate, nil
+	}
 	for _, t := range e.tools {
 		if t.Name() != toolCall.Name {
 			continue

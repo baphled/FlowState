@@ -122,7 +122,8 @@ type validatorManifestProbe struct {
 		Role string `yaml:"role"`
 	} `yaml:"metadata"`
 	Capabilities struct {
-		Tools []string `yaml:"tools"`
+		Tools     []string `yaml:"tools"`
+		ToolsDeny []string `yaml:"tools_deny"`
 	} `yaml:"capabilities"`
 	Delegation struct {
 		CanDelegate bool `yaml:"can_delegate"`
@@ -145,6 +146,37 @@ type validatorManifestProbe struct {
 // MCP tools are accepted via the mcp_* prefix rather than being
 // enumerated — the MCP set is discovered at runtime and any static
 // list would drift the moment an operator wires a new server.
+// defaultBaseTools is the toolset every agent inherits regardless of
+// manifest declaration (D1 in Agent Runtime Quality plan, May 2026).
+// Convergent precedent: Claude Code subagents omit `tools:` to inherit
+// the full belt; OpenCode hard-codes a built-in tool set.
+//
+// FlowState's pre-D1 fail-closed semantics meant a manifest that did
+// not declare todowrite / todo_update / skill_load silently lost
+// access to the discipline + observability surface every agent
+// depends on. The base set restores that floor; per-agent
+// Capabilities.ToolsDeny opts back out for the rare manifest that
+// genuinely needs the denial.
+//
+// Hard-coded rather than YAML-config per D1 rationale (zero user-
+// stated benefit to a per-environment override matrix today; YAML
+// upgrade path is straightforward when a second use case lands).
+var defaultBaseTools = []string{
+	"todowrite",
+	"todo_update",
+	"skill_load",
+}
+
+// DefaultBaseTools exposes the inherit-by-default base toolset for
+// callers outside the agent package (validators, registries, debug
+// surfaces). Returns a fresh copy so callers cannot mutate the
+// package-level constant.
+func DefaultBaseTools() []string {
+	out := make([]string, len(defaultBaseTools))
+	copy(out, defaultBaseTools)
+	return out
+}
+
 var canonicalTools = map[string]bool{
 	// Engine bundle aliases (see buildAllowedToolSetFor).
 	"file":     true,
@@ -228,6 +260,12 @@ var (
 // ruleToolCanonical fires on any tool name not in canonicalTools and
 // not prefixed mcp_. One violation per offending name keeps the
 // detail strings short and the CI output greppable.
+//
+// D3 (Agent Runtime Quality plan, May 2026): Capabilities.ToolsDeny
+// entries are checked against the same registry so a typo in the
+// deny list ("bash" misspelt "bashh") surfaces at the CI gate rather
+// than silently failing to deny anything at runtime. Empty/nil
+// ToolsDeny is the pre-D3 zero value and trips no violation.
 func ruleToolCanonical(name string, probe validatorManifestProbe) []Violation {
 	var out []Violation
 	for _, t := range probe.Capabilities.Tools {
@@ -240,13 +278,29 @@ func ruleToolCanonical(name string, probe validatorManifestProbe) []Violation {
 			Detail:   fmt.Sprintf("unknown tool name %q (not in canonical set, not mcp_*-prefixed)", t),
 		})
 	}
+	for _, t := range probe.Capabilities.ToolsDeny {
+		if canonicalTools[t] || strings.HasPrefix(t, "mcp_") {
+			continue
+		}
+		out = append(out, Violation{
+			Manifest: name,
+			Rule:     "tool-canonical",
+			Detail:   fmt.Sprintf("unknown tool_deny name %q (not in canonical set, not mcp_*-prefixed)", t),
+		})
+	}
 	return out
 }
 
 // ruleToolsEmpty fires on an explicit empty list AND on a missing
-// frontmatter key. The engine's tool-gating is fail-closed (empty
-// Tools → no tools allowed beyond suggest_delegate) so this is the
-// load-bearing rule for the "manifest ships stuck" regression.
+// frontmatter key. Under D1 (Agent Runtime Quality plan, May 2026)
+// the engine inherits the DefaultBaseTools floor, so an agent with
+// empty Tools is no longer literally stuck — it still has
+// todowrite/todo_update/skill_load. The rule persists because the
+// historical "shipped with empty tools[]" failure mode usually
+// signalled operator intent gone missing (engineering agent shipped
+// with no implementation surfaces), and the load-time CI gate is the
+// earliest place we can surface it. The detail message reflects the
+// post-D1 reality.
 func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
 	if len(probe.Capabilities.Tools) > 0 {
 		return nil
@@ -254,7 +308,7 @@ func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
 	return []Violation{{
 		Manifest: name,
 		Rule:     "tools-empty",
-		Detail:   "capabilities.tools is empty — engine fail-closed gating leaves the agent stuck (see ecbe59d3 / b17038c2)",
+		Detail:   "capabilities.tools is empty — under D1 the agent inherits only the default base toolset (todowrite, todo_update, skill_load); if more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical fail-closed regression this rule originally caught)",
 	}}
 }
 

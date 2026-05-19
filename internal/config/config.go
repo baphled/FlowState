@@ -199,6 +199,12 @@ type AppConfig struct {
 	// `mistral:7b`.
 	ToolIncapableModels []string `json:"tool_incapable_models,omitempty" yaml:"tool_incapable_models,omitempty"`
 
+	// Features carries opt-in runtime feature flags introduced by the
+	// Agent Runtime Quality plan (May 2026). Defaults to the zero
+	// value (all flags off) so existing deployments inherit the
+	// historical behaviour without configuration churn.
+	Features FeaturesConfig `json:"features,omitempty" yaml:"features,omitempty"`
+
 	// SystemPromptBudget overrides the model-context fallback used when
 	// the failover manager and token counter cannot supply a concrete
 	// context length for the active provider/model. Zero (default) lets
@@ -625,6 +631,31 @@ type PluginsConfig struct {
 // FailoverConfig holds configurable tier mappings for provider failover.
 type FailoverConfig struct {
 	Tiers map[string]string `json:"tiers" yaml:"tiers,omitempty"`
+}
+
+// FeaturesConfig carries opt-in runtime feature flags introduced by
+// the Agent Runtime Quality plan (May 2026).
+//
+// Every flag defaults to false so an upgrading deployment inherits
+// the historical behaviour without any config churn. Flag-off is the
+// support contract: tests for the historical behaviour MUST exercise
+// the zero-valued FeaturesConfig and prove the engine's old surface
+// is unchanged.
+//
+// Fields:
+//
+//   - TodoStrictMode — D9. When true, the engine rejects non-
+//     todowrite tool calls once a session's agent-turn-chain has
+//     fired more than 3 tool calls without invoking todowrite. The
+//     rejection is a structured tool.Result with IsError=true whose
+//     output instructs the model to call todowrite first. When false
+//     (the v1 default), only the soft-nudge system-reminder fires
+//     (D6, ships separately). Per D9 rationale: the user constraint
+//     "mandatory AND stick to them" deserves a hard-gate upgrade
+//     path even though v1 ships off; flip the flag in config.yaml
+//     to opt in without a code change.
+type FeaturesConfig struct {
+	TodoStrictMode bool `json:"todo_strict_mode" yaml:"todo_strict_mode"`
 }
 
 // AuthConfig holds the FlowState API Auth Track (May 2026) config layer.

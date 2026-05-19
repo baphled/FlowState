@@ -13,17 +13,19 @@ import (
 )
 
 // warnIfNoTools emits a slog warning when a loaded manifest declares no
-// capabilities.tools. The engine's tool-gating is fail-closed (empty/nil
-// Tools yields an empty allowlist), so legacy manifests carried over from
-// the implicit-grant era now produce silently-stuck agents. The warning
-// surfaces the broken manifest at load time so operators can update it
-// rather than discover the issue when an agent fails to do anything.
+// capabilities.tools. Under D1 (Agent Runtime Quality plan, May 2026)
+// the engine inherits the DefaultBaseTools floor for every manifest, so
+// such agents are no longer silently stuck — they still have
+// todowrite/todo_update/skill_load. The warning persists because an
+// empty declared toolset usually signals operator intent gone missing
+// (engineering agent shipping without bash/read/write/edit), and the
+// loader is the earliest place we can flag that.
 func warnIfNoTools(m *Manifest, path string) {
 	if m == nil || len(m.Capabilities.Tools) > 0 {
 		return
 	}
 	slog.Warn(
-		"agent manifest has no capabilities.tools; agent will have no tools available beyond suggest_delegate",
+		"agent manifest has no capabilities.tools; agent will inherit only the default base toolset (todowrite, todo_update, skill_load)",
 		"path", path,
 		"agent_id", m.ID,
 	)

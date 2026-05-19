@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -167,8 +168,14 @@ type Metadata struct {
 }
 
 // Capabilities defines the tools and skills available to an agent.
+//
+// Manifest schema 1.1.0 adds ToolsDeny (D3 in Agent Runtime Quality plan).
+// Existing manifests are forward-compatible: an absent ToolsDeny YAML key
+// unmarshals as the zero-valued nil slice, which EffectiveTools treats as
+// "no denials".
 type Capabilities struct {
 	Tools                 []string `json:"tools" yaml:"tools"`
+	ToolsDeny             []string `json:"tools_deny,omitempty" yaml:"tools_deny,omitempty"`
 	Skills                []string `json:"skills" yaml:"skills"`
 	AlwaysActiveSkills    []string `json:"always_active_skills" yaml:"always_active_skills"`
 	MCPServers            []string `json:"mcp_servers" yaml:"mcp_servers"`
@@ -372,6 +379,54 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// EffectiveTools returns the set of tools an agent may invoke after
+// applying D1 inherit-by-default semantics from the Agent Runtime
+// Quality plan (May 2026).
+//
+// Computation:
+//
+//	union(Capabilities.Tools, DefaultBaseTools) − Capabilities.ToolsDeny
+//
+// The result is sorted for stable ordering across callers (test
+// assertions, debug surfaces, prompt rendering). Manifest aliases
+// like "file" / "delegate" / "autoresearch_run" are NOT expanded here
+// — engine-side buildAllowedToolSetFor remains the seam that turns
+// bundle aliases into individual tool names. EffectiveTools answers
+// the conceptual "what is this manifest's tool floor?" question; the
+// engine answers "what tools does the runtime actually surface?".
+//
+// Returns:
+//   - A sorted []string of effective tool names. Empty result is
+//     impossible under D1 — the base set is always present unless
+//     every base tool is explicitly denied.
+//
+// Side effects:
+//   - None; pure computation over the receiver.
+func (m *Manifest) EffectiveTools() []string {
+	if m == nil {
+		return DefaultBaseTools()
+	}
+	set := make(map[string]struct{}, len(m.Capabilities.Tools)+len(defaultBaseTools))
+	for _, t := range m.Capabilities.Tools {
+		if t == "" {
+			continue
+		}
+		set[t] = struct{}{}
+	}
+	for _, t := range defaultBaseTools {
+		set[t] = struct{}{}
+	}
+	for _, t := range m.Capabilities.ToolsDeny {
+		delete(set, t)
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ValidationError represents a manifest validation failure.
