@@ -921,3 +921,104 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		})
 	})
 })
+
+// Item 3 of the Agent Runtime Quality plan (May 2026) exposes the
+// autoloader's catalogue so the engine's tool-not-found path can
+// detect hallucinated skill-as-tool calls (`task-tracker`,
+// `parallel-execution`) and redirect to skill_load. KnownSkills is
+// the catalogue accessor — it returns the SUPERSET of every name
+// the autoloader could surface for the given manifest, including
+// keyword-pattern and category-mapping entries whose contextual
+// tier may not be selected for any single request.
+var _ = Describe("hook.KnownSkills", func() {
+	var (
+		cfg      *hook.SkillAutoLoaderConfig
+		manifest agent.Manifest
+	)
+
+	BeforeEach(func() {
+		cfg = &hook.SkillAutoLoaderConfig{
+			BaselineSkills: []string{"pre-action", "memory-keeper"},
+			KeywordPatterns: []hook.KeywordPattern{
+				{Pattern: "test", Skills: []string{"golang-testing", "jest"}},
+				{Pattern: "review", Skills: []string{"code-reviewer"}},
+			},
+			CategoryMappings: map[string][]string{
+				"complex": {"architecture", "design-patterns"},
+			},
+		}
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Capabilities: agent.Capabilities{
+				AlwaysActiveSkills: []string{"clean-code", "pre-action"},
+			},
+		}
+	})
+
+	It("returns the union of baseline, agent always-active, keyword-pattern, and category-mapping skills", func() {
+		result := hook.KnownSkills(cfg, manifest)
+
+		// Baseline.
+		Expect(result).To(ContainElements("pre-action", "memory-keeper"))
+		// Agent always-active.
+		Expect(result).To(ContainElement("clean-code"))
+		// Keyword-pattern skills (every pattern, not just the ones that match a prompt).
+		Expect(result).To(ContainElements("golang-testing", "jest", "code-reviewer"))
+		// Category-mapping skills.
+		Expect(result).To(ContainElements("architecture", "design-patterns"))
+	})
+
+	It("deduplicates names that appear in multiple sources", func() {
+		// `pre-action` is in both BaselineSkills and AlwaysActiveSkills — must
+		// appear exactly once in the output, otherwise the engine's redirect
+		// loop would do redundant comparisons.
+		result := hook.KnownSkills(cfg, manifest)
+
+		count := 0
+		for _, name := range result {
+			if name == "pre-action" {
+				count++
+			}
+		}
+		Expect(count).To(Equal(1),
+			"a name present in baseline + agent always-active must surface exactly once")
+	})
+
+	It("returns sorted output for deterministic ordering across calls", func() {
+		// The engine's redirect path iterates the catalogue once per
+		// tool-not-found event; stable ordering keeps log output
+		// reproducible and lets goldens pin specific positions if any
+		// downstream consumer needs it.
+		result := hook.KnownSkills(cfg, manifest)
+		Expect(result).To(BeAssignableToTypeOf([]string{}))
+
+		for i := 1; i < len(result); i++ {
+			Expect(result[i-1] <= result[i]).To(BeTrue(),
+				"KnownSkills output must be sorted; got %q at %d > %q at %d",
+				result[i-1], i-1, result[i], i)
+		}
+	})
+
+	It("returns nil when neither cfg nor manifest provide any names", func() {
+		result := hook.KnownSkills(nil, agent.Manifest{})
+		Expect(result).To(BeNil(),
+			"empty catalogue → nil, so engine's `for range knownSkillsFunc()` short-circuits cleanly")
+	})
+
+	It("tolerates a nil cfg by returning only the manifest's always-active skills", func() {
+		result := hook.KnownSkills(nil, manifest)
+		Expect(result).To(ConsistOf("clean-code", "pre-action"))
+	})
+
+	It("trims whitespace and discards empty names", func() {
+		// Defensive against stray whitespace in YAML config — an empty
+		// skill name would match an empty tool call, which the model
+		// cannot legitimately emit but is worth guarding against.
+		dirtyCfg := &hook.SkillAutoLoaderConfig{
+			BaselineSkills: []string{"  spaced-skill  ", "", "valid"},
+		}
+		result := hook.KnownSkills(dirtyCfg, agent.Manifest{})
+		Expect(result).To(ConsistOf("spaced-skill", "valid"))
+	})
+})

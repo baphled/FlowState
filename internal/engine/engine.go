@@ -151,6 +151,13 @@ type Engine struct {
 	// observable proxy at the executeToolCall seam. Protected by e.mu
 	// like every other per-session map on the engine.
 	todoNonTodowriteToolCalls map[string]int
+
+	// knownSkillsFunc is the optional catalogue accessor consulted by
+	// executeToolCall before the generic tool-not-found fallback. Item
+	// 3 of the Agent Runtime Quality plan (May 2026). Nil disables the
+	// redirect — the executor matches the pre-Item-3 fuzzy fallback in
+	// that case.
+	knownSkillsFunc func() []string
 	// compressionMetrics, when non-nil, is shared with the window
 	// builder (via WithMetrics) and bumped by maybeAutoCompact on every
 	// successful L2 compaction so operators have a single counter set
@@ -523,6 +530,22 @@ type Config struct {
 	// false honours the soft-nudge-only v1 contract (D6).
 	TodoStrictMode bool
 
+	// KnownSkillsFunc returns the catalogue of skill names the
+	// autoloader could surface to the model on this engine's requests.
+	// Item 3 of the Agent Runtime Quality plan (May 2026): when a
+	// tool call arrives for a name that is not a registered tool but
+	// IS a known skill name, the engine returns a structured recovery
+	// hint pointing the model at skill_load(name="X") instead of the
+	// generic "tool not found" message.
+	//
+	// Wiring: app.buildHookChain composes this from
+	// hook.KnownSkills(autoloaderCfg, manifestGetter()) so the
+	// catalogue tracks the live manifest. Nil disables the redirect
+	// entirely — the tool-not-found path then matches the pre-Item-3
+	// behaviour (fuzzy "Did you mean" suggestion against the tool
+	// inventory).
+	KnownSkillsFunc func() []string
+
 	// RecallEmbeddingModel is the embedding-model identifier the recall
 	// pipeline is currently configured against (typically the value from
 	// cfg.ResolvedEmbeddingModel() at app wiring time). The RecallBroker
@@ -798,6 +821,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		seededSessions:            make(map[string]struct{}),
 		todoStrictMode:            cfg.TodoStrictMode,
 		todoNonTodowriteToolCalls: make(map[string]int),
+		knownSkillsFunc:           cfg.KnownSkillsFunc,
 		lastUsagePayload:          make(map[string]string),
 		sessionOutputTokens:       make(map[string]int64),
 		quotaTracker:              cfg.QuotaTracker,
@@ -4373,6 +4397,43 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		}
 		return result, nil
 	}
+	// Item 3 (Agent Runtime Quality plan, May 2026): exact-match
+	// skill-name redirect. If the unknown tool name matches a known
+	// skill name verbatim, return a structured recovery hint pointing
+	// the model at skill_load(name="X") instead of the generic
+	// "tool not found. Available tools: [...]" inventory. The
+	// pre-check sits IN FRONT OF the fuzzy-suggest fallback so the
+	// historical "Did you mean" path still runs for unknown-non-skill
+	// names (typos like `bashh`); R4 mitigation. Exact match only,
+	// per the plan's "redirect only on exact match" position — fuzzy
+	// matching against skill names would over-fire on tool typos.
+	//
+	// Safety net: the body references skill_load but the engine never
+	// auto-invokes anything from it. Even when skill_load itself is
+	// absent from the agent's effective toolset the redirect still
+	// emits — the next call is the model's choice, so there is no
+	// executor-side recursion that could infinite-loop on a degraded
+	// agent.
+	if e.knownSkillsFunc != nil {
+		for _, skillName := range e.knownSkillsFunc() {
+			if skillName == toolCall.Name {
+				msg := fmt.Sprintf(
+					`'%s' is a skill, not a tool. Invoke it with skill_load(name=%q).`,
+					toolCall.Name, toolCall.Name,
+				)
+				slog.Warn("tool call hit skill-name redirect",
+					"requested", toolCall.Name,
+					"redirect_action", "skill_load",
+				)
+				return tool.Result{
+					Output:  msg,
+					IsError: true,
+					Error:   fmt.Errorf("%w: %s", tool.ErrToolNotFound, toolCall.Name),
+				}, nil
+			}
+		}
+	}
+
 	available := e.availableToolNames()
 	suggestion := suggestTool(available, toolCall.Name)
 	msg := fmt.Sprintf("Error: tool '%s' not found. Available tools: [%s].", toolCall.Name, strings.Join(available, ", "))

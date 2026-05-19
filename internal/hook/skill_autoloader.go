@@ -3,6 +3,7 @@ package hook
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -338,4 +339,75 @@ func injectLeanSkills(req *provider.ChatRequest, lean string) {
 		return
 	}
 	req.Messages[0].Content = lean + "\n\n" + req.Messages[0].Content
+}
+
+// KnownSkills returns the catalogue of skill names the autoloader could
+// surface in an <available_skills> block for the given manifest. It is
+// the union of:
+//
+//   - cfg.BaselineSkills (always-available across every request)
+//   - manifest.Capabilities.AlwaysActiveSkills (per-agent session-start tier)
+//   - every cfg.KeywordPatterns[].Skills entry (contextual tier — any
+//     prompt could plausibly trigger one of these)
+//   - every cfg.CategoryMappings[*] entry (the category-tier set the
+//     selector may surface for a matching category)
+//
+// The result is the SUPERSET of any single request's
+// <available_skills> block — keyword/category tiers only fire when the
+// prompt matches, but a skill that appears in any pattern is still a
+// "known skill" the model could plausibly hallucinate as a tool name.
+// The engine's Item 3 skill-name redirect uses this superset so the
+// recovery hint fires consistently across the conversation rather than
+// drifting turn-to-turn with the keyword matcher.
+//
+// Expected:
+//   - cfg may be nil; a nil cfg yields only the manifest's always-active
+//     skills (no baseline, no patterns).
+//   - manifest may be the zero value; an empty manifest yields only
+//     cfg-derived names.
+//
+// Returns:
+//   - A sorted, deduplicated slice of skill names. Empty slice when
+//     neither source provides any names.
+//
+// Side effects:
+//   - None.
+func KnownSkills(cfg *SkillAutoLoaderConfig, manifest agent.Manifest) []string {
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		seen[name] = struct{}{}
+	}
+
+	if cfg != nil {
+		for _, s := range cfg.BaselineSkills {
+			add(s)
+		}
+		for _, kp := range cfg.KeywordPatterns {
+			for _, s := range kp.Skills {
+				add(s)
+			}
+		}
+		for _, skills := range cfg.CategoryMappings {
+			for _, s := range skills {
+				add(s)
+			}
+		}
+	}
+	for _, s := range manifest.Capabilities.AlwaysActiveSkills {
+		add(s)
+	}
+
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }

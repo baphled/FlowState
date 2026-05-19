@@ -1237,6 +1237,22 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 			skillDir, appLevelSkillNames, m.Capabilities.AlwaysActiveSkills,
 		)
 	}
+	// Item 3 (Agent Runtime Quality plan, May 2026): catalogue accessor
+	// used by the engine's tool-not-found path to redirect hallucinated
+	// skill-as-tool calls into a skill_load(name="X") recovery hint.
+	// Re-reads the autoloader config on every call so a hot-edited
+	// skill-autoloader.yaml (or a manifest swap via SetManifest) surfaces
+	// the new catalogue without restarting the engine.
+	knownSkillsCfg := loadSkillAutoLoaderConfigOrDefault()
+	knownSkillsFunc := func() []string {
+		var manifest agent.Manifest
+		if eng != nil {
+			manifest = eng.Manifest()
+		} else {
+			manifest = params.defaultManifest
+		}
+		return hook.KnownSkills(knownSkillsCfg, manifest)
+	}
 	eng = engine.New(engine.Config{
 		ChatProvider:              params.defaultProvider,
 		EmbeddingProvider:         toEmbeddingProvider(params.ollamaProvider),
@@ -1273,6 +1289,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		CompactionConfig:          params.compaction,
 		CompactionStoreDir:        params.compactionStoreDir,
 		SwarmRegistry:             params.swarmRegistry,
+		KnownSkillsFunc:           knownSkillsFunc,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
@@ -1870,6 +1887,16 @@ func (a *App) createDelegateEngine(
 		skillDir:        delegateSkillDir,
 	})
 
+	// Item 3 (Agent Runtime Quality plan, May 2026): same catalogue
+	// accessor as the root engine — see createEngine for the rationale.
+	// The delegate engine binds the catalogue to its own manifest,
+	// which is fixed for the lifetime of the child engine (no
+	// SetManifest path), so a closure over `manifest` is sufficient.
+	delegateKnownSkillsCfg := loadSkillAutoLoaderConfigOrDefault()
+	delegateKnownSkillsFunc := func() []string {
+		return hook.KnownSkills(delegateKnownSkillsCfg, manifest)
+	}
+
 	delegateCompression := a.buildDelegateCompression(manifest)
 
 	eng := engine.New(engine.Config{
@@ -1896,6 +1923,7 @@ func (a *App) createDelegateEngine(
 		TodoStrictMode:            a.Config.Features.TodoStrictMode,
 		CompactionConfig:          a.delegateCompactionConfig(),
 		CompactionStoreDir:        a.delegateCompactionStoreDir(),
+		KnownSkillsFunc:           delegateKnownSkillsFunc,
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
@@ -2666,6 +2694,30 @@ type hookChainConfig struct {
 	skillDir        string
 }
 
+// loadSkillAutoLoaderConfigOrDefault reads skill-autoloader.yaml from the
+// FlowState config directory, falling back to
+// hook.DefaultSkillAutoLoaderConfig when the file is absent or unreadable.
+// Shared between buildHookChain (autoloader hook setup) and createEngine /
+// delegate-engine wiring (engine.Config.KnownSkillsFunc for Item 3 of the
+// Agent Runtime Quality plan, May 2026) so the two consumers see the same
+// catalogue.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A non-nil *hook.SkillAutoLoaderConfig.
+//
+// Side effects:
+//   - Reads skill-autoloader.yaml from the config directory if it exists.
+func loadSkillAutoLoaderConfigOrDefault() *hook.SkillAutoLoaderConfig {
+	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
+	if err != nil {
+		return hook.DefaultSkillAutoLoaderConfig()
+	}
+	return cfg
+}
+
 // buildHookChain constructs a hook chain with logging, learning, and skill auto-loading hooks.
 // When failoverMgr is non-nil, a StreamHook is appended LAST so provider failover wraps
 // the base handler. When only failoverHk is set (legacy path), it is prepended first.
@@ -2688,10 +2740,7 @@ type hookChainConfig struct {
 //   - Reads skill-autoloader.yaml from the config directory if it exists.
 //   - Scans params.skillDir to populate the skill content cache when non-empty.
 func buildHookChain(params hookChainConfig) *hook.Chain {
-	cfg, err := hook.LoadSkillAutoLoaderConfig(filepath.Join(config.Dir(), "skill-autoloader.yaml"))
-	if err != nil {
-		cfg = hook.DefaultSkillAutoLoaderConfig()
-	}
+	cfg := loadSkillAutoLoaderConfigOrDefault()
 
 	var skillCache *hook.SkillContentCache
 	if params.skillDir != "" {
