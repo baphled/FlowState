@@ -270,10 +270,68 @@ type HarnessConfig struct {
 	// ceilings on the engine still apply.
 	MaxParallel int `json:"max_parallel,omitempty" yaml:"max_parallel,omitempty"`
 
+	// MemberTimeout caps how long a single delegate-member stream may
+	// run before the dispatcher cancels it with context.DeadlineExceeded.
+	// Zero (the default) preserves the historical contract: the parent
+	// awaits the child indefinitely. A positive value wraps each
+	// per-member context with context.WithTimeout so a stalled child
+	// surfaces as a typed error and unwinds through the existing
+	// dispatch-failure path (delegation.go failure branch + the
+	// dispatchParallel first-error cancel cascade). Mirrors the
+	// GateSpec.Timeout precedent — same shape, same semantics.
+	//
+	// Symptom this guards against: session 3255e2ee — a coordinator
+	// dispatched researcher + executor in parallel; the executor went
+	// silent mid-stream and the parent's collectWithProgress await
+	// loop had no time.After branch, so the parent session stayed
+	// active indefinitely. Parses YAML scalars like "5s" / "30s" via
+	// the custom HarnessConfig.UnmarshalYAML below.
+	MemberTimeout time.Duration `json:"member_timeout,omitempty" yaml:"member_timeout,omitempty"`
+
 	// Gates is the ordered list of swarm-scoped gates evaluated at
 	// swarm and member boundaries. Each entry's Kind selects the
 	// dispatch family ("builtin:*" / "ext:*") consumed by T-swarm-3.
 	Gates []GateSpec `json:"gates,omitempty" yaml:"gates,omitempty"`
+}
+
+// UnmarshalYAML parses a HarnessConfig from YAML, translating the
+// MemberTimeout field from a duration scalar (e.g. "90s") to a
+// time.Duration value. The default yaml unmarshaller for that type
+// treats the field as an integer count of nanoseconds; the human
+// "90s" / "5m" form is bridged here, mirroring GateSpec.UnmarshalYAML.
+//
+// Expected:
+//   - value is a YAML mapping node produced by gopkg.in/yaml.v3 for a
+//     harness block.
+//
+// Returns:
+//   - nil on a successful parse.
+//   - The wrapped yaml.v3 / time.ParseDuration error otherwise.
+//
+// Side effects:
+//   - Mutates the receiver's fields in place.
+func (h *HarnessConfig) UnmarshalYAML(value *yaml.Node) error {
+	type rawHarnessConfig struct {
+		Parallel      bool       `yaml:"parallel"`
+		MaxParallel   int        `yaml:"max_parallel"`
+		MemberTimeout string     `yaml:"member_timeout"`
+		Gates         []GateSpec `yaml:"gates"`
+	}
+	var raw rawHarnessConfig
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	h.Parallel = raw.Parallel
+	h.MaxParallel = raw.MaxParallel
+	h.Gates = raw.Gates
+	if raw.MemberTimeout != "" {
+		d, err := time.ParseDuration(raw.MemberTimeout)
+		if err != nil {
+			return fmt.Errorf("harness: parsing member_timeout %q: %w", raw.MemberTimeout, err)
+		}
+		h.MemberTimeout = d
+	}
+	return nil
 }
 
 // GateSpec is one entry in a swarm's harness.gates list. The fields
@@ -565,7 +623,37 @@ func (m *Manifest) Validate(v Validator) error {
 		return err
 	}
 
+	if err := m.validateHarness(); err != nil {
+		return err
+	}
+
 	return m.validateResilience()
+}
+
+// validateHarness enforces the non-gate invariants on the harness
+// block. Today that's the MemberTimeout sign check (zero is allowed
+// and means "no deadline"; negative is rejected with a field-named
+// error so the activity-pane error surface stays terse). Mirrors
+// validateGateTimeout for the per-gate timeout.
+//
+// Expected:
+//   - m is a non-nil Manifest pointer.
+//
+// Returns:
+//   - nil when MemberTimeout is zero or positive.
+//   - A *ValidationError naming the harness.member_timeout field when
+//     negative.
+//
+// Side effects:
+//   - None.
+func (m *Manifest) validateHarness() error {
+	if m.Harness.MemberTimeout < 0 {
+		return &ValidationError{
+			Field:   "harness.member_timeout",
+			Message: fmt.Sprintf("member_timeout must be non-negative (got %s)", m.Harness.MemberTimeout),
+		}
+	}
+	return nil
 }
 
 // validateResilience enforces the §7 A2 rules on the optional retry
