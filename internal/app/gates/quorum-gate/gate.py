@@ -31,46 +31,11 @@ verbatim. A halt response includes a specific diagnostic so operators
 can see at a glance which contract failed (missing analyst by name,
 or collapsed adversarial review with the converged decision quoted).
 """
-import base64
-import binascii
 import json
 import sys
 
 
 REQUIRED_ANALYSTS = ["bull", "bear", "market", "financial", "technical"]
-
-
-def decode_payload(raw):
-    """Coerce the request's `payload` field into a Python dict.
-
-    Go's `encoding/json` marshals `[]byte` as a base64 string, so the
-    host side's swarm.ExtGateRequest{Payload: <bytes>} arrives here as
-    a base64-encoded value. Older example dispatchers (and direct unit
-    tests) feed a raw JSON string or a pre-parsed object instead. Try
-    each in turn so the gate is portable across both call shapes —
-    matches the relevance-gate's decode_payload helper introduced in
-    commit `885f44aa`.
-    """
-    if raw is None or raw == "":
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
-        # Try direct JSON first — covers tests / hand-rolled callers
-        # that send a JSON string verbatim.
-        try:
-            return json.loads(raw)
-        except Exception:
-            pass
-        # Fall back to base64 + JSON, which is the runtime path the
-        # subprocessRunner takes when ExtGateRequest.Payload is a
-        # []byte slice (Go marshals []byte as base64).
-        try:
-            decoded = base64.b64decode(raw, validate=True)
-            return json.loads(decoded.decode("utf-8"))
-        except (binascii.Error, ValueError, json.JSONDecodeError):
-            return None
-    return None
 
 
 def extract_decision(slot):
@@ -91,10 +56,13 @@ def extract_decision(slot):
 
 def main():
     req = json.load(sys.stdin)
-    payload = decode_payload(req.get("payload"))
-    if payload is None:
-        json.dump({"pass": False, "reason": "payload is not valid JSON"}, sys.stdout)
-        return
+    # Wire-format invariant — the host's ExtGateRequest.Payload is a
+    # json.RawMessage that embeds verbatim into the marshalled stdin,
+    # so the value arrives here as a parsed JSON object (composed
+    # multi-key payload) or null (no composition produced). The legacy
+    # base64-decode fallback retired alongside the wire format change;
+    # see internal/swarm/extproc.go ExtGateRequest comment.
+    payload = req.get("payload") or {}
     if not isinstance(payload, dict):
         json.dump({"pass": False, "reason": "payload is not a JSON object"}, sys.stdout)
         return

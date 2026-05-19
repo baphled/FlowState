@@ -25,14 +25,30 @@ import (
 // these slots being unpopulated at the wrap site; threading them onto
 // the request makes the dispatcher self-sufficient — callers only have
 // to populate the request once.
+//
+// Payload is typed as json.RawMessage (not []byte) so the composed
+// bytes embed verbatim into the marshalled stdin instead of being
+// base64-encoded. Go's encoding/json marshals a `[]byte` field as a
+// base64 string by default — the 2026-05-18 user report
+// (`gate "post-member-researcher-relevance" ... payload is not valid
+// JSON`) traced to a stale seeded gate.py at
+// ~/.config/flowstate/gates/relevance-gate/gate.py (mtime 7 May 2026)
+// that did `json.loads` on the payload, hit the base64 string, and
+// rejected without ever seeing the real composed JSON object. The
+// RawMessage type pushes the validity-of-bytes invariant onto callers
+// (composeMultiKeyPayload + the legacy single-key path both wrap
+// non-JSON bytes via embedAsJSONValue before assignment) and lets the
+// stale runtime work unmodified — the new wire format produces a
+// parsed dict and the stale code's `isinstance(payload, str)` branch
+// never fires.
 type ExtGateRequest struct {
-	Kind     string         `json:"kind"`
-	GateName string         `json:"gate_name,omitempty"`
-	SwarmID  string         `json:"swarm_id,omitempty"`
-	MemberID string         `json:"member_id"`
-	When     string         `json:"when"`
-	Payload  []byte         `json:"payload"`
-	Policy   map[string]any `json:"policy,omitempty"`
+	Kind     string          `json:"kind"`
+	GateName string          `json:"gate_name,omitempty"`
+	SwarmID  string          `json:"swarm_id,omitempty"`
+	MemberID string          `json:"member_id"`
+	When     string          `json:"when"`
+	Payload  json.RawMessage `json:"payload"`
+	Policy   map[string]any  `json:"policy,omitempty"`
 }
 
 // ExtGateResponse is the host-side output shape parsed from the gate's
