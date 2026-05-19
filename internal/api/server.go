@@ -570,6 +570,8 @@ func NewServer(
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
 	s.subscribeTurnHeartbeat()
+	s.subscribeTurnContextCompacted()
+	s.subscribeTurnGateFailed()
 	s.setupRoutes()
 	return s
 }
@@ -611,6 +613,92 @@ func (s *Server) subscribeTurnHeartbeat() {
 			return
 		}
 		registry.SetHeartbeat(turnID, hb.Data.Phase, int(hb.Data.TokenCount))
+	})
+}
+
+// subscribeTurnContextCompacted wires the polling-side context_compacted
+// subscriber (Phase-5 §1c-γ). Mirrors subscribeTurnHeartbeat's shape: the
+// closure resolves the active turn for the event's session_id via the
+// registry, then appends the compaction payload onto the Turn so
+// GET /turns/{id} can surface compaction history without an SSE
+// side-channel.
+//
+// The existing SSE-side bridge at internal/api/event_bridge.go (Slice 6a)
+// stays live through Commit 2 — both subscribers ship together so the
+// frontend can migrate without a half-state.
+//
+// No-op when either the eventBus or the dispatcher's Turn registry is
+// unwired — test fixtures that skip WithEventBus simply do not get the
+// projection.
+func (s *Server) subscribeTurnContextCompacted() {
+	if s.eventBus == nil || s.dispatcher == nil {
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		return
+	}
+	s.eventBus.Subscribe(events.EventContextCompacted, func(msg any) {
+		ce, ok := msg.(*events.ContextCompactedEvent)
+		if !ok {
+			return
+		}
+		turnID, ok := registry.FindActiveBySession(ce.Data.SessionID)
+		if !ok {
+			return
+		}
+		registry.AppendCompactionEvent(turnID, turn.CompactionEvent{
+			SessionID:      ce.Data.SessionID,
+			AgentID:        ce.Data.AgentID,
+			OriginalTokens: ce.Data.OriginalTokens,
+			SummaryTokens:  ce.Data.SummaryTokens,
+			LatencyMS:      ce.Data.LatencyMS,
+			Trigger:        ce.Data.Trigger,
+		})
+	})
+}
+
+// subscribeTurnGateFailed wires the polling-side gate_failed subscriber
+// (Phase-5 §1c-γ). Same shape as subscribeTurnContextCompacted.
+//
+// Halt-class failures only — the gate event bus publishes only halts
+// per Plans/Gate Bus Bridge — continue-class and warn-class never
+// reach this subscriber. The CoordStoreKeys slice is preserved verbatim
+// onto the Turn so the FE's banner expander has data to render.
+func (s *Server) subscribeTurnGateFailed() {
+	if s.eventBus == nil || s.dispatcher == nil {
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		return
+	}
+	s.eventBus.Subscribe(events.EventGateFailed, func(msg any) {
+		ge, ok := msg.(*events.GateFailedEvent)
+		if !ok {
+			return
+		}
+		turnID, ok := registry.FindActiveBySession(ge.Data.SessionID)
+		if !ok {
+			return
+		}
+		// Copy CoordStoreKeys so the registry owns its memory — the
+		// bus payload's slice could be mutated post-publish by the
+		// engine; defensively copy at the boundary.
+		var coordKeys []string
+		if len(ge.Data.CoordStoreKeys) > 0 {
+			coordKeys = append([]string(nil), ge.Data.CoordStoreKeys...)
+		}
+		registry.AppendGateFailure(turnID, turn.GateFailure{
+			SwarmID:        ge.Data.SwarmID,
+			Lifecycle:      ge.Data.Lifecycle,
+			MemberID:       ge.Data.MemberID,
+			GateName:       ge.Data.GateName,
+			GateKind:       ge.Data.GateKind,
+			Reason:         ge.Data.Reason,
+			Cause:          ge.Data.Cause,
+			CoordStoreKeys: coordKeys,
+		})
 	})
 }
 
@@ -1413,6 +1501,23 @@ type turnResponse struct {
 	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
 	ContextUsage   *turn.ContextUsage            `json:"context_usage,omitempty"`
 	ProviderQuotas []turn.ProviderQuotaSnapshot `json:"provider_quotas,omitempty"`
+	// CompactionEvents + GateFailures + CriticalError surface the
+	// remaining SSE-only event projections onto the polling wire
+	// (Phase-5 §1c-γ). The first two come from bus subscribers wired in
+	// subscribeTurnContextCompacted / subscribeTurnGateFailed mirroring
+	// the existing subscribeTurnHeartbeat pattern; CriticalError comes
+	// from the dispatcher's chunk-tap on chunk.Error when classified as
+	// SeverityCritical.
+	//
+	// Each is `omitempty` — pre-1c-γ servers and pre-first-event Turn
+	// states omit the field entirely so the FE poll-diff treats absent
+	// as "no transition yet" rather than "real empty signal".
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+	CompactionEvents []turn.CompactionEvent  `json:"compaction_events,omitempty"`
+	GateFailures     []turn.GateFailure      `json:"gate_failures,omitempty"`
+	CriticalError    *turn.TurnCriticalError `json:"critical_error,omitempty"`
 }
 
 // handleGetTurn returns the current state of a Turn by its UUID.
@@ -1519,6 +1624,9 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			baseline.CurrentModel,
 			baseline.ContextUsage,
 			baseline.ProviderQuotas,
+			len(baseline.CompactionEvents),
+			len(baseline.GateFailures),
+			baseline.CriticalError,
 			longPollTimeout,
 		)
 		// ctx-cancel path returns the zero snapshot — t.ID == "" iff
@@ -1533,20 +1641,23 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			msgs = []session.Message{}
 		}
 		writeJSON(w, turnResponse{
-			TurnID:          t.ID,
-			SessionID:       t.SessionID,
-			Status:          string(t.Status),
-			StartedAt:       t.StartedAt,
-			CompletedAt:     t.CompletedAt,
-			Model:           t.Model,
-			Error:           t.Error,
-			Messages:        msgs,
-			Phase:           t.Phase,
-			TokenCount:      t.TokenCount,
-			CurrentProvider: t.CurrentProvider,
-			CurrentModel:    t.CurrentModel,
-			ContextUsage:    t.ContextUsage,
-			ProviderQuotas:  t.ProviderQuotas,
+			TurnID:           t.ID,
+			SessionID:        t.SessionID,
+			Status:           string(t.Status),
+			StartedAt:        t.StartedAt,
+			CompletedAt:      t.CompletedAt,
+			Model:            t.Model,
+			Error:            t.Error,
+			Messages:         msgs,
+			Phase:            t.Phase,
+			TokenCount:       t.TokenCount,
+			CurrentProvider:  t.CurrentProvider,
+			CurrentModel:     t.CurrentModel,
+			ContextUsage:     t.ContextUsage,
+			ProviderQuotas:   t.ProviderQuotas,
+			CompactionEvents: t.CompactionEvents,
+			GateFailures:     t.GateFailures,
+			CriticalError:    t.CriticalError,
 		})
 		return
 	}
@@ -1565,20 +1676,23 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		msgs = []session.Message{}
 	}
 	writeJSON(w, turnResponse{
-		TurnID:          t.ID,
-		SessionID:       t.SessionID,
-		Status:          string(t.Status),
-		StartedAt:       t.StartedAt,
-		CompletedAt:     t.CompletedAt,
-		Model:           t.Model,
-		Error:           t.Error,
-		Messages:        msgs,
-		Phase:           t.Phase,
-		TokenCount:      t.TokenCount,
-		CurrentProvider: t.CurrentProvider,
-		CurrentModel:    t.CurrentModel,
-		ContextUsage:    t.ContextUsage,
-		ProviderQuotas:  t.ProviderQuotas,
+		TurnID:           t.ID,
+		SessionID:        t.SessionID,
+		Status:           string(t.Status),
+		StartedAt:        t.StartedAt,
+		CompletedAt:      t.CompletedAt,
+		Model:            t.Model,
+		Error:            t.Error,
+		Messages:         msgs,
+		Phase:            t.Phase,
+		TokenCount:       t.TokenCount,
+		CurrentProvider:  t.CurrentProvider,
+		CurrentModel:     t.CurrentModel,
+		ContextUsage:     t.ContextUsage,
+		ProviderQuotas:   t.ProviderQuotas,
+		CompactionEvents: t.CompactionEvents,
+		GateFailures:     t.GateFailures,
+		CriticalError:    t.CriticalError,
 	})
 }
 

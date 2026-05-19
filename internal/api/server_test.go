@@ -7908,6 +7908,195 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 		}, "3s", "20ms").Should(BeTrue(),
 			"GET /turns/{turn_id} must reflect the POST-FAILOVER provider/model — current_provider pivots from anthropic to zai when the engine emits provider_changed; the chip then pivots without an SSE side-channel. Last GET response: %s", string(lastGetRaw))
 	})
+
+	// Phase-5 §1c-γ: the turnResponse wire surface now also exposes
+	// `compaction_events`, `gate_failures`, and `critical_error` so the
+	// FE's poll loop can pivot the chip flash, GateFailureBanner, and
+	// CriticalErrorBanner on bus-driven (compaction, gate_failed) and
+	// chunk-driven (stream_critical) signals respectively. The
+	// context_compacted + gate_failed subscribers wired in NewServer
+	// project bus events onto AppendCompactionEvent / AppendGateFailure;
+	// the dispatcher's chunk-tap handles critical errors via
+	// SetCriticalError.
+	It("GET /turns/{turn_id} exposes compaction_events after EventContextCompacted publishes", func() {
+		// dripStreamer with a slow emit so the Turn stays Running
+		// across the bus publication.
+		setup([]provider.StreamChunk{
+			{Content: "step-1"},
+			{Content: "step-2"},
+			{Done: true},
+		}, 250*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		st, body, raw := postMessage(sess.ID, "go")
+		Expect(st).To(Equal(http.StatusOK))
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty(), "POST must return turn_id; raw: %s", string(raw))
+
+		// Publish a context_compacted on the bus — in production the
+		// engine's L2 auto-compactor fires this. The new subscriber
+		// reads session_id → turn_id via the registry and calls
+		// AppendCompactionEvent.
+		bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
+			SessionID:      sess.ID,
+			AgentID:        "default-assistant",
+			OriginalTokens: 10000,
+			SummaryTokens:  2000,
+			LatencyMS:      42,
+			Trigger:        "ratio",
+		}))
+
+		var (
+			gotLen     int
+			gotOrig    float64
+			gotSum     float64
+			gotTrig    string
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			rawList, ok := gbody["compaction_events"].([]interface{})
+			if !ok {
+				return false
+			}
+			gotLen = len(rawList)
+			if gotLen == 0 {
+				return false
+			}
+			entry, _ := rawList[0].(map[string]interface{})
+			gotOrig, _ = entry["original_tokens"].(float64)
+			gotSum, _ = entry["summary_tokens"].(float64)
+			gotTrig, _ = entry["trigger"].(string)
+			return gotOrig == 10000 && gotSum == 2000
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must surface compaction_events[0] with original_tokens=10000, summary_tokens=2000 after the bus subscriber appends — Phase-5 §1c-γ wire contract. Last GET response: %s", string(lastGetRaw))
+
+		Expect(gotLen).To(Equal(1))
+		Expect(gotOrig).To(Equal(float64(10000)))
+		Expect(gotSum).To(Equal(float64(2000)))
+		Expect(gotTrig).To(Equal("ratio"),
+			"the Trigger discriminant must round-trip from bus → registry → wire so the FE chip's tooltip can render the cause")
+	})
+
+	It("GET /turns/{turn_id} exposes gate_failures after EventGateFailed publishes", func() {
+		setup([]provider.StreamChunk{
+			{Content: "step-1"},
+			{Content: "step-2"},
+			{Done: true},
+		}, 250*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "go")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
+			SwarmID:        "a-team",
+			SessionID:      sess.ID,
+			Lifecycle:      "post-member",
+			MemberID:       "member-1",
+			GateName:       "relevance",
+			GateKind:       "ext:relevance-gate",
+			Reason:         "off-topic",
+			Cause:          "runner exited non-zero",
+			CoordStoreKeys: []string{"key-a", "key-b"},
+		}))
+
+		var (
+			gotLen     int
+			gotName    string
+			gotReason  string
+			gotKeys    []interface{}
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			rawList, ok := gbody["gate_failures"].([]interface{})
+			if !ok {
+				return false
+			}
+			gotLen = len(rawList)
+			if gotLen == 0 {
+				return false
+			}
+			entry, _ := rawList[0].(map[string]interface{})
+			gotName, _ = entry["gate_name"].(string)
+			gotReason, _ = entry["reason"].(string)
+			gotKeys, _ = entry["coord_store_keys"].([]interface{})
+			return gotName == "relevance" && gotReason == "off-topic"
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must surface gate_failures[0] with gate_name=relevance after the bus subscriber appends — Phase-5 §1c-γ wire contract. Last GET response: %s", string(lastGetRaw))
+
+		Expect(gotLen).To(Equal(1))
+		Expect(gotName).To(Equal("relevance"))
+		Expect(gotReason).To(Equal("off-topic"))
+		Expect(gotKeys).To(HaveLen(2),
+			"CoordStoreKeys must round-trip so the banner's 'what was checked?' expander has data to render")
+	})
+
+	It("GET /turns/{turn_id} exposes critical_error after the engine emits a SeverityCritical chunk.Error", func() {
+		// The engine's classifier sees provider.ErrorTypeAuthFailure
+		// as SeverityCritical (per severityFromProviderErrorType). The
+		// dispatcher's chunk-tap mints the safeMsg + correlation_id
+		// using the same logic internal/api/errors.go uses.
+		critErr := &provider.Error{
+			Provider:  "anthropic",
+			ErrorType: provider.ErrorTypeAuthFailure,
+			Message:   "401 unauthorized",
+		}
+		setup([]provider.StreamChunk{
+			{Content: "partial"},
+			{Error: critErr, Done: true},
+		}, 5*time.Millisecond)
+
+		sess, err := mgr.CreateSession("default-assistant")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, body, _ := postMessage(sess.ID, "go")
+		turnID, _ := body["turn_id"].(string)
+		Expect(turnID).NotTo(BeEmpty())
+
+		var (
+			gotMsg     string
+			gotCID     string
+			gotSev     string
+			lastGetRaw []byte
+		)
+		Eventually(func() bool {
+			gst, gbody, graw := getTurn(sess.ID, turnID)
+			lastGetRaw = graw
+			if gst != http.StatusOK {
+				return false
+			}
+			ce, ok := gbody["critical_error"].(map[string]interface{})
+			if !ok {
+				return false
+			}
+			gotMsg, _ = ce["message"].(string)
+			gotCID, _ = ce["correlation_id"].(string)
+			gotSev, _ = ce["severity"].(string)
+			return gotMsg == "critical stream error" && gotCID != ""
+		}, "3s", "20ms").Should(BeTrue(),
+			"GET /turns/{turn_id} must surface critical_error.message='critical stream error' + a non-empty correlation_id after the chunk-tap classifies SeverityCritical — Phase-5 §1c-γ wire contract. Last GET response: %s", string(lastGetRaw))
+
+		Expect(gotMsg).To(Equal("critical stream error"),
+			"the safeMsg must be the same sanitised category text internal/api/errors.go uses — never the raw provider error")
+		Expect(gotCID).To(MatchRegexp(`^[0-9a-f]{16}$`),
+			"correlation_id must be 16 hex chars (8 random bytes) — matches the SSE wire shape so support tickets are indistinguishable across the two surfaces")
+		Expect(gotSev).To(Equal("critical"))
+	})
 })
 
 // Phase-4-Commit-1b RED gate per "Turn-Based Post-Then-Poll Architecture

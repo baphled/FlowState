@@ -186,6 +186,95 @@ func (s ProviderQuotaSnapshot) partitionKey() string {
 	return s.Provider + ":" + s.AccountHash + ":" + s.Model
 }
 
+// CompactionEvent mirrors the engine's context_compacted bus event
+// (events.ContextCompactedEventData) onto the Turn registry so the
+// long-poll wire surfaces per-Turn compaction telemetry. Phase-5 §1c-γ
+// replaces the SSE side-channel for the chip's compaction tooltip +
+// flash affordance.
+//
+// The struct lives in internal/turn (NOT in events) because the api
+// package imports internal/turn for turnResponse; importing events here
+// would force a reverse cycle. The field names + JSON tags mirror
+// sseContextCompacted at internal/api/sse_writers.go:247-260 exactly so
+// the FE parser sees the same wire shape whether the payload arrives
+// via SSE or the poll snapshot.
+//
+// Append-only: each compaction publishes one event onto the bus; the
+// registry's AppendCompactionEvent records each one in sequence so a
+// long-running stream with multiple compactions surfaces every event.
+// FE diff loop uses positional indexing (compaction_events.length
+// growth) — no per-event id is required.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+type CompactionEvent struct {
+	SessionID      string `json:"session_id"`
+	AgentID        string `json:"agent_id"`
+	OriginalTokens int    `json:"original_tokens"`
+	SummaryTokens  int    `json:"summary_tokens"`
+	LatencyMS      int64  `json:"latency_ms"`
+	// Trigger identifies the path that fired compaction (Phase-5 Slice δ).
+	// Closed vocabulary: ratio | gate_proximity | model_switch |
+	// tool_result_wave. Empty tolerated for forward-compat.
+	Trigger string `json:"trigger,omitempty"`
+}
+
+// GateFailure mirrors the engine's gate_failed bus event
+// (events.GateEventData) onto the Turn registry so the long-poll wire
+// surfaces per-Turn gate-halt telemetry. Phase-5 §1c-γ replaces the SSE
+// side-channel for the GateFailureBanner.
+//
+// Same import-cycle reasoning as CompactionEvent: types live here so
+// the turn package owns the wire shape without dragging internal/api or
+// events. Field names + JSON tags mirror sseGateFailed at
+// internal/api/sse_writers.go:290-300 exactly.
+//
+// Append-only: each halted gate publishes one event; AppendGateFailure
+// records each one in sequence. FE diff uses positional indexing
+// (gate_failures.length growth). The chat surface's banner reads only
+// the LATEST entry (matches the existing SSE handler's overwrite
+// policy) but the slice preserves history for future affordances.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+type GateFailure struct {
+	SwarmID        string   `json:"swarm_id"`
+	Lifecycle      string   `json:"lifecycle"`
+	MemberID       string   `json:"member_id"`
+	GateName       string   `json:"gate_name"`
+	GateKind       string   `json:"gate_kind"`
+	Reason         string   `json:"reason"`
+	Cause          string   `json:"cause"`
+	CoordStoreKeys []string `json:"coord_store_keys,omitempty"`
+}
+
+// TurnCriticalError mirrors the engine's stream-critical signal
+// (chunk.Error classified by provider.IsCriticalStreamError) onto the
+// Turn registry so the long-poll wire can hydrate the FE's persistent
+// CriticalErrorBanner without an SSE side-channel. Phase-5 §1c-γ.
+//
+// Distinct from `Turn.Error string` which retains the legacy raw-error
+// representation for backward compatibility; CriticalError carries the
+// CLIENT-SAFE shape the SSE writer (writeSSEClientError) already
+// produces via clientError: a sanitised message + a correlation id the
+// operator pastes into support tickets to locate the server-log entry.
+//
+// The dispatcher's wrapWithTurnLifecycle chunk-tap mints the
+// correlation id, classifies the safeMsg via the same category logic
+// internal/api/errors.go uses (stream_critical vs
+// stream_critical_context_exceeded), and calls SetCriticalError BEFORE
+// the terminal Fail. Severity is the StreamErrorSeverity (currently
+// only "critical" reaches this path — non-critical errors classify as
+// transient and don't populate this field).
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+type TurnCriticalError struct {
+	Message       string `json:"message"`
+	CorrelationID string `json:"correlation_id,omitempty"`
+	Severity      string `json:"severity,omitempty"`
+}
+
 // Turn is the first-class per-streaming-pass resource. One Turn is
 // minted per POST /messages call (Phase 2 will wire the handler);
 // the engine pipeline tags chunks with the Turn's ID via context.
@@ -281,6 +370,52 @@ type Turn struct {
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
 	ProviderQuotas []ProviderQuotaSnapshot `json:"provider_quotas,omitempty"`
+	// CompactionEvents records each `context_compacted` bus event the
+	// engine published during this Turn. Populated by
+	// AppendCompactionEvent, wired off a subscriber to
+	// events.EventContextCompacted (parallel to the existing
+	// subscribeTurnHeartbeat in internal/api/server.go). Append-only —
+	// each compaction adds one element; the FE diff loop uses positional
+	// indexing (length growth) to detect new events.
+	//
+	// Empty (nil) until the first compaction fires on this Turn; entries
+	// accumulate as the engine compacts; frozen at the final set once
+	// the Turn reaches a terminal state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+	CompactionEvents []CompactionEvent `json:"compaction_events,omitempty"`
+	// GateFailures records each `gate_failed` bus event the engine
+	// published during this Turn. Populated by AppendGateFailure, wired
+	// off a subscriber to events.EventGateFailed. Append-only —
+	// the FE diff loop uses positional indexing (length growth) to
+	// detect new halts; the banner reads only the latest entry but the
+	// slice preserves history.
+	//
+	// Empty (nil) until the first halt fires; entries accumulate;
+	// frozen at the final set once the Turn reaches a terminal state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+	GateFailures []GateFailure `json:"gate_failures,omitempty"`
+	// CriticalError surfaces a fatal provider-error stamp produced by
+	// the dispatcher's wrapWithTurnLifecycle chunk-tap when chunk.Error
+	// classifies as SeverityCritical via provider.IsCriticalStreamError.
+	// Populated by SetCriticalError just before the wrap goroutine
+	// invokes turnRegistry.Fail.
+	//
+	// nil through the Running lifetime and on a successful Complete.
+	// The FE poll-diff transitions nil→non-nil populate the chat-UI's
+	// persistent CriticalErrorBanner; the correlation id is the
+	// idempotency key the FE handler dedups on.
+	//
+	// Distinct from Error (raw-string legacy field for backward-
+	// compat): CriticalError carries the sanitised, operator-pasteable
+	// shape the SSE writer already produces.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+	CriticalError *TurnCriticalError `json:"critical_error,omitempty"`
 }
 
 // ErrTurnConflict fires when Start is called on a session that
@@ -954,6 +1089,156 @@ func (r *Registry) UpsertProviderQuota(turnID string, snap ProviderQuotaSnapshot
 	}
 }
 
+// AppendCompactionEvent records a context_compacted bus payload onto a
+// Running Turn's CompactionEvents slice. Append-only — each compaction
+// publishes one event and AppendCompactionEvent unconditionally appends
+// (subject only to the no-op gates). The FE diff loop tracks the prior
+// poll's compaction_events.length and routes any new entries through
+// handleContextCompactedEvent.
+//
+// No-op semantics mirror SetContextUsage / SetProviderModel:
+//   - empty turnID — silent return.
+//   - unknown turnID — silent return.
+//   - non-Running turnID — silent return (a late tap arriving after
+//     Complete/Fail must not mutate the frozen snapshot).
+//
+// Broadcast: unconditional. Every append moves the slice's length past
+// the FE's baseline, so the long-poll wait must wake. There is no
+// "spurious tap" path for this method — the bus publishes once per
+// compaction.
+//
+// Concurrency: acquires r.mu via Lock. The slice append is under the
+// same lock peer methods use so readers (Get / WaitForChange) never
+// observe a torn slice.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+func (r *Registry) AppendCompactionEvent(turnID string, ev CompactionEvent) {
+	if turnID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+	t.CompactionEvents = append(t.CompactionEvents, ev)
+	r.broadcastChangeLocked()
+}
+
+// AppendGateFailure records a gate_failed bus payload onto a Running
+// Turn's GateFailures slice. Append-only — same shape and rationale as
+// AppendCompactionEvent. The bus publishes one event per halted gate;
+// the slice accumulates the history so future affordances (a "halts
+// this turn" panel) can read it, while the existing GateFailureBanner
+// reads only the latest entry.
+//
+// No-op semantics: empty/unknown/non-Running turnID — silent return.
+//
+// Broadcast: unconditional. Every append moves the slice length, so
+// every wake is real.
+//
+// Concurrency: acquires r.mu via Lock.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+func (r *Registry) AppendGateFailure(turnID string, gf GateFailure) {
+	if turnID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+	t.GateFailures = append(t.GateFailures, gf)
+	r.broadcastChangeLocked()
+}
+
+// SetCriticalError stamps a sanitised critical-error payload onto a
+// Running Turn. Wired off the dispatcher's wrapWithTurnLifecycle
+// chunk-tap when chunk.Error classifies as SeverityCritical — the tap
+// mints the correlation id + safeMsg using the same logic
+// internal/api/errors.go's clientError uses, then calls SetCriticalError
+// BEFORE the wrap goroutine invokes turnRegistry.Fail. The long-poll
+// Get path surfaces CriticalError on every snapshot until terminal; the
+// FE poll-diff transitions nil→non-nil populate the persistent banner.
+//
+// No-op semantics:
+//   - empty turnID — silent return.
+//   - unknown turnID — silent return.
+//   - non-Running turnID — silent return (the wrap goroutine's terminal
+//     Fail happens AFTER SetCriticalError, so this gate only fires for
+//     pathological late taps post-Complete which the registry must
+//     absorb silently like its peers).
+//   - nil ce — silent return (defensive — a producer-side bug must not
+//     panic the registry).
+//
+// Broadcast gate: only fires when the stamped value DIFFERS from any
+// existing CriticalError on the Turn. nil-old + non-nil-new always
+// counts as a change (the empty → real transition the FE's first-
+// render gate waits on); equal field values absorb silently to mirror
+// SetContextUsage's idempotency promise.
+//
+// Concurrency: acquires r.mu via Lock; the pointer write + copy live
+// under the lock so readers (Get / WaitForChange) never observe a
+// torn payload.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+func (r *Registry) SetCriticalError(turnID string, ce *TurnCriticalError) {
+	if turnID == "" || ce == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+	// Change-gate: nil-old vs non-nil-new is always a change; field
+	// equality on a non-nil-old short-circuits the broadcast so a
+	// future producer that double-stamps the same critical does not
+	// spin the long-poll cadence.
+	changed := t.CriticalError == nil || *t.CriticalError != *ce
+	// Copy the pointee so the registry owns its memory — callers can
+	// mutate their input after the call without poisoning the snapshot.
+	ceCopy := *ce
+	t.CriticalError = &ceCopy
+	if changed {
+		r.broadcastChangeLocked()
+	}
+}
+
+// criticalErrorDiffers reports whether the live CriticalError pointer
+// differs from the caller's baseline. nil-vs-nil is no-difference;
+// nil-vs-non-nil is a difference (the empty → real transition the FE's
+// first-render gate waits on); non-nil-vs-non-nil dereferences both
+// sides for field equality. Used by WaitForChange's predicate.
+func criticalErrorDiffers(live, baseline *TurnCriticalError) bool {
+	if live == nil && baseline == nil {
+		return false
+	}
+	if live == nil || baseline == nil {
+		return true
+	}
+	return *live != *baseline
+}
+
 // deepCopyProviderQuota produces an independent copy of snap including
 // each variant payload. Required so a caller's mutation of e.g.
 // snap.TokenSpend after the Upsert call does not leak into the registry's
@@ -1056,6 +1341,9 @@ func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 //   - turn.ContextUsage differs from lastContextUsage by value (Phase-5 §1c-β)
 //   - turn.ProviderQuotas differs from lastProviderQuotas by length OR
 //     any element's value (Phase-5 §1c-β)
+//   - len(turn.CompactionEvents) > lastCompactionEventsLen (Phase-5 §1c-γ)
+//   - len(turn.GateFailures) > lastGateFailuresLen (Phase-5 §1c-γ)
+//   - turn.CriticalError differs from lastCriticalError by value (Phase-5 §1c-γ)
 //   - turn.Status != StatusRunning (terminal-state reached)
 //   - timeout elapses (returns the current snapshot with changed=false)
 //   - ctx is cancelled (returns the zero snapshot with changed=false)
@@ -1092,6 +1380,17 @@ func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 //   - lastProviderQuotas — caller's last-observed ProviderQuotas slice.
 //     A change is len() growth OR any per-partition snapshot differing
 //     from baseline (Phase-5 §1c-β).
+//   - lastCompactionEventsLen — caller's last-observed
+//     len(CompactionEvents). Wake when the registry's slice grew past
+//     this baseline (Phase-5 §1c-γ). Append-only semantics mean any
+//     length growth is a new event — element-by-element compare is
+//     unnecessary.
+//   - lastGateFailuresLen — caller's last-observed len(GateFailures).
+//     Same append-only semantics as compaction (Phase-5 §1c-γ).
+//   - lastCriticalError — caller's last-observed CriticalError pointer.
+//     Wake when the registry transitioned nil→non-nil OR the fields
+//     moved past the baseline (Phase-5 §1c-γ). Mirrors the
+//     contextUsageDiffers semantics for ContextUsage.
 //   - timeout — max wait duration. A zero or negative timeout means
 //     "evaluate the predicate once and return immediately".
 //
@@ -1116,6 +1415,9 @@ func (r *Registry) WaitForChange(
 	lastModel string,
 	lastContextUsage *ContextUsage,
 	lastProviderQuotas []ProviderQuotaSnapshot,
+	lastCompactionEventsLen int,
+	lastGateFailuresLen int,
+	lastCriticalError *TurnCriticalError,
 	timeout time.Duration,
 ) (Turn, bool) {
 	// Wall-clock deadline (NOT r.clock()) — the test fakes r.clock to
@@ -1140,6 +1442,9 @@ func (r *Registry) WaitForChange(
 			t.CurrentModel != lastModel ||
 			contextUsageDiffers(t.ContextUsage, lastContextUsage) ||
 			providerQuotasDiffer(t.ProviderQuotas, lastProviderQuotas) ||
+			len(t.CompactionEvents) > lastCompactionEventsLen ||
+			len(t.GateFailures) > lastGateFailuresLen ||
+			criticalErrorDiffers(t.CriticalError, lastCriticalError) ||
 			t.Status != StatusRunning {
 			snap := r.snapshotLocked(t)
 			r.mu.Unlock()
@@ -1209,6 +1514,30 @@ func (r *Registry) snapshotLocked(t *Turn) Turn {
 			copies[i] = deepCopyProviderQuota(snap)
 		}
 		out.ProviderQuotas = copies
+	}
+	// Phase-5 §1c-γ: deep-copy CompactionEvents + GateFailures slices +
+	// CriticalError pointer so callers cannot race the next
+	// AppendCompactionEvent / AppendGateFailure / SetCriticalError. The
+	// CompactionEvent and GateFailure structs are flat value types
+	// EXCEPT GateFailure.CoordStoreKeys which is a []string; copy that
+	// slice too so a caller's mutation of the returned snapshot's
+	// per-entry slice does not poison the registry's stored slice.
+	if len(t.CompactionEvents) > 0 {
+		out.CompactionEvents = append([]CompactionEvent(nil), t.CompactionEvents...)
+	}
+	if len(t.GateFailures) > 0 {
+		copies := make([]GateFailure, len(t.GateFailures))
+		for i, gf := range t.GateFailures {
+			copies[i] = gf
+			if len(gf.CoordStoreKeys) > 0 {
+				copies[i].CoordStoreKeys = append([]string(nil), gf.CoordStoreKeys...)
+			}
+		}
+		out.GateFailures = copies
+	}
+	if t.CriticalError != nil {
+		ce := *t.CriticalError
+		out.CriticalError = &ce
 	}
 	return out
 }
