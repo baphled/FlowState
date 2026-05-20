@@ -20,24 +20,24 @@
  *     the token (e.g. "/clear " or "@planner ").
  */
 
-export type TriggerKind = 'slash' | 'mention'
+export type TriggerKind = "slash" | "mention";
 
 export interface TriggerDescriptor {
   /** Which picker to open. */
-  readonly kind: TriggerKind
+  readonly kind: TriggerKind;
   /** Buffer index of the trigger character itself (the "/" or "@"). */
-  readonly triggerIndex: number
+  readonly triggerIndex: number;
   /** Caret index at the moment of detection. */
-  readonly caretIndex: number
+  readonly caretIndex: number;
   /** Text between the trigger character and the caret — used as the fuzzy filter query. */
-  readonly fragment: string
+  readonly fragment: string;
 }
 
 export interface TokenInsertion {
   /** New textarea value after replacing the trigger fragment with the token. */
-  readonly text: string
+  readonly text: string;
   /** Caret position after the inserted token (always immediately after a trailing space). */
-  readonly caret: number
+  readonly caret: number;
 }
 
 /**
@@ -46,9 +46,9 @@ export interface TokenInsertion {
  * trigger doesn't fire mid-word (e.g. inside an email address).
  */
 function isAtBoundary(text: string, index: number): boolean {
-  if (index <= 0) return true
-  const prev = text[index - 1]
-  return prev === ' ' || prev === '\n' || prev === '\t'
+  if (index <= 0) return true;
+  const prev = text[index - 1];
+  return prev === " " || prev === "\n" || prev === "\t";
 }
 
 /**
@@ -57,43 +57,46 @@ function isAtBoundary(text: string, index: number): boolean {
  * still a valid fuzzy-filter query (no whitespace, no newline). Returns
  * null when no trigger is active — the host should close any open picker.
  */
-export function detectTrigger(text: string, caret: number): TriggerDescriptor | null {
-  if (caret < 0 || caret > text.length) return null
+export function detectTrigger(
+  text: string,
+  caret: number,
+): TriggerDescriptor | null {
+  if (caret < 0 || caret > text.length) return null;
 
   // Walk backwards from the caret, looking for "/" or "@". Stop at any
   // whitespace — a fragment with whitespace means the user has moved on
   // from the trigger and the picker should close.
   for (let i = caret - 1; i >= 0; i -= 1) {
-    const ch = text[i]
-    if (ch === ' ' || ch === '\n' || ch === '\t') {
-      return null
+    const ch = text[i];
+    if (ch === " " || ch === "\n" || ch === "\t") {
+      return null;
     }
-    if (ch === '/') {
+    if (ch === "/") {
       // Slash only triggers at the start of the buffer or right after
       // a newline — it must not fire inside paths like "src/foo".
-      if (i === 0 || text[i - 1] === '\n') {
+      if (i === 0 || text[i - 1] === "\n") {
         return {
-          kind: 'slash',
+          kind: "slash",
           triggerIndex: i,
           caretIndex: caret,
           fragment: text.slice(i + 1, caret),
-        }
+        };
       }
-      return null
+      return null;
     }
-    if (ch === '@') {
+    if (ch === "@") {
       if (isAtBoundary(text, i)) {
         return {
-          kind: 'mention',
+          kind: "mention",
           triggerIndex: i,
           caretIndex: caret,
           fragment: text.slice(i + 1, caret),
-        }
+        };
       }
-      return null
+      return null;
     }
   }
-  return null
+  return null;
 }
 
 /**
@@ -107,11 +110,11 @@ export function insertToken(
   trigger: TriggerDescriptor,
   token: string,
 ): TokenInsertion {
-  const before = text.slice(0, trigger.triggerIndex)
-  const after = text.slice(trigger.caretIndex)
-  const insertion = `${token} `
+  const before = text.slice(0, trigger.triggerIndex);
+  const after = text.slice(trigger.caretIndex);
+  const insertion = `${token} `;
   return {
     text: `${before}${insertion}${after}`,
     caret: before.length + insertion.length,
-  }
+  };
 }

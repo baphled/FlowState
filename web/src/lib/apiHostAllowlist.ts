@@ -40,18 +40,18 @@ export interface AllowlistOptions {
    * `window.location.origin`. Tests pass a fixed value to make assertions
    * independent of the harness.
    */
-  pageOrigin?: string
+  pageOrigin?: string;
   /**
    * Extra origins the deployment trusts. Each entry is a full origin
    * `scheme://host[:port]` (no trailing slash). Production builds may
    * inject e.g. ['https://api.flowstate.app'].
    */
-  extraAllowedOrigins?: readonly string[]
+  extraAllowedOrigins?: readonly string[];
 }
 
 /** Localhost detection — covers dev tooling, including IPv4 loopback. */
 function isLocalhostHost(host: string): boolean {
-  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]'
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
 /**
@@ -60,9 +60,12 @@ function isLocalhostHost(host: string): boolean {
  * `getBaseURL`). Relative paths are permitted. Absolute URLs are checked
  * against the localhost-or-same-origin policy.
  */
-export function isAllowedApiHost(value: string | null | undefined, opts: AllowlistOptions = {}): boolean {
-  if (value === null || value === undefined || value === '') {
-    return true
+export function isAllowedApiHost(
+  value: string | null | undefined,
+  opts: AllowlistOptions = {},
+): boolean {
+  if (value === null || value === undefined || value === "") {
+    return true;
   }
 
   // Relative paths (no scheme + no authority) — same-origin by definition.
@@ -70,41 +73,45 @@ export function isAllowedApiHost(value: string | null | undefined, opts: Allowli
   // We deliberately reject '//' (protocol-relative) because the browser
   // will resolve it against the page protocol but the host is attacker-
   // controlled.
-  if (value.startsWith('/') && !value.startsWith('//')) {
-    return true
+  if (value.startsWith("/") && !value.startsWith("//")) {
+    return true;
   }
 
   // Anything else must parse as an absolute URL with a permitted scheme.
   // URL constructor throws on garbage like 'javascript:alert(1)'? — no,
   // 'javascript:' is a valid URL scheme to the parser. The scheme check
   // below catches it.
-  let url: URL
+  let url: URL;
   try {
-    url = new URL(value)
+    url = new URL(value);
   } catch {
-    return false
+    return false;
   }
 
   // Permit only http/https. javascript:, file:, data:, blob:, etc. are out.
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return false
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return false;
   }
 
   // Localhost gets the http: pass — developer setups commonly use plain http.
   if (isLocalhostHost(url.hostname)) {
-    return true
+    return true;
   }
 
   // Non-localhost http: (no TLS) is always rejected.
-  if (url.protocol === 'http:') {
-    return false
+  if (url.protocol === "http:") {
+    return false;
   }
 
   // Same-origin or extra-allowed-origin check for https.
   const pageOrigin =
-    opts.pageOrigin ?? (typeof window !== 'undefined' ? window.location.origin : '')
-  const candidates = new Set<string>([pageOrigin, ...(opts.extraAllowedOrigins ?? [])])
-  return candidates.has(url.origin)
+    opts.pageOrigin ??
+    (typeof window !== "undefined" ? window.location.origin : "");
+  const candidates = new Set<string>([
+    pageOrigin,
+    ...(opts.extraAllowedOrigins ?? []),
+  ]);
+  return candidates.has(url.origin);
 }
 
 /**
@@ -117,16 +124,16 @@ export function validateApiHost(
   opts: AllowlistOptions = {},
 ): string {
   if (isAllowedApiHost(value, opts)) {
-    return value ?? ''
+    return value ?? "";
   }
   // No PII in the warning — the value is the user's input, not message
   // content; logging it is the only way for an operator to debug a
   // legitimate rejection of a custom-deployment host.
   // eslint-disable-next-line no-console
   console.warn(
-    '[flowstate] rejected API host override (not in allowlist):',
+    "[flowstate] rejected API host override (not in allowlist):",
     value,
-    '- falling back to default',
-  )
-  return ''
+    "- falling back to default",
+  );
+  return "";
 }

@@ -1,8 +1,8 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
-import { setActivePinia, createPinia } from 'pinia'
-import App from './App.vue'
-import { useChatStore } from '@/stores/chatStore'
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { mount, flushPromises } from "@vue/test-utils";
+import { setActivePinia, createPinia } from "pinia";
+import App from "./App.vue";
+import { useChatStore } from "@/stores/chatStore";
 
 // App-level test surface — pins the loading-overlay contract that gates
 // first-paint of the application until bootstrap (health-check + the
@@ -19,132 +19,161 @@ import { useChatStore } from '@/stores/chatStore'
 //     pipeline), so the visual cover gets verified separately via
 //     Playwright in dev. This spec covers the Vue-component half.
 
-vi.mock('@/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api')>()
+vi.mock("@/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api")>();
   return {
     ...actual,
     fetchModels: vi.fn().mockResolvedValue([]),
     listModels: vi.fn().mockResolvedValue({ providers: [] }),
     fetchAgents: vi.fn().mockResolvedValue([]),
     fetchSessions: vi.fn().mockResolvedValue([]),
-  }
-})
+  };
+});
 
 // Stub vue-router so App.vue's <RouterView /> resolves without a real
 // router; we only care about whether RouterView is mounted, not what it
 // renders. mount() global.stubs below also covers the template-side
 // auto-resolution that the router plugin would normally provide.
-vi.mock('vue-router', () => ({
-  RouterView: { name: 'RouterView', template: '<div data-testid="router-view-stub"></div>' },
+vi.mock("vue-router", () => ({
+  RouterView: {
+    name: "RouterView",
+    template: '<div data-testid="router-view-stub"></div>',
+  },
   useRouter: () => ({ push: vi.fn() }),
-  useRoute: () => ({ path: '/chat' }),
-}))
+  useRoute: () => ({ path: "/chat" }),
+}));
 
 const mountOptions = {
   global: {
     stubs: {
-      RouterView: { name: 'RouterView', template: '<div data-testid="router-view-stub"></div>' },
+      RouterView: {
+        name: "RouterView",
+        template: '<div data-testid="router-view-stub"></div>',
+      },
     },
   },
-}
+};
 
 // Stub NavBar — it does its own picker hydration on mount, which would
 // pull in agent / model / session machinery we are not exercising here.
-vi.mock('@/components/layout/NavBar.vue', () => ({
-  default: { name: 'NavBar', template: '<div data-testid="nav-bar-stub"></div>' },
-}))
+vi.mock("@/components/layout/NavBar.vue", () => ({
+  default: {
+    name: "NavBar",
+    template: '<div data-testid="nav-bar-stub"></div>',
+  },
+}));
 
 // Stub ToastContainer — pure-presentation, irrelevant to the overlay
 // gate, drags in useToast composable singleton state we do not want.
-vi.mock('@/components/common/ToastContainer.vue', () => ({
-  default: { name: 'ToastContainer', template: '<div data-testid="toast-stub"></div>' },
-}))
+vi.mock("@/components/common/ToastContainer.vue", () => ({
+  default: {
+    name: "ToastContainer",
+    template: '<div data-testid="toast-stub"></div>',
+  },
+}));
 
-describe('App loading overlay', () => {
+describe("App loading overlay", () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
+    setActivePinia(createPinia());
     // Default: a healthy backend so the health-check resolves quickly.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({ ok: true } as Response),
-    )
-  })
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true } as Response));
+  });
 
   afterEach(() => {
-    vi.unstubAllGlobals()
-  })
+    vi.unstubAllGlobals();
+  });
 
-  it('renders the loading overlay on initial mount (after the 200ms min-duration gate)', async () => {
+  it("renders the loading overlay on initial mount (after the 200ms min-duration gate)", async () => {
     // Hold bootstrap in flight indefinitely so we can observe the
     // pre-ready state of the DOM. UI Parity PR6 N10: the overlay is now
     // gated by a 200ms min-duration so fast backends don't flash it;
     // advance fake timers past the gate before asserting visibility.
-    vi.useFakeTimers()
-    const chatStore = useChatStore()
-    vi.spyOn(chatStore, 'bootstrap').mockReturnValue(new Promise(() => {}))
+    vi.useFakeTimers();
+    const chatStore = useChatStore();
+    vi.spyOn(chatStore, "bootstrap").mockReturnValue(new Promise(() => {}));
 
-    const wrapper = mount(App, mountOptions)
-    vi.advanceTimersByTime(250)
-    await flushPromises()
+    const wrapper = mount(App, mountOptions);
+    vi.advanceTimersByTime(250);
+    await flushPromises();
 
-    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(true)
-    vi.useRealTimers()
-  })
+    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+      true,
+    );
+    vi.useRealTimers();
+  });
 
-  it('hides the router view (page content) while the overlay is visible', async () => {
-    vi.useFakeTimers()
-    const chatStore = useChatStore()
-    vi.spyOn(chatStore, 'bootstrap').mockReturnValue(new Promise(() => {}))
+  it("hides the router view (page content) while the overlay is visible", async () => {
+    vi.useFakeTimers();
+    const chatStore = useChatStore();
+    vi.spyOn(chatStore, "bootstrap").mockReturnValue(new Promise(() => {}));
 
-    const wrapper = mount(App, mountOptions)
-    vi.advanceTimersByTime(250)
-    await flushPromises()
+    const wrapper = mount(App, mountOptions);
+    vi.advanceTimersByTime(250);
+    await flushPromises();
 
     // The page underneath must NOT be visible during loading. We assert
     // both that the RouterView host is absent from the rendered DOM AND
     // that the overlay is present — together they prove no half-built
     // page leaks under the overlay.
-    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(true)
-    vi.useRealTimers()
-  })
+    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(
+      false,
+    );
+    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+      true,
+    );
+    vi.useRealTimers();
+  });
 
-  it('dismisses the overlay and renders the router view once bootstrap resolves', async () => {
-    const chatStore = useChatStore()
-    vi.spyOn(chatStore, 'bootstrap').mockResolvedValue(undefined)
+  it("dismisses the overlay and renders the router view once bootstrap resolves", async () => {
+    const chatStore = useChatStore();
+    vi.spyOn(chatStore, "bootstrap").mockResolvedValue(undefined);
 
-    const wrapper = mount(App, mountOptions)
-    await flushPromises()
+    const wrapper = mount(App, mountOptions);
+    await flushPromises();
 
-    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
-  })
+    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+      false,
+    );
+    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(
+      true,
+    );
+  });
 
-  it('still dismisses the overlay when bootstrap rejects (so a network blip does not strand the user behind a permanent splash)', async () => {
-    const chatStore = useChatStore()
-    vi.spyOn(chatStore, 'bootstrap').mockRejectedValue(new Error('network down'))
+  it("still dismisses the overlay when bootstrap rejects (so a network blip does not strand the user behind a permanent splash)", async () => {
+    const chatStore = useChatStore();
+    vi.spyOn(chatStore, "bootstrap").mockRejectedValue(
+      new Error("network down"),
+    );
 
-    const wrapper = mount(App, mountOptions)
-    await flushPromises()
+    const wrapper = mount(App, mountOptions);
+    await flushPromises();
 
-    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
-  })
+    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+      false,
+    );
+    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(
+      true,
+    );
+  });
 
-  it('still dismisses the overlay when the health-check rejects', async () => {
+  it("still dismisses the overlay when the health-check rejects", async () => {
     vi.stubGlobal(
-      'fetch',
-      vi.fn().mockRejectedValue(new Error('health-check failed')),
-    )
-    const chatStore = useChatStore()
-    vi.spyOn(chatStore, 'bootstrap').mockResolvedValue(undefined)
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("health-check failed")),
+    );
+    const chatStore = useChatStore();
+    vi.spyOn(chatStore, "bootstrap").mockResolvedValue(undefined);
 
-    const wrapper = mount(App, mountOptions)
-    await flushPromises()
+    const wrapper = mount(App, mountOptions);
+    await flushPromises();
 
-    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
-  })
+    expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+      false,
+    );
+    expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(
+      true,
+    );
+  });
 
   // UI Parity PR6 N10 (May 2026) — min-duration gate.
   //
@@ -155,80 +184,92 @@ describe('App loading overlay', () => {
   // if the timeout fires first, show the overlay and clear it only when
   // bootstrap resolves. Tests use vitest's fake timers to drive both
   // sides deterministically.
-  describe('min-duration gate (N10)', () => {
-    it('never shows the overlay when bootstrap resolves before the 200ms gate fires', async () => {
-      vi.useFakeTimers()
-      const chatStore = useChatStore()
+  describe("min-duration gate (N10)", () => {
+    it("never shows the overlay when bootstrap resolves before the 200ms gate fires", async () => {
+      vi.useFakeTimers();
+      const chatStore = useChatStore();
       // 50ms simulated bootstrap — well under the 200ms gate.
-      let resolveBootstrap!: () => void
-      vi.spyOn(chatStore, 'bootstrap').mockReturnValue(
+      let resolveBootstrap!: () => void;
+      vi.spyOn(chatStore, "bootstrap").mockReturnValue(
         new Promise<void>((resolve) => {
-          resolveBootstrap = resolve
+          resolveBootstrap = resolve;
         }),
-      )
+      );
 
-      const wrapper = mount(App, mountOptions)
+      const wrapper = mount(App, mountOptions);
 
       // Advance to 50ms — bootstrap resolves, the gate timer has NOT fired.
-      vi.advanceTimersByTime(50)
-      resolveBootstrap()
-      await flushPromises()
+      vi.advanceTimersByTime(50);
+      resolveBootstrap();
+      await flushPromises();
       // Drain the remaining gate timer.
-      vi.advanceTimersByTime(200)
-      await flushPromises()
+      vi.advanceTimersByTime(200);
+      await flushPromises();
 
       // The overlay must never have rendered.
-      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
-      expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
-      vi.useRealTimers()
-    })
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+        false,
+      );
+      expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(
+        true,
+      );
+      vi.useRealTimers();
+    });
 
-    it('shows the overlay once the 200ms gate fires and bootstrap is still in flight', async () => {
-      vi.useFakeTimers()
-      const chatStore = useChatStore()
-      let resolveBootstrap!: () => void
-      vi.spyOn(chatStore, 'bootstrap').mockReturnValue(
+    it("shows the overlay once the 200ms gate fires and bootstrap is still in flight", async () => {
+      vi.useFakeTimers();
+      const chatStore = useChatStore();
+      let resolveBootstrap!: () => void;
+      vi.spyOn(chatStore, "bootstrap").mockReturnValue(
         new Promise<void>((resolve) => {
-          resolveBootstrap = resolve
+          resolveBootstrap = resolve;
         }),
-      )
+      );
 
-      const wrapper = mount(App, mountOptions)
+      const wrapper = mount(App, mountOptions);
 
       // Before the gate fires, overlay should NOT yet be visible.
-      vi.advanceTimersByTime(150)
-      await flushPromises()
-      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
+      vi.advanceTimersByTime(150);
+      await flushPromises();
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+        false,
+      );
 
       // Cross the gate. Overlay should now be visible because bootstrap is
       // still in flight (500ms total simulated).
-      vi.advanceTimersByTime(100)
-      await flushPromises()
-      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(true)
+      vi.advanceTimersByTime(100);
+      await flushPromises();
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+        true,
+      );
 
       // Resolve bootstrap; overlay must disappear.
-      resolveBootstrap()
-      await flushPromises()
-      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
-      expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
-      vi.useRealTimers()
-    })
-  })
+      resolveBootstrap();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(
+        false,
+      );
+      expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(
+        true,
+      );
+      vi.useRealTimers();
+    });
+  });
 
-  it('removes the index.html splash element on mount so the Vue overlay can take over without double-stacking', async () => {
+  it("removes the index.html splash element on mount so the Vue overlay can take over without double-stacking", async () => {
     // index.html ships an HTML-level splash with id="app-loading-splash"
     // to cover the FOUC window before Vue mounts. Once App.vue mounts,
     // its own LoadingOverlay supersedes that element — leaving both in
     // the DOM would stack two opaque covers on top of one another.
-    const splash = document.createElement('div')
-    splash.id = 'app-loading-splash'
-    document.body.appendChild(splash)
+    const splash = document.createElement("div");
+    splash.id = "app-loading-splash";
+    document.body.appendChild(splash);
 
-    const chatStore = useChatStore()
-    vi.spyOn(chatStore, 'bootstrap').mockReturnValue(new Promise(() => {}))
+    const chatStore = useChatStore();
+    vi.spyOn(chatStore, "bootstrap").mockReturnValue(new Promise(() => {}));
 
-    mount(App, mountOptions)
+    mount(App, mountOptions);
 
-    expect(document.getElementById('app-loading-splash')).toBeNull()
-  })
-})
+    expect(document.getElementById("app-loading-splash")).toBeNull();
+  });
+});

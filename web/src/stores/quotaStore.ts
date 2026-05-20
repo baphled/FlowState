@@ -20,13 +20,13 @@
  * Plan §"Vue integration" lines 326-336 + OD-9 thresholds (517-520).
  */
 
-import { defineStore } from 'pinia'
+import { defineStore } from "pinia";
 import type {
   SSEProviderQuotaEvent,
   SSEProviderQuotaRateLimit,
   SSEProviderQuotaTokenSpend,
   SSEProviderQuotaNotConfig,
-} from '@/lib/sseEvent'
+} from "@/lib/sseEvent";
 
 /**
  * ProviderQuotaSnapshot is the store-side projection of
@@ -34,17 +34,17 @@ import type {
  * "store value type" separate from "wire event type" in TS imports.
  */
 export interface ProviderQuotaSnapshot {
-  provider: string
-  accountHash: string
-  model: string
-  observedAt: string
-  stale: boolean
-  storeBackend: string
-  pricingSource: string
-  variant: 'rate_limit' | 'token_spend' | 'not_configured'
-  rateLimit: SSEProviderQuotaRateLimit | null
-  tokenSpend: SSEProviderQuotaTokenSpend | null
-  notConfigured: SSEProviderQuotaNotConfig | null
+  provider: string;
+  accountHash: string;
+  model: string;
+  observedAt: string;
+  stale: boolean;
+  storeBackend: string;
+  pricingSource: string;
+  variant: "rate_limit" | "token_spend" | "not_configured";
+  rateLimit: SSEProviderQuotaRateLimit | null;
+  tokenSpend: SSEProviderQuotaTokenSpend | null;
+  notConfigured: SSEProviderQuotaNotConfig | null;
 }
 
 /**
@@ -53,8 +53,12 @@ export interface ProviderQuotaSnapshot {
  * model) — the engine writes one Snapshot per key and the chip
  * reads the same partition.
  */
-export function snapshotKey(provider: string, accountHash: string, model: string): string {
-  return `${provider}:${accountHash}:${model}`
+export function snapshotKey(
+  provider: string,
+  accountHash: string,
+  model: string,
+): string {
+  return `${provider}:${accountHash}:${model}`;
 }
 
 /**
@@ -86,18 +90,22 @@ export function providerQuotaSnapshotEqual(
     a.pricingSource !== b.pricingSource ||
     a.variant !== b.variant
   ) {
-    return false
+    return false;
   }
   // Variant-specific primary figure comparison. Each variant has
   // exactly one non-null payload (the discriminator guarantee).
-  if (a.variant === 'token_spend') {
-    if (a.tokenSpend?.spentMinor !== b.tokenSpend?.spentMinor) return false
-  } else if (a.variant === 'rate_limit') {
-    if (a.rateLimit?.tightestPercentRemaining !== b.rateLimit?.tightestPercentRemaining) return false
-  } else if (a.variant === 'not_configured') {
-    if (a.notConfigured?.reason !== b.notConfigured?.reason) return false
+  if (a.variant === "token_spend") {
+    if (a.tokenSpend?.spentMinor !== b.tokenSpend?.spentMinor) return false;
+  } else if (a.variant === "rate_limit") {
+    if (
+      a.rateLimit?.tightestPercentRemaining !==
+      b.rateLimit?.tightestPercentRemaining
+    )
+      return false;
+  } else if (a.variant === "not_configured") {
+    if (a.notConfigured?.reason !== b.notConfigured?.reason) return false;
   }
-  return true
+  return true;
 }
 
 interface QuotaStoreState {
@@ -109,10 +117,10 @@ interface QuotaStoreState {
    * from loadSessionMessages so a stale prior-session figure does
    * not bleed into the new session's empty chip).
    */
-  snapshots: Record<string, ProviderQuotaSnapshot>
+  snapshots: Record<string, ProviderQuotaSnapshot>;
 }
 
-export const useQuotaStore = defineStore('quota', {
+export const useQuotaStore = defineStore("quota", {
   state: (): QuotaStoreState => ({
     snapshots: {},
   }),
@@ -126,10 +134,14 @@ export const useQuotaStore = defineStore('quota', {
      * → render the matching variant.
      */
     currentQuotaFor: (state) => {
-      return (provider: string, accountHash: string, model: string): ProviderQuotaSnapshot | null => {
-        const key = snapshotKey(provider, accountHash, model)
-        return state.snapshots[key] ?? null
-      }
+      return (
+        provider: string,
+        accountHash: string,
+        model: string,
+      ): ProviderQuotaSnapshot | null => {
+        const key = snapshotKey(provider, accountHash, model);
+        return state.snapshots[key] ?? null;
+      };
     },
 
     /**
@@ -142,14 +154,17 @@ export const useQuotaStore = defineStore('quota', {
      * matching key so the iteration order is moot.
      */
     anyQuotaFor: (state) => {
-      return (provider: string, model: string): ProviderQuotaSnapshot | null => {
+      return (
+        provider: string,
+        model: string,
+      ): ProviderQuotaSnapshot | null => {
         for (const snap of Object.values(state.snapshots)) {
           if (snap.provider === provider && snap.model === model) {
-            return snap
+            return snap;
           }
         }
-        return null
-      }
+        return null;
+      };
     },
   },
 
@@ -178,8 +193,8 @@ export const useQuotaStore = defineStore('quota', {
         rateLimit: event.rateLimit,
         tokenSpend: event.tokenSpend,
         notConfigured: event.notConfigured,
-      }
-      const key = snapshotKey(event.provider, event.accountHash, event.model)
+      };
+      const key = snapshotKey(event.provider, event.accountHash, event.model);
       // Phase-5 §1c-β idempotency gate. The transitional state has two
       // callers for the same partition's snapshot — the SSE branch at
       // chatStore.ts:2818-2828 and the new pollTurnUntilTerminal poll-
@@ -193,11 +208,14 @@ export const useQuotaStore = defineStore('quota', {
       // by structural equality on the four primitives that move per
       // emission (observedAt, stale + the variant payload's primary
       // figure). Identical → short-circuit; differing → write.
-      const existing = this.snapshots[key]
-      if (existing !== undefined && providerQuotaSnapshotEqual(existing, snap)) {
-        return
+      const existing = this.snapshots[key];
+      if (
+        existing !== undefined &&
+        providerQuotaSnapshotEqual(existing, snap)
+      ) {
+        return;
       }
-      this.snapshots = { ...this.snapshots, [key]: snap }
+      this.snapshots = { ...this.snapshots, [key]: snap };
     },
 
     /**
@@ -210,7 +228,7 @@ export const useQuotaStore = defineStore('quota', {
      * pre-mount); reset is a session-change action only.
      */
     reset(): void {
-      this.snapshots = {}
+      this.snapshots = {};
     },
   },
-})
+});

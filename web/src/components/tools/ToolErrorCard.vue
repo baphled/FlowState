@@ -1,19 +1,24 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import CopyButton from './CopyButton.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { ref } from "vue";
+import CopyButton from "./CopyButton.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
-const props = defineProps<Pick<ToolRendererProps, 'toolName' | 'heading' | 'body'>>()
+const props =
+  defineProps<Pick<ToolRendererProps, "toolName" | "heading" | "body">>();
 
-const isOpen = ref(false)
+const isOpen = ref(false);
 
 function toggleDetails(): void {
-  isOpen.value = !isOpen.value
+  isOpen.value = !isOpen.value;
 }
 </script>
 
 <template>
-  <div class="tool-error-card" data-component="tool-error-card" data-tool="error">
+  <div
+    class="tool-error-card"
+    data-component="tool-error-card"
+    data-tool="error"
+  >
     <div class="tool-error-card__header">
       <div class="tool-error-card__summary">
         <span class="tool-error-card__icon" aria-hidden="true">✕</span>
@@ -28,11 +33,15 @@ function toggleDetails(): void {
         type="button"
         @click="toggleDetails"
       >
-        {{ isOpen ? 'Hide details' : 'Show details' }}
+        {{ isOpen ? "Hide details" : "Show details" }}
       </button>
     </div>
 
-    <div v-if="isOpen" class="tool-error-card__details" data-component="tool-error-details">
+    <div
+      v-if="isOpen"
+      class="tool-error-card__details"
+      data-component="tool-error-details"
+    >
       <div class="tool-error-card__actions">
         <CopyButton :text="props.body" />
       </div>
@@ -46,7 +55,11 @@ function toggleDetails(): void {
   border: 1px solid color-mix(in srgb, var(--error, #f7768e) 35%, transparent);
   border-left: 4px solid var(--error, #f7768e);
   border-radius: var(--radius, 12px);
-  background: color-mix(in srgb, var(--error, #f7768e) 10%, var(--surface-low, #1a1b26));
+  background: color-mix(
+    in srgb,
+    var(--error, #f7768e) 10%,
+    var(--surface-low, #1a1b26)
+  );
   color: var(--text-primary, #c0caf5);
   overflow: hidden;
 }
@@ -111,9 +124,15 @@ function toggleDetails(): void {
   padding: 0.85rem 1rem;
   border: 1px solid color-mix(in srgb, var(--error, #f7768e) 30%, transparent);
   border-radius: calc(var(--radius, 12px) - 4px);
-  background: color-mix(in srgb, var(--error, #f7768e) 7%, var(--surface-low, #1a1b26));
+  background: color-mix(
+    in srgb,
+    var(--error, #f7768e) 7%,
+    var(--surface-low, #1a1b26)
+  );
   color: var(--text-primary, #c0caf5);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-x: auto;

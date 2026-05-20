@@ -13,96 +13,110 @@
 // to avoid pulling in the markdown-it-task-lists plugin for one widget. The
 // list is therefore rendered directly as styled list items here, with the
 // checkbox character chosen by status. No new dependency required.
-import { computed } from 'vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { computed } from "vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
 interface TodoEntry {
-  content: string
-  status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
-  priority?: string
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  priority?: string;
 }
 
 interface RawTodoEntry {
-  content?: unknown
-  status?: unknown
-  priority?: unknown
+  content?: unknown;
+  status?: unknown;
+  priority?: unknown;
 }
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 
-const known: ReadonlyArray<TodoEntry['status']> = ['pending', 'in_progress', 'completed', 'cancelled']
+const known: ReadonlyArray<TodoEntry["status"]> = [
+  "pending",
+  "in_progress",
+  "completed",
+  "cancelled",
+];
 
-function normaliseStatus(raw: unknown): TodoEntry['status'] {
-  if (typeof raw !== 'string') return 'pending'
-  return (known as readonly string[]).includes(raw) ? (raw as TodoEntry['status']) : 'pending'
+function normaliseStatus(raw: unknown): TodoEntry["status"] {
+  if (typeof raw !== "string") return "pending";
+  return (known as readonly string[]).includes(raw)
+    ? (raw as TodoEntry["status"])
+    : "pending";
 }
 
-function parseEntries(body: string): { ok: true; entries: TodoEntry[] } | { ok: false } {
-  if (!body) return { ok: true, entries: [] }
-  let parsed: unknown
+function parseEntries(
+  body: string,
+): { ok: true; entries: TodoEntry[] } | { ok: false } {
+  if (!body) return { ok: true, entries: [] };
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(body)
+    parsed = JSON.parse(body);
   } catch {
-    return { ok: false }
+    return { ok: false };
   }
-  if (!Array.isArray(parsed)) return { ok: false }
-  const entries: TodoEntry[] = []
+  if (!Array.isArray(parsed)) return { ok: false };
+  const entries: TodoEntry[] = [];
   for (const item of parsed as RawTodoEntry[]) {
-    if (typeof item.content !== 'string' || item.content.length === 0) continue
+    if (typeof item.content !== "string" || item.content.length === 0) continue;
     entries.push({
       content: item.content,
       status: normaliseStatus(item.status),
-      priority: typeof item.priority === 'string' ? item.priority : undefined,
-    })
+      priority: typeof item.priority === "string" ? item.priority : undefined,
+    });
   }
-  return { ok: true, entries }
+  return { ok: true, entries };
 }
 
-const parsed = computed(() => parseEntries(props.body))
+const parsed = computed(() => parseEntries(props.body));
 
 const fallbackMessage = computed(() => {
   if (parsed.value.ok && parsed.value.entries.length === 0) {
-    return 'Todo list cleared'
+    return "Todo list cleared";
   }
   if (!parsed.value.ok) {
-    return 'todos updated'
+    return "todos updated";
   }
-  return null
-})
+  return null;
+});
 
-const entries = computed<TodoEntry[]>(() => (parsed.value.ok ? parsed.value.entries : []))
+const entries = computed<TodoEntry[]>(() =>
+  parsed.value.ok ? parsed.value.entries : [],
+);
 
-const activeCount = computed(() =>
-  entries.value.filter((entry) => entry.status !== 'completed' && entry.status !== 'cancelled').length,
-)
+const activeCount = computed(
+  () =>
+    entries.value.filter(
+      (entry) => entry.status !== "completed" && entry.status !== "cancelled",
+    ).length,
+);
 
-function checkboxFor(status: TodoEntry['status']): string {
+function checkboxFor(status: TodoEntry["status"]): string {
   switch (status) {
-    case 'completed':
-      return '[x]'
-    case 'cancelled':
-      return '[-]'
-    case 'in_progress':
-      return '[~]'
+    case "completed":
+      return "[x]";
+    case "cancelled":
+      return "[-]";
+    case "in_progress":
+      return "[~]";
     default:
-      return '[ ]'
+      return "[ ]";
   }
 }
 
 const subtitle = computed(() => {
-  if (!parsed.value.ok || entries.value.length === 0) return undefined
-  return `${activeCount.value} active / ${entries.value.length} total`
-})
+  if (!parsed.value.ok || entries.value.length === 0) return undefined;
+  return `${activeCount.value} active / ${entries.value.length} total`;
+});
 
 // UI Parity I4 (May 2026): the todo widget is always tabular and the
 // subtitle already shows N active / M total. Collapse-by-default keeps
 // the thread compact; users can expand to see the full checkbox list.
 // Todos do not have an error status path, but mirror the heuristic for
 // consistency with the rest of the tool surface.
-const cardDefaultOpen = computed(() => props.status === 'error')
+const cardDefaultOpen = computed(() => props.status === "error");
 </script>
 
 <template>
@@ -124,7 +138,9 @@ const cardDefaultOpen = computed(() => props.status === 'error')
           data-testid="todo-item"
           :data-status="entry.status"
         >
-          <span class="todo-box" aria-hidden="true">{{ checkboxFor(entry.status) }}</span>
+          <span class="todo-box" aria-hidden="true">{{
+            checkboxFor(entry.status)
+          }}</span>
           <span class="todo-content">{{ entry.content }}</span>
         </li>
       </ul>
@@ -152,7 +168,9 @@ const cardDefaultOpen = computed(() => props.status === 'error')
   gap: 0.6rem;
   padding: 0.2rem 0.4rem;
   border-radius: calc(var(--radius, 12px) - 6px);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.4;
 }

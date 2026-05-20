@@ -1,42 +1,42 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import CopyButton from './CopyButton.vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { computed } from "vue";
+import CopyButton from "./CopyButton.vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 
 // UI Parity I4 (May 2026): file content is rarely what the user wants to
 // re-read inline. Start collapsed; subtitle still surfaces the file path.
 // Force open on error so missing-file / permission failures are visible.
-const cardDefaultOpen = computed(() => props.status === 'error')
+const cardDefaultOpen = computed(() => props.status === "error");
 
 function parseToolInput(raw: string | undefined): Record<string, unknown> {
-  if (!raw) return {}
+  if (!raw) return {};
   try {
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
     }
-    return {}
+    return {};
   } catch {
-    return {}
+    return {};
   }
 }
 
 const lineRange = computed(() => {
-  const input = parseToolInput(props.toolInput)
-  const limit = typeof input.limit === 'number' ? input.limit : undefined
-  const offset = typeof input.offset === 'number' ? input.offset : undefined
+  const input = parseToolInput(props.toolInput);
+  const limit = typeof input.limit === "number" ? input.limit : undefined;
+  const offset = typeof input.offset === "number" ? input.offset : undefined;
 
-  if (limit === undefined && offset === undefined) return null
+  if (limit === undefined && offset === undefined) return null;
 
-  const start = (offset ?? 0) + 1
-  const end = (offset ?? 0) + (limit ?? 0)
-  return `lines ${start}–${end}`
-})
+  const start = (offset ?? 0) + 1;
+  const end = (offset ?? 0) + (limit ?? 0);
+  return `lines ${start}–${end}`;
+});
 </script>
 
 <template>
@@ -50,10 +50,18 @@ const lineRange = computed(() => {
     <div class="tool-renderer" data-component="read-tool">
       <div class="tool-renderer__header">
         <span class="tool-renderer__label">File contents</span>
-        <span v-if="lineRange" class="tool-renderer__line-range" data-testid="line-range">[{{ lineRange }}]</span>
+        <span
+          v-if="lineRange"
+          class="tool-renderer__line-range"
+          data-testid="line-range"
+          >[{{ lineRange }}]</span
+        >
         <CopyButton :text="props.body" />
       </div>
-      <pre class="tool-code tool-code--file" data-component="read-content"><code>{{ props.body }}</code></pre>
+      <pre
+        class="tool-code tool-code--file"
+        data-component="read-content"
+      ><code>{{ props.body }}</code></pre>
     </div>
   </ToolBubble>
 </template>
@@ -85,7 +93,9 @@ const lineRange = computed(() => {
   border-radius: calc(var(--radius, 12px) - 4px);
   background: var(--surface-low, #1a1b26);
   color: var(--text-primary, #c0caf5);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-x: auto;
@@ -101,6 +111,8 @@ const lineRange = computed(() => {
 .tool-renderer__line-range {
   font-size: 0.75rem;
   color: var(--text-muted, #565f89);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
 }
 </style>

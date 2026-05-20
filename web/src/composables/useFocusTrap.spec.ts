@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest'
-import { ref, nextTick } from 'vue'
-import { useFocusTrap } from './useFocusTrap'
+import { describe, it, expect, beforeEach } from "vitest";
+import { ref, nextTick } from "vue";
+import { useFocusTrap } from "./useFocusTrap";
 
 /**
  * useFocusTrap implements modal-style Tab/Shift+Tab cycling so keyboard
@@ -18,129 +18,157 @@ import { useFocusTrap } from './useFocusTrap'
  *     element.
  */
 
-function setupContainer(): { root: HTMLElement; first: HTMLButtonElement; mid: HTMLInputElement; last: HTMLButtonElement } {
-  const root = document.createElement('div')
+function setupContainer(): {
+  root: HTMLElement;
+  first: HTMLButtonElement;
+  mid: HTMLInputElement;
+  last: HTMLButtonElement;
+} {
+  const root = document.createElement("div");
   // Make the container's children visible to offsetParent.
-  Object.defineProperty(root, 'offsetParent', { configurable: true, get: () => document.body })
-  const first = document.createElement('button')
-  first.textContent = 'first'
-  const mid = document.createElement('input')
-  const last = document.createElement('button')
-  last.textContent = 'last'
-  ;[first, mid, last].forEach((el) => {
-    Object.defineProperty(el, 'offsetParent', { configurable: true, get: () => root })
-  })
-  root.append(first, mid, last)
-  document.body.appendChild(root)
-  return { root, first, mid, last }
+  Object.defineProperty(root, "offsetParent", {
+    configurable: true,
+    get: () => document.body,
+  });
+  const first = document.createElement("button");
+  first.textContent = "first";
+  const mid = document.createElement("input");
+  const last = document.createElement("button");
+  last.textContent = "last";
+  [first, mid, last].forEach((el) => {
+    Object.defineProperty(el, "offsetParent", {
+      configurable: true,
+      get: () => root,
+    });
+  });
+  root.append(first, mid, last);
+  document.body.appendChild(root);
+  return { root, first, mid, last };
 }
 
-describe('useFocusTrap', () => {
+describe("useFocusTrap", () => {
   beforeEach(() => {
-    document.body.innerHTML = ''
-  })
+    document.body.innerHTML = "";
+  });
 
-  it('cycles Tab from the last focusable to the first', async () => {
-    const { root, first, last } = setupContainer()
-    const triggerBtn = document.createElement('button')
-    triggerBtn.textContent = 'trigger'
-    document.body.appendChild(triggerBtn)
-    triggerBtn.focus()
+  it("cycles Tab from the last focusable to the first", async () => {
+    const { root, first, last } = setupContainer();
+    const triggerBtn = document.createElement("button");
+    triggerBtn.textContent = "trigger";
+    document.body.appendChild(triggerBtn);
+    triggerBtn.focus();
 
-    const containerRef = ref<HTMLElement | null>(root)
-    const active = ref(false)
+    const containerRef = ref<HTMLElement | null>(root);
+    const active = ref(false);
 
     // Mount a tiny harness to drive the watch.
-    const { defineComponent, h } = await import('vue')
-    const { mount } = await import('@vue/test-utils')
+    const { defineComponent, h } = await import("vue");
+    const { mount } = await import("@vue/test-utils");
     const Harness = defineComponent({
       setup() {
-        useFocusTrap(containerRef, active)
-        return () => h('div')
+        useFocusTrap(containerRef, active);
+        return () => h("div");
       },
-    })
-    mount(Harness)
+    });
+    mount(Harness);
 
-    active.value = true
-    await nextTick()
+    active.value = true;
+    await nextTick();
     // wait for the rAF inside activate to fire focus
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
 
     // Now mimic Tab when activeElement === last.
-    last.focus()
-    const evt = new KeyboardEvent('keydown', { key: 'Tab', cancelable: true })
-    document.dispatchEvent(evt)
-    expect(document.activeElement).toBe(first)
-  })
+    last.focus();
+    const evt = new KeyboardEvent("keydown", { key: "Tab", cancelable: true });
+    document.dispatchEvent(evt);
+    expect(document.activeElement).toBe(first);
+  });
 
-  it('cycles Shift+Tab from the first focusable to the last', async () => {
-    const { root, first, last } = setupContainer()
-    const containerRef = ref<HTMLElement | null>(root)
-    const active = ref(false)
-    const { defineComponent, h } = await import('vue')
-    const { mount } = await import('@vue/test-utils')
+  it("cycles Shift+Tab from the first focusable to the last", async () => {
+    const { root, first, last } = setupContainer();
+    const containerRef = ref<HTMLElement | null>(root);
+    const active = ref(false);
+    const { defineComponent, h } = await import("vue");
+    const { mount } = await import("@vue/test-utils");
     const Harness = defineComponent({
       setup() {
-        useFocusTrap(containerRef, active)
-        return () => h('div')
+        useFocusTrap(containerRef, active);
+        return () => h("div");
       },
-    })
-    mount(Harness)
-    active.value = true
-    await nextTick()
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    });
+    mount(Harness);
+    active.value = true;
+    await nextTick();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
 
-    first.focus()
-    const evt = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true })
-    document.dispatchEvent(evt)
-    expect(document.activeElement).toBe(last)
-  })
+    first.focus();
+    const evt = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(evt);
+    expect(document.activeElement).toBe(last);
+  });
 
-  it('snaps focus back into the container if Tab is pressed while activeElement is outside', async () => {
-    const { root, first } = setupContainer()
-    const stray = document.createElement('button')
-    document.body.appendChild(stray)
-    const containerRef = ref<HTMLElement | null>(root)
-    const active = ref(false)
-    const { defineComponent, h } = await import('vue')
-    const { mount } = await import('@vue/test-utils')
+  it("snaps focus back into the container if Tab is pressed while activeElement is outside", async () => {
+    const { root, first } = setupContainer();
+    const stray = document.createElement("button");
+    document.body.appendChild(stray);
+    const containerRef = ref<HTMLElement | null>(root);
+    const active = ref(false);
+    const { defineComponent, h } = await import("vue");
+    const { mount } = await import("@vue/test-utils");
     const Harness = defineComponent({
       setup() {
-        useFocusTrap(containerRef, active)
-        return () => h('div')
+        useFocusTrap(containerRef, active);
+        return () => h("div");
       },
-    })
-    mount(Harness)
-    active.value = true
-    await nextTick()
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    });
+    mount(Harness);
+    active.value = true;
+    await nextTick();
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve()),
+    );
 
-    stray.focus()
-    const evt = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, cancelable: true })
-    document.dispatchEvent(evt)
+    stray.focus();
+    const evt = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      cancelable: true,
+    });
+    document.dispatchEvent(evt);
     // Shift+Tab from outside → focus moves to last (treated as if at first)
     // We assert focus is at least back inside.
-    expect(root.contains(document.activeElement)).toBe(true)
-    expect(first).toBeDefined()
-  })
+    expect(root.contains(document.activeElement)).toBe(true);
+    expect(first).toBeDefined();
+  });
 
-  it('does not interfere with Escape — owners keep their handler', async () => {
-    const { root } = setupContainer()
-    const containerRef = ref<HTMLElement | null>(root)
-    const active = ref(true)
-    const { defineComponent, h } = await import('vue')
-    const { mount } = await import('@vue/test-utils')
+  it("does not interfere with Escape — owners keep their handler", async () => {
+    const { root } = setupContainer();
+    const containerRef = ref<HTMLElement | null>(root);
+    const active = ref(true);
+    const { defineComponent, h } = await import("vue");
+    const { mount } = await import("@vue/test-utils");
     const Harness = defineComponent({
       setup() {
-        useFocusTrap(containerRef, active)
-        return () => h('div')
+        useFocusTrap(containerRef, active);
+        return () => h("div");
       },
-    })
-    mount(Harness)
-    await nextTick()
+    });
+    mount(Harness);
+    await nextTick();
 
-    const evt = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
-    const swallowed = !document.dispatchEvent(evt)
-    expect(swallowed).toBe(false)
-  })
-})
+    const evt = new KeyboardEvent("keydown", {
+      key: "Escape",
+      cancelable: true,
+    });
+    const swallowed = !document.dispatchEvent(evt);
+    expect(swallowed).toBe(false);
+  });
+});

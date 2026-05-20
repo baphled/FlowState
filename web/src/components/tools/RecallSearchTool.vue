@@ -14,15 +14,15 @@
 // We split on the "---" separator, peel the leading "role:" prefix off each
 // chunk for display, and cap the visible result count at maxVisible (10) to
 // keep the panel compact. Anything beyond that gets a "and N more" hint.
-import { computed } from 'vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { computed } from "vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
-const maxVisible = 10
+const maxVisible = 10;
 
 interface RecallResult {
-  source: string
-  snippet: string
+  source: string;
+  snippet: string;
   // UI Parity PR6 N6 — optional provenance carried by chain-search results.
   // The backend formatter (internal/recall/query_tools.go) does NOT yet
   // emit these; this is the UI-side scaffold pinning the wire shape so the
@@ -30,117 +30,125 @@ interface RecallResult {
   // when present is:
   //   `[time=<iso>] [depth=<n>] <role>: <snippet>`
   // Either prefix is independent; both are optional.
-  timestamp?: string
-  chainDepth?: number
+  timestamp?: string;
+  chainDepth?: number;
 }
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 
 function parseQuery(raw: string | undefined): string | null {
-  if (!raw) return null
+  if (!raw) return null;
   try {
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const args = parsed as Record<string, unknown>
-      const query = args.query
-      return typeof query === 'string' && query.length > 0 ? query : null
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const args = parsed as Record<string, unknown>;
+      const query = args.query;
+      return typeof query === "string" && query.length > 0 ? query : null;
     }
   } catch {
     // Fall through.
   }
-  return null
+  return null;
 }
 
 // UI Parity PR6 N6 — strip optional `[time=...]` and `[depth=...]` prefixes
 // from a result chunk so the snippet itself is free of metadata. Returns the
 // extracted metadata plus the remaining body for the role-colon parser to
 // consume.
-function extractMetadata(chunk: string): { timestamp?: string; chainDepth?: number; rest: string } {
-  let rest = chunk
-  let timestamp: string | undefined
-  let chainDepth: number | undefined
+function extractMetadata(chunk: string): {
+  timestamp?: string;
+  chainDepth?: number;
+  rest: string;
+} {
+  let rest = chunk;
+  let timestamp: string | undefined;
+  let chainDepth: number | undefined;
   // Match one prefix at a time so order does not matter and so the parser
   // is tolerant of either-or-both. The regex anchors to the start, with a
   // single token before the trailing `] `.
   for (;;) {
-    const m = rest.match(/^\[(time|depth)=([^\]]+)\]\s*/)
-    if (!m) break
-    const key = m[1]
-    const value = m[2]
-    if (key === 'time') {
-      timestamp = value
-    } else if (key === 'depth') {
-      const n = Number.parseInt(value, 10)
-      if (Number.isFinite(n) && n >= 0) chainDepth = n
+    const m = rest.match(/^\[(time|depth)=([^\]]+)\]\s*/);
+    if (!m) break;
+    const key = m[1];
+    const value = m[2];
+    if (key === "time") {
+      timestamp = value;
+    } else if (key === "depth") {
+      const n = Number.parseInt(value, 10);
+      if (Number.isFinite(n) && n >= 0) chainDepth = n;
     }
-    rest = rest.slice(m[0].length)
+    rest = rest.slice(m[0].length);
   }
-  return { timestamp, chainDepth, rest }
+  return { timestamp, chainDepth, rest };
 }
 
 function parseResults(body: string): RecallResult[] {
-  if (!body || body.trim().length === 0) return []
+  if (!body || body.trim().length === 0) return [];
   return body
     .split(/\n---\n/)
     .map((chunk) => chunk.trim())
     .filter((chunk) => chunk.length > 0)
     .map((chunk) => {
-      const { timestamp, chainDepth, rest } = extractMetadata(chunk)
-      const stripped = rest.trim()
-      const colon = stripped.indexOf(':')
+      const { timestamp, chainDepth, rest } = extractMetadata(chunk);
+      const stripped = rest.trim();
+      const colon = stripped.indexOf(":");
       if (colon > 0 && colon < 32) {
-        const source = stripped.slice(0, colon).trim()
-        const snippet = stripped.slice(colon + 1).trim()
+        const source = stripped.slice(0, colon).trim();
+        const snippet = stripped.slice(colon + 1).trim();
         if (source && snippet) {
-          return { source, snippet, timestamp, chainDepth }
+          return { source, snippet, timestamp, chainDepth };
         }
       }
-      return { source: 'context', snippet: stripped, timestamp, chainDepth }
-    })
+      return { source: "context", snippet: stripped, timestamp, chainDepth };
+    });
 }
 
 // UI Parity PR6 N6 — relative-time formatter. Mirrors SessionBrowser's
 // formatRelativeTime contract ("just now", "Nm ago", "Nh ago", "Nd ago")
 // so the recall surface speaks the same vocabulary as the session list.
 function formatRelativeTime(iso: string): string {
-  const parsed = new Date(iso).getTime()
-  if (!Number.isFinite(parsed)) return iso
-  const seconds = Math.floor((Date.now() - parsed) / 1000)
-  if (seconds < 60) return 'just now'
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
-  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`
-  return new Date(iso).toLocaleDateString()
+  const parsed = new Date(iso).getTime();
+  if (!Number.isFinite(parsed)) return iso;
+  const seconds = Math.floor((Date.now() - parsed) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(iso).toLocaleDateString();
 }
 
 const queryText = computed<string | null>(() => {
-  const fromInput = parseQuery(props.toolInput)
-  if (fromInput) return fromInput
+  const fromInput = parseQuery(props.toolInput);
+  if (fromInput) return fromInput;
   // search_context falls back to the heading when toolInput is unparseable;
   // get_messages variants have no query at all.
-  return props.heading && props.heading !== props.toolName ? props.heading : null
-})
+  return props.heading && props.heading !== props.toolName
+    ? props.heading
+    : null;
+});
 
-const results = computed(() => parseResults(props.body))
+const results = computed(() => parseResults(props.body));
 
-const visibleResults = computed(() => results.value.slice(0, maxVisible))
+const visibleResults = computed(() => results.value.slice(0, maxVisible));
 
-const overflowCount = computed(() => Math.max(0, results.value.length - maxVisible))
+const overflowCount = computed(() =>
+  Math.max(0, results.value.length - maxVisible),
+);
 
 const subtitle = computed(() => {
-  if (results.value.length === 0) return undefined
+  if (results.value.length === 0) return undefined;
   if (overflowCount.value > 0) {
-    return `${visibleResults.value.length} of ${results.value.length} results`
+    return `${visibleResults.value.length} of ${results.value.length} results`;
   }
-  return `${results.value.length} ${results.value.length === 1 ? 'result' : 'results'}`
-})
+  return `${results.value.length} ${results.value.length === 1 ? "result" : "results"}`;
+});
 
 // UI Parity I4 (May 2026): recall searches return long result lists.
 // Start collapsed; subtitle already shows result count. Force open on
 // error so failure cause is visible.
-const cardDefaultOpen = computed(() => props.status === 'error')
+const cardDefaultOpen = computed(() => props.status === "error");
 </script>
 
 <template>
@@ -185,13 +193,15 @@ const cardDefaultOpen = computed(() => props.status === 'error')
               class="recall-timestamp"
               data-testid="recall-timestamp"
               :title="result.timestamp"
-            >{{ formatRelativeTime(result.timestamp) }}</span>
+              >{{ formatRelativeTime(result.timestamp) }}</span
+            >
             <span
               v-if="result.chainDepth !== undefined"
               class="recall-chain-depth"
               data-testid="recall-chain-depth"
               :title="`Chain depth: ${result.chainDepth}`"
-            >↑{{ result.chainDepth }}</span>
+              >↑{{ result.chainDepth }}</span
+            >
           </span>
           <span class="recall-snippet">{{ result.snippet }}</span>
         </li>
@@ -234,7 +244,9 @@ const cardDefaultOpen = computed(() => props.status === 'error')
   background: var(--surface-low, #1a1b26);
   padding: 0.15rem 0.45rem;
   border-radius: calc(var(--radius, 12px) - 6px);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
 }
 
 .recall-results {

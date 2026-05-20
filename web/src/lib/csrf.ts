@@ -36,10 +36,10 @@
  * runtime error.
  */
 
-import { useCsrfStore } from '@/stores/csrfStore'
+import { useCsrfStore } from "@/stores/csrfStore";
 
-const CSRF_COOKIE_NAME = '_csrf'
-const CSRF_HEADER_NAME = 'X-CSRF-Token'
+const CSRF_COOKIE_NAME = "_csrf";
+const CSRF_HEADER_NAME = "X-CSRF-Token";
 
 /**
  * cookieFallback reads the `_csrf` cookie value from document.cookie.
@@ -52,23 +52,23 @@ const CSRF_HEADER_NAME = 'X-CSRF-Token'
  * (same 403, but with a less-greppable log signature).
  */
 function cookieFallback(): string {
-  if (typeof document === 'undefined' || !document.cookie) {
-    return ''
+  if (typeof document === "undefined" || !document.cookie) {
+    return "";
   }
-  const cookies = document.cookie.split('; ')
+  const cookies = document.cookie.split("; ");
   for (const cookie of cookies) {
-    const eq = cookie.indexOf('=')
-    if (eq === -1) continue
-    const name = cookie.slice(0, eq)
-    if (name !== CSRF_COOKIE_NAME) continue
-    const raw = cookie.slice(eq + 1)
+    const eq = cookie.indexOf("=");
+    if (eq === -1) continue;
+    const name = cookie.slice(0, eq);
+    if (name !== CSRF_COOKIE_NAME) continue;
+    const raw = cookie.slice(eq + 1);
     try {
-      return decodeURIComponent(raw)
+      return decodeURIComponent(raw);
     } catch {
-      return raw
+      return raw;
     }
   }
-  return ''
+  return "";
 }
 
 /**
@@ -90,15 +90,15 @@ export function getCsrfToken(): string {
   // The try/catch lets the fallback path serve those callers without
   // throwing.
   try {
-    const store = useCsrfStore()
-    const cached = store.tokenValue
+    const store = useCsrfStore();
+    const cached = store.tokenValue;
     if (cached) {
-      return cached
+      return cached;
     }
   } catch {
     // Pinia not active; fall through to cookie.
   }
-  return cookieFallback()
+  return cookieFallback();
 }
 
 /**
@@ -115,8 +115,8 @@ export function getCsrfToken(): string {
  * csrfStore's `fetchInFlight` coalescing.
  */
 export async function ensureCsrfToken(): Promise<string> {
-  const store = useCsrfStore()
-  return store.ensureToken()
+  const store = useCsrfStore();
+  return store.ensureToken();
 }
 
 /**
@@ -136,22 +136,20 @@ export async function ensureCsrfToken(): Promise<string> {
  * the value (and not an off-origin attacker who can't read it via
  * SameSite=Lax).
  */
-export function withCsrfHeader(
-  headers: HeadersInit | undefined,
-): HeadersInit {
-  const token = getCsrfToken()
+export function withCsrfHeader(headers: HeadersInit | undefined): HeadersInit {
+  const token = getCsrfToken();
   if (!token) {
-    return headers ?? {}
+    return headers ?? {};
   }
   // Build the merged headers without mutating the input. Three shapes
   // to handle (per HeadersInit): Headers, string[][], Record.
   if (headers instanceof Headers) {
-    const out = new Headers(headers)
-    out.set(CSRF_HEADER_NAME, token)
-    return out
+    const out = new Headers(headers);
+    out.set(CSRF_HEADER_NAME, token);
+    return out;
   }
   if (Array.isArray(headers)) {
-    return [...headers, [CSRF_HEADER_NAME, token]]
+    return [...headers, [CSRF_HEADER_NAME, token]];
   }
-  return { ...(headers ?? {}), [CSRF_HEADER_NAME]: token }
+  return { ...(headers ?? {}), [CSRF_HEADER_NAME]: token };
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
+import { computed, ref } from "vue";
+import { useChatStore } from "@/stores/chatStore";
 
 /**
  * CriticalErrorBanner — persistent, accessible affordance for the
@@ -31,22 +31,24 @@ import { useChatStore } from '@/stores/chatStore'
  *     overwrites unconditionally — see the dispatch comment in
  *     chatStore.ts).
  */
-defineOptions({ name: 'CriticalErrorBanner' })
+defineOptions({ name: "CriticalErrorBanner" });
 
-const chatStore = useChatStore()
-const detailsOpen = ref(false)
+const chatStore = useChatStore();
+const detailsOpen = ref(false);
 
-const isVisible = computed(() => chatStore.criticalError !== null)
-const message = computed(() => chatStore.criticalError?.message ?? '')
-const correlationId = computed(() => chatStore.criticalError?.correlationId ?? '')
+const isVisible = computed(() => chatStore.criticalError !== null);
+const message = computed(() => chatStore.criticalError?.message ?? "");
+const correlationId = computed(
+  () => chatStore.criticalError?.correlationId ?? "",
+);
 
 function toggleDetails(): void {
-  detailsOpen.value = !detailsOpen.value
+  detailsOpen.value = !detailsOpen.value;
 }
 
 function dismiss(): void {
-  detailsOpen.value = false
-  chatStore.dismissCriticalError()
+  detailsOpen.value = false;
+  chatStore.dismissCriticalError();
 }
 </script>
 
@@ -72,7 +74,7 @@ function dismiss(): void {
         :aria-expanded="detailsOpen"
         @click="toggleDetails"
       >
-        {{ detailsOpen ? 'Hide details' : 'Show details' }}
+        {{ detailsOpen ? "Hide details" : "Show details" }}
       </button>
       <p
         v-if="detailsOpen && correlationId"
@@ -80,7 +82,11 @@ function dismiss(): void {
         data-testid="critical-error-details"
       >
         Reference this id when contacting support:
-        <code class="critical-error-correlation-id" data-testid="critical-error-correlation-id">{{ correlationId }}</code>
+        <code
+          class="critical-error-correlation-id"
+          data-testid="critical-error-correlation-id"
+          >{{ correlationId }}</code
+        >
       </p>
     </div>
     <button

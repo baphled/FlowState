@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import MarkdownIt from 'markdown-it'
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import MarkdownIt from "markdown-it";
 import {
   ensureHighlighterLoaded,
   highlightCode,
   onHighlighterReady,
-} from '@/lib/markdownHighlighter'
-import { useChatStore } from '@/stores/chatStore'
+} from "@/lib/markdownHighlighter";
+import { useChatStore } from "@/stores/chatStore";
 
-defineOptions({ name: 'MarkdownRenderer' })
+defineOptions({ name: "MarkdownRenderer" });
 
-const props = defineProps<{ content: string }>()
+const props = defineProps<{ content: string }>();
 
 // Chat store handle — sourced once at setup time so the same instance
 // is used for every render pass. The image allow-list (below) reaches
@@ -20,7 +20,7 @@ const props = defineProps<{ content: string }>()
 // at app bootstrap and is the canonical source of the active session
 // id (also referenced as `chat.currentSessionId` in
 // web/src/stores/swarmStore.test.ts:103,127,156,205).
-const chat = useChatStore()
+const chat = useChatStore();
 
 const md = new MarkdownIt({
   // N9 (Vue UI Parity vs OpenCode, May 2026) / plan "Chat Attachments
@@ -47,10 +47,10 @@ const md = new MarkdownIt({
   // language class — preserves the current contract for legacy
   // languages and never surfaces a Shiki error to the user.
   highlight: (str: string, lang: string): string => {
-    const html = highlightCode(str, lang)
-    return html ?? ''
+    const html = highlightCode(str, lang);
+    return html ?? "";
   },
-})
+});
 
 // N4 (Vue UI Parity vs OpenCode, May 2026). Per-code-block copy
 // affordance. Override the default fence renderer so every fenced
@@ -75,31 +75,33 @@ const md = new MarkdownIt({
 // the markdown render output pure HTML and avoids a hydration
 // boundary inside the v-html surface.
 md.renderer.rules.fence = (tokens, idx, options): string => {
-  const token = tokens[idx]
-  const info = token.info ? token.info.trim() : ''
-  const lang = info.split(/\s+/g)[0] ?? ''
-  const content = token.content
+  const token = tokens[idx];
+  const info = token.info ? token.info.trim() : "";
+  const lang = info.split(/\s+/g)[0] ?? "";
+  const content = token.content;
 
   // Try Shiki first via the highlight option.
-  let codeHtml = ''
+  let codeHtml = "";
   if (options.highlight) {
-    codeHtml = options.highlight(content, lang, '') || ''
+    codeHtml = options.highlight(content, lang, "") || "";
   }
 
-  if (codeHtml === '') {
+  if (codeHtml === "") {
     // Fallback path — plain `<pre><code>` with HTML-escaped source.
     // Matches what MarkdownIt's default fence renderer would have
     // produced before B1 landed.
-    const escaped = md.utils.escapeHtml(content)
-    const langClass = lang ? ` class="language-${md.utils.escapeHtml(lang)}"` : ''
-    codeHtml = `<pre><code${langClass}>${escaped}</code></pre>`
+    const escaped = md.utils.escapeHtml(content);
+    const langClass = lang
+      ? ` class="language-${md.utils.escapeHtml(lang)}"`
+      : "";
+    codeHtml = `<pre><code${langClass}>${escaped}</code></pre>`;
   }
 
   // Wrap with a copy affordance container. The raw source is stored
   // on a data attribute on the wrapper so the click handler can
   // copy the original text (not the tokenised HTML). HTML-escape
   // the raw to avoid breaking out of the attribute.
-  const rawAttr = md.utils.escapeHtml(content)
+  const rawAttr = md.utils.escapeHtml(content);
   return (
     `<div class="markdown-code" data-code-raw="${rawAttr}">` +
     codeHtml +
@@ -107,8 +109,8 @@ md.renderer.rules.fence = (tokens, idx, options): string => {
     `<span aria-hidden="true">📋</span><span class="markdown-code__copy-label">Copy</span>` +
     `</button>` +
     `</div>`
-  )
-}
+  );
+};
 
 // M6 (Bug Hunt May 2026): tighten link validation. markdown-it 14's default
 // validateLink regex-tests the trimmed lower-cased URL but does NOT URL-
@@ -118,41 +120,41 @@ md.renderer.rules.fence = (tokens, idx, options): string => {
 // a strict scheme allowlist: http, https, mailto, fragments (#…), and
 // relative paths (./…, ../…, /…). Everything else (javascript, vbscript,
 // data, file, blob, ftp, scheme-relative //) becomes plain text.
-const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'mailto:'])
+const ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
 md.validateLink = (url: string): boolean => {
-  if (typeof url !== 'string') return false
+  if (typeof url !== "string") return false;
   // Decode percent-encoding so `javascript%3A...` cannot bypass the check.
-  let decoded: string
+  let decoded: string;
   try {
-    decoded = decodeURIComponent(url)
+    decoded = decodeURIComponent(url);
   } catch {
-    decoded = url
+    decoded = url;
   }
-  const trimmed = decoded.trim().toLowerCase()
-  if (trimmed === '') return false
+  const trimmed = decoded.trim().toLowerCase();
+  if (trimmed === "") return false;
   // Scheme-relative `//host` inherits the page protocol — disallow.
-  if (trimmed.startsWith('//')) return false
+  if (trimmed.startsWith("//")) return false;
   // Fragment-only (`#anchor`) and relative paths (`/`, `./`, `../`) are
   // safe — no scheme to abuse.
   if (
-    trimmed.startsWith('#') ||
-    trimmed.startsWith('/') ||
-    trimmed.startsWith('./') ||
-    trimmed.startsWith('../')
+    trimmed.startsWith("#") ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../")
   ) {
-    return true
+    return true;
   }
   // Anything containing a colon before the first slash is a scheme — gate
   // it. Anything else (e.g. `guide.md`) is a relative reference.
-  const colonIdx = trimmed.indexOf(':')
-  const slashIdx = trimmed.indexOf('/')
+  const colonIdx = trimmed.indexOf(":");
+  const slashIdx = trimmed.indexOf("/");
   if (colonIdx === -1 || (slashIdx !== -1 && slashIdx < colonIdx)) {
-    return true
+    return true;
   }
-  const scheme = trimmed.slice(0, colonIdx + 1)
-  return ALLOWED_SCHEMES.has(scheme)
-}
+  const scheme = trimmed.slice(0, colonIdx + 1);
+  return ALLOWED_SCHEMES.has(scheme);
+};
 
 // B1: Reactive version counter to trigger a re-render after the
 // lazy-loaded Shiki highlighter resolves. Before Shiki is ready,
@@ -161,17 +163,17 @@ md.validateLink = (url: string): boolean => {
 // completes (typically <100 ms after first render), this counter
 // increments and Vue re-runs `renderedHtml` so the same content
 // re-renders with tokenised code blocks.
-const highlighterVersion = ref(0)
-let unsubscribeReady: (() => void) | null = null
+const highlighterVersion = ref(0);
+let unsubscribeReady: (() => void) | null = null;
 
 onMounted(() => {
   unsubscribeReady = onHighlighterReady(() => {
-    highlighterVersion.value += 1
-  })
+    highlighterVersion.value += 1;
+  });
   // Fire-and-forget — load Shiki in the background. The
   // `highlighterVersion` increment above wakes us up when it lands.
-  void ensureHighlighterLoaded()
-})
+  void ensureHighlighterLoaded();
+});
 
 // N9 / task-08 — image allow-list. Walks the parsed HTML and drops
 // every non-<img> raw HTML tag (script, iframe, object, …) and every
@@ -199,9 +201,10 @@ onMounted(() => {
 // appear via the markdown-it `html: true` path* needs allow-list
 // gating — and within that set, only `<img>` is permitted.
 
-const DATA_URL_ALLOWED = /^data:image\/(png|jpeg|gif|webp);base64,/i
+const DATA_URL_ALLOWED = /^data:image\/(png|jpeg|gif|webp);base64,/i;
 
-const SESSION_ATTACHMENT_URL = /^\/api\/v1\/sessions\/([A-Za-z0-9_-]+)\/attachments\/[A-Za-z0-9_-]+$/
+const SESSION_ATTACHMENT_URL =
+  /^\/api\/v1\/sessions\/([A-Za-z0-9_-]+)\/attachments\/[A-Za-z0-9_-]+$/;
 
 // HTML tags that are explicit script-execution or exfiltration vectors
 // and must be stripped from the rendered DOM regardless of how they
@@ -221,105 +224,111 @@ const SESSION_ATTACHMENT_URL = /^\/api\/v1\/sessions\/([A-Za-z0-9_-]+)\/attachme
 // and the fence renderer below legitimately emits `<button>` for the
 // per-code-block copy affordance. Stripping them would regress N4.
 const RAW_HTML_TAGS_TO_STRIP = new Set([
-  'script',
-  'iframe',
-  'object',
-  'embed',
-  'style',
-  'link',
-  'meta',
-  'base',
-  'frame',
-  'frameset',
-  'applet',
-  'svg',
-])
+  "script",
+  "iframe",
+  "object",
+  "embed",
+  "style",
+  "link",
+  "meta",
+  "base",
+  "frame",
+  "frameset",
+  "applet",
+  "svg",
+]);
 
 function emitCrossSessionBlocked(rawSrc: string): void {
-  if (typeof window === 'undefined') return
+  if (typeof window === "undefined") return;
   try {
     window.dispatchEvent(
-      new CustomEvent('attachment_blocked.cross_session', {
+      new CustomEvent("attachment_blocked.cross_session", {
         detail: { src: rawSrc },
       }),
-    )
+    );
   } catch {
     // CustomEvent unavailable (very old environments) — fall back to a
     // best-effort console signal so we never silently drop the
     // observability promise made to operators / tests.
-    if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-      console.warn('attachment_blocked.cross_session', rawSrc)
+    if (typeof console !== "undefined" && typeof console.warn === "function") {
+      console.warn("attachment_blocked.cross_session", rawSrc);
     }
   }
 }
 
-function isImgSrcAllowed(rawSrc: string, currentSessionId: string | null): boolean {
-  if (typeof rawSrc !== 'string' || rawSrc === '') return false
-  if (DATA_URL_ALLOWED.test(rawSrc)) return true
-  const match = SESSION_ATTACHMENT_URL.exec(rawSrc)
-  if (match === null) return false
-  const srcSession = match[1]
+function isImgSrcAllowed(
+  rawSrc: string,
+  currentSessionId: string | null,
+): boolean {
+  if (typeof rawSrc !== "string" || rawSrc === "") return false;
+  if (DATA_URL_ALLOWED.test(rawSrc)) return true;
+  const match = SESSION_ATTACHMENT_URL.exec(rawSrc);
+  if (match === null) return false;
+  const srcSession = match[1];
   if (currentSessionId !== null && srcSession === currentSessionId) {
-    return true
+    return true;
   }
   // The URL is shaped like a session-attachment path but points at a
   // DIFFERENT session id — fire the typed observability event before
   // the caller drops the node so a listener can attribute the block.
-  emitCrossSessionBlocked(rawSrc)
-  return false
+  emitCrossSessionBlocked(rawSrc);
+  return false;
 }
 
-function applyImageAllowList(html: string, currentSessionId: string | null): string {
-  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+function applyImageAllowList(
+  html: string,
+  currentSessionId: string | null,
+): string {
+  if (typeof window === "undefined" || typeof DOMParser === "undefined") {
     // SSR / non-browser environment — return the raw HTML unchanged.
     // The chat surface is browser-only so this branch is defensive.
-    return html
+    return html;
   }
   // Parse inside a synthetic body so document-level boilerplate (html,
   // head, body) does not appear in the output. We re-serialise body's
   // children only.
   const doc = new DOMParser().parseFromString(
     `<!doctype html><html><body>${html}</body></html>`,
-    'text/html',
-  )
-  const body = doc.body
+    "text/html",
+  );
+  const body = doc.body;
   // Walk every element and gate it. Use a fresh static list of
   // candidates because we mutate the DOM in-place.
-  const all = Array.from(body.querySelectorAll('*'))
+  const all = Array.from(body.querySelectorAll("*"));
   for (const el of all) {
-    const tag = el.tagName.toLowerCase()
-    if (tag === 'img') {
-      const src = el.getAttribute('src')
+    const tag = el.tagName.toLowerCase();
+    if (tag === "img") {
+      const src = el.getAttribute("src");
       if (src === null || !isImgSrcAllowed(src, currentSessionId)) {
-        el.remove()
+        el.remove();
       }
-      continue
+      continue;
     }
     if (RAW_HTML_TAGS_TO_STRIP.has(tag)) {
-      el.remove()
-      continue
+      el.remove();
+      continue;
     }
     // Strip inline event handlers and `javascript:` href/src
     // residue from preserved tags (defence in depth — these would not
     // normally appear via markdown-it but a `html: true` parse could
     // surface them via author HTML in an assistant response).
-    const attrs = Array.from(el.attributes)
+    const attrs = Array.from(el.attributes);
     for (const attr of attrs) {
-      const name = attr.name.toLowerCase()
-      const value = attr.value
-      if (name.startsWith('on')) {
-        el.removeAttribute(attr.name)
-        continue
+      const name = attr.name.toLowerCase();
+      const value = attr.value;
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+        continue;
       }
       if (
-        (name === 'href' || name === 'src') &&
+        (name === "href" || name === "src") &&
         /^\s*javascript:/i.test(value)
       ) {
-        el.removeAttribute(attr.name)
+        el.removeAttribute(attr.name);
       }
     }
   }
-  return body.innerHTML
+  return body.innerHTML;
 }
 
 const renderedHtml = computed(() => {
@@ -327,13 +336,13 @@ const renderedHtml = computed(() => {
   // when Shiki finishes loading and the version bumps, the
   // computed re-evaluates with the real highlight callback wired
   // through MarkdownIt.
-  void highlighterVersion.value
-  const raw = md.render(props.content)
+  void highlighterVersion.value;
+  const raw = md.render(props.content);
   // Allow-list filter — Vue's reactivity tracks chat.currentSessionId
   // through the closure, so a session switch re-evaluates the computed
   // and re-applies the constraint with the new active id.
-  return applyImageAllowList(raw, chat.currentSessionId)
-})
+  return applyImageAllowList(raw, chat.currentSessionId);
+});
 
 // Per-block copy affordance handler. The fence renderer emits the
 // copy button as static HTML inside the v-html surface, so the click
@@ -341,51 +350,53 @@ const renderedHtml = computed(() => {
 // raw (untokenised) source text lives on the wrapper's
 // `data-code-raw` attribute. A two-second "Copied" affordance hint
 // is surfaced by toggling a class on the clicked button.
-const copiedTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>()
+const copiedTimers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
 
 function onCopyClick(event: MouseEvent): void {
-  const target = event.target as HTMLElement | null
-  if (!target) return
-  const btn = target.closest('.markdown-code__copy-btn') as HTMLButtonElement | null
-  if (!btn) return
-  event.preventDefault()
-  const wrapper = btn.closest('.markdown-code') as HTMLElement | null
-  if (!wrapper) return
-  const raw = wrapper.getAttribute('data-code-raw') ?? ''
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+  const btn = target.closest(
+    ".markdown-code__copy-btn",
+  ) as HTMLButtonElement | null;
+  if (!btn) return;
+  event.preventDefault();
+  const wrapper = btn.closest(".markdown-code") as HTMLElement | null;
+  if (!wrapper) return;
+  const raw = wrapper.getAttribute("data-code-raw") ?? "";
   // navigator.clipboard is async; the spec only asserts the button
   // exists. Best-effort copy — silently no-ops if clipboard API is
   // unavailable (e.g. headless test environments).
   if (
-    typeof navigator !== 'undefined' &&
+    typeof navigator !== "undefined" &&
     navigator.clipboard &&
-    typeof navigator.clipboard.writeText === 'function'
+    typeof navigator.clipboard.writeText === "function"
   ) {
     navigator.clipboard.writeText(raw).then(
       () => {
-        btn.classList.add('markdown-code__copy-btn--copied')
-        const existing = copiedTimers.get(btn)
-        if (existing) clearTimeout(existing)
+        btn.classList.add("markdown-code__copy-btn--copied");
+        const existing = copiedTimers.get(btn);
+        if (existing) clearTimeout(existing);
         const t = setTimeout(() => {
-          btn.classList.remove('markdown-code__copy-btn--copied')
-          copiedTimers.delete(btn)
-        }, 2000)
-        copiedTimers.set(btn, t)
+          btn.classList.remove("markdown-code__copy-btn--copied");
+          copiedTimers.delete(btn);
+        }, 2000);
+        copiedTimers.set(btn, t);
       },
       () => {
         // Clipboard rejected — no surfacing, the user can retry.
       },
-    )
+    );
   }
 }
 
 onBeforeUnmount(() => {
-  copiedTimers.forEach((t) => clearTimeout(t))
-  copiedTimers.clear()
+  copiedTimers.forEach((t) => clearTimeout(t));
+  copiedTimers.clear();
   if (unsubscribeReady !== null) {
-    unsubscribeReady()
-    unsubscribeReady = null
+    unsubscribeReady();
+    unsubscribeReady = null;
   }
-})
+});
 </script>
 
 <template>
@@ -599,7 +610,9 @@ onBeforeUnmount(() => {
   line-height: 1;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s, border-color 0.15s;
+  transition:
+    opacity 0.15s,
+    border-color 0.15s;
 }
 
 .markdown-body :deep(.markdown-code:hover .markdown-code__copy-btn),
@@ -617,15 +630,18 @@ onBeforeUnmount(() => {
   color: var(--success, #9ece6a);
 }
 
-.markdown-body :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label::before) {
-  content: 'Copied';
+.markdown-body
+  :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label::before) {
+  content: "Copied";
 }
 
-.markdown-body :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label) {
+.markdown-body
+  :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label) {
   font-size: 0;
 }
 
-.markdown-body :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label::before) {
+.markdown-body
+  :deep(.markdown-code__copy-btn--copied .markdown-code__copy-label::before) {
   font-size: 0.7rem;
 }
 

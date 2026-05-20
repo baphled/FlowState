@@ -12,26 +12,26 @@
  * (mounted by ChatView). A queue with zero entries renders nothing —
  * the strip is invisible when there is nothing pending.
  */
-import { computed } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
+import { computed } from "vue";
+import { useChatStore } from "@/stores/chatStore";
 
-defineOptions({ name: 'QueuedPromptStrip' })
+defineOptions({ name: "QueuedPromptStrip" });
 
-const store = useChatStore()
+const store = useChatStore();
 
 const queue = computed<string[]>(() => {
-  const id = store.currentSessionId
-  if (!id) return []
-  return store.queuedPrompts[id] ?? []
-})
+  const id = store.currentSessionId;
+  if (!id) return [];
+  return store.queuedPrompts[id] ?? [];
+});
 
 function revert(index: number): void {
-  if (!store.currentSessionId) return
-  const removed = store.popQueuedPromptFor(store.currentSessionId, index)
+  if (!store.currentSessionId) return;
+  const removed = store.popQueuedPromptFor(store.currentSessionId, index);
   if (removed !== null) {
     // Push the prompt onto composerText so MessageInput's watcher
     // pre-fills the textarea (matches revertToMessage's contract).
-    store.composerText = removed
+    store.composerText = removed;
   }
 }
 </script>

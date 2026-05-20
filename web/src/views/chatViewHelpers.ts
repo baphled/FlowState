@@ -1,18 +1,18 @@
-import { isContextTool } from '@/tools/toolRegistry'
-import type { Agent, Message } from '@/types'
+import { isContextTool } from "@/tools/toolRegistry";
+import type { Agent, Message } from "@/types";
 
 export interface GroupedMessage {
-  type: 'message'
-  message: Message
+  type: "message";
+  message: Message;
 }
 
 export interface ContextGroup {
-  type: 'context-group'
-  messages: Message[]
-  toolCounts: Record<string, number>
+  type: "context-group";
+  messages: Message[];
+  toolCounts: Record<string, number>;
 }
 
-export type GroupedMessageEntry = GroupedMessage | ContextGroup
+export type GroupedMessageEntry = GroupedMessage | ContextGroup;
 
 /**
  * Resolve the human-readable display name for the agent that produced a
@@ -26,16 +26,16 @@ export function resolveAgentName(
   agents: Agent[],
   activeAgentId: string,
 ): string | undefined {
-  if (message.role !== 'assistant') {
-    return undefined
+  if (message.role !== "assistant") {
+    return undefined;
   }
 
-  const candidateId = message.agentId ?? activeAgentId
+  const candidateId = message.agentId ?? activeAgentId;
   if (!candidateId) {
-    return undefined
+    return undefined;
   }
 
-  return agents.find((agent) => agent.id === candidateId)?.name
+  return agents.find((agent) => agent.id === candidateId)?.name;
 }
 
 /**
@@ -48,18 +48,22 @@ export function resolveAgentName(
  * are preserved.
  */
 export function collapseToolPairs(messages: Message[]): Message[] {
-  const out: Message[] = []
+  const out: Message[] = [];
   for (let i = 0; i < messages.length; i += 1) {
-    const current = messages[i]
-    if (current.role === 'tool_call') {
-      const next = messages[i + 1]
-      if (next && next.role === 'tool_result' && next.toolName === current.toolName) {
-        continue
+    const current = messages[i];
+    if (current.role === "tool_call") {
+      const next = messages[i + 1];
+      if (
+        next &&
+        next.role === "tool_result" &&
+        next.toolName === current.toolName
+      ) {
+        continue;
       }
     }
-    out.push(current)
+    out.push(current);
   }
-  return out
+  return out;
 }
 
 /**
@@ -78,18 +82,18 @@ export function collapseToolPairs(messages: Message[]): Message[] {
 export function buildPrecedingUserPromptMap(
   messages: Message[],
 ): Map<string, { id: string; content: string } | null> {
-  const map = new Map<string, { id: string; content: string } | null>()
-  let lastUser: { id: string; content: string } | null = null
+  const map = new Map<string, { id: string; content: string } | null>();
+  let lastUser: { id: string; content: string } | null = null;
   for (const m of messages) {
-    if (m.role === 'user') {
-      lastUser = { id: m.id, content: m.content }
-      continue
+    if (m.role === "user") {
+      lastUser = { id: m.id, content: m.content };
+      continue;
     }
-    if (m.role === 'assistant') {
-      map.set(m.id, lastUser)
+    if (m.role === "assistant") {
+      map.set(m.id, lastUser);
     }
   }
-  return map
+  return map;
 }
 
 /**
@@ -97,43 +101,51 @@ export function buildPrecedingUserPromptMap(
  * into a single group entry. Single context tools are not grouped.
  */
 export function groupContextTools(messages: Message[]): GroupedMessageEntry[] {
-  const result: GroupedMessageEntry[] = []
-  let i = 0
+  const result: GroupedMessageEntry[] = [];
+  let i = 0;
 
   while (i < messages.length) {
-    const current = messages[i]
-    if (current.role === 'tool_result' && current.toolName && isContextTool(current.toolName)) {
-      const group: Message[] = [current]
-      let j = i + 1
+    const current = messages[i];
+    if (
+      current.role === "tool_result" &&
+      current.toolName &&
+      isContextTool(current.toolName)
+    ) {
+      const group: Message[] = [current];
+      let j = i + 1;
       while (j < messages.length) {
-        const next = messages[j]
-        if (next.role === 'tool_result' && next.toolName && isContextTool(next.toolName)) {
-          group.push(next)
-          j++
+        const next = messages[j];
+        if (
+          next.role === "tool_result" &&
+          next.toolName &&
+          isContextTool(next.toolName)
+        ) {
+          group.push(next);
+          j++;
         } else {
-          break
+          break;
         }
       }
 
       if (group.length >= 2) {
-        const toolCounts: Record<string, number> = {}
+        const toolCounts: Record<string, number> = {};
         for (const msg of group) {
-          const name = msg.toolName!
-          toolCounts[name] = (toolCounts[name] || 0) + 1
+          const name = msg.toolName!;
+          toolCounts[name] = (toolCounts[name] || 0) + 1;
         }
         result.push({
-          type: 'context-group',
+          type: "context-group",
           messages: group,
           toolCounts,
-        })
-        i = j
-        continue
+        });
+        i = j;
+        continue;
       }
     }
 
-    result.push({ type: 'message', message: current })
-    i++
+    result.push({ type: "message", message: current });
+    i++;
   }
 
-  return result
+  return result;
 }

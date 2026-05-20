@@ -1,52 +1,52 @@
-import { ref, type Ref } from 'vue'
+import { ref, type Ref } from "vue";
 
-export type ToastVariant = 'default' | 'success' | 'error' | 'loading'
+export type ToastVariant = "default" | "success" | "error" | "loading";
 
 export interface ToastAction {
-  label: string
-  onClick: () => void
+  label: string;
+  onClick: () => void;
 }
 
 export interface ToastOptions {
-  message: string
-  title?: string
-  variant?: ToastVariant
-  duration?: number
-  action?: ToastAction
+  message: string;
+  title?: string;
+  variant?: ToastVariant;
+  duration?: number;
+  action?: ToastAction;
 }
 
 export interface Toast {
-  id: number
-  message: string
-  title?: string
-  variant: ToastVariant
-  duration: number
-  action?: ToastAction
+  id: number;
+  message: string;
+  title?: string;
+  variant: ToastVariant;
+  duration: number;
+  action?: ToastAction;
 }
 
-const DEFAULT_DURATION = 3000
+const DEFAULT_DURATION = 3000;
 
-const toasts = ref<Toast[]>([])
+const toasts = ref<Toast[]>([]);
 
-let nextId = 0
+let nextId = 0;
 
 function resolveOptions(options: ToastOptions | string): Toast {
-  if (typeof options === 'string') {
+  if (typeof options === "string") {
     return {
       id: nextId++,
       message: options,
-      variant: 'default',
+      variant: "default",
       duration: DEFAULT_DURATION,
-    }
+    };
   }
 
-  const variant = options.variant ?? 'default'
+  const variant = options.variant ?? "default";
   const duration =
     options.duration !== undefined
       ? options.duration
-      : variant === 'loading'
+      : variant === "loading"
         ? 0
-        : DEFAULT_DURATION
+        : DEFAULT_DURATION;
 
   return {
     id: nextId++,
@@ -55,53 +55,53 @@ function resolveOptions(options: ToastOptions | string): Toast {
     variant,
     duration,
     action: options.action,
-  }
+  };
 }
 
-const timers = new Map<number, ReturnType<typeof setTimeout>>()
+const timers = new Map<number, ReturnType<typeof setTimeout>>();
 
 function scheduleDismiss(toast: Toast): void {
-  if (toast.duration <= 0) return
+  if (toast.duration <= 0) return;
 
   const timer = setTimeout(() => {
-    removeToast(toast.id)
-  }, toast.duration)
+    removeToast(toast.id);
+  }, toast.duration);
 
-  timers.set(toast.id, timer)
+  timers.set(toast.id, timer);
 }
 
 function clearTimer(id: number): void {
-  const timer = timers.get(id)
+  const timer = timers.get(id);
   if (timer !== undefined) {
-    clearTimeout(timer)
-    timers.delete(id)
+    clearTimeout(timer);
+    timers.delete(id);
   }
 }
 
 function removeToast(id: number): void {
-  clearTimer(id)
-  const index = toasts.value.findIndex((t) => t.id === id)
+  clearTimer(id);
+  const index = toasts.value.findIndex((t) => t.id === id);
   if (index !== -1) {
-    toasts.value.splice(index, 1)
+    toasts.value.splice(index, 1);
   }
 }
 
 function dismissAll(): void {
   for (const toast of toasts.value) {
-    clearTimer(toast.id)
+    clearTimer(toast.id);
   }
-  toasts.value.splice(0, toasts.value.length)
+  toasts.value.splice(0, toasts.value.length);
 }
 
 export function showToast(options: ToastOptions | string): number {
-  const toast = resolveOptions(options)
-  toasts.value.push(toast)
-  scheduleDismiss(toast)
-  return toast.id
+  const toast = resolveOptions(options);
+  toasts.value.push(toast);
+  scheduleDismiss(toast);
+  return toast.id;
 }
 
 export function dismissToast(id: number): void {
-  removeToast(id)
+  removeToast(id);
 }
 
 /**
@@ -123,23 +123,23 @@ export function dismissToast(id: number): void {
  */
 export function updateToast(
   id: number,
-  patch: Partial<Omit<Toast, 'id'>>,
+  patch: Partial<Omit<Toast, "id">>,
 ): boolean {
-  const toast = toasts.value.find((t) => t.id === id)
-  if (!toast) return false
+  const toast = toasts.value.find((t) => t.id === id);
+  if (!toast) return false;
 
-  if (patch.message !== undefined) toast.message = patch.message
-  if (patch.title !== undefined) toast.title = patch.title
-  if (patch.variant !== undefined) toast.variant = patch.variant
-  if (patch.action !== undefined) toast.action = patch.action
+  if (patch.message !== undefined) toast.message = patch.message;
+  if (patch.title !== undefined) toast.title = patch.title;
+  if (patch.variant !== undefined) toast.variant = patch.variant;
+  if (patch.action !== undefined) toast.action = patch.action;
 
   if (patch.duration !== undefined) {
-    toast.duration = patch.duration
-    clearTimer(id)
-    scheduleDismiss(toast)
+    toast.duration = patch.duration;
+    clearTimer(id);
+    scheduleDismiss(toast);
   }
 
-  return true
+  return true;
 }
 
 export function useToast() {
@@ -147,5 +147,5 @@ export function useToast() {
     toasts: toasts as Ref<Toast[]>,
     removeToast,
     dismissAll,
-  }
+  };
 }

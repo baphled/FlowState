@@ -24,11 +24,11 @@ npx playwright test                 # default e2e config (port 5173)
 
 E2E specs live in `web/e2e/*.spec.ts`. Per-feature configs:
 
-| Config | Purpose |
-|---|---|
-| `playwright.config.ts` | Default — most specs |
+| Config                            | Purpose                 |
+| --------------------------------- | ----------------------- |
+| `playwright.config.ts`            | Default — most specs    |
 | `playwright.delegation.config.ts` | Delegation-driven flows |
-| `playwright.multi-turn.config.ts` | Multi-turn streaming |
+| `playwright.multi-turn.config.ts` | Multi-turn streaming    |
 
 ## Type checking
 

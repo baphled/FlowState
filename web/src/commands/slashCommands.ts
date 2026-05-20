@@ -10,22 +10,28 @@
 
 export interface SlashCommand {
   /** Command name without the leading slash, e.g. "clear". */
-  readonly name: string
+  readonly name: string;
   /** Short single-line gloss shown in the picker. */
-  readonly description: string
+  readonly description: string;
 }
 
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: 'clear', description: 'Wipe the chat buffer' },
-  { name: 'help', description: 'List available slash commands' },
-  { name: 'exit', description: 'Exit FlowState' },
-  { name: 'quit', description: 'Alias for /exit' },
-  { name: 'sessions', description: 'Resume a saved session' },
-  { name: 'plans', description: 'Ask the agent to list your saved plans' },
-  { name: 'agent', description: 'Switch the active agent' },
-  { name: 'agents', description: 'Switch the active agent (alias of /agent)' },
-  { name: 'model', description: 'Switch the chat model' },
-  { name: 'swarm', description: 'Create a new swarm manifest interactively' },
-  { name: 'autoresearch', description: 'Launch an autoresearch optimisation run interactively' },
-  { name: 'compress', description: 'Force-compact the current session’s context now' },
-]
+  { name: "clear", description: "Wipe the chat buffer" },
+  { name: "help", description: "List available slash commands" },
+  { name: "exit", description: "Exit FlowState" },
+  { name: "quit", description: "Alias for /exit" },
+  { name: "sessions", description: "Resume a saved session" },
+  { name: "plans", description: "Ask the agent to list your saved plans" },
+  { name: "agent", description: "Switch the active agent" },
+  { name: "agents", description: "Switch the active agent (alias of /agent)" },
+  { name: "model", description: "Switch the chat model" },
+  { name: "swarm", description: "Create a new swarm manifest interactively" },
+  {
+    name: "autoresearch",
+    description: "Launch an autoresearch optimisation run interactively",
+  },
+  {
+    name: "compress",
+    description: "Force-compact the current session’s context now",
+  },
+];

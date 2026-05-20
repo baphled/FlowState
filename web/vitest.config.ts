@@ -1,6 +1,6 @@
-import { defineConfig } from 'vitest/config'
-import { fileURLToPath, URL } from 'node:url'
-import viteConfig from './vite.config'
+import { defineConfig } from "vitest/config";
+import { fileURLToPath, URL } from "node:url";
+import viteConfig from "./vite.config";
 
 // Worker pool sizing for the vitest fork pool.
 //
@@ -27,14 +27,14 @@ export default defineConfig({
   ...viteConfig,
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
   test: {
-    environment: 'jsdom',
-    exclude: ['node_modules/**', 'e2e/**', 'dist/**'],
-    pool: 'forks',
-    maxWorkers: '50%',
+    environment: "jsdom",
+    exclude: ["node_modules/**", "e2e/**", "dist/**"],
+    pool: "forks",
+    maxWorkers: "50%",
     minWorkers: 1,
   },
-})
+});

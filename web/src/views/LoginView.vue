@@ -26,9 +26,7 @@
   <div class="login-view" data-testid="login-view">
     <div class="login-card">
       <h1>Sign in to FlowState</h1>
-      <p class="login-subtitle">
-        Enter your credentials to continue.
-      </p>
+      <p class="login-subtitle">Enter your credentials to continue.</p>
 
       <form @submit.prevent="onSubmit" data-testid="login-form">
         <!--
@@ -60,7 +58,10 @@
           :disabled="submitting"
         />
 
-        <details class="login-secret-section" data-testid="login-secret-section">
+        <details
+          class="login-secret-section"
+          data-testid="login-secret-section"
+        >
           <summary>Deployment secret (alternative)</summary>
           <label class="field-label" for="login-secret">Shared secret</label>
           <input
@@ -73,9 +74,8 @@
             :disabled="submitting"
           />
           <p class="field-hint">
-            Required for `shared-secret` / `per-deployment-login`
-            deployment modes. Leave blank if your deployment uses
-            multi-user mode.
+            Required for `shared-secret` / `per-deployment-login` deployment
+            modes. Leave blank if your deployment uses multi-user mode.
           </p>
         </details>
 
@@ -85,7 +85,7 @@
           data-testid="login-submit"
           :disabled="submitting || !canSubmit"
         >
-          {{ submitting ? 'Signing in…' : 'Sign in' }}
+          {{ submitting ? "Signing in…" : "Sign in" }}
         </button>
       </form>
     </div>
@@ -93,23 +93,23 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { joinBaseURL } from '@/api'
-import { showToast } from '@/composables/useToast'
-import { ensureCsrfToken } from '@/lib/csrf'
-import { useCsrfStore } from '@/stores/csrfStore'
+import { computed, ref } from "vue";
+import { useRouter } from "vue-router";
+import { joinBaseURL } from "@/api";
+import { showToast } from "@/composables/useToast";
+import { ensureCsrfToken } from "@/lib/csrf";
+import { useCsrfStore } from "@/stores/csrfStore";
 
 // State — three free-form fields. The form renders all three; the
 // server's mode dictates which actually mints a session. The UI
 // surfaces ONLY a uniform "Invalid credentials" on failure (no mode
 // hint) to preserve the server's B8 wire discipline on the
 // rendered-surface side too.
-const username = ref('')
-const password = ref('')
-const secret = ref('')
-const submitting = ref(false)
-const router = useRouter()
+const username = ref("");
+const password = ref("");
+const secret = ref("");
+const submitting = ref(false);
+const router = useRouter();
 
 // canSubmit: enable the button when at least ONE of the credential
 // shapes is filled. The deeper validation lives on the server side; we
@@ -118,22 +118,22 @@ const canSubmit = computed(() => {
   return (
     secret.value.length > 0 ||
     (username.value.length > 0 && password.value.length > 0)
-  )
-})
+  );
+});
 
 async function onSubmit() {
-  if (!canSubmit.value) return
-  submitting.value = true
+  if (!canSubmit.value) return;
+  submitting.value = true;
 
   // Build the request body. The server's parseCredentials (in
   // internal/auth/login.go) reads the field shape that matches its
   // configured auth.mode and ignores the others (silent extra-field
   // drop, per B8 fold). The SPA sends all three when populated; the
   // server picks the right one.
-  const body: Record<string, string> = {}
-  if (secret.value) body.secret = secret.value
-  if (username.value) body.username = username.value
-  if (password.value) body.password = password.value
+  const body: Record<string, string> = {};
+  if (secret.value) body.secret = secret.value;
+  if (username.value) body.username = username.value;
+  if (password.value) body.password = password.value;
 
   try {
     // QA BUG-1/BUG-2 fix (May 2026): prefetch the masked CSRF token
@@ -144,44 +144,44 @@ async function onSubmit() {
     // the server issues the _csrf cookie + returns the matching
     // masked token. The token is cached in the Pinia csrfStore; the
     // X-CSRF-Token header below reads it via getCsrfToken().
-    let csrfToken: string
+    let csrfToken: string;
     try {
-      csrfToken = await ensureCsrfToken()
+      csrfToken = await ensureCsrfToken();
     } catch (err) {
       // Pre-flight prefetch failed (network, server misconfig). Surface
       // a clear error rather than firing the POST without a token — the
       // user gets a "could not reach the server" toast and the operator
       // sees the prefetch failure in the browser network panel.
       showToast({
-        message: 'Could not reach the server. Try again.',
-        variant: 'error',
-      })
+        message: "Could not reach the server. Try again.",
+        variant: "error",
+      });
       // eslint-disable-next-line no-console
-      console.error('[flowstate] csrf prefetch failed:', err)
-      return
+      console.error("[flowstate] csrf prefetch failed:", err);
+      return;
     }
 
-    const res = await fetch(joinBaseURL('/auth/login'), {
-      method: 'POST',
+    const res = await fetch(joinBaseURL("/auth/login"), {
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'X-CSRF-Token': csrfToken,
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
       },
-      credentials: 'include',
+      credentials: "include",
       body: JSON.stringify(body),
-    })
+    });
 
     if (res.status === 401) {
       // Uniform error per plan B8. No mode-specific hint.
-      showToast({ message: 'Invalid credentials', variant: 'error' })
-      return
+      showToast({ message: "Invalid credentials", variant: "error" });
+      return;
     }
     if (!res.ok) {
       showToast({
         message: `Login failed (${res.status})`,
-        variant: 'error',
-      })
-      return
+        variant: "error",
+      });
+      return;
     }
 
     // 200 — cookie set by Set-Cookie; capture the rotated csrf_token
@@ -191,28 +191,28 @@ async function onSubmit() {
     // chatStore's bootstrap re-runs on the new view and pulls fresh
     // session data.
     try {
-      const respBody = (await res.json()) as { csrf_token?: string }
+      const respBody = (await res.json()) as { csrf_token?: string };
       if (respBody?.csrf_token) {
-        useCsrfStore().setToken(respBody.csrf_token)
+        useCsrfStore().setToken(respBody.csrf_token);
       }
     } catch {
       // Best-effort — a malformed 200 body falls through to navigation.
       // The next authenticated request will 403 if the token is wrong;
       // the SPA's 401/403 handler kicks back to /login.
     }
-    await router.push('/chat')
+    await router.push("/chat");
   } catch (err) {
     // Network-level failure (DNS, CORS, offline). Surface a generic
     // error — the underlying cause is logged via the browser's
     // network panel for debugging.
     showToast({
-      message: 'Could not reach the server. Try again.',
-      variant: 'error',
-    })
+      message: "Could not reach the server. Try again.",
+      variant: "error",
+    });
     // eslint-disable-next-line no-console
-    console.error('[flowstate] login fetch failed:', err)
+    console.error("[flowstate] login fetch failed:", err);
   } finally {
-    submitting.value = false
+    submitting.value = false;
   }
 }
 </script>

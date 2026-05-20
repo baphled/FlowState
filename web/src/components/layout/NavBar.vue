@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
-import SessionSwitcher from '@/components/session-switcher/SessionSwitcher.vue'
-import { useChatStore } from '@/stores/chatStore'
+import { computed } from "vue";
+import { useRouter, useRoute } from "vue-router";
+import SessionSwitcher from "@/components/session-switcher/SessionSwitcher.vue";
+import { useChatStore } from "@/stores/chatStore";
 // N7 (Vue UI Parity vs OpenCode, May 2026): the marketing mark in
 // `src/assets/logo.svg` carries the FlowState wordmark + ribbon glyph.
 // Vite resolves the import to a hashed asset URL at build time so the
 // `<img>` src is cache-friendly and the SVG is HTTP-cached.
-import logoUrl from '@/assets/logo.svg'
+import logoUrl from "@/assets/logo.svg";
 
-defineOptions({ name: 'NavBar' })
+defineOptions({ name: "NavBar" });
 
-const router = useRouter()
-const route = useRoute()
-const chatStore = useChatStore()
+const router = useRouter();
+const route = useRoute();
+const chatStore = useChatStore();
 
 // Hide the entire NavBar in child sessions. The user's mental model: a
 // child session is a focused, read-only view of delegated work — the
@@ -22,17 +22,17 @@ const chatStore = useChatStore()
 // (ArrowUp/Left/Right) is wired at the document level inside ChatView and
 // is unaffected by hiding this bar.
 const isChildSession = computed(() => {
-  const id = chatStore.currentSessionId
-  if (!id) return false
-  const current = chatStore.sessions.find((session) => session.id === id)
-  return Boolean(current?.parentId)
-})
+  const id = chatStore.currentSessionId;
+  if (!id) return false;
+  const current = chatStore.sessions.find((session) => session.id === id);
+  return Boolean(current?.parentId);
+});
 
 const navItems = [
-  { label: 'Chat', path: '/chat', testId: 'nav-chat' },
-  { label: 'Swarm', path: '/swarm', testId: 'nav-swarm' },
-  { label: 'Settings', path: '/settings', testId: 'nav-settings' },
-]
+  { label: "Chat", path: "/chat", testId: "nav-chat" },
+  { label: "Swarm", path: "/swarm", testId: "nav-swarm" },
+  { label: "Settings", path: "/settings", testId: "nav-settings" },
+];
 </script>
 
 <template>
@@ -101,7 +101,9 @@ const navItems = [
   border-radius: var(--radius);
   cursor: pointer;
   color: var(--text-muted);
-  transition: color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    background 0.15s;
   font-size: 0.9rem;
 }
 

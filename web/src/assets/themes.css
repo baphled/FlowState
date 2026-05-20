@@ -34,8 +34,8 @@
   --event-tool-call: #9ece6a;
   --event-plan: #e0af68;
   --event-review: #bb9af7;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --radius: 6px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
@@ -81,8 +81,8 @@
   --event-tool-call: #00ff41;
   --event-plan: #ffc840;
   --event-review: #ff00ff;
-  --font-mono: 'VT323', 'Courier New', monospace;
-  --font-sans: 'VT323', 'Courier New', monospace;
+  --font-mono: "VT323", "Courier New", monospace;
+  --font-sans: "VT323", "Courier New", monospace;
   --radius: 0px;
   --shadow: none;
 }
@@ -110,8 +110,8 @@
   --event-tool-call: #9ece6a;
   --event-plan: #e0af68;
   --event-review: #bb9af7;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --radius: 6px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
@@ -135,8 +135,8 @@
   --event-tool-call: #a6e3a1;
   --event-plan: #f9e2af;
   --event-review: #cba6f7;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --radius: 6px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
 }
@@ -160,8 +160,8 @@
   --event-tool-call: #50fa7b;
   --event-plan: #f1fa8c;
   --event-review: #bd93f9;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --radius: 6px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
@@ -185,8 +185,8 @@
   --event-tool-call: #a3be8c;
   --event-plan: #ebcb8b;
   --event-review: #b48ead;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
   --radius: 6px;
   --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
@@ -195,9 +195,17 @@
 /* Base reset                                                       */
 /* ---------------------------------------------------------------- */
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
   background: var(--bg-primary);
   color: var(--text-primary);
@@ -207,13 +215,24 @@ html, body, #app {
 }
 
 /* Scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: var(--bg-secondary); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
 
 /* Utility */
-.mono { font-family: var(--font-mono); }
+.mono {
+  font-family: var(--font-mono);
+}
 
 /* ---------------------------------------------------------------- */
 /* N3 — Shiki theme bindings                                        */

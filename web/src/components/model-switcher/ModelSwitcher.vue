@@ -1,85 +1,85 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { listModels } from '@/api'
-import { useChatStore } from '@/stores/chatStore'
-import type { ModelsResponse, ProviderInfo } from '@/types'
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { listModels } from "@/api";
+import { useChatStore } from "@/stores/chatStore";
+import type { ModelsResponse, ProviderInfo } from "@/types";
 
-defineOptions({ name: 'ModelSwitcher' })
+defineOptions({ name: "ModelSwitcher" });
 
-const chatStore = useChatStore()
+const chatStore = useChatStore();
 
-const isOpen = ref(false)
-const isLoading = ref(false)
-const errorMessage = ref<string | null>(null)
-const providers = ref<ProviderInfo[]>([])
-const hasLoaded = ref(false)
-const rootEl = ref<HTMLElement | null>(null)
+const isOpen = ref(false);
+const isLoading = ref(false);
+const errorMessage = ref<string | null>(null);
+const providers = ref<ProviderInfo[]>([]);
+const hasLoaded = ref(false);
+const rootEl = ref<HTMLElement | null>(null);
 
 const triggerLabel = computed(() => {
   if (chatStore.currentProviderId && chatStore.currentModelId) {
-    return `${chatStore.currentProviderId}/${chatStore.currentModelId}`
+    return `${chatStore.currentProviderId}/${chatStore.currentModelId}`;
   }
-  return 'Select model'
-})
+  return "Select model";
+});
 
 async function loadModels(): Promise<void> {
-  isLoading.value = true
-  errorMessage.value = null
+  isLoading.value = true;
+  errorMessage.value = null;
   try {
-    const response: ModelsResponse = await listModels()
-    providers.value = response.providers ?? []
-    hasLoaded.value = true
+    const response: ModelsResponse = await listModels();
+    providers.value = response.providers ?? [];
+    hasLoaded.value = true;
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : String(err)
+    errorMessage.value = err instanceof Error ? err.message : String(err);
   } finally {
-    isLoading.value = false
+    isLoading.value = false;
   }
 }
 
 function toggleDropdown(): void {
-  isOpen.value = !isOpen.value
+  isOpen.value = !isOpen.value;
 }
 
 function closeDropdown(): void {
-  isOpen.value = false
+  isOpen.value = false;
 }
 
 function selectModel(providerId: string, modelId: string): void {
-  void chatStore.setModel(modelId, providerId)
-  closeDropdown()
+  void chatStore.setModel(modelId, providerId);
+  closeDropdown();
 }
 
 function retry(): void {
-  void loadModels()
+  void loadModels();
 }
 
 function handleDocumentMouseDown(event: MouseEvent): void {
   if (!isOpen.value) {
-    return
+    return;
   }
-  const target = event.target as Node | null
+  const target = event.target as Node | null;
   if (rootEl.value && target && rootEl.value.contains(target)) {
-    return
+    return;
   }
-  closeDropdown()
+  closeDropdown();
 }
 
 function handleDocumentKeyDown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
-    closeDropdown()
+  if (event.key === "Escape") {
+    closeDropdown();
   }
 }
 
 onMounted(() => {
-  void loadModels()
-  document.addEventListener('mousedown', handleDocumentMouseDown)
-  document.addEventListener('keydown', handleDocumentKeyDown)
-})
+  void loadModels();
+  document.addEventListener("mousedown", handleDocumentMouseDown);
+  document.addEventListener("keydown", handleDocumentKeyDown);
+});
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', handleDocumentMouseDown)
-  document.removeEventListener('keydown', handleDocumentKeyDown)
-})
+  document.removeEventListener("mousedown", handleDocumentMouseDown);
+  document.removeEventListener("keydown", handleDocumentKeyDown);
+});
 </script>
 
 <template>
@@ -183,7 +183,9 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-size: 0.85rem;
   color: var(--text-primary);
-  transition: background 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
 
 .model-switcher-trigger:hover {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
-import { useQuotaStore, type ProviderQuotaSnapshot } from '@/stores/quotaStore'
+import { computed } from "vue";
+import { useChatStore } from "@/stores/chatStore";
+import { useQuotaStore, type ProviderQuotaSnapshot } from "@/stores/quotaStore";
 
 /**
  * QuotaChip — toolbar affordance for the engine's `provider_quota`
@@ -25,10 +25,10 @@ import { useQuotaStore, type ProviderQuotaSnapshot } from '@/stores/quotaStore'
  *   - TokenSpend (uncapped): always green (no denominator)
  *   - NotConfigured: neutral
  */
-defineOptions({ name: 'QuotaChip' })
+defineOptions({ name: "QuotaChip" });
 
-const chatStore = useChatStore()
-const quotaStore = useQuotaStore()
+const chatStore = useChatStore();
+const quotaStore = useQuotaStore();
 
 /**
  * Active snapshot — falls back to the any-account match when the
@@ -38,13 +38,13 @@ const quotaStore = useQuotaStore()
  * chip does not currently propagate from configuration.
  */
 const snapshot = computed<ProviderQuotaSnapshot | null>(() => {
-  const provider = chatStore.currentProviderId ?? ''
-  const model = chatStore.currentModelId ?? ''
-  if (provider === '' || model === '') {
-    return null
+  const provider = chatStore.currentProviderId ?? "";
+  const model = chatStore.currentModelId ?? "";
+  if (provider === "" || model === "") {
+    return null;
   }
-  return quotaStore.anyQuotaFor(provider, model)
-})
+  return quotaStore.anyQuotaFor(provider, model);
+});
 
 /**
  * isVisible — hide the chip until the model is known AND a snapshot
@@ -55,7 +55,7 @@ const snapshot = computed<ProviderQuotaSnapshot | null>(() => {
  * placeholder for both chips would be visually noisy in the
  * toolbar.
  */
-const isVisible = computed(() => snapshot.value !== null)
+const isVisible = computed(() => snapshot.value !== null);
 
 /**
  * Severity classification per OD-9. Always 'neutral' for
@@ -63,30 +63,30 @@ const isVisible = computed(() => snapshot.value !== null)
  * RateLimit; computed from Spent/Cap for TokenSpend (capped path);
  * always 'neutral' (green) for TokenSpend uncapped.
  */
-const severity = computed<'neutral' | 'warning' | 'danger'>(() => {
-  const s = snapshot.value
-  if (s === null) return 'neutral'
-  if (s.variant === 'not_configured') return 'neutral'
-  if (s.variant === 'rate_limit' && s.rateLimit !== null) {
-    const pct = s.rateLimit.tightestPercentRemaining
-    if (pct < 0) return 'neutral' // -1 sentinel — no signal
-    if (pct < 5) return 'danger'
-    if (pct < 20) return 'warning'
-    return 'neutral'
+const severity = computed<"neutral" | "warning" | "danger">(() => {
+  const s = snapshot.value;
+  if (s === null) return "neutral";
+  if (s.variant === "not_configured") return "neutral";
+  if (s.variant === "rate_limit" && s.rateLimit !== null) {
+    const pct = s.rateLimit.tightestPercentRemaining;
+    if (pct < 0) return "neutral"; // -1 sentinel — no signal
+    if (pct < 5) return "danger";
+    if (pct < 20) return "warning";
+    return "neutral";
   }
-  if (s.variant === 'token_spend' && s.tokenSpend !== null) {
-    const ts = s.tokenSpend
-    if (ts.capMinor <= 0) return 'neutral' // uncapped — always green
-    if (ts.thresholdAmber < 0 || ts.thresholdRed < 0) return 'neutral'
-    const pct = (ts.spentMinor / ts.capMinor) * 100
-    if (pct >= ts.thresholdRed) return 'danger'
-    if (pct >= ts.thresholdAmber) return 'warning'
-    return 'neutral'
+  if (s.variant === "token_spend" && s.tokenSpend !== null) {
+    const ts = s.tokenSpend;
+    if (ts.capMinor <= 0) return "neutral"; // uncapped — always green
+    if (ts.thresholdAmber < 0 || ts.thresholdRed < 0) return "neutral";
+    const pct = (ts.spentMinor / ts.capMinor) * 100;
+    if (pct >= ts.thresholdRed) return "danger";
+    if (pct >= ts.thresholdAmber) return "warning";
+    return "neutral";
   }
-  return 'neutral'
-})
+  return "neutral";
+});
 
-const chipClass = computed(() => `quota-chip quota-chip--${severity.value}`)
+const chipClass = computed(() => `quota-chip quota-chip--${severity.value}`);
 
 /**
  * Format an ISO-8601 timestamp as a "resets in Nm" / "in Nh" /
@@ -95,19 +95,19 @@ const chipClass = computed(() => `quota-chip quota-chip--${severity.value}`)
  * "· resets" suffix).
  */
 function formatReset(iso: string): string {
-  if (!iso) return ''
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return ''
-  const diffMs = t - Date.now()
-  if (diffMs <= 0) return ''
-  const totalSeconds = Math.round(diffMs / 1000)
-  if (totalSeconds < 60) return `${totalSeconds}s`
-  const totalMinutes = Math.round(totalSeconds / 60)
-  if (totalMinutes < 60) return `${totalMinutes}m`
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  if (minutes === 0) return `${hours}h`
-  return `${hours}h${minutes.toString().padStart(2, '0')}`
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "";
+  const diffMs = t - Date.now();
+  if (diffMs <= 0) return "";
+  const totalSeconds = Math.round(diffMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.round(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h${minutes.toString().padStart(2, "0")}`;
 }
 
 /**
@@ -116,40 +116,42 @@ function formatReset(iso: string): string {
  * currencies fall back to `<code> <major>.<minor>` ("XYZ 12.34").
  */
 function formatMoney(minor: number, currency: string): string {
-  const major = (minor / 100).toFixed(2)
+  const major = (minor / 100).toFixed(2);
   switch (currency) {
-    case 'USD':
-      return `$${major}`
-    case 'CNY':
-      return `¥${major}`
-    case 'GBP':
-      return `£${major}`
-    case 'EUR':
-      return `€${major}`
+    case "USD":
+      return `$${major}`;
+    case "CNY":
+      return `¥${major}`;
+    case "GBP":
+      return `£${major}`;
+    case "EUR":
+      return `€${major}`;
     default:
-      return `${currency} ${major}`
+      return `${currency} ${major}`;
   }
 }
 
 const rateLimitLabel = computed(() => {
-  const s = snapshot.value
-  if (s === null || s.variant !== 'rate_limit' || s.rateLimit === null) return ''
-  const pct = s.rateLimit.tightestPercentRemaining
-  const pctLabel = pct < 0 ? '—' : `${pct}%`
-  const reset = formatReset(s.rateLimit.tightestResetAt)
-  if (reset === '') return `${pctLabel} remaining`
-  return `${pctLabel} remaining · resets ${reset}`
-})
+  const s = snapshot.value;
+  if (s === null || s.variant !== "rate_limit" || s.rateLimit === null)
+    return "";
+  const pct = s.rateLimit.tightestPercentRemaining;
+  const pctLabel = pct < 0 ? "—" : `${pct}%`;
+  const reset = formatReset(s.rateLimit.tightestResetAt);
+  if (reset === "") return `${pctLabel} remaining`;
+  return `${pctLabel} remaining · resets ${reset}`;
+});
 
 const tokenSpendLabel = computed(() => {
-  const s = snapshot.value
-  if (s === null || s.variant !== 'token_spend' || s.tokenSpend === null) return ''
-  const ts = s.tokenSpend
-  const spent = formatMoney(ts.spentMinor, ts.spentCurrency)
-  if (ts.capMinor <= 0) return spent
-  const cap = formatMoney(ts.capMinor, ts.capCurrency || ts.spentCurrency)
-  return `${spent} / ${cap}`
-})
+  const s = snapshot.value;
+  if (s === null || s.variant !== "token_spend" || s.tokenSpend === null)
+    return "";
+  const ts = s.tokenSpend;
+  const spent = formatMoney(ts.spentMinor, ts.spentCurrency);
+  if (ts.capMinor <= 0) return spent;
+  const cap = formatMoney(ts.capMinor, ts.capCurrency || ts.spentCurrency);
+  return `${spent} / ${cap}`;
+});
 
 /**
  * TokenSpend bar fill (0-100). Returns 0 for uncapped so the bar
@@ -157,21 +159,23 @@ const tokenSpendLabel = computed(() => {
  * over-cap spend.
  */
 const tokenSpendBarPct = computed(() => {
-  const s = snapshot.value
-  if (s === null || s.variant !== 'token_spend' || s.tokenSpend === null) return 0
-  const ts = s.tokenSpend
-  if (ts.capMinor <= 0) return 0
-  const pct = (ts.spentMinor / ts.capMinor) * 100
-  if (pct < 0) return 0
-  if (pct > 100) return 100
-  return pct
-})
+  const s = snapshot.value;
+  if (s === null || s.variant !== "token_spend" || s.tokenSpend === null)
+    return 0;
+  const ts = s.tokenSpend;
+  if (ts.capMinor <= 0) return 0;
+  const pct = (ts.spentMinor / ts.capMinor) * 100;
+  if (pct < 0) return 0;
+  if (pct > 100) return 100;
+  return pct;
+});
 
 const notConfiguredReason = computed(() => {
-  const s = snapshot.value
-  if (s === null || s.variant !== 'not_configured' || s.notConfigured === null) return ''
-  return s.notConfigured.reason
-})
+  const s = snapshot.value;
+  if (s === null || s.variant !== "not_configured" || s.notConfigured === null)
+    return "";
+  return s.notConfigured.reason;
+});
 
 /**
  * Tooltip text. Variant-specific copy explaining the figure + the
@@ -179,33 +183,40 @@ const notConfiguredReason = computed(() => {
  * StoreBackend=memory).
  */
 const tooltipTitle = computed(() => {
-  const s = snapshot.value
-  if (s === null) return ''
-  const parts: string[] = []
-  if (s.variant === 'token_spend' && s.tokenSpend !== null) {
-    const usd = formatMoney(s.tokenSpend.spentUsdMinor, 'USD')
-    if (s.tokenSpend.spentCurrency !== 'USD' && s.tokenSpend.spentUsdMinor > 0) {
-      parts.push(`USD equivalent: ${usd}`)
+  const s = snapshot.value;
+  if (s === null) return "";
+  const parts: string[] = [];
+  if (s.variant === "token_spend" && s.tokenSpend !== null) {
+    const usd = formatMoney(s.tokenSpend.spentUsdMinor, "USD");
+    if (
+      s.tokenSpend.spentCurrency !== "USD" &&
+      s.tokenSpend.spentUsdMinor > 0
+    ) {
+      parts.push(`USD equivalent: ${usd}`);
     }
     if (s.pricingSource) {
-      parts.push(`Pricing source: ${s.pricingSource}`)
+      parts.push(`Pricing source: ${s.pricingSource}`);
     }
   }
-  if (s.variant === 'not_configured' && s.notConfigured !== null) {
-    parts.push(`No quota signal: ${s.notConfigured.reason}`)
+  if (s.variant === "not_configured" && s.notConfigured !== null) {
+    parts.push(`No quota signal: ${s.notConfigured.reason}`);
   }
-  if (s.storeBackend === 'memory') {
+  if (s.storeBackend === "memory") {
     parts.push(
-      'Single-instance scope. If you run multiple FlowState instances against this provider key, this figure is FlowState-observed only and not the full account spend.',
-    )
-  } else if (s.storeBackend === 'redis' || s.storeBackend === 'postgres') {
-    parts.push('Shared across all FlowState instances using this provider key.')
+      "Single-instance scope. If you run multiple FlowState instances against this provider key, this figure is FlowState-observed only and not the full account spend.",
+    );
+  } else if (s.storeBackend === "redis" || s.storeBackend === "postgres") {
+    parts.push(
+      "Shared across all FlowState instances using this provider key.",
+    );
   }
   if (s.stale) {
-    parts.push('Stale: the underlying window has reset; awaiting next response.')
+    parts.push(
+      "Stale: the underlying window has reset; awaiting next response.",
+    );
   }
-  return parts.join(' · ')
-})
+  return parts.join(" · ");
+});
 
 /**
  * Click emit — PR4a wires the click to a parent-handled event;
@@ -213,16 +224,16 @@ const tooltipTitle = computed(() => {
  * gets the event but no panel renders yet (out of PR4 scope).
  */
 const emit = defineEmits<{
-  open: [snapshot: ProviderQuotaSnapshot]
-}>()
+  open: [snapshot: ProviderQuotaSnapshot];
+}>();
 
 function handleClick(): void {
-  const s = snapshot.value
-  if (s === null) return
+  const s = snapshot.value;
+  if (s === null) return;
   // Only TokenSpend opens the panel — RateLimit and NotConfigured
   // have nothing additional to drill into in PR4a.
-  if (s.variant === 'token_spend') {
-    emit('open', s)
+  if (s.variant === "token_spend") {
+    emit("open", s);
   }
 }
 </script>
@@ -240,13 +251,19 @@ function handleClick(): void {
     @click="handleClick"
   >
     <template v-if="snapshot.variant === 'rate_limit'">
-      <span class="quota-chip__label" data-testid="provider-quota-rate-limit-label">
+      <span
+        class="quota-chip__label"
+        data-testid="provider-quota-rate-limit-label"
+      >
         {{ rateLimitLabel }}
       </span>
     </template>
 
     <template v-else-if="snapshot.variant === 'token_spend'">
-      <span class="quota-chip__label" data-testid="provider-quota-token-spend-label">
+      <span
+        class="quota-chip__label"
+        data-testid="provider-quota-token-spend-label"
+      >
         {{ tokenSpendLabel }}
       </span>
       <span
@@ -291,7 +308,7 @@ function handleClick(): void {
   cursor: default;
 }
 
-.quota-chip[data-variant='token_spend'] {
+.quota-chip[data-variant="token_spend"] {
   /* TokenSpend is the only variant the click-handler emits 'open' for; the
    * cursor disambiguates affordance from the RateLimit / NotConfigured
    * branches which are read-only. PR4b adds the actual panel. */

@@ -1,22 +1,30 @@
 <script setup lang="ts">
-import { useToolStore } from '@/stores/toolStore'
-import ToolCallItem from './ToolCallItem.vue'
+import { useToolStore } from "@/stores/toolStore";
+import ToolCallItem from "./ToolCallItem.vue";
 
-defineOptions({ name: 'ToolCallPanel' })
+defineOptions({ name: "ToolCallPanel" });
 
-const toolStore = useToolStore()
+const toolStore = useToolStore();
 
 const emit = defineEmits<{
-  close: []
-}>()
+  close: [];
+}>();
 </script>
 
 <template>
   <aside class="tool-panel" data-testid="tool-panel">
     <header class="panel-header">
       <span class="panel-title">Tool Activity</span>
-      <span v-if="toolStore.toolCount > 0" class="tool-badge">{{ toolStore.toolCount }}</span>
-      <button class="close-btn" data-testid="close-tool-panel" @click="emit('close')">✕</button>
+      <span v-if="toolStore.toolCount > 0" class="tool-badge">{{
+        toolStore.toolCount
+      }}</span>
+      <button
+        class="close-btn"
+        data-testid="close-tool-panel"
+        @click="emit('close')"
+      >
+        ✕
+      </button>
     </header>
     <div class="tool-list">
       <ToolCallItem

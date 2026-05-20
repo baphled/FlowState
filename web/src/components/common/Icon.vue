@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, type Component } from 'vue'
+import { computed, type Component } from "vue";
 import {
   MessageCircle,
   Plus,
@@ -12,9 +12,9 @@ import {
   Square,
   Paperclip,
   X,
-} from 'lucide-vue-next'
+} from "lucide-vue-next";
 
-defineOptions({ name: 'Icon' })
+defineOptions({ name: "Icon" });
 
 /**
  * UI Parity PR2 I1 (May 2026) — thin Lucide wrapper.
@@ -30,17 +30,17 @@ defineOptions({ name: 'Icon' })
  * stroke colour.
  */
 export type IconName =
-  | 'message'
-  | 'plus'
-  | 'trash'
-  | 'search'
-  | 'bot'
-  | 'document'
-  | 'clock'
-  | 'inbox'
-  | 'stop'
-  | 'attach'
-  | 'close'
+  | "message"
+  | "plus"
+  | "trash"
+  | "search"
+  | "bot"
+  | "document"
+  | "clock"
+  | "inbox"
+  | "stop"
+  | "attach"
+  | "close";
 
 // Catalogue: semantic name -> Lucide component. Add new entries here as
 // call sites grow; the IconName union above keeps consumers honest.
@@ -56,26 +56,26 @@ const REGISTRY: Record<IconName, Component> = {
   stop: Square,
   attach: Paperclip,
   close: X,
-}
+};
 
 const props = withDefaults(
   defineProps<{
-    name: IconName
+    name: IconName;
     /** Pixel size for both width and height. Defaults to 16 (inline-text). */
-    size?: number | string
+    size?: number | string;
     /** Stroke width forwarded to Lucide. Default 2 matches the library default. */
-    strokeWidth?: number | string
+    strokeWidth?: number | string;
     /** Optional aria-label; when supplied the SVG advertises itself as img. */
-    ariaLabel?: string
+    ariaLabel?: string;
   }>(),
   {
     size: 16,
     strokeWidth: 2,
     ariaLabel: undefined,
   },
-)
+);
 
-const component = computed(() => REGISTRY[props.name])
+const component = computed(() => REGISTRY[props.name]);
 </script>
 
 <template>

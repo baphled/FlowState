@@ -49,44 +49,44 @@
  * the caller's plain fallback. Failure is silent — the bubble keeps
  * rendering.
  */
-import type { HighlighterCore } from '@shikijs/core'
+import type { HighlighterCore } from "@shikijs/core";
 
 // Languages the highlighter knows about. Membership check before
 // calling Shiki avoids surfacing "Language not loaded" errors from
 // inside the highlight callback.
 const SUPPORTED_LANGS = new Set([
-  'bash',
-  'javascript',
-  'typescript',
-  'markdown',
-  'powershell',
-  'zig',
-  'json',
-  'go',
-  'python',
-])
+  "bash",
+  "javascript",
+  "typescript",
+  "markdown",
+  "powershell",
+  "zig",
+  "json",
+  "go",
+  "python",
+]);
 
 // Alias map — accept the common shorthand spellings users type in
 // fences. Shiki only matches the canonical grammar names so we
 // normalise here.
 const LANG_ALIASES: Record<string, string> = {
-  js: 'javascript',
-  jsx: 'javascript',
-  ts: 'typescript',
-  tsx: 'typescript',
-  shell: 'bash',
-  sh: 'bash',
-  zsh: 'bash',
-  ps: 'powershell',
-  ps1: 'powershell',
-  md: 'markdown',
-  py: 'python',
-  golang: 'go',
-}
+  js: "javascript",
+  jsx: "javascript",
+  ts: "typescript",
+  tsx: "typescript",
+  shell: "bash",
+  sh: "bash",
+  zsh: "bash",
+  ps: "powershell",
+  ps1: "powershell",
+  md: "markdown",
+  py: "python",
+  golang: "go",
+};
 
-let highlighter: HighlighterCore | null = null
-let loadPromise: Promise<HighlighterCore> | null = null
-const readyListeners = new Set<() => void>()
+let highlighter: HighlighterCore | null = null;
+let loadPromise: Promise<HighlighterCore> | null = null;
+const readyListeners = new Set<() => void>();
 
 /**
  * Resolve a fence-info language tag to a supported Shiki grammar
@@ -94,11 +94,11 @@ const readyListeners = new Set<() => void>()
  * to match how Shiki's bundled grammar names are spelled.
  */
 function resolveLang(raw: string): string | null {
-  const cleaned = raw.trim().toLowerCase()
-  if (cleaned === '') return null
-  const mapped = LANG_ALIASES[cleaned] ?? cleaned
-  if (!SUPPORTED_LANGS.has(mapped)) return null
-  return mapped
+  const cleaned = raw.trim().toLowerCase();
+  if (cleaned === "") return null;
+  const mapped = LANG_ALIASES[cleaned] ?? cleaned;
+  if (!SUPPORTED_LANGS.has(mapped)) return null;
+  return mapped;
 }
 
 /**
@@ -109,8 +109,8 @@ function resolveLang(raw: string): string | null {
  * loading completes.
  */
 export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
-  if (highlighter !== null) return Promise.resolve(highlighter)
-  if (loadPromise !== null) return loadPromise
+  if (highlighter !== null) return Promise.resolve(highlighter);
+  if (loadPromise !== null) return loadPromise;
 
   loadPromise = (async (): Promise<HighlighterCore> => {
     // N3 — multi-theme palette. One Shiki theme per FlowState
@@ -148,25 +148,25 @@ export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
       go,
       python,
     ] = await Promise.all([
-      import('@shikijs/core'),
-      import('@shikijs/engine-javascript'),
-      import('@shikijs/themes/vitesse-dark'),
-      import('@shikijs/themes/vitesse-light'),
-      import('@shikijs/themes/solarized-dark'),
-      import('@shikijs/themes/tokyo-night'),
-      import('@shikijs/themes/catppuccin-mocha'),
-      import('@shikijs/themes/dracula'),
-      import('@shikijs/themes/nord'),
-      import('@shikijs/langs/bash'),
-      import('@shikijs/langs/javascript'),
-      import('@shikijs/langs/typescript'),
-      import('@shikijs/langs/markdown'),
-      import('@shikijs/langs/powershell'),
-      import('@shikijs/langs/zig'),
-      import('@shikijs/langs/json'),
-      import('@shikijs/langs/go'),
-      import('@shikijs/langs/python'),
-    ])
+      import("@shikijs/core"),
+      import("@shikijs/engine-javascript"),
+      import("@shikijs/themes/vitesse-dark"),
+      import("@shikijs/themes/vitesse-light"),
+      import("@shikijs/themes/solarized-dark"),
+      import("@shikijs/themes/tokyo-night"),
+      import("@shikijs/themes/catppuccin-mocha"),
+      import("@shikijs/themes/dracula"),
+      import("@shikijs/themes/nord"),
+      import("@shikijs/langs/bash"),
+      import("@shikijs/langs/javascript"),
+      import("@shikijs/langs/typescript"),
+      import("@shikijs/langs/markdown"),
+      import("@shikijs/langs/powershell"),
+      import("@shikijs/langs/zig"),
+      import("@shikijs/langs/json"),
+      import("@shikijs/langs/go"),
+      import("@shikijs/langs/python"),
+    ]);
 
     // Re-name the underlying Shiki themes to match FlowState's
     // data-theme keys so the CSS variable shape is `--shiki-dark`,
@@ -174,14 +174,23 @@ export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
     // would otherwise leak through (`--shiki-vitesse-dark`) and the
     // CSS rules would have to mirror an external naming convention.
     const themed = [
-      { ...(vitesseDark.default as Record<string, unknown>), name: 'dark' },
-      { ...(vitesseLight.default as Record<string, unknown>), name: 'light' },
-      { ...(solarizedDark.default as Record<string, unknown>), name: 'terminal' },
-      { ...(tokyoNight.default as Record<string, unknown>), name: 'tokyo-night' },
-      { ...(catppuccinMocha.default as Record<string, unknown>), name: 'catppuccin-mocha' },
-      { ...(dracula.default as Record<string, unknown>), name: 'dracula' },
-      { ...(nord.default as Record<string, unknown>), name: 'nord' },
-    ]
+      { ...(vitesseDark.default as Record<string, unknown>), name: "dark" },
+      { ...(vitesseLight.default as Record<string, unknown>), name: "light" },
+      {
+        ...(solarizedDark.default as Record<string, unknown>),
+        name: "terminal",
+      },
+      {
+        ...(tokyoNight.default as Record<string, unknown>),
+        name: "tokyo-night",
+      },
+      {
+        ...(catppuccinMocha.default as Record<string, unknown>),
+        name: "catppuccin-mocha",
+      },
+      { ...(dracula.default as Record<string, unknown>), name: "dracula" },
+      { ...(nord.default as Record<string, unknown>), name: "nord" },
+    ];
 
     const created = createHighlighterCoreSync({
       themes: themed,
@@ -197,24 +206,24 @@ export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
         python.default,
       ],
       engine: createJavaScriptRegexEngine(),
-    })
-    highlighter = created
+    });
+    highlighter = created;
     // Notify subscribers so they can re-render now that Shiki is
     // available. The listener Set is snapshot-iterated to avoid
     // mutation-during-iteration if a listener unsubscribes itself
     // synchronously.
-    const snap = Array.from(readyListeners)
+    const snap = Array.from(readyListeners);
     snap.forEach((fn) => {
       try {
-        fn()
+        fn();
       } catch {
         // Listener errors must not block other subscribers — swallow.
       }
-    })
-    return created
-  })()
+    });
+    return created;
+  })();
 
-  return loadPromise
+  return loadPromise;
 }
 
 /**
@@ -226,15 +235,15 @@ export function ensureHighlighterLoaded(): Promise<HighlighterCore> {
  */
 export function onHighlighterReady(fn: () => void): () => void {
   if (highlighter !== null) {
-    queueMicrotask(fn)
+    queueMicrotask(fn);
     return () => {
       /* nothing to clean — fired already */
-    }
+    };
   }
-  readyListeners.add(fn)
+  readyListeners.add(fn);
   return () => {
-    readyListeners.delete(fn)
-  }
+    readyListeners.delete(fn);
+  };
 }
 
 /**
@@ -248,9 +257,9 @@ export function onHighlighterReady(fn: () => void): () => void {
  *   - Any Shiki tokenisation error occurs.
  */
 export function highlightCode(code: string, lang: string): string | null {
-  if (highlighter === null) return null
-  const grammar = resolveLang(lang)
-  if (grammar === null) return null
+  if (highlighter === null) return null;
+  const grammar = resolveLang(lang);
+  if (grammar === null) return null;
   try {
     // N3 — multi-theme mode. `defaultColor: false` tells Shiki NOT to
     // pick one theme as the inline `color:` value; instead each token
@@ -260,17 +269,17 @@ export function highlightCode(code: string, lang: string): string | null {
     return highlighter.codeToHtml(code, {
       lang: grammar,
       themes: {
-        dark: 'dark',
-        light: 'light',
-        terminal: 'terminal',
-        'tokyo-night': 'tokyo-night',
-        'catppuccin-mocha': 'catppuccin-mocha',
-        dracula: 'dracula',
-        nord: 'nord',
+        dark: "dark",
+        light: "light",
+        terminal: "terminal",
+        "tokyo-night": "tokyo-night",
+        "catppuccin-mocha": "catppuccin-mocha",
+        dracula: "dracula",
+        nord: "nord",
       },
       defaultColor: false,
-    })
+    });
   } catch {
-    return null
+    return null;
   }
 }

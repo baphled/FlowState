@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from "@playwright/test";
 
 /**
  * sse-live-render-probe — Bug Hunt (May 2026).
@@ -41,103 +41,106 @@ import { test, expect } from '@playwright/test'
  */
 
 interface ProbeWireEntry {
-  t: number
-  url: string
-  event: string
-  preview: string
+  t: number;
+  url: string;
+  event: string;
+  preview: string;
 }
 
 interface ProbeStoreEntry {
-  t: number
-  messageCount: number
-  lastAssistantStatus: string | null
-  lastAssistantContentLen: number
-  currentSessionId: string | null
-  contextUsageKeys: string[]
-  currentModelId: string
+  t: number;
+  messageCount: number;
+  lastAssistantStatus: string | null;
+  lastAssistantContentLen: number;
+  currentSessionId: string | null;
+  contextUsageKeys: string[];
+  currentModelId: string;
 }
 
 interface ProbeApplyEntry {
-  t: number
-  payload: string
-  currentSessionId: string | null
-  capturedSessionId: string | undefined
-  messageCountBefore: number
-  messageCountAfter: number
+  t: number;
+  payload: string;
+  currentSessionId: string | null;
+  capturedSessionId: string | undefined;
+  messageCountBefore: number;
+  messageCountAfter: number;
 }
 
 interface ProbeSubscribeEntry {
-  t: number
-  messageCount: number
-  firstId: string
-  lastId: string
-  lastRole: string
-  lastStatus: string
-  lastContentLen: number
+  t: number;
+  messageCount: number;
+  firstId: string;
+  lastId: string;
+  lastRole: string;
+  lastStatus: string;
+  lastContentLen: number;
 }
 
 interface ProbeDomEntry {
-  t: number
-  assistantBubbleCount: number
-  lastAssistantTextLen: number
+  t: number;
+  assistantBubbleCount: number;
+  lastAssistantTextLen: number;
 }
 
 interface ProbeSnapshot {
-  wire: ProbeWireEntry[]
-  store: ProbeStoreEntry[]
-  dom: ProbeDomEntry[]
-  apply: ProbeApplyEntry[]
-  sub: ProbeSubscribeEntry[]
+  wire: ProbeWireEntry[];
+  store: ProbeStoreEntry[];
+  dom: ProbeDomEntry[];
+  apply: ProbeApplyEntry[];
+  sub: ProbeSubscribeEntry[];
 }
 
 declare global {
   interface Window {
-    __sseProbe?: ProbeSnapshot
-    __sseProbeInstall?: () => void
+    __sseProbe?: ProbeSnapshot;
+    __sseProbeInstall?: () => void;
   }
 }
 
-test.describe('sse live-render probe', () => {
-  test.describe.configure({ mode: 'serial' })
-  test.setTimeout(90_000)
+test.describe("sse live-render probe", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(90_000);
 
   test.beforeEach(async ({ page, request }) => {
     // Mirror chat-real-backend.spec.ts beforeEach: create a brand-new
     // backend session and scope GET /api/v1/sessions to ONLY return it
     // so restoreStateFromBackend lands on this session deterministically.
-    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
-      data: { agent_id: 'Team-Lead' },
-    })
-    const created = await createRes.json() as {
-      id: string
-      agentId: string
-      createdAt: string
-      updatedAt: string
-    }
-    const sessionId = created.id
+    const createRes = await request.post(
+      "http://localhost:8080/api/v1/sessions",
+      {
+        data: { agent_id: "Team-Lead" },
+      },
+    );
+    const created = (await createRes.json()) as {
+      id: string;
+      agentId: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    const sessionId = created.id;
 
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "GET") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify([
             {
               id: created.id,
               agentId: created.agentId,
               currentAgentId: created.agentId,
-              title: '',
+              title: "",
               messageCount: 0,
               createdAt: created.createdAt,
               updatedAt: created.updatedAt,
               isStreaming: false,
             },
           ]),
-        })
-        return
+        });
+        return;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
     // Install the wire-side EventSource wrapper BEFORE any app code runs.
     // page.addInitScript runs in EVERY frame for every navigation — the
@@ -150,49 +153,49 @@ test.describe('sse live-render probe', () => {
         dom: [] as ProbeDomEntry[],
         apply: [] as ProbeApplyEntry[],
         sub: [] as ProbeSubscribeEntry[],
-      }
-      ;(window as Window).__sseProbe = probe
-      const startedAt = Date.now()
+      };
+      (window as Window).__sseProbe = probe;
+      const startedAt = Date.now();
 
-      const NativeEventSource = window.EventSource
+      const NativeEventSource = window.EventSource;
       class ProbeEventSource extends NativeEventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
-          super(url, init)
-          const probedUrl = typeof url === 'string' ? url : url.toString()
-          this.addEventListener('message', (event: MessageEvent) => {
-            const data = typeof event.data === 'string' ? event.data : ''
+          super(url, init);
+          const probedUrl = typeof url === "string" ? url : url.toString();
+          this.addEventListener("message", (event: MessageEvent) => {
+            const data = typeof event.data === "string" ? event.data : "";
             probe.wire.push({
               t: Date.now() - startedAt,
               url: probedUrl,
-              event: 'message',
+              event: "message",
               preview: data.slice(0, 200),
-            })
-          })
-          this.addEventListener('error', () => {
+            });
+          });
+          this.addEventListener("error", () => {
             probe.wire.push({
               t: Date.now() - startedAt,
               url: probedUrl,
-              event: 'error',
-              preview: '',
-            })
-          })
-          this.addEventListener('open', () => {
+              event: "error",
+              preview: "",
+            });
+          });
+          this.addEventListener("open", () => {
             probe.wire.push({
               t: Date.now() - startedAt,
               url: probedUrl,
-              event: 'open',
-              preview: '',
-            })
-          })
+              event: "open",
+              preview: "",
+            });
+          });
         }
       }
-      window.EventSource = ProbeEventSource as unknown as typeof EventSource
+      window.EventSource = ProbeEventSource as unknown as typeof EventSource;
 
       // The store/DOM taps must wait for the Vue app to mount + Pinia to
       // be installed, but addInitScript runs pre-document-ready. Expose
       // an installer the test calls after navigation.
-      ;(window as Window).__sseProbeInstall = (): void => {
-        const startedAtInstall = Date.now()
+      (window as Window).__sseProbeInstall = (): void => {
+        const startedAtInstall = Date.now();
 
         const recordDom = (): void => {
           // Capture any live-rendered reply bubble — `assistant` for
@@ -204,23 +207,23 @@ test.describe('sse live-render probe', () => {
           // bubble is excluded so the count tracks ONLY the agent's
           // response shape.
           const bubbles = document.querySelectorAll<HTMLElement>(
-            '.message-bubble.assistant, .message-bubble.thinking',
-          )
-          const last = bubbles[bubbles.length - 1]
+            ".message-bubble.assistant, .message-bubble.thinking",
+          );
+          const last = bubbles[bubbles.length - 1];
           probe.dom.push({
             t: Date.now() - startedAtInstall,
             assistantBubbleCount: bubbles.length,
-            lastAssistantTextLen: last ? (last.textContent ?? '').length : 0,
-          })
-        }
-        const obs = new MutationObserver(() => recordDom())
-        const target = document.body
+            lastAssistantTextLen: last ? (last.textContent ?? "").length : 0,
+          });
+        };
+        const obs = new MutationObserver(() => recordDom());
+        const target = document.body;
         obs.observe(target, {
           childList: true,
           subtree: true,
           characterData: true,
-        })
-        recordDom()
+        });
+        recordDom();
 
         // Pinia store tap. The chatStore is registered with id 'chat'.
         // Pinia exposes the Pinia instance on the Vue app's globalProperties
@@ -237,45 +240,59 @@ test.describe('sse live-render probe', () => {
         const findChatStore = (): unknown => {
           // Walk the Vue app instance graph; Vue 3 stores the App
           // instance on the root element under `__vue_app__`.
-          const root = document.getElementById('app') ?? document.body
-          const vueApp = (root as unknown as {
-            __vue_app__?: {
-              config: {
-                globalProperties: {
-                  $pinia?: {
-                    _s?: Map<string, { $state?: Record<string, unknown> } & Record<string, unknown>>
-                    state: { value: Record<string, unknown> }
-                  }
-                }
-              }
+          const root = document.getElementById("app") ?? document.body;
+          const vueApp = (
+            root as unknown as {
+              __vue_app__?: {
+                config: {
+                  globalProperties: {
+                    $pinia?: {
+                      _s?: Map<
+                        string,
+                        { $state?: Record<string, unknown> } & Record<
+                          string,
+                          unknown
+                        >
+                      >;
+                      state: { value: Record<string, unknown> };
+                    };
+                  };
+                };
+              };
             }
-          }).__vue_app__
-          const pinia = vueApp?.config?.globalProperties?.$pinia
-          if (!pinia) return null
+          ).__vue_app__;
+          const pinia = vueApp?.config?.globalProperties?.$pinia;
+          if (!pinia) return null;
           // Prefer the live store instance from the Pinia registry —
           // its top-level `messages` getter is the SAME proxy Vue
           // components consume, so any mutation made by a Pinia action
           // (e.g. handleThinkingEvent pushing onto messages) is
           // observable here. Fall back to `state.value.chat` when the
           // registry isn't exposed (Pinia could change internals).
-          const fromRegistry = pinia._s?.get('chat')
+          const fromRegistry = pinia._s?.get("chat");
           if (fromRegistry) {
             // The store proxy exposes state members as top-level fields;
             // returning the proxy works whether the caller reads
             // `.messages` or `.$state.messages`.
-            return fromRegistry
+            return fromRegistry;
           }
-          return pinia.state.value.chat
-        }
+          return pinia.state.value.chat;
+        };
         const recordStore = (): void => {
           const state = findChatStore() as {
-            messages?: Array<{ id: string; role: string; status?: string; content?: string; thinkingContent?: string }>
-            currentSessionId?: string | null
-            contextUsageBySession?: Record<string, unknown>
-            currentModelId?: string
-          } | null
-          if (!state || !Array.isArray(state.messages)) return
-          const msgs = state.messages
+            messages?: Array<{
+              id: string;
+              role: string;
+              status?: string;
+              content?: string;
+              thinkingContent?: string;
+            }>;
+            currentSessionId?: string | null;
+            contextUsageBySession?: Record<string, unknown>;
+            currentModelId?: string;
+          } | null;
+          if (!state || !Array.isArray(state.messages)) return;
+          const msgs = state.messages;
           // Track the BEST live-render evidence among the agent-side
           // rows — assistant content, thinking-row content, or the
           // legacy assistant.thinkingContent buffer. The store passes
@@ -286,19 +303,23 @@ test.describe('sse live-render probe', () => {
           // row's content grows AND assistant.thinkingContent grows;
           // for content responses the assistant.content grows. All
           // three signal live progress.
-          const running = msgs.filter((m) => m.status === 'running')
-          let bestStatus: string | null = null
-          let bestLen = 0
+          const running = msgs.filter((m) => m.status === "running");
+          let bestStatus: string | null = null;
+          let bestLen = 0;
           for (const m of running) {
-            if (m.role === 'assistant' || m.role === 'thinking' || m.role === 'delegation_started') {
-              const contentLen = (m.content ?? '').length
-              const thinkingLen = (m.thinkingContent ?? '').length
-              const len = Math.max(contentLen, thinkingLen)
+            if (
+              m.role === "assistant" ||
+              m.role === "thinking" ||
+              m.role === "delegation_started"
+            ) {
+              const contentLen = (m.content ?? "").length;
+              const thinkingLen = (m.thinkingContent ?? "").length;
+              const len = Math.max(contentLen, thinkingLen);
               if (len > bestLen) {
-                bestStatus = m.status ?? null
-                bestLen = len
+                bestStatus = m.status ?? null;
+                bestLen = len;
               } else if (bestStatus === null) {
-                bestStatus = m.status ?? null
+                bestStatus = m.status ?? null;
               }
             }
           }
@@ -309,9 +330,9 @@ test.describe('sse live-render probe', () => {
             lastAssistantContentLen: bestLen,
             currentSessionId: state.currentSessionId ?? null,
             contextUsageKeys: Object.keys(state.contextUsageBySession ?? {}),
-            currentModelId: state.currentModelId ?? '',
-          })
-        }
+            currentModelId: state.currentModelId ?? "",
+          });
+        };
 
         // Install Pinia $subscribe on the chat store so EVERY state mutation
         // is captured — this catches mutations from any caller, not just
@@ -319,44 +340,61 @@ test.describe('sse live-render probe', () => {
         // BETWEEN the apply-wrapper's after-snapshot and the next 50ms poll,
         // a $subscribe entry records that mutation along with whatever
         // mutation type Pinia reports (direct, patch object, patch function).
-        let subInstalled = false
+        let subInstalled = false;
         const trySubInstall = (): void => {
-          if (subInstalled) return
-          const root = document.getElementById('app') ?? document.body
-          const vueApp = (root as unknown as {
-            __vue_app__?: {
-              config: {
-                globalProperties: {
-                  $pinia?: { _s?: Map<string, unknown> }
-                }
-              }
+          if (subInstalled) return;
+          const root = document.getElementById("app") ?? document.body;
+          const vueApp = (
+            root as unknown as {
+              __vue_app__?: {
+                config: {
+                  globalProperties: {
+                    $pinia?: { _s?: Map<string, unknown> };
+                  };
+                };
+              };
             }
-          }).__vue_app__
-          const pinia = vueApp?.config?.globalProperties?.$pinia
-          if (!pinia) return
-          const store = pinia._s?.get('chat') as
+          ).__vue_app__;
+          const pinia = vueApp?.config?.globalProperties?.$pinia;
+          if (!pinia) return;
+          const store = pinia._s?.get("chat") as
             | {
-                $subscribe?: (cb: (mutation: { type: string; events?: unknown }, state: Record<string, unknown>) => void) => void
-                messages?: Array<{ id: string; role: string; status?: string; content?: string }>
+                $subscribe?: (
+                  cb: (
+                    mutation: { type: string; events?: unknown },
+                    state: Record<string, unknown>,
+                  ) => void,
+                ) => void;
+                messages?: Array<{
+                  id: string;
+                  role: string;
+                  status?: string;
+                  content?: string;
+                }>;
               }
-            | undefined
-          if (!store?.$subscribe) return
+            | undefined;
+          if (!store?.$subscribe) return;
           store.$subscribe((_mutation, state) => {
-            const msgs = (state.messages ?? []) as Array<{ id: string; role: string; status?: string; content?: string }>
-            const last = msgs.length > 0 ? msgs[msgs.length - 1] : null
-            const first = msgs.length > 0 ? msgs[0] : null
+            const msgs = (state.messages ?? []) as Array<{
+              id: string;
+              role: string;
+              status?: string;
+              content?: string;
+            }>;
+            const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+            const first = msgs.length > 0 ? msgs[0] : null;
             probe.sub.push({
               t: Date.now() - startedAtInstall,
               messageCount: msgs.length,
-              firstId: first?.id ?? '',
-              lastId: last?.id ?? '',
-              lastRole: last?.role ?? '',
-              lastStatus: last?.status ?? '',
-              lastContentLen: (last?.content ?? '').length,
-            })
-          })
-          subInstalled = true
-        }
+              firstId: first?.id ?? "",
+              lastId: last?.id ?? "",
+              lastRole: last?.role ?? "",
+              lastStatus: last?.status ?? "",
+              lastContentLen: (last?.content ?? "").length,
+            });
+          });
+          subInstalled = true;
+        };
 
         // Wrap applyContentEvent to log every dispatch. Pinia actions are
         // bound on the store instance; we obtain the store object lazily
@@ -364,35 +402,52 @@ test.describe('sse live-render probe', () => {
         // touches it) and patch the action in place. Re-attempt the patch
         // on every poll tick until it lands, so a race with Pinia install
         // is harmless.
-        let applyPatched = false
+        let applyPatched = false;
         const tryPatchApply = (): void => {
-          if (applyPatched) return
-          const root = document.getElementById('app') ?? document.body
-          const vueApp = (root as unknown as {
-            __vue_app__?: {
-              config: {
-                globalProperties: {
-                  $pinia?: { _s?: Map<string, unknown>; state: { value: Record<string, unknown> } }
-                }
-              }
+          if (applyPatched) return;
+          const root = document.getElementById("app") ?? document.body;
+          const vueApp = (
+            root as unknown as {
+              __vue_app__?: {
+                config: {
+                  globalProperties: {
+                    $pinia?: {
+                      _s?: Map<string, unknown>;
+                      state: { value: Record<string, unknown> };
+                    };
+                  };
+                };
+              };
             }
-          }).__vue_app__
-          const pinia = vueApp?.config?.globalProperties?.$pinia
-          if (!pinia) return
-          const store = pinia._s?.get('chat') as {
-            applyContentEvent?: (payload: string, capturedSessionId?: string) => void
-            messages?: unknown[]
-            currentSessionId?: string | null
-          } | undefined
-          if (!store?.applyContentEvent) return
-          const orig = store.applyContentEvent.bind(store)
-          store.applyContentEvent = function patched(payload: string, capturedSessionId?: string): void {
-            const before = Array.isArray(store.messages) ? store.messages.length : 0
-            const csid = store.currentSessionId ?? null
+          ).__vue_app__;
+          const pinia = vueApp?.config?.globalProperties?.$pinia;
+          if (!pinia) return;
+          const store = pinia._s?.get("chat") as
+            | {
+                applyContentEvent?: (
+                  payload: string,
+                  capturedSessionId?: string,
+                ) => void;
+                messages?: unknown[];
+                currentSessionId?: string | null;
+              }
+            | undefined;
+          if (!store?.applyContentEvent) return;
+          const orig = store.applyContentEvent.bind(store);
+          store.applyContentEvent = function patched(
+            payload: string,
+            capturedSessionId?: string,
+          ): void {
+            const before = Array.isArray(store.messages)
+              ? store.messages.length
+              : 0;
+            const csid = store.currentSessionId ?? null;
             try {
-              orig(payload, capturedSessionId)
+              orig(payload, capturedSessionId);
             } finally {
-              const after = Array.isArray(store.messages) ? store.messages.length : 0
+              const after = Array.isArray(store.messages)
+                ? store.messages.length
+                : 0;
               probe.apply.push({
                 t: Date.now() - startedAtInstall,
                 payload: payload.slice(0, 200),
@@ -400,43 +455,51 @@ test.describe('sse live-render probe', () => {
                 capturedSessionId,
                 messageCountBefore: before,
                 messageCountAfter: after,
-              })
+              });
             }
-          }
-          applyPatched = true
-        }
-        recordStore()
-        tryPatchApply()
-        trySubInstall()
+          };
+          applyPatched = true;
+        };
+        recordStore();
+        tryPatchApply();
+        trySubInstall();
         // Poll the store at 50ms cadence — this catches every applyContentEvent
         // landing because handleContentChunk mutates target.content, and the
         // 50ms window between samples is well below the agent's chunking
         // cadence (typically 100-500ms between content deltas).
         const storePoll = setInterval(() => {
-          tryPatchApply()
-          trySubInstall()
-          recordStore()
-        }, 50)
-        ;(window as Window & { __ssePoll?: ReturnType<typeof setInterval> }).__ssePoll = storePoll
-      }
-    })
+          tryPatchApply();
+          trySubInstall();
+          recordStore();
+        }, 50);
+        (
+          window as Window & { __ssePoll?: ReturnType<typeof setInterval> }
+        ).__ssePoll = storePoll;
+      };
+    });
 
-    await page.goto('/chat')
+    await page.goto("/chat");
     await page.evaluate((sid) => {
-      localStorage.clear()
-      localStorage.setItem('chat.currentSessionId', sid)
-      localStorage.setItem('chat.agentId', 'Team-Lead')
-    }, sessionId)
-    await page.reload()
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
-    await expect(page.getByTestId('agent-picker')).toContainText('Team Lead', { timeout: 10_000 })
+      localStorage.clear();
+      localStorage.setItem("chat.currentSessionId", sid);
+      localStorage.setItem("chat.agentId", "Team-Lead");
+    }, sessionId);
+    await page.reload();
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
+    await expect(page.getByTestId("agent-picker")).toContainText("Team Lead", {
+      timeout: 10_000,
+    });
 
-    await page.evaluate(() => (window as Window).__sseProbeInstall?.())
-  })
+    await page.evaluate(() => (window as Window).__sseProbeInstall?.());
+  });
 
-  test('streamed assistant content renders in DOM before [DONE] arrives', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
+  test("streamed assistant content renders in DOM before [DONE] arrives", async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
 
     // Prompt chosen to elicit a short visible reply (a `"type":"content"`
     // SSE chunk) on reasoning models — z.ai glm-4.6 with a vague prompt
@@ -445,9 +508,9 @@ test.describe('sse live-render probe', () => {
     // real) UX gap unrelated to the live-render bug under test. Pinning
     // the model to a terse content response keeps this spec focused on
     // the SSE-content → DOM-update path.
-    const PROMPT = 'reply with exactly the single word PING and nothing else'
-    await input.fill(PROMPT)
-    await sendBtn.click()
+    const PROMPT = "reply with exactly the single word PING and nothing else";
+    await input.fill(PROMPT);
+    await sendBtn.click();
 
     // Wait for the FIRST wire-side `"type":"content"` chunk to arrive.
     // This is the pivotal event: an SSE payload whose `type` field is
@@ -474,61 +537,69 @@ test.describe('sse live-render probe', () => {
     // reload). The probe must work for both shapes because the user-
     // reported bug fires on the default z.ai/glm-4.6 setup where ONLY
     // thinking chunks arrive.
-    let firstContentAt: number
+    let firstContentAt: number;
     try {
       const firstContentResult = await page.waitForFunction(
         () => {
-          const probe = (window as Window).__sseProbe
-          if (!probe) return false
+          const probe = (window as Window).__sseProbe;
+          if (!probe) return false;
           const replyChunk = probe.wire.find(
             (w) =>
-              w.event === 'message' &&
-              w.preview !== '[DONE]' &&
+              w.event === "message" &&
+              w.preview !== "[DONE]" &&
               (w.preview.includes('"type":"content"') ||
                 w.preview.includes('"type":"thinking"')),
-          )
-          return replyChunk ? { firstContentAt: replyChunk.t, preview: replyChunk.preview } : false
+          );
+          return replyChunk
+            ? { firstContentAt: replyChunk.t, preview: replyChunk.preview }
+            : false;
         },
         undefined,
         { timeout: 75_000 },
-      )
-      ;({ firstContentAt } = await firstContentResult.jsonValue() as {
-        firstContentAt: number
-        preview: string
-      })
+      );
+      ({ firstContentAt } = (await firstContentResult.jsonValue()) as {
+        firstContentAt: number;
+        preview: string;
+      });
     } catch (e) {
       const partial = await page.evaluate(() => {
-        const probe = (window as Window).__sseProbe
-        return probe ? { wire: probe.wire.slice(), apply: probe.apply.slice(), sub: probe.sub.slice() } : null
-      })
+        const probe = (window as Window).__sseProbe;
+        return probe
+          ? {
+              wire: probe.wire.slice(),
+              apply: probe.apply.slice(),
+              sub: probe.sub.slice(),
+            }
+          : null;
+      });
       throw new Error(
         `No reply-bearing SSE chunk (content or thinking) arrived within 75s of send.\n` +
           `(${(e as Error).message})\n\n` +
           `--- WIRE (${partial?.wire.length ?? 0}) ---\n${JSON.stringify(partial?.wire ?? [], null, 2)}\n` +
           `--- APPLY (${partial?.apply.length ?? 0}) ---\n${JSON.stringify(partial?.apply ?? [], null, 2)}\n` +
           `--- SUB (${partial?.sub.length ?? 0}) ---\n${JSON.stringify(partial?.sub ?? [], null, 2)}`,
-      )
+      );
     }
 
     // 1.5s drain — Vue's update queue flushes within microtasks (≤16ms);
     // the MutationObserver records every text change. 1.5s is far longer
     // than any plausible flush window, so failure to show the DOM update
     // here means the chunk was structurally dropped.
-    await page.waitForTimeout(1500)
+    await page.waitForTimeout(1500);
 
     const snapshot = await page.evaluate(() => {
-      const probe = (window as Window).__sseProbe
-      if (!probe) return null
+      const probe = (window as Window).__sseProbe;
+      if (!probe) return null;
       return {
         wire: probe.wire.slice(),
         store: probe.store.slice(),
         dom: probe.dom.slice(),
         apply: probe.apply.slice(),
         sub: probe.sub.slice(),
-      }
-    })
-    expect(snapshot, 'probe snapshot must have been captured').not.toBeNull()
-    const { wire, store, dom, apply, sub } = snapshot as ProbeSnapshot
+      };
+    });
+    expect(snapshot, "probe snapshot must have been captured").not.toBeNull();
+    const { wire, store, dom, apply, sub } = snapshot as ProbeSnapshot;
 
     // Cutoff for "live render" — chunks arriving up to firstContentAt +
     // 1500ms count as live. The MutationObserver / store poll timestamps
@@ -556,10 +627,11 @@ test.describe('sse live-render probe', () => {
     // bounded (≤1s — install runs immediately after page.reload settles)
     // so any DOM/store entry that records non-empty content within
     // ~3s of firstContentAt counts as a live update.
-    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0)
+    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0);
     const liveStoreEntries = store.filter(
-      (s) => s.lastAssistantStatus === 'running' && s.lastAssistantContentLen > 0,
-    )
+      (s) =>
+        s.lastAssistantStatus === "running" && s.lastAssistantContentLen > 0,
+    );
 
     // The load-bearing assertion: the assistant bubble's text content
     // grew while the stream was alive. The probe slept 1.5s AFTER the
@@ -574,13 +646,13 @@ test.describe('sse live-render probe', () => {
         `\n--- SUB ($subscribe, ${sub.length} entries) ---\n${JSON.stringify(sub, null, 2)}\n` +
         `\n--- STORE (last 5 entries) ---\n${JSON.stringify(store.slice(-5), null, 2)}\n` +
         `\n--- DOM (${dom.length} entries) ---\n${JSON.stringify(dom.slice(0, 60), null, 2)}`,
-    ).toBeGreaterThan(0)
+    ).toBeGreaterThan(0);
 
     // Store-side diagnostic — narrows the drop point if DOM is empty.
     // Sample the last N store entries — the early-window samples (user
     // bubble only) aren't load-bearing for this assertion; the
     // post-firstContent samples are.
-    const tail = store.slice(-30)
+    const tail = store.slice(-30);
     expect(
       liveStoreEntries.length,
       `STORE evidence: expected chatStore.messages to carry a running assistant or thinking ` +
@@ -589,9 +661,9 @@ test.describe('sse live-render probe', () => {
         `Neither updates ⇒ chunk→handler path broken — C-3 guard, useSessionStream listener, ` +
         `or csrfStore circular import.)\n` +
         `STORE (last 30 of ${store.length}): ${JSON.stringify(tail, null, 2)}`,
-    ).toBeGreaterThan(0)
-  })
-})
+    ).toBeGreaterThan(0);
+  });
+});
 
 /**
  * sse-live-render-probe / coordinator + swarm flow — Bug Hunt (May 2026).
@@ -623,44 +695,47 @@ test.describe('sse live-render probe', () => {
  * This describe block uses a fresh beforeEach so it can pick its own agent
  * and prompt while sharing the wire/store/DOM probe infrastructure.
  */
-test.describe('sse live-render probe — coordinator swarm flow', () => {
-  test.describe.configure({ mode: 'serial' })
-  test.setTimeout(120_000)
+test.describe("sse live-render probe — coordinator swarm flow", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(120_000);
 
   test.beforeEach(async ({ page, request }) => {
-    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
-      data: { agent_id: 'coordinator' },
-    })
-    const created = await createRes.json() as {
-      id: string
-      agentId: string
-      createdAt: string
-      updatedAt: string
-    }
-    const sessionId = created.id
+    const createRes = await request.post(
+      "http://localhost:8080/api/v1/sessions",
+      {
+        data: { agent_id: "coordinator" },
+      },
+    );
+    const created = (await createRes.json()) as {
+      id: string;
+      agentId: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    const sessionId = created.id;
 
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "GET") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify([
             {
               id: created.id,
               agentId: created.agentId,
               currentAgentId: created.agentId,
-              title: '',
+              title: "",
               messageCount: 0,
               createdAt: created.createdAt,
               updatedAt: created.updatedAt,
               isStreaming: false,
             },
           ]),
-        })
-        return
+        });
+        return;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
     // Re-use the shared probe wiring from the Team-Lead beforeEach.
     // (The probe definitions live in window so we install them here too;
@@ -672,36 +747,45 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
         dom: [] as ProbeDomEntry[],
         apply: [] as ProbeApplyEntry[],
         sub: [] as ProbeSubscribeEntry[],
-      }
-      ;(window as Window).__sseProbe = probe
-      const startedAt = Date.now()
+      };
+      (window as Window).__sseProbe = probe;
+      const startedAt = Date.now();
 
-      const NativeEventSource = window.EventSource
+      const NativeEventSource = window.EventSource;
       class ProbeEventSource extends NativeEventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
-          super(url, init)
-          const probedUrl = typeof url === 'string' ? url : url.toString()
-          this.addEventListener('message', (event: MessageEvent) => {
-            const data = typeof event.data === 'string' ? event.data : ''
+          super(url, init);
+          const probedUrl = typeof url === "string" ? url : url.toString();
+          this.addEventListener("message", (event: MessageEvent) => {
+            const data = typeof event.data === "string" ? event.data : "";
             probe.wire.push({
               t: Date.now() - startedAt,
               url: probedUrl,
-              event: 'message',
+              event: "message",
               preview: data.slice(0, 200),
-            })
-          })
-          this.addEventListener('error', () => {
-            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'error', preview: '' })
-          })
-          this.addEventListener('open', () => {
-            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'open', preview: '' })
-          })
+            });
+          });
+          this.addEventListener("error", () => {
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: "error",
+              preview: "",
+            });
+          });
+          this.addEventListener("open", () => {
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: "open",
+              preview: "",
+            });
+          });
         }
       }
-      window.EventSource = ProbeEventSource as unknown as typeof EventSource
-
-      ;(window as Window).__sseProbeInstall = (): void => {
-        const startedAtInstall = Date.now()
+      window.EventSource = ProbeEventSource as unknown as typeof EventSource;
+      (window as Window).__sseProbeInstall = (): void => {
+        const startedAtInstall = Date.now();
         const recordDom = (): void => {
           // Coordinator turns surface ANY of three live bubbles before the
           // final assistant content lands: a thinking row (reasoning
@@ -709,67 +793,86 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
           // tool_call row. Adding `.message-bubble.delegation_started` and
           // `.message-bubble.tool_call` widens the live-render gate.
           const bubbles = document.querySelectorAll<HTMLElement>(
-            '.message-bubble.assistant, .message-bubble.thinking, ' +
-            '.message-bubble.delegation_started, .message-bubble.tool_call',
-          )
-          const last = bubbles[bubbles.length - 1]
+            ".message-bubble.assistant, .message-bubble.thinking, " +
+              ".message-bubble.delegation_started, .message-bubble.tool_call",
+          );
+          const last = bubbles[bubbles.length - 1];
           probe.dom.push({
             t: Date.now() - startedAtInstall,
             assistantBubbleCount: bubbles.length,
-            lastAssistantTextLen: last ? (last.textContent ?? '').length : 0,
-          })
-        }
-        const obs = new MutationObserver(() => recordDom())
-        obs.observe(document.body, { childList: true, subtree: true, characterData: true })
-        recordDom()
+            lastAssistantTextLen: last ? (last.textContent ?? "").length : 0,
+          });
+        };
+        const obs = new MutationObserver(() => recordDom());
+        obs.observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+        recordDom();
 
         const findChatStore = (): unknown => {
-          const root = document.getElementById('app') ?? document.body
-          const vueApp = (root as unknown as {
-            __vue_app__?: {
-              config: {
-                globalProperties: {
-                  $pinia?: {
-                    _s?: Map<string, { $state?: Record<string, unknown> } & Record<string, unknown>>
-                    state: { value: Record<string, unknown> }
-                  }
-                }
-              }
+          const root = document.getElementById("app") ?? document.body;
+          const vueApp = (
+            root as unknown as {
+              __vue_app__?: {
+                config: {
+                  globalProperties: {
+                    $pinia?: {
+                      _s?: Map<
+                        string,
+                        { $state?: Record<string, unknown> } & Record<
+                          string,
+                          unknown
+                        >
+                      >;
+                      state: { value: Record<string, unknown> };
+                    };
+                  };
+                };
+              };
             }
-          }).__vue_app__
-          const pinia = vueApp?.config?.globalProperties?.$pinia
-          if (!pinia) return null
-          const fromRegistry = pinia._s?.get('chat')
-          if (fromRegistry) return fromRegistry
-          return pinia.state.value.chat
-        }
+          ).__vue_app__;
+          const pinia = vueApp?.config?.globalProperties?.$pinia;
+          if (!pinia) return null;
+          const fromRegistry = pinia._s?.get("chat");
+          if (fromRegistry) return fromRegistry;
+          return pinia.state.value.chat;
+        };
 
         const recordStore = (): void => {
           const state = findChatStore() as {
             messages?: Array<{
-              id: string; role: string; status?: string;
-              content?: string; thinkingContent?: string;
-            }>
-            currentSessionId?: string | null
-            contextUsageBySession?: Record<string, unknown>
-            currentModelId?: string
-          } | null
-          if (!state || !Array.isArray(state.messages)) return
-          const msgs = state.messages
-          const running = msgs.filter((m) => m.status === 'running')
-          let bestStatus: string | null = null
-          let bestLen = 0
+              id: string;
+              role: string;
+              status?: string;
+              content?: string;
+              thinkingContent?: string;
+            }>;
+            currentSessionId?: string | null;
+            contextUsageBySession?: Record<string, unknown>;
+            currentModelId?: string;
+          } | null;
+          if (!state || !Array.isArray(state.messages)) return;
+          const msgs = state.messages;
+          const running = msgs.filter((m) => m.status === "running");
+          let bestStatus: string | null = null;
+          let bestLen = 0;
           for (const m of running) {
-            if (m.role === 'assistant' || m.role === 'thinking' ||
-                m.role === 'delegation_started' || m.role === 'tool_call') {
-              const contentLen = (m.content ?? '').length
-              const thinkingLen = (m.thinkingContent ?? '').length
-              const len = Math.max(contentLen, thinkingLen)
+            if (
+              m.role === "assistant" ||
+              m.role === "thinking" ||
+              m.role === "delegation_started" ||
+              m.role === "tool_call"
+            ) {
+              const contentLen = (m.content ?? "").length;
+              const thinkingLen = (m.thinkingContent ?? "").length;
+              const len = Math.max(contentLen, thinkingLen);
               if (len > bestLen) {
-                bestStatus = m.status ?? null
-                bestLen = len
+                bestStatus = m.status ?? null;
+                bestLen = len;
               } else if (bestStatus === null) {
-                bestStatus = m.status ?? null
+                bestStatus = m.status ?? null;
               }
             }
           }
@@ -780,30 +883,36 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
             lastAssistantContentLen: bestLen,
             currentSessionId: state.currentSessionId ?? null,
             contextUsageKeys: Object.keys(state.contextUsageBySession ?? {}),
-            currentModelId: state.currentModelId ?? '',
-          })
-        }
-        recordStore()
-        const storePoll = setInterval(recordStore, 50)
-        ;(window as Window & { __ssePoll?: ReturnType<typeof setInterval> }).__ssePoll = storePoll
-      }
-    })
+            currentModelId: state.currentModelId ?? "",
+          });
+        };
+        recordStore();
+        const storePoll = setInterval(recordStore, 50);
+        (
+          window as Window & { __ssePoll?: ReturnType<typeof setInterval> }
+        ).__ssePoll = storePoll;
+      };
+    });
 
-    await page.goto('/chat')
+    await page.goto("/chat");
     await page.evaluate((sid) => {
-      localStorage.clear()
-      localStorage.setItem('chat.currentSessionId', sid)
-      localStorage.setItem('chat.agentId', 'coordinator')
-    }, sessionId)
-    await page.reload()
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+      localStorage.clear();
+      localStorage.setItem("chat.currentSessionId", sid);
+      localStorage.setItem("chat.agentId", "coordinator");
+    }, sessionId);
+    await page.reload();
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
 
-    await page.evaluate(() => (window as Window).__sseProbeInstall?.())
-  })
+    await page.evaluate(() => (window as Window).__sseProbeInstall?.());
+  });
 
-  test('coordinator session live-renders thinking chunks before [DONE] arrives', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
+  test("coordinator session live-renders thinking chunks before [DONE] arrives", async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
 
     // Coordinator's preferred is claude-opus-4-7 (anthropic). The user
     // reported the bug on a complex prompt; opus on this prompt typically
@@ -811,16 +920,17 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
     // tool call. Either thinking OR content events satisfy the wire-side
     // gate; the DOM-side gate accepts ANY of the live-render bubble
     // shapes (assistant, thinking, delegation_started, tool_call).
-    const PROMPT = 'plan a single concrete task: improve test coverage of internal/auth/store'
-    await input.fill(PROMPT)
-    await sendBtn.click()
+    const PROMPT =
+      "plan a single concrete task: improve test coverage of internal/auth/store";
+    await input.fill(PROMPT);
+    await sendBtn.click();
 
-    let firstChunkAt: number
+    let firstChunkAt: number;
     try {
       const firstChunkResult = await page.waitForFunction(
         () => {
-          const probe = (window as Window).__sseProbe
-          if (!probe) return false
+          const probe = (window as Window).__sseProbe;
+          if (!probe) return false;
           // Any substantive chunk counts — context_usage / model_active
           // are metadata that arrive immediately and do NOT carry the
           // live-render payload, so we skip them. The first chunk that
@@ -828,47 +938,60 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
           // (delegate), tool_result — is the pivot.
           const replyChunk = probe.wire.find(
             (w) =>
-              w.event === 'message' &&
-              w.preview !== '[DONE]' &&
+              w.event === "message" &&
+              w.preview !== "[DONE]" &&
               !w.preview.includes('"type":"context_usage"') &&
               !w.preview.includes('"type":"model_active"') &&
               (w.preview.includes('"type":"thinking"') ||
                 w.preview.includes('"type":"content"') ||
                 w.preview.includes('"type":"tool_call"') ||
                 w.preview.includes('"type":"delegation"')),
-          )
-          return replyChunk ? { firstChunkAt: replyChunk.t, preview: replyChunk.preview } : false
+          );
+          return replyChunk
+            ? { firstChunkAt: replyChunk.t, preview: replyChunk.preview }
+            : false;
         },
         undefined,
         { timeout: 90_000 },
-      )
-      ;({ firstChunkAt } = await firstChunkResult.jsonValue() as { firstChunkAt: number; preview: string })
+      );
+      ({ firstChunkAt } = (await firstChunkResult.jsonValue()) as {
+        firstChunkAt: number;
+        preview: string;
+      });
     } catch (e) {
       const partial = await page.evaluate(() => {
-        const probe = (window as Window).__sseProbe
-        return probe ? { wire: probe.wire.slice() } : null
-      })
+        const probe = (window as Window).__sseProbe;
+        return probe ? { wire: probe.wire.slice() } : null;
+      });
       throw new Error(
         `No reply-bearing SSE chunk arrived within 90s of send (coordinator + complex prompt).\n` +
           `(${(e as Error).message})\n` +
           `--- WIRE (${partial?.wire.length ?? 0}) ---\n${JSON.stringify(partial?.wire.slice(0, 40) ?? [], null, 2)}`,
-      )
+      );
     }
 
-    await page.waitForTimeout(2000)
+    await page.waitForTimeout(2000);
 
     const snapshot = await page.evaluate(() => {
-      const probe = (window as Window).__sseProbe
-      if (!probe) return null
-      return { wire: probe.wire.slice(), store: probe.store.slice(), dom: probe.dom.slice() }
-    })
-    expect(snapshot, 'probe snapshot must have been captured').not.toBeNull()
-    const { wire, store, dom } = snapshot as Pick<ProbeSnapshot, 'wire' | 'store' | 'dom'>
+      const probe = (window as Window).__sseProbe;
+      if (!probe) return null;
+      return {
+        wire: probe.wire.slice(),
+        store: probe.store.slice(),
+        dom: probe.dom.slice(),
+      };
+    });
+    expect(snapshot, "probe snapshot must have been captured").not.toBeNull();
+    const { wire, store, dom } = snapshot as Pick<
+      ProbeSnapshot,
+      "wire" | "store" | "dom"
+    >;
 
-    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0)
+    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0);
     const liveStoreEntries = store.filter(
-      (s) => s.lastAssistantStatus === 'running' && s.lastAssistantContentLen > 0,
-    )
+      (s) =>
+        s.lastAssistantStatus === "running" && s.lastAssistantContentLen > 0,
+    );
 
     expect(
       liveDomEntries.length,
@@ -877,7 +1000,7 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
         `\n--- WIRE (${wire.length} entries, first 30) ---\n${JSON.stringify(wire.slice(0, 30), null, 2)}\n` +
         `\n--- STORE (last 10 entries) ---\n${JSON.stringify(store.slice(-10), null, 2)}\n` +
         `\n--- DOM (${dom.length} entries, last 10) ---\n${JSON.stringify(dom.slice(-10), null, 2)}`,
-    ).toBeGreaterThan(0)
+    ).toBeGreaterThan(0);
 
     expect(
       liveStoreEntries.length,
@@ -885,9 +1008,9 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
         `tool_call message with non-empty content post-firstChunk@${firstChunkAt}ms.\n` +
         `Got ${liveStoreEntries.length}.\n` +
         `STORE (last 30): ${JSON.stringify(store.slice(-30), null, 2)}`,
-    ).toBeGreaterThan(0)
-  })
-})
+    ).toBeGreaterThan(0);
+  });
+});
 
 /**
  * sse-live-render-probe / default-assistant clean reproduction — Bug 2
@@ -918,55 +1041,61 @@ test.describe('sse live-render probe — coordinator swarm flow', () => {
  * there is a deeper code bug. Per the brief, this block diagnoses ONLY;
  * it does not ship a code fix on a red — that would be a separate run.
  */
-test.describe('sse live-render probe — default-assistant clean reproduction (Bug 2)', () => {
-  test.describe.configure({ mode: 'serial' })
-  test.setTimeout(120_000)
+test.describe("sse live-render probe — default-assistant clean reproduction (Bug 2)", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(120_000);
 
   test.beforeEach(async ({ page, request }) => {
     // Fresh backend session under default-assistant — the exact agent
     // the user's broken session (678318aa-6ec9-4c5e-92a8-624b2edd75a0)
     // ran under.
-    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
-      data: { agent_id: 'default-assistant' },
-    })
-    const created = await createRes.json() as {
-      id: string
-      agentId: string
-      createdAt: string
-      updatedAt: string
-    }
-    const sessionId = created.id
+    const createRes = await request.post(
+      "http://localhost:8080/api/v1/sessions",
+      {
+        data: { agent_id: "default-assistant" },
+      },
+    );
+    const created = (await createRes.json()) as {
+      id: string;
+      agentId: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    const sessionId = created.id;
 
     // Pin provider+model BEFORE the page navigates. The user's broken
     // session ran under zai/glm-4.6; without this PATCH the engine could
     // pick any preferred-cascade provider on the first turn, making the
     // probe non-deterministic across machines.
-    await request.patch(`http://localhost:8080/api/v1/sessions/${sessionId}/model`, {
-      data: { providerId: 'zai', modelId: 'glm-4.6' },
-    })
+    await request.patch(
+      `http://localhost:8080/api/v1/sessions/${sessionId}/model`,
+      {
+        data: { providerId: "zai", modelId: "glm-4.6" },
+      },
+    );
 
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "GET") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify([
             {
               id: created.id,
               agentId: created.agentId,
               currentAgentId: created.agentId,
-              title: '',
+              title: "",
               messageCount: 0,
               createdAt: created.createdAt,
               updatedAt: created.updatedAt,
               isStreaming: false,
             },
           ]),
-        })
-        return
+        });
+        return;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
     // Same probe wiring as the Team-Lead block. Wire-side EventSource
     // wrap + DOM MutationObserver + Pinia $subscribe — captures the
@@ -979,36 +1108,45 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
         dom: [] as ProbeDomEntry[],
         apply: [] as ProbeApplyEntry[],
         sub: [] as ProbeSubscribeEntry[],
-      }
-      ;(window as Window).__sseProbe = probe
-      const startedAt = Date.now()
+      };
+      (window as Window).__sseProbe = probe;
+      const startedAt = Date.now();
 
-      const NativeEventSource = window.EventSource
+      const NativeEventSource = window.EventSource;
       class ProbeEventSource extends NativeEventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
-          super(url, init)
-          const probedUrl = typeof url === 'string' ? url : url.toString()
-          this.addEventListener('message', (event: MessageEvent) => {
-            const data = typeof event.data === 'string' ? event.data : ''
+          super(url, init);
+          const probedUrl = typeof url === "string" ? url : url.toString();
+          this.addEventListener("message", (event: MessageEvent) => {
+            const data = typeof event.data === "string" ? event.data : "";
             probe.wire.push({
               t: Date.now() - startedAt,
               url: probedUrl,
-              event: 'message',
+              event: "message",
               preview: data.slice(0, 200),
-            })
-          })
-          this.addEventListener('error', () => {
-            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'error', preview: '' })
-          })
-          this.addEventListener('open', () => {
-            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'open', preview: '' })
-          })
+            });
+          });
+          this.addEventListener("error", () => {
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: "error",
+              preview: "",
+            });
+          });
+          this.addEventListener("open", () => {
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: "open",
+              preview: "",
+            });
+          });
         }
       }
-      window.EventSource = ProbeEventSource as unknown as typeof EventSource
-
-      ;(window as Window).__sseProbeInstall = (): void => {
-        const startedAtInstall = Date.now()
+      window.EventSource = ProbeEventSource as unknown as typeof EventSource;
+      (window as Window).__sseProbeInstall = (): void => {
+        const startedAtInstall = Date.now();
         const recordDom = (): void => {
           // Default-assistant on glm-4.6 emits thinking before any
           // content (the model is reasoning-on by default on the zai
@@ -1017,59 +1155,77 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
           // `.message-bubble.assistant`. Either bubble growing in the
           // DOM before [DONE] arrives counts as live-render.
           const bubbles = document.querySelectorAll<HTMLElement>(
-            '.message-bubble.assistant, .message-bubble.thinking',
-          )
-          const last = bubbles[bubbles.length - 1]
+            ".message-bubble.assistant, .message-bubble.thinking",
+          );
+          const last = bubbles[bubbles.length - 1];
           probe.dom.push({
             t: Date.now() - startedAtInstall,
             assistantBubbleCount: bubbles.length,
-            lastAssistantTextLen: last ? (last.textContent ?? '').length : 0,
-          })
-        }
-        const obs = new MutationObserver(() => recordDom())
-        obs.observe(document.body, { childList: true, subtree: true, characterData: true })
-        recordDom()
+            lastAssistantTextLen: last ? (last.textContent ?? "").length : 0,
+          });
+        };
+        const obs = new MutationObserver(() => recordDom());
+        obs.observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+        recordDom();
 
         const findChatStore = (): unknown => {
-          const root = document.getElementById('app') ?? document.body
-          const vueApp = (root as unknown as {
-            __vue_app__?: {
-              config: {
-                globalProperties: {
-                  $pinia?: {
-                    _s?: Map<string, { $state?: Record<string, unknown> } & Record<string, unknown>>
-                    state: { value: Record<string, unknown> }
-                  }
-                }
-              }
+          const root = document.getElementById("app") ?? document.body;
+          const vueApp = (
+            root as unknown as {
+              __vue_app__?: {
+                config: {
+                  globalProperties: {
+                    $pinia?: {
+                      _s?: Map<
+                        string,
+                        { $state?: Record<string, unknown> } & Record<
+                          string,
+                          unknown
+                        >
+                      >;
+                      state: { value: Record<string, unknown> };
+                    };
+                  };
+                };
+              };
             }
-          }).__vue_app__
-          const pinia = vueApp?.config?.globalProperties?.$pinia
-          if (!pinia) return null
-          const fromRegistry = pinia._s?.get('chat')
-          if (fromRegistry) return fromRegistry
-          return pinia.state.value.chat
-        }
+          ).__vue_app__;
+          const pinia = vueApp?.config?.globalProperties?.$pinia;
+          if (!pinia) return null;
+          const fromRegistry = pinia._s?.get("chat");
+          if (fromRegistry) return fromRegistry;
+          return pinia.state.value.chat;
+        };
         const recordStore = (): void => {
           const state = findChatStore() as {
-            messages?: Array<{ id: string; role: string; status?: string; content?: string; thinkingContent?: string }>
-            currentSessionId?: string | null
-          } | null
-          if (!state || !Array.isArray(state.messages)) return
-          const msgs = state.messages
-          const running = msgs.filter((m) => m.status === 'running')
-          let bestStatus: string | null = null
-          let bestLen = 0
+            messages?: Array<{
+              id: string;
+              role: string;
+              status?: string;
+              content?: string;
+              thinkingContent?: string;
+            }>;
+            currentSessionId?: string | null;
+          } | null;
+          if (!state || !Array.isArray(state.messages)) return;
+          const msgs = state.messages;
+          const running = msgs.filter((m) => m.status === "running");
+          let bestStatus: string | null = null;
+          let bestLen = 0;
           for (const m of running) {
-            if (m.role === 'assistant' || m.role === 'thinking') {
-              const contentLen = (m.content ?? '').length
-              const thinkingLen = (m.thinkingContent ?? '').length
-              const len = Math.max(contentLen, thinkingLen)
+            if (m.role === "assistant" || m.role === "thinking") {
+              const contentLen = (m.content ?? "").length;
+              const thinkingLen = (m.thinkingContent ?? "").length;
+              const len = Math.max(contentLen, thinkingLen);
               if (len > bestLen) {
-                bestStatus = m.status ?? null
-                bestLen = len
+                bestStatus = m.status ?? null;
+                bestLen = len;
               } else if (bestStatus === null) {
-                bestStatus = m.status ?? null
+                bestStatus = m.status ?? null;
               }
             }
           }
@@ -1080,72 +1236,83 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
             lastAssistantContentLen: bestLen,
             currentSessionId: state.currentSessionId ?? null,
             contextUsageKeys: [],
-            currentModelId: '',
-          })
-        }
-        recordStore()
-        const storePoll = setInterval(recordStore, 50)
-        ;(window as Window & { __ssePoll?: ReturnType<typeof setInterval> }).__ssePoll = storePoll
-      }
-    })
+            currentModelId: "",
+          });
+        };
+        recordStore();
+        const storePoll = setInterval(recordStore, 50);
+        (
+          window as Window & { __ssePoll?: ReturnType<typeof setInterval> }
+        ).__ssePoll = storePoll;
+      };
+    });
 
-    await page.goto('/chat')
+    await page.goto("/chat");
     await page.evaluate((sid) => {
-      localStorage.clear()
-      localStorage.setItem('chat.currentSessionId', sid)
-      localStorage.setItem('chat.agentId', 'default-assistant')
-    }, sessionId)
-    await page.reload()
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+      localStorage.clear();
+      localStorage.setItem("chat.currentSessionId", sid);
+      localStorage.setItem("chat.agentId", "default-assistant");
+    }, sessionId);
+    await page.reload();
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
 
-    await page.evaluate(() => (window as Window).__sseProbeInstall?.())
-  })
+    await page.evaluate(() => (window as Window).__sseProbeInstall?.());
+  });
 
-  test('default-assistant session on zai/glm-4.6 live-renders thinking before [DONE]', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
+  test("default-assistant session on zai/glm-4.6 live-renders thinking before [DONE]", async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
 
     // Terse prompt — keeps the upstream cost low while still triggering
     // glm-4.6's thinking surface (the model emits reasoning tokens before
     // every reply, even single-token ones).
-    const PROMPT = 'say the word PING and nothing else'
-    await input.fill(PROMPT)
-    await sendBtn.click()
+    const PROMPT = "say the word PING and nothing else";
+    await input.fill(PROMPT);
+    await sendBtn.click();
 
     // Wait for the first reply-bearing SSE chunk — either thinking or
     // content. context_usage / model_active land first and are skipped
     // because they don't surface the assistant turn.
-    let firstChunkAt: number
+    let firstChunkAt: number;
     try {
       const firstChunkResult = await page.waitForFunction(
         () => {
-          const probe = (window as Window).__sseProbe
-          if (!probe) return false
+          const probe = (window as Window).__sseProbe;
+          if (!probe) return false;
           const replyChunk = probe.wire.find(
             (w) =>
-              w.event === 'message' &&
-              w.preview !== '[DONE]' &&
+              w.event === "message" &&
+              w.preview !== "[DONE]" &&
               !w.preview.includes('"type":"context_usage"') &&
               !w.preview.includes('"type":"model_active"') &&
               (w.preview.includes('"type":"thinking"') ||
                 w.preview.includes('"type":"content"')),
-          )
-          return replyChunk ? { firstChunkAt: replyChunk.t, preview: replyChunk.preview } : false
+          );
+          return replyChunk
+            ? { firstChunkAt: replyChunk.t, preview: replyChunk.preview }
+            : false;
         },
         undefined,
         { timeout: 90_000 },
-      )
-      ;({ firstChunkAt } = await firstChunkResult.jsonValue() as { firstChunkAt: number; preview: string })
+      );
+      ({ firstChunkAt } = (await firstChunkResult.jsonValue()) as {
+        firstChunkAt: number;
+        preview: string;
+      });
     } catch (e) {
       const partial = await page.evaluate(() => {
-        const probe = (window as Window).__sseProbe
-        return probe ? { wire: probe.wire.slice() } : null
-      })
+        const probe = (window as Window).__sseProbe;
+        return probe ? { wire: probe.wire.slice() } : null;
+      });
       throw new Error(
         `No reply-bearing SSE chunk arrived within 90s of send (default-assistant + zai/glm-4.6).\n` +
           `(${(e as Error).message})\n` +
           `--- WIRE (${partial?.wire.length ?? 0}) ---\n${JSON.stringify(partial?.wire.slice(0, 40) ?? [], null, 2)}`,
-      )
+      );
     }
 
     // 2s drain — gives the store poll (50ms cadence) and the MutationObserver
@@ -1153,20 +1320,28 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
     // handleThinkingEvent path creates a thinking running row + appends
     // thinkingContent on every delta; the MutationObserver should pick up
     // either the row insertion or its text growth.
-    await page.waitForTimeout(2000)
+    await page.waitForTimeout(2000);
 
     const snapshot = await page.evaluate(() => {
-      const probe = (window as Window).__sseProbe
-      if (!probe) return null
-      return { wire: probe.wire.slice(), store: probe.store.slice(), dom: probe.dom.slice() }
-    })
-    expect(snapshot, 'probe snapshot must have been captured').not.toBeNull()
-    const { wire, store, dom } = snapshot as Pick<ProbeSnapshot, 'wire' | 'store' | 'dom'>
+      const probe = (window as Window).__sseProbe;
+      if (!probe) return null;
+      return {
+        wire: probe.wire.slice(),
+        store: probe.store.slice(),
+        dom: probe.dom.slice(),
+      };
+    });
+    expect(snapshot, "probe snapshot must have been captured").not.toBeNull();
+    const { wire, store, dom } = snapshot as Pick<
+      ProbeSnapshot,
+      "wire" | "store" | "dom"
+    >;
 
-    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0)
+    const liveDomEntries = dom.filter((d) => d.lastAssistantTextLen > 0);
     const liveStoreEntries = store.filter(
-      (s) => s.lastAssistantStatus === 'running' && s.lastAssistantContentLen > 0,
-    )
+      (s) =>
+        s.lastAssistantStatus === "running" && s.lastAssistantContentLen > 0,
+    );
 
     expect(
       liveDomEntries.length,
@@ -1176,7 +1351,7 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
         `\n--- WIRE (${wire.length} entries, first 30) ---\n${JSON.stringify(wire.slice(0, 30), null, 2)}\n` +
         `\n--- STORE (last 10 entries) ---\n${JSON.stringify(store.slice(-10), null, 2)}\n` +
         `\n--- DOM (${dom.length} entries, last 10) ---\n${JSON.stringify(dom.slice(-10), null, 2)}`,
-    ).toBeGreaterThan(0)
+    ).toBeGreaterThan(0);
 
     expect(
       liveStoreEntries.length,
@@ -1185,9 +1360,9 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
         `(WIRE has chunks but STORE empty ⇒ handler path broken; STORE updates but DOM empty ⇒ ` +
         `Vue reactivity / template binding; both empty ⇒ chunk listener never wired.)\n` +
         `STORE (last 30): ${JSON.stringify(store.slice(-30), null, 2)}`,
-    ).toBeGreaterThan(0)
-  })
-})
+    ).toBeGreaterThan(0);
+  });
+});
 
 // Phase 2 GREEN gate per "Dispatcher Service Unification (May 2026)" v6.
 //
@@ -1204,49 +1379,55 @@ test.describe('sse live-render probe — default-assistant clean reproduction (B
 //
 // Backed by default-assistant + zai/glm-4.6 — the exact agent/model pair the
 // user's broken session ran under.
-test.describe('sse live-render probe — Vue UI refresh-free multi-turn (Bug C)', () => {
-  test.describe.configure({ mode: 'serial' })
-  test.setTimeout(240_000)
+test.describe("sse live-render probe — Vue UI refresh-free multi-turn (Bug C)", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(240_000);
 
-  let sessionId = ''
+  let sessionId = "";
 
   test.beforeEach(async ({ page, request }) => {
-    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
-      data: { agent_id: 'default-assistant' },
-    })
+    const createRes = await request.post(
+      "http://localhost:8080/api/v1/sessions",
+      {
+        data: { agent_id: "default-assistant" },
+      },
+    );
     const created = (await createRes.json()) as {
-      id: string
-      agentId: string
-      createdAt: string
-      updatedAt: string
-    }
-    sessionId = created.id
-    await request.patch(`http://localhost:8080/api/v1/sessions/${sessionId}/model`, {
-      data: { providerId: 'zai', modelId: 'glm-4.6' },
-    })
+      id: string;
+      agentId: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    sessionId = created.id;
+    await request.patch(
+      `http://localhost:8080/api/v1/sessions/${sessionId}/model`,
+      {
+        data: { providerId: "zai", modelId: "glm-4.6" },
+      },
+    );
 
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "GET") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify([
             {
               id: created.id,
               agentId: created.agentId,
               currentAgentId: created.agentId,
-              title: '',
+              title: "",
               messageCount: 0,
               createdAt: created.createdAt,
               updatedAt: created.updatedAt,
               isStreaming: false,
             },
           ]),
-        })
-        return
+        });
+        return;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
     // Same probe wiring as the Bug 2 block — wire EventSource + DOM
     // MutationObserver + Pinia $subscribe. We also track explicit reload
@@ -1259,153 +1440,182 @@ test.describe('sse live-render probe — Vue UI refresh-free multi-turn (Bug C)'
         dom: [] as ProbeDomEntry[],
         apply: [] as ProbeApplyEntry[],
         sub: [] as ProbeSubscribeEntry[],
-      }
-      ;(window as Window).__sseProbe = probe
-      ;(window as Window & { __reloadFired?: number }).__reloadFired = 0
+      };
+      (window as Window).__sseProbe = probe;
+      (window as Window & { __reloadFired?: number }).__reloadFired = 0;
 
       // Detect explicit reload attempts. The bug-class manifestation is the
       // user manually refreshing because the live render dropped; if any
       // production code path triggers location.reload(), the test must
       // surface that as a failure.
-      const origReload = window.location.reload.bind(window.location)
+      const origReload = window.location.reload.bind(window.location);
       window.location.reload = function patchedReload(...args: unknown[]) {
-        const w = window as Window & { __reloadFired?: number }
-        w.__reloadFired = (w.__reloadFired ?? 0) + 1
-        return origReload(...(args as []))
-      }
+        const w = window as Window & { __reloadFired?: number };
+        w.__reloadFired = (w.__reloadFired ?? 0) + 1;
+        return origReload(...(args as []));
+      };
 
-      const startedAt = Date.now()
-      const NativeEventSource = window.EventSource
+      const startedAt = Date.now();
+      const NativeEventSource = window.EventSource;
       class ProbeEventSource extends NativeEventSource {
         constructor(url: string | URL, init?: EventSourceInit) {
-          super(url, init)
-          const probedUrl = typeof url === 'string' ? url : url.toString()
-          this.addEventListener('message', (event: MessageEvent) => {
-            const data = typeof event.data === 'string' ? event.data : ''
+          super(url, init);
+          const probedUrl = typeof url === "string" ? url : url.toString();
+          this.addEventListener("message", (event: MessageEvent) => {
+            const data = typeof event.data === "string" ? event.data : "";
             probe.wire.push({
               t: Date.now() - startedAt,
               url: probedUrl,
-              event: 'message',
+              event: "message",
               preview: data.slice(0, 200),
-            })
-          })
-          this.addEventListener('error', () => {
-            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'error', preview: '' })
-          })
-          this.addEventListener('open', () => {
-            probe.wire.push({ t: Date.now() - startedAt, url: probedUrl, event: 'open', preview: '' })
-          })
+            });
+          });
+          this.addEventListener("error", () => {
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: "error",
+              preview: "",
+            });
+          });
+          this.addEventListener("open", () => {
+            probe.wire.push({
+              t: Date.now() - startedAt,
+              url: probedUrl,
+              event: "open",
+              preview: "",
+            });
+          });
         }
       }
-      window.EventSource = ProbeEventSource as unknown as typeof EventSource
-
-      ;(window as Window).__sseProbeInstall = (): void => {
-        const startedAtInstall = Date.now()
+      window.EventSource = ProbeEventSource as unknown as typeof EventSource;
+      (window as Window).__sseProbeInstall = (): void => {
+        const startedAtInstall = Date.now();
         const recordDom = (): void => {
           const bubbles = document.querySelectorAll<HTMLElement>(
-            '.message-bubble.assistant, .message-bubble.thinking',
-          )
-          const last = bubbles[bubbles.length - 1]
+            ".message-bubble.assistant, .message-bubble.thinking",
+          );
+          const last = bubbles[bubbles.length - 1];
           probe.dom.push({
             t: Date.now() - startedAtInstall,
             assistantBubbleCount: bubbles.length,
-            lastAssistantTextLen: last ? (last.textContent ?? '').length : 0,
-          })
-        }
-        const obs = new MutationObserver(() => recordDom())
-        obs.observe(document.body, { childList: true, subtree: true, characterData: true })
-        recordDom()
-      }
-    })
+            lastAssistantTextLen: last ? (last.textContent ?? "").length : 0,
+          });
+        };
+        const obs = new MutationObserver(() => recordDom());
+        obs.observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+        recordDom();
+      };
+    });
 
-    await page.goto('/chat')
+    await page.goto("/chat");
     await page.evaluate((sid) => {
-      localStorage.clear()
-      localStorage.setItem('chat.currentSessionId', sid)
-      localStorage.setItem('chat.agentId', 'default-assistant')
-    }, sessionId)
-    await page.reload()
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
-    await page.evaluate(() => (window as Window).__sseProbeInstall?.())
-  })
+      localStorage.clear();
+      localStorage.setItem("chat.currentSessionId", sid);
+      localStorage.setItem("chat.agentId", "default-assistant");
+    }, sessionId);
+    await page.reload();
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
+    await page.evaluate(() => (window as Window).__sseProbeInstall?.());
+  });
 
-  test('Vue UI refresh-free multi-turn', async ({ page }) => {
+  test("Vue UI refresh-free multi-turn", async ({ page }) => {
     // Turn 1 — plain content. The Dispatcher's snapshot-then-stream contract
     // must surface live DOM mutations between first content chunk and [DONE].
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
 
-    const sendAndAwaitContent = async (prompt: string, turnLabel: string): Promise<void> => {
+    const sendAndAwaitContent = async (
+      prompt: string,
+      turnLabel: string,
+    ): Promise<void> => {
       const domLenBefore = await page.evaluate(() => {
-        const probe = (window as Window).__sseProbe
-        return probe ? probe.dom.length : 0
-      })
+        const probe = (window as Window).__sseProbe;
+        return probe ? probe.dom.length : 0;
+      });
 
-      await input.fill(prompt)
-      await sendBtn.click()
+      await input.fill(prompt);
+      await sendBtn.click();
 
       // Wait for at least one reply-bearing chunk this turn — thinking or
       // content, skip the meta events context_usage / model_active.
       await page.waitForFunction(
         (lenBefore) => {
-          const probe = (window as Window).__sseProbe
-          if (!probe) return false
+          const probe = (window as Window).__sseProbe;
+          if (!probe) return false;
           // Scan only the wire entries that appeared since the previous turn.
-          const since = probe.wire.slice(-50)
+          const since = probe.wire.slice(-50);
           return since.some(
             (w) =>
-              w.event === 'message' &&
-              w.preview !== '[DONE]' &&
+              w.event === "message" &&
+              w.preview !== "[DONE]" &&
               !w.preview.includes('"type":"context_usage"') &&
               !w.preview.includes('"type":"model_active"') &&
               (w.preview.includes('"type":"thinking"') ||
                 w.preview.includes('"type":"content"')) &&
               probe.dom.length >= lenBefore,
-          )
+          );
         },
         domLenBefore,
         { timeout: 90_000 },
-      )
+      );
 
       // Drain 1.5s so MutationObserver captures post-firstChunk live updates.
-      await page.waitForTimeout(1500)
+      await page.waitForTimeout(1500);
 
       // Wait for [DONE] this turn.
       await page.waitForFunction(
         () => {
-          const probe = (window as Window).__sseProbe
-          if (!probe) return false
-          return probe.wire.some((w) => w.preview === '[DONE]')
+          const probe = (window as Window).__sseProbe;
+          if (!probe) return false;
+          return probe.wire.some((w) => w.preview === "[DONE]");
         },
         undefined,
         { timeout: 60_000 },
-      )
+      );
 
       const evidence = await page.evaluate((lenBefore) => {
-        const probe = (window as Window).__sseProbe
-        if (!probe) return null
-        const newDom = probe.dom.slice(lenBefore).filter((d) => d.lastAssistantTextLen > 0)
-        return { liveDomEntries: newDom.length, totalDom: probe.dom.length }
-      }, domLenBefore)
-      expect(evidence, `${turnLabel} probe must capture a snapshot`).not.toBeNull()
+        const probe = (window as Window).__sseProbe;
+        if (!probe) return null;
+        const newDom = probe.dom
+          .slice(lenBefore)
+          .filter((d) => d.lastAssistantTextLen > 0);
+        return { liveDomEntries: newDom.length, totalDom: probe.dom.length };
+      }, domLenBefore);
+      expect(
+        evidence,
+        `${turnLabel} probe must capture a snapshot`,
+      ).not.toBeNull();
       expect(
         evidence!.liveDomEntries,
         `${turnLabel}: expected ≥1 thinking-or-assistant DOM mutation between firstChunk and [DONE]. ` +
           `Got ${evidence!.liveDomEntries} new mutations (total dom snapshots: ${evidence!.totalDom}).`,
-      ).toBeGreaterThan(0)
-    }
+      ).toBeGreaterThan(0);
+    };
 
-    await sendAndAwaitContent('say the word PING and nothing else', 'Turn 1 (plain)')
-    await sendAndAwaitContent('@coordinator say the word PONG and nothing else', 'Turn 2 (@coordinator)')
+    await sendAndAwaitContent(
+      "say the word PING and nothing else",
+      "Turn 1 (plain)",
+    );
+    await sendAndAwaitContent(
+      "@coordinator say the word PONG and nothing else",
+      "Turn 2 (@coordinator)",
+    );
 
     // No production code path may trigger window.location.reload across the
     // two turns. The user's refresh-bug workaround MUST be unnecessary.
     const reloadCount = await page.evaluate(() => {
-      return (window as Window & { __reloadFired?: number }).__reloadFired ?? 0
-    })
+      return (window as Window & { __reloadFired?: number }).__reloadFired ?? 0;
+    });
     expect(
       reloadCount,
-      'window.location.reload must NOT fire between turns — the refresh bug is gone if multi-turn render works without reload.',
-    ).toBe(0)
-  })
-})
+      "window.location.reload must NOT fire between turns — the refresh bug is gone if multi-turn render works without reload.",
+    ).toBe(0);
+  });
+});

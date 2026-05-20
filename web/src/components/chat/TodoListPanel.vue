@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { useTodoStore } from '@/stores/todoStore'
+import { useTodoStore } from "@/stores/todoStore";
 
-defineOptions({ name: 'TodoListPanel' })
+defineOptions({ name: "TodoListPanel" });
 
 // TodoListPanel is the side-panel host for the todoStore. Todos are
 // agent-emitted (see the `todowrite` tool and internal/tui/uikit/widgets/
 // todo_widget.go FormatTodoList for the TUI counterpart) and the user is
 // purely an observer — no add input, no toggle, no delete. The store is
 // the single source of truth and is read-only from the UI.
-const todoStore = useTodoStore()
+const todoStore = useTodoStore();
 </script>
 
 <template>
@@ -32,12 +32,17 @@ const todoStore = useTodoStore()
           class="status-icon"
           :class="`status-${todo.status}`"
           aria-hidden="true"
-        >{{ todo.status === 'completed' ? '✓' : '○' }}</span>
+          >{{ todo.status === "completed" ? "✓" : "○" }}</span
+        >
         <span class="todo-text">{{ todo.content }}</span>
       </li>
     </ul>
 
-    <div v-if="todoStore.todos.length === 0" class="empty" data-testid="todo-empty">
+    <div
+      v-if="todoStore.todos.length === 0"
+      class="empty"
+      data-testid="todo-empty"
+    >
       No todos in this session yet
     </div>
   </section>

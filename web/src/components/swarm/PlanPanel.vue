@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useSwarmStore } from '@/stores/swarmStore'
-import EventCard from '@/components/swarm/EventCard.vue'
-import TodoList from '@/components/swarm/TodoList.vue'
+import { computed } from "vue";
+import { useSwarmStore } from "@/stores/swarmStore";
+import EventCard from "@/components/swarm/EventCard.vue";
+import TodoList from "@/components/swarm/TodoList.vue";
 
-defineOptions({ name: 'PlanPanel' })
+defineOptions({ name: "PlanPanel" });
 
 const emit = defineEmits<{
-  close: []
-}>()
+  close: [];
+}>();
 
-const swarmStore = useSwarmStore()
+const swarmStore = useSwarmStore();
 
-const planEvents = computed(() => swarmStore.planEvents)
-const statusEvents = computed(() => swarmStore.statusEvents)
-const reviewEvents = computed(() => swarmStore.reviewEvents)
+const planEvents = computed(() => swarmStore.planEvents);
+const statusEvents = computed(() => swarmStore.statusEvents);
+const reviewEvents = computed(() => swarmStore.reviewEvents);
 </script>
 
 <template>
@@ -36,11 +36,7 @@ const reviewEvents = computed(() => swarmStore.reviewEvents)
 
       <section v-if="planEvents.length > 0" class="event-section">
         <h3>Plan Artifacts</h3>
-        <EventCard
-          v-for="event in planEvents"
-          :key="event.id"
-          :event="event"
-        />
+        <EventCard v-for="event in planEvents" :key="event.id" :event="event" />
       </section>
 
       <section v-if="statusEvents.length > 0" class="event-section">
@@ -61,7 +57,14 @@ const reviewEvents = computed(() => swarmStore.reviewEvents)
         />
       </section>
 
-      <p v-if="planEvents.length === 0 && statusEvents.length === 0 && reviewEvents.length === 0" class="empty-message">
+      <p
+        v-if="
+          planEvents.length === 0 &&
+          statusEvents.length === 0 &&
+          reviewEvents.length === 0
+        "
+        class="empty-message"
+      >
         No plan or status events yet
       </p>
     </div>
@@ -101,7 +104,9 @@ const reviewEvents = computed(() => swarmStore.reviewEvents)
   border-radius: var(--radius);
   padding: 0.15rem 0.5rem;
   font-size: 0.75rem;
-  transition: color 0.15s, border-color 0.15s;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
 }
 
 .close-btn:hover {

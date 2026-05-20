@@ -1,29 +1,29 @@
 <script setup lang="ts">
-import type { ToolCallEvent } from '@/stores/toolStore'
+import type { ToolCallEvent } from "@/stores/toolStore";
 
-defineOptions({ name: 'ToolCallItem' })
+defineOptions({ name: "ToolCallItem" });
 
-const props = defineProps<{ event: ToolCallEvent }>()
+const props = defineProps<{ event: ToolCallEvent }>();
 
 function formatDuration(start: string, end?: string): string {
-  const startMs = new Date(start).getTime()
-  const endMs = end ? new Date(end).getTime() : Date.now()
-  const diff = endMs - startMs
-  if (diff < 1000) return `${diff}ms`
-  return `${(diff / 1000).toFixed(1)}s`
+  const startMs = new Date(start).getTime();
+  const endMs = end ? new Date(end).getTime() : Date.now();
+  const diff = endMs - startMs;
+  if (diff < 1000) return `${diff}ms`;
+  return `${(diff / 1000).toFixed(1)}s`;
 }
 
 function truncateResult(result?: string, max = 120): string {
-  if (!result) return '—'
-  return result.length > max ? result.slice(0, max) + '…' : result
+  if (!result) return "—";
+  return result.length > max ? result.slice(0, max) + "…" : result;
 }
 
-const statusIcon: Record<ToolCallEvent['status'], string> = {
-  pending: '◷',
-  running: '◐',
-  completed: '✓',
-  error: '✕',
-}
+const statusIcon: Record<ToolCallEvent["status"], string> = {
+  pending: "◷",
+  running: "◐",
+  completed: "✓",
+  error: "✕",
+};
 </script>
 
 <template>
@@ -35,12 +35,19 @@ const statusIcon: Record<ToolCallEvent['status'], string> = {
     <div class="tool-header">
       <span class="tool-status-icon">{{ statusIcon[props.event.status] }}</span>
       <span class="tool-name">{{ props.event.toolName }}</span>
-      <span class="tool-duration">{{ formatDuration(props.event.startedAt, props.event.completedAt) }}</span>
+      <span class="tool-duration">{{
+        formatDuration(props.event.startedAt, props.event.completedAt)
+      }}</span>
     </div>
     <div v-if="props.event.result" class="tool-result">
       {{ truncateResult(props.event.result) }}
     </div>
-    <div v-else-if="props.event.arguments && Object.keys(props.event.arguments).length > 0" class="tool-args">
+    <div
+      v-else-if="
+        props.event.arguments && Object.keys(props.event.arguments).length > 0
+      "
+      class="tool-args"
+    >
       {{ truncateResult(JSON.stringify(props.event.arguments), 80) }}
     </div>
   </div>
@@ -56,10 +63,18 @@ const statusIcon: Record<ToolCallEvent['status'], string> = {
   font-size: 0.78rem;
 }
 
-.tool-status-pending { border-left-color: var(--text-muted); }
-.tool-status-running { border-left-color: var(--accent); }
-.tool-status-completed { border-left-color: #22c55e; }
-.tool-status-error { border-left-color: #ef4444; }
+.tool-status-pending {
+  border-left-color: var(--text-muted);
+}
+.tool-status-running {
+  border-left-color: var(--accent);
+}
+.tool-status-completed {
+  border-left-color: #22c55e;
+}
+.tool-status-error {
+  border-left-color: #ef4444;
+}
 
 .tool-header {
   display: flex;
@@ -104,7 +119,11 @@ const statusIcon: Record<ToolCallEvent['status'], string> = {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>

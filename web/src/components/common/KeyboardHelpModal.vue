@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, toRef } from 'vue'
-import { useFocusTrap } from '@/composables/useFocusTrap'
-import Icon from '@/components/common/Icon.vue'
+import { onBeforeUnmount, onMounted, ref, toRef } from "vue";
+import { useFocusTrap } from "@/composables/useFocusTrap";
+import Icon from "@/components/common/Icon.vue";
 
-defineOptions({ name: 'KeyboardHelpModal' })
+defineOptions({ name: "KeyboardHelpModal" });
 
 /**
  * UI Parity PR2 I2 (May 2026) — Keyboard shortcuts help modal.
@@ -19,25 +19,25 @@ defineOptions({ name: 'KeyboardHelpModal' })
  * cannot fall through to the underlying chat thread.
  */
 const props = defineProps<{
-  open: boolean
-}>()
+  open: boolean;
+}>();
 
 const emit = defineEmits<{
-  close: []
-}>()
+  close: [];
+}>();
 
-const modalEl = ref<HTMLElement | null>(null)
+const modalEl = ref<HTMLElement | null>(null);
 
-useFocusTrap(modalEl, toRef(props, 'open'))
+useFocusTrap(modalEl, toRef(props, "open"));
 
 interface ShortcutRow {
-  keys: string[]
-  description: string
+  keys: string[];
+  description: string;
 }
 
 interface ShortcutGroup {
-  title: string
-  rows: ShortcutRow[]
+  title: string;
+  rows: ShortcutRow[];
 }
 
 // Mirrors the bindings actually wired in the app. When a new binding
@@ -45,65 +45,83 @@ interface ShortcutGroup {
 // of truth for "what shortcuts exist".
 const GROUPS: ShortcutGroup[] = [
   {
-    title: 'Composer',
+    title: "Composer",
     rows: [
-      { keys: ['Enter'], description: 'Send message' },
-      { keys: ['Shift', 'Enter'], description: 'Insert newline' },
-      { keys: ['Alt', 'Enter'], description: 'Insert newline (alt)' },
-      { keys: ['ArrowUp'], description: 'Recall previous prompt (when empty / caret at start)' },
-      { keys: ['ArrowDown'], description: 'Walk forward through history' },
-      { keys: ['/'], description: 'Open slash-command picker' },
-      { keys: ['@'], description: 'Open agent / swarm mention picker' },
+      { keys: ["Enter"], description: "Send message" },
+      { keys: ["Shift", "Enter"], description: "Insert newline" },
+      { keys: ["Alt", "Enter"], description: "Insert newline (alt)" },
+      {
+        keys: ["ArrowUp"],
+        description: "Recall previous prompt (when empty / caret at start)",
+      },
+      { keys: ["ArrowDown"], description: "Walk forward through history" },
+      { keys: ["/"], description: "Open slash-command picker" },
+      { keys: ["@"], description: "Open agent / swarm mention picker" },
     ],
   },
   {
-    title: 'Streaming control',
+    title: "Streaming control",
     rows: [
-      { keys: ['Esc', 'Esc'], description: 'Cancel in-flight turn (press twice within 600ms)' },
-      { keys: ['Esc'], description: 'Close open picker without losing buffer' },
+      {
+        keys: ["Esc", "Esc"],
+        description: "Cancel in-flight turn (press twice within 600ms)",
+      },
+      { keys: ["Esc"], description: "Close open picker without losing buffer" },
     ],
   },
   {
-    title: 'Session navigation',
+    title: "Session navigation",
     rows: [
-      { keys: ['ArrowUp'], description: 'Go to parent session (when not focused on input)' },
-      { keys: ['ArrowLeft'], description: 'Previous sibling session' },
-      { keys: ['ArrowRight'], description: 'Next sibling session' },
-      { keys: ['Ctrl', 'X', '→', 'ArrowDown'], description: 'Jump to most-recent child session' },
+      {
+        keys: ["ArrowUp"],
+        description: "Go to parent session (when not focused on input)",
+      },
+      { keys: ["ArrowLeft"], description: "Previous sibling session" },
+      { keys: ["ArrowRight"], description: "Next sibling session" },
+      {
+        keys: ["Ctrl", "X", "→", "ArrowDown"],
+        description: "Jump to most-recent child session",
+      },
     ],
   },
   {
-    title: 'Help',
+    title: "Help",
     rows: [
-      { keys: ['?'], description: 'Open this shortcut list (when no input focused)' },
-      { keys: ['Ctrl', '/'], description: 'Open this shortcut list (anywhere)' },
+      {
+        keys: ["?"],
+        description: "Open this shortcut list (when no input focused)",
+      },
+      {
+        keys: ["Ctrl", "/"],
+        description: "Open this shortcut list (anywhere)",
+      },
     ],
   },
-]
+];
 
 function handleEscape(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && props.open) {
-    event.preventDefault()
-    event.stopPropagation()
-    emit('close')
+  if (event.key === "Escape" && props.open) {
+    event.preventDefault();
+    event.stopPropagation();
+    emit("close");
   }
 }
 
 function handleBackdropClick(): void {
-  emit('close')
+  emit("close");
 }
 
 function handleCloseButton(): void {
-  emit('close')
+  emit("close");
 }
 
 onMounted(() => {
-  document.addEventListener('keydown', handleEscape, true)
-})
+  document.addEventListener("keydown", handleEscape, true);
+});
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', handleEscape, true)
-})
+  document.removeEventListener("keydown", handleEscape, true);
+});
 </script>
 
 <template>
@@ -143,11 +161,18 @@ onBeforeUnmount(() => {
         >
           <h3 class="keyboard-help-group-title">{{ group.title }}</h3>
           <dl class="keyboard-help-rows">
-            <template v-for="(row, idx) in group.rows" :key="`${group.title}-${idx}`">
+            <template
+              v-for="(row, idx) in group.rows"
+              :key="`${group.title}-${idx}`"
+            >
               <dt class="keyboard-help-keys">
                 <template v-for="(key, k) in row.keys" :key="k">
                   <kbd class="keyboard-help-kbd">{{ key }}</kbd>
-                  <span v-if="k < row.keys.length - 1" class="keyboard-help-plus">+</span>
+                  <span
+                    v-if="k < row.keys.length - 1"
+                    class="keyboard-help-plus"
+                    >+</span
+                  >
                 </template>
               </dt>
               <dd class="keyboard-help-description">{{ row.description }}</dd>

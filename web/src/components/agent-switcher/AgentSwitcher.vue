@@ -1,50 +1,56 @@
 <script setup lang="ts">
-import type { Agent } from '@/types'
-import { ref, onMounted, computed } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
-import Icon from '@/components/common/Icon.vue'
+import type { Agent } from "@/types";
+import { ref, onMounted, computed } from "vue";
+import { useChatStore } from "@/stores/chatStore";
+import Icon from "@/components/common/Icon.vue";
 
-defineOptions({ name: 'AgentSwitcher' })
+defineOptions({ name: "AgentSwitcher" });
 
-const chatStore = useChatStore()
-const isOpen = ref(false)
+const chatStore = useChatStore();
+const isOpen = ref(false);
 
 const currentAgentName = computed(() => {
-  const agent = chatStore.availableAgentDetails.find((a: Agent) => a.id === chatStore.agentId)
-  return agent?.name ?? chatStore.agentId
-})
+  const agent = chatStore.availableAgentDetails.find(
+    (a: Agent) => a.id === chatStore.agentId,
+  );
+  return agent?.name ?? chatStore.agentId;
+});
 
 const currentAgentSummary = computed(() => {
-  const agent = chatStore.availableAgentDetails.find((a: Agent) => a.id === chatStore.agentId)
-  const details = [agent?.provider, agent?.model].filter(Boolean)
-  return details.length > 0 ? details.join(' · ') : 'No model metadata available'
-})
+  const agent = chatStore.availableAgentDetails.find(
+    (a: Agent) => a.id === chatStore.agentId,
+  );
+  const details = [agent?.provider, agent?.model].filter(Boolean);
+  return details.length > 0
+    ? details.join(" · ")
+    : "No model metadata available";
+});
 
 const agentOptions = computed(() => {
   return chatStore.availableAgentDetails.map((agent: Agent) => ({
     id: agent.id,
     name: agent.name,
     description: agent.description,
-    model: [agent.provider, agent.model].filter(Boolean).join(' · '),
-  }))
-})
+    model: [agent.provider, agent.model].filter(Boolean).join(" · "),
+  }));
+});
 
 function selectAgent(id: string): void {
-  chatStore.setAgent(id)
-  isOpen.value = false
+  chatStore.setAgent(id);
+  isOpen.value = false;
 }
 
 function toggleDropdown(): void {
-  isOpen.value = !isOpen.value
+  isOpen.value = !isOpen.value;
 }
 
 function closeDropdown(): void {
-  isOpen.value = false
+  isOpen.value = false;
 }
 
 onMounted(() => {
-  void chatStore.loadAgents()
-})
+  void chatStore.loadAgents();
+});
 </script>
 
 <template>
@@ -58,15 +64,13 @@ onMounted(() => {
       <span class="agent-icon"><Icon name="bot" :size="14" /></span>
       <span class="agent-labels">
         <span class="agent-name">{{ currentAgentName }}</span>
-        <span class="agent-summary" data-testid="current-agent-summary">{{ currentAgentSummary }}</span>
+        <span class="agent-summary" data-testid="current-agent-summary">{{
+          currentAgentSummary
+        }}</span>
       </span>
       <span class="dropdown-arrow" :class="{ open: isOpen }">▾</span>
     </button>
-    <ul
-      v-if="isOpen"
-      class="agent-dropdown"
-      role="listbox"
-    >
+    <ul v-if="isOpen" class="agent-dropdown" role="listbox">
       <li
         v-for="agent in agentOptions"
         :key="agent.id"
@@ -75,12 +79,14 @@ onMounted(() => {
         @click="selectAgent(agent.id)"
         role="option"
         :aria-selected="agent.id === chatStore.agentId"
-        >
-          <span class="option-name">{{ agent.name }}</span>
-          <span v-if="agent.description" class="option-desc">{{ agent.description }}</span>
-          <span v-if="agent.model" class="option-meta">{{ agent.model }}</span>
-        </li>
-      </ul>
+      >
+        <span class="option-name">{{ agent.name }}</span>
+        <span v-if="agent.description" class="option-desc">{{
+          agent.description
+        }}</span>
+        <span v-if="agent.model" class="option-meta">{{ agent.model }}</span>
+      </li>
+    </ul>
     <div v-if="isOpen" class="dropdown-backdrop" @click="closeDropdown" />
   </div>
 </template>
@@ -102,7 +108,9 @@ onMounted(() => {
   cursor: pointer;
   font-size: 0.85rem;
   color: var(--text-primary);
-  transition: background 0.15s, border-color 0.15s;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
 }
 
 .agent-labels {

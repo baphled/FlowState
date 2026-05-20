@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
-import Icon from '@/components/common/Icon.vue'
+import { computed } from "vue";
+import { useChatStore } from "@/stores/chatStore";
+import Icon from "@/components/common/Icon.vue";
 
-defineOptions({ name: 'EmptyChatState' })
+defineOptions({ name: "EmptyChatState" });
 
 /**
  * UI Parity I10 (May 2026) — empty-state component.
@@ -32,13 +32,15 @@ defineOptions({ name: 'EmptyChatState' })
  *     have evidence that per-agent tailoring would help).
  */
 
-const chatStore = useChatStore()
+const chatStore = useChatStore();
 
 const currentAgent = computed(() =>
   chatStore.availableAgentDetails.find((a) => a.id === chatStore.agentId),
-)
+);
 
-const agentName = computed(() => currentAgent.value?.name || chatStore.agentId || 'Agent')
+const agentName = computed(
+  () => currentAgent.value?.name || chatStore.agentId || "Agent",
+);
 
 /**
  * Prefer the live `chatStore.currentModelId` (mirrors the actively
@@ -47,16 +49,16 @@ const agentName = computed(() => currentAgent.value?.name || chatStore.agentId |
  * set (i.e. fresh session before the first message).
  */
 const modelLabel = computed(() => {
-  const live = chatStore.currentModelId
-  if (live) return live
-  return currentAgent.value?.model || ''
-})
+  const live = chatStore.currentModelId;
+  if (live) return live;
+  return currentAgent.value?.model || "";
+});
 
 const providerLabel = computed(() => {
-  const live = chatStore.currentProviderId
-  if (live) return live
-  return currentAgent.value?.provider || ''
-})
+  const live = chatStore.currentProviderId;
+  if (live) return live;
+  return currentAgent.value?.provider || "";
+});
 
 /**
  * Example prompts — kept short so the chips don't overflow the empty
@@ -64,18 +66,18 @@ const providerLabel = computed(() => {
  * for FlowState's typical user flow.
  */
 const examplePrompts: readonly string[] = [
-  'Explore the repository and summarise the architecture',
-  'Help me plan a new feature from scratch',
-  'Find and fix a bug in this codebase',
-  'Explain how a specific function works',
-] as const
+  "Explore the repository and summarise the architecture",
+  "Help me plan a new feature from scratch",
+  "Find and fix a bug in this codebase",
+  "Explain how a specific function works",
+] as const;
 
 function applyExample(prompt: string): void {
-  chatStore.composerText = prompt
+  chatStore.composerText = prompt;
 }
 
 function applyHelp(): void {
-  chatStore.composerText = '/help'
+  chatStore.composerText = "/help";
 }
 </script>
 
@@ -91,7 +93,10 @@ function applyHelp(): void {
       </span>
       <div class="empty-state-agent-meta">
         <div class="empty-state-agent-name">{{ agentName }}</div>
-        <div v-if="modelLabel || providerLabel" class="empty-state-agent-model-line">
+        <div
+          v-if="modelLabel || providerLabel"
+          class="empty-state-agent-model-line"
+        >
           <template v-if="modelLabel">{{ modelLabel }}</template>
           <template v-if="modelLabel && providerLabel"> · </template>
           <template v-if="providerLabel">{{ providerLabel }}</template>
@@ -210,7 +215,10 @@ function applyHelp(): void {
   color: var(--text-primary);
   font-size: 0.85rem;
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  transition:
+    border-color 0.15s,
+    background 0.15s,
+    transform 0.15s;
 }
 
 .empty-state-chip:hover,

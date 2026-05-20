@@ -1,23 +1,23 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
+import { ref, computed, watch } from "vue";
+import { useChatStore } from "@/stores/chatStore";
 
 interface Props {
-  toolName: string
-  title: string
-  subtitle?: string
-  status?: 'pending' | 'running' | 'completed' | 'error'
-  defaultOpen?: boolean
+  toolName: string;
+  title: string;
+  subtitle?: string;
+  status?: "pending" | "running" | "completed" | "error";
+  defaultOpen?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  status: 'completed',
-  defaultOpen: false
-})
+  status: "completed",
+  defaultOpen: false,
+});
 
-const chatStore = useChatStore()
+const chatStore = useChatStore();
 
-const isOpen = ref(props.defaultOpen)
+const isOpen = ref(props.defaultOpen);
 
 // UI Parity PR6 — Collapse all / Expand all override.
 //
@@ -27,11 +27,11 @@ const isOpen = ref(props.defaultOpen)
 // effective state via a computed keeps the watcher contract (P0-3 sticky
 // open semantics) untouched.
 const effectiveOpen = computed(() => {
-  const override = chatStore.toolCardOpenOverride
-  if (override === 'expanded') return true
-  if (override === 'collapsed') return false
-  return isOpen.value
-})
+  const override = chatStore.toolCardOpenOverride;
+  if (override === "expanded") return true;
+  if (override === "collapsed") return false;
+  return isOpen.value;
+});
 
 // UI Parity bug-fix bundle (May 2026). P0-3: pre-fix isOpen was seeded
 // once at mount from defaultOpen, so a card mounted with
@@ -46,22 +46,26 @@ const effectiveOpen = computed(() => {
 watch(
   () => props.defaultOpen,
   (next) => {
-    if (next) isOpen.value = true
+    if (next) isOpen.value = true;
   },
-)
+);
 
 function toggleOpen() {
-  isOpen.value = !isOpen.value
+  isOpen.value = !isOpen.value;
 }
 
 const statusIcon = computed(() => {
   switch (props.status) {
-    case 'running': return '⟳'
-    case 'completed': return '✓'
-    case 'error': return '✕'
-    default: return ''
+    case "running":
+      return "⟳";
+    case "completed":
+      return "✓";
+    case "error":
+      return "✕";
+    default:
+      return "";
   }
-})
+});
 </script>
 
 <template>
@@ -77,14 +81,26 @@ const statusIcon = computed(() => {
       <span class="tool-bubble__chevron" aria-hidden="true">▸</span>
       <div class="tool-bubble__header-text">
         <span class="tool-bubble__title">{{ title }}</span>
-        <span v-if="subtitle" class="tool-bubble__subtitle">{{ subtitle }}</span>
+        <span v-if="subtitle" class="tool-bubble__subtitle">{{
+          subtitle
+        }}</span>
       </div>
-      <span v-if="statusIcon" class="tool-bubble__status-icon" :class="{ 'tool-bubble__status-icon--spinning': status === 'running' }">
+      <span
+        v-if="statusIcon"
+        class="tool-bubble__status-icon"
+        :class="{ 'tool-bubble__status-icon--spinning': status === 'running' }"
+      >
         {{ statusIcon }}
       </span>
     </div>
 
-    <div class="tool-bubble__body" :style="{ maxHeight: effectiveOpen ? 'none' : '0', opacity: effectiveOpen ? '1' : '0' }">
+    <div
+      class="tool-bubble__body"
+      :style="{
+        maxHeight: effectiveOpen ? 'none' : '0',
+        opacity: effectiveOpen ? '1' : '0',
+      }"
+    >
       <div class="tool-bubble__content">
         <slot />
       </div>
@@ -111,9 +127,9 @@ const statusIcon = computed(() => {
 .tool-bubble[data-status="pending"] .tool-bubble__title,
 .tool-bubble[data-status="running"] .tool-bubble__title {
   background: linear-gradient(
-    90deg, 
-    var(--text-muted, #565f89) 25%, 
-    var(--text-secondary, #a9b1d6) 50%, 
+    90deg,
+    var(--text-muted, #565f89) 25%,
+    var(--text-secondary, #a9b1d6) 50%,
     var(--text-muted, #565f89) 75%
   );
   background-size: 200% 100%;
@@ -123,8 +139,12 @@ const statusIcon = computed(() => {
 }
 
 @keyframes text-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 .tool-bubble__trigger {
@@ -180,13 +200,19 @@ const statusIcon = computed(() => {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .tool-bubble__body {
   overflow: hidden;
-  transition: max-height 0.2s ease, opacity 0.15s ease;
+  transition:
+    max-height 0.2s ease,
+    opacity 0.15s ease;
 }
 
 .tool-bubble__content {

@@ -1,4 +1,4 @@
-import { test, expect, Page } from '@playwright/test'
+import { test, expect, Page } from "@playwright/test";
 
 // Tests for the scroll UX fix:
 // - New messages (messages.length watcher) scroll with 'smooth'
@@ -10,79 +10,93 @@ import { test, expect, Page } from '@playwright/test'
 // chunk timing without a real backend. REST endpoints are mocked via page.route().
 
 // Number of content lines to stream — enough to require scroll on a real viewport
-const STREAM_LINES = 25
+const STREAM_LINES = 25;
 
 async function setupScrollMocks(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const w = window as unknown as { [k: string]: unknown }
+    const w = window as unknown as { [k: string]: unknown };
     class FakeEventSource {
-      listeners: Record<string, Array<(event: MessageEvent) => void>> = {}
-      url: string
-      readyState = 1
+      listeners: Record<string, Array<(event: MessageEvent) => void>> = {};
+      url: string;
+      readyState = 1;
       constructor(url: string) {
-        this.url = url
-        const instances = w.__sseInstances as FakeEventSource[] | undefined
+        this.url = url;
+        const instances = w.__sseInstances as FakeEventSource[] | undefined;
         if (instances) {
-          instances.push(this)
+          instances.push(this);
         } else {
-          w.__sseInstances = [this]
+          w.__sseInstances = [this];
         }
       }
       addEventListener(type: string, fn: (event: MessageEvent) => void): void {
-        this.listeners[type] = this.listeners[type] || []
-        this.listeners[type].push(fn)
+        this.listeners[type] = this.listeners[type] || [];
+        this.listeners[type].push(fn);
       }
-      removeEventListener(type: string, fn: (event: MessageEvent) => void): void {
-        this.listeners[type] = (this.listeners[type] || []).filter((f) => f !== fn)
+      removeEventListener(
+        type: string,
+        fn: (event: MessageEvent) => void,
+      ): void {
+        this.listeners[type] = (this.listeners[type] || []).filter(
+          (f) => f !== fn,
+        );
       }
       close(): void {
-        this.readyState = 2
+        this.readyState = 2;
       }
       fire(type: string, data: unknown): void {
-        const fns = this.listeners[type] || []
-        const payload = typeof data === 'string' ? data : JSON.stringify(data)
-        for (const fn of fns) fn({ data: payload } as MessageEvent)
+        const fns = this.listeners[type] || [];
+        const payload = typeof data === "string" ? data : JSON.stringify(data);
+        for (const fn of fns) fn({ data: payload } as MessageEvent);
       }
     }
-    w.EventSource = FakeEventSource
+    w.EventSource = FakeEventSource;
     w.__sseDriver = {
-      instances: () => (w.__sseInstances as FakeEventSource[] | undefined) ?? [],
+      instances: () =>
+        (w.__sseInstances as FakeEventSource[] | undefined) ?? [],
       latest: () => {
-        const arr = (w.__sseInstances as FakeEventSource[] | undefined) ?? []
-        return arr[arr.length - 1]
+        const arr = (w.__sseInstances as FakeEventSource[] | undefined) ?? [];
+        return arr[arr.length - 1];
       },
-    }
-  })
+    };
+  });
 
-  const messagesBySession: Record<string, Array<{ id: string; role: string; content: string; timestamp: string }>> = {
-    'scroll-session-1': [],
-  }
+  const messagesBySession: Record<
+    string,
+    Array<{ id: string; role: string; content: string; timestamp: string }>
+  > = {
+    "scroll-session-1": [],
+  };
 
-  await page.route('**/api/agents', async (route) => {
+  await page.route("**/api/agents", async (route) => {
     await route.fulfill({
       status: 200,
-      contentType: 'application/json',
+      contentType: "application/json",
       body: JSON.stringify([
-        { id: 'agent-1', name: 'Agent One', description: 'Scroll test agent', model: 'claude-sonnet-4-6' },
+        {
+          id: "agent-1",
+          name: "Agent One",
+          description: "Scroll test agent",
+          model: "claude-sonnet-4-6",
+        },
       ]),
-    })
-  })
+    });
+  });
 
-  await page.route('**/api/v1/models', async (route) => {
+  await page.route("**/api/v1/models", async (route) => {
     await route.fulfill({
       status: 200,
-      contentType: 'application/json',
+      contentType: "application/json",
       body: JSON.stringify({ providers: [] }),
-    })
-  })
+    });
+  });
 
-  await page.route('**/api/swarm/events', async (route) => {
+  await page.route("**/api/swarm/events", async (route) => {
     await route.fulfill({
       status: 200,
-      contentType: 'application/json',
+      contentType: "application/json",
       body: JSON.stringify([]),
-    })
-  })
+    });
+  });
 
   // The chat-scroll tests fire SSE chunks AFTER the page has clicked
   // send-button. The pre-PR-2 sendMessage didn't tear down the SSE until
@@ -94,88 +108,99 @@ async function setupScrollMocks(page: Page): Promise<void> {
   // per send-button click (a fresh per-call gate is created on every
   // request). The gate is fresh per POST invocation so multi-turn tests
   // work without coordination.
-  const postReleaseQueue: Array<() => void> = []
-  await page.exposeFunction('__releaseScrollPost', () => {
-    const next = postReleaseQueue.shift()
-    if (next) next()
-  })
+  const postReleaseQueue: Array<() => void> = [];
+  await page.exposeFunction("__releaseScrollPost", () => {
+    const next = postReleaseQueue.shift();
+    if (next) next();
+  });
 
-  let postCount = 0
-  await page.route('**/api/v1/sessions', async (route) => {
-    if (route.request().method() === 'POST') {
+  let postCount = 0;
+  await page.route("**/api/v1/sessions", async (route) => {
+    if (route.request().method() === "POST") {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ id: 'scroll-session-1', agentId: 'agent-1' }),
-      })
-      return
+        contentType: "application/json",
+        body: JSON.stringify({ id: "scroll-session-1", agentId: "agent-1" }),
+      });
+      return;
     }
     await route.fulfill({
       status: 200,
-      contentType: 'application/json',
+      contentType: "application/json",
       body: JSON.stringify([
         {
-          id: 'scroll-session-1',
-          agentId: 'agent-1',
-          currentAgentId: 'agent-1',
-          title: 'Scroll Test Session',
-          createdAt: '2026-05-04T00:00:00Z',
-          updatedAt: '2026-05-04T00:00:00Z',
-          messageCount: messagesBySession['scroll-session-1']?.length ?? 0,
+          id: "scroll-session-1",
+          agentId: "agent-1",
+          currentAgentId: "agent-1",
+          title: "Scroll Test Session",
+          createdAt: "2026-05-04T00:00:00Z",
+          updatedAt: "2026-05-04T00:00:00Z",
+          messageCount: messagesBySession["scroll-session-1"]?.length ?? 0,
         },
       ]),
-    })
-  })
+    });
+  });
 
-  await page.route('**/api/v1/sessions/*/messages', async (route) => {
-    const url = route.request().url()
-    const sessionId = url.match(/\/sessions\/([^/]+)\/messages/)?.[1] ?? 'scroll-session-1'
+  await page.route("**/api/v1/sessions/*/messages", async (route) => {
+    const url = route.request().url();
+    const sessionId =
+      url.match(/\/sessions\/([^/]+)\/messages/)?.[1] ?? "scroll-session-1";
 
-    if (route.request().method() === 'POST') {
+    if (route.request().method() === "POST") {
       // Hold the POST open until the test calls __releaseScrollPost(). Per
       // the gate comment above this is required so the C-9 flush guard
       // doesn't drop SSE chunks fired by the test after the POST settles.
       // Each test must call __releaseScrollPost() before checking final
       // assertions that depend on the POST having returned.
       await new Promise<void>((resolve) => {
-        postReleaseQueue.push(resolve)
-      })
-      postCount += 1
-      const body = route.request().postDataJSON() as { content?: string }
-      const userId = `u${postCount}`
-      const assistantId = `a${postCount}`
+        postReleaseQueue.push(resolve);
+      });
+      postCount += 1;
+      const body = route.request().postDataJSON() as { content?: string };
+      const userId = `u${postCount}`;
+      const assistantId = `a${postCount}`;
       const longContent = Array.from(
         { length: STREAM_LINES },
         (_, i) => `Response line ${i + 1} of ${STREAM_LINES}`,
-      ).join('\n')
+      ).join("\n");
 
       messagesBySession[sessionId] = [
         ...(messagesBySession[sessionId] ?? []),
-        { id: userId, role: 'user', content: body.content ?? '', timestamp: new Date().toISOString() },
-        { id: assistantId, role: 'assistant', content: longContent, timestamp: new Date().toISOString() },
-      ]
+        {
+          id: userId,
+          role: "user",
+          content: body.content ?? "",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: assistantId,
+          role: "assistant",
+          content: longContent,
+          timestamp: new Date().toISOString(),
+        },
+      ];
 
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify({
           id: sessionId,
-          agentId: 'agent-1',
+          agentId: "agent-1",
           messages: messagesBySession[sessionId],
           messageCount: messagesBySession[sessionId].length,
-          createdAt: '2026-05-04T00:00:00Z',
+          createdAt: "2026-05-04T00:00:00Z",
           updatedAt: new Date().toISOString(),
         }),
-      })
-      return
+      });
+      return;
     }
 
     await route.fulfill({
       status: 200,
-      contentType: 'application/json',
+      contentType: "application/json",
       body: JSON.stringify(messagesBySession[sessionId] ?? []),
-    })
-  })
+    });
+  });
 }
 
 /**
@@ -183,10 +208,12 @@ async function setupScrollMocks(page: Page): Promise<void> {
  */
 async function isScrolledToBottom(page: Page): Promise<boolean> {
   return page.evaluate(() => {
-    const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
-    if (!el) return false
-    return el.scrollTop + el.clientHeight >= el.scrollHeight - 10
-  })
+    const el = document.querySelector(
+      '[data-testid="chat-message-pane"]',
+    ) as HTMLElement | null;
+    if (!el) return false;
+    return el.scrollTop + el.clientHeight >= el.scrollHeight - 10;
+  });
 }
 
 /**
@@ -194,215 +221,311 @@ async function isScrolledToBottom(page: Page): Promise<boolean> {
  */
 async function scrollPaneUp(page: Page, amount = 300): Promise<void> {
   await page.evaluate((scrollAmount: number) => {
-    const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
+    const el = document.querySelector(
+      '[data-testid="chat-message-pane"]',
+    ) as HTMLElement | null;
     if (el) {
-      el.scrollTop = Math.max(0, el.scrollTop - scrollAmount)
-      el.dispatchEvent(new Event('scroll'))
+      el.scrollTop = Math.max(0, el.scrollTop - scrollAmount);
+      el.dispatchEvent(new Event("scroll"));
     }
-  }, amount)
+  }, amount);
 }
 
-type SseDriver = { instances: () => SseFakeInstance[]; latest: () => SseFakeInstance }
-type SseFakeInstance = { fire: (type: string, data: unknown) => void }
+type SseDriver = {
+  instances: () => SseFakeInstance[];
+  latest: () => SseFakeInstance;
+};
+type SseFakeInstance = { fire: (type: string, data: unknown) => void };
 
-test.describe('Chat scroll UX', () => {
+test.describe("Chat scroll UX", () => {
   test.beforeEach(async ({ page }) => {
-    await setupScrollMocks(page)
-    await page.goto('/chat')
-    await expect(page.getByTestId('message-input')).toBeVisible()
-  })
+    await setupScrollMocks(page);
+    await page.goto("/chat");
+    await expect(page.getByTestId("message-input")).toBeVisible();
+  });
 
-  test('after submitting a prompt, the chat scrolls to bottom showing the new user message', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    await input.fill('Tell me something long')
-    await page.getByTestId('send-button').click()
+  test("after submitting a prompt, the chat scrolls to bottom showing the new user message", async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    await input.fill("Tell me something long");
+    await page.getByTestId("send-button").click();
 
     // Wait for the message to appear in the list
-    await expect(page.getByTestId('message-list')).toContainText('Tell me something long')
+    await expect(page.getByTestId("message-list")).toContainText(
+      "Tell me something long",
+    );
 
     // The pane should have scrolled to show the new message
-    await page.waitForFunction(() => {
-      const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
-      if (!el) return false
-      return el.scrollTop + el.clientHeight >= el.scrollHeight - 10
-    }, { timeout: 3000 })
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector(
+          '[data-testid="chat-message-pane"]',
+        ) as HTMLElement | null;
+        if (!el) return false;
+        return el.scrollTop + el.clientHeight >= el.scrollHeight - 10;
+      },
+      { timeout: 3000 },
+    );
 
-    const atBottom = await isScrolledToBottom(page)
-    expect(atBottom).toBe(true)
+    const atBottom = await isScrolledToBottom(page);
+    expect(atBottom).toBe(true);
 
     // Release the gated POST so the page exits cleanly.
-    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
-  })
+    await page.evaluate(() =>
+      (
+        window as unknown as { __releaseScrollPost: () => void }
+      ).__releaseScrollPost(),
+    );
+  });
 
-  test('during streaming, the pane follows new content so the bottom stays visible', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    await input.fill('stream me a long reply')
-    await page.getByTestId('send-button').click()
+  test("during streaming, the pane follows new content so the bottom stays visible", async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    await input.fill("stream me a long reply");
+    await page.getByTestId("send-button").click();
 
     // Wait for the SSE EventSource to be created
     await page.waitForFunction(() => {
-      return (window as unknown as { __sseDriver?: SseDriver }).__sseDriver?.instances().length === 1
-    })
+      return (
+        (
+          window as unknown as { __sseDriver?: SseDriver }
+        ).__sseDriver?.instances().length === 1
+      );
+    });
 
     // Deliver chunks one-by-one simulating streaming
     for (let i = 1; i <= STREAM_LINES; i++) {
-      await page.evaluate(([lineNum, total]: [number, number]) => {
-        const driver = (window as unknown as { __sseDriver: SseDriver }).__sseDriver
-        const es = driver.latest()
-        es.fire('message', JSON.stringify({ content: `Response line ${lineNum} of ${total}\n` }))
-      }, [i, STREAM_LINES] as [number, number])
+      await page.evaluate(
+        ([lineNum, total]: [number, number]) => {
+          const driver = (window as unknown as { __sseDriver: SseDriver })
+            .__sseDriver;
+          const es = driver.latest();
+          es.fire(
+            "message",
+            JSON.stringify({
+              content: `Response line ${lineNum} of ${total}\n`,
+            }),
+          );
+        },
+        [i, STREAM_LINES] as [number, number],
+      );
       // Small pause to let Vue react and the RAF debounce fire
-      await page.waitForTimeout(30)
+      await page.waitForTimeout(30);
     }
 
     // After all chunks, the bottom should still be visible
-    await page.waitForFunction(() => {
-      const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
-      if (!el) return false
-      return el.scrollTop + el.clientHeight >= el.scrollHeight - 10
-    }, { timeout: 3000 })
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector(
+          '[data-testid="chat-message-pane"]',
+        ) as HTMLElement | null;
+        if (!el) return false;
+        return el.scrollTop + el.clientHeight >= el.scrollHeight - 10;
+      },
+      { timeout: 3000 },
+    );
 
-    const atBottom = await isScrolledToBottom(page)
-    expect(atBottom).toBe(true)
+    const atBottom = await isScrolledToBottom(page);
+    expect(atBottom).toBe(true);
 
-    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
-  })
+    await page.evaluate(() =>
+      (
+        window as unknown as { __releaseScrollPost: () => void }
+      ).__releaseScrollPost(),
+    );
+  });
 
-  test('if user scrolls up mid-stream, auto-scroll stops and bottom is no longer forced', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    await input.fill('stream me something')
-    await page.getByTestId('send-button').click()
+  test("if user scrolls up mid-stream, auto-scroll stops and bottom is no longer forced", async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    await input.fill("stream me something");
+    await page.getByTestId("send-button").click();
 
     // Wait for the SSE EventSource to be created
     await page.waitForFunction(() => {
-      return (window as unknown as { __sseDriver?: SseDriver }).__sseDriver?.instances().length === 1
-    })
+      return (
+        (
+          window as unknown as { __sseDriver?: SseDriver }
+        ).__sseDriver?.instances().length === 1
+      );
+    });
 
     // Deliver many large chunks to build up enough scroll height to overflow the viewport
-    const bigLine = 'The quick brown fox jumps over the lazy dog. '.repeat(10)
+    const bigLine = "The quick brown fox jumps over the lazy dog. ".repeat(10);
     for (let i = 1; i <= 40; i++) {
       await page.evaluate((content: string) => {
-        const driver = (window as unknown as { __sseDriver: SseDriver }).__sseDriver
-        const es = driver.latest()
-        es.fire('message', JSON.stringify({ content }))
-      }, `${bigLine}\n`)
-      await page.waitForTimeout(10)
+        const driver = (window as unknown as { __sseDriver: SseDriver })
+          .__sseDriver;
+        const es = driver.latest();
+        es.fire("message", JSON.stringify({ content }));
+      }, `${bigLine}\n`);
+      await page.waitForTimeout(10);
     }
 
     // Wait until the pane has scrollable content (scrollHeight > clientHeight)
-    await page.waitForFunction(() => {
-      const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
-      if (!el) return false
-      return el.scrollHeight > el.clientHeight + 50
-    }, { timeout: 5000 })
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector(
+          '[data-testid="chat-message-pane"]',
+        ) as HTMLElement | null;
+        if (!el) return false;
+        return el.scrollHeight > el.clientHeight + 50;
+      },
+      { timeout: 5000 },
+    );
 
     // Simulate the user scrolling to the top of the pane
     await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
+      const el = document.querySelector(
+        '[data-testid="chat-message-pane"]',
+      ) as HTMLElement | null;
       if (el) {
-        el.scrollTop = 0
-        el.dispatchEvent(new Event('scroll'))
+        el.scrollTop = 0;
+        el.dispatchEvent(new Event("scroll"));
       }
-    })
-    await page.waitForTimeout(50)
+    });
+    await page.waitForTimeout(50);
 
     // Record scroll position just after scrolling up
     const scrollTopAfterScrollUp = await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
-      return el?.scrollTop ?? 0
-    })
+      const el = document.querySelector(
+        '[data-testid="chat-message-pane"]',
+      ) as HTMLElement | null;
+      return el?.scrollTop ?? 0;
+    });
 
     // Deliver more chunks — auto-scroll should NOT override the user's position
     for (let i = 1; i <= 10; i++) {
       await page.evaluate((content: string) => {
-        const driver = (window as unknown as { __sseDriver: SseDriver }).__sseDriver
-        const es = driver.latest()
-        es.fire('message', JSON.stringify({ content }))
-      }, `${bigLine}\n`)
-      await page.waitForTimeout(20)
+        const driver = (window as unknown as { __sseDriver: SseDriver })
+          .__sseDriver;
+        const es = driver.latest();
+        es.fire("message", JSON.stringify({ content }));
+      }, `${bigLine}\n`);
+      await page.waitForTimeout(20);
     }
 
     // Wait a moment for any RAF debounce to flush
-    await page.waitForTimeout(100)
+    await page.waitForTimeout(100);
 
     // The pane should NOT have been scrolled to the bottom after the user scrolled up
-    const atBottom = await isScrolledToBottom(page)
-    expect(atBottom).toBe(false)
+    const atBottom = await isScrolledToBottom(page);
+    expect(atBottom).toBe(false);
 
     // Scroll position should be near where the user left it (not jumped to bottom)
     const scrollTopAfterChunks = await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
-      return el?.scrollTop ?? 0
-    })
+      const el = document.querySelector(
+        '[data-testid="chat-message-pane"]',
+      ) as HTMLElement | null;
+      return el?.scrollTop ?? 0;
+    });
     // Should be near the top (where we scrolled), not at the bottom
-    expect(scrollTopAfterChunks).toBeLessThanOrEqual(scrollTopAfterScrollUp + 50)
+    expect(scrollTopAfterChunks).toBeLessThanOrEqual(
+      scrollTopAfterScrollUp + 50,
+    );
 
-    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
-  })
+    await page.evaluate(() =>
+      (
+        window as unknown as { __releaseScrollPost: () => void }
+      ).__releaseScrollPost(),
+    );
+  });
 
-  test('after a new submit, auto-scroll re-engages even if user had scrolled up before', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    await input.fill('first message')
-    await page.getByTestId('send-button').click()
+  test("after a new submit, auto-scroll re-engages even if user had scrolled up before", async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    await input.fill("first message");
+    await page.getByTestId("send-button").click();
 
     // Wait for SSE and send a few chunks
     await page.waitForFunction(() => {
-      return (window as unknown as { __sseDriver?: SseDriver }).__sseDriver?.instances().length === 1
-    })
+      return (
+        (
+          window as unknown as { __sseDriver?: SseDriver }
+        ).__sseDriver?.instances().length === 1
+      );
+    });
 
     for (let i = 1; i <= 5; i++) {
       await page.evaluate((lineNum: number) => {
-        const driver = (window as unknown as { __sseDriver: SseDriver }).__sseDriver
-        const es = driver.latest()
-        es.fire('message', JSON.stringify({ content: `Line ${lineNum}\n` }))
-      }, i)
+        const driver = (window as unknown as { __sseDriver: SseDriver })
+          .__sseDriver;
+        const es = driver.latest();
+        es.fire("message", JSON.stringify({ content: `Line ${lineNum}\n` }));
+      }, i);
     }
 
     // Simulate the user scrolling up
-    await scrollPaneUp(page, 500)
+    await scrollPaneUp(page, 500);
 
     // Release the first POST FIRST so canonical history is populated by the
     // mock before [DONE] triggers the post-stream reconcile (otherwise the
     // reconcile reads an empty backend and wipes the chunk-assembled
     // assistant). Real backend timing: the POST handler returns AFTER the
     // chunk channel is fully drained; the test's release is the analogue.
-    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
+    await page.evaluate(() =>
+      (
+        window as unknown as { __releaseScrollPost: () => void }
+      ).__releaseScrollPost(),
+    );
     // Brief wait for the POST to settle into messagesBySession.
-    await page.waitForTimeout(100)
+    await page.waitForTimeout(100);
 
     // Finish the stream — reconcile will read the now-populated history.
     await page.evaluate(() => {
-      const driver = (window as unknown as { __sseDriver: SseDriver }).__sseDriver
-      const es = driver.latest()
-      es.fire('message', '[DONE]')
-    })
+      const driver = (window as unknown as { __sseDriver: SseDriver })
+        .__sseDriver;
+      const es = driver.latest();
+      es.fire("message", "[DONE]");
+    });
 
     // Now submit a second message — this should re-engage auto-scroll.
     // First fill the input (which alone wouldn't enable the button while
     // isLoading is true — this also tests that isLoading has cleared).
-    await input.fill('second message')
-    await expect(page.getByTestId('send-button')).toBeEnabled({ timeout: 3000 })
-    await page.getByTestId('send-button').click()
+    await input.fill("second message");
+    await expect(page.getByTestId("send-button")).toBeEnabled({
+      timeout: 3000,
+    });
+    await page.getByTestId("send-button").click();
 
     // Wait for the second SSE and send enough content to require scroll
     await page.waitForFunction(() => {
-      return (window as unknown as { __sseDriver?: SseDriver }).__sseDriver?.instances().length === 2
-    })
+      return (
+        (
+          window as unknown as { __sseDriver?: SseDriver }
+        ).__sseDriver?.instances().length === 2
+      );
+    });
 
     // Wait for the new message to appear
-    await expect(page.getByTestId('message-list')).toContainText('second message')
+    await expect(page.getByTestId("message-list")).toContainText(
+      "second message",
+    );
 
     // The second submit should have reset userScrolledUp, so the pane scrolls to bottom
-    await page.waitForFunction(() => {
-      const el = document.querySelector('[data-testid="chat-message-pane"]') as HTMLElement | null
-      if (!el) return false
-      return el.scrollTop + el.clientHeight >= el.scrollHeight - 10
-    }, { timeout: 3000 })
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector(
+          '[data-testid="chat-message-pane"]',
+        ) as HTMLElement | null;
+        if (!el) return false;
+        return el.scrollTop + el.clientHeight >= el.scrollHeight - 10;
+      },
+      { timeout: 3000 },
+    );
 
-    const atBottom = await isScrolledToBottom(page)
-    expect(atBottom).toBe(true)
+    const atBottom = await isScrolledToBottom(page);
+    expect(atBottom).toBe(true);
 
     // Release the second POST so the page exits cleanly.
-    await page.evaluate(() => (window as unknown as { __releaseScrollPost: () => void }).__releaseScrollPost())
-  })
-})
+    await page.evaluate(() =>
+      (
+        window as unknown as { __releaseScrollPost: () => void }
+      ).__releaseScrollPost(),
+    );
+  });
+});

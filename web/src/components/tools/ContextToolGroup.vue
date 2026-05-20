@@ -1,48 +1,48 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import type { Message } from '@/types'
-import { buildToolRenderSpec } from '@/views/toolRenderSpec'
+import { ref, computed } from "vue";
+import type { Message } from "@/types";
+import { buildToolRenderSpec } from "@/views/toolRenderSpec";
 
 const props = defineProps<{
-  messages: Message[]
-  toolCounts: Record<string, number>
-}>()
+  messages: Message[];
+  toolCounts: Record<string, number>;
+}>();
 
-const isOpen = ref(false)
+const isOpen = ref(false);
 
 const toolLabels: Record<string, string> = {
-  read: 'files read',
-  glob: 'patterns matched',
-  grep: 'searches',
-  list: 'listings',
-}
+  read: "files read",
+  glob: "patterns matched",
+  grep: "searches",
+  list: "listings",
+};
 
 const summaryLabel = computed(() => {
   return Object.entries(props.toolCounts)
     .map(([name, count]) => `${count} ${toolLabels[name] || name}`)
-    .join(', ')
-})
+    .join(", ");
+});
 
 function toggle() {
-  isOpen.value = !isOpen.value
+  isOpen.value = !isOpen.value;
 }
 
 function truncateBody(body: string): string {
-  const maxLen = 100
-  if (body.length <= maxLen) return body
-  return body.slice(0, maxLen) + '...'
+  const maxLen = 100;
+  if (body.length <= maxLen) return body;
+  return body.slice(0, maxLen) + "...";
 }
 
 const renderedMessages = computed(() => {
   return props.messages.map((msg) => {
-    const spec = buildToolRenderSpec(msg)
+    const spec = buildToolRenderSpec(msg);
     return {
       id: msg.id,
       heading: spec.heading,
       bodyPreview: truncateBody(spec.body),
-    }
-  })
-})
+    };
+  });
+});
 </script>
 
 <template>
@@ -53,7 +53,7 @@ const renderedMessages = computed(() => {
     :data-open="isOpen"
   >
     <div class="group-header" @click="toggle">
-      <span class="toggle-icon">{{ isOpen ? '▼' : '▶' }}</span>
+      <span class="toggle-icon">{{ isOpen ? "▼" : "▶" }}</span>
       <span class="summary">{{ summaryLabel }}</span>
     </div>
     <div v-if="isOpen" class="group-content">

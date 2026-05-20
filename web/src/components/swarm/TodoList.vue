@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { useTodoStore } from '@/stores/todoStore'
+import { useTodoStore } from "@/stores/todoStore";
 
-defineOptions({ name: 'TodoList' })
+defineOptions({ name: "TodoList" });
 
 // Todos are agent-emitted (see the `todowrite` tool); this view is a
 // read-only projection. No user-driven add, toggle, or delete. The
 // canonical mount point is TodoListPanel in the chat side-panel; this
 // component only survives because PlanPanel still imports it.
-const todoStore = useTodoStore()
+const todoStore = useTodoStore();
 </script>
 
 <template>
@@ -24,12 +24,17 @@ const todoStore = useTodoStore()
           class="status-icon"
           :class="`status-${todo.status}`"
           aria-hidden="true"
-        >{{ todo.status === 'completed' ? '✓' : '○' }}</span>
+          >{{ todo.status === "completed" ? "✓" : "○" }}</span
+        >
         <span class="todo-text">{{ todo.content }}</span>
       </li>
     </ul>
 
-    <div v-if="todoStore.todos.length === 0" class="empty" data-testid="todo-empty">
+    <div
+      v-if="todoStore.todos.length === 0"
+      class="empty"
+      data-testid="todo-empty"
+    >
       No tasks yet
     </div>
   </div>

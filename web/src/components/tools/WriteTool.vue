@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import CopyButton from './CopyButton.vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import CopyButton from "./CopyButton.vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 </script>
 
 <template>
@@ -21,7 +21,10 @@ const props = withDefaults(defineProps<ToolRendererProps>(), {
         <span class="tool-renderer__label">Written content</span>
         <CopyButton :text="props.body" />
       </div>
-      <pre class="tool-code tool-code--write" data-component="write-content"><code>{{ props.body }}</code></pre>
+      <pre
+        class="tool-code tool-code--write"
+        data-component="write-content"
+      ><code>{{ props.body }}</code></pre>
     </div>
   </ToolBubble>
 </template>
@@ -53,7 +56,9 @@ const props = withDefaults(defineProps<ToolRendererProps>(), {
   border-radius: calc(var(--radius, 12px) - 4px);
   background: var(--surface-low, #1a1b26);
   color: var(--text-primary, #c0caf5);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-x: auto;

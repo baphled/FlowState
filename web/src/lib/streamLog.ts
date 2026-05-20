@@ -17,43 +17,50 @@
  */
 
 /** Maximum number of entries retained in the ring. */
-export const STREAM_LOG_MAX = 50
+export const STREAM_LOG_MAX = 50;
 
 export type StreamLogEntry =
-  | { kind: 'connect'; sessionId: string; at: number }
-  | { kind: 'disconnect'; sessionId: string; at: number }
-  | { kind: 'chunk-batch'; sessionId: string; count: number; at: number }
-  | { kind: 'watchdog-arm'; sessionId: string; at: number }
-  | { kind: 'watchdog-trip'; sessionId: string; at: number }
-  | { kind: 'watchdog-clear'; sessionId: string; at: number }
-  | { kind: 'reconcile-call'; sessionId: string; at: number }
-  | { kind: 'reconcile-result'; sessionId: string; messageCount: number; at: number }
-  | { kind: 'event-dropped'; sessionId: string; reason: string; at: number }
+  | { kind: "connect"; sessionId: string; at: number }
+  | { kind: "disconnect"; sessionId: string; at: number }
+  | { kind: "chunk-batch"; sessionId: string; count: number; at: number }
+  | { kind: "watchdog-arm"; sessionId: string; at: number }
+  | { kind: "watchdog-trip"; sessionId: string; at: number }
+  | { kind: "watchdog-clear"; sessionId: string; at: number }
+  | { kind: "reconcile-call"; sessionId: string; at: number }
+  | {
+      kind: "reconcile-result";
+      sessionId: string;
+      messageCount: number;
+      at: number;
+    }
+  | { kind: "event-dropped"; sessionId: string; reason: string; at: number };
 
 /** Input payload for recordStreamEvent — `at` is filled in by the recorder. */
 export type StreamLogInput =
-  | { kind: 'connect'; sessionId: string }
-  | { kind: 'disconnect'; sessionId: string }
-  | { kind: 'chunk-batch'; sessionId: string; count: number }
-  | { kind: 'watchdog-arm'; sessionId: string }
-  | { kind: 'watchdog-trip'; sessionId: string }
-  | { kind: 'watchdog-clear'; sessionId: string }
-  | { kind: 'reconcile-call'; sessionId: string }
-  | { kind: 'reconcile-result'; sessionId: string; messageCount: number }
-  | { kind: 'event-dropped'; sessionId: string; reason: string }
+  | { kind: "connect"; sessionId: string }
+  | { kind: "disconnect"; sessionId: string }
+  | { kind: "chunk-batch"; sessionId: string; count: number }
+  | { kind: "watchdog-arm"; sessionId: string }
+  | { kind: "watchdog-trip"; sessionId: string }
+  | { kind: "watchdog-clear"; sessionId: string }
+  | { kind: "reconcile-call"; sessionId: string }
+  | { kind: "reconcile-result"; sessionId: string; messageCount: number }
+  | { kind: "event-dropped"; sessionId: string; reason: string };
 
 // The live ring. Module-scoped so every consumer in the page sees the same
 // breadcrumb list. Tests reset it via clearStreamLog. Do not export — clients
 // must go through getStreamLog so the array reference can be swapped if we
 // ever need to (no current need; future-proofing).
-const ring: StreamLogEntry[] = []
+const ring: StreamLogEntry[] = [];
 
 function mirrorToWindow(): void {
-  if (typeof window === 'undefined') return
-  // Mirror the live array (same reference) so the maintainer can watch it
-  // grow in DevTools without re-fetching. The variable is intentionally
-  // namespaced under `__flowstate` to make clear it's a debug surface.
-  ;(window as unknown as { __flowstateStreamLog: StreamLogEntry[] }).__flowstateStreamLog = ring
+  if (typeof window === "undefined")
+    return; // Mirror the live array (same reference) so the maintainer can watch it
+    // grow in DevTools without re-fetching. The variable is intentionally
+    // namespaced under `__flowstate` to make clear it's a debug surface.
+  (
+    window as unknown as { __flowstateStreamLog: StreamLogEntry[] }
+  ).__flowstateStreamLog = ring;
 }
 
 /**
@@ -62,12 +69,12 @@ function mirrorToWindow(): void {
  * STREAM_LOG_MAX the oldest entry is dropped.
  */
 export function recordStreamEvent(input: StreamLogInput): void {
-  const entry = { ...input, at: Date.now() } as StreamLogEntry
-  ring.push(entry)
+  const entry = { ...input, at: Date.now() } as StreamLogEntry;
+  ring.push(entry);
   while (ring.length > STREAM_LOG_MAX) {
-    ring.shift()
+    ring.shift();
   }
-  mirrorToWindow()
+  mirrorToWindow();
 }
 
 /**
@@ -76,13 +83,13 @@ export function recordStreamEvent(input: StreamLogInput): void {
  * shape from documented intent.
  */
 export function getStreamLog(): StreamLogEntry[] {
-  return ring
+  return ring;
 }
 
 /**
  * Empty the ring. Used by tests; not intended for production code paths.
  */
 export function clearStreamLog(): void {
-  ring.length = 0
-  mirrorToWindow()
+  ring.length = 0;
+  mirrorToWindow();
 }

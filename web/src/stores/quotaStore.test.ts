@@ -1,7 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { createPinia, setActivePinia } from 'pinia'
-import { useQuotaStore, snapshotKey, type ProviderQuotaSnapshot } from './quotaStore'
-import type { SSEProviderQuotaEvent } from '@/lib/sseEvent'
+import { beforeEach, describe, expect, it } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+import {
+  useQuotaStore,
+  snapshotKey,
+  type ProviderQuotaSnapshot,
+} from "./quotaStore";
+import type { SSEProviderQuotaEvent } from "@/lib/sseEvent";
 
 /**
  * quotaStore behaviour specs — pin the Pinia store's contract for
@@ -25,297 +29,334 @@ import type { SSEProviderQuotaEvent } from '@/lib/sseEvent'
 
 function buildRateLimitEvent(): SSEProviderQuotaEvent {
   return {
-    kind: 'provider_quota',
-    provider: 'anthropic',
-    accountHash: 'deadbeef',
-    model: 'claude-opus-4-7',
-    observedAt: '2026-05-13T12:00:00Z',
+    kind: "provider_quota",
+    provider: "anthropic",
+    accountHash: "deadbeef",
+    model: "claude-opus-4-7",
+    observedAt: "2026-05-13T12:00:00Z",
     stale: false,
-    storeBackend: 'memory',
-    pricingSource: '',
-    variant: 'rate_limit',
+    storeBackend: "memory",
+    pricingSource: "",
+    variant: "rate_limit",
     rateLimit: {
-      requests: { limit: 1000, remaining: 750, reset: '2026-05-13T12:01:00Z' },
-      tokens: { limit: 100000, remaining: 75000, reset: '2026-05-13T12:01:00Z' },
-      input: { limit: -1, remaining: -1, reset: '' },
-      output: { limit: -1, remaining: -1, reset: '' },
+      requests: { limit: 1000, remaining: 750, reset: "2026-05-13T12:01:00Z" },
+      tokens: {
+        limit: 100000,
+        remaining: 75000,
+        reset: "2026-05-13T12:01:00Z",
+      },
+      input: { limit: -1, remaining: -1, reset: "" },
+      output: { limit: -1, remaining: -1, reset: "" },
       tightestPercentRemaining: 75,
-      tightestResetAt: '2026-05-13T12:01:00Z',
+      tightestResetAt: "2026-05-13T12:01:00Z",
     },
     tokenSpend: null,
     notConfigured: null,
-  }
+  };
 }
 
 function buildTokenSpendEvent(): SSEProviderQuotaEvent {
   return {
-    kind: 'provider_quota',
-    provider: 'anthropic',
-    accountHash: 'deadbeef',
-    model: 'claude-opus-4-7',
-    observedAt: '2026-05-13T12:00:00Z',
+    kind: "provider_quota",
+    provider: "anthropic",
+    accountHash: "deadbeef",
+    model: "claude-opus-4-7",
+    observedAt: "2026-05-13T12:00:00Z",
     stale: false,
-    storeBackend: 'memory',
-    pricingSource: 'flowstate-default-v1',
-    variant: 'token_spend',
+    storeBackend: "memory",
+    pricingSource: "flowstate-default-v1",
+    variant: "token_spend",
     rateLimit: null,
     tokenSpend: {
       spentMinor: 241,
-      spentCurrency: 'USD',
+      spentCurrency: "USD",
       spentUsdMinor: 241,
       capMinor: 5000,
-      capCurrency: 'USD',
-      period: 'monthly',
-      periodStart: '2026-05-01T00:00:00Z',
-      periodEnd: '2026-06-01T00:00:00Z',
+      capCurrency: "USD",
+      period: "monthly",
+      periodStart: "2026-05-01T00:00:00Z",
+      periodEnd: "2026-06-01T00:00:00Z",
       thresholdAmber: 80,
       thresholdRed: 95,
     },
     notConfigured: null,
-  }
+  };
 }
 
 function buildNotConfiguredEvent(): SSEProviderQuotaEvent {
   return {
-    kind: 'provider_quota',
-    provider: 'ollama',
-    accountHash: '',
-    model: 'llama3',
-    observedAt: '2026-05-13T12:00:00Z',
+    kind: "provider_quota",
+    provider: "ollama",
+    accountHash: "",
+    model: "llama3",
+    observedAt: "2026-05-13T12:00:00Z",
     stale: false,
-    storeBackend: 'memory',
-    pricingSource: '',
-    variant: 'not_configured',
+    storeBackend: "memory",
+    pricingSource: "",
+    variant: "not_configured",
     rateLimit: null,
     tokenSpend: null,
-    notConfigured: { reason: 'local-model' },
-  }
+    notConfigured: { reason: "local-model" },
+  };
 }
 
-describe('quotaStore', () => {
+describe("quotaStore", () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
-  })
+    setActivePinia(createPinia());
+  });
 
-  describe('snapshotKey helper', () => {
+  describe("snapshotKey helper", () => {
     it('builds the canonical "<provider>:<account>:<model>" key form', () => {
-      expect(snapshotKey('anthropic', 'deadbeef', 'claude-opus-4-7'))
-        .toBe('anthropic:deadbeef:claude-opus-4-7')
-    })
+      expect(snapshotKey("anthropic", "deadbeef", "claude-opus-4-7")).toBe(
+        "anthropic:deadbeef:claude-opus-4-7",
+      );
+    });
 
-    it('tolerates empty accountHash (ollama-style no-key providers)', () => {
-      expect(snapshotKey('ollama', '', 'llama3')).toBe('ollama::llama3')
-    })
-  })
+    it("tolerates empty accountHash (ollama-style no-key providers)", () => {
+      expect(snapshotKey("ollama", "", "llama3")).toBe("ollama::llama3");
+    });
+  });
 
-  describe('applyProviderQuotaEvent — RateLimit branch', () => {
-    it('stores a RateLimit snapshot under (provider, account, model)', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildRateLimitEvent())
-      const snap = store.currentQuotaFor('anthropic', 'deadbeef', 'claude-opus-4-7')
-      expect(snap).not.toBeNull()
-      expect(snap?.variant).toBe('rate_limit')
-      expect(snap?.rateLimit?.tightestPercentRemaining).toBe(75)
-      expect(snap?.tokenSpend).toBeNull()
-      expect(snap?.notConfigured).toBeNull()
-    })
-  })
+  describe("applyProviderQuotaEvent — RateLimit branch", () => {
+    it("stores a RateLimit snapshot under (provider, account, model)", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildRateLimitEvent());
+      const snap = store.currentQuotaFor(
+        "anthropic",
+        "deadbeef",
+        "claude-opus-4-7",
+      );
+      expect(snap).not.toBeNull();
+      expect(snap?.variant).toBe("rate_limit");
+      expect(snap?.rateLimit?.tightestPercentRemaining).toBe(75);
+      expect(snap?.tokenSpend).toBeNull();
+      expect(snap?.notConfigured).toBeNull();
+    });
+  });
 
-  describe('applyProviderQuotaEvent — TokenSpend branch', () => {
-    it('stores a TokenSpend snapshot with figures preserved', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
-      const snap = store.currentQuotaFor('anthropic', 'deadbeef', 'claude-opus-4-7')
-      expect(snap?.variant).toBe('token_spend')
-      expect(snap?.tokenSpend?.spentMinor).toBe(241)
-      expect(snap?.tokenSpend?.capMinor).toBe(5000)
-      expect(snap?.tokenSpend?.thresholdAmber).toBe(80)
-      expect(snap?.tokenSpend?.thresholdRed).toBe(95)
-      expect(snap?.rateLimit).toBeNull()
-    })
+  describe("applyProviderQuotaEvent — TokenSpend branch", () => {
+    it("stores a TokenSpend snapshot with figures preserved", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
+      const snap = store.currentQuotaFor(
+        "anthropic",
+        "deadbeef",
+        "claude-opus-4-7",
+      );
+      expect(snap?.variant).toBe("token_spend");
+      expect(snap?.tokenSpend?.spentMinor).toBe(241);
+      expect(snap?.tokenSpend?.capMinor).toBe(5000);
+      expect(snap?.tokenSpend?.thresholdAmber).toBe(80);
+      expect(snap?.tokenSpend?.thresholdRed).toBe(95);
+      expect(snap?.rateLimit).toBeNull();
+    });
 
-    it('overwrites a prior TokenSpend snapshot for the same key (later event wins)', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
+    it("overwrites a prior TokenSpend snapshot for the same key (later event wins)", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
       store.applyProviderQuotaEvent({
         ...buildTokenSpendEvent(),
         tokenSpend: {
           spentMinor: 482,
-          spentCurrency: 'USD',
+          spentCurrency: "USD",
           spentUsdMinor: 482,
           capMinor: 5000,
-          capCurrency: 'USD',
-          period: 'monthly',
-          periodStart: '2026-05-01T00:00:00Z',
-          periodEnd: '2026-06-01T00:00:00Z',
+          capCurrency: "USD",
+          period: "monthly",
+          periodStart: "2026-05-01T00:00:00Z",
+          periodEnd: "2026-06-01T00:00:00Z",
           thresholdAmber: 80,
           thresholdRed: 95,
         },
-      })
-      const snap = store.currentQuotaFor('anthropic', 'deadbeef', 'claude-opus-4-7')
-      expect(snap?.tokenSpend?.spentMinor).toBe(482)
-    })
+      });
+      const snap = store.currentQuotaFor(
+        "anthropic",
+        "deadbeef",
+        "claude-opus-4-7",
+      );
+      expect(snap?.tokenSpend?.spentMinor).toBe(482);
+    });
 
-    it('partitions snapshots by accountHash (distinct keys for distinct accounts)', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent({ ...buildTokenSpendEvent(), accountHash: 'acc-A' })
+    it("partitions snapshots by accountHash (distinct keys for distinct accounts)", () => {
+      const store = useQuotaStore();
       store.applyProviderQuotaEvent({
         ...buildTokenSpendEvent(),
-        accountHash: 'acc-B',
+        accountHash: "acc-A",
+      });
+      store.applyProviderQuotaEvent({
+        ...buildTokenSpendEvent(),
+        accountHash: "acc-B",
         tokenSpend: {
           spentMinor: 482,
-          spentCurrency: 'USD',
+          spentCurrency: "USD",
           spentUsdMinor: 482,
           capMinor: 5000,
-          capCurrency: 'USD',
-          period: 'monthly',
-          periodStart: '2026-05-01T00:00:00Z',
-          periodEnd: '2026-06-01T00:00:00Z',
+          capCurrency: "USD",
+          period: "monthly",
+          periodStart: "2026-05-01T00:00:00Z",
+          periodEnd: "2026-06-01T00:00:00Z",
           thresholdAmber: 80,
           thresholdRed: 95,
         },
-      })
-      const a = store.currentQuotaFor('anthropic', 'acc-A', 'claude-opus-4-7')
-      const b = store.currentQuotaFor('anthropic', 'acc-B', 'claude-opus-4-7')
-      expect(a?.tokenSpend?.spentMinor).toBe(241)
-      expect(b?.tokenSpend?.spentMinor).toBe(482)
-    })
-  })
+      });
+      const a = store.currentQuotaFor("anthropic", "acc-A", "claude-opus-4-7");
+      const b = store.currentQuotaFor("anthropic", "acc-B", "claude-opus-4-7");
+      expect(a?.tokenSpend?.spentMinor).toBe(241);
+      expect(b?.tokenSpend?.spentMinor).toBe(482);
+    });
+  });
 
-  describe('applyProviderQuotaEvent — NotConfigured branch', () => {
-    it('stores a NotConfigured snapshot with the Reason verbatim', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildNotConfiguredEvent())
-      const snap = store.currentQuotaFor('ollama', '', 'llama3')
-      expect(snap?.variant).toBe('not_configured')
-      expect(snap?.notConfigured?.reason).toBe('local-model')
-    })
-  })
+  describe("applyProviderQuotaEvent — NotConfigured branch", () => {
+    it("stores a NotConfigured snapshot with the Reason verbatim", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildNotConfiguredEvent());
+      const snap = store.currentQuotaFor("ollama", "", "llama3");
+      expect(snap?.variant).toBe("not_configured");
+      expect(snap?.notConfigured?.reason).toBe("local-model");
+    });
+  });
 
   // Phase-5 §1c-β — idempotency gate. The transitional state has two
   // callers for the same partition's snapshot (the SSE handler and the
   // new pollTurnUntilTerminal poll-diff). A structural-equal short-
   // circuit prevents Vue reactivity from observing a fresh object
   // reference as a state change on duplicate emissions.
-  describe('applyProviderQuotaEvent idempotency (Phase-5 §1c-β)', () => {
-    it('does NOT rewrite the snapshots map when the same partition is re-applied with an identical figure', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
+  describe("applyProviderQuotaEvent idempotency (Phase-5 §1c-β)", () => {
+    it("does NOT rewrite the snapshots map when the same partition is re-applied with an identical figure", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
 
-      const firstMap = store.snapshots
+      const firstMap = store.snapshots;
       // Apply the IDENTICAL event again — the dedup gate must short-circuit
       // so the snapshots map keeps its previous object reference.
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
 
-      expect(store.snapshots).toBe(firstMap)
-    })
+      expect(store.snapshots).toBe(firstMap);
+    });
 
-    it('DOES rewrite when the partition variant figure moves (spentMinor delta)', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
-      const firstMap = store.snapshots
+    it("DOES rewrite when the partition variant figure moves (spentMinor delta)", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
+      const firstMap = store.snapshots;
 
       // Different spentMinor — must NOT short-circuit; map identity changes.
       store.applyProviderQuotaEvent({
         ...buildTokenSpendEvent(),
         tokenSpend: {
           spentMinor: 999,
-          spentCurrency: 'USD',
+          spentCurrency: "USD",
           spentUsdMinor: 999,
           capMinor: 5000,
-          capCurrency: 'USD',
-          period: 'monthly',
-          periodStart: '2026-05-01T00:00:00Z',
-          periodEnd: '2026-06-01T00:00:00Z',
+          capCurrency: "USD",
+          period: "monthly",
+          periodStart: "2026-05-01T00:00:00Z",
+          periodEnd: "2026-06-01T00:00:00Z",
           thresholdAmber: 80,
           thresholdRed: 95,
         },
-      })
+      });
 
-      expect(store.snapshots).not.toBe(firstMap)
-      const snap = store.currentQuotaFor('anthropic', 'deadbeef', 'claude-opus-4-7')
-      expect(snap?.tokenSpend?.spentMinor).toBe(999)
-    })
+      expect(store.snapshots).not.toBe(firstMap);
+      const snap = store.currentQuotaFor(
+        "anthropic",
+        "deadbeef",
+        "claude-opus-4-7",
+      );
+      expect(snap?.tokenSpend?.spentMinor).toBe(999);
+    });
 
-    it('DOES rewrite when observedAt moves (same figure, new emission timestamp)', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
-      const firstMap = store.snapshots
+    it("DOES rewrite when observedAt moves (same figure, new emission timestamp)", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
+      const firstMap = store.snapshots;
 
       store.applyProviderQuotaEvent({
         ...buildTokenSpendEvent(),
-        observedAt: '2026-05-19T00:00:01Z',
-      })
+        observedAt: "2026-05-19T00:00:01Z",
+      });
 
-      expect(store.snapshots).not.toBe(firstMap)
-    })
-  })
+      expect(store.snapshots).not.toBe(firstMap);
+    });
+  });
 
-  describe('currentQuotaFor', () => {
-    it('returns null when no snapshot has been seen for the tuple', () => {
-      const store = useQuotaStore()
-      expect(store.currentQuotaFor('anthropic', 'deadbeef', 'claude-opus-4-7')).toBeNull()
-    })
+  describe("currentQuotaFor", () => {
+    it("returns null when no snapshot has been seen for the tuple", () => {
+      const store = useQuotaStore();
+      expect(
+        store.currentQuotaFor("anthropic", "deadbeef", "claude-opus-4-7"),
+      ).toBeNull();
+    });
 
-    it('returns null for a different (provider, account, model) tuple', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
-      expect(store.currentQuotaFor('anthropic', 'different-account', 'claude-opus-4-7')).toBeNull()
-    })
-  })
+    it("returns null for a different (provider, account, model) tuple", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
+      expect(
+        store.currentQuotaFor(
+          "anthropic",
+          "different-account",
+          "claude-opus-4-7",
+        ),
+      ).toBeNull();
+    });
+  });
 
-  describe('anyQuotaFor', () => {
-    it('returns the first match for (provider, model) regardless of accountHash', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent({ ...buildTokenSpendEvent(), accountHash: 'some-account' })
-      const snap = store.anyQuotaFor('anthropic', 'claude-opus-4-7')
-      expect(snap?.variant).toBe('token_spend')
-    })
-
-    it('returns null when no matching (provider, model) entry exists', () => {
-      const store = useQuotaStore()
-      expect(store.anyQuotaFor('anthropic', 'claude-opus-4-7')).toBeNull()
-    })
-
-    it('skips snapshots whose model does not match', () => {
-      const store = useQuotaStore()
+  describe("anyQuotaFor", () => {
+    it("returns the first match for (provider, model) regardless of accountHash", () => {
+      const store = useQuotaStore();
       store.applyProviderQuotaEvent({
         ...buildTokenSpendEvent(),
-        model: 'claude-sonnet-4-5',
-      })
-      expect(store.anyQuotaFor('anthropic', 'claude-opus-4-7')).toBeNull()
-    })
-  })
+        accountHash: "some-account",
+      });
+      const snap = store.anyQuotaFor("anthropic", "claude-opus-4-7");
+      expect(snap?.variant).toBe("token_spend");
+    });
 
-  describe('reset', () => {
-    it('clears all snapshots so the chip falls back to its bootstrap empty state', () => {
-      const store = useQuotaStore()
-      store.applyProviderQuotaEvent(buildRateLimitEvent())
-      store.applyProviderQuotaEvent(buildNotConfiguredEvent())
-      expect(Object.keys(store.snapshots).length).toBe(2)
-      store.reset()
-      expect(Object.keys(store.snapshots).length).toBe(0)
-      expect(store.currentQuotaFor('anthropic', 'deadbeef', 'claude-opus-4-7')).toBeNull()
-    })
-  })
+    it("returns null when no matching (provider, model) entry exists", () => {
+      const store = useQuotaStore();
+      expect(store.anyQuotaFor("anthropic", "claude-opus-4-7")).toBeNull();
+    });
 
-  describe('Pinia post-mount seed gotcha (memory feedback_pinia_onmounted_clobbers_seed)', () => {
-    it('a snapshot dispatched after mount is preserved (no clobbering)', async () => {
+    it("skips snapshots whose model does not match", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent({
+        ...buildTokenSpendEvent(),
+        model: "claude-sonnet-4-5",
+      });
+      expect(store.anyQuotaFor("anthropic", "claude-opus-4-7")).toBeNull();
+    });
+  });
+
+  describe("reset", () => {
+    it("clears all snapshots so the chip falls back to its bootstrap empty state", () => {
+      const store = useQuotaStore();
+      store.applyProviderQuotaEvent(buildRateLimitEvent());
+      store.applyProviderQuotaEvent(buildNotConfiguredEvent());
+      expect(Object.keys(store.snapshots).length).toBe(2);
+      store.reset();
+      expect(Object.keys(store.snapshots).length).toBe(0);
+      expect(
+        store.currentQuotaFor("anthropic", "deadbeef", "claude-opus-4-7"),
+      ).toBeNull();
+    });
+  });
+
+  describe("Pinia post-mount seed gotcha (memory feedback_pinia_onmounted_clobbers_seed)", () => {
+    it("a snapshot dispatched after mount is preserved (no clobbering)", async () => {
       // The chip subscribes to the store reactively; this spec
       // mirrors the post-mount seed pattern used in QuotaChip.spec.ts
       // and asserts the store does not lose the dispatch.
-      const store = useQuotaStore()
+      const store = useQuotaStore();
       // Simulate a post-mount seed via a microtask boundary.
-      await Promise.resolve()
-      store.applyProviderQuotaEvent(buildTokenSpendEvent())
-      await Promise.resolve()
+      await Promise.resolve();
+      store.applyProviderQuotaEvent(buildTokenSpendEvent());
+      await Promise.resolve();
       const snap: ProviderQuotaSnapshot | null = store.currentQuotaFor(
-        'anthropic',
-        'deadbeef',
-        'claude-opus-4-7',
-      )
-      expect(snap).not.toBeNull()
-      expect(snap?.variant).toBe('token_spend')
-    })
-  })
-})
+        "anthropic",
+        "deadbeef",
+        "claude-opus-4-7",
+      );
+      expect(snap).not.toBeNull();
+      expect(snap?.variant).toBe("token_spend");
+    });
+  });
+});

@@ -1,31 +1,33 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useSwarmStore } from '@/stores/swarmStore'
-import { useChatStore } from '@/stores/chatStore'
-import type { SwarmEvent } from '@/types'
+import { computed } from "vue";
+import { useSwarmStore } from "@/stores/swarmStore";
+import { useChatStore } from "@/stores/chatStore";
+import type { SwarmEvent } from "@/types";
 
-defineOptions({ name: 'DelegationPanel' })
+defineOptions({ name: "DelegationPanel" });
 
-const swarmStore = useSwarmStore()
-const chatStore = useChatStore()
-const delegationEvents = computed(() => swarmStore.delegationEvents)
-const harnessEvents = computed(() => swarmStore.harnessEvents)
+const swarmStore = useSwarmStore();
+const chatStore = useChatStore();
+const delegationEvents = computed(() => swarmStore.delegationEvents);
+const harnessEvents = computed(() => swarmStore.harnessEvents);
 
 const emit = defineEmits<{
-  close: []
-}>()
+  close: [];
+}>();
 
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString()
+  return new Date(iso).toLocaleTimeString();
 }
 
-function delegationSummary(event: { metadata?: Record<string, unknown> }): string {
-  if (!event.metadata) return '—'
-  const meta = event.metadata
-  const from = meta.source_agent || meta.from || meta.from_agent || '?'
-  const to = meta.target_agent || meta.to || meta.to_agent || '?'
-  const status = meta.status || meta.delegation_status || ''
-  return `${from} → ${to}${status ? ` (${status})` : ''}`
+function delegationSummary(event: {
+  metadata?: Record<string, unknown>;
+}): string {
+  if (!event.metadata) return "—";
+  const meta = event.metadata;
+  const from = meta.source_agent || meta.from || meta.from_agent || "?";
+  const to = meta.target_agent || meta.to || meta.to_agent || "?";
+  const status = meta.status || meta.delegation_status || "";
+  return `${from} → ${to}${status ? ` (${status})` : ""}`;
 }
 
 // childSessionIdFor extracts the delegated agent's session identifier
@@ -34,11 +36,11 @@ function delegationSummary(event: { metadata?: Record<string, unknown> }): strin
 // new session so consumers can navigate to the delegated work without
 // reconstructing the parent → child mapping client-side.
 function childSessionIdFor(event: SwarmEvent): string | null {
-  const candidate = event.metadata?.child_session_id
-  if (typeof candidate === 'string' && candidate.length > 0) {
-    return candidate
+  const candidate = event.metadata?.child_session_id;
+  if (typeof candidate === "string" && candidate.length > 0) {
+    return candidate;
   }
-  return null
+  return null;
 }
 
 // loadedSkillsFor extracts the `load_skills` argument from the
@@ -54,21 +56,21 @@ function childSessionIdFor(event: SwarmEvent): string | null {
 // chip row in this component lights up without further frontend
 // changes.
 function loadedSkillsFor(event: SwarmEvent): string[] {
-  const raw = event.metadata?.load_skills
-  if (!Array.isArray(raw)) return []
-  return raw.filter((s): s is string => typeof s === 'string' && s.length > 0)
+  const raw = event.metadata?.load_skills;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((s): s is string => typeof s === "string" && s.length > 0);
 }
 
 function isClickable(event: SwarmEvent): boolean {
-  return childSessionIdFor(event) !== null
+  return childSessionIdFor(event) !== null;
 }
 
 async function selectDelegationSession(event: SwarmEvent): Promise<void> {
-  const sessionId = childSessionIdFor(event)
+  const sessionId = childSessionIdFor(event);
   if (!sessionId) {
-    return
+    return;
   }
-  await chatStore.loadSessionMessages(sessionId)
+  await chatStore.loadSessionMessages(sessionId);
 }
 </script>
 
@@ -79,7 +81,11 @@ async function selectDelegationSession(event: SwarmEvent): Promise<void> {
       <span v-if="delegationEvents.length > 0" class="delegation-badge">
         {{ delegationEvents.length }}
       </span>
-      <button class="close-btn" data-testid="close-delegation-panel" @click="emit('close')">
+      <button
+        class="close-btn"
+        data-testid="close-delegation-panel"
+        @click="emit('close')"
+      >
         ✕
       </button>
     </header>
@@ -125,13 +131,18 @@ async function selectDelegationSession(event: SwarmEvent): Promise<void> {
         :data-testid="`harness-${event.id}`"
       >
         <div class="harness-header">
-          <span class="harness-type-badge">{{ event.type.replace('harness_', '') }}</span>
+          <span class="harness-type-badge">{{
+            event.type.replace("harness_", "")
+          }}</span>
           <span class="harness-time">{{ formatTime(event.timestamp) }}</span>
         </div>
-        <p class="harness-payload">{{ event.metadata?.message || '—' }}</p>
+        <p class="harness-payload">{{ event.metadata?.message || "—" }}</p>
       </div>
 
-      <p v-if="delegationEvents.length === 0 && harnessEvents.length === 0" class="delegation-empty">
+      <p
+        v-if="delegationEvents.length === 0 && harnessEvents.length === 0"
+        class="delegation-empty"
+      >
         No delegation or harness events yet
       </p>
     </div>
@@ -201,7 +212,9 @@ async function selectDelegationSession(event: SwarmEvent): Promise<void> {
 
 .delegation-card.clickable {
   cursor: pointer;
-  transition: background 0.15s, border-left-color 0.15s;
+  transition:
+    background 0.15s,
+    border-left-color 0.15s;
 }
 
 .delegation-card.clickable:hover,

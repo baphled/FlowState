@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { fetchProviderQuotas, type ProviderQuotaEntry } from '@/api'
-import ProviderQuotaPanel from '@/components/ProviderQuotaPanel.vue'
+import { computed, onMounted, ref } from "vue";
+import { fetchProviderQuotas, type ProviderQuotaEntry } from "@/api";
+import ProviderQuotaPanel from "@/components/ProviderQuotaPanel.vue";
 
 /**
  * ProviderQuotaDashboardView — `/providers/quota` route surface
@@ -22,25 +22,25 @@ import ProviderQuotaPanel from '@/components/ProviderQuotaPanel.vue'
  * the snapshot after Pinia seeds (in the spec, seed AFTER
  * flushPromises so the post-mount fetch resolves first).
  */
-defineOptions({ name: 'ProviderQuotaDashboardView' })
+defineOptions({ name: "ProviderQuotaDashboardView" });
 
-const entries = ref<ProviderQuotaEntry[]>([])
-const featureWired = ref<boolean>(true)
-const loading = ref<boolean>(true)
-const errorMessage = ref<string>('')
-const selectedEntry = ref<ProviderQuotaEntry | null>(null)
+const entries = ref<ProviderQuotaEntry[]>([]);
+const featureWired = ref<boolean>(true);
+const loading = ref<boolean>(true);
+const errorMessage = ref<string>("");
+const selectedEntry = ref<ProviderQuotaEntry | null>(null);
 
 const isEmpty = computed(() => {
-  return featureWired.value && !loading.value && entries.value.length === 0
-})
+  return featureWired.value && !loading.value && entries.value.length === 0;
+});
 
 /**
  * truncateAccountHash — first 8 chars of the SHA-256-truncated hash,
  * or "(default)" when empty (single-account-per-provider v1 default).
  */
 function truncateAccountHash(hash: string): string {
-  if (!hash) return '(default)'
-  return hash.length > 8 ? hash.slice(0, 8) : hash
+  if (!hash) return "(default)";
+  return hash.length > 8 ? hash.slice(0, 8) : hash;
 }
 
 /**
@@ -48,14 +48,14 @@ function truncateAccountHash(hash: string): string {
  * canonical discriminant stays the snake_case wire string; this is
  * presentation only.
  */
-function variantLabel(variant: ProviderQuotaEntry['variant']): string {
+function variantLabel(variant: ProviderQuotaEntry["variant"]): string {
   switch (variant) {
-    case 'rate_limit':
-      return 'Rate-limit'
-    case 'token_spend':
-      return 'Token spend'
-    case 'not_configured':
-      return 'Not configured'
+    case "rate_limit":
+      return "Rate-limit";
+    case "token_spend":
+      return "Token spend";
+    case "not_configured":
+      return "Not configured";
   }
 }
 
@@ -66,60 +66,61 @@ function variantLabel(variant: ProviderQuotaEntry['variant']): string {
  * not_configured shows the reason verbatim.
  */
 function remainingOrSpent(entry: ProviderQuotaEntry): string {
-  if (entry.variant === 'rate_limit' && entry.rateLimit !== null) {
-    const pct = entry.rateLimit.tightestPercentRemaining
-    return pct < 0 ? '—' : `${pct}% remaining`
+  if (entry.variant === "rate_limit" && entry.rateLimit !== null) {
+    const pct = entry.rateLimit.tightestPercentRemaining;
+    return pct < 0 ? "—" : `${pct}% remaining`;
   }
-  if (entry.variant === 'token_spend' && entry.tokenSpend !== null) {
-    const ts = entry.tokenSpend
-    const spent = `${(ts.spentMinor / 100).toFixed(2)} ${ts.spentCurrency}`
-    if (ts.capMinor <= 0) return spent
-    const cap = `${(ts.capMinor / 100).toFixed(2)} ${ts.capCurrency || ts.spentCurrency}`
-    return `${spent} / ${cap}`
+  if (entry.variant === "token_spend" && entry.tokenSpend !== null) {
+    const ts = entry.tokenSpend;
+    const spent = `${(ts.spentMinor / 100).toFixed(2)} ${ts.spentCurrency}`;
+    if (ts.capMinor <= 0) return spent;
+    const cap = `${(ts.capMinor / 100).toFixed(2)} ${ts.capCurrency || ts.spentCurrency}`;
+    return `${spent} / ${cap}`;
   }
-  if (entry.variant === 'not_configured' && entry.notConfigured !== null) {
-    return entry.notConfigured.reason
+  if (entry.variant === "not_configured" && entry.notConfigured !== null) {
+    return entry.notConfigured.reason;
   }
-  return '—'
+  return "—";
 }
 
 async function loadEntries(): Promise<void> {
-  loading.value = true
-  errorMessage.value = ''
+  loading.value = true;
+  errorMessage.value = "";
   try {
-    const res = await fetchProviderQuotas()
+    const res = await fetchProviderQuotas();
     if (res === null) {
       // 501 — feature not wired in this deployment. Render an
       // explanatory empty state rather than crashing the route.
-      featureWired.value = false
-      entries.value = []
+      featureWired.value = false;
+      entries.value = [];
     } else {
-      featureWired.value = true
-      entries.value = res
+      featureWired.value = true;
+      entries.value = res;
     }
   } catch (err) {
-    errorMessage.value = err instanceof Error ? err.message : 'Failed to load quotas'
-    entries.value = []
+    errorMessage.value =
+      err instanceof Error ? err.message : "Failed to load quotas";
+    entries.value = [];
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
-onMounted(loadEntries)
+onMounted(loadEntries);
 
 function openPanel(entry: ProviderQuotaEntry): void {
-  selectedEntry.value = entry
+  selectedEntry.value = entry;
 }
 
 function closePanel(): void {
-  selectedEntry.value = null
+  selectedEntry.value = null;
 }
 
 async function onReset(): Promise<void> {
   // After a successful reset, re-fetch so the aggregator shows the
   // zeroed snapshot. The panel emits `close` after `reset` so the
   // selectedEntry is already nullified by then.
-  await loadEntries()
+  await loadEntries();
 }
 </script>
 
@@ -185,13 +186,13 @@ async function onReset(): Promise<void> {
         <tr
           v-for="entry in entries"
           :key="`${entry.provider}:${entry.accountHash}:${entry.model}`"
-          :data-testid="
-            `provider-quota-row-${entry.provider}-${entry.accountHash}-${entry.model}`
-          "
+          :data-testid="`provider-quota-row-${entry.provider}-${entry.accountHash}-${entry.model}`"
           class="quota-dashboard__row"
           @click="openPanel(entry)"
         >
-          <td data-testid="provider-quota-row-provider">{{ entry.provider }}</td>
+          <td data-testid="provider-quota-row-provider">
+            {{ entry.provider }}
+          </td>
           <td data-testid="provider-quota-row-account">
             {{ truncateAccountHash(entry.accountHash) }}
           </td>
@@ -203,7 +204,7 @@ async function onReset(): Promise<void> {
             {{ remainingOrSpent(entry) }}
           </td>
           <td data-testid="provider-quota-row-store">
-            {{ entry.storeBackend || '—' }}
+            {{ entry.storeBackend || "—" }}
           </td>
         </tr>
       </tbody>

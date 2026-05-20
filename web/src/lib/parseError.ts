@@ -25,28 +25,28 @@
 export async function parseError(res: Response): Promise<string> {
   const fallback = res.statusText
     ? `${res.statusText} (HTTP ${res.status})`
-    : `HTTP ${res.status}`
+    : `HTTP ${res.status}`;
 
-  let body: unknown
+  let body: unknown;
   try {
-    body = await res.json()
+    body = await res.json();
   } catch {
-    return fallback
+    return fallback;
   }
 
-  if (typeof body === 'string' && body.length > 0) {
-    return body
+  if (typeof body === "string" && body.length > 0) {
+    return body;
   }
 
-  if (body && typeof body === 'object') {
-    const obj = body as Record<string, unknown>
-    for (const key of ['error', 'message', 'detail'] as const) {
-      const value = obj[key]
-      if (typeof value === 'string' && value.length > 0) {
-        return value
+  if (body && typeof body === "object") {
+    const obj = body as Record<string, unknown>;
+    for (const key of ["error", "message", "detail"] as const) {
+      const value = obj[key];
+      if (typeof value === "string" && value.length > 0) {
+        return value;
       }
     }
   }
 
-  return fallback
+  return fallback;
 }

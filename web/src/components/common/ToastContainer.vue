@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { useToast } from '@/composables/useToast'
-import type { Toast } from '@/composables/useToast'
+import { useToast } from "@/composables/useToast";
+import type { Toast } from "@/composables/useToast";
 
-defineOptions({ name: 'ToastContainer' })
+defineOptions({ name: "ToastContainer" });
 
-const { toasts, removeToast } = useToast()
+const { toasts, removeToast } = useToast();
 
 function handleClose(toast: Toast): void {
-  removeToast(toast.id)
+  removeToast(toast.id);
 }
 
 function handleAction(toast: Toast): void {
-  toast.action?.onClick()
+  toast.action?.onClick();
 }
 </script>
 
@@ -27,7 +27,11 @@ function handleAction(toast: Toast): void {
           data-testid="toast-item"
         >
           <div class="toast-content">
-            <span v-if="toast.title" class="toast-title" data-testid="toast-title">
+            <span
+              v-if="toast.title"
+              class="toast-title"
+              data-testid="toast-title"
+            >
               {{ toast.title }}
             </span>
             <span class="toast-message">{{ toast.message }}</span>

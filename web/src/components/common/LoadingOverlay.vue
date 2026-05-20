@@ -21,8 +21,8 @@ defineProps<{
   // the wordmark. Kept opt-in because the bootstrap path is short enough
   // (single health-check + one restoreStateFromBackend) that a static
   // splash is honest. Surfaced as a prop for future progress narration.
-  message?: string
-}>()
+  message?: string;
+}>();
 </script>
 
 <template>
@@ -87,9 +87,15 @@ defineProps<{
   animation: loading-bounce 1.2s ease-in-out infinite;
 }
 
-.loading-dot--1 { animation-delay: 0s; }
-.loading-dot--2 { animation-delay: 0.15s; }
-.loading-dot--3 { animation-delay: 0.3s; }
+.loading-dot--1 {
+  animation-delay: 0s;
+}
+.loading-dot--2 {
+  animation-delay: 0.15s;
+}
+.loading-dot--3 {
+  animation-delay: 0.3s;
+}
 
 .loading-message {
   font-size: 0.85rem;
@@ -98,12 +104,25 @@ defineProps<{
 }
 
 @keyframes loading-pulse {
-  0%, 100% { opacity: 0.7; }
-  50% { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 @keyframes loading-bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
-  40% { transform: translateY(-6px); opacity: 1; }
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
 }
 </style>

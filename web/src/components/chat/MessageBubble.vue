@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import type { Message } from '@/types'
-import { useChatStore } from '@/stores/chatStore'
-import MarkdownRenderer from './MarkdownRenderer.vue'
-import ThinkingPanel from './ThinkingPanel.vue'
-import CopyButton from '@/components/tools/CopyButton.vue'
-import ToolErrorCard from '@/components/tools/ToolErrorCard.vue'
-import GenericTool from '@/components/tools/GenericTool.vue'
-import { getToolComponent } from '@/tools/toolRegistry'
-import { buildToolRenderSpec } from '@/views/toolRenderSpec'
-import { sanitiseMessageContent } from '@/lib/messageContentBackstop'
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import type { Message } from "@/types";
+import { useChatStore } from "@/stores/chatStore";
+import MarkdownRenderer from "./MarkdownRenderer.vue";
+import ThinkingPanel from "./ThinkingPanel.vue";
+import CopyButton from "@/components/tools/CopyButton.vue";
+import ToolErrorCard from "@/components/tools/ToolErrorCard.vue";
+import GenericTool from "@/components/tools/GenericTool.vue";
+import { getToolComponent } from "@/tools/toolRegistry";
+import { buildToolRenderSpec } from "@/views/toolRenderSpec";
+import { sanitiseMessageContent } from "@/lib/messageContentBackstop";
 
-defineOptions({ name: 'MessageBubble' })
+defineOptions({ name: "MessageBubble" });
 
 // UI Parity bug-fix bundle (May 2026). P2-9: precedingUserPrompt is now
 // an optional prop, hoisted to the parent's groupedMessages builder so
@@ -19,17 +19,17 @@ defineOptions({ name: 'MessageBubble' })
 // fallback for callers that mount MessageBubble directly without
 // pre-resolving the predecessor (existing tests, ad-hoc renders).
 const props = defineProps<{
-  message: Message
-  agentName?: string
-  precedingUserPrompt?: { id: string; content: string } | null
-}>()
+  message: Message;
+  agentName?: string;
+  precedingUserPrompt?: { id: string; content: string } | null;
+}>();
 
-const chatStore = useChatStore()
-const now = ref(Date.now())
-const elapsedTimer = ref<ReturnType<typeof setInterval> | null>(null)
+const chatStore = useChatStore();
+const now = ref(Date.now());
+const elapsedTimer = ref<ReturnType<typeof setInterval> | null>(null);
 
 async function loadDelegatedSession(): Promise<void> {
-  if (!props.message.targetAgent) return
+  if (!props.message.targetAgent) return;
   // Bug Hunt (May 2026) sibling-confusion fix — pass the message's
   // chainId alongside the targetAgent so the store can disambiguate
   // sibling delegations to the same agent. Pre-fix the resolver was
@@ -38,20 +38,20 @@ async function loadDelegatedSession(): Promise<void> {
   await chatStore.loadSessionForDelegation({
     chainId: props.message.chainId,
     agentId: props.message.targetAgent,
-  })
+  });
 }
 
 function startTimer(): void {
-  if (elapsedTimer.value !== null) return
+  if (elapsedTimer.value !== null) return;
   elapsedTimer.value = setInterval(() => {
-    now.value = Date.now()
-  }, 1000)
+    now.value = Date.now();
+  }, 1000);
 }
 
 function stopTimer(): void {
   if (elapsedTimer.value !== null) {
-    clearInterval(elapsedTimer.value)
-    elapsedTimer.value = null
+    clearInterval(elapsedTimer.value);
+    elapsedTimer.value = null;
   }
 }
 
@@ -59,37 +59,42 @@ onMounted(() => {
   // Only tick for in-flight delegation messages — elapsedLabel is only
   // displayed there. Running an interval for every bubble in a long
   // conversation burns CPU for no visible effect.
-  if (props.message.role === 'delegation_started' && props.message.status !== 'completed') {
-    startTimer()
+  if (
+    props.message.role === "delegation_started" &&
+    props.message.status !== "completed"
+  ) {
+    startTimer();
   }
-})
+});
 
 onBeforeUnmount(() => {
-  stopTimer()
-})
+  stopTimer();
+});
 
 const elapsedLabel = computed(() => {
-  const startedAt = Date.parse(props.message.timestamp)
+  const startedAt = Date.parse(props.message.timestamp);
   if (Number.isNaN(startedAt)) {
-    return '0s'
+    return "0s";
   }
-  const seconds = Math.max(0, Math.floor((now.value - startedAt) / 1000))
+  const seconds = Math.max(0, Math.floor((now.value - startedAt) / 1000));
   if (seconds < 60) {
-    return `${seconds}s`
+    return `${seconds}s`;
   }
-  const minutes = Math.floor(seconds / 60)
-  const remaining = seconds % 60
-  return `${minutes}m ${remaining}s`
-})
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds % 60;
+  return `${minutes}m ${remaining}s`;
+});
 
 const hasProgress = computed(
   () =>
-    typeof props.message.toolCalls === 'number' ||
-    typeof props.message.lastTool === 'string',
-)
+    typeof props.message.toolCalls === "number" ||
+    typeof props.message.lastTool === "string",
+);
 
-const isDelegationStarted = computed(() => props.message.role === 'delegation_started')
-const isDelegation = computed(() => props.message.role === 'delegation')
+const isDelegationStarted = computed(
+  () => props.message.role === "delegation_started",
+);
+const isDelegation = computed(() => props.message.role === "delegation");
 // B2 (May 2026). isThinking gates the new ThinkingPanel render path
 // only when there is something to show — either thinkingBlocks with
 // at least one non-empty thinking field, or non-empty content. A
@@ -97,11 +102,11 @@ const isDelegation = computed(() => props.message.role === 'delegation')
 // gate and is suppressed (matches the May 2026 blank-bubble gate
 // from commit 4c0cee54).
 const isThinking = computed(() => {
-  if (props.message.role !== 'thinking') return false
-  const blocks = props.message.thinkingBlocks ?? []
-  if (blocks.some((b) => (b.thinking ?? '').trim().length > 0)) return true
-  return (props.message.content ?? '').trim().length > 0
-})
+  if (props.message.role !== "thinking") return false;
+  const blocks = props.message.thinkingBlocks ?? [];
+  if (blocks.some((b) => (b.thinking ?? "").trim().length > 0)) return true;
+  return (props.message.content ?? "").trim().length > 0;
+});
 
 // B2 (Vue UI Parity vs OpenCode, May 2026). Thinking content sections.
 //
@@ -118,16 +123,16 @@ const isThinking = computed(() => {
 // with both `thinking` and (e.g.) `redacted` fields is rare on the
 // wire but the filter keeps the panel array stable.
 const thinkingSections = computed<string[]>(() => {
-  if (!isThinking.value) return []
-  const blocks = props.message.thinkingBlocks ?? []
+  if (!isThinking.value) return [];
+  const blocks = props.message.thinkingBlocks ?? [];
   if (blocks.length > 0) {
     return blocks
-      .map((b) => (b.thinking ?? '').trim())
-      .filter((t) => t.length > 0)
+      .map((b) => (b.thinking ?? "").trim())
+      .filter((t) => t.length > 0);
   }
-  const content = (props.message.content ?? '').trim()
-  return content.length > 0 ? [content] : []
-})
+  const content = (props.message.content ?? "").trim();
+  return content.length > 0 ? [content] : [];
+});
 
 // Thinking-only degraded turn — closes the UI follow-up flagged by
 // `Empty-Content Thinking-Only Assistant Turn (May 2026)` in the
@@ -155,13 +160,13 @@ const thinkingSections = computed<string[]>(() => {
 // future error path that doesn't carry thinking blocks — does not
 // collide with this rendering.
 const isThinkingOnlyDegraded = computed(() => {
-  if (props.message.role !== 'assistant') return false
-  if ((props.message.content ?? '') !== '') return false
-  const thinkingBlocks = props.message.thinkingBlocks ?? []
-  if (thinkingBlocks.length === 0) return false
-  if (!props.message.stopReason) return false
-  return true
-})
+  if (props.message.role !== "assistant") return false;
+  if ((props.message.content ?? "") !== "") return false;
+  const thinkingBlocks = props.message.thinkingBlocks ?? [];
+  if (thinkingBlocks.length === 0) return false;
+  if (!props.message.stopReason) return false;
+  return true;
+});
 
 // Empty-turn placeholder render branch — bug fix #27 (May 11 2026).
 //
@@ -190,12 +195,12 @@ const isThinkingOnlyDegraded = computed(() => {
 // branches matched, the v-else-if order would silently decide which
 // fires, masking future state-machine bugs.
 const isEmptyTurn = computed(() => {
-  if (props.message.role !== 'assistant') return false
-  if ((props.message.content ?? '') !== '') return false
-  const thinkingBlocks = props.message.thinkingBlocks ?? []
-  if (thinkingBlocks.length > 0) return false
-  return props.message.stopReason === 'empty_turn'
-})
+  if (props.message.role !== "assistant") return false;
+  if ((props.message.content ?? "") !== "") return false;
+  const thinkingBlocks = props.message.thinkingBlocks ?? [];
+  if (thinkingBlocks.length > 0) return false;
+  return props.message.stopReason === "empty_turn";
+});
 
 // Both tool_result and an unmatched tool_call (one without a paired
 // tool_result — collapseToolPairs leaves it intact) render through the
@@ -203,22 +208,25 @@ const isEmptyTurn = computed(() => {
 // "this is a tool invocation", so a separate "TOOL_CALL" role label
 // would be redundant.
 const isToolInvocation = computed(
-  () => props.message.role === 'tool_result' || props.message.role === 'tool_call',
-)
-const isToolError = computed(() => props.message.role === 'tool_error')
+  () =>
+    props.message.role === "tool_result" || props.message.role === "tool_call",
+);
+const isToolError = computed(() => props.message.role === "tool_error");
 
-const toolSpec = computed(() => buildToolRenderSpec(props.message))
+const toolSpec = computed(() => buildToolRenderSpec(props.message));
 
-const toolStatus = computed<'pending' | 'running' | 'completed' | 'error'>(() => {
-  if (props.message.status === 'error') return 'error'
-  if (props.message.status === 'running') return 'running'
-  if (props.message.status === 'pending') return 'pending'
-  return 'completed'
-})
+const toolStatus = computed<"pending" | "running" | "completed" | "error">(
+  () => {
+    if (props.message.status === "error") return "error";
+    if (props.message.status === "running") return "running";
+    if (props.message.status === "pending") return "pending";
+    return "completed";
+  },
+);
 
 const toolComponent = computed(() => {
-  return getToolComponent(toolSpec.value.toolName) ?? GenericTool
-})
+  return getToolComponent(toolSpec.value.toolName) ?? GenericTool;
+});
 
 // Empty-content assistant suppression — May 10 2026 follow-up to user
 // feedback: "Are we outputting an agent response, along with a tool call?
@@ -247,9 +255,9 @@ const toolComponent = computed(() => {
 // surface correctly.
 const hasVisibleAssistantContent = computed(
   () =>
-    props.message.role !== 'assistant' ||
-    (props.message.content ?? '').trim().length > 0,
-)
+    props.message.role !== "assistant" ||
+    (props.message.content ?? "").trim().length > 0,
+);
 
 const isPlain = computed(
   () =>
@@ -261,7 +269,7 @@ const isPlain = computed(
     !isThinkingOnlyDegraded.value &&
     !isEmptyTurn.value &&
     hasVisibleAssistantContent.value,
-)
+);
 
 // Outer wrapper gate — May 11 2026 follow-up. User: "We should not see
 // `<div class="message-bubble assistant" ...><!--v-if--></div>` if there
@@ -280,7 +288,7 @@ const hasRenderableContent = computed(
     isThinkingOnlyDegraded.value ||
     isEmptyTurn.value ||
     isPlain.value,
-)
+);
 
 // Defensive backstop for the May 2026 chat-UI leak class (session
 // 2d8dc0ac). The backend is the primary fix surface — see
@@ -293,17 +301,17 @@ const hasRenderableContent = computed(
 // processing — to avoid re-introducing exotic content via the same
 // surface the backstop is protecting.
 const sanitisedAssistantContent = computed(() =>
-  sanitiseMessageContent(props.message.content ?? ''),
-)
+  sanitiseMessageContent(props.message.content ?? ""),
+);
 const sanitisedPlainContent = computed(() =>
-  sanitiseMessageContent(props.message.content ?? ''),
-)
+  sanitiseMessageContent(props.message.content ?? ""),
+);
 
 const displayRole = computed(() =>
-  props.message.role === 'assistant' && props.agentName
+  props.message.role === "assistant" && props.agentName
     ? props.agentName
     : props.message.role,
-)
+);
 
 // Copy affordance: surface a clipboard button on the user's own messages
 // and on assistant replies, mirroring the convention already used inside
@@ -312,15 +320,15 @@ const displayRole = computed(() =>
 const showCopyButton = computed(
   () =>
     isPlain.value &&
-    (props.message.role === 'assistant' || props.message.role === 'user'),
-)
+    (props.message.role === "assistant" || props.message.role === "user"),
+);
 
 // Revert affordance: only user messages can be reverted. Clicking revert
 // truncates the session at this message and pre-fills the composer so the
 // user can edit and re-send without re-typing.
 const showRevertButton = computed(
-  () => isPlain.value && props.message.role === 'user',
-)
+  () => isPlain.value && props.message.role === "user",
+);
 
 // UI Parity I7 (May 2026) — Regenerate affordance on assistant messages.
 // Mirrors OpenCode's "regenerate this reply" gesture. Resolves the
@@ -341,27 +349,29 @@ const showRevertButton = computed(
 // existing callers (and unit tests that don't pass the prop) keep
 // working. An EXPLICIT null prop is respected: the parent has told us
 // there is no preceding prompt, hide the affordance.
-const precedingUserPrompt = computed<{ id: string; content: string } | null>(() => {
-  // Explicit prop wins (including explicit null).
-  if (props.precedingUserPrompt !== undefined) {
-    return props.precedingUserPrompt
-  }
-  if (props.message.role !== 'assistant') return null
-  // Defensive: chatStore.messages may be undefined in test mocks that
-  // don't seed the array. Treat that as "no preceding prompt" so the
-  // Regenerate affordance hides cleanly.
-  const messages = chatStore.messages
-  if (!Array.isArray(messages)) return null
-  const idx = messages.findIndex((m) => m.id === props.message.id)
-  if (idx <= 0) return null
-  for (let i = idx - 1; i >= 0; i -= 1) {
-    const m = messages[i]
-    if (m.role === 'user') {
-      return { id: m.id, content: m.content }
+const precedingUserPrompt = computed<{ id: string; content: string } | null>(
+  () => {
+    // Explicit prop wins (including explicit null).
+    if (props.precedingUserPrompt !== undefined) {
+      return props.precedingUserPrompt;
     }
-  }
-  return null
-})
+    if (props.message.role !== "assistant") return null;
+    // Defensive: chatStore.messages may be undefined in test mocks that
+    // don't seed the array. Treat that as "no preceding prompt" so the
+    // Regenerate affordance hides cleanly.
+    const messages = chatStore.messages;
+    if (!Array.isArray(messages)) return null;
+    const idx = messages.findIndex((m) => m.id === props.message.id);
+    if (idx <= 0) return null;
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      const m = messages[i];
+      if (m.role === "user") {
+        return { id: m.id, content: m.content };
+      }
+    }
+    return null;
+  },
+);
 
 // UI Parity bug-fix bundle (May 2026). P1-7: Regenerate clicked
 // mid-stream calls revertToMessage which disconnects whatever session
@@ -374,20 +384,20 @@ const anyStreamInFlight = computed<boolean>(() => {
   // streamingFor is the canonical per-session getter; consult it via
   // the active session and any other slot. The flat fields back up the
   // null-session fast path.
-  const sessionMap = chatStore.sessionStreaming ?? {}
+  const sessionMap = chatStore.sessionStreaming ?? {};
   for (const slot of Object.values(sessionMap)) {
-    if (slot.isStreaming || slot.isLoading) return true
+    if (slot.isStreaming || slot.isLoading) return true;
   }
-  return Boolean(chatStore.isStreaming) || Boolean(chatStore.isLoading)
-})
+  return Boolean(chatStore.isStreaming) || Boolean(chatStore.isLoading);
+});
 
 const showRegenerateButton = computed(
   () =>
     isPlain.value &&
-    props.message.role === 'assistant' &&
+    props.message.role === "assistant" &&
     precedingUserPrompt.value !== null &&
     !anyStreamInFlight.value,
-)
+);
 
 // Failure marker: when a user-message send rejects (network error, backend
 // rejection), chatStore marks the optimistic bubble status='failed'. We
@@ -395,11 +405,11 @@ const showRegenerateButton = computed(
 // glance which message didn't go through. Toast is the loud surfacing;
 // this is the persistent indicator on the bubble itself.
 const isFailedSend = computed(
-  () => props.message.role === 'user' && props.message.status === 'failed',
-)
+  () => props.message.role === "user" && props.message.status === "failed",
+);
 
 async function handleRevert(): Promise<void> {
-  await chatStore.revertToMessage(props.message.id)
+  await chatStore.revertToMessage(props.message.id);
 }
 
 // I7 — Regenerate: truncate back to the preceding user prompt then
@@ -409,10 +419,10 @@ async function handleRevert(): Promise<void> {
 // the revert because revertToMessage may invalidate `precedingUserPrompt`
 // once messages get sliced.
 async function handleRegenerate(): Promise<void> {
-  const target = precedingUserPrompt.value
-  if (!target) return
-  await chatStore.revertToMessage(target.id)
-  await chatStore.sendMessage(target.content)
+  const target = precedingUserPrompt.value;
+  if (!target) return;
+  await chatStore.revertToMessage(target.id);
+  await chatStore.sendMessage(target.content);
 }
 </script>
 
@@ -444,8 +454,16 @@ async function handleRegenerate(): Promise<void> {
       data-testid="tool-error-renderer"
     />
 
-    <div v-else-if="isDelegationStarted" class="delegation-card delegation-card--inflight">
-      <span data-testid="delegation-spinner" class="delegation-spinner" aria-hidden="true">⋯</span>
+    <div
+      v-else-if="isDelegationStarted"
+      class="delegation-card delegation-card--inflight"
+    >
+      <span
+        data-testid="delegation-spinner"
+        class="delegation-spinner"
+        aria-hidden="true"
+        >⋯</span
+      >
       <div class="delegation-body">
         <div v-if="props.message.targetAgent" class="delegation-header">
           <button
@@ -456,7 +474,9 @@ async function handleRegenerate(): Promise<void> {
           >
             {{ props.message.targetAgent }}
           </button>
-          <span data-testid="delegation-elapsed" class="delegation-elapsed">{{ elapsedLabel }}</span>
+          <span data-testid="delegation-elapsed" class="delegation-elapsed">{{
+            elapsedLabel
+          }}</span>
         </div>
         <pre class="delegation-content">{{ props.message.content }}</pre>
         <div
@@ -464,8 +484,12 @@ async function handleRegenerate(): Promise<void> {
           data-testid="delegation-progress"
           class="delegation-progress"
         >
-          <span class="delegation-progress-count">{{ props.message.toolCalls ?? 0 }} tool calls</span>
-          <span v-if="props.message.lastTool" class="delegation-progress-tool">· {{ props.message.lastTool }}</span>
+          <span class="delegation-progress-count"
+            >{{ props.message.toolCalls ?? 0 }} tool calls</span
+          >
+          <span v-if="props.message.lastTool" class="delegation-progress-tool"
+            >· {{ props.message.lastTool }}</span
+          >
         </div>
       </div>
     </div>
@@ -520,7 +544,8 @@ async function handleRegenerate(): Promise<void> {
       <div class="thinking-only-content">
         <span class="thinking-only-title">Reply didn't come through</span>
         <span class="thinking-only-message">
-          The model worked through this turn but stopped before replying. Try sending the prompt again.
+          The model worked through this turn but stopped before replying. Try
+          sending the prompt again.
         </span>
       </div>
     </div>
@@ -547,7 +572,8 @@ async function handleRegenerate(): Promise<void> {
       <div class="thinking-only-content">
         <span class="thinking-only-title">Reply didn't come through</span>
         <span class="thinking-only-message">
-          The model finished without producing a reply. Try sending the prompt again.
+          The model finished without producing a reply. Try sending the prompt
+          again.
         </span>
       </div>
     </div>
@@ -568,7 +594,9 @@ async function handleRegenerate(): Promise<void> {
         on both branches.
       -->
       <MarkdownRenderer
-        v-if="props.message.role === 'assistant' || props.message.role === 'user'"
+        v-if="
+          props.message.role === 'assistant' || props.message.role === 'user'
+        "
         :content="
           props.message.role === 'assistant'
             ? sanitisedAssistantContent.content
@@ -584,7 +612,9 @@ async function handleRegenerate(): Promise<void> {
         v-else
         class="message-content"
         :data-leak-backstop="sanitisedPlainContent.appliedFilter || undefined"
-      >{{ sanitisedPlainContent.content }}</p>
+      >
+        {{ sanitisedPlainContent.content }}
+      </p>
       <div v-if="showCopyButton" class="message-actions">
         <span
           v-if="isFailedSend"
@@ -592,7 +622,8 @@ async function handleRegenerate(): Promise<void> {
           data-testid="message-failed-marker"
           role="status"
           title="Message failed to send"
-        >&#x26A0; Failed to send</span>
+          >&#x26A0; Failed to send</span
+        >
         <button
           v-if="showRevertButton"
           type="button"
@@ -600,7 +631,9 @@ async function handleRegenerate(): Promise<void> {
           data-testid="message-revert-btn"
           title="Revert to this message"
           @click="handleRevert"
-        >&#x21A9; Revert</button>
+        >
+          &#x21A9; Revert
+        </button>
         <button
           v-if="showRegenerateButton"
           type="button"
@@ -608,8 +641,13 @@ async function handleRegenerate(): Promise<void> {
           data-testid="message-regenerate-btn"
           title="Regenerate this reply"
           @click="handleRegenerate"
-        >&#x21BB; Regenerate</button>
-        <CopyButton data-testid="message-copy-btn" :text="props.message.content" />
+        >
+          &#x21BB; Regenerate
+        </button>
+        <CopyButton
+          data-testid="message-copy-btn"
+          :text="props.message.content"
+        />
       </div>
     </template>
   </div>
@@ -700,7 +738,9 @@ async function handleRegenerate(): Promise<void> {
   padding: 0.15rem 0.3rem;
   border-radius: var(--radius);
   font-family: inherit;
-  transition: color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    background 0.15s;
 }
 
 .revert-button:hover {

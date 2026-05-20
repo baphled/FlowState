@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
+import { computed, ref } from "vue";
+import { useChatStore } from "@/stores/chatStore";
 
 /**
  * GateFailureBanner — persistent, accessible affordance for the
@@ -39,49 +39,49 @@ import { useChatStore } from '@/stores/chatStore'
  * acknowledgement (deliberately distinct from the auto-clearing
  * compaction-flash chip pattern).
  */
-defineOptions({ name: 'GateFailureBanner' })
+defineOptions({ name: "GateFailureBanner" });
 
-const chatStore = useChatStore()
-const detailsOpen = ref(false)
+const chatStore = useChatStore();
+const detailsOpen = ref(false);
 
-const isVisible = computed(() => chatStore.lastGateFailure !== null)
-const failure = computed(() => chatStore.lastGateFailure)
+const isVisible = computed(() => chatStore.lastGateFailure !== null);
+const failure = computed(() => chatStore.lastGateFailure);
 
 const title = computed(() => {
-  const name = failure.value?.gateName ?? ''
+  const name = failure.value?.gateName ?? "";
   if (name.length === 0) {
-    return 'Swarm gate halted'
+    return "Swarm gate halted";
   }
-  return `Swarm gate halted: ${name}`
-})
+  return `Swarm gate halted: ${name}`;
+});
 
-const message = computed(() => failure.value?.reason ?? '')
-const cause = computed(() => failure.value?.cause ?? '')
-const coordStoreKeys = computed(() => failure.value?.coordStoreKeys ?? [])
+const message = computed(() => failure.value?.reason ?? "");
+const cause = computed(() => failure.value?.cause ?? "");
+const coordStoreKeys = computed(() => failure.value?.coordStoreKeys ?? []);
 
 const subtitle = computed(() => {
-  const f = failure.value
-  if (!f) return ''
-  const parts: string[] = []
+  const f = failure.value;
+  if (!f) return "";
+  const parts: string[] = [];
   if (f.lifecycle) {
-    parts.push(`${f.lifecycle} gate`)
+    parts.push(`${f.lifecycle} gate`);
   }
   if (f.memberId) {
-    parts.push(`on ${f.memberId}`)
+    parts.push(`on ${f.memberId}`);
   }
   if (f.swarmId) {
-    parts.push(`in swarm ${f.swarmId}`)
+    parts.push(`in swarm ${f.swarmId}`);
   }
-  return parts.join(' ')
-})
+  return parts.join(" ");
+});
 
 function toggleDetails(): void {
-  detailsOpen.value = !detailsOpen.value
+  detailsOpen.value = !detailsOpen.value;
 }
 
 function dismiss(): void {
-  detailsOpen.value = false
-  chatStore.clearGateFailure()
+  detailsOpen.value = false;
+  chatStore.clearGateFailure();
 }
 </script>
 
@@ -95,7 +95,9 @@ function dismiss(): void {
   >
     <span class="gate-failure-icon" aria-hidden="true">!</span>
     <div class="gate-failure-content">
-      <span class="gate-failure-title" data-testid="gate-failure-title">{{ title }}</span>
+      <span class="gate-failure-title" data-testid="gate-failure-title">{{
+        title
+      }}</span>
       <span class="gate-failure-message" data-testid="gate-failure-message">
         {{ message }}
       </span>
@@ -121,7 +123,7 @@ function dismiss(): void {
         :aria-expanded="detailsOpen"
         @click="toggleDetails"
       >
-        {{ detailsOpen ? 'Hide checked inputs' : 'What was checked?' }}
+        {{ detailsOpen ? "Hide checked inputs" : "What was checked?" }}
       </button>
       <ul
         v-if="detailsOpen && coordStoreKeys.length > 0"

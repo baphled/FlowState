@@ -1,23 +1,34 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRef, watch } from 'vue'
-import { useFuzzyFilter, type FuzzySearchItem } from '@/composables/useFuzzyFilter'
-import { useFocusTrap } from '@/composables/useFocusTrap'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  toRef,
+  watch,
+} from "vue";
+import {
+  useFuzzyFilter,
+  type FuzzySearchItem,
+} from "@/composables/useFuzzyFilter";
+import { useFocusTrap } from "@/composables/useFocusTrap";
 
-defineOptions({ name: 'FuzzySearchModal' })
+defineOptions({ name: "FuzzySearchModal" });
 
 const props = withDefaults(
   defineProps<{
-    items: FuzzySearchItem[]
-    open: boolean
-    placeholder?: string
-    emptyMessage?: string
+    items: FuzzySearchItem[];
+    open: boolean;
+    placeholder?: string;
+    emptyMessage?: string;
     /**
      * Seed text for the search input when the modal opens. Useful for
      * inline triggers (e.g. "/cle" in the chat input) where the user
      * has already started typing the filter before the picker
      * appeared.
      */
-    initialQuery?: string
+    initialQuery?: string;
     /**
      * When true (default), the modal grabs keyboard focus on its
      * search input the moment it opens. Inline trigger pickers
@@ -25,30 +36,30 @@ const props = withDefaults(
      * textarea retains focus and the user can keep typing the filter
      * fragment in place.
      */
-    focusOnOpen?: boolean
+    focusOnOpen?: boolean;
   }>(),
   {
-    placeholder: 'Search...',
-    emptyMessage: 'No results',
-    initialQuery: '',
+    placeholder: "Search...",
+    emptyMessage: "No results",
+    initialQuery: "",
     focusOnOpen: true,
   },
-)
+);
 
 const emit = defineEmits<{
-  select: [item: FuzzySearchItem]
-  close: []
-}>()
+  select: [item: FuzzySearchItem];
+  close: [];
+}>();
 
-const inputEl = ref<HTMLInputElement | null>(null)
-const modalEl = ref<HTMLElement | null>(null)
-const itemsRef = computed(() => props.items)
+const inputEl = ref<HTMLInputElement | null>(null);
+const modalEl = ref<HTMLElement | null>(null);
+const itemsRef = computed(() => props.items);
 
 // Accessibility (Principal F9): trap Tab/Shift+Tab inside the modal so
 // keyboard-only users can't fall out into the underlying chat thread.
 // The trap is gated on `props.open` and stays out of Escape's way — the
 // existing handleKeydown already emits 'close' on Escape.
-useFocusTrap(modalEl, toRef(props, 'open'))
+useFocusTrap(modalEl, toRef(props, "open"));
 
 const {
   filteredItems,
@@ -56,7 +67,7 @@ const {
   highlightNext,
   highlightPrev,
   setQuery,
-} = useFuzzyFilter(itemsRef)
+} = useFuzzyFilter(itemsRef);
 
 const groupedItems = computed(() => {
   // Walks the filtered list and rolls runs of items that share the
@@ -66,29 +77,29 @@ const groupedItems = computed(() => {
   // `result[-1]` access on the first iteration. Tracking
   // started-yet explicitly keeps both group=string and group=undefined
   // surfaces correct.
-  const result: { group?: string; items: FuzzySearchItem[] }[] = []
-  let currentGroup: string | undefined
-  let started = false
+  const result: { group?: string; items: FuzzySearchItem[] }[] = [];
+  let currentGroup: string | undefined;
+  let started = false;
 
   for (const item of filteredItems.value) {
     if (!started || item.group !== currentGroup) {
-      currentGroup = item.group
-      started = true
-      result.push({ group: currentGroup, items: [item] })
-      continue
+      currentGroup = item.group;
+      started = true;
+      result.push({ group: currentGroup, items: [item] });
+      continue;
     }
-    result[result.length - 1].items.push(item)
+    result[result.length - 1].items.push(item);
   }
 
-  return result
-})
+  return result;
+});
 
 function selectHighlighted(): void {
-  const items = filteredItems.value
-  if (items.length === 0) return
-  const item = items[highlightedIndex.value]
-  emit('select', item)
-  emit('close')
+  const items = filteredItems.value;
+  if (items.length === 0) return;
+  const item = items[highlightedIndex.value];
+  emit("select", item);
+  emit("close");
 }
 
 function handleKeydown(event: KeyboardEvent): void {
@@ -103,39 +114,39 @@ function handleKeydown(event: KeyboardEvent): void {
   // their trigger fires), plus more in the toolbar — every one of them
   // stacks an always-on keydown listener. The fix is a single open-gate so
   // the handler only acts when the modal is actually visible.
-  if (!props.open) return
+  if (!props.open) return;
   switch (event.key) {
-    case 'ArrowDown':
-      event.preventDefault()
-      highlightNext()
-      break
-    case 'ArrowUp':
-      event.preventDefault()
-      highlightPrev()
-      break
-    case 'Enter':
-      event.preventDefault()
-      selectHighlighted()
-      break
-    case 'Escape':
-      event.preventDefault()
-      emit('close')
-      break
+    case "ArrowDown":
+      event.preventDefault();
+      highlightNext();
+      break;
+    case "ArrowUp":
+      event.preventDefault();
+      highlightPrev();
+      break;
+    case "Enter":
+      event.preventDefault();
+      selectHighlighted();
+      break;
+    case "Escape":
+      event.preventDefault();
+      emit("close");
+      break;
   }
 }
 
 function handleBackdropClick(): void {
-  emit('close')
+  emit("close");
 }
 
 function handleItemClick(item: FuzzySearchItem): void {
-  emit('select', item)
-  emit('close')
+  emit("select", item);
+  emit("close");
 }
 
 function handleSearchInput(event: Event): void {
-  const target = event.target as HTMLInputElement
-  setQuery(target.value)
+  const target = event.target as HTMLInputElement;
+  setQuery(target.value);
 }
 
 watch(
@@ -145,19 +156,19 @@ watch(
       // Seed the filter with the trigger fragment so inline pickers
       // (slash / mention) reflect what the user has already typed.
       // Falls back to empty string for the standalone toolbar pickers.
-      setQuery(props.initialQuery)
-      await nextTick()
-      const el = inputEl.value
+      setQuery(props.initialQuery);
+      await nextTick();
+      const el = inputEl.value;
       if (el) {
-        el.value = props.initialQuery
+        el.value = props.initialQuery;
         if (props.focusOnOpen) {
-          el.focus()
+          el.focus();
         }
       }
     }
   },
   { immediate: true },
-)
+);
 
 // Keep the input element's displayed value in sync with the seeded
 // query when initialQuery changes mid-open (e.g. user types another
@@ -165,20 +176,20 @@ watch(
 watch(
   () => props.initialQuery,
   (q) => {
-    if (!props.open) return
-    setQuery(q)
-    const el = inputEl.value
-    if (el) el.value = q
+    if (!props.open) return;
+    setQuery(q);
+    const el = inputEl.value;
+    if (el) el.value = q;
   },
-)
+);
 
 onMounted(() => {
-  document.addEventListener('keydown', handleKeydown)
-})
+  document.addEventListener("keydown", handleKeydown);
+});
 
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', handleKeydown)
-})
+  document.removeEventListener("keydown", handleKeydown);
+});
 </script>
 
 <template>
@@ -188,7 +199,14 @@ onBeforeUnmount(() => {
     data-testid="fuzzy-search-backdrop"
     @click.self="handleBackdropClick"
   >
-    <div ref="modalEl" class="fuzzy-search-modal" data-testid="fuzzy-search-modal" role="dialog" aria-modal="true" @click.stop>
+    <div
+      ref="modalEl"
+      class="fuzzy-search-modal"
+      data-testid="fuzzy-search-modal"
+      role="dialog"
+      aria-modal="true"
+      @click.stop
+    >
       <input
         ref="inputEl"
         type="text"
@@ -205,7 +223,10 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
-        <template v-for="(group, groupIdx) in groupedItems" :key="group.group ?? groupIdx">
+        <template
+          v-for="(group, groupIdx) in groupedItems"
+          :key="group.group ?? groupIdx"
+        >
           <div
             v-if="group.group"
             class="fuzzy-search-group-header"
@@ -215,15 +236,20 @@ onBeforeUnmount(() => {
           </div>
 
           <div
-            v-for="(item) in group.items"
+            v-for="item in group.items"
             :key="item.id"
             class="fuzzy-search-item"
-            :class="{ 'fuzzy-search-item--highlighted': filteredItems.indexOf(item) === highlightedIndex }"
+            :class="{
+              'fuzzy-search-item--highlighted':
+                filteredItems.indexOf(item) === highlightedIndex,
+            }"
             :data-testid="`fuzzy-search-item-${item.id}`"
             @click="handleItemClick(item)"
           >
             <span class="fuzzy-search-item-label">{{ item.label }}</span>
-            <span v-if="item.meta" class="fuzzy-search-item-meta">{{ item.meta }}</span>
+            <span v-if="item.meta" class="fuzzy-search-item-meta">{{
+              item.meta
+            }}</span>
           </div>
         </template>
       </div>

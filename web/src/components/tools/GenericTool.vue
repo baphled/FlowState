@@ -1,26 +1,26 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import CopyButton from './CopyButton.vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { computed } from "vue";
+import CopyButton from "./CopyButton.vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
-const maxToolInputLength = 200
+const maxToolInputLength = 200;
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 
 const truncatedToolInput = computed(() => {
   if (!props.toolInput) {
-    return ''
+    return "";
   }
 
   if (props.toolInput.length <= maxToolInputLength) {
-    return props.toolInput
+    return props.toolInput;
   }
 
-  return `${props.toolInput.slice(0, maxToolInputLength)}...`
-})
+  return `${props.toolInput.slice(0, maxToolInputLength)}...`;
+});
 </script>
 
 <template>
@@ -34,7 +34,9 @@ const truncatedToolInput = computed(() => {
     <div class="tool-renderer" data-component="generic-tool">
       <section v-if="truncatedToolInput" class="tool-section">
         <span class="tool-section__label">Input</span>
-        <pre class="tool-code tool-code--input"><code data-component="generic-tool-input">{{ truncatedToolInput }}</code></pre>
+        <pre
+          class="tool-code tool-code--input"
+        ><code data-component="generic-tool-input">{{ truncatedToolInput }}</code></pre>
       </section>
 
       <section class="tool-section">
@@ -42,7 +44,10 @@ const truncatedToolInput = computed(() => {
           <span class="tool-section__label">Output</span>
           <CopyButton :text="props.body" />
         </div>
-        <pre class="tool-code tool-code--output" data-component="generic-tool-output"><code>{{ props.body }}</code></pre>
+        <pre
+          class="tool-code tool-code--output"
+          data-component="generic-tool-output"
+        ><code>{{ props.body }}</code></pre>
       </section>
     </div>
   </ToolBubble>
@@ -80,7 +85,9 @@ const truncatedToolInput = computed(() => {
   border-radius: calc(var(--radius, 12px) - 4px);
   background: var(--surface-low, #1a1b26);
   color: var(--text-primary, #c0caf5);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-x: auto;

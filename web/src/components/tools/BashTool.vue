@@ -4,19 +4,19 @@
 // "Show full output" toggle. The cap is purely visual — the agent-side
 // truncation in internal/tool/truncate already enforces the contract
 // the model sees.
-export const RENDER_MAX_LINES = 200
-export const RENDER_MAX_BYTES = 8 * 1024
+export const RENDER_MAX_LINES = 200;
+export const RENDER_MAX_BYTES = 8 * 1024;
 </script>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import CopyButton from './CopyButton.vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { ref, computed } from "vue";
+import CopyButton from "./CopyButton.vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 
 // UI Parity I4 (May 2026): bash is a "silent-success" category — a busy
 // thread fills with `bash · git status` cards whose stdout is rarely the
@@ -24,54 +24,59 @@ const props = withDefaults(defineProps<ToolRendererProps>(), {
 // row shows the command preview via the subtitle plumbed below (I5).
 // Force open on error so the user sees the failure stdout without an
 // extra click.
-const cardDefaultOpen = computed(() => props.status === 'error')
+const cardDefaultOpen = computed(() => props.status === "error");
 
-const showFull = ref(false)
+const showFull = ref(false);
 
 interface SliceResult {
-  body: string
-  hiddenLines: number
+  body: string;
+  hiddenLines: number;
 }
 
 function sliceForRender(body: string): SliceResult {
   // Byte cap first: take up to RENDER_MAX_BYTES, then trim back to a
   // line boundary so the <pre> never shows a half-line. Then enforce
   // the line cap on whatever survived. Whichever cap bites first wins.
-  let slice = body.length > RENDER_MAX_BYTES ? body.slice(0, RENDER_MAX_BYTES) : body
+  let slice =
+    body.length > RENDER_MAX_BYTES ? body.slice(0, RENDER_MAX_BYTES) : body;
   if (slice.length < body.length) {
-    const lastNewline = slice.lastIndexOf('\n')
+    const lastNewline = slice.lastIndexOf("\n");
     if (lastNewline > 0) {
-      slice = slice.slice(0, lastNewline)
+      slice = slice.slice(0, lastNewline);
     }
   }
 
-  const lines = slice.split('\n')
+  const lines = slice.split("\n");
   if (lines.length > RENDER_MAX_LINES) {
-    slice = lines.slice(0, RENDER_MAX_LINES).join('\n')
+    slice = lines.slice(0, RENDER_MAX_LINES).join("\n");
   }
 
-  const totalLines = body.split('\n').length
-  const renderedLines = slice.split('\n').length
-  const hiddenLines = Math.max(0, totalLines - renderedLines)
-  return { body: slice, hiddenLines }
+  const totalLines = body.split("\n").length;
+  const renderedLines = slice.split("\n").length;
+  const hiddenLines = Math.max(0, totalLines - renderedLines);
+  return { body: slice, hiddenLines };
 }
 
-const renderSlice = computed(() => sliceForRender(props.body))
+const renderSlice = computed(() => sliceForRender(props.body));
 
-const bodyTruncated = computed(() => renderSlice.value.hiddenLines > 0)
+const bodyTruncated = computed(() => renderSlice.value.hiddenLines > 0);
 
 const displayedBody = computed(() => {
   if (showFull.value || !bodyTruncated.value) {
-    return props.body
+    return props.body;
   }
-  return renderSlice.value.body
-})
+  return renderSlice.value.body;
+});
 
-const toggleLabel = computed(() => (showFull.value ? 'Show less' : 'Show full output'))
-const toggleAriaLabel = computed(() => (showFull.value ? 'Hide full output' : 'Show full output'))
+const toggleLabel = computed(() =>
+  showFull.value ? "Show less" : "Show full output",
+);
+const toggleAriaLabel = computed(() =>
+  showFull.value ? "Hide full output" : "Show full output",
+);
 
 function toggle() {
-  showFull.value = !showFull.value
+  showFull.value = !showFull.value;
 }
 </script>
 
@@ -89,7 +94,10 @@ function toggle() {
           <span class="tool-section__label">Command</span>
           <CopyButton :text="props.heading" />
         </div>
-        <pre class="tool-code tool-code--bash" data-component="bash-command"><code>{{ props.heading }}</code></pre>
+        <pre
+          class="tool-code tool-code--bash"
+          data-component="bash-command"
+        ><code>{{ props.heading }}</code></pre>
       </section>
 
       <section v-if="props.body" class="tool-section">
@@ -97,13 +105,17 @@ function toggle() {
           <span class="tool-section__label">Output</span>
           <CopyButton :text="props.body" />
         </div>
-        <pre class="tool-code tool-code--output" data-component="bash-output"><code>{{ displayedBody }}</code></pre>
+        <pre
+          class="tool-code tool-code--output"
+          data-component="bash-output"
+        ><code>{{ displayedBody }}</code></pre>
         <p
           v-if="bodyTruncated && !showFull"
           class="bash-tool-truncation-hint"
           data-component="bash-output-truncation-hint"
         >
-          {{ renderSlice.hiddenLines }} lines hidden — click "Show full output" to view all.
+          {{ renderSlice.hiddenLines }} lines hidden — click "Show full output"
+          to view all.
         </p>
         <button
           v-if="bodyTruncated"
@@ -154,7 +166,9 @@ function toggle() {
   border-radius: calc(var(--radius, 12px) - 4px);
   background: var(--surface-low, #1a1b26);
   color: var(--text-primary, #c0caf5);
-  font-family: ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-x: auto;

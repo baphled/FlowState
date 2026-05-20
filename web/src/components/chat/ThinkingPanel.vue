@@ -22,11 +22,11 @@
  * Legacy thinking-role messages without `thinkingBlocks` get a
  * single ThinkingPanel over the joined content string.
  */
-import MarkdownRenderer from './MarkdownRenderer.vue'
+import MarkdownRenderer from "./MarkdownRenderer.vue";
 
-defineOptions({ name: 'ThinkingPanel' })
+defineOptions({ name: "ThinkingPanel" });
 
-defineProps<{ content: string }>()
+defineProps<{ content: string }>();
 </script>
 
 <template>

@@ -1,6 +1,12 @@
-import { test, expect, type Page, type ConsoleMessage, type Request } from '@playwright/test'
-import * as fs from 'fs'
-import * as path from 'path'
+import {
+  test,
+  expect,
+  type Page,
+  type ConsoleMessage,
+  type Request,
+} from "@playwright/test";
+import * as fs from "fs";
+import * as path from "path";
 
 /**
  * Session regression spec — drives the live backend at localhost:8080 and
@@ -31,53 +37,62 @@ import * as path from 'path'
  * Evidence is captured to /tmp/session-regression-evidence/ for operator audit.
  */
 
-const EVIDENCE_DIR = '/tmp/session-regression-evidence'
+const EVIDENCE_DIR = "/tmp/session-regression-evidence";
 
 interface NetEntry {
-  ts: string
-  method: string
-  url: string
-  type: 'request' | 'response' | 'failed'
-  status?: number
-  size?: number
+  ts: string;
+  method: string;
+  url: string;
+  type: "request" | "response" | "failed";
+  status?: number;
+  size?: number;
 }
 
 interface ConsoleEntry {
-  ts: string
-  type: string
-  text: string
+  ts: string;
+  type: string;
+  text: string;
 }
 
 interface DomSnapshot {
-  phase: string
-  ts: string
-  userBubbleCount: number
-  assistantBubbleCount: number
-  userBubbleTexts: string[]
-  assistantBubbleTexts: string[]
-  indicatorVisible: boolean
-  modelChipVisible: boolean
-  modelChipText: string
-  pickerText: string
-  url: string
+  phase: string;
+  ts: string;
+  userBubbleCount: number;
+  assistantBubbleCount: number;
+  userBubbleTexts: string[];
+  assistantBubbleTexts: string[];
+  indicatorVisible: boolean;
+  modelChipVisible: boolean;
+  modelChipText: string;
+  pickerText: string;
+  url: string;
 }
 
-const REGRESSION_NAME = 'REGRESSION_TEST_NAME_47'
+const REGRESSION_NAME = "REGRESSION_TEST_NAME_47";
 
 // Patterns we MUST NOT see in any visible message bubble (#6).
 // Each pattern represents a class of wire-format leakage that has shipped
 // to users in past regressions.
 const FORBIDDEN_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /\{"attempt"\s*:/, label: '{"attempt":...} retry envelope' },
-  { pattern: /<task_result>/, label: '<task_result> literal tag' },
-  { pattern: /\{"error"\s*:[^}]*"status"\s*:\s*"failed"/, label: '{"error":..."status":"failed"} envelope' },
-  { pattern: /\{"type"\s*:\s*"tool_use"/, label: '{"type":"tool_use"...} raw chunk' },
-  { pattern: /\{"role"\s*:\s*"(user|assistant|tool)"/, label: '{"role":"..."} raw message' },
+  { pattern: /<task_result>/, label: "<task_result> literal tag" },
+  {
+    pattern: /\{"error"\s*:[^}]*"status"\s*:\s*"failed"/,
+    label: '{"error":..."status":"failed"} envelope',
+  },
+  {
+    pattern: /\{"type"\s*:\s*"tool_use"/,
+    label: '{"type":"tool_use"...} raw chunk',
+  },
+  {
+    pattern: /\{"role"\s*:\s*"(user|assistant|tool)"/,
+    label: '{"role":"..."} raw message',
+  },
   { pattern: /data:\s*\{"type"/, label: 'data:{"type"...} SSE frame' },
-]
+];
 
 function nowIso(): string {
-  return new Date().toISOString()
+  return new Date().toISOString();
 }
 
 async function snapshot(page: Page, phase: string): Promise<DomSnapshot> {
@@ -86,24 +101,25 @@ async function snapshot(page: Page, phase: string): Promise<DomSnapshot> {
   // model chip element does not render at all (v-if on currentModelId ||
   // currentProviderId), so we must pin a short explicit timeout to every
   // potentially-absent locator probe.
-  const userBubbles = page.locator('.message-bubble.user')
-  const assistantBubbles = page.locator('.message-bubble.assistant')
-  const indicator = page.getByTestId('agent-activity-indicator')
-  const modelChip = page.getByTestId('agent-activity-model')
-  const picker = page.getByTestId('agent-picker')
-  const PROBE = { timeout: 250 }
+  const userBubbles = page.locator(".message-bubble.user");
+  const assistantBubbles = page.locator(".message-bubble.assistant");
+  const indicator = page.getByTestId("agent-activity-indicator");
+  const modelChip = page.getByTestId("agent-activity-model");
+  const picker = page.getByTestId("agent-picker");
+  const PROBE = { timeout: 250 };
 
-  const [uc, ac, ut, at, ind, chipVis, chipText, pickerText, url] = await Promise.all([
-    userBubbles.count(),
-    assistantBubbles.count(),
-    userBubbles.allTextContents(),
-    assistantBubbles.allTextContents(),
-    indicator.isVisible().catch(() => false),
-    modelChip.isVisible().catch(() => false),
-    modelChip.textContent(PROBE).catch(() => null),
-    picker.textContent(PROBE).catch(() => null),
-    Promise.resolve(page.url()),
-  ])
+  const [uc, ac, ut, at, ind, chipVis, chipText, pickerText, url] =
+    await Promise.all([
+      userBubbles.count(),
+      assistantBubbles.count(),
+      userBubbles.allTextContents(),
+      assistantBubbles.allTextContents(),
+      indicator.isVisible().catch(() => false),
+      modelChip.isVisible().catch(() => false),
+      modelChip.textContent(PROBE).catch(() => null),
+      picker.textContent(PROBE).catch(() => null),
+      Promise.resolve(page.url()),
+    ]);
 
   return {
     phase,
@@ -114,10 +130,10 @@ async function snapshot(page: Page, phase: string): Promise<DomSnapshot> {
     assistantBubbleTexts: at.map((t) => t.trim().slice(0, 400)),
     indicatorVisible: ind,
     modelChipVisible: chipVis,
-    modelChipText: (chipText ?? '').trim(),
-    pickerText: (pickerText ?? '').trim(),
+    modelChipText: (chipText ?? "").trim(),
+    pickerText: (pickerText ?? "").trim(),
     url,
-  }
+  };
 }
 
 async function recordSnapshot(
@@ -126,33 +142,32 @@ async function recordSnapshot(
   snapshots: DomSnapshot[],
   evidenceDir: string,
 ): Promise<DomSnapshot> {
-  const snap = await snapshot(page, phase)
-  snapshots.push(snap)
-  await page.screenshot({ path: path.join(evidenceDir, `${phase}.png`) }).catch(() => {})
-  return snap
+  const snap = await snapshot(page, phase);
+  snapshots.push(snap);
+  await page
+    .screenshot({ path: path.join(evidenceDir, `${phase}.png`) })
+    .catch(() => {});
+  return snap;
 }
 
 function ensureEvidenceDir(dir: string): void {
   if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
+    fs.mkdirSync(dir, { recursive: true });
   }
 }
 
-function dumpEvidence(
-  dir: string,
-  files: Record<string, unknown>,
-): void {
+function dumpEvidence(dir: string, files: Record<string, unknown>): void {
   for (const [name, payload] of Object.entries(files)) {
     fs.writeFileSync(
       path.join(dir, name),
-      typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2),
-    )
+      typeof payload === "string" ? payload : JSON.stringify(payload, null, 2),
+    );
   }
 }
 
-test.describe('session regression — live backend', () => {
-  test.describe.configure({ mode: 'serial' })
-  test.setTimeout(360_000)
+test.describe("session regression — live backend", () => {
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(360_000);
 
   /**
    * Regression guard for the AgentPicker pre-empt race fixed alongside
@@ -178,59 +193,81 @@ test.describe('session regression — live backend', () => {
    *   `chat.agentId` is preserved by restoreStateFromBackend's
    *   `persistedAgentId` branch (the existing chain at chatStore.ts:439).
    */
-  test('#1: fresh-visit defaults to default-assistant (AgentPicker pre-empt race)', async ({ page }) => {
+  test("#1: fresh-visit defaults to default-assistant (AgentPicker pre-empt race)", async ({
+    page,
+  }) => {
     await page.addInitScript(() => {
-      try { localStorage.clear() } catch { /* first-load may not have storage yet */ }
-    })
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
-        return
+      try {
+        localStorage.clear();
+      } catch {
+        /* first-load may not have storage yet */
       }
-      await route.continue()
-    })
-    await page.goto('/chat')
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+    });
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: "[]",
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto("/chat");
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
     // Wait for restoreStateFromBackend to complete by polling localStorage.
     // The picker label is intentionally NOT used as a proxy here — pre-fix
     // it flipped to "Default Assistant" early via the AgentPicker pre-empt,
     // so this test must observe the *persisted* value to detect the race.
     await expect
       .poll(
-        async () => await page.evaluate(() => localStorage.getItem('chat.agentId')),
+        async () =>
+          await page.evaluate(() => localStorage.getItem("chat.agentId")),
         {
           timeout: 15_000,
-          message: 'restoreStateFromBackend never persisted chat.agentId',
+          message: "restoreStateFromBackend never persisted chat.agentId",
         },
       )
-      .not.toBeNull()
-    const persistedAgentId = await page.evaluate(() => localStorage.getItem('chat.agentId'))
+      .not.toBeNull();
+    const persistedAgentId = await page.evaluate(() =>
+      localStorage.getItem("chat.agentId"),
+    );
     expect(
       persistedAgentId,
       `fresh-visit chat.agentId must be "default-assistant" — got "${persistedAgentId}"`,
-    ).toBe('default-assistant')
-  })
+    ).toBe("default-assistant");
+  });
 
-  test('#2-#4, #6, #7: full chat round-trip with regression assertions', async ({ page }) => {
-    ensureEvidenceDir(EVIDENCE_DIR)
-    const network: NetEntry[] = []
-    const consoleLog: ConsoleEntry[] = []
-    const snapshots: DomSnapshot[] = []
+  test("#2-#4, #6, #7: full chat round-trip with regression assertions", async ({
+    page,
+  }) => {
+    ensureEvidenceDir(EVIDENCE_DIR);
+    const network: NetEntry[] = [];
+    const consoleLog: ConsoleEntry[] = [];
+    const snapshots: DomSnapshot[] = [];
 
     // Lightweight listeners only — never read response bodies (would
     // block SSE streams). page.on('response') for SSE sometimes hung
     // tests where heavier inspection was attempted in earlier drafts.
-    page.on('request', (req: Request) => {
-      const url = req.url()
-      if (!url.includes('/api/')) return
-      network.push({ ts: nowIso(), method: req.method(), url, type: 'request' })
-    })
-    page.on('console', (msg: ConsoleMessage) => {
-      consoleLog.push({ ts: nowIso(), type: msg.type(), text: msg.text() })
-    })
-    page.on('pageerror', (err: Error) => {
-      consoleLog.push({ ts: nowIso(), type: 'pageerror', text: err.message })
-    })
+    page.on("request", (req: Request) => {
+      const url = req.url();
+      if (!url.includes("/api/")) return;
+      network.push({
+        ts: nowIso(),
+        method: req.method(),
+        url,
+        type: "request",
+      });
+    });
+    page.on("console", (msg: ConsoleMessage) => {
+      consoleLog.push({ ts: nowIso(), type: msg.type(), text: msg.text() });
+    });
+    page.on("pageerror", (err: Error) => {
+      consoleLog.push({ ts: nowIso(), type: "pageerror", text: err.message });
+    });
 
     // ---- Setup: pre-create a real backend session, pin GET /sessions ----
     //
@@ -246,68 +283,87 @@ test.describe('session regression — live backend', () => {
     //
     // POST /sessions, POST /messages, GET /messages, GET /stream are NOT
     // routed — they hit the real backend.
-    const createRes = await page.request.post('http://localhost:8080/api/v1/sessions', {
-      data: { agent_id: 'default-assistant' },
-    })
-    expect(createRes.ok(), `session creation failed: ${createRes.status()}`).toBeTruthy()
+    const createRes = await page.request.post(
+      "http://localhost:8080/api/v1/sessions",
+      {
+        data: { agent_id: "default-assistant" },
+      },
+    );
+    expect(
+      createRes.ok(),
+      `session creation failed: ${createRes.status()}`,
+    ).toBeTruthy();
     const created = (await createRes.json()) as {
-      id: string
-      agentId: string
-      createdAt: string
-      updatedAt: string
-    }
-    fs.writeFileSync(path.join(EVIDENCE_DIR, 'session-id.txt'), created.id)
+      id: string;
+      agentId: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    fs.writeFileSync(path.join(EVIDENCE_DIR, "session-id.txt"), created.id);
 
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "GET") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify([
             {
               id: created.id,
               agentId: created.agentId,
               currentAgentId: created.agentId,
-              title: '',
+              title: "",
               messageCount: 0,
               createdAt: created.createdAt,
               updatedAt: created.updatedAt,
               isStreaming: false,
             },
           ]),
-        })
-        return
+        });
+        return;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
-    await page.goto('/chat')
+    await page.goto("/chat");
     await page.evaluate(
       ({ sid }) => {
-        localStorage.clear()
-        localStorage.setItem('chat.currentSessionId', sid)
-        localStorage.setItem('chat.agentId', 'default-assistant')
+        localStorage.clear();
+        localStorage.setItem("chat.currentSessionId", sid);
+        localStorage.setItem("chat.agentId", "default-assistant");
       },
       { sid: created.id },
-    )
-    await page.reload()
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+    );
+    await page.reload();
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
     // restoreStateFromBackend resolves the session-agentId to
     // default-assistant via the GET /sessions mock; the picker label
     // (which renders the manifest's `name`) flips to "Default Assistant".
-    await expect(page.getByTestId('agent-picker')).toContainText(/default assistant/i, { timeout: 10_000 })
+    await expect(page.getByTestId("agent-picker")).toContainText(
+      /default assistant/i,
+      { timeout: 10_000 },
+    );
 
     // ---- Pre-send snapshot ---------------------------------------------
-    const preSendSnap = await recordSnapshot(page, '01-pre-send-turn1', snapshots, EVIDENCE_DIR)
-    expect(preSendSnap.indicatorVisible, '#3 pre-send indicator must be hidden').toBe(false)
-    expect(preSendSnap.userBubbleCount, 'pre-send: zero user bubbles').toBe(0)
+    const preSendSnap = await recordSnapshot(
+      page,
+      "01-pre-send-turn1",
+      snapshots,
+      EVIDENCE_DIR,
+    );
+    expect(
+      preSendSnap.indicatorVisible,
+      "#3 pre-send indicator must be hidden",
+    ).toBe(false);
+    expect(preSendSnap.userBubbleCount, "pre-send: zero user bubbles").toBe(0);
 
     // ---- Turn 1 — establish a fact for context-retention check ----------
-    const TURN1 = `My name is ${REGRESSION_NAME}. Reply with just "OK".`
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
-    await input.fill(TURN1)
-    await sendBtn.click()
+    const TURN1 = `My name is ${REGRESSION_NAME}. Reply with just "OK".`;
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
+    await input.fill(TURN1);
+    await sendBtn.click();
 
     // #3 indicator must be visible IMMEDIATELY after click. Pre-fix
     // (Bug B from chat-real-backend.spec.ts) the indicator never showed.
@@ -315,21 +371,26 @@ test.describe('session regression — live backend', () => {
     // Assert this BEFORE the bubble-count loop because for very fast
     // responses (default-assistant + glm-4.6 frequently <1s for "OK")
     // the indicator could already be hidden by the time the loop ends.
-    const indicator = page.getByTestId('agent-activity-indicator')
-    await expect(indicator, '#3 indicator must be visible mid-stream').toBeVisible({ timeout: 3_000 })
+    const indicator = page.getByTestId("agent-activity-indicator");
+    await expect(
+      indicator,
+      "#3 indicator must be visible mid-stream",
+    ).toBeVisible({ timeout: 3_000 });
 
-    await recordSnapshot(page, '02-mid-stream-turn1', snapshots, EVIDENCE_DIR)
+    await recordSnapshot(page, "02-mid-stream-turn1", snapshots, EVIDENCE_DIR);
 
-    const turn1UserBubbles = page.locator('.message-bubble.user').filter({ hasText: REGRESSION_NAME })
+    const turn1UserBubbles = page
+      .locator(".message-bubble.user")
+      .filter({ hasText: REGRESSION_NAME });
     // Sample the user bubble count over a 4-second window (Bug A pattern).
     // Pre-fix #2 the duplicate orphan persisted from ~300ms to ~3.5s.
     for (let i = 1; i <= 6; i++) {
-      const c = await turn1UserBubbles.count()
+      const c = await turn1UserBubbles.count();
       expect(
         c,
         `#2 user bubble rendered ${c} times at ~${i * 500}ms post-click — must be exactly 1`,
-      ).toBe(1)
-      await page.waitForTimeout(500)
+      ).toBe(1);
+      await page.waitForTimeout(500);
     }
 
     // Wait for assistant content. The model+provider chip (#4) is checked
@@ -342,24 +403,40 @@ test.describe('session regression — live backend', () => {
     // `chatStore.currentModelId || chatStore.currentProviderId` (see
     // ChatView.vue:347) and both are empty until the first chunk lands.
     await expect
-      .poll(async () => await page.locator('.message-bubble.assistant').count(), {
-        timeout: 90_000,
-        message: 'no assistant bubble after turn 1',
-      })
-      .toBeGreaterThan(0)
+      .poll(
+        async () => await page.locator(".message-bubble.assistant").count(),
+        {
+          timeout: 90_000,
+          message: "no assistant bubble after turn 1",
+        },
+      )
+      .toBeGreaterThan(0);
 
     // Wait for indicator to settle (#3 hidden post-settle)
-    await expect(page.getByTestId('agent-activity-indicator')).toBeHidden({ timeout: 60_000 })
-    await page.waitForTimeout(1500)
+    await expect(page.getByTestId("agent-activity-indicator")).toBeHidden({
+      timeout: 60_000,
+    });
+    await page.waitForTimeout(1500);
 
-    const postSettleSnap = await recordSnapshot(page, '03-post-settle-turn1', snapshots, EVIDENCE_DIR)
-    expect(postSettleSnap.indicatorVisible, '#3 indicator must be hidden post-settle').toBe(false)
-    expect(postSettleSnap.userBubbleCount, '#2 single user bubble post-settle').toBe(1)
+    const postSettleSnap = await recordSnapshot(
+      page,
+      "03-post-settle-turn1",
+      snapshots,
+      EVIDENCE_DIR,
+    );
+    expect(
+      postSettleSnap.indicatorVisible,
+      "#3 indicator must be hidden post-settle",
+    ).toBe(false);
+    expect(
+      postSettleSnap.userBubbleCount,
+      "#2 single user bubble post-settle",
+    ).toBe(1);
 
     // ---- Turn 2 — context-retention check (#7) --------------------------
-    const TURN2 = 'What is my name? Answer in 4 words or fewer.'
-    await input.fill(TURN2)
-    await sendBtn.click()
+    const TURN2 = "What is my name? Answer in 4 words or fewer.";
+    await input.fill(TURN2);
+    await sendBtn.click();
 
     // #4 model+provider chip — assert IMMEDIATELY after click, before
     // any waitForTimeout. Turn 1 has already promoted
@@ -370,42 +447,59 @@ test.describe('session regression — live backend', () => {
     // assistant on glm-4.6 frequently responds in <1s) the chip would
     // disappear by the time later samples ran, so we capture the chip
     // text FIRST and re-use it through the rest of the assertions.
-    const modelChip = page.getByTestId('agent-activity-model')
-    await expect(modelChip, '#4 model chip must be visible at turn-2 click time').toBeVisible({
+    const modelChip = page.getByTestId("agent-activity-model");
+    await expect(
+      modelChip,
+      "#4 model chip must be visible at turn-2 click time",
+    ).toBeVisible({
       timeout: 5_000,
-    })
-    const chipText = (await modelChip.textContent())?.trim() ?? ''
-    fs.writeFileSync(path.join(EVIDENCE_DIR, 'chip-text.txt'), chipText)
-    expect(chipText.length, '#4 chip text must not be blank').toBeGreaterThan(0)
+    });
+    const chipText = (await modelChip.textContent())?.trim() ?? "";
+    fs.writeFileSync(path.join(EVIDENCE_DIR, "chip-text.txt"), chipText);
+    expect(chipText.length, "#4 chip text must not be blank").toBeGreaterThan(
+      0,
+    );
     expect(
       chipText,
       `#4 chip text must match "on <model>[ · <provider>]" — got "${chipText}"`,
-    ).toMatch(/^on\s+\S+/)
+    ).toMatch(/^on\s+\S+/);
 
     // Mid-stream sample — indicator on, user bubble count == 1 for
     // turn 2's prompt.
-    await recordSnapshot(page, '04-mid-stream-turn2', snapshots, EVIDENCE_DIR)
+    await recordSnapshot(page, "04-mid-stream-turn2", snapshots, EVIDENCE_DIR);
 
-    const turn2UserBubbles = page.locator('.message-bubble.user').filter({ hasText: 'What is my name' })
+    const turn2UserBubbles = page
+      .locator(".message-bubble.user")
+      .filter({ hasText: "What is my name" });
     for (let i = 1; i <= 6; i++) {
-      const c = await turn2UserBubbles.count()
+      const c = await turn2UserBubbles.count();
       expect(
         c,
         `#2 turn2 user bubble rendered ${c} times at ~${i * 500}ms — must be exactly 1`,
-      ).toBe(1)
-      await page.waitForTimeout(500)
+      ).toBe(1);
+      await page.waitForTimeout(500);
     }
 
     await expect
-      .poll(async () => await page.locator('.message-bubble.assistant').count(), {
-        timeout: 90_000,
-        message: 'expected ≥2 assistant bubbles after turn 2',
-      })
-      .toBeGreaterThanOrEqual(2)
-    await expect(page.getByTestId('agent-activity-indicator')).toBeHidden({ timeout: 60_000 })
-    await page.waitForTimeout(1500)
+      .poll(
+        async () => await page.locator(".message-bubble.assistant").count(),
+        {
+          timeout: 90_000,
+          message: "expected ≥2 assistant bubbles after turn 2",
+        },
+      )
+      .toBeGreaterThanOrEqual(2);
+    await expect(page.getByTestId("agent-activity-indicator")).toBeHidden({
+      timeout: 60_000,
+    });
+    await page.waitForTimeout(1500);
 
-    const finalSnap = await recordSnapshot(page, '05-post-settle-turn2', snapshots, EVIDENCE_DIR)
+    const finalSnap = await recordSnapshot(
+      page,
+      "05-post-settle-turn2",
+      snapshots,
+      EVIDENCE_DIR,
+    );
 
     // ---- #7: context retention -----------------------------------------
     //
@@ -413,26 +507,33 @@ test.describe('session regression — live backend', () => {
     // robust to the UI's bubble truncation (which slices to 400 chars
     // for the snapshot) and to any race between the indicator hiding
     // and the final assistant chunk landing in the DOM.
-    const canonRes = await page.request.get(`http://localhost:8080/api/v1/sessions/${created.id}/messages`)
+    const canonRes = await page.request.get(
+      `http://localhost:8080/api/v1/sessions/${created.id}/messages`,
+    );
     const canonMessages = (await canonRes.json()) as Array<{
-      role: string
-      content: string
-      modelName?: string
-      providerName?: string
-    }>
+      role: string;
+      content: string;
+      modelName?: string;
+      providerName?: string;
+    }>;
     fs.writeFileSync(
-      path.join(EVIDENCE_DIR, 'canonical-messages.json'),
+      path.join(EVIDENCE_DIR, "canonical-messages.json"),
       JSON.stringify(canonMessages, null, 2),
-    )
+    );
 
-    const assistantTexts = canonMessages.filter((m) => m.role === 'assistant').map((m) => m.content)
-    expect(assistantTexts.length, '#7 must have ≥2 assistant turns').toBeGreaterThanOrEqual(2)
+    const assistantTexts = canonMessages
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.content);
+    expect(
+      assistantTexts.length,
+      "#7 must have ≥2 assistant turns",
+    ).toBeGreaterThanOrEqual(2);
     // Turn 2's assistant should mention the regression name.
-    const turn2AssistantText = assistantTexts[assistantTexts.length - 1]
+    const turn2AssistantText = assistantTexts[assistantTexts.length - 1];
     expect(
       turn2AssistantText,
       `#7 turn-2 assistant must reference "${REGRESSION_NAME}" — got "${turn2AssistantText}"`,
-    ).toContain(REGRESSION_NAME)
+    ).toContain(REGRESSION_NAME);
 
     // ---- #6: no raw JSON / wire-format leakage --------------------------
     //
@@ -442,27 +543,29 @@ test.describe('session regression — live backend', () => {
     // the rendered DOM, not the canonical message store, because
     // leakage shows up specifically when the renderer fails to project
     // a wire-format chunk through the right adaptor.
-    const allBubbleTexts = await page.locator('.message-bubble').allTextContents()
+    const allBubbleTexts = await page
+      .locator(".message-bubble")
+      .allTextContents();
     fs.writeFileSync(
-      path.join(EVIDENCE_DIR, 'all-bubble-texts.json'),
+      path.join(EVIDENCE_DIR, "all-bubble-texts.json"),
       JSON.stringify(allBubbleTexts, null, 2),
-    )
+    );
     for (const { pattern, label } of FORBIDDEN_PATTERNS) {
       for (const text of allBubbleTexts) {
         expect(
           pattern.test(text),
           `#6 forbidden wire-format leakage (${label}) found in bubble: ${text.slice(0, 200)}`,
-        ).toBe(false)
+        ).toBe(false);
       }
     }
 
     dumpEvidence(EVIDENCE_DIR, {
-      'snapshots.json': snapshots,
-      'network.json': network,
-      'console.json': consoleLog,
-      'final-snapshot.json': finalSnap,
-    })
-  })
+      "snapshots.json": snapshots,
+      "network.json": network,
+      "console.json": consoleLog,
+      "final-snapshot.json": finalSnap,
+    });
+  });
 
   /**
    * #5 — tool-trigger toast wire-contract test.
@@ -505,12 +608,14 @@ test.describe('session regression — live backend', () => {
    *      are all mocked via `page.route` so the test is fully hermetic —
    *      no backend dependency, no LLM, no network egress.
    */
-  test('#5: tool-trigger toast renders on tool_call SSE event (deterministic)', async ({ page }) => {
-    ensureEvidenceDir(EVIDENCE_DIR)
+  test("#5: tool-trigger toast renders on tool_call SSE event (deterministic)", async ({
+    page,
+  }) => {
+    ensureEvidenceDir(EVIDENCE_DIR);
 
-    const SESSION_ID = 'regression-session-tool-toast'
-    const AGENT_ID = 'default-assistant'
-    const NOW_ISO = new Date().toISOString()
+    const SESSION_ID = "regression-session-tool-toast";
+    const AGENT_ID = "default-assistant";
+    const NOW_ISO = new Date().toISOString();
 
     // ---- Step 1: install fake EventSource BEFORE the app boots --------
     //
@@ -521,43 +626,60 @@ test.describe('session regression — live backend', () => {
     // exercise the same wire-contract.
     await page.addInitScript(() => {
       class FakeEventSource {
-        url: string
-        readyState = 1
-        listeners: Record<string, Array<(event: unknown) => void>> = {}
+        url: string;
+        readyState = 1;
+        listeners: Record<string, Array<(event: unknown) => void>> = {};
         constructor(url: string) {
-          this.url = url
-          ;(window as unknown as { __flowstateFakeES?: FakeEventSource[] }).__flowstateFakeES =
-            (window as unknown as { __flowstateFakeES?: FakeEventSource[] }).__flowstateFakeES ?? []
-          ;(window as unknown as { __flowstateFakeES: FakeEventSource[] }).__flowstateFakeES.push(this)
+          this.url = url;
+          (
+            window as unknown as { __flowstateFakeES?: FakeEventSource[] }
+          ).__flowstateFakeES =
+            (window as unknown as { __flowstateFakeES?: FakeEventSource[] })
+              .__flowstateFakeES ?? [];
+          (
+            window as unknown as { __flowstateFakeES: FakeEventSource[] }
+          ).__flowstateFakeES.push(this);
         }
-        addEventListener(type: string, listener: (event: unknown) => void): void {
-          this.listeners[type] = this.listeners[type] ?? []
-          this.listeners[type].push(listener)
+        addEventListener(
+          type: string,
+          listener: (event: unknown) => void,
+        ): void {
+          this.listeners[type] = this.listeners[type] ?? [];
+          this.listeners[type].push(listener);
         }
-        removeEventListener(): void { /* noop — close path doesn't read from removed */ }
+        removeEventListener(): void {
+          /* noop — close path doesn't read from removed */
+        }
         close(): void {
-          this.readyState = 2
+          this.readyState = 2;
         }
         dispatch(payload: string): void {
-          for (const cb of this.listeners['message'] ?? []) {
-            cb({ data: payload } as unknown)
+          for (const cb of this.listeners["message"] ?? []) {
+            cb({ data: payload } as unknown);
           }
         }
       }
-      ;(globalThis as unknown as { EventSource: unknown }).EventSource = FakeEventSource
+      (globalThis as unknown as { EventSource: unknown }).EventSource =
+        FakeEventSource;
       // Driver hook: dispatch into the most-recently-constructed fake. The
       // chat store opens at most one EventSource at a time (see
       // useSessionStream.connect's prior-disconnect contract), so the last
       // fake is always the active one.
-      ;(window as unknown as { __flowstateDispatchSSE: (payload: string) => boolean }).__flowstateDispatchSSE = (
-        payload: string,
-      ): boolean => {
-        const all = (window as unknown as { __flowstateFakeES?: { dispatch: (p: string) => void }[] }).__flowstateFakeES
-        if (!all || all.length === 0) return false
-        all[all.length - 1].dispatch(payload)
-        return true
-      }
-    })
+      (
+        window as unknown as {
+          __flowstateDispatchSSE: (payload: string) => boolean;
+        }
+      ).__flowstateDispatchSSE = (payload: string): boolean => {
+        const all = (
+          window as unknown as {
+            __flowstateFakeES?: { dispatch: (p: string) => void }[];
+          }
+        ).__flowstateFakeES;
+        if (!all || all.length === 0) return false;
+        all[all.length - 1].dispatch(payload);
+        return true;
+      };
+    });
 
     // ---- Step 2: mock every HTTP path the chat round-trip touches ----
     //
@@ -567,31 +689,31 @@ test.describe('session regression — live backend', () => {
     //   POST /api/v1/sessions/{id}/messages — sendMessage
     // All three return canned, minimal responses. The `subscribeSessionStream`
     // call constructs our fake EventSource — no HTTP traffic to mock there.
-    await page.route('**/api/v1/sessions', async (route) => {
-      const method = route.request().method()
-      if (method === 'GET') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      const method = route.request().method();
+      if (method === "GET") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify([
             {
               id: SESSION_ID,
               agentId: AGENT_ID,
               currentAgentId: AGENT_ID,
-              title: '',
+              title: "",
               messageCount: 0,
               createdAt: NOW_ISO,
               updatedAt: NOW_ISO,
               isStreaming: false,
             },
           ]),
-        })
-        return
+        });
+        return;
       }
-      if (method === 'POST') {
+      if (method === "POST") {
         await route.fulfill({
           status: 201,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify({
             id: SESSION_ID,
             agentId: AGENT_ID,
@@ -599,48 +721,60 @@ test.describe('session regression — live backend', () => {
             createdAt: NOW_ISO,
             updatedAt: NOW_ISO,
           }),
-        })
-        return
+        });
+        return;
       }
-      await route.fallback()
-    })
+      await route.fallback();
+    });
 
-    await page.route(`**/api/v1/sessions/${SESSION_ID}/messages`, async (route) => {
-      const method = route.request().method()
-      if (method === 'GET') {
-        await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
-        return
-      }
-      if (method === 'POST') {
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            id: SESSION_ID,
-            agentId: AGENT_ID,
-            currentAgentId: AGENT_ID,
-            createdAt: NOW_ISO,
-            updatedAt: NOW_ISO,
-          }),
-        })
-        return
-      }
-      await route.fallback()
-    })
+    await page.route(
+      `**/api/v1/sessions/${SESSION_ID}/messages`,
+      async (route) => {
+        const method = route.request().method();
+        if (method === "GET") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: "[]",
+          });
+          return;
+        }
+        if (method === "POST") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              id: SESSION_ID,
+              agentId: AGENT_ID,
+              currentAgentId: AGENT_ID,
+              createdAt: NOW_ISO,
+              updatedAt: NOW_ISO,
+            }),
+          });
+          return;
+        }
+        await route.fallback();
+      },
+    );
 
     // ---- Step 3: open the chat, pin to our session ------------------
-    await page.goto('/chat')
+    await page.goto("/chat");
     await page.evaluate(
       ({ sid }) => {
-        localStorage.clear()
-        localStorage.setItem('chat.currentSessionId', sid)
-        localStorage.setItem('chat.agentId', 'default-assistant')
+        localStorage.clear();
+        localStorage.setItem("chat.currentSessionId", sid);
+        localStorage.setItem("chat.agentId", "default-assistant");
       },
       { sid: SESSION_ID },
-    )
-    await page.reload()
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
-    await expect(page.getByTestId('agent-picker')).toContainText(/default assistant/i, { timeout: 10_000 })
+    );
+    await page.reload();
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
+    await expect(page.getByTestId("agent-picker")).toContainText(
+      /default assistant/i,
+      { timeout: 10_000 },
+    );
 
     // ---- Step 4: send a message — opens the (fake) EventSource -----
     //
@@ -649,19 +783,23 @@ test.describe('session regression — live backend', () => {
     // `subscribeSessionStream` → `new EventSource(...)` → our fake.
     // After click, poll until the fake is in place, then dispatch the
     // tool_call payload directly.
-    await page.getByTestId('message-input').fill('test')
-    await page.getByTestId('send-button').click()
+    await page.getByTestId("message-input").fill("test");
+    await page.getByTestId("send-button").click();
 
     await expect
       .poll(
         async () =>
           await page.evaluate(
             () =>
-              (window as unknown as { __flowstateFakeES?: unknown[] }).__flowstateFakeES?.length ?? 0,
+              (window as unknown as { __flowstateFakeES?: unknown[] })
+                .__flowstateFakeES?.length ?? 0,
           ),
-        { timeout: 5_000, message: 'fake EventSource was never constructed by the chat store' },
+        {
+          timeout: 5_000,
+          message: "fake EventSource was never constructed by the chat store",
+        },
       )
-      .toBeGreaterThan(0)
+      .toBeGreaterThan(0);
 
     // ---- Step 5: dispatch a tool_call SSE event --------------------
     //
@@ -673,16 +811,19 @@ test.describe('session regression — live backend', () => {
     // chatStore.ts:1711.
     const dispatched = await page.evaluate(() => {
       const payload = JSON.stringify({
-        type: 'tool_call',
-        name: 'bash',
-        status: 'running',
+        type: "tool_call",
+        name: "bash",
+        status: "running",
         input: '{"command":"ls"}',
-      })
+      });
       return (
         window as unknown as { __flowstateDispatchSSE: (p: string) => boolean }
-      ).__flowstateDispatchSSE(payload)
-    })
-    expect(dispatched, 'fake EventSource refused to dispatch — no instance').toBe(true)
+      ).__flowstateDispatchSSE(payload);
+    });
+    expect(
+      dispatched,
+      "fake EventSource refused to dispatch — no instance",
+    ).toBe(true);
 
     // ---- Step 6: assert toast renders --------------------------------
     //
@@ -691,16 +832,21 @@ test.describe('session regression — live backend', () => {
     // budget here means the toast plumbing is broken — exactly the
     // regression we want to catch.
     const toastTitle = page
-      .getByTestId('toast-container')
-      .getByTestId('toast-title')
-      .filter({ hasText: 'Working' })
-    await expect(toastTitle, '#5 tool-trigger toast titled "Working" must appear within 5s').toBeVisible({
+      .getByTestId("toast-container")
+      .getByTestId("toast-title")
+      .filter({ hasText: "Working" });
+    await expect(
+      toastTitle,
+      '#5 tool-trigger toast titled "Working" must appear within 5s',
+    ).toBeVisible({
       timeout: 5_000,
-    })
+    });
 
-    await page.screenshot({
-      path: path.join(EVIDENCE_DIR, 'tool-trigger-toast.png'),
-      fullPage: true,
-    }).catch(() => {})
-  })
-})
+    await page
+      .screenshot({
+        path: path.join(EVIDENCE_DIR, "tool-trigger-toast.png"),
+        fullPage: true,
+      })
+      .catch(() => {});
+  });
+});

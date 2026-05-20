@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import CopyButton from './CopyButton.vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { computed } from "vue";
+import CopyButton from "./CopyButton.vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
-type EditLineKind = 'added' | 'removed' | 'plain'
+type EditLineKind = "added" | "removed" | "plain";
 
 interface EditLine {
-  text: string
-  kind: EditLineKind
+  text: string;
+  kind: EditLineKind;
 }
 
 // UI Parity PR6 N5 (May 2026) — unified-diff hunk shape.
@@ -19,129 +19,134 @@ interface EditLine {
 //   `-` (removed)  — only left gutter advances
 //   `+` (added)    — only right gutter advances
 interface DiffHunkLine {
-  text: string
-  kind: EditLineKind
+  text: string;
+  kind: EditLineKind;
   // Empty string = no number on that gutter (added line has no left, removed
   // has no right). String type lets the template bind via :data-... without
   // emitting `undefined` strings or 0 sentinels.
-  oldLine: string
-  newLine: string
+  oldLine: string;
+  newLine: string;
 }
 
 interface DiffHunk {
-  header: string // The literal `@@ -A,B +C,D @@ <ctx>` text.
-  oldStart: number
-  newStart: number
-  lines: DiffHunkLine[]
+  header: string; // The literal `@@ -A,B +C,D @@ <ctx>` text.
+  oldStart: number;
+  newStart: number;
+  lines: DiffHunkLine[];
 }
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 
 function isAddedLine(line: string): boolean {
-  return line.startsWith('+') && !line.startsWith('+++')
+  return line.startsWith("+") && !line.startsWith("+++");
 }
 
 function isRemovedLine(line: string): boolean {
-  return line.startsWith('-') && !line.startsWith('---')
+  return line.startsWith("-") && !line.startsWith("---");
 }
 
-function resolveLineKind(line: string, useDiffFormatting: boolean): EditLineKind {
+function resolveLineKind(
+  line: string,
+  useDiffFormatting: boolean,
+): EditLineKind {
   if (!useDiffFormatting) {
-    return 'plain'
+    return "plain";
   }
 
   if (isAddedLine(line)) {
-    return 'added'
+    return "added";
   }
 
   if (isRemovedLine(line)) {
-    return 'removed'
+    return "removed";
   }
 
-  return 'plain'
+  return "plain";
 }
 
 const lines = computed<EditLine[]>(() => {
-  const splitLines = props.body.split('\n')
-  const useDiffFormatting = splitLines.some((line) => isAddedLine(line) || isRemovedLine(line))
+  const splitLines = props.body.split("\n");
+  const useDiffFormatting = splitLines.some(
+    (line) => isAddedLine(line) || isRemovedLine(line),
+  );
 
   return splitLines.map((line) => ({
     text: line,
     kind: resolveLineKind(line, useDiffFormatting),
-  }))
-})
+  }));
+});
 
 // UI Parity PR6 N5 — parse the body into hunks when `@@` markers are
 // present. Falls through to the legacy line-based rendering otherwise.
 // The header regex matches the canonical unified-diff form; trailing
 // context (function name) after `@@ -A,B +C,D @@` is captured for the
 // header label.
-const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/
+const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
 
 function parseHunks(body: string): DiffHunk[] {
-  const lines = body.split('\n')
-  const hunks: DiffHunk[] = []
-  let current: DiffHunk | null = null
-  let oldCursor = 0
-  let newCursor = 0
+  const lines = body.split("\n");
+  const hunks: DiffHunk[] = [];
+  let current: DiffHunk | null = null;
+  let oldCursor = 0;
+  let newCursor = 0;
   for (const rawLine of lines) {
-    const headerMatch = rawLine.match(HUNK_HEADER_RE)
+    const headerMatch = rawLine.match(HUNK_HEADER_RE);
     if (headerMatch) {
-      if (current) hunks.push(current)
-      const oldStart = Number.parseInt(headerMatch[1], 10)
-      const newStart = Number.parseInt(headerMatch[3], 10)
+      if (current) hunks.push(current);
+      const oldStart = Number.parseInt(headerMatch[1], 10);
+      const newStart = Number.parseInt(headerMatch[3], 10);
       current = {
         header: rawLine,
         oldStart,
         newStart,
         lines: [],
-      }
-      oldCursor = oldStart
-      newCursor = newStart
-      continue
+      };
+      oldCursor = oldStart;
+      newCursor = newStart;
+      continue;
     }
-    if (!current) continue // pre-amble lines outside any hunk (file headers etc) — skip
+    if (!current) continue; // pre-amble lines outside any hunk (file headers etc) — skip
     if (isAddedLine(rawLine)) {
       current.lines.push({
         text: rawLine,
-        kind: 'added',
-        oldLine: '',
+        kind: "added",
+        oldLine: "",
         newLine: String(newCursor),
-      })
-      newCursor += 1
+      });
+      newCursor += 1;
     } else if (isRemovedLine(rawLine)) {
       current.lines.push({
         text: rawLine,
-        kind: 'removed',
+        kind: "removed",
         oldLine: String(oldCursor),
-        newLine: '',
-      })
-      oldCursor += 1
+        newLine: "",
+      });
+      oldCursor += 1;
     } else {
       // Context line. Strip the leading single space (canonical unified diff)
       // for display, but keep numbering aligned on both gutters.
       current.lines.push({
         text: rawLine,
-        kind: 'plain',
+        kind: "plain",
         oldLine: String(oldCursor),
         newLine: String(newCursor),
-      })
-      oldCursor += 1
-      newCursor += 1
+      });
+      oldCursor += 1;
+      newCursor += 1;
     }
   }
-  if (current) hunks.push(current)
-  return hunks
+  if (current) hunks.push(current);
+  return hunks;
 }
 
 const hunks = computed<DiffHunk[]>(() => {
-  if (!props.body.includes('@@')) return []
-  return parseHunks(props.body)
-})
+  if (!props.body.includes("@@")) return [];
+  return parseHunks(props.body);
+});
 
-const hasHunks = computed(() => hunks.value.length > 0)
+const hasHunks = computed(() => hunks.value.length > 0);
 </script>
 
 <template>
@@ -170,8 +175,12 @@ const hasHunks = computed(() => hunks.value.length > 0)
           class="edit-hunk"
           data-testid="edit-hunk"
         >
-          <div class="edit-hunk-header" data-testid="edit-hunk-header">{{ hunk.header }}</div>
-          <pre class="tool-code tool-code--edit edit-hunk-body"><code><template v-for="(line, li) in hunk.lines" :key="`hunk-${hi}-line-${li}`"><span
+          <div class="edit-hunk-header" data-testid="edit-hunk-header">
+            {{ hunk.header }}
+          </div>
+          <pre
+            class="tool-code tool-code--edit edit-hunk-body"
+          ><code><template v-for="(line, li) in hunk.lines" :key="`hunk-${hi}-line-${li}`"><span
               class="edit-line"
               :class="`tool-line--${line.kind}`"
               data-testid="edit-line"
@@ -215,7 +224,9 @@ const hasHunks = computed(() => hunks.value.length > 0)
   border-radius: calc(var(--radius, 12px) - 4px);
   background: var(--surface-low, #1a1b26);
   color: var(--text-primary, #c0caf5);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-x: auto;
@@ -263,7 +274,9 @@ const hasHunks = computed(() => hunks.value.length > 0)
   padding: 0.35rem 0.85rem;
   background: var(--surface-mid, rgba(148, 163, 184, 0.08));
   color: var(--text-muted, #565f89);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.78rem;
   border-bottom: 1px solid var(--border, rgba(148, 163, 184, 0.25));
 }

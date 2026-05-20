@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from "@playwright/test";
 
 /**
  * Real-backend chat-flow specs.
@@ -28,14 +28,14 @@ import { test, expect } from '@playwright/test'
  * a clear "POST /messages 502" trace, which is what we want).
  */
 
-test.describe('chat real backend', () => {
+test.describe("chat real backend", () => {
   // Real-backend tests share backend state (the sessions list, the agent
   // configurations) across workers. Running them in parallel produces
   // cross-test interference: one test's `restoreStateFromBackend` can
   // pick up another test's just-created session and start sending into
   // it. Serial mode guarantees each spec sees a stable backend snapshot.
-  test.describe.configure({ mode: 'serial' })
-  test.setTimeout(120_000)
+  test.describe.configure({ mode: "serial" });
+  test.setTimeout(120_000);
 
   test.beforeEach(async ({ page, request }) => {
     // Real-backend setup: create a brand-new backend session via the
@@ -56,54 +56,68 @@ test.describe('chat real backend', () => {
     //
     // The POST /sessions, POST /messages, GET /messages and GET /stream
     // endpoints are NOT routed — they hit the real backend.
-    const createRes = await request.post('http://localhost:8080/api/v1/sessions', {
-      data: { agent_id: 'Team-Lead' },
-    })
-    const created = (await createRes.json() as { id: string; agentId: string; createdAt: string; updatedAt: string })
-    const sessionId = created.id
+    const createRes = await request.post(
+      "http://localhost:8080/api/v1/sessions",
+      {
+        data: { agent_id: "Team-Lead" },
+      },
+    );
+    const created = (await createRes.json()) as {
+      id: string;
+      agentId: string;
+      createdAt: string;
+      updatedAt: string;
+    };
+    const sessionId = created.id;
 
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'GET') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "GET") {
         // Only return OUR session. The chatStore picks it as the active
         // session for the team-lead agent on restore.
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify([
             {
               id: created.id,
               agentId: created.agentId,
               currentAgentId: created.agentId,
-              title: '',
+              title: "",
               messageCount: 0,
               createdAt: created.createdAt,
               updatedAt: created.updatedAt,
               isStreaming: false,
             },
           ]),
-        })
-        return
+        });
+        return;
       }
-      await route.continue()
-    })
+      await route.continue();
+    });
 
-    await page.goto('/chat')
+    await page.goto("/chat");
     await page.evaluate((sid) => {
-      localStorage.clear()
-      localStorage.setItem('chat.currentSessionId', sid)
-      localStorage.setItem('chat.agentId', 'Team-Lead')
-    }, sessionId)
-    await page.reload()
-    await page.getByTestId('chat-empty-state').waitFor({ state: 'visible', timeout: 15_000 })
+      localStorage.clear();
+      localStorage.setItem("chat.currentSessionId", sid);
+      localStorage.setItem("chat.agentId", "Team-Lead");
+    }, sessionId);
+    await page.reload();
+    await page
+      .getByTestId("chat-empty-state")
+      .waitFor({ state: "visible", timeout: 15_000 });
     // Wait for restoreStateFromBackend to settle on the Team-Lead
     // session — until this completes, `loadAgents` will have set the
     // agent to the first available (alphabetical: API-Engineer) and a
     // send dispatched in this window would race against the restore
     // and corrupt the test setup.
-    await expect(page.getByTestId('agent-picker')).toContainText('Team Lead', { timeout: 10_000 })
-  })
+    await expect(page.getByTestId("agent-picker")).toContainText("Team Lead", {
+      timeout: 10_000,
+    });
+  });
 
-  test('fresh session: user prompt rendered exactly once (Bug A)', async ({ page }) => {
+  test("fresh session: user prompt rendered exactly once (Bug A)", async ({
+    page,
+  }) => {
     // Bug A regression: pre-fix the optimistic `temp-*` user bubble and the
     // server-id user bubble both appeared in the thread after a fresh send.
     // The duplicate is observable within ~2s of the click — the SSE [DONE]
@@ -123,27 +137,31 @@ test.describe('chat real backend', () => {
     // spec to the agent's response latency (which can be many tens of
     // seconds). The post-send reconcile is exercised separately by
     // Bug B part 2.
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
 
-    const PROMPT = 'one two three'
-    await input.fill(PROMPT)
-    await sendBtn.click()
+    const PROMPT = "one two three";
+    await input.fill(PROMPT);
+    await sendBtn.click();
 
-    const earlyUserBubbles = page.locator(`.message-bubble.user`).filter({ hasText: PROMPT })
-    const sampleCount = 8
-    const sampleIntervalMs = 500
+    const earlyUserBubbles = page
+      .locator(`.message-bubble.user`)
+      .filter({ hasText: PROMPT });
+    const sampleCount = 8;
+    const sampleIntervalMs = 500;
     for (let i = 1; i <= sampleCount; i++) {
-      await page.waitForTimeout(sampleIntervalMs)
-      const count = await earlyUserBubbles.count()
+      await page.waitForTimeout(sampleIntervalMs);
+      const count = await earlyUserBubbles.count();
       expect(
         count,
         `user prompt rendered ${count} times at sample ${i} (t≈${i * sampleIntervalMs}ms after send) — must always be 1`,
-      ).toBe(1)
+      ).toBe(1);
     }
-  })
+  });
 
-  test('fresh session: agent activity indicator visible while streaming (Bug B part 1)', async ({ page }) => {
+  test("fresh session: agent activity indicator visible while streaming (Bug B part 1)", async ({
+    page,
+  }) => {
     // Bug B part 1: the user reported no loading-dots / no animation while
     // the agent was working. Pre-fix `isStreaming` was only set true on the
     // first SSE `content` event. With the live backend emitting only
@@ -153,18 +171,22 @@ test.describe('chat real backend', () => {
     // SSE connect and the [DONE] sentinel — independent of whether content
     // events arrive — so the user has a continuous "the agent is thinking"
     // affordance.
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
-    const indicator = page.getByTestId('agent-activity-indicator')
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
+    const indicator = page.getByTestId("agent-activity-indicator");
 
-    await input.fill('say hi back')
-    await sendBtn.click()
+    await input.fill("say hi back");
+    await sendBtn.click();
 
-    await expect(indicator, 'agent-activity-indicator must appear within 1s of send')
-      .toBeVisible({ timeout: 1_000 })
-  })
+    await expect(
+      indicator,
+      "agent-activity-indicator must appear within 1s of send",
+    ).toBeVisible({ timeout: 1_000 });
+  });
 
-  test('fresh session: assistant response appears without manual reload (Bug B part 2)', async ({ page }) => {
+  test("fresh session: assistant response appears without manual reload (Bug B part 2)", async ({
+    page,
+  }) => {
     // Bug B part 2: pre-fix the assistant content arrived only after
     // F5/reload because the post-POST code path called `loadSessions()`
     // (sessions list only) but never reconciled the canonical message
@@ -174,11 +196,11 @@ test.describe('chat real backend', () => {
     // Post-fix: `sendMessage` always reconciles after `await
     // sendSessionMessage` resolves, so the final assistant content is
     // visible without any user action.
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
 
-    await input.fill('say hi back')
-    await sendBtn.click()
+    await input.fill("say hi back");
+    await sendBtn.click();
 
     // The assistant content must materialise within 60s (generous to
     // accommodate slow providers; the median is ~5s for a short prompt).
@@ -187,13 +209,19 @@ test.describe('chat real backend', () => {
     // higher; the assertion is "at least one", not "exactly one".
     await expect
       .poll(
-        async () => await page.locator('.message-bubble.assistant').count(),
-        { timeout: 60_000, message: 'no assistant bubble visible without reload — Bug B regression' },
+        async () => await page.locator(".message-bubble.assistant").count(),
+        {
+          timeout: 60_000,
+          message:
+            "no assistant bubble visible without reload — Bug B regression",
+        },
       )
-      .toBeGreaterThan(0)
-  })
+      .toBeGreaterThan(0);
+  });
 
-  test('fresh session: model+provider chip renders after the first assistant turn (Track B chip-on-fresh-session)', async ({ page }) => {
+  test("fresh session: model+provider chip renders after the first assistant turn (Track B chip-on-fresh-session)", async ({
+    page,
+  }) => {
     // May 2026 regression cover. Track B's initial implementation only
     // populated chatStore.currentModelId / currentProviderId on a
     // `provider_changed` SSE transition, which never fires on the happy
@@ -219,11 +247,11 @@ test.describe('chat real backend', () => {
     // metadata via reconcileFromBackend on every poll. The chip's
     // `data-testid="agent-activity-model"` becomes visible once at
     // least one of the fields is non-empty.
-    const input = page.getByTestId('message-input')
-    const sendBtn = page.getByTestId('send-button')
+    const input = page.getByTestId("message-input");
+    const sendBtn = page.getByTestId("send-button");
 
-    await input.fill('say "ok"')
-    await sendBtn.click()
+    await input.fill('say "ok"');
+    await sendBtn.click();
 
     // Wait for an assistant bubble first — that confirms the engine has
     // streamed at least one chunk (so e.LastModel() / e.LastProvider()
@@ -231,10 +259,13 @@ test.describe('chat real backend', () => {
     // session metadata.
     await expect
       .poll(
-        async () => await page.locator('.message-bubble.assistant').count(),
-        { timeout: 60_000, message: 'no assistant bubble — cannot assert chip provenance' },
+        async () => await page.locator(".message-bubble.assistant").count(),
+        {
+          timeout: 60_000,
+          message: "no assistant bubble — cannot assert chip provenance",
+        },
       )
-      .toBeGreaterThan(0)
+      .toBeGreaterThan(0);
 
     // The chip is bound to chatStore state and rendered while
     // isStreaming OR isLoading is true. After the assistant bubble
@@ -244,29 +275,42 @@ test.describe('chat real backend', () => {
     // the chip happens not to be on-screen at this exact tick.
     const storeState = await page.evaluate(() => {
       const w = window as unknown as {
-        __chatStoreSnapshot?: () => { currentModelId: string; currentProviderId: string }
-      }
+        __chatStoreSnapshot?: () => {
+          currentModelId: string;
+          currentProviderId: string;
+        };
+      };
       // Prefer an injected snapshot helper when present (the dev build
       // exposes one for diagnostics); fall back to scraping window for
       // a Pinia instance.
-      if (typeof w.__chatStoreSnapshot === 'function') return w.__chatStoreSnapshot()
-      return null
-    })
+      if (typeof w.__chatStoreSnapshot === "function")
+        return w.__chatStoreSnapshot();
+      return null;
+    });
 
     // Re-trigger streaming so the chip is on-screen for the DOM-evidence
     // assertion. We send a second prompt and assert the chip renders
     // immediately — at this point the store state from the first turn is
     // already promoted, so the chip must show non-empty content.
-    await input.fill('again')
-    await sendBtn.click()
+    await input.fill("again");
+    await sendBtn.click();
 
-    const chip = page.getByTestId('agent-activity-model')
-    await expect(chip, 'model chip must be visible while the second turn streams').toBeVisible({
+    const chip = page.getByTestId("agent-activity-model");
+    await expect(
+      chip,
+      "model chip must be visible while the second turn streams",
+    ).toBeVisible({
       timeout: 10_000,
-    })
-    const chipText = (await chip.textContent())?.trim() ?? ''
-    expect(chipText.length, `chip text must not be blank — got "${chipText}"`).toBeGreaterThan(0)
-    expect(chipText, 'chip should start with "on " per the activity-indicator format').toMatch(/^on\s+\S+/)
+    });
+    const chipText = (await chip.textContent())?.trim() ?? "";
+    expect(
+      chipText.length,
+      `chip text must not be blank — got "${chipText}"`,
+    ).toBeGreaterThan(0);
+    expect(
+      chipText,
+      'chip should start with "on " per the activity-indicator format',
+    ).toMatch(/^on\s+\S+/);
 
     // Optional store-state diagnostic. When the diagnostic helper isn't
     // injected (production build, default config), the chip-text
@@ -274,8 +318,8 @@ test.describe('chat real backend', () => {
     if (storeState) {
       expect(
         storeState.currentModelId.length + storeState.currentProviderId.length,
-        'at least one of currentModelId / currentProviderId must be set after the first assistant turn',
-      ).toBeGreaterThan(0)
+        "at least one of currentModelId / currentProviderId must be set after the first assistant turn",
+      ).toBeGreaterThan(0);
     }
-  })
-})
+  });
+});

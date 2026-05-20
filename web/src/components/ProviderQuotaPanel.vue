@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { resetProviderQuotaSpend, type ProviderQuotaEntry } from '@/api'
-import { showToast } from '@/composables/useToast'
+import { computed, ref } from "vue";
+import { resetProviderQuotaSpend, type ProviderQuotaEntry } from "@/api";
+import { showToast } from "@/composables/useToast";
 
 /**
  * ProviderQuotaPanel — modal deep-view of one provider/account/model
@@ -30,19 +30,19 @@ import { showToast } from '@/composables/useToast'
  * Per memory feedback_response_ok_mock_gotcha — fetch mocks in the
  * spec must use real Response objects so `if (!response.ok)` resolves.
  */
-defineOptions({ name: 'ProviderQuotaPanel' })
+defineOptions({ name: "ProviderQuotaPanel" });
 
 const props = defineProps<{
-  entry: ProviderQuotaEntry
-}>()
+  entry: ProviderQuotaEntry;
+}>();
 
 const emit = defineEmits<{
-  close: []
-  reset: []
-}>()
+  close: [];
+  reset: [];
+}>();
 
-const showResetConfirm = ref(false)
-const resetting = ref(false)
+const showResetConfirm = ref(false);
+const resetting = ref(false);
 
 /**
  * truncateAccountHash — clip the SHA-256-truncated hash to the first
@@ -50,8 +50,8 @@ const resetting = ref(false)
  * the chip's truncation pattern.
  */
 function truncateAccountHash(hash: string): string {
-  if (!hash) return '(default)'
-  return hash.length > 8 ? hash.slice(0, 8) : hash
+  if (!hash) return "(default)";
+  return hash.length > 8 ? hash.slice(0, 8) : hash;
 }
 
 /**
@@ -60,18 +60,18 @@ function truncateAccountHash(hash: string): string {
  * currencies fall back to `<code> <major>.<minor>` ("XYZ 12.34").
  */
 function formatMoney(minor: number, currency: string): string {
-  const major = (minor / 100).toFixed(2)
+  const major = (minor / 100).toFixed(2);
   switch (currency) {
-    case 'USD':
-      return `$${major}`
-    case 'CNY':
-      return `¥${major}`
-    case 'GBP':
-      return `£${major}`
-    case 'EUR':
-      return `€${major}`
+    case "USD":
+      return `$${major}`;
+    case "CNY":
+      return `¥${major}`;
+    case "GBP":
+      return `£${major}`;
+    case "EUR":
+      return `€${major}`;
     default:
-      return `${currency} ${major}`
+      return `${currency} ${major}`;
   }
 }
 
@@ -80,8 +80,8 @@ function formatMoney(minor: number, currency: string): string {
  * suffix otherwise.
  */
 function formatPercentRemaining(pct: number): string {
-  if (pct < 0) return '—'
-  return `${pct}%`
+  if (pct < 0) return "—";
+  return `${pct}%`;
 }
 
 /**
@@ -90,11 +90,11 @@ function formatPercentRemaining(pct: number): string {
  * "Invalid Date".
  */
 function formatTimestamp(iso: string): string {
-  if (!iso) return '—'
-  const t = Date.parse(iso)
-  if (Number.isNaN(t)) return iso
-  const d = new Date(t)
-  return d.toLocaleString()
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return iso;
+  const d = new Date(t);
+  return d.toLocaleString();
 }
 
 /**
@@ -106,12 +106,12 @@ function formatTimestamp(iso: string): string {
  * is in place now so the visual contract is stable.
  */
 const estimatorDelta = computed<string>(() => {
-  return '—'
-})
+  return "—";
+});
 
-const tokenSpend = computed(() => props.entry.tokenSpend)
-const rateLimit = computed(() => props.entry.rateLimit)
-const notConfigured = computed(() => props.entry.notConfigured)
+const tokenSpend = computed(() => props.entry.tokenSpend);
+const rateLimit = computed(() => props.entry.rateLimit);
+const notConfigured = computed(() => props.entry.notConfigured);
 
 /**
  * isUncapped — token_spend with no cap configured (capMinor <= 0).
@@ -120,67 +120,68 @@ const notConfigured = computed(() => props.entry.notConfigured)
  * observational.
  */
 const isUncapped = computed(() => {
-  const ts = tokenSpend.value
-  if (ts === null) return true
-  return ts.capMinor <= 0
-})
+  const ts = tokenSpend.value;
+  if (ts === null) return true;
+  return ts.capMinor <= 0;
+});
 
 function onBackdropClick(): void {
-  if (showResetConfirm.value) return
-  emit('close')
+  if (showResetConfirm.value) return;
+  emit("close");
 }
 
 function onEscape(event: KeyboardEvent): void {
-  if (event.key === 'Escape') {
+  if (event.key === "Escape") {
     if (showResetConfirm.value) {
-      showResetConfirm.value = false
-      return
+      showResetConfirm.value = false;
+      return;
     }
-    emit('close')
+    emit("close");
   }
 }
 
 function openResetConfirm(): void {
-  if (isUncapped.value || resetting.value) return
-  showResetConfirm.value = true
+  if (isUncapped.value || resetting.value) return;
+  showResetConfirm.value = true;
 }
 
 function cancelReset(): void {
-  showResetConfirm.value = false
+  showResetConfirm.value = false;
 }
 
 async function confirmReset(): Promise<void> {
-  if (resetting.value) return
-  resetting.value = true
+  if (resetting.value) return;
+  resetting.value = true;
   try {
     const ok = await resetProviderQuotaSpend(
       props.entry.provider,
       props.entry.accountHash,
       props.entry.model,
-    )
+    );
     if (ok) {
       showToast({
         message: `Spend counter reset for ${props.entry.provider} / ${props.entry.model}`,
-        variant: 'success',
-      })
-      emit('reset')
+        variant: "success",
+      });
+      emit("reset");
     } else {
       // 404 — nothing to reset. Surface as info-level toast so the
       // user knows the click was acknowledged but had no effect.
       showToast({
-        message: 'Nothing to reset — no spend snapshot recorded.',
-        variant: 'default',
-      })
+        message: "Nothing to reset — no spend snapshot recorded.",
+        variant: "default",
+      });
     }
-    showResetConfirm.value = false
-    emit('close')
+    showResetConfirm.value = false;
+    emit("close");
   } catch (err) {
     showToast({
-      message: err instanceof Error ? err.message : 'Failed to reset spend counter',
-      variant: 'error',
-    })
+      message:
+        err instanceof Error ? err.message : "Failed to reset spend counter",
+      variant: "error",
+    });
   } finally {
-    resetting.value = false
+    resetting.value = false;
   }
 }
 </script>
@@ -199,13 +200,17 @@ async function confirmReset(): Promise<void> {
     <div class="quota-panel" data-testid="provider-quota-panel">
       <header class="quota-panel__header">
         <h2 id="quota-panel-title" class="quota-panel__title">
-          <span data-testid="provider-quota-panel-provider">{{ entry.provider }}</span>
+          <span data-testid="provider-quota-panel-provider">{{
+            entry.provider
+          }}</span>
           <span class="quota-panel__sep">·</span>
           <span data-testid="provider-quota-panel-account">{{
             truncateAccountHash(entry.accountHash)
           }}</span>
           <span class="quota-panel__sep">·</span>
-          <span data-testid="provider-quota-panel-model">{{ entry.model }}</span>
+          <span data-testid="provider-quota-panel-model">{{
+            entry.model
+          }}</span>
         </h2>
         <button
           type="button"
@@ -288,7 +293,7 @@ async function confirmReset(): Promise<void> {
           <!-- OD-6 — USD equivalent always visible -->
           <dt>USD equivalent</dt>
           <dd data-testid="provider-quota-panel-spent-usd">
-            {{ formatMoney(tokenSpend.spentUsdMinor, 'USD') }}
+            {{ formatMoney(tokenSpend.spentUsdMinor, "USD") }}
           </dd>
           <dt>Cap</dt>
           <dd data-testid="provider-quota-panel-cap">
@@ -301,7 +306,9 @@ async function confirmReset(): Promise<void> {
             }}</template>
           </dd>
           <dt>Period</dt>
-          <dd data-testid="provider-quota-panel-period">{{ tokenSpend.period }}</dd>
+          <dd data-testid="provider-quota-panel-period">
+            {{ tokenSpend.period }}
+          </dd>
           <dt>Period start</dt>
           <dd data-testid="provider-quota-panel-period-start">
             {{ formatTimestamp(tokenSpend.periodStart) }}
@@ -324,7 +331,7 @@ async function confirmReset(): Promise<void> {
           </dd>
           <dt>Pricing source</dt>
           <dd data-testid="provider-quota-panel-pricing-source">
-            {{ entry.pricingSource || '—' }}
+            {{ entry.pricingSource || "—" }}
           </dd>
           <!-- OD-7 — estimator-vs-actual drift column. Always
                present (visual contract stable); populates when the
@@ -355,9 +362,7 @@ async function confirmReset(): Promise<void> {
         <p
           class="quota-panel__reason"
           data-testid="provider-quota-panel-reason"
-          :title="
-            'Some provider classes do not expose a usable quota signal — e.g. local Ollama (no API) or providers that do not surface remaining-budget headers.'
-          "
+          :title="'Some provider classes do not expose a usable quota signal — e.g. local Ollama (no API) or providers that do not surface remaining-budget headers.'"
         >
           {{ notConfigured.reason }}
         </p>
@@ -376,9 +381,8 @@ async function confirmReset(): Promise<void> {
         <p>
           This will zero the spend snapshot for
           <strong>{{ entry.provider }} / {{ entry.model }}</strong> and start
-          the counter from zero on the next response. This is a manual
-          operator action — the spend will still accumulate normally
-          afterwards.
+          the counter from zero on the next response. This is a manual operator
+          action — the spend will still accumulate normally afterwards.
         </p>
         <div class="quota-panel__confirm-buttons">
           <button

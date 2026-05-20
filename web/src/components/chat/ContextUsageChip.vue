@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useChatStore } from "@/stores/chatStore";
 
 /**
  * ContextUsageChip — toolbar affordance for the engine's
@@ -53,11 +53,11 @@ import { useChatStore } from '@/stores/chatStore'
  *     the figure on update without interrupting the user's flow (the
  *     critical banner uses assertive; the chip is informational).
  */
-defineOptions({ name: 'ContextUsageChip' })
+defineOptions({ name: "ContextUsageChip" });
 
-const chatStore = useChatStore()
+const chatStore = useChatStore();
 
-const usage = computed(() => chatStore.currentContextUsage)
+const usage = computed(() => chatStore.currentContextUsage);
 
 /**
  * Visibility predicate — the chip renders whenever a model is
@@ -66,7 +66,7 @@ const usage = computed(() => chatStore.currentContextUsage)
  * state". Without a model the chip has no provider/limit reference
  * to display so we keep it hidden — the no-model bootstrap edge.
  */
-const isVisible = computed(() => chatStore.currentModelId !== '')
+const isVisible = computed(() => chatStore.currentModelId !== "");
 
 /**
  * The chip's empty-state predicate. True when we have no usage
@@ -75,12 +75,12 @@ const isVisible = computed(() => chatStore.currentModelId !== '')
  * here.
  */
 const isEmptyState = computed(() => {
-  const u = usage.value
-  return u === null || u.limit <= 0
-})
+  const u = usage.value;
+  return u === null || u.limit <= 0;
+});
 
-const EMPTY_STATE_COUNT = '—'
-const EMPTY_STATE_PERCENTAGE = '—'
+const EMPTY_STATE_COUNT = "—";
+const EMPTY_STATE_PERCENTAGE = "—";
 
 /**
  * Formats a token count to the chip's compact representation. Values
@@ -91,20 +91,26 @@ const EMPTY_STATE_PERCENTAGE = '—'
  */
 function formatTokens(n: number): string {
   if (n < 1000) {
-    return String(n)
+    return String(n);
   }
-  return `${Math.round(n / 1000)}K`
+  return `${Math.round(n / 1000)}K`;
 }
 
 const inputLabel = computed(() =>
-  isEmptyState.value ? EMPTY_STATE_COUNT : formatTokens(usage.value?.inputTokens ?? 0),
-)
+  isEmptyState.value
+    ? EMPTY_STATE_COUNT
+    : formatTokens(usage.value?.inputTokens ?? 0),
+);
 const limitLabel = computed(() =>
-  isEmptyState.value ? EMPTY_STATE_COUNT : formatTokens(usage.value?.limit ?? 0),
-)
+  isEmptyState.value
+    ? EMPTY_STATE_COUNT
+    : formatTokens(usage.value?.limit ?? 0),
+);
 const percentageLabel = computed(() =>
-  isEmptyState.value ? `${EMPTY_STATE_PERCENTAGE}%` : `${usage.value?.percentage ?? 0}%`,
-)
+  isEmptyState.value
+    ? `${EMPTY_STATE_PERCENTAGE}%`
+    : `${usage.value?.percentage ?? 0}%`,
+);
 
 /**
  * Severity classification — matches the CriticalErrorBanner palette
@@ -117,21 +123,23 @@ const percentageLabel = computed(() =>
  * Empty-state always renders neutral so the toolbar reads as quiet
  * until real data lands.
  */
-const severity = computed<'neutral' | 'warning' | 'danger'>(() => {
+const severity = computed<"neutral" | "warning" | "danger">(() => {
   if (isEmptyState.value) {
-    return 'neutral'
+    return "neutral";
   }
-  const pct = usage.value?.percentage ?? 0
+  const pct = usage.value?.percentage ?? 0;
   if (pct >= 90) {
-    return 'danger'
+    return "danger";
   }
   if (pct >= 75) {
-    return 'warning'
+    return "warning";
   }
-  return 'neutral'
-})
+  return "neutral";
+});
 
-const chipClass = computed(() => `context-usage-chip context-usage-chip--${severity.value}`)
+const chipClass = computed(
+  () => `context-usage-chip context-usage-chip--${severity.value}`,
+);
 
 /**
  * Slice 6b — auto-compaction flash + tooltip.
@@ -152,11 +160,11 @@ const chipClass = computed(() => `context-usage-chip context-usage-chip--${sever
  * if the saved-tokens figure happens to match. Watching the payload
  * object would conflate two distinct events with the same delta.
  */
-const FLASH_MS = 2000
-const compactionCount = computed(() => chatStore.compactionEventCount)
-const lastCompaction = computed(() => chatStore.lastCompaction)
-const flashing = ref(false)
-let flashTimer: ReturnType<typeof setTimeout> | null = null
+const FLASH_MS = 2000;
+const compactionCount = computed(() => chatStore.compactionEventCount);
+const lastCompaction = computed(() => chatStore.lastCompaction);
+const flashing = ref(false);
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
 watch(compactionCount, (next, prev) => {
   // Only flash on positive increments. Resets to 0 on session change
@@ -164,24 +172,24 @@ watch(compactionCount, (next, prev) => {
   // lastCompaction) must NOT trigger a flash on the new session's
   // empty chip.
   if (next <= (prev ?? 0)) {
-    return
+    return;
   }
   if (flashTimer !== null) {
-    clearTimeout(flashTimer)
+    clearTimeout(flashTimer);
   }
-  flashing.value = true
+  flashing.value = true;
   flashTimer = setTimeout(() => {
-    flashing.value = false
-    flashTimer = null
-  }, FLASH_MS)
-})
+    flashing.value = false;
+    flashTimer = null;
+  }, FLASH_MS);
+});
 
 onBeforeUnmount(() => {
   if (flashTimer !== null) {
-    clearTimeout(flashTimer)
-    flashTimer = null
+    clearTimeout(flashTimer);
+    flashTimer = null;
   }
-})
+});
 
 /**
  * Format a token count for the tooltip. Reuses the chip's compact
@@ -190,9 +198,9 @@ onBeforeUnmount(() => {
  */
 function formatTooltipTokens(n: number): string {
   if (n < 1000) {
-    return String(n)
+    return String(n);
   }
-  return `${Math.round(n / 1000)}K`
+  return `${Math.round(n / 1000)}K`;
 }
 
 /**
@@ -207,33 +215,33 @@ function formatTooltipTokens(n: number): string {
  */
 function triggerPhrase(trigger: string): string {
   switch (trigger) {
-    case 'ratio':
-      return 'compacted on threshold'
-    case 'gate_proximity':
-      return 'compacted near limit'
-    case 'model_switch':
-      return 'compacted on model switch'
-    case 'tool_result_wave':
-      return 'compacted after tool result'
+    case "ratio":
+      return "compacted on threshold";
+    case "gate_proximity":
+      return "compacted near limit";
+    case "model_switch":
+      return "compacted on model switch";
+    case "tool_result_wave":
+      return "compacted after tool result";
     default:
-      return ''
+      return "";
   }
 }
 
 const tooltipTitle = computed(() => {
-  const lc = lastCompaction.value
+  const lc = lastCompaction.value;
   if (lc === null || compactionCount.value === 0) {
-    return ''
+    return "";
   }
-  const saved = formatTooltipTokens(lc.tokensSaved)
-  const before = formatTooltipTokens(lc.originalTokens)
-  const after = formatTooltipTokens(lc.summaryTokens)
-  const phrase = triggerPhrase(lc.trigger)
-  if (phrase !== '') {
-    return `Last compaction saved ${saved} tokens (${before} → ${after}) — ${phrase}`
+  const saved = formatTooltipTokens(lc.tokensSaved);
+  const before = formatTooltipTokens(lc.originalTokens);
+  const after = formatTooltipTokens(lc.summaryTokens);
+  const phrase = triggerPhrase(lc.trigger);
+  if (phrase !== "") {
+    return `Last compaction saved ${saved} tokens (${before} → ${after}) — ${phrase}`;
   }
-  return `Last compaction saved ${saved} tokens (${before} → ${after})`
-})
+  return `Last compaction saved ${saved} tokens (${before} → ${after})`;
+});
 </script>
 
 <template>
@@ -249,7 +257,10 @@ const tooltipTitle = computed(() => {
     <span class="context-usage-chip__counts" data-testid="context-usage-counts">
       {{ inputLabel }}/{{ limitLabel }}
     </span>
-    <span class="context-usage-chip__percentage" data-testid="context-usage-percentage">
+    <span
+      class="context-usage-chip__percentage"
+      data-testid="context-usage-percentage"
+    >
       {{ percentageLabel }}
     </span>
     <!--

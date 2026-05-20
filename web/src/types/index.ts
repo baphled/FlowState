@@ -20,26 +20,26 @@
  *      directly without a separate fetch.
  */
 export interface ThinkingBlock {
-  thinking?: string
-  signature?: string
-  redacted?: boolean
-  data?: string
+  thinking?: string;
+  signature?: string;
+  redacted?: boolean;
+  data?: string;
 }
 
 export interface Message {
-  id: string
-  role: string
-  content: string
-  agentId?: string
-  toolName?: string
-  toolInput?: string
-  timestamp: string
-  targetAgent?: string
-  chainId?: string
-  toolCalls?: number
-  lastTool?: string
-  status?: string
-  modelName?: string
+  id: string;
+  role: string;
+  content: string;
+  agentId?: string;
+  toolName?: string;
+  toolInput?: string;
+  timestamp: string;
+  targetAgent?: string;
+  chainId?: string;
+  toolCalls?: number;
+  lastTool?: string;
+  status?: string;
+  modelName?: string;
   /**
    * providerName carries the provider that produced this message
    * (e.g. "anthropic", "zai", "openai"), stamped by the engine on
@@ -55,7 +55,7 @@ export interface Message {
    * latest assistant message). A future per-bubble badge will read
    * this directly to show "produced by glm-4.6 · zai".
    */
-  providerName?: string
+  providerName?: string;
   /**
    * Model-reasoning text accumulated from `type: "thinking"` SSE events
    * (Drop #2 in the Streaming Signal-Drop fix). Carries the provider's
@@ -65,7 +65,7 @@ export interface Message {
    * that ships the field is plumbed end-to-end so the watchdog re-arms
    * during the reasoning phase and the data is captured for later display.
    */
-  thinkingContent?: string
+  thinkingContent?: string;
   /**
    * thinkingBlocks carries the structured per-block thinking content
    * the backend accumulator persisted on this assistant message
@@ -79,7 +79,7 @@ export interface Message {
    * `Empty-Content Thinking-Only Assistant Turn (May 2026)` in the
    * FlowState vault.
    */
-  thinkingBlocks?: ThinkingBlock[]
+  thinkingBlocks?: ThinkingBlock[];
   /**
    * stopReason is the upstream provider's terminal stop reason for the
    * turn that produced this message. Empty when unknown. Mirrors
@@ -89,35 +89,35 @@ export interface Message {
    * array, identifies the synthesised assistant placeholder for a
    * thinking-only degraded turn.
    */
-  stopReason?: string
+  stopReason?: string;
 }
 
 export interface ChatRequest {
-  agent_id: string
-  message: string
+  agent_id: string;
+  message: string;
 }
 
 export interface ChatResponse {
-  content: string
+  content: string;
 }
 
 export interface SSEChunk {
-  content?: string
-  error?: string
+  content?: string;
+  error?: string;
 }
 
 export interface SwarmEvent {
-  id: string
-  type: string
-  status?: string
-  timestamp: string
-  agent_id: string
-  metadata?: Record<string, unknown>
-  schema_version?: number
+  id: string;
+  type: string;
+  status?: string;
+  timestamp: string;
+  agent_id: string;
+  metadata?: Record<string, unknown>;
+  schema_version?: number;
 }
 
 export interface HealthResponse {
-  status: 'ok' | 'degraded'
+  status: "ok" | "degraded";
 }
 
 // N2 (Vue UI Parity vs OpenCode, May 2026) — community-flavoured
@@ -131,39 +131,39 @@ export interface HealthResponse {
 // Missing any of those three sites leaves a gap that surfaces as
 // either uncoloured code blocks or a half-applied theme.
 export type Theme =
-  | 'dark'
-  | 'light'
-  | 'terminal'
-  | 'tokyo-night'
-  | 'catppuccin-mocha'
-  | 'dracula'
-  | 'nord'
+  | "dark"
+  | "light"
+  | "terminal"
+  | "tokyo-night"
+  | "catppuccin-mocha"
+  | "dracula"
+  | "nord";
 
 export interface ModelPreference {
-  provider: string
-  model: string
+  provider: string;
+  model: string;
 }
 
-export type ModelPolicy = 'permissive' | 'strict' | ''
+export type ModelPolicy = "permissive" | "strict" | "";
 
 export interface Agent {
-  id: string
-  name: string
-  description?: string
-  version?: string
-  instructions?: string
-  model?: string
-  provider?: string
+  id: string;
+  name: string;
+  description?: string;
+  version?: string;
+  instructions?: string;
+  model?: string;
+  provider?: string;
   capabilities?: {
-    skills?: string[]
-    tools?: string[]
-  }
+    skills?: string[];
+    tools?: string[];
+  };
   /**
    * Provider/model pairs the agent is intended to run on. Order is
    * significant — earlier entries are surfaced first by the picker.
    * Mirrors agent.Manifest.PreferredModels on the Go side.
    */
-  preferred_models?: ModelPreference[]
+  preferred_models?: ModelPreference[];
   /**
    * Controls how preferred_models is interpreted:
    * - "" or "permissive": every model is allowed; preferred entries
@@ -171,7 +171,7 @@ export interface Agent {
    * - "strict": only preferred entries are selectable; an empty list
    *   degrades to permissive (avoids locking the user out).
    */
-  model_policy?: ModelPolicy
+  model_policy?: ModelPolicy;
 }
 
 /**
@@ -188,10 +188,10 @@ export interface Agent {
  *   members     ← Manifest.Members (always an array; never null)
  */
 export interface Swarm {
-  id: string
-  description?: string
-  lead: string
-  members: string[]
+  id: string;
+  description?: string;
+  lead: string;
+  members: string[];
 }
 
 /**
@@ -211,23 +211,23 @@ export interface Swarm {
  * the boolean defensively is still cheap and harmless.
  */
 export interface Session {
-  id: string
-  agentId: string
-  currentAgentId?: string
-  currentModelId?: string
-  currentProviderId?: string
+  id: string;
+  agentId: string;
+  currentAgentId?: string;
+  currentModelId?: string;
+  currentProviderId?: string;
   /** Lifecycle status emitted on every response (no omitempty in Go). */
-  status: string
+  status: string;
   /** Direct parent id (delegated child → parent). Optional — root sessions omit. */
-  parentId?: string
+  parentId?: string;
   /** Session-level parent id, distinct from parentId in nested swarms. Optional. */
-  parentSessionId?: string
+  parentSessionId?: string;
   /** Depth in the delegation tree (0 = root). Always emitted. */
-  depth: number
-  messages: Message[]
-  messageCount: number
+  depth: number;
+  messages: Message[];
+  messageCount: number;
   /** True when the backend broker has an active Publish in progress. Always emitted. */
-  isStreaming: boolean
+  isStreaming: boolean;
   /**
    * Delegation coordination chain identifier — populated when this session
    * was spawned via the engine's delegate tool. Empty for root sessions.
@@ -238,7 +238,7 @@ export interface Session {
    * that fetches a single session would lose chainId after the list-driven
    * cold load and the sibling-confusion bug could re-appear on refresh.
    */
-  chainId?: string
+  chainId?: string;
   /**
    * Phase 3 — TUI-cadence parity. Carries the engine's current
    * context_usage shape on agent / model PATCH responses so the
@@ -249,30 +249,30 @@ export interface Session {
    * meaningful figure (no token counter, no resolvable limit).
    */
   contextUsage?: {
-    input_tokens: number
-    output_reserve: number
-    limit: number
-    percentage: number
-    provider: string
-    model: string
-  }
-  createdAt: string
-  updatedAt: string
+    input_tokens: number;
+    output_reserve: number;
+    limit: number;
+    percentage: number;
+    provider: string;
+    model: string;
+  };
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface SessionSummary {
-  id: string
-  agentId: string
-  currentAgentId?: string
-  currentModelId?: string
-  currentProviderId?: string
-  parentId?: string
+  id: string;
+  agentId: string;
+  currentAgentId?: string;
+  currentModelId?: string;
+  currentProviderId?: string;
+  parentId?: string;
   /** Optional second parent id used by some swarm layouts. */
-  parentSessionId?: string
+  parentSessionId?: string;
   /** Lifecycle status emitted on every response. */
-  status: string
+  status: string;
   /** Depth in the delegation tree (0 = root). */
-  depth: number
+  depth: number;
   /**
    * Delegation coordination chain identifier — populated when this session
    * was spawned via the engine's delegate tool. Empty for root sessions.
@@ -284,54 +284,54 @@ export interface SessionSummary {
    * inline cards share targetAgent; click A opens B) re-appears every
    * page reload, because SwarmEvents do not replay on reconnect.
    */
-  chainId?: string
-  title: string
-  createdAt: string
-  updatedAt: string
-  messageCount: number
+  chainId?: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
   /**
    * True when the session has an active Running Turn in the registry.
    * Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture
    * (May 2026)" retired the SSE broker that previously drove this
    * field; it now mirrors `activeTurnId != ""`.
    */
-  isStreaming: boolean
+  isStreaming: boolean;
   /**
    * UUIDv4 of the currently-Running Turn for this session, or "" when
    * the session is idle. Populated by the backend's Turn registry
    * via handleListV1Sessions when a Running entry exists. The FE
    * uses this to drive long-poll reattach in maybeReattachStream.
    */
-  activeTurnId?: string
+  activeTurnId?: string;
 }
 
 export interface ModelInfo {
-  id: string
-  name: string
+  id: string;
+  name: string;
 }
 
 export interface ProviderInfo {
-  id: string
-  models: ModelInfo[]
+  id: string;
+  models: ModelInfo[];
 }
 
 export interface ModelsResponse {
-  providers: ProviderInfo[]
+  providers: ProviderInfo[];
 }
 
 export interface Model {
-  id: string
-  name: string
-  providerId: string
+  id: string;
+  name: string;
+  providerId: string;
 }
 
 export interface SessionMessageRequest {
-  content: string
+  content: string;
 }
 
 export interface SessionMessageResponse {
-  id: string
-  role: string
-  content: string
-  createdAt: string
+  id: string;
+  role: string;
+  content: string;
+  createdAt: string;
 }

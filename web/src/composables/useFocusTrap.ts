@@ -1,4 +1,4 @@
-import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { onBeforeUnmount, ref, watch, type Ref } from "vue";
 
 /**
  * useFocusTrap — keyboard accessibility helper for modal-like overlays.
@@ -34,22 +34,22 @@ export interface FocusTrapOptions {
    * time. Pass an explicit element when the previously-focused element
    * is known to disappear (e.g. a tear-down trigger button).
    */
-  restoreFocusTo?: () => HTMLElement | null
+  restoreFocusTo?: () => HTMLElement | null;
 }
 
 const FOCUSABLE_SELECTORS = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
   '[tabindex]:not([tabindex="-1"])',
-].join(',')
+].join(",");
 
 function getFocusableElements(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTORS)).filter(
-    (el) => !el.hasAttribute('disabled') && el.offsetParent !== null,
-  )
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTORS),
+  ).filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
 }
 
 export function useFocusTrap(
@@ -57,74 +57,78 @@ export function useFocusTrap(
   active: Ref<boolean>,
   options: FocusTrapOptions = {},
 ): void {
-  const previouslyFocused = ref<HTMLElement | null>(null)
+  const previouslyFocused = ref<HTMLElement | null>(null);
 
   function onKeydown(event: KeyboardEvent): void {
-    if (event.key !== 'Tab') return
-    const container = containerRef.value
-    if (!container) return
-    const focusables = getFocusableElements(container)
+    if (event.key !== "Tab") return;
+    const container = containerRef.value;
+    if (!container) return;
+    const focusables = getFocusableElements(container);
     if (focusables.length === 0) {
       // Nothing to trap into — keep the focus on whatever the modal
       // owner put there. Stop propagation so the chat thread doesn't
       // steal focus on Tab.
-      event.preventDefault()
-      return
+      event.preventDefault();
+      return;
     }
 
-    const first = focusables[0]
-    const last = focusables[focusables.length - 1]
-    const activeEl = document.activeElement as HTMLElement | null
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const activeEl = document.activeElement as HTMLElement | null;
 
     if (event.shiftKey) {
       if (activeEl === first || !container.contains(activeEl)) {
-        event.preventDefault()
-        last.focus()
+        event.preventDefault();
+        last.focus();
       }
     } else {
       if (activeEl === last) {
-        event.preventDefault()
-        first.focus()
+        event.preventDefault();
+        first.focus();
       }
     }
   }
 
   function activate(): void {
-    previouslyFocused.value = document.activeElement as HTMLElement | null
-    document.addEventListener('keydown', onKeydown)
+    previouslyFocused.value = document.activeElement as HTMLElement | null;
+    document.addEventListener("keydown", onKeydown);
     // Focus first focusable on next paint so any container child that
     // appears in the same activation tick (e.g. v-if=open) is in the DOM.
     requestAnimationFrame(() => {
-      const container = containerRef.value
-      if (!container) return
-      const focusables = getFocusableElements(container)
-      const target = focusables[0] ?? container
-      if (target && typeof target.focus === 'function') {
-        target.focus()
+      const container = containerRef.value;
+      if (!container) return;
+      const focusables = getFocusableElements(container);
+      const target = focusables[0] ?? container;
+      if (target && typeof target.focus === "function") {
+        target.focus();
       }
-    })
+    });
   }
 
   function deactivate(): void {
-    document.removeEventListener('keydown', onKeydown)
-    const restoreTo = options.restoreFocusTo?.() ?? previouslyFocused.value
-    if (restoreTo && typeof restoreTo.focus === 'function' && restoreTo.isConnected) {
-      restoreTo.focus()
+    document.removeEventListener("keydown", onKeydown);
+    const restoreTo = options.restoreFocusTo?.() ?? previouslyFocused.value;
+    if (
+      restoreTo &&
+      typeof restoreTo.focus === "function" &&
+      restoreTo.isConnected
+    ) {
+      restoreTo.focus();
     }
-    previouslyFocused.value = null
+    previouslyFocused.value = null;
   }
 
   watch(active, (isActive, wasActive) => {
     if (isActive && !wasActive) {
-      activate()
+      activate();
     } else if (!isActive && wasActive) {
-      deactivate()
+      deactivate();
     }
-  })
+  });
 
   onBeforeUnmount(() => {
     if (active.value) {
-      deactivate()
+      deactivate();
     }
-  })
+  });
 }

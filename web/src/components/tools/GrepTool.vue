@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import CopyButton from './CopyButton.vue'
-import ToolBubble from './ToolBubble.vue'
-import type { ToolRendererProps } from './toolRendererProps'
+import { computed } from "vue";
+import CopyButton from "./CopyButton.vue";
+import ToolBubble from "./ToolBubble.vue";
+import type { ToolRendererProps } from "./toolRendererProps";
 
 const props = withDefaults(defineProps<ToolRendererProps>(), {
-  status: 'completed',
-})
+  status: "completed",
+});
 
 // UI Parity I4 (May 2026): grep results are long match lists. Start
 // collapsed; subtitle surfaces the pattern. Force open on error.
-const cardDefaultOpen = computed(() => props.status === 'error')
+const cardDefaultOpen = computed(() => props.status === "error");
 </script>
 
 <template>
@@ -26,7 +26,10 @@ const cardDefaultOpen = computed(() => props.status === 'error')
         <span class="tool-renderer__label">Matches</span>
         <CopyButton :text="props.body" />
       </div>
-      <pre class="tool-code tool-code--grep" data-component="grep-content"><code>{{ props.body }}</code></pre>
+      <pre
+        class="tool-code tool-code--grep"
+        data-component="grep-content"
+      ><code>{{ props.body }}</code></pre>
     </div>
   </ToolBubble>
 </template>
@@ -58,7 +61,9 @@ const cardDefaultOpen = computed(() => props.status === 'error')
   border-radius: calc(var(--radius, 12px) - 4px);
   background: var(--surface-low, #1a1b26);
   color: var(--text-primary, #c0caf5);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
   font-size: 0.85rem;
   line-height: 1.5;
   overflow-x: auto;

@@ -8,10 +8,10 @@ import type {
   Model,
   ModelsResponse,
   Swarm,
-} from '@/types'
-import { parseError } from '@/lib/parseError'
-import { isAllowedApiHost } from '@/lib/apiHostAllowlist'
-import { withCsrfHeader } from '@/lib/csrf'
+} from "@/types";
+import { parseError } from "@/lib/parseError";
+import { isAllowedApiHost } from "@/lib/apiHostAllowlist";
+import { withCsrfHeader } from "@/lib/csrf";
 
 // PR3 / C8 — auth coordinated change. Every fetch() in this module
 // adds `credentials: 'include'` so the browser sends the
@@ -29,10 +29,10 @@ import { withCsrfHeader } from '@/lib/csrf'
 
 // CREDENTIALS_INCLUDE is the shared RequestCredentials literal so the
 // constant is referenced consistently across every fetch site.
-const CREDENTIALS_INCLUDE: RequestCredentials = 'include'
+const CREDENTIALS_INCLUDE: RequestCredentials = "include";
 
-const BASE = '/api'
-const API_HOST_STORAGE_KEY = 'flowstate-api-host'
+const BASE = "/api";
+const API_HOST_STORAGE_KEY = "flowstate-api-host";
 
 /**
  * getBaseURL returns the API base URL, validated against the host
@@ -42,55 +42,57 @@ const API_HOST_STORAGE_KEY = 'flowstate-api-host'
  * threat model.
  */
 function getBaseURL(): string {
-  let stored: string | null = null
+  let stored: string | null = null;
   try {
-    stored = localStorage.getItem(API_HOST_STORAGE_KEY)
+    stored = localStorage.getItem(API_HOST_STORAGE_KEY);
   } catch {
     // localStorage unavailable (private mode, SSR) — fall through to default.
-    return BASE
+    return BASE;
   }
-  if (!stored) return BASE
+  if (!stored) return BASE;
   if (!isAllowedApiHost(stored)) {
     // Hostile or malformed override — clear it and warn (validateApiHost
     // would also warn, but we want to log AND remove). The next page load
     // sees the BASE default; in-flight requests in the same tick still
     // see BASE because we returned it below.
     try {
-      localStorage.removeItem(API_HOST_STORAGE_KEY)
+      localStorage.removeItem(API_HOST_STORAGE_KEY);
     } catch {
       // best effort — fall through
     }
     // eslint-disable-next-line no-console
     console.warn(
-      '[flowstate] cleared API host override that failed allowlist policy:',
+      "[flowstate] cleared API host override that failed allowlist policy:",
       stored,
-    )
-    return BASE
+    );
+    return BASE;
   }
-  return stored
+  return stored;
 }
 
 export function joinBaseURL(path: string): string {
-  const base = getBaseURL().replace(/\/$/, '')
-  return `${base}${path}`
+  const base = getBaseURL().replace(/\/$/, "");
+  return `${base}${path}`;
 }
 
 export async function fetchAgents(): Promise<Agent[]> {
-  const res = await fetch(joinBaseURL('/agents'), { credentials: CREDENTIALS_INCLUDE })
+  const res = await fetch(joinBaseURL("/agents"), {
+    credentials: CREDENTIALS_INCLUDE,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to fetch agents: ${res.statusText}`)
+    throw new Error(`Failed to fetch agents: ${res.statusText}`);
   }
-  return res.json()
+  return res.json();
 }
 
 export async function fetchAgent(id: string): Promise<Agent> {
   const res = await fetch(joinBaseURL(`/agents/${encodeURIComponent(id)}`), {
     credentials: CREDENTIALS_INCLUDE,
-  })
+  });
   if (!res.ok) {
-    throw new Error(`Failed to fetch agent ${id}: ${res.statusText}`)
+    throw new Error(`Failed to fetch agent ${id}: ${res.statusText}`);
   }
-  return res.json()
+  return res.json();
 }
 
 /**
@@ -104,54 +106,56 @@ export async function fetchAgent(id: string): Promise<Agent> {
  * GET /api/swarms specs in internal/api/server_test.go).
  */
 export async function fetchSwarms(): Promise<Swarm[]> {
-  const res = await fetch(joinBaseURL('/swarms'), { credentials: CREDENTIALS_INCLUDE })
+  const res = await fetch(joinBaseURL("/swarms"), {
+    credentials: CREDENTIALS_INCLUDE,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to fetch swarms: ${res.statusText}`)
+    throw new Error(`Failed to fetch swarms: ${res.statusText}`);
   }
-  return res.json()
+  return res.json();
 }
 
 export async function postChat(
   agentId: string,
   message: string,
-  onChunk: (content: string) => void
+  onChunk: (content: string) => void,
 ): Promise<string> {
-  const res = await fetch(joinBaseURL('/chat'), {
-    method: 'POST',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+  const res = await fetch(joinBaseURL("/chat"), {
+    method: "POST",
+    headers: withCsrfHeader({ "Content-Type": "application/json" }),
     credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ agent_id: agentId, message } as ChatRequest),
-  })
+  });
 
   if (!res.ok) {
-    throw new Error(await parseError(res))
+    throw new Error(await parseError(res));
   }
 
   if (!res.body) {
-    throw new Error('Response body is null')
+    throw new Error("Response body is null");
   }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let content = ''
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let content = "";
 
   try {
     while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      const chunk = decoder.decode(value, { stream: true })
-      const lines = chunk.split('\n')
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split("\n");
       for (const line of lines) {
-        if (!line.trim() || !line.startsWith('data: ')) continue
-        const data = line.slice(6)
-        if (data === '[DONE]') continue
+        if (!line.trim() || !line.startsWith("data: ")) continue;
+        const data = line.slice(6);
+        if (data === "[DONE]") continue;
         try {
-          const parsed: SSEChunk = JSON.parse(data)
+          const parsed: SSEChunk = JSON.parse(data);
           if (parsed.content) {
-            content += parsed.content
-            onChunk(parsed.content)
+            content += parsed.content;
+            onChunk(parsed.content);
           } else if (parsed.error) {
-            throw new Error(parsed.error)
+            throw new Error(parsed.error);
           }
         } catch {
           // ignore parse errors for non-JSON lines
@@ -159,45 +163,48 @@ export async function postChat(
       }
     }
   } finally {
-    reader.releaseLock()
+    reader.releaseLock();
   }
 
-  return content
+  return content;
 }
 
 export async function fetchSwarmEvents(): Promise<unknown[]> {
-  const res = await fetch(joinBaseURL('/swarm/events'), { credentials: CREDENTIALS_INCLUDE })
+  const res = await fetch(joinBaseURL("/swarm/events"), {
+    credentials: CREDENTIALS_INCLUDE,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to fetch swarm events: ${res.statusText}`)
+    throw new Error(`Failed to fetch swarm events: ${res.statusText}`);
   }
-  return res.json()
+  return res.json();
 }
 
 export async function fetchSessions(): Promise<SessionSummary[]> {
-  const res = await fetch(joinBaseURL('/v1/sessions'), { credentials: CREDENTIALS_INCLUDE })
+  const res = await fetch(joinBaseURL("/v1/sessions"), {
+    credentials: CREDENTIALS_INCLUDE,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to fetch sessions: ${res.statusText}`)
+    throw new Error(`Failed to fetch sessions: ${res.statusText}`);
   }
-  return res.json()
+  return res.json();
 }
 
 export async function createSession(agentId: string): Promise<Session> {
-  const res = await fetch(joinBaseURL('/v1/sessions'), {
-    method: 'POST',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+  const res = await fetch(joinBaseURL("/v1/sessions"), {
+    method: "POST",
+    headers: withCsrfHeader({ "Content-Type": "application/json" }),
     credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ agent_id: agentId }),
-  })
+  });
   if (!res.ok) {
-    throw new Error(`Failed to create session: ${res.statusText}`)
+    throw new Error(`Failed to create session: ${res.statusText}`);
   }
-  return res.json()
+  return res.json();
 }
 
-
 export interface SendSessionMessageOptions {
-  attachmentIds?: string[]
-  signal?: AbortSignal
+  attachmentIds?: string[];
+  signal?: AbortSignal;
 }
 
 /**
@@ -225,33 +232,36 @@ export interface SendSessionMessageOptions {
  *     Turn-Based Post-Then-Poll Architecture (May 2026).md
  */
 export interface SendSessionMessageResult {
-  turnId: string | null
-  snapshot: Session
+  turnId: string | null;
+  snapshot: Session;
 }
 
 export async function sendSessionMessage(
   sessionId: string,
   content: string,
-  options?: SendSessionMessageOptions
+  options?: SendSessionMessageOptions,
 ): Promise<SendSessionMessageResult> {
   if (options?.signal?.aborted) {
-    throw new DOMException('This operation was aborted', 'AbortError')
+    throw new DOMException("This operation was aborted", "AbortError");
   }
 
-  const body: Record<string, unknown> = { content }
+  const body: Record<string, unknown> = { content };
   if (options?.attachmentIds && options.attachmentIds.length > 0) {
-    body.attachmentIds = options.attachmentIds
+    body.attachmentIds = options.attachmentIds;
   }
 
-  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
-    method: 'POST',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
-    credentials: CREDENTIALS_INCLUDE,
-    body: JSON.stringify(body),
-    signal: options?.signal,
-  })
+  const res = await fetch(
+    joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`),
+    {
+      method: "POST",
+      headers: withCsrfHeader({ "Content-Type": "application/json" }),
+      credentials: CREDENTIALS_INCLUDE,
+      body: JSON.stringify(body),
+      signal: options?.signal,
+    },
+  );
   if (!res.ok) {
-    throw new Error(await parseError(res))
+    throw new Error(await parseError(res));
   }
   // Phase 2 wire shape:
   //   {
@@ -268,13 +278,14 @@ export async function sendSessionMessage(
   // snapshot is the body itself (flat) when no nested snapshot was
   // provided — the flat fields ARE the Session.
   const parsed = (await res.json()) as Session & {
-    turn_id?: string
-    snapshot?: Session
-  }
-  const rawTurnId = typeof parsed.turn_id === 'string' ? parsed.turn_id : ''
-  const turnId = rawTurnId.length > 0 ? rawTurnId : null
-  const snapshot = (parsed.snapshot as Session | undefined) ?? (parsed as Session)
-  return { turnId, snapshot }
+    turn_id?: string;
+    snapshot?: Session;
+  };
+  const rawTurnId = typeof parsed.turn_id === "string" ? parsed.turn_id : "";
+  const turnId = rawTurnId.length > 0 ? rawTurnId : null;
+  const snapshot =
+    (parsed.snapshot as Session | undefined) ?? (parsed as Session);
+  return { turnId, snapshot };
 }
 
 /**
@@ -296,19 +307,19 @@ export async function sendSessionMessage(
  *     Turn-Based Post-Then-Poll Architecture (May 2026).md
  */
 export interface TurnStateModel {
-  provider: string
-  model: string
+  provider: string;
+  model: string;
 }
 
 export interface TurnState {
-  turn_id: string
-  session_id: string
-  status: 'running' | 'completed' | 'failed'
-  started_at: string
-  completed_at: string | null
-  model: TurnStateModel
-  error: string
-  messages: Message[]
+  turn_id: string;
+  session_id: string;
+  status: "running" | "completed" | "failed";
+  started_at: string;
+  completed_at: string | null;
+  model: TurnStateModel;
+  error: string;
+  messages: Message[];
   /**
    * phase surfaces the engine's most-recent streaming heartbeat phase
    * (Phase-4-Commit-1). Values: 'generating', 'thinking',
@@ -318,14 +329,14 @@ export interface TurnState {
    * chip's adaptive watchdog — the FE writes it onto
    * `chatStore.streamingPhase[sessionId]` on every poll-diff.
    */
-  phase?: string
+  phase?: string;
   /**
    * token_count is the engine's most-recent cumulative
    * output_tokens-so-far on this turn (Phase-4-Commit-1). Monotonically
    * non-decreasing within a turn; resets at the start of each new turn.
    * Powers the live token counter + tokens-per-second display.
    */
-  token_count?: number
+  token_count?: number;
   /**
    * current_provider mirrors the provider id the engine is CURRENTLY
    * streaming under (Phase-5 §1c-α). Populated by the dispatcher's
@@ -339,14 +350,14 @@ export interface TurnState {
    * model_active chunk; pre-1c servers omit the field entirely (the
    * absent key is functionally equivalent to "").
    */
-  current_provider?: string
+  current_provider?: string;
   /**
    * current_model is the model id paired with current_provider. Same
    * lifecycle semantics — Phase-5 §1c-α adds this so the FE's poll loop
    * can diff against the prior snapshot and pivot the chip on a real
    * change without waiting for the SSE handler at chatStore.ts:2740.
    */
-  current_model?: string
+  current_model?: string;
   /**
    * context_usage mirrors the engine's `context_usage` chunk payload —
    * the live context-window saturation figure the chat-UI's usage chip
@@ -362,7 +373,7 @@ export interface TurnState {
    * Optional: pre-1c-β servers and pre-first-chunk Turn states omit the
    * field entirely. The FE's poll-diff treats absent === unchanged.
    */
-  context_usage?: TurnStateContextUsage
+  context_usage?: TurnStateContextUsage;
   /**
    * provider_quotas mirrors the cumulative set of `provider_quota`
    * chunk payloads the engine emitted during this Turn (Phase-5 §1c-β),
@@ -382,7 +393,7 @@ export interface TurnState {
    * field entirely. The FE's poll-diff iterates per-partition; an
    * absent slice is treated as no-change.
    */
-  provider_quotas?: TurnStateProviderQuotaSnapshot[]
+  provider_quotas?: TurnStateProviderQuotaSnapshot[];
   /**
    * compaction_events records each `context_compacted` bus event the
    * engine published during this Turn (Phase-5 §1c-γ). Populated by the
@@ -395,7 +406,7 @@ export interface TurnState {
    * Optional: pre-1c-γ servers and pre-first-event Turn states omit
    * the field entirely. The FE's poll-diff treats absent === unchanged.
    */
-  compaction_events?: TurnStateCompactionEvent[]
+  compaction_events?: TurnStateCompactionEvent[];
   /**
    * gate_failures records each halt-class `gate_failed` bus event the
    * engine published during this Turn (Phase-5 §1c-γ). Populated by
@@ -404,7 +415,7 @@ export interface TurnState {
    *
    * Optional: pre-1c-γ servers omit the field entirely.
    */
-  gate_failures?: TurnStateGateFailure[]
+  gate_failures?: TurnStateGateFailure[];
   /**
    * critical_error surfaces a fatal provider-error stamp produced by
    * the dispatcher's wrapWithTurnLifecycle chunk-tap when chunk.Error
@@ -417,7 +428,7 @@ export interface TurnState {
    * (the common case); non-null transitions populate the banner and
    * the correlation_id is the idempotency key the FE handler dedups on.
    */
-  critical_error?: TurnStateCriticalError | null
+  critical_error?: TurnStateCriticalError | null;
 }
 
 /**
@@ -431,12 +442,12 @@ export interface TurnState {
  * Phase-5 §1c-γ.
  */
 export interface TurnStateCompactionEvent {
-  session_id: string
-  agent_id: string
-  original_tokens: number
-  summary_tokens: number
-  latency_ms: number
-  trigger?: string
+  session_id: string;
+  agent_id: string;
+  original_tokens: number;
+  summary_tokens: number;
+  latency_ms: number;
+  trigger?: string;
 }
 
 /**
@@ -448,14 +459,14 @@ export interface TurnStateCompactionEvent {
  * Phase-5 §1c-γ.
  */
 export interface TurnStateGateFailure {
-  swarm_id: string
-  lifecycle: string
-  member_id: string
-  gate_name: string
-  gate_kind: string
-  reason: string
-  cause: string
-  coord_store_keys?: string[]
+  swarm_id: string;
+  lifecycle: string;
+  member_id: string;
+  gate_name: string;
+  gate_kind: string;
+  reason: string;
+  cause: string;
+  coord_store_keys?: string[];
 }
 
 /**
@@ -468,9 +479,9 @@ export interface TurnStateGateFailure {
  * Phase-5 §1c-γ.
  */
 export interface TurnStateCriticalError {
-  message: string
-  correlation_id?: string
-  severity?: string
+  message: string;
+  correlation_id?: string;
+  severity?: string;
 }
 
 /**
@@ -484,12 +495,12 @@ export interface TurnStateCriticalError {
  * Phase-5 §1c-β.
  */
 export interface TurnStateContextUsage {
-  input_tokens: number
-  output_reserve: number
-  limit: number
-  percentage: number
-  provider: string
-  model: string
+  input_tokens: number;
+  output_reserve: number;
+  limit: number;
+  percentage: number;
+  provider: string;
+  model: string;
 }
 
 /**
@@ -509,49 +520,49 @@ export interface TurnStateContextUsage {
  * Phase-5 §1c-β.
  */
 export interface TurnStateProviderQuotaSnapshot {
-  provider: string
-  account_hash: string
-  model?: string
-  observed_at: string
-  stale?: boolean
-  store_backend?: string
-  pricing_source?: string
-  variant: 'rate_limit' | 'token_spend' | 'not_configured'
-  rate_limit?: TurnStateProviderQuotaRateLimit | null
-  token_spend?: TurnStateProviderQuotaTokenSpend | null
-  not_configured?: TurnStateProviderQuotaNotConfig | null
+  provider: string;
+  account_hash: string;
+  model?: string;
+  observed_at: string;
+  stale?: boolean;
+  store_backend?: string;
+  pricing_source?: string;
+  variant: "rate_limit" | "token_spend" | "not_configured";
+  rate_limit?: TurnStateProviderQuotaRateLimit | null;
+  token_spend?: TurnStateProviderQuotaTokenSpend | null;
+  not_configured?: TurnStateProviderQuotaNotConfig | null;
 }
 
 export interface TurnStateProviderQuotaRateLimit {
-  requests: TurnStateProviderQuotaWindow
-  tokens: TurnStateProviderQuotaWindow
-  input: TurnStateProviderQuotaWindow
-  output: TurnStateProviderQuotaWindow
-  tightest_percent_remaining: number
-  tightest_reset_at?: string
+  requests: TurnStateProviderQuotaWindow;
+  tokens: TurnStateProviderQuotaWindow;
+  input: TurnStateProviderQuotaWindow;
+  output: TurnStateProviderQuotaWindow;
+  tightest_percent_remaining: number;
+  tightest_reset_at?: string;
 }
 
 export interface TurnStateProviderQuotaWindow {
-  limit: number
-  remaining: number
-  reset?: string
+  limit: number;
+  remaining: number;
+  reset?: string;
 }
 
 export interface TurnStateProviderQuotaTokenSpend {
-  spent_minor: number
-  spent_currency: string
-  spent_usd_minor: number
-  cap_minor?: number
-  cap_currency?: string
-  period: string
-  period_start: string
-  period_end: string
-  threshold_amber: number
-  threshold_red: number
+  spent_minor: number;
+  spent_currency: string;
+  spent_usd_minor: number;
+  cap_minor?: number;
+  cap_currency?: string;
+  period: string;
+  period_start: string;
+  period_end: string;
+  threshold_amber: number;
+  threshold_red: number;
 }
 
 export interface TurnStateProviderQuotaNotConfig {
-  reason: string
+  reason: string;
 }
 
 /**
@@ -576,9 +587,9 @@ export interface TurnStateProviderQuotaNotConfig {
  *     handler aborts the wait without writing a stale body.
  */
 export interface FetchTurnOptions {
-  wait?: boolean
-  since?: number
-  signal?: AbortSignal
+  wait?: boolean;
+  since?: number;
+  signal?: AbortSignal;
 }
 
 /**
@@ -615,26 +626,26 @@ export async function fetchTurn(
   turnId: string,
   opts: FetchTurnOptions = {},
 ): Promise<TurnState> {
-  const basePath = `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`
-  let url = joinBaseURL(basePath)
+  const basePath = `/v1/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`;
+  let url = joinBaseURL(basePath);
   if (opts.wait) {
     // The server reads `wait=true` as a string match — only this exact
     // value enables the long-poll branch. Pre-1b servers ignore the
     // query param and fall through to the legacy snapshot path
     // (acceptable degradation: every long-poll round-trip is a
     // 250ms-cadence poll on the server we have).
-    const since = Math.max(0, Math.floor(opts.since ?? 0))
-    url = `${url}?wait=true&since=${since}`
+    const since = Math.max(0, Math.floor(opts.since ?? 0));
+    url = `${url}?wait=true&since=${since}`;
   }
-  const init: RequestInit = { credentials: CREDENTIALS_INCLUDE }
+  const init: RequestInit = { credentials: CREDENTIALS_INCLUDE };
   if (opts.signal) {
-    init.signal = opts.signal
+    init.signal = opts.signal;
   }
-  const res = await fetch(url, init)
+  const res = await fetch(url, init);
   if (!res.ok) {
-    throw new Error(`Failed to fetch turn: ${res.status} ${res.statusText}`)
+    throw new Error(`Failed to fetch turn: ${res.status} ${res.statusText}`);
   }
-  return (await res.json()) as TurnState
+  return (await res.json()) as TurnState;
 }
 
 /**
@@ -646,10 +657,10 @@ export async function fetchTurn(
  * Plan "Chat Attachments Backend (May 2026)" §6 task-03 / task-05.
  */
 export interface UploadedAttachment {
-  id: string
-  mediaType: string
-  sizeBytes: number
-  originalFilename?: string
+  id: string;
+  mediaType: string;
+  sizeBytes: number;
+  originalFilename?: string;
 }
 
 /**
@@ -667,37 +678,45 @@ export interface UploadedAttachment {
  */
 export async function uploadAttachments(
   sessionId: string,
-  files: File[]
+  files: File[],
 ): Promise<UploadedAttachment[]> {
   if (files.length === 0) {
-    return []
+    return [];
   }
-  const form = new FormData()
+  const form = new FormData();
   for (const file of files) {
-    form.append('files', file, file.name)
+    form.append("files", file, file.name);
   }
-  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/attachments`), {
-    method: 'POST',
-    headers: withCsrfHeader(undefined),
-    credentials: CREDENTIALS_INCLUDE,
-    body: form,
-  })
+  const res = await fetch(
+    joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/attachments`),
+    {
+      method: "POST",
+      headers: withCsrfHeader(undefined),
+      credentials: CREDENTIALS_INCLUDE,
+      body: form,
+    },
+  );
   if (!res.ok) {
-    throw new Error(await parseError(res))
+    throw new Error(await parseError(res));
   }
-  const data = (await res.json()) as { attachments?: UploadedAttachment[] }
-  return data.attachments ?? []
+  const data = (await res.json()) as { attachments?: UploadedAttachment[] };
+  return data.attachments ?? [];
 }
 
-export async function fetchSessionMessages(sessionId: string): Promise<Message[]> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`), {
-    credentials: CREDENTIALS_INCLUDE,
-  })
+export async function fetchSessionMessages(
+  sessionId: string,
+): Promise<Message[]> {
+  const res = await fetch(
+    joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`),
+    {
+      credentials: CREDENTIALS_INCLUDE,
+    },
+  );
   if (!res.ok) {
-    throw new Error(`Failed to fetch session messages: ${res.statusText}`)
+    throw new Error(`Failed to fetch session messages: ${res.statusText}`);
   }
-  const data = (await res.json()) as Message[] | null
-  return data ?? []
+  const data = (await res.json()) as Message[] | null;
+  return data ?? [];
 }
 
 // Phase-4-Commit-2 of "Turn-Based Post-Then-Poll Architecture (May 2026)"
@@ -711,21 +730,27 @@ export async function fetchSessionMessages(sessionId: string): Promise<Message[]
 // poll fixtures. Calling it in production throws — the route is gone.
 export function subscribeSessionStream(_sessionId: string): EventSource {
   throw new Error(
-    'subscribeSessionStream retired in Phase-4-Commit-2 of Turn-Based Post-Then-Poll Architecture (May 2026). Use long-poll on GET /v1/sessions/{id}/turns/{turn_id} via pollTurnUntilTerminal.',
-  )
+    "subscribeSessionStream retired in Phase-4-Commit-2 of Turn-Based Post-Then-Poll Architecture (May 2026). Use long-poll on GET /v1/sessions/{id}/turns/{turn_id} via pollTurnUntilTerminal.",
+  );
 }
 
-export async function updateSessionAgent(sessionId: string, agentId: string): Promise<Session> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/agent`), {
-    method: 'PATCH',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
-    credentials: CREDENTIALS_INCLUDE,
-    body: JSON.stringify({ agentId }),
-  })
+export async function updateSessionAgent(
+  sessionId: string,
+  agentId: string,
+): Promise<Session> {
+  const res = await fetch(
+    joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/agent`),
+    {
+      method: "PATCH",
+      headers: withCsrfHeader({ "Content-Type": "application/json" }),
+      credentials: CREDENTIALS_INCLUDE,
+      body: JSON.stringify({ agentId }),
+    },
+  );
   if (!res.ok) {
-    throw new Error(await parseError(res))
+    throw new Error(await parseError(res));
   }
-  return (await res.json()) as Session
+  return (await res.json()) as Session;
 }
 
 export async function updateSessionModel(
@@ -733,32 +758,37 @@ export async function updateSessionModel(
   modelId: string,
   providerId: string,
 ): Promise<Session> {
-  const res = await fetch(joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/model`), {
-    method: 'PATCH',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
-    credentials: CREDENTIALS_INCLUDE,
-    body: JSON.stringify({ modelId, providerId }),
-  })
+  const res = await fetch(
+    joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/model`),
+    {
+      method: "PATCH",
+      headers: withCsrfHeader({ "Content-Type": "application/json" }),
+      credentials: CREDENTIALS_INCLUDE,
+      body: JSON.stringify({ modelId, providerId }),
+    },
+  );
   if (!res.ok) {
-    throw new Error(await parseError(res))
+    throw new Error(await parseError(res));
   }
-  return (await res.json()) as Session
+  return (await res.json()) as Session;
 }
 
 export async function fetchModels(): Promise<Model[]> {
-  const res = await fetch(joinBaseURL('/v1/models'), { credentials: CREDENTIALS_INCLUDE })
+  const res = await fetch(joinBaseURL("/v1/models"), {
+    credentials: CREDENTIALS_INCLUDE,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to fetch models: ${res.statusText}`)
+    throw new Error(`Failed to fetch models: ${res.statusText}`);
   }
-  const data = (await res.json()) as ModelsResponse | null
-  const providers = data?.providers ?? []
-  const models: Model[] = []
+  const data = (await res.json()) as ModelsResponse | null;
+  const providers = data?.providers ?? [];
+  const models: Model[] = [];
   for (const provider of providers) {
     for (const model of provider.models ?? []) {
-      models.push({ id: model.id, name: model.name, providerId: provider.id })
+      models.push({ id: model.id, name: model.name, providerId: provider.id });
     }
   }
-  return models
+  return models;
 }
 
 /**
@@ -770,36 +800,43 @@ export async function fetchModels(): Promise<Model[]> {
  * remove.
  */
 export async function deleteSession(sessionId: string): Promise<void> {
-  const url = joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}`)
+  const url = joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}`);
   const res = await fetch(url, {
-    method: 'DELETE',
+    method: "DELETE",
     headers: withCsrfHeader(undefined),
     credentials: CREDENTIALS_INCLUDE,
-  })
+  });
   if (!res.ok) {
-    throw new Error(`Failed to delete session: ${res.status} ${res.statusText}`)
+    throw new Error(
+      `Failed to delete session: ${res.status} ${res.statusText}`,
+    );
   }
 }
 
-export async function truncateSessionMessages(sessionId: string, fromMessageId: string): Promise<void> {
+export async function truncateSessionMessages(
+  sessionId: string,
+  fromMessageId: string,
+): Promise<void> {
   const url = joinBaseURL(
     `/v1/sessions/${encodeURIComponent(sessionId)}/messages/from/${encodeURIComponent(fromMessageId)}`,
-  )
+  );
   const res = await fetch(url, {
-    method: 'DELETE',
+    method: "DELETE",
     headers: withCsrfHeader(undefined),
     credentials: CREDENTIALS_INCLUDE,
-  })
-  if (!res.ok) throw new Error(`truncate failed: ${res.status}`)
+  });
+  if (!res.ok) throw new Error(`truncate failed: ${res.status}`);
 }
 
 export async function listModels(): Promise<ModelsResponse> {
-  const res = await fetch(joinBaseURL('/v1/models'), { credentials: CREDENTIALS_INCLUDE })
+  const res = await fetch(joinBaseURL("/v1/models"), {
+    credentials: CREDENTIALS_INCLUDE,
+  });
   if (!res.ok) {
-    throw new Error(`Failed to list models: ${res.statusText}`)
+    throw new Error(`Failed to list models: ${res.statusText}`);
   }
-  const data = (await res.json()) as ModelsResponse | null
-  return { providers: data?.providers ?? [] }
+  const data = (await res.json()) as ModelsResponse | null;
+  return { providers: data?.providers ?? [] };
 }
 
 // Deliverable 2 of the May 2026 context-accuracy bundle —
@@ -807,7 +844,7 @@ export async function listModels(): Promise<ModelsResponse> {
 // GET / PATCH /api/v1/config/compression. The SettingsView slider
 // binds onto `threshold`.
 export interface CompressionConfig {
-  threshold: number
+  threshold: number;
 }
 
 /**
@@ -824,17 +861,19 @@ export interface CompressionConfig {
  *   - Throws on any other non-OK status.
  */
 export async function fetchCompressionConfig(): Promise<CompressionConfig | null> {
-  const res = await fetch(joinBaseURL('/v1/config/compression'), {
+  const res = await fetch(joinBaseURL("/v1/config/compression"), {
     credentials: CREDENTIALS_INCLUDE,
-  })
+  });
   if (res.status === 501) {
-    return null
+    return null;
   }
   if (!res.ok) {
-    throw new Error(`Failed to fetch compression config: ${res.status} ${res.statusText}`)
+    throw new Error(
+      `Failed to fetch compression config: ${res.status} ${res.statusText}`,
+    );
   }
-  const data = (await res.json()) as CompressionConfig
-  return data
+  const data = (await res.json()) as CompressionConfig;
+  return data;
 }
 
 /**
@@ -847,18 +886,20 @@ export async function fetchCompressionConfig(): Promise<CompressionConfig | null
  * 400 response propagates as a thrown Error so the SettingsView
  * can surface it inline.
  */
-export async function updateCompressionThreshold(threshold: number): Promise<CompressionConfig> {
-  const res = await fetch(joinBaseURL('/v1/config/compression'), {
-    method: 'PATCH',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+export async function updateCompressionThreshold(
+  threshold: number,
+): Promise<CompressionConfig> {
+  const res = await fetch(joinBaseURL("/v1/config/compression"), {
+    method: "PATCH",
+    headers: withCsrfHeader({ "Content-Type": "application/json" }),
     credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({ threshold }),
-  })
+  });
   if (!res.ok) {
-    throw new Error(await parseError(res))
+    throw new Error(await parseError(res));
   }
-  const data = (await res.json()) as CompressionConfig
-  return data
+  const data = (await res.json()) as CompressionConfig;
+  return data;
 }
 
 // Deliverable 3 — CompactNowResult is the wire shape returned by
@@ -869,8 +910,8 @@ export async function updateCompressionThreshold(threshold: number): Promise<Com
 // Summary is the JSON-encoded summary text when fired=true; absent
 // otherwise.
 export interface CompactNowResult {
-  fired: boolean
-  summary?: string
+  fired: boolean;
+  summary?: string;
 }
 
 /**
@@ -879,18 +920,22 @@ export interface CompactNowResult {
  * still respects the AutoCompaction.Enabled flag — an opt-out is
  * sticky and cannot be overridden by the slash command.
  */
-export async function compactSessionNow(sessionId: string): Promise<CompactNowResult> {
-  const url = joinBaseURL(`/v1/sessions/${encodeURIComponent(sessionId)}/compress`)
+export async function compactSessionNow(
+  sessionId: string,
+): Promise<CompactNowResult> {
+  const url = joinBaseURL(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/compress`,
+  );
   const res = await fetch(url, {
-    method: 'POST',
+    method: "POST",
     headers: withCsrfHeader(undefined),
     credentials: CREDENTIALS_INCLUDE,
-  })
+  });
   if (!res.ok) {
-    throw new Error(await parseError(res))
+    throw new Error(await parseError(res));
   }
-  const data = (await res.json()) as CompactNowResult
-  return data
+  const data = (await res.json()) as CompactNowResult;
+  return data;
 }
 
 // Provider Quota and Spend Visibility plan (May 2026) — PR5 REST
@@ -908,9 +953,9 @@ export async function compactSessionNow(sessionId: string): Promise<CompactNowRe
  * one of four windows the rate_limit variant exposes.
  */
 export interface ProviderQuotaWindow {
-  limit: number
-  remaining: number
-  reset: string
+  limit: number;
+  remaining: number;
+  reset: string;
 }
 
 /**
@@ -918,12 +963,12 @@ export interface ProviderQuotaWindow {
  * sseProviderQuotaRateLimit — the rate_limit variant payload.
  */
 export interface ProviderQuotaRateLimit {
-  requests: ProviderQuotaWindow
-  tokens: ProviderQuotaWindow
-  input: ProviderQuotaWindow
-  output: ProviderQuotaWindow
-  tightestPercentRemaining: number
-  tightestResetAt: string
+  requests: ProviderQuotaWindow;
+  tokens: ProviderQuotaWindow;
+  input: ProviderQuotaWindow;
+  output: ProviderQuotaWindow;
+  tightestPercentRemaining: number;
+  tightestResetAt: string;
 }
 
 /**
@@ -931,16 +976,16 @@ export interface ProviderQuotaRateLimit {
  * sseProviderQuotaTokenSpend — the token_spend variant payload.
  */
 export interface ProviderQuotaTokenSpend {
-  spentMinor: number
-  spentCurrency: string
-  spentUsdMinor: number
-  capMinor: number
-  capCurrency: string
-  period: string
-  periodStart: string
-  periodEnd: string
-  thresholdAmber: number
-  thresholdRed: number
+  spentMinor: number;
+  spentCurrency: string;
+  spentUsdMinor: number;
+  capMinor: number;
+  capCurrency: string;
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  thresholdAmber: number;
+  thresholdRed: number;
 }
 
 /**
@@ -948,7 +993,7 @@ export interface ProviderQuotaTokenSpend {
  * sseProviderQuotaNotConfig — the not_configured variant payload.
  */
 export interface ProviderQuotaNotConfigured {
-  reason: string
+  reason: string;
 }
 
 /**
@@ -958,17 +1003,17 @@ export interface ProviderQuotaNotConfigured {
  * of the three nested payloads.
  */
 export interface ProviderQuotaEntry {
-  provider: string
-  accountHash: string
-  model: string
-  observedAt: string
-  stale: boolean
-  storeBackend: string
-  pricingSource: string
-  variant: 'rate_limit' | 'token_spend' | 'not_configured'
-  rateLimit: ProviderQuotaRateLimit | null
-  tokenSpend: ProviderQuotaTokenSpend | null
-  notConfigured: ProviderQuotaNotConfigured | null
+  provider: string;
+  accountHash: string;
+  model: string;
+  observedAt: string;
+  stale: boolean;
+  storeBackend: string;
+  pricingSource: string;
+  variant: "rate_limit" | "token_spend" | "not_configured";
+  rateLimit: ProviderQuotaRateLimit | null;
+  tokenSpend: ProviderQuotaTokenSpend | null;
+  notConfigured: ProviderQuotaNotConfigured | null;
 }
 
 /**
@@ -980,85 +1025,126 @@ export interface ProviderQuotaEntry {
  * codec replaces this in one place.
  */
 function normaliseQuotaEntry(raw: unknown): ProviderQuotaEntry | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
-  const variant = obj['variant']
-  if (variant !== 'rate_limit' && variant !== 'token_spend' && variant !== 'not_configured') {
-    return null
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const variant = obj["variant"];
+  if (
+    variant !== "rate_limit" &&
+    variant !== "token_spend" &&
+    variant !== "not_configured"
+  ) {
+    return null;
   }
   return {
-    provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
-    accountHash: typeof obj['account_hash'] === 'string' ? (obj['account_hash'] as string) : '',
-    model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
-    observedAt: typeof obj['observed_at'] === 'string' ? (obj['observed_at'] as string) : '',
-    stale: obj['stale'] === true,
-    storeBackend: typeof obj['store_backend'] === 'string' ? (obj['store_backend'] as string) : '',
-    pricingSource: typeof obj['pricing_source'] === 'string' ? (obj['pricing_source'] as string) : '',
+    provider:
+      typeof obj["provider"] === "string" ? (obj["provider"] as string) : "",
+    accountHash:
+      typeof obj["account_hash"] === "string"
+        ? (obj["account_hash"] as string)
+        : "",
+    model: typeof obj["model"] === "string" ? (obj["model"] as string) : "",
+    observedAt:
+      typeof obj["observed_at"] === "string"
+        ? (obj["observed_at"] as string)
+        : "",
+    stale: obj["stale"] === true,
+    storeBackend:
+      typeof obj["store_backend"] === "string"
+        ? (obj["store_backend"] as string)
+        : "",
+    pricingSource:
+      typeof obj["pricing_source"] === "string"
+        ? (obj["pricing_source"] as string)
+        : "",
     variant,
-    rateLimit: normaliseRateLimit(obj['rate_limit']),
-    tokenSpend: normaliseTokenSpend(obj['token_spend']),
-    notConfigured: normaliseNotConfigured(obj['not_configured']),
-  }
+    rateLimit: normaliseRateLimit(obj["rate_limit"]),
+    tokenSpend: normaliseTokenSpend(obj["token_spend"]),
+    notConfigured: normaliseNotConfigured(obj["not_configured"]),
+  };
 }
 
 function normaliseWindow(raw: unknown): ProviderQuotaWindow {
-  if (!raw || typeof raw !== 'object') {
-    return { limit: 0, remaining: 0, reset: '' }
+  if (!raw || typeof raw !== "object") {
+    return { limit: 0, remaining: 0, reset: "" };
   }
-  const obj = raw as Record<string, unknown>
+  const obj = raw as Record<string, unknown>;
   return {
-    limit: typeof obj['limit'] === 'number' ? (obj['limit'] as number) : 0,
-    remaining: typeof obj['remaining'] === 'number' ? (obj['remaining'] as number) : 0,
-    reset: typeof obj['reset'] === 'string' ? (obj['reset'] as string) : '',
-  }
+    limit: typeof obj["limit"] === "number" ? (obj["limit"] as number) : 0,
+    remaining:
+      typeof obj["remaining"] === "number" ? (obj["remaining"] as number) : 0,
+    reset: typeof obj["reset"] === "string" ? (obj["reset"] as string) : "",
+  };
 }
 
 function normaliseRateLimit(raw: unknown): ProviderQuotaRateLimit | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
   return {
-    requests: normaliseWindow(obj['requests']),
-    tokens: normaliseWindow(obj['tokens']),
-    input: normaliseWindow(obj['input']),
-    output: normaliseWindow(obj['output']),
+    requests: normaliseWindow(obj["requests"]),
+    tokens: normaliseWindow(obj["tokens"]),
+    input: normaliseWindow(obj["input"]),
+    output: normaliseWindow(obj["output"]),
     tightestPercentRemaining:
-      typeof obj['tightest_percent_remaining'] === 'number'
-        ? (obj['tightest_percent_remaining'] as number)
+      typeof obj["tightest_percent_remaining"] === "number"
+        ? (obj["tightest_percent_remaining"] as number)
         : -1,
     tightestResetAt:
-      typeof obj['tightest_reset_at'] === 'string' ? (obj['tightest_reset_at'] as string) : '',
-  }
+      typeof obj["tightest_reset_at"] === "string"
+        ? (obj["tightest_reset_at"] as string)
+        : "",
+  };
 }
 
 function normaliseTokenSpend(raw: unknown): ProviderQuotaTokenSpend | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
   return {
-    spentMinor: typeof obj['spent_minor'] === 'number' ? (obj['spent_minor'] as number) : 0,
+    spentMinor:
+      typeof obj["spent_minor"] === "number"
+        ? (obj["spent_minor"] as number)
+        : 0,
     spentCurrency:
-      typeof obj['spent_currency'] === 'string' ? (obj['spent_currency'] as string) : '',
+      typeof obj["spent_currency"] === "string"
+        ? (obj["spent_currency"] as string)
+        : "",
     spentUsdMinor:
-      typeof obj['spent_usd_minor'] === 'number' ? (obj['spent_usd_minor'] as number) : 0,
-    capMinor: typeof obj['cap_minor'] === 'number' ? (obj['cap_minor'] as number) : 0,
+      typeof obj["spent_usd_minor"] === "number"
+        ? (obj["spent_usd_minor"] as number)
+        : 0,
+    capMinor:
+      typeof obj["cap_minor"] === "number" ? (obj["cap_minor"] as number) : 0,
     capCurrency:
-      typeof obj['cap_currency'] === 'string' ? (obj['cap_currency'] as string) : '',
-    period: typeof obj['period'] === 'string' ? (obj['period'] as string) : '',
+      typeof obj["cap_currency"] === "string"
+        ? (obj["cap_currency"] as string)
+        : "",
+    period: typeof obj["period"] === "string" ? (obj["period"] as string) : "",
     periodStart:
-      typeof obj['period_start'] === 'string' ? (obj['period_start'] as string) : '',
-    periodEnd: typeof obj['period_end'] === 'string' ? (obj['period_end'] as string) : '',
+      typeof obj["period_start"] === "string"
+        ? (obj["period_start"] as string)
+        : "",
+    periodEnd:
+      typeof obj["period_end"] === "string"
+        ? (obj["period_end"] as string)
+        : "",
     thresholdAmber:
-      typeof obj['threshold_amber'] === 'number' ? (obj['threshold_amber'] as number) : -1,
+      typeof obj["threshold_amber"] === "number"
+        ? (obj["threshold_amber"] as number)
+        : -1,
     thresholdRed:
-      typeof obj['threshold_red'] === 'number' ? (obj['threshold_red'] as number) : -1,
-  }
+      typeof obj["threshold_red"] === "number"
+        ? (obj["threshold_red"] as number)
+        : -1,
+  };
 }
 
-function normaliseNotConfigured(raw: unknown): ProviderQuotaNotConfigured | null {
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
+function normaliseNotConfigured(
+  raw: unknown,
+): ProviderQuotaNotConfigured | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
   return {
-    reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
-  }
+    reason: typeof obj["reason"] === "string" ? (obj["reason"] as string) : "",
+  };
 }
 
 /**
@@ -1072,27 +1158,31 @@ function normaliseNotConfigured(raw: unknown): ProviderQuotaNotConfigured | null
  * MUST use real Response objects (or include `ok` getter explicitly)
  * so the `if (!res.ok)` branch resolves correctly.
  */
-export async function fetchProviderQuotas(): Promise<ProviderQuotaEntry[] | null> {
-  const res = await fetch(joinBaseURL('/v1/providers/quota'), {
+export async function fetchProviderQuotas(): Promise<
+  ProviderQuotaEntry[] | null
+> {
+  const res = await fetch(joinBaseURL("/v1/providers/quota"), {
     headers: withCsrfHeader(undefined),
     credentials: CREDENTIALS_INCLUDE,
-  })
+  });
   if (res.status === 501) {
-    return null
+    return null;
   }
   if (!res.ok) {
-    throw new Error(`Failed to fetch provider quotas: ${res.status} ${res.statusText}`)
+    throw new Error(
+      `Failed to fetch provider quotas: ${res.status} ${res.statusText}`,
+    );
   }
-  const raw = (await res.json()) as unknown
+  const raw = (await res.json()) as unknown;
   if (!Array.isArray(raw)) {
-    return []
+    return [];
   }
-  const out: ProviderQuotaEntry[] = []
+  const out: ProviderQuotaEntry[] = [];
   for (const r of raw) {
-    const entry = normaliseQuotaEntry(r)
-    if (entry !== null) out.push(entry)
+    const entry = normaliseQuotaEntry(r);
+    if (entry !== null) out.push(entry);
   }
-  return out
+  return out;
 }
 
 /**
@@ -1112,21 +1202,23 @@ export async function resetProviderQuotaSpend(
   accountHash: string,
   model: string,
 ): Promise<boolean> {
-  const res = await fetch(joinBaseURL('/v1/providers/quota/reset'), {
-    method: 'POST',
-    headers: withCsrfHeader({ 'Content-Type': 'application/json' }),
+  const res = await fetch(joinBaseURL("/v1/providers/quota/reset"), {
+    method: "POST",
+    headers: withCsrfHeader({ "Content-Type": "application/json" }),
     credentials: CREDENTIALS_INCLUDE,
     body: JSON.stringify({
       provider,
       account_hash: accountHash,
       model,
     }),
-  })
+  });
   if (res.status === 404) {
-    return false
+    return false;
   }
   if (!res.ok) {
-    throw new Error(`Failed to reset provider quota: ${res.status} ${res.statusText}`)
+    throw new Error(
+      `Failed to reset provider quota: ${res.status} ${res.statusText}`,
+    );
   }
-  return true
+  return true;
 }

@@ -1,54 +1,64 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
-import { useRoute, RouterLink } from 'vue-router'
-import { fetchAgent } from '@/api'
-import type { Agent } from '@/types'
+import { onMounted, ref, watch } from "vue";
+import { useRoute, RouterLink } from "vue-router";
+import { fetchAgent } from "@/api";
+import type { Agent } from "@/types";
 
-defineOptions({ name: 'AgentInfoView' })
+defineOptions({ name: "AgentInfoView" });
 
-const route = useRoute()
-const agent = ref<Agent | null>(null)
-const error = ref<string | null>(null)
-const loading = ref(false)
+const route = useRoute();
+const agent = ref<Agent | null>(null);
+const error = ref<string | null>(null);
+const loading = ref(false);
 
 async function load(id: string) {
-  loading.value = true
-  error.value = null
-  agent.value = null
+  loading.value = true;
+  error.value = null;
+  agent.value = null;
   try {
-    agent.value = await fetchAgent(id)
+    agent.value = await fetchAgent(id);
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
+    error.value = err instanceof Error ? err.message : String(err);
   } finally {
-    loading.value = false
+    loading.value = false;
   }
 }
 
-onMounted(() => load(String(route.params.id)))
+onMounted(() => load(String(route.params.id)));
 watch(
   () => route.params.id,
   (next) => {
-    if (next) load(String(next))
+    if (next) load(String(next));
   },
-)
+);
 </script>
 
 <template>
   <section class="agent-info" data-testid="agent-info-view">
     <header class="agent-info__header">
-      <RouterLink to="/chat" class="agent-info__back">← back to chat</RouterLink>
-      <h1 v-if="agent" class="agent-info__title">{{ agent.name || agent.id }}</h1>
+      <RouterLink to="/chat" class="agent-info__back"
+        >← back to chat</RouterLink
+      >
+      <h1 v-if="agent" class="agent-info__title">
+        {{ agent.name || agent.id }}
+      </h1>
     </header>
 
     <p v-if="loading" class="agent-info__status">Loading agent…</p>
-    <p v-else-if="error" class="agent-info__status agent-info__status--error">{{ error }}</p>
+    <p v-else-if="error" class="agent-info__status agent-info__status--error">
+      {{ error }}
+    </p>
 
     <article v-else-if="agent" class="agent-info__body">
       <dl class="agent-info__meta">
-        <dt>ID</dt><dd>{{ agent.id }}</dd>
-        <dt v-if="agent.version">Version</dt><dd v-if="agent.version">{{ agent.version }}</dd>
-        <dt v-if="agent.model">Model</dt><dd v-if="agent.model">{{ agent.model }}</dd>
-        <dt v-if="agent.provider">Provider</dt><dd v-if="agent.provider">{{ agent.provider }}</dd>
+        <dt>ID</dt>
+        <dd>{{ agent.id }}</dd>
+        <dt v-if="agent.version">Version</dt>
+        <dd v-if="agent.version">{{ agent.version }}</dd>
+        <dt v-if="agent.model">Model</dt>
+        <dd v-if="agent.model">{{ agent.model }}</dd>
+        <dt v-if="agent.provider">Provider</dt>
+        <dd v-if="agent.provider">{{ agent.provider }}</dd>
       </dl>
 
       <section v-if="agent.description" class="agent-info__section">
@@ -61,17 +71,27 @@ watch(
         <pre class="agent-info__instructions">{{ agent.instructions }}</pre>
       </section>
 
-      <section v-if="agent.capabilities?.skills?.length" class="agent-info__section">
+      <section
+        v-if="agent.capabilities?.skills?.length"
+        class="agent-info__section"
+      >
         <h2>Skills</h2>
         <ul class="agent-info__list">
-          <li v-for="skill in agent.capabilities.skills" :key="skill">{{ skill }}</li>
+          <li v-for="skill in agent.capabilities.skills" :key="skill">
+            {{ skill }}
+          </li>
         </ul>
       </section>
 
-      <section v-if="agent.capabilities?.tools?.length" class="agent-info__section">
+      <section
+        v-if="agent.capabilities?.tools?.length"
+        class="agent-info__section"
+      >
         <h2>Tools</h2>
         <ul class="agent-info__list">
-          <li v-for="tool in agent.capabilities.tools" :key="tool">{{ tool }}</li>
+          <li v-for="tool in agent.capabilities.tools" :key="tool">
+            {{ tool }}
+          </li>
         </ul>
       </section>
     </article>

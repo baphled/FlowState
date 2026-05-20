@@ -1,185 +1,206 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from "@playwright/test";
 
 // ...existing tests...
 
-test.describe('Chat view', () => {
+test.describe("Chat view", () => {
   let agents = [
-    { id: 'planner', name: 'Planner', description: 'Plans work', model: 'claude-sonnet-4-6' },
-    { id: 'executor', name: 'Executor', description: 'Runs work', model: 'llama3.2' },
-  ]
+    {
+      id: "planner",
+      name: "Planner",
+      description: "Plans work",
+      model: "claude-sonnet-4-6",
+    },
+    {
+      id: "executor",
+      name: "Executor",
+      description: "Runs work",
+      model: "llama3.2",
+    },
+  ];
 
   let sessions = [
     {
-      id: 'session-12345678',
-      title: 'Planning Sync',
-      agentId: 'planner',
+      id: "session-12345678",
+      title: "Planning Sync",
+      agentId: "planner",
       messageCount: 3,
-      createdAt: '2026-04-30T09:00:00Z',
-      updatedAt: '2026-05-01T09:00:00Z',
+      createdAt: "2026-04-30T09:00:00Z",
+      updatedAt: "2026-05-01T09:00:00Z",
     },
     {
-      id: 'session-87654321',
-      title: 'Sprint Retro',
-      agentId: 'executor',
+      id: "session-87654321",
+      title: "Sprint Retro",
+      agentId: "executor",
       messageCount: 3,
-      createdAt: '2026-05-01T09:00:00Z',
-      updatedAt: '2026-05-01T10:00:00Z',
+      createdAt: "2026-05-01T09:00:00Z",
+      updatedAt: "2026-05-01T10:00:00Z",
     },
-  ]
+  ];
 
   let messages = [
-    { role: 'user', content: 'Hello!' },
-    { role: 'assistant', content: 'Hello from the mock assistant!' },
-  ]
+    { role: "user", content: "Hello!" },
+    { role: "assistant", content: "Hello from the mock assistant!" },
+  ];
 
   const messagesBySession: Record<string, typeof messages> = {
-    'session-12345678': messages,
-    'session-87654321': messages,
-  }
+    "session-12345678": messages,
+    "session-87654321": messages,
+  };
 
-  const getSessionId = (url: string) => url.match(/\/sessions\/([^/]+)\/messages/)?.[1] ?? ''
+  const getSessionId = (url: string) =>
+    url.match(/\/sessions\/([^/]+)\/messages/)?.[1] ?? "";
 
   test.beforeEach(async ({ page }) => {
-    await page.route('**/api/agents', async (route) => {
+    await page.route("**/api/agents", async (route) => {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify(agents),
-      })
-    })
+      });
+    });
 
-    await page.route('**/api/v1/sessions', async (route) => {
-      if (route.request().method() === 'POST') {
+    await page.route("**/api/v1/sessions", async (route) => {
+      if (route.request().method() === "POST") {
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({ id: 'session-98765432' }),
-        })
-        return
+          contentType: "application/json",
+          body: JSON.stringify({ id: "session-98765432" }),
+        });
+        return;
       }
 
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify(sessions),
-      })
-    })
+      });
+    });
 
-    await page.route('**/api/v1/sessions/**/messages', async (route) => {
-      const sessionId = getSessionId(route.request().url())
+    await page.route("**/api/v1/sessions/**/messages", async (route) => {
+      const sessionId = getSessionId(route.request().url());
 
-      if (route.request().method() === 'POST') {
-        const body = route.request().postDataJSON() as { content?: string }
-        const currentMessages = messagesBySession[sessionId] ?? []
+      if (route.request().method() === "POST") {
+        const body = route.request().postDataJSON() as { content?: string };
+        const currentMessages = messagesBySession[sessionId] ?? [];
 
         messagesBySession[sessionId] = [
           ...currentMessages,
-          { role: 'user', content: body.content ?? '' },
-          { role: 'assistant', content: 'Hello from the mock assistant!' },
-        ]
+          { role: "user", content: body.content ?? "" },
+          { role: "assistant", content: "Hello from the mock assistant!" },
+        ];
 
         await route.fulfill({
           status: 200,
-          contentType: 'application/json',
+          contentType: "application/json",
           body: JSON.stringify({
             id: sessionId,
-            agentId: sessionId === 'session-87654321' ? 'executor' : 'planner',
+            agentId: sessionId === "session-87654321" ? "executor" : "planner",
             messages: messagesBySession[sessionId],
-            createdAt: '2026-05-01T00:00:00Z',
-            updatedAt: '2026-05-01T00:00:00Z',
+            createdAt: "2026-05-01T00:00:00Z",
+            updatedAt: "2026-05-01T00:00:00Z",
           }),
-        })
-        return
+        });
+        return;
       }
 
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify(messagesBySession[sessionId] ?? messages),
-      })
-    })
+      });
+    });
 
-    await page.route('**/api/swarm/events', async (route) => {
+    await page.route("**/api/swarm/events", async (route) => {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify([]),
-      })
-    })
+      });
+    });
 
-    await page.goto('/chat')
-  })
+    await page.goto("/chat");
+  });
 
-  test('renders the chat view', async ({ page }) => {
-    await expect(page.getByTestId('nav-bar')).toBeVisible()
+  test("renders the chat view", async ({ page }) => {
+    await expect(page.getByTestId("nav-bar")).toBeVisible();
     // AgentPicker (moved from NavBar into input-selector-bar in eb15ab7)
-    await expect(page.getByTestId('agent-picker')).toBeVisible()
-    await expect(page.getByTestId('session-switcher')).toBeVisible()
+    await expect(page.getByTestId("agent-picker")).toBeVisible();
+    await expect(page.getByTestId("session-switcher")).toBeVisible();
     // AgentPicker shows the selected agent name, not a model summary
-    await expect(page.getByTestId('agent-picker')).toContainText('Planner')
-    await expect(page.getByTestId('message-input')).toBeVisible()
-    await expect(page.getByTestId('send-button')).toBeVisible()
+    await expect(page.getByTestId("agent-picker")).toContainText("Planner");
+    await expect(page.getByTestId("message-input")).toBeVisible();
+    await expect(page.getByTestId("send-button")).toBeVisible();
     // old model-select input is gone (replaced by ModelPicker component)
-    await expect(page.getByTestId('model-select')).toHaveCount(0)
-  })
+    await expect(page.getByTestId("model-select")).toHaveCount(0);
+  });
 
-  test('opens and uses the agent picker and session switcher', async ({ page }) => {
+  test("opens and uses the agent picker and session switcher", async ({
+    page,
+  }) => {
     // AgentPicker is a clickable span that opens a FuzzySearchModal (not a listbox)
-    const agentPicker = page.getByTestId('agent-picker')
-    await agentPicker.click()
-    await expect(page.getByTestId('fuzzy-search-modal')).toBeVisible()
-    await page.getByTestId('fuzzy-search-item-executor').click()
-    await expect(page.getByTestId('fuzzy-search-modal')).toHaveCount(0)
-    await expect(agentPicker).toContainText('Executor')
+    const agentPicker = page.getByTestId("agent-picker");
+    await agentPicker.click();
+    await expect(page.getByTestId("fuzzy-search-modal")).toBeVisible();
+    await page.getByTestId("fuzzy-search-item-executor").click();
+    await expect(page.getByTestId("fuzzy-search-modal")).toHaveCount(0);
+    await expect(agentPicker).toContainText("Executor");
 
     // SessionSwitcher uses a native button + listbox dropdown
-    const sessionSwitcher = page.getByTestId('session-switcher')
-    await sessionSwitcher.getByRole('button').click()
-    await expect(sessionSwitcher.getByRole('listbox')).toBeVisible()
-    await sessionSwitcher.getByRole('option', { name: /Sprint Retro/i }).click()
-    await expect(sessionSwitcher.getByRole('button')).toContainText(/Sprint Retro/)
-  })
+    const sessionSwitcher = page.getByTestId("session-switcher");
+    await sessionSwitcher.getByRole("button").click();
+    await expect(sessionSwitcher.getByRole("listbox")).toBeVisible();
+    await sessionSwitcher
+      .getByRole("option", { name: /Sprint Retro/i })
+      .click();
+    await expect(sessionSwitcher.getByRole("button")).toContainText(
+      /Sprint Retro/,
+    );
+  });
 
-  test('sends a message and receives a response', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    await input.fill('Hello!')
-    await page.getByTestId('send-button').click()
+  test("sends a message and receives a response", async ({ page }) => {
+    const input = page.getByTestId("message-input");
+    await input.fill("Hello!");
+    await page.getByTestId("send-button").click();
 
-    const messages = page.getByTestId('message-list')
-    await expect(messages).toContainText('Hello!')
-    await expect(messages).toContainText('Hello from the mock assistant!')
-  })
+    const messages = page.getByTestId("message-list");
+    await expect(messages).toContainText("Hello!");
+    await expect(messages).toContainText("Hello from the mock assistant!");
+  });
 
-  test('opens the slash command picker when "/" is typed and inserts the chosen command', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    await input.click()
-    await input.press('/')
+  test('opens the slash command picker when "/" is typed and inserts the chosen command', async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    await input.click();
+    await input.press("/");
 
     // The picker reuses the FuzzySearchModal scaffolding so its backdrop
     // shares the same testid as the toolbar AgentPicker / ModelPicker
     // — only one is ever open at a time, so this is unambiguous.
-    await expect(page.getByTestId('fuzzy-search-backdrop')).toBeVisible()
-    await expect(page.getByTestId('fuzzy-search-item-clear')).toBeVisible()
-    await expect(page.getByTestId('fuzzy-search-item-help')).toBeVisible()
+    await expect(page.getByTestId("fuzzy-search-backdrop")).toBeVisible();
+    await expect(page.getByTestId("fuzzy-search-item-clear")).toBeVisible();
+    await expect(page.getByTestId("fuzzy-search-item-help")).toBeVisible();
 
-    await page.getByTestId('fuzzy-search-item-clear').click()
-    await expect(page.getByTestId('fuzzy-search-backdrop')).toHaveCount(0)
-    await expect(input).toHaveValue('/clear ')
-  })
+    await page.getByTestId("fuzzy-search-item-clear").click();
+    await expect(page.getByTestId("fuzzy-search-backdrop")).toHaveCount(0);
+    await expect(input).toHaveValue("/clear ");
+  });
 
-  test('opens the agent mention picker when "@" is typed mid-message', async ({ page }) => {
-    const input = page.getByTestId('message-input')
-    await input.click()
-    await input.fill('hey ')
-    await input.press('@')
+  test('opens the agent mention picker when "@" is typed mid-message', async ({
+    page,
+  }) => {
+    const input = page.getByTestId("message-input");
+    await input.click();
+    await input.fill("hey ");
+    await input.press("@");
 
-    await expect(page.getByTestId('fuzzy-search-backdrop')).toBeVisible()
-    await expect(page.getByTestId('fuzzy-search-item-planner')).toBeVisible()
+    await expect(page.getByTestId("fuzzy-search-backdrop")).toBeVisible();
+    await expect(page.getByTestId("fuzzy-search-item-planner")).toBeVisible();
 
-    await page.getByTestId('fuzzy-search-item-planner').click()
-    await expect(page.getByTestId('fuzzy-search-backdrop')).toHaveCount(0)
-    await expect(input).toHaveValue('hey @planner ')
-  })
+    await page.getByTestId("fuzzy-search-item-planner").click();
+    await expect(page.getByTestId("fuzzy-search-backdrop")).toHaveCount(0);
+    await expect(input).toHaveValue("hey @planner ");
+  });
 
   // Web Swarm Mention Parity (May 2026) — typing @<swarm-id> in the
   // composer surfaces the registered swarm in the @-picker and, on
@@ -187,68 +208,92 @@ test.describe('Chat view', () => {
   // a swarm at GET /api/swarms; this spec proves the surface picks it
   // up via the chatStore's `swarms` slice and renders it in the
   // FuzzySearchModal alongside agents.
-  test('opens the @-picker with registered swarms when "@" is typed', async ({ page }) => {
-    await page.route('**/api/swarms', async (route) => {
+  test('opens the @-picker with registered swarms when "@" is typed', async ({
+    page,
+  }) => {
+    await page.route("**/api/swarms", async (route) => {
       await route.fulfill({
         status: 200,
-        contentType: 'application/json',
+        contentType: "application/json",
         body: JSON.stringify([
-          { id: 'a-team', description: 'Alpha team', lead: 'planner', members: ['executor'] },
+          {
+            id: "a-team",
+            description: "Alpha team",
+            lead: "planner",
+            members: ["executor"],
+          },
         ]),
-      })
-    })
-    await page.reload()
+      });
+    });
+    await page.reload();
 
-    const input = page.getByTestId('message-input')
-    await input.click()
-    await input.press('@')
+    const input = page.getByTestId("message-input");
+    await input.click();
+    await input.press("@");
 
-    await expect(page.getByTestId('fuzzy-search-backdrop')).toBeVisible()
-    await expect(page.getByTestId('fuzzy-search-item-a-team')).toBeVisible()
-  })
+    await expect(page.getByTestId("fuzzy-search-backdrop")).toBeVisible();
+    await expect(page.getByTestId("fuzzy-search-item-a-team")).toBeVisible();
+  });
 
-  test('restores last-used session and agent after localStorage compaction', async ({ page }) => {
+  test("restores last-used session and agent after localStorage compaction", async ({
+    page,
+  }) => {
     // Select Executor via AgentPicker FuzzySearchModal
-    await page.getByTestId('agent-picker').click()
-    await expect(page.getByTestId('fuzzy-search-modal')).toBeVisible()
-    await page.getByTestId('fuzzy-search-item-executor').click()
-    await expect(page.getByTestId('agent-picker')).toContainText('Executor')
+    await page.getByTestId("agent-picker").click();
+    await expect(page.getByTestId("fuzzy-search-modal")).toBeVisible();
+    await page.getByTestId("fuzzy-search-item-executor").click();
+    await expect(page.getByTestId("agent-picker")).toContainText("Executor");
 
-    const sessionSwitcher = page.getByTestId('session-switcher')
-    await sessionSwitcher.getByRole('button').click()
-    await sessionSwitcher.getByRole('option', { name: /Sprint Retro/i }).click()
-    await expect(sessionSwitcher.getByRole('button')).toContainText(/Sprint Retro/)
+    const sessionSwitcher = page.getByTestId("session-switcher");
+    await sessionSwitcher.getByRole("button").click();
+    await sessionSwitcher
+      .getByRole("option", { name: /Sprint Retro/i })
+      .click();
+    await expect(sessionSwitcher.getByRole("button")).toContainText(
+      /Sprint Retro/,
+    );
 
-    await page.evaluate(() => localStorage.clear())
+    await page.evaluate(() => localStorage.clear());
 
     agents = [
-      { id: 'executor', name: 'Executor', description: 'Runs work', model: 'llama3.2' },
-      { id: 'planner', name: 'Planner', description: 'Plans work', model: 'claude-sonnet-4-6' },
-    ]
+      {
+        id: "executor",
+        name: "Executor",
+        description: "Runs work",
+        model: "llama3.2",
+      },
+      {
+        id: "planner",
+        name: "Planner",
+        description: "Plans work",
+        model: "claude-sonnet-4-6",
+      },
+    ];
 
     sessions = [
       {
-        id: 'session-87654321',
-        title: 'Sprint Retro',
-        agentId: 'executor',
+        id: "session-87654321",
+        title: "Sprint Retro",
+        agentId: "executor",
         messageCount: 3,
-        createdAt: '2026-05-01T09:00:00Z',
-        updatedAt: '2026-05-01T10:00:00Z',
+        createdAt: "2026-05-01T09:00:00Z",
+        updatedAt: "2026-05-01T10:00:00Z",
       },
       {
-        id: 'session-12345678',
-        title: 'Planning Sync',
-        agentId: 'planner',
+        id: "session-12345678",
+        title: "Planning Sync",
+        agentId: "planner",
         messageCount: 3,
-        createdAt: '2026-04-30T09:00:00Z',
-        updatedAt: '2026-05-01T09:00:00Z',
+        createdAt: "2026-04-30T09:00:00Z",
+        updatedAt: "2026-05-01T09:00:00Z",
       },
-    ]
+    ];
 
-    await page.reload()
+    await page.reload();
 
-    await expect(page.getByTestId('agent-picker')).toContainText('Executor')
-    await expect(page.getByTestId('session-switcher').getByRole('button')).toContainText(/Sprint Retro/)
-  })
-
-})
+    await expect(page.getByTestId("agent-picker")).toContainText("Executor");
+    await expect(
+      page.getByTestId("session-switcher").getByRole("button"),
+    ).toContainText(/Sprint Retro/);
+  });
+});

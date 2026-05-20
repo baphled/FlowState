@@ -1,61 +1,61 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useChatStore } from '@/stores/chatStore'
-import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
-import type { FuzzySearchItem } from '@/composables/useFuzzyFilter'
+import { computed, onMounted, ref } from "vue";
+import { useChatStore } from "@/stores/chatStore";
+import FuzzySearchModal from "@/components/common/FuzzySearchModal.vue";
+import type { FuzzySearchItem } from "@/composables/useFuzzyFilter";
 
-defineOptions({ name: 'AgentPicker' })
+defineOptions({ name: "AgentPicker" });
 
 const props = withDefaults(
   defineProps<{
-    readonly?: boolean
+    readonly?: boolean;
   }>(),
   {
     readonly: false,
   },
-)
+);
 
-const chatStore = useChatStore()
+const chatStore = useChatStore();
 
-const isOpen = ref(false)
+const isOpen = ref(false);
 
 const currentAgent = computed(() =>
   chatStore.availableAgentDetails.find((a) => a.id === chatStore.agentId),
-)
+);
 
-const label = computed(() => currentAgent.value?.name ?? 'Select agent')
+const label = computed(() => currentAgent.value?.name ?? "Select agent");
 
 const agentItems = computed<FuzzySearchItem[]>(() =>
   chatStore.availableAgentDetails.map((agent) => ({
     id: agent.id,
     label: agent.name,
-    group: '',
+    group: "",
     meta: agent.description,
   })),
-)
+);
 
 function openPicker(): void {
   if (props.readonly) {
-    return
+    return;
   }
 
-  isOpen.value = true
+  isOpen.value = true;
 }
 
 function handleSelect(item: FuzzySearchItem): void {
-  void chatStore.setAgent(item.id)
-  isOpen.value = false
+  void chatStore.setAgent(item.id);
+  isOpen.value = false;
 }
 
 function handleClose(): void {
-  isOpen.value = false
+  isOpen.value = false;
 }
 
 onMounted(() => {
   if (chatStore.availableAgentDetails.length === 0) {
-    void chatStore.loadAgents()
+    void chatStore.loadAgents();
   }
-})
+});
 </script>
 
 <template>

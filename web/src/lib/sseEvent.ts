@@ -35,13 +35,13 @@
  */
 
 export interface SSEContentChunkEvent {
-  kind: 'content'
-  content: string
+  kind: "content";
+  content: string;
 }
 
 export interface SSEErrorEvent {
-  kind: 'error'
-  error: string
+  kind: "error";
+  error: string;
 }
 
 /**
@@ -67,9 +67,9 @@ export interface SSEErrorEvent {
  * support; the server logs the raw error under this id.
  */
 export interface SSECriticalErrorEvent {
-  kind: 'stream_critical'
-  error: string
-  correlationId: string
+  kind: "stream_critical";
+  error: string;
+  correlationId: string;
 }
 
 /**
@@ -80,7 +80,7 @@ export interface SSECriticalErrorEvent {
  * is shared between transient and critical error categories — only the
  * `error` text identifies criticality.
  */
-export const CRITICAL_STREAM_ERROR_MESSAGE = 'critical stream error'
+export const CRITICAL_STREAM_ERROR_MESSAGE = "critical stream error";
 
 /**
  * CONTEXT_WINDOW_EXCEEDED_MESSAGE is the sibling canonical safe-message
@@ -97,27 +97,27 @@ export const CRITICAL_STREAM_ERROR_MESSAGE = 'critical stream error'
  * variant.
  */
 export const CONTEXT_WINDOW_EXCEEDED_MESSAGE =
-  'context window exceeded — start a fresh session or trim recent tool results before retrying'
+  "context window exceeded — start a fresh session or trim recent tool results before retrying";
 
 export interface SSEDoneEvent {
-  kind: 'done'
+  kind: "done";
 }
 
 export interface SSEToolCallEvent {
-  kind: 'tool_call'
-  name: string
-  status: string
-  input?: string
+  kind: "tool_call";
+  name: string;
+  status: string;
+  input?: string;
 }
 
 export interface SSESkillLoadEvent {
-  kind: 'skill_load'
-  name: string
+  kind: "skill_load";
+  name: string;
 }
 
 export interface SSEToolResultEvent {
-  kind: 'tool_result'
-  content: string
+  kind: "tool_result";
+  content: string;
 }
 
 /**
@@ -140,39 +140,39 @@ export interface SSEToolResultEvent {
  *     so the parser never throws on a malformed wire.
  */
 export interface SSEToolErrorEvent {
-  kind: 'tool_error'
-  content: string
+  kind: "tool_error";
+  content: string;
 }
 
 export interface SSEDelegationEvent {
-  kind: 'delegation'
+  kind: "delegation";
   /** Raw JSON-encoded payload — the chat store unpacks specific fields. */
-  raw: string
-  targetAgent?: string
-  chainId?: string
-  toolCalls?: number
-  lastTool?: string
-  status?: string
+  raw: string;
+  targetAgent?: string;
+  chainId?: string;
+  toolCalls?: number;
+  lastTool?: string;
+  status?: string;
 }
 
 export interface SSEHarnessRetryEvent {
-  kind: 'harness_retry'
-  content: string
+  kind: "harness_retry";
+  content: string;
 }
 
 export interface SSEHarnessAttemptStartEvent {
-  kind: 'harness_attempt_start'
-  content: string
+  kind: "harness_attempt_start";
+  content: string;
 }
 
 export interface SSEHarnessCompleteEvent {
-  kind: 'harness_complete'
-  content: string
+  kind: "harness_complete";
+  content: string;
 }
 
 export interface SSEHarnessCriticFeedbackEvent {
-  kind: 'harness_critic_feedback'
-  content: string
+  kind: "harness_critic_feedback";
+  content: string;
 }
 
 /**
@@ -189,8 +189,8 @@ export interface SSEHarnessCriticFeedbackEvent {
  * planned "provider_changed" event (failover transitions).
  */
 export interface SSEThinkingEvent {
-  kind: 'thinking'
-  content: string
+  kind: "thinking";
+  content: string;
 }
 
 /**
@@ -227,14 +227,14 @@ export interface SSEThinkingEvent {
  * that degraded case.
  */
 export interface SSEProviderChangedEvent {
-  kind: 'provider_changed'
-  from: string
-  to: string
-  fromProvider: string
-  fromModel: string
-  toProvider: string
-  toModel: string
-  reason: string
+  kind: "provider_changed";
+  from: string;
+  to: string;
+  fromProvider: string;
+  fromModel: string;
+  toProvider: string;
+  toModel: string;
+  reason: string;
 }
 
 /**
@@ -269,9 +269,9 @@ export interface SSEProviderChangedEvent {
  * chip on its prior value rather than blanking it out mid-conversation.
  */
 export interface SSEModelActiveEvent {
-  kind: 'model_active'
-  provider: string
-  model: string
+  kind: "model_active";
+  provider: string;
+  model: string;
 }
 
 /**
@@ -315,13 +315,13 @@ export interface SSEModelActiveEvent {
  * blanking out mid-conversation.
  */
 export interface SSEContextUsageEvent {
-  kind: 'context_usage'
-  inputTokens: number
-  outputReserve: number
-  limit: number
-  percentage: number
-  provider: string
-  model: string
+  kind: "context_usage";
+  inputTokens: number;
+  outputReserve: number;
+  limit: number;
+  percentage: number;
+  provider: string;
+  model: string;
 }
 
 /**
@@ -363,12 +363,12 @@ export interface SSEContextUsageEvent {
  * than firing a spurious flash.
  */
 export interface SSEContextCompactedEvent {
-  kind: 'context_compacted'
-  sessionId: string
-  agentId: string
-  originalTokens: number
-  summaryTokens: number
-  latencyMs: number
+  kind: "context_compacted";
+  sessionId: string;
+  agentId: string;
+  originalTokens: number;
+  summaryTokens: number;
+  latencyMs: number;
   /**
    * Trigger discriminant — Phase-5 Slice δ.
    *
@@ -387,7 +387,7 @@ export interface SSEContextCompactedEvent {
    * decodable; the chip tooltip falls back to the generic
    * "saved Ns tokens" copy when the discriminant is unrecognised.
    */
-  trigger: string
+  trigger: string;
 }
 
 /**
@@ -430,15 +430,15 @@ export interface SSEContextCompactedEvent {
  * dispatch.
  */
 export interface SSEGateFailedEvent {
-  kind: 'gate_failed'
-  swarmId: string
-  lifecycle: string
-  memberId: string
-  gateName: string
-  gateKind: string
-  reason: string
-  cause: string
-  coordStoreKeys: string[]
+  kind: "gate_failed";
+  swarmId: string;
+  lifecycle: string;
+  memberId: string;
+  gateName: string;
+  gateKind: string;
+  reason: string;
+  cause: string;
+  coordStoreKeys: string[];
 }
 
 /**
@@ -472,21 +472,21 @@ export interface SSEGateFailedEvent {
  * from a pre-PR5 server omits the field; the parser defaults to 0.
  */
 export interface SSEStreamingHeartbeatEvent {
-  kind: 'streaming_heartbeat'
-  phase: string
-  tokenCount: number
+  kind: "streaming_heartbeat";
+  phase: string;
+  tokenCount: number;
 }
 
 /** Catch-all for unrecognised events — preserves forward compatibility. */
 export interface SSEUnknownEvent {
-  kind: 'unknown'
-  raw: string
+  kind: "unknown";
+  raw: string;
 }
 
 /** Returned when the payload is not parseable as JSON or a known sentinel. */
 export interface SSEMalformedEvent {
-  kind: 'malformed'
-  raw: string
+  kind: "malformed";
+  raw: string;
 }
 
 export type SSEEvent =
@@ -512,7 +512,7 @@ export type SSEEvent =
   | SSEGateFailedEvent
   | SSEStreamingHeartbeatEvent
   | SSEUnknownEvent
-  | SSEMalformedEvent
+  | SSEMalformedEvent;
 
 /**
  * Provider Quota wire shape — Pinia store + chip subscribe via
@@ -528,50 +528,50 @@ export type SSEEvent =
  * the Go-side sseProviderQuota struct in lockstep.
  */
 export interface SSEProviderQuotaEvent {
-  kind: 'provider_quota'
-  provider: string
-  accountHash: string
-  model: string
-  observedAt: string
-  stale: boolean
-  storeBackend: string
-  pricingSource: string
-  variant: 'rate_limit' | 'token_spend' | 'not_configured'
-  rateLimit: SSEProviderQuotaRateLimit | null
-  tokenSpend: SSEProviderQuotaTokenSpend | null
-  notConfigured: SSEProviderQuotaNotConfig | null
+  kind: "provider_quota";
+  provider: string;
+  accountHash: string;
+  model: string;
+  observedAt: string;
+  stale: boolean;
+  storeBackend: string;
+  pricingSource: string;
+  variant: "rate_limit" | "token_spend" | "not_configured";
+  rateLimit: SSEProviderQuotaRateLimit | null;
+  tokenSpend: SSEProviderQuotaTokenSpend | null;
+  notConfigured: SSEProviderQuotaNotConfig | null;
 }
 
 export interface SSEProviderQuotaRateLimit {
-  requests: SSEProviderQuotaWindow
-  tokens: SSEProviderQuotaWindow
-  input: SSEProviderQuotaWindow
-  output: SSEProviderQuotaWindow
-  tightestPercentRemaining: number
-  tightestResetAt: string
+  requests: SSEProviderQuotaWindow;
+  tokens: SSEProviderQuotaWindow;
+  input: SSEProviderQuotaWindow;
+  output: SSEProviderQuotaWindow;
+  tightestPercentRemaining: number;
+  tightestResetAt: string;
 }
 
 export interface SSEProviderQuotaWindow {
-  limit: number
-  remaining: number
-  reset: string
+  limit: number;
+  remaining: number;
+  reset: string;
 }
 
 export interface SSEProviderQuotaTokenSpend {
-  spentMinor: number
-  spentCurrency: string
-  spentUsdMinor: number
-  capMinor: number
-  capCurrency: string
-  period: string
-  periodStart: string
-  periodEnd: string
-  thresholdAmber: number
-  thresholdRed: number
+  spentMinor: number;
+  spentCurrency: string;
+  spentUsdMinor: number;
+  capMinor: number;
+  capCurrency: string;
+  period: string;
+  periodStart: string;
+  periodEnd: string;
+  thresholdAmber: number;
+  thresholdRed: number;
 }
 
 export interface SSEProviderQuotaNotConfig {
-  reason: string
+  reason: string;
 }
 
 /**
@@ -590,128 +590,188 @@ export interface SSEProviderQuotaNotConfig {
  * for handling each variant, including malformed.
  */
 export function parseSSEPayload(payload: string): SSEEvent {
-  if (payload === '[DONE]') {
-    return { kind: 'done' }
+  if (payload === "[DONE]") {
+    return { kind: "done" };
   }
 
-  let data: unknown
+  let data: unknown;
   try {
-    data = JSON.parse(payload)
+    data = JSON.parse(payload);
   } catch {
-    return { kind: 'malformed', raw: payload }
+    return { kind: "malformed", raw: payload };
   }
 
-  if (!data || typeof data !== 'object') {
-    return { kind: 'unknown', raw: payload }
+  if (!data || typeof data !== "object") {
+    return { kind: "unknown", raw: payload };
   }
 
-  const obj = data as Record<string, unknown>
-  const type = typeof obj['type'] === 'string' ? (obj['type'] as string) : undefined
+  const obj = data as Record<string, unknown>;
+  const type =
+    typeof obj["type"] === "string" ? (obj["type"] as string) : undefined;
 
-  if (type === 'tool_call') {
+  if (type === "tool_call") {
     return {
-      kind: 'tool_call',
-      name: typeof obj['name'] === 'string' ? (obj['name'] as string) : 'unknown',
-      status: typeof obj['status'] === 'string' ? (obj['status'] as string) : 'running',
-      input: typeof obj['input'] === 'string' ? (obj['input'] as string) : undefined,
-    }
+      kind: "tool_call",
+      name:
+        typeof obj["name"] === "string" ? (obj["name"] as string) : "unknown",
+      status:
+        typeof obj["status"] === "string"
+          ? (obj["status"] as string)
+          : "running",
+      input:
+        typeof obj["input"] === "string" ? (obj["input"] as string) : undefined,
+    };
   }
 
-  if (type === 'skill_load') {
+  if (type === "skill_load") {
     return {
-      kind: 'skill_load',
-      name: typeof obj['name'] === 'string' ? (obj['name'] as string) : 'unknown',
-    }
+      kind: "skill_load",
+      name:
+        typeof obj["name"] === "string" ? (obj["name"] as string) : "unknown",
+    };
   }
 
-  if (type === 'tool_result') {
+  if (type === "tool_result") {
     return {
-      kind: 'tool_result',
-      content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '',
-    }
+      kind: "tool_result",
+      content:
+        typeof obj["content"] === "string" ? (obj["content"] as string) : "",
+    };
   }
 
-  if (type === 'tool_error') {
+  if (type === "tool_error") {
     return {
-      kind: 'tool_error',
-      content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '',
-    }
+      kind: "tool_error",
+      content:
+        typeof obj["content"] === "string" ? (obj["content"] as string) : "",
+    };
   }
 
-  if (type === 'delegation') {
+  if (type === "delegation") {
     return {
-      kind: 'delegation',
+      kind: "delegation",
       raw: payload,
-      targetAgent: typeof obj['target_agent'] === 'string' ? (obj['target_agent'] as string) : undefined,
-      chainId: typeof obj['chain_id'] === 'string' ? (obj['chain_id'] as string) : undefined,
-      toolCalls: typeof obj['tool_calls'] === 'number' ? (obj['tool_calls'] as number) : undefined,
-      lastTool: typeof obj['last_tool'] === 'string' ? (obj['last_tool'] as string) : undefined,
-      status: typeof obj['status'] === 'string' ? (obj['status'] as string) : undefined,
-    }
+      targetAgent:
+        typeof obj["target_agent"] === "string"
+          ? (obj["target_agent"] as string)
+          : undefined,
+      chainId:
+        typeof obj["chain_id"] === "string"
+          ? (obj["chain_id"] as string)
+          : undefined,
+      toolCalls:
+        typeof obj["tool_calls"] === "number"
+          ? (obj["tool_calls"] as number)
+          : undefined,
+      lastTool:
+        typeof obj["last_tool"] === "string"
+          ? (obj["last_tool"] as string)
+          : undefined,
+      status:
+        typeof obj["status"] === "string"
+          ? (obj["status"] as string)
+          : undefined,
+    };
   }
 
-  if (type === 'thinking') {
-    return { kind: 'thinking', content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '' }
-  }
-
-  if (type === 'provider_changed') {
+  if (type === "thinking") {
     return {
-      kind: 'provider_changed',
-      from: typeof obj['from'] === 'string' ? (obj['from'] as string) : '',
-      to: typeof obj['to'] === 'string' ? (obj['to'] as string) : '',
+      kind: "thinking",
+      content:
+        typeof obj["content"] === "string" ? (obj["content"] as string) : "",
+    };
+  }
+
+  if (type === "provider_changed") {
+    return {
+      kind: "provider_changed",
+      from: typeof obj["from"] === "string" ? (obj["from"] as string) : "",
+      to: typeof obj["to"] === "string" ? (obj["to"] as string) : "",
       fromProvider:
-        typeof obj['from_provider'] === 'string' ? (obj['from_provider'] as string) : '',
-      fromModel: typeof obj['from_model'] === 'string' ? (obj['from_model'] as string) : '',
-      toProvider: typeof obj['to_provider'] === 'string' ? (obj['to_provider'] as string) : '',
-      toModel: typeof obj['to_model'] === 'string' ? (obj['to_model'] as string) : '',
-      reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
-    }
+        typeof obj["from_provider"] === "string"
+          ? (obj["from_provider"] as string)
+          : "",
+      fromModel:
+        typeof obj["from_model"] === "string"
+          ? (obj["from_model"] as string)
+          : "",
+      toProvider:
+        typeof obj["to_provider"] === "string"
+          ? (obj["to_provider"] as string)
+          : "",
+      toModel:
+        typeof obj["to_model"] === "string" ? (obj["to_model"] as string) : "",
+      reason:
+        typeof obj["reason"] === "string" ? (obj["reason"] as string) : "",
+    };
   }
 
-  if (type === 'model_active') {
+  if (type === "model_active") {
     return {
-      kind: 'model_active',
-      provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
-      model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
-    }
+      kind: "model_active",
+      provider:
+        typeof obj["provider"] === "string" ? (obj["provider"] as string) : "",
+      model: typeof obj["model"] === "string" ? (obj["model"] as string) : "",
+    };
   }
 
-  if (type === 'context_usage') {
+  if (type === "context_usage") {
     return {
-      kind: 'context_usage',
-      inputTokens: typeof obj['input_tokens'] === 'number' ? (obj['input_tokens'] as number) : 0,
+      kind: "context_usage",
+      inputTokens:
+        typeof obj["input_tokens"] === "number"
+          ? (obj["input_tokens"] as number)
+          : 0,
       outputReserve:
-        typeof obj['output_reserve'] === 'number' ? (obj['output_reserve'] as number) : 0,
-      limit: typeof obj['limit'] === 'number' ? (obj['limit'] as number) : 0,
-      percentage: typeof obj['percentage'] === 'number' ? (obj['percentage'] as number) : 0,
-      provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
-      model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
-    }
+        typeof obj["output_reserve"] === "number"
+          ? (obj["output_reserve"] as number)
+          : 0,
+      limit: typeof obj["limit"] === "number" ? (obj["limit"] as number) : 0,
+      percentage:
+        typeof obj["percentage"] === "number"
+          ? (obj["percentage"] as number)
+          : 0,
+      provider:
+        typeof obj["provider"] === "string" ? (obj["provider"] as string) : "",
+      model: typeof obj["model"] === "string" ? (obj["model"] as string) : "",
+    };
   }
 
-  if (type === 'context_compacted') {
+  if (type === "context_compacted") {
     return {
-      kind: 'context_compacted',
-      sessionId: typeof obj['session_id'] === 'string' ? (obj['session_id'] as string) : '',
-      agentId: typeof obj['agent_id'] === 'string' ? (obj['agent_id'] as string) : '',
+      kind: "context_compacted",
+      sessionId:
+        typeof obj["session_id"] === "string"
+          ? (obj["session_id"] as string)
+          : "",
+      agentId:
+        typeof obj["agent_id"] === "string" ? (obj["agent_id"] as string) : "",
       originalTokens:
-        typeof obj['original_tokens'] === 'number' ? (obj['original_tokens'] as number) : 0,
+        typeof obj["original_tokens"] === "number"
+          ? (obj["original_tokens"] as number)
+          : 0,
       summaryTokens:
-        typeof obj['summary_tokens'] === 'number' ? (obj['summary_tokens'] as number) : 0,
-      latencyMs: typeof obj['latency_ms'] === 'number' ? (obj['latency_ms'] as number) : 0,
+        typeof obj["summary_tokens"] === "number"
+          ? (obj["summary_tokens"] as number)
+          : 0,
+      latencyMs:
+        typeof obj["latency_ms"] === "number"
+          ? (obj["latency_ms"] as number)
+          : 0,
       // Phase-5 Slice δ — Trigger discriminant. Empty default ('')
       // tolerates historical wire payloads that pre-date the field;
       // the chip tooltip falls back to the generic "saved Ns tokens"
       // copy when the discriminant is empty / unrecognised.
-      trigger: typeof obj['trigger'] === 'string' ? (obj['trigger'] as string) : '',
-    }
+      trigger:
+        typeof obj["trigger"] === "string" ? (obj["trigger"] as string) : "",
+    };
   }
 
-  if (type === 'provider_quota') {
-    return parseProviderQuotaEvent(obj)
+  if (type === "provider_quota") {
+    return parseProviderQuotaEvent(obj);
   }
 
-  if (type === 'streaming.heartbeat' || type === 'streaming_heartbeat') {
+  if (type === "streaming.heartbeat" || type === "streaming_heartbeat") {
     // Streaming Coherence Slice F (May 2026) — engine liveness tick.
     // Tolerate both wire formats: the canonical dotted variant per the
     // Engine Bus Event Taxonomy ADR ("streaming.heartbeat"), and the
@@ -726,57 +786,90 @@ export function parseSSEPayload(payload: string): SSEEvent {
     // missing / zero value renders nothing rather than a misleading
     // "0 tokens".
     return {
-      kind: 'streaming_heartbeat',
-      phase: typeof obj['phase'] === 'string' ? (obj['phase'] as string) : '',
-      tokenCount: typeof obj['token_count'] === 'number' ? (obj['token_count'] as number) : 0,
-    }
+      kind: "streaming_heartbeat",
+      phase: typeof obj["phase"] === "string" ? (obj["phase"] as string) : "",
+      tokenCount:
+        typeof obj["token_count"] === "number"
+          ? (obj["token_count"] as number)
+          : 0,
+    };
   }
 
-  if (type === 'gate_failed') {
+  if (type === "gate_failed") {
     // Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026):
     // halt-class swarm gate failure. coord_store_keys is optional —
     // populated only when the gate declares Inputs (Multi-Key Gate
     // Inputs plan). String fields default to ''; the keys array
     // defaults to []. A degraded wire payload (only `type`) leaves
     // the banner with empty copy rather than crashing the dispatch.
-    let coordStoreKeys: string[] = []
-    if (Array.isArray(obj['coord_store_keys'])) {
-      coordStoreKeys = (obj['coord_store_keys'] as unknown[]).filter(
-        (k): k is string => typeof k === 'string',
-      )
+    let coordStoreKeys: string[] = [];
+    if (Array.isArray(obj["coord_store_keys"])) {
+      coordStoreKeys = (obj["coord_store_keys"] as unknown[]).filter(
+        (k): k is string => typeof k === "string",
+      );
     }
     return {
-      kind: 'gate_failed',
-      swarmId: typeof obj['swarm_id'] === 'string' ? (obj['swarm_id'] as string) : '',
-      lifecycle: typeof obj['lifecycle'] === 'string' ? (obj['lifecycle'] as string) : '',
-      memberId: typeof obj['member_id'] === 'string' ? (obj['member_id'] as string) : '',
-      gateName: typeof obj['gate_name'] === 'string' ? (obj['gate_name'] as string) : '',
-      gateKind: typeof obj['gate_kind'] === 'string' ? (obj['gate_kind'] as string) : '',
-      reason: typeof obj['reason'] === 'string' ? (obj['reason'] as string) : '',
-      cause: typeof obj['cause'] === 'string' ? (obj['cause'] as string) : '',
+      kind: "gate_failed",
+      swarmId:
+        typeof obj["swarm_id"] === "string" ? (obj["swarm_id"] as string) : "",
+      lifecycle:
+        typeof obj["lifecycle"] === "string"
+          ? (obj["lifecycle"] as string)
+          : "",
+      memberId:
+        typeof obj["member_id"] === "string"
+          ? (obj["member_id"] as string)
+          : "",
+      gateName:
+        typeof obj["gate_name"] === "string"
+          ? (obj["gate_name"] as string)
+          : "",
+      gateKind:
+        typeof obj["gate_kind"] === "string"
+          ? (obj["gate_kind"] as string)
+          : "",
+      reason:
+        typeof obj["reason"] === "string" ? (obj["reason"] as string) : "",
+      cause: typeof obj["cause"] === "string" ? (obj["cause"] as string) : "",
       coordStoreKeys,
-    }
+    };
   }
 
-  if (type === 'harness_retry') {
-    return { kind: 'harness_retry', content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '' }
+  if (type === "harness_retry") {
+    return {
+      kind: "harness_retry",
+      content:
+        typeof obj["content"] === "string" ? (obj["content"] as string) : "",
+    };
   }
-  if (type === 'harness_attempt_start') {
-    return { kind: 'harness_attempt_start', content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '' }
+  if (type === "harness_attempt_start") {
+    return {
+      kind: "harness_attempt_start",
+      content:
+        typeof obj["content"] === "string" ? (obj["content"] as string) : "",
+    };
   }
-  if (type === 'harness_complete') {
-    return { kind: 'harness_complete', content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '' }
+  if (type === "harness_complete") {
+    return {
+      kind: "harness_complete",
+      content:
+        typeof obj["content"] === "string" ? (obj["content"] as string) : "",
+    };
   }
-  if (type === 'harness_critic_feedback') {
-    return { kind: 'harness_critic_feedback', content: typeof obj['content'] === 'string' ? (obj['content'] as string) : '' }
+  if (type === "harness_critic_feedback") {
+    return {
+      kind: "harness_critic_feedback",
+      content:
+        typeof obj["content"] === "string" ? (obj["content"] as string) : "",
+    };
   }
 
   // Untyped variants fall through to structural detection.
-  if (typeof obj['content'] === 'string') {
-    return { kind: 'content', content: obj['content'] as string }
+  if (typeof obj["content"] === "string") {
+    return { kind: "content", content: obj["content"] as string };
   }
-  if (typeof obj['error'] === 'string') {
-    const errorText = obj['error'] as string
+  if (typeof obj["error"] === "string") {
+    const errorText = obj["error"] as string;
     // Critical-class fan-out gate: the engine's "stream_critical" category
     // produces the canonical safeMsg `CRITICAL_STREAM_ERROR_MESSAGE`. The
     // sibling category "stream_critical_context_exceeded" produces
@@ -791,18 +884,18 @@ export function parseSSEPayload(payload: string): SSEEvent {
       errorText === CONTEXT_WINDOW_EXCEEDED_MESSAGE
     ) {
       return {
-        kind: 'stream_critical',
+        kind: "stream_critical",
         error: errorText,
         correlationId:
-          typeof obj['correlation_id'] === 'string'
-            ? (obj['correlation_id'] as string)
-            : '',
-      }
+          typeof obj["correlation_id"] === "string"
+            ? (obj["correlation_id"] as string)
+            : "",
+      };
     }
-    return { kind: 'error', error: errorText }
+    return { kind: "error", error: errorText };
   }
 
-  return { kind: 'unknown', raw: payload }
+  return { kind: "unknown", raw: payload };
 }
 
 /**
@@ -815,96 +908,153 @@ export function parseSSEPayload(payload: string): SSEEvent {
  * Plan §"Vue integration (OD-4 resolution)" lines 326-336 (PR4a).
  * Contract spec parity: web/src/types/contract.spec.ts.
  */
-function parseProviderQuotaEvent(obj: Record<string, unknown>): SSEProviderQuotaEvent {
-  const rawVariant = typeof obj['variant'] === 'string' ? (obj['variant'] as string) : ''
-  let variant: SSEProviderQuotaEvent['variant'] = 'not_configured'
-  if (rawVariant === 'rate_limit' || rawVariant === 'token_spend' || rawVariant === 'not_configured') {
-    variant = rawVariant
+function parseProviderQuotaEvent(
+  obj: Record<string, unknown>,
+): SSEProviderQuotaEvent {
+  const rawVariant =
+    typeof obj["variant"] === "string" ? (obj["variant"] as string) : "";
+  let variant: SSEProviderQuotaEvent["variant"] = "not_configured";
+  if (
+    rawVariant === "rate_limit" ||
+    rawVariant === "token_spend" ||
+    rawVariant === "not_configured"
+  ) {
+    variant = rawVariant;
   }
 
-  const rateLimitRaw = obj['rate_limit']
+  const rateLimitRaw = obj["rate_limit"];
   const rateLimit =
-    rateLimitRaw && typeof rateLimitRaw === 'object'
+    rateLimitRaw && typeof rateLimitRaw === "object"
       ? parseProviderQuotaRateLimit(rateLimitRaw as Record<string, unknown>)
-      : null
+      : null;
 
-  const tokenSpendRaw = obj['token_spend']
+  const tokenSpendRaw = obj["token_spend"];
   const tokenSpend =
-    tokenSpendRaw && typeof tokenSpendRaw === 'object'
+    tokenSpendRaw && typeof tokenSpendRaw === "object"
       ? parseProviderQuotaTokenSpend(tokenSpendRaw as Record<string, unknown>)
-      : null
+      : null;
 
-  const notConfiguredRaw = obj['not_configured']
+  const notConfiguredRaw = obj["not_configured"];
   const notConfigured =
-    notConfiguredRaw && typeof notConfiguredRaw === 'object'
+    notConfiguredRaw && typeof notConfiguredRaw === "object"
       ? {
           reason:
-            typeof (notConfiguredRaw as Record<string, unknown>)['reason'] === 'string'
-              ? ((notConfiguredRaw as Record<string, unknown>)['reason'] as string)
-              : '',
+            typeof (notConfiguredRaw as Record<string, unknown>)["reason"] ===
+            "string"
+              ? ((notConfiguredRaw as Record<string, unknown>)[
+                  "reason"
+                ] as string)
+              : "",
         }
-      : null
+      : null;
 
   return {
-    kind: 'provider_quota',
-    provider: typeof obj['provider'] === 'string' ? (obj['provider'] as string) : '',
-    accountHash: typeof obj['account_hash'] === 'string' ? (obj['account_hash'] as string) : '',
-    model: typeof obj['model'] === 'string' ? (obj['model'] as string) : '',
-    observedAt: typeof obj['observed_at'] === 'string' ? (obj['observed_at'] as string) : '',
-    stale: obj['stale'] === true,
-    storeBackend: typeof obj['store_backend'] === 'string' ? (obj['store_backend'] as string) : '',
-    pricingSource: typeof obj['pricing_source'] === 'string' ? (obj['pricing_source'] as string) : '',
+    kind: "provider_quota",
+    provider:
+      typeof obj["provider"] === "string" ? (obj["provider"] as string) : "",
+    accountHash:
+      typeof obj["account_hash"] === "string"
+        ? (obj["account_hash"] as string)
+        : "",
+    model: typeof obj["model"] === "string" ? (obj["model"] as string) : "",
+    observedAt:
+      typeof obj["observed_at"] === "string"
+        ? (obj["observed_at"] as string)
+        : "",
+    stale: obj["stale"] === true,
+    storeBackend:
+      typeof obj["store_backend"] === "string"
+        ? (obj["store_backend"] as string)
+        : "",
+    pricingSource:
+      typeof obj["pricing_source"] === "string"
+        ? (obj["pricing_source"] as string)
+        : "",
     variant,
     rateLimit,
     tokenSpend,
     notConfigured,
-  }
+  };
 }
 
-function parseProviderQuotaWindow(obj: Record<string, unknown>): SSEProviderQuotaWindow {
+function parseProviderQuotaWindow(
+  obj: Record<string, unknown>,
+): SSEProviderQuotaWindow {
   return {
-    limit: typeof obj['limit'] === 'number' ? (obj['limit'] as number) : -1,
-    remaining: typeof obj['remaining'] === 'number' ? (obj['remaining'] as number) : -1,
-    reset: typeof obj['reset'] === 'string' ? (obj['reset'] as string) : '',
-  }
+    limit: typeof obj["limit"] === "number" ? (obj["limit"] as number) : -1,
+    remaining:
+      typeof obj["remaining"] === "number" ? (obj["remaining"] as number) : -1,
+    reset: typeof obj["reset"] === "string" ? (obj["reset"] as string) : "",
+  };
 }
 
-function parseProviderQuotaRateLimit(obj: Record<string, unknown>): SSEProviderQuotaRateLimit {
+function parseProviderQuotaRateLimit(
+  obj: Record<string, unknown>,
+): SSEProviderQuotaRateLimit {
   return {
     requests: parseProviderQuotaWindow(
-      (obj['requests'] as Record<string, unknown>) ?? {},
+      (obj["requests"] as Record<string, unknown>) ?? {},
     ),
     tokens: parseProviderQuotaWindow(
-      (obj['tokens'] as Record<string, unknown>) ?? {},
+      (obj["tokens"] as Record<string, unknown>) ?? {},
     ),
     input: parseProviderQuotaWindow(
-      (obj['input'] as Record<string, unknown>) ?? {},
+      (obj["input"] as Record<string, unknown>) ?? {},
     ),
     output: parseProviderQuotaWindow(
-      (obj['output'] as Record<string, unknown>) ?? {},
+      (obj["output"] as Record<string, unknown>) ?? {},
     ),
     tightestPercentRemaining:
-      typeof obj['tightest_percent_remaining'] === 'number'
-        ? (obj['tightest_percent_remaining'] as number)
+      typeof obj["tightest_percent_remaining"] === "number"
+        ? (obj["tightest_percent_remaining"] as number)
         : -1,
     tightestResetAt:
-      typeof obj['tightest_reset_at'] === 'string' ? (obj['tightest_reset_at'] as string) : '',
-  }
+      typeof obj["tightest_reset_at"] === "string"
+        ? (obj["tightest_reset_at"] as string)
+        : "",
+  };
 }
 
-function parseProviderQuotaTokenSpend(obj: Record<string, unknown>): SSEProviderQuotaTokenSpend {
+function parseProviderQuotaTokenSpend(
+  obj: Record<string, unknown>,
+): SSEProviderQuotaTokenSpend {
   return {
-    spentMinor: typeof obj['spent_minor'] === 'number' ? (obj['spent_minor'] as number) : 0,
-    spentCurrency: typeof obj['spent_currency'] === 'string' ? (obj['spent_currency'] as string) : '',
-    spentUsdMinor: typeof obj['spent_usd_minor'] === 'number' ? (obj['spent_usd_minor'] as number) : 0,
-    capMinor: typeof obj['cap_minor'] === 'number' ? (obj['cap_minor'] as number) : 0,
-    capCurrency: typeof obj['cap_currency'] === 'string' ? (obj['cap_currency'] as string) : '',
-    period: typeof obj['period'] === 'string' ? (obj['period'] as string) : '',
-    periodStart: typeof obj['period_start'] === 'string' ? (obj['period_start'] as string) : '',
-    periodEnd: typeof obj['period_end'] === 'string' ? (obj['period_end'] as string) : '',
-    thresholdAmber: typeof obj['threshold_amber'] === 'number' ? (obj['threshold_amber'] as number) : -1,
-    thresholdRed: typeof obj['threshold_red'] === 'number' ? (obj['threshold_red'] as number) : -1,
-  }
+    spentMinor:
+      typeof obj["spent_minor"] === "number"
+        ? (obj["spent_minor"] as number)
+        : 0,
+    spentCurrency:
+      typeof obj["spent_currency"] === "string"
+        ? (obj["spent_currency"] as string)
+        : "",
+    spentUsdMinor:
+      typeof obj["spent_usd_minor"] === "number"
+        ? (obj["spent_usd_minor"] as number)
+        : 0,
+    capMinor:
+      typeof obj["cap_minor"] === "number" ? (obj["cap_minor"] as number) : 0,
+    capCurrency:
+      typeof obj["cap_currency"] === "string"
+        ? (obj["cap_currency"] as string)
+        : "",
+    period: typeof obj["period"] === "string" ? (obj["period"] as string) : "",
+    periodStart:
+      typeof obj["period_start"] === "string"
+        ? (obj["period_start"] as string)
+        : "",
+    periodEnd:
+      typeof obj["period_end"] === "string"
+        ? (obj["period_end"] as string)
+        : "",
+    thresholdAmber:
+      typeof obj["threshold_amber"] === "number"
+        ? (obj["threshold_amber"] as number)
+        : -1,
+    thresholdRed:
+      typeof obj["threshold_red"] === "number"
+        ? (obj["threshold_red"] as number)
+        : -1,
+  };
 }
 
 /**
@@ -923,5 +1073,5 @@ export function exhaustivenessGuard(_value: never): never {
   // Runtime-side defence — the throw should be unreachable when the type
   // system is satisfied, but adding a real throw means a forgotten case
   // surfaces as an actionable error instead of silent dead-code execution.
-  throw new Error('Unhandled SSEEvent kind — switch is not exhaustive')
+  throw new Error("Unhandled SSEEvent kind — switch is not exhaustive");
 }

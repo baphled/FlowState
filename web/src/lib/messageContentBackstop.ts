@@ -27,27 +27,32 @@
  * original string unchanged.
  */
 
-const HARNESS_JSON_PREFIX = /^\s*\{\s*"attempt"\s*:\s*\d+\s*,\s*"maxRetries"\s*:\s*\d+\s*\}/
+const HARNESS_JSON_PREFIX =
+  /^\s*\{\s*"attempt"\s*:\s*\d+\s*,\s*"maxRetries"\s*:\s*\d+\s*\}/;
 
-const TASK_RESULT_OPEN = '<task_result>\n'
-const TASK_RESULT_CLOSE = '\n</task_result>'
+const TASK_RESULT_OPEN = "<task_result>\n";
+const TASK_RESULT_CLOSE = "\n</task_result>";
 
 export interface BackstopResult {
   /** The rendered text (cleaned or original). */
-  content: string
+  content: string;
   /**
    * When the input matched a known leak pattern, a stable id describing
    * the cleanup that was applied. UI can surface this for diagnostics
    * (e.g. an aria-label or a small inline marker). Empty string when no
    * cleanup was performed.
    */
-  appliedFilter: '' | 'harness-json-prefix' | 'task-result-wrapper' | 'delegation-failure-json'
+  appliedFilter:
+    | ""
+    | "harness-json-prefix"
+    | "task-result-wrapper"
+    | "delegation-failure-json";
   /**
    * For delegation-failure-json matches, the correlation id parsed out
    * of the payload (if present) so a support lookup can be offered.
    * Empty string in all other cases.
    */
-  correlationId: string
+  correlationId: string;
 }
 
 /**
@@ -56,17 +61,17 @@ export interface BackstopResult {
  * fired (if any). Designed for use in a Vue computed; pure function.
  */
 export function sanitiseMessageContent(raw: string): BackstopResult {
-  if (typeof raw !== 'string' || raw.length === 0) {
-    return { content: raw, appliedFilter: '', correlationId: '' }
+  if (typeof raw !== "string" || raw.length === 0) {
+    return { content: raw, appliedFilter: "", correlationId: "" };
   }
 
   // Leak C: background-output failure JSON.
   // Detect the shape eagerly so the case where the harness JSON prefix
   // sits inside a tool_result wrapper is handled consistently with how
   // the backend serialises errors today.
-  const failureMatch = matchDelegationFailure(raw)
+  const failureMatch = matchDelegationFailure(raw);
   if (failureMatch) {
-    return failureMatch
+    return failureMatch;
   }
 
   // Leak B: <task_result> wrapper. Strip ONLY the canonical exact-match
@@ -74,35 +79,38 @@ export function sanitiseMessageContent(raw: string): BackstopResult {
   // mention. Recurse once into the unwrapped content so a wrapper holding
   // a harness JSON prefix is also caught.
   if (raw.startsWith(TASK_RESULT_OPEN) && raw.endsWith(TASK_RESULT_CLOSE)) {
-    const inner = raw.slice(TASK_RESULT_OPEN.length, raw.length - TASK_RESULT_CLOSE.length)
-    const innerResult = sanitiseMessageContent(inner)
-    if (innerResult.appliedFilter === 'harness-json-prefix') {
+    const inner = raw.slice(
+      TASK_RESULT_OPEN.length,
+      raw.length - TASK_RESULT_CLOSE.length,
+    );
+    const innerResult = sanitiseMessageContent(inner);
+    if (innerResult.appliedFilter === "harness-json-prefix") {
       // Combined leak — return the harness-stripped inner with the
       // task-result-wrapper filter id as the outer cause.
       return {
         content: innerResult.content,
-        appliedFilter: 'task-result-wrapper',
-        correlationId: '',
-      }
+        appliedFilter: "task-result-wrapper",
+        correlationId: "",
+      };
     }
     return {
       content: innerResult.content,
-      appliedFilter: 'task-result-wrapper',
-      correlationId: '',
-    }
+      appliedFilter: "task-result-wrapper",
+      correlationId: "",
+    };
   }
 
   // Leak A: harness JSON prefix.
   if (HARNESS_JSON_PREFIX.test(raw)) {
-    const cleaned = raw.replace(HARNESS_JSON_PREFIX, '').replace(/^\s+/, '')
+    const cleaned = raw.replace(HARNESS_JSON_PREFIX, "").replace(/^\s+/, "");
     return {
       content: cleaned,
-      appliedFilter: 'harness-json-prefix',
-      correlationId: '',
-    }
+      appliedFilter: "harness-json-prefix",
+      correlationId: "",
+    };
   }
 
-  return { content: raw, appliedFilter: '', correlationId: '' }
+  return { content: raw, appliedFilter: "", correlationId: "" };
 }
 
 /**
@@ -116,49 +124,49 @@ export function sanitiseMessageContent(raw: string): BackstopResult {
  * keys are not stripped.
  */
 function matchDelegationFailure(raw: string): BackstopResult | null {
-  const trimmed = raw.trim()
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {
-    return null
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+    return null;
   }
-  let parsed: unknown
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed)
+    parsed = JSON.parse(trimmed);
   } catch {
-    return null
+    return null;
   }
-  if (!parsed || typeof parsed !== 'object') {
-    return null
+  if (!parsed || typeof parsed !== "object") {
+    return null;
   }
-  const obj = parsed as Record<string, unknown>
-  if (typeof obj.error !== 'string') {
-    return null
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.error !== "string") {
+    return null;
   }
-  if (obj.status !== 'failed') {
-    return null
+  if (obj.status !== "failed") {
+    return null;
   }
-  if (typeof obj.task_id !== 'string') {
-    return null
+  if (typeof obj.task_id !== "string") {
+    return null;
   }
   const correlationId =
-    typeof obj.correlation_id === 'string' && obj.correlation_id.length > 0
+    typeof obj.correlation_id === "string" && obj.correlation_id.length > 0
       ? obj.correlation_id
-      : ''
+      : "";
   // Use the sanitised error string from the backend (post-fix) when
   // available; pre-fix payloads have raw provider text in `error` so
   // collapse those to a generic safe message.
-  const errLower = obj.error.toLowerCase()
-  let friendly: string
-  if (errLower.includes('rate') || errLower.includes('429')) {
-    friendly = 'Sub-task was rate-limited — please try again in a moment.'
+  const errLower = obj.error.toLowerCase();
+  let friendly: string;
+  if (errLower.includes("rate") || errLower.includes("429")) {
+    friendly = "Sub-task was rate-limited — please try again in a moment.";
   } else {
-    friendly = 'Sub-task failed.'
+    friendly = "Sub-task failed.";
   }
-  if (correlationId !== '') {
-    friendly += ` (id: ${correlationId})`
+  if (correlationId !== "") {
+    friendly += ` (id: ${correlationId})`;
   }
   return {
     content: friendly,
-    appliedFilter: 'delegation-failure-json',
+    appliedFilter: "delegation-failure-json",
     correlationId,
-  }
+  };
 }

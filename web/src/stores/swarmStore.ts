@@ -1,96 +1,99 @@
-import { ref, computed } from 'vue'
-import { defineStore } from 'pinia'
-import type { SwarmEvent } from '@/types'
-import { joinBaseURL } from '@/api'
-import { useChatStore } from '@/stores/chatStore'
+import { ref, computed } from "vue";
+import { defineStore } from "pinia";
+import type { SwarmEvent } from "@/types";
+import { joinBaseURL } from "@/api";
+import { useChatStore } from "@/stores/chatStore";
 
-const MAX_EVENTS = 500
-const SWARM_STALL_TIMEOUT_MS = 60_000
-const SWARM_RECONNECT_BASE_DELAY_MS = 2_000
-const SWARM_RECONNECT_MAX_DELAY_MS = 30_000
-const SWARM_RECONNECT_MAX_ATTEMPTS = 5
+const MAX_EVENTS = 500;
+const SWARM_STALL_TIMEOUT_MS = 60_000;
+const SWARM_RECONNECT_BASE_DELAY_MS = 2_000;
+const SWARM_RECONNECT_MAX_DELAY_MS = 30_000;
+const SWARM_RECONNECT_MAX_ATTEMPTS = 5;
 
-export const useSwarmStore = defineStore('swarm', () => {
-  const events = ref<SwarmEvent[]>([])
-  const isLive = ref(false)
-  const error = ref<string | null>(null)
-  const abortController = ref<AbortController | null>(null)
-  const reconnectAttempt = ref(0)
-  let stallTimerId: ReturnType<typeof setTimeout> | null = null
-  let reconnectTimerId: ReturnType<typeof setTimeout> | null = null
-  let shouldResetReconnectAttempt = true
+export const useSwarmStore = defineStore("swarm", () => {
+  const events = ref<SwarmEvent[]>([]);
+  const isLive = ref(false);
+  const error = ref<string | null>(null);
+  const abortController = ref<AbortController | null>(null);
+  const reconnectAttempt = ref(0);
+  let stallTimerId: ReturnType<typeof setTimeout> | null = null;
+  let reconnectTimerId: ReturnType<typeof setTimeout> | null = null;
+  let shouldResetReconnectAttempt = true;
 
   // Generation token. Every connect() increments this. The active read loop
   // captures the value at start and only mutates store state (events, isLive,
   // error) when its captured generation still matches the current. This pins
   // the M8 contract: a late `read()` resolution from a previous generation —
   // including the generation's `finally` block — must not touch the store.
-  const generation = ref(0)
+  const generation = ref(0);
 
   function clearStallTimer(): void {
     if (stallTimerId !== null) {
-      clearTimeout(stallTimerId)
-      stallTimerId = null
+      clearTimeout(stallTimerId);
+      stallTimerId = null;
     }
   }
 
   function armStallTimer(myGeneration: number): void {
-    clearStallTimer()
+    clearStallTimer();
     stallTimerId = setTimeout(() => {
       if (myGeneration === generation.value) {
-        attemptReconnect(myGeneration)
+        attemptReconnect(myGeneration);
       }
-    }, SWARM_STALL_TIMEOUT_MS)
+    }, SWARM_STALL_TIMEOUT_MS);
   }
 
   function clearReconnectTimer(): void {
     if (reconnectTimerId !== null) {
-      clearTimeout(reconnectTimerId)
-      reconnectTimerId = null
+      clearTimeout(reconnectTimerId);
+      reconnectTimerId = null;
     }
   }
 
   function attemptReconnect(myGeneration: number): void {
-    if (myGeneration !== generation.value) return
-    clearReconnectTimer()
+    if (myGeneration !== generation.value) return;
+    clearReconnectTimer();
     if (reconnectAttempt.value >= SWARM_RECONNECT_MAX_ATTEMPTS) {
-      error.value = `Swarm stream stalled after ${SWARM_RECONNECT_MAX_ATTEMPTS} reconnect attempts`
-      isLive.value = false
-      return
+      error.value = `Swarm stream stalled after ${SWARM_RECONNECT_MAX_ATTEMPTS} reconnect attempts`;
+      isLive.value = false;
+      return;
     }
-    reconnectAttempt.value += 1
+    reconnectAttempt.value += 1;
     const delay = Math.min(
       SWARM_RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempt.value - 1),
       SWARM_RECONNECT_MAX_DELAY_MS,
-    )
+    );
     reconnectTimerId = setTimeout(() => {
       if (myGeneration === generation.value) {
-        shouldResetReconnectAttempt = false
-        void connect()
+        shouldResetReconnectAttempt = false;
+        void connect();
       }
-    }, delay)
+    }, delay);
   }
 
   function ingestEventLine(line: string): void {
-    if (!line.startsWith('data: ')) {
-      return
+    if (!line.startsWith("data: ")) {
+      return;
     }
 
-    const data = line.slice(6)
-    if (data === '[DONE]') {
-      return
+    const data = line.slice(6);
+    if (data === "[DONE]") {
+      return;
     }
 
     try {
-      const event = JSON.parse(data) as SwarmEvent
-      if (typeof event.id !== 'string') return
-      const idx = events.value.findIndex((e) => e.id === event.id)
+      const event = JSON.parse(data) as SwarmEvent;
+      if (typeof event.id !== "string") return;
+      const idx = events.value.findIndex((e) => e.id === event.id);
       if (idx >= 0) {
-        events.value[idx] = event
+        events.value[idx] = event;
       } else {
-        const next = [...events.value, event]
+        const next = [...events.value, event];
         // Evict oldest entries to keep memory bounded.
-        events.value = next.length > MAX_EVENTS ? next.slice(next.length - MAX_EVENTS) : next
+        events.value =
+          next.length > MAX_EVENTS
+            ? next.slice(next.length - MAX_EVENTS)
+            : next;
       }
       // Bug Hunt (May 2026) sibling-confusion fix — every `delegation`
       // SwarmEvent carries the chain id (event.id) plus the child
@@ -100,39 +103,41 @@ export const useSwarmStore = defineStore('swarm', () => {
       // agent more than once. Idempotent — the engine emits multiple
       // status updates per chain (started, completed, …) and they
       // share the same pair.
-      if (event.type === 'delegation' && event.metadata) {
-        const childSessionId = event.metadata['child_session_id']
-        if (typeof childSessionId === 'string' && childSessionId !== '') {
-          useChatStore().recordChainSession(event.id, childSessionId)
+      if (event.type === "delegation" && event.metadata) {
+        const childSessionId = event.metadata["child_session_id"];
+        if (typeof childSessionId === "string" && childSessionId !== "") {
+          useChatStore().recordChainSession(event.id, childSessionId);
         }
       }
     } catch {
-      return
+      return;
     }
   }
 
   async function connect(): Promise<void> {
-    await disconnect()
-    error.value = null
+    await disconnect();
+    error.value = null;
     if (shouldResetReconnectAttempt) {
-      reconnectAttempt.value = 0
+      reconnectAttempt.value = 0;
     }
-    shouldResetReconnectAttempt = true
+    shouldResetReconnectAttempt = true;
 
-    const sessionId = useChatStore().currentSessionId
+    const sessionId = useChatStore().currentSessionId;
     if (!sessionId) {
-      error.value = 'cannot connect to swarm events: no active session id'
-      isLive.value = false
-      return
+      error.value = "cannot connect to swarm events: no active session id";
+      isLive.value = false;
+      return;
     }
 
-    generation.value += 1
-    const myGeneration = generation.value
+    generation.value += 1;
+    const myGeneration = generation.value;
 
-    isLive.value = true
-    abortController.value = new AbortController()
+    isLive.value = true;
+    abortController.value = new AbortController();
 
-    const url = joinBaseURL(`/swarm/events?session_id=${encodeURIComponent(sessionId)}`)
+    const url = joinBaseURL(
+      `/swarm/events?session_id=${encodeURIComponent(sessionId)}`,
+    );
 
     try {
       const response = await fetch(url, {
@@ -140,116 +145,112 @@ export const useSwarmStore = defineStore('swarm', () => {
         // PR3/C8 — send the flowstate_session cookie on the SSE-via-
         // fetch handshake. Without it the protected /api/swarm/events
         // endpoint returns 401 once features.auth_v1 flips on (PR5).
-        credentials: 'include',
-      })
+        credentials: "include",
+      });
 
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
+        throw new Error(`HTTP ${response.status}`);
       }
 
-      const reader = response.body?.getReader()
+      const reader = response.body?.getReader();
       if (!reader) {
-        throw new Error('Response body is not readable')
+        throw new Error("Response body is not readable");
       }
 
-      const decoder = new TextDecoder()
-      let buffer = ''
-      armStallTimer(myGeneration)
+      const decoder = new TextDecoder();
+      let buffer = "";
+      armStallTimer(myGeneration);
 
       while (true) {
-        const { done, value } = await reader.read()
+        const { done, value } = await reader.read();
         if (myGeneration !== generation.value) {
-          return
+          return;
         }
         if (done) {
-          clearStallTimer()
-          buffer += decoder.decode()
+          clearStallTimer();
+          buffer += decoder.decode();
           if (buffer) {
-            ingestEventLine(buffer)
+            ingestEventLine(buffer);
           }
-          break
+          break;
         }
-        armStallTimer(myGeneration)
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
+        armStallTimer(myGeneration);
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
         for (const line of lines) {
-          ingestEventLine(line)
+          ingestEventLine(line);
         }
       }
     } catch (e) {
       if (myGeneration !== generation.value) {
-        return
+        return;
       }
-      if (e instanceof Error && e.name !== 'AbortError') {
-        attemptReconnect(myGeneration)
+      if (e instanceof Error && e.name !== "AbortError") {
+        attemptReconnect(myGeneration);
       }
     } finally {
       if (myGeneration === generation.value) {
-        isLive.value = false
+        isLive.value = false;
       }
     }
   }
 
   async function disconnect(): Promise<void> {
-    clearStallTimer()
-    clearReconnectTimer()
+    clearStallTimer();
+    clearReconnectTimer();
     if (abortController.value) {
-      abortController.value.abort()
-      abortController.value = null
+      abortController.value.abort();
+      abortController.value = null;
     }
-    isLive.value = false
+    isLive.value = false;
   }
 
   // Expose computed for template
-  const eventCount = computed(() => events.value.length)
+  const eventCount = computed(() => events.value.length);
 
   // Filter events by type
   const delegationEvents = computed(() =>
-    events.value.filter(e => e.type === 'delegation')
-  )
+    events.value.filter((e) => e.type === "delegation"),
+  );
 
   const harnessEvents = computed(() =>
-    events.value.filter(e =>
-      e.type === 'harness_retry' ||
-      e.type === 'harness_attempt_start' ||
-      e.type === 'harness_complete' ||
-      e.type === 'harness_critic_feedback'
-    )
-  )
+    events.value.filter(
+      (e) =>
+        e.type === "harness_retry" ||
+        e.type === "harness_attempt_start" ||
+        e.type === "harness_complete" ||
+        e.type === "harness_critic_feedback",
+    ),
+  );
 
   const toolEvents = computed(() =>
-    events.value.filter(e =>
-      e.type === 'tool_call' ||
-      e.type === 'tool_result'
-    )
-  )
+    events.value.filter(
+      (e) => e.type === "tool_call" || e.type === "tool_result",
+    ),
+  );
 
   // Filter events by plan artifacts
   const planEvents = computed(() =>
-    events.value.filter(e =>
-      e.type === 'plan'
-    )
-  )
+    events.value.filter((e) => e.type === "plan"),
+  );
 
   // Filter events by status transitions (any event with status field indicating state change)
   const statusEvents = computed(() =>
-    events.value.filter(e =>
-      e.status && (
-        e.status === 'start' ||
-        e.status === 'progress' ||
-        e.status === 'complete' ||
-        e.status === 'error'
-      )
-    )
-  )
+    events.value.filter(
+      (e) =>
+        e.status &&
+        (e.status === "start" ||
+          e.status === "progress" ||
+          e.status === "complete" ||
+          e.status === "error"),
+    ),
+  );
 
   // Filter events by review artifacts
   const reviewEvents = computed(() =>
-    events.value.filter(e =>
-      e.type === 'review'
-    )
-  )
+    events.value.filter((e) => e.type === "review"),
+  );
 
   return {
     events,
@@ -265,5 +266,5 @@ export const useSwarmStore = defineStore('swarm', () => {
     statusEvents,
     reviewEvents,
     reconnectAttempt,
-  }
-})
+  };
+});

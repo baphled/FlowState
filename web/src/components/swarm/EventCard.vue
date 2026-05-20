@@ -1,18 +1,18 @@
 <script setup lang="ts">
-import type { SwarmEvent } from '@/types'
+import type { SwarmEvent } from "@/types";
 
-defineOptions({ name: 'EventCard' })
+defineOptions({ name: "EventCard" });
 
-const props = defineProps<{ event: SwarmEvent }>()
+const props = defineProps<{ event: SwarmEvent }>();
 
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString()
+  return new Date(iso).toLocaleTimeString();
 }
 
 function payloadSummary(metadata?: Record<string, unknown>): string {
-  if (!metadata) return '—'
-  const entries = Object.entries(metadata).slice(0, 2)
-  return entries.map(([k, v]) => `${k}: ${String(v)}`).join(' · ')
+  if (!metadata) return "—";
+  const entries = Object.entries(metadata).slice(0, 2);
+  return entries.map(([k, v]) => `${k}: ${String(v)}`).join(" · ");
 }
 </script>
 
@@ -24,7 +24,9 @@ function payloadSummary(metadata?: Record<string, unknown>): string {
     :data-event-type="props.event.type"
   >
     <div class="event-header">
-      <span class="event-type-badge">{{ props.event.type.replace('_', ' ') }}</span>
+      <span class="event-type-badge">{{
+        props.event.type.replace("_", " ")
+      }}</span>
       <span class="event-agent">{{ props.event.agent_id }}</span>
       <span class="event-time">{{ formatTime(props.event.timestamp) }}</span>
     </div>
@@ -41,10 +43,18 @@ function payloadSummary(metadata?: Record<string, unknown>): string {
   margin-bottom: 0.5rem;
 }
 
-.event-type-delegation { border-left-color: var(--event-delegation); }
-.event-type-tool-call   { border-left-color: var(--event-tool-call); }
-.event-type-plan        { border-left-color: var(--event-plan); }
-.event-type-review      { border-left-color: var(--event-review); }
+.event-type-delegation {
+  border-left-color: var(--event-delegation);
+}
+.event-type-tool-call {
+  border-left-color: var(--event-tool-call);
+}
+.event-type-plan {
+  border-left-color: var(--event-plan);
+}
+.event-type-review {
+  border-left-color: var(--event-review);
+}
 
 .event-header {
   display: flex;
@@ -64,10 +74,18 @@ function payloadSummary(metadata?: Record<string, unknown>): string {
   color: var(--text-secondary);
 }
 
-.event-type-delegation .event-type-badge { color: var(--event-delegation); }
-.event-type-tool-call .event-type-badge  { color: var(--event-tool-call); }
-.event-type-plan .event-type-badge       { color: var(--event-plan); }
-.event-type-review .event-type-badge     { color: var(--event-review); }
+.event-type-delegation .event-type-badge {
+  color: var(--event-delegation);
+}
+.event-type-tool-call .event-type-badge {
+  color: var(--event-tool-call);
+}
+.event-type-plan .event-type-badge {
+  color: var(--event-plan);
+}
+.event-type-review .event-type-badge {
+  color: var(--event-review);
+}
 
 .event-agent {
   font-weight: 600;

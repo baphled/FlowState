@@ -1,30 +1,35 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount } from 'vue'
-import { useClipboard } from '@/composables/useClipboard'
+import { computed, onBeforeUnmount } from "vue";
+import { useClipboard } from "@/composables/useClipboard";
 
-defineOptions({ name: 'CopyButton' })
+defineOptions({ name: "CopyButton" });
 
 const props = defineProps<{
-  text: string
-}>()
+  text: string;
+}>();
 
-const { copy, copied, cleanup } = useClipboard()
+const { copy, copied, cleanup } = useClipboard();
 
-const icon = computed(() => (copied.value ? '✓' : '📋'))
+const icon = computed(() => (copied.value ? "✓" : "📋"));
 
 async function handleCopy(): Promise<void> {
-  await copy(props.text)
+  await copy(props.text);
 }
 
 onBeforeUnmount(() => {
-  cleanup()
-})
+  cleanup();
+});
 </script>
 
 <template>
-  <button class="copy-button" data-testid="copy-btn" type="button" @click="handleCopy">
+  <button
+    class="copy-button"
+    data-testid="copy-btn"
+    type="button"
+    @click="handleCopy"
+  >
     <span class="copy-button__icon" aria-hidden="true">{{ icon }}</span>
-    <span class="copy-button__label">{{ copied ? 'Copied' : 'Copy' }}</span>
+    <span class="copy-button__label">{{ copied ? "Copied" : "Copy" }}</span>
   </button>
 </template>
 
