@@ -330,10 +330,34 @@ watch(
 
 watch(
   () => chatStore.currentSessionId,
-  async () => {
+  async (newSessionId) => {
     await nextTick()
     userScrolledUp.value = false
     scrollMessagePaneToBottom('smooth')
+
+    // Bug-O (May 2026) — per-view swarm reattach. The original
+    // swarmStore.connect() call in onMounted captured the session at
+    // call time, and the backend's eventBelongsToSession predicate
+    // pins the SSE socket to that id for the lifetime of the loop.
+    // When the user navigates into a child session, delegations
+    // spawned by THAT child (grand-children) are scoped to a new
+    // session id the open socket never heard of, so the panel goes
+    // stale. Per-view semantics: the panel shows delegations
+    // belonging to the currently viewed session. On session change
+    // tear down → clear stale rows → reattach with the new id.
+    //
+    // disconnect() also clears the stall and reconnect timers — no
+    // EventSource leaks across rapid back-and-forth navigation.
+    // connect() is awaited last so the abortController setup races
+    // strictly behind the prior disconnect.
+    if (newSessionId) {
+      await swarmStore.disconnect()
+      swarmStore.clear()
+      void swarmStore.connect(newSessionId)
+    } else {
+      await swarmStore.disconnect()
+      swarmStore.clear()
+    }
   },
 )
 

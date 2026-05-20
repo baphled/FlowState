@@ -571,3 +571,173 @@ describe("swarmStore.ingestEventLine — delegation chain → session recording"
     await p;
   });
 });
+
+// Bug-O — per-view swarm reattach on session-change.
+//
+// Pre-fix: swarmStore.connect() captured useChatStore().currentSessionId at
+// call time. The backend's eventBelongsToSession predicate filters every SSE
+// chunk against that captured id for the lifetime of the read loop. When the
+// user navigated into a child session, delegations spawned by THAT child
+// (grand-children) were scoped to a new session id the open socket had never
+// heard of, so the panel went stale.
+//
+// Fix: parameterise connect(sessionId?) — explicit > magic capture — and add
+// clear() so the consumer (ChatView) can reset events between sessions
+// without leaking stale rows from the previous view.
+describe("swarmStore.connect — Bug-O per-view session reattach", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("threads an explicit sessionId argument onto the URL (preferring the argument over chatStore.currentSessionId)", async () => {
+    // Pre-fix shape: connect() ignored arguments and read
+    // useChatStore().currentSessionId at call time. The fix makes the
+    // argument authoritative so a ChatView watcher can reattach to the
+    // freshly-navigated-to session WITHOUT racing the chatStore mutation.
+    const chat = useChatStore();
+    chat.currentSessionId = "session-stale-in-store";
+
+    const ctrl = controllableReader();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve(makeFetchResponse(ctrl.reader)),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const swarm = useSwarmStore();
+    const p = swarm.connect("session-explicit-arg");
+    await flushMicrotasks();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const firstCall = fetchSpy.mock.calls[0] as unknown as [
+      string | URL,
+      ...unknown[],
+    ];
+    const calledUrl = String(firstCall[0]);
+    expect(calledUrl).toContain("session_id=session-explicit-arg");
+    expect(calledUrl).not.toContain("session_id=session-stale-in-store");
+
+    ctrl.close();
+    await swarm.disconnect();
+    await p;
+  });
+
+  it("falls back to chatStore.currentSessionId when no argument is supplied (preserves the original mount-time call site)", async () => {
+    // Back-compat — onMounted does `swarmStore.connect()` (no arg). The
+    // fallback path must still pick up the active session.
+    const chat = useChatStore();
+    chat.currentSessionId = "session-fallback-1";
+
+    const ctrl = controllableReader();
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve(makeFetchResponse(ctrl.reader)),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const swarm = useSwarmStore();
+    const p = swarm.connect();
+    await flushMicrotasks();
+
+    const calledUrl = String(
+      (fetchSpy.mock.calls[0] as unknown as [string | URL])[0],
+    );
+    expect(calledUrl).toContain("session_id=session-fallback-1");
+
+    ctrl.close();
+    await swarm.disconnect();
+    await p;
+  });
+
+  it("clear() empties events and resets reconnect / error state", async () => {
+    // The companion to parameterised connect — ChatView needs to wipe
+    // stale rows from the previous session before reattaching. The
+    // reconnect counter and error state must reset too so a clean
+    // session-change isn't dragging the previous view's stall ladder.
+    const chat = useChatStore();
+    chat.currentSessionId = "session-clear-1";
+
+    const ctrl = controllableReader();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(makeFetchResponse(ctrl.reader))),
+    );
+
+    const swarm = useSwarmStore();
+    const p = swarm.connect();
+    await flushMicrotasks();
+
+    ctrl.emit(
+      'data: {"id":"evt-prev-1","type":"tool_call","timestamp":"2026-05-20T00:00:00Z","agent_id":"a"}\n',
+    );
+    await flushMicrotasks();
+    expect(swarm.events.length).toBe(1);
+
+    // Simulate a reconnect-pending state — the previous session was
+    // mid-stall when the user navigated away.
+    swarm.reconnectAttempt = 3;
+    swarm.error = "stale stall error from previous view";
+
+    swarm.clear();
+
+    expect(swarm.events).toEqual([]);
+    expect(swarm.reconnectAttempt).toBe(0);
+    expect(swarm.error).toBeNull();
+
+    ctrl.close();
+    await swarm.disconnect();
+    await p;
+  });
+
+  it("rapid back-and-forth connect calls do not leak streams (each new connect aborts the previous fetch's AbortSignal)", async () => {
+    // EventSource-leak regression pin. The store uses fetch+AbortController
+    // rather than EventSource, but the contract is the same: each connect
+    // must abort the previous in-flight fetch so we don't pile up sockets
+    // on a chatty user that bounces between sessions.
+    const chat = useChatStore();
+    chat.currentSessionId = "session-bounce-0";
+
+    const signals: AbortSignal[] = [];
+    const fetchSpy = vi.fn((_url: string | URL, init?: RequestInit) => {
+      if (init?.signal) signals.push(init.signal);
+      const ctrl = controllableReader();
+      init?.signal?.addEventListener(
+        "abort",
+        () => ctrl.abort(),
+        { once: true },
+      );
+      return Promise.resolve(makeFetchResponse(ctrl.reader));
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const swarm = useSwarmStore();
+
+    const p1 = swarm.connect("session-bounce-1");
+    await flushMicrotasks();
+    const p2 = swarm.connect("session-bounce-2");
+    await flushMicrotasks();
+    const p3 = swarm.connect("session-bounce-3");
+    await flushMicrotasks();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    // Each prior connect must have aborted its AbortSignal — the proof a
+    // sibling EventSource-style stream would be torn down rather than
+    // leaked. The current (third) signal is still live.
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(true);
+    expect(signals[2]?.aborted).toBe(false);
+
+    // The last-called URL pins the active session.
+    const lastCallUrl = String(
+      (fetchSpy.mock.calls[2] as unknown as [string | URL])[0],
+    );
+    expect(lastCallUrl).toContain("session_id=session-bounce-3");
+
+    await swarm.disconnect();
+    await Promise.all([p1, p2, p3]);
+  });
+});

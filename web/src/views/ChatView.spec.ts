@@ -39,10 +39,12 @@ vi.mock('@/api', async (importOriginal) => {
 vi.mock('@/stores/swarmStore', () => {
   const connect = vi.fn()
   const disconnect = vi.fn()
+  const clear = vi.fn()
   return {
     useSwarmStore: () => ({
       connect,
       disconnect,
+      clear,
       events: [],
       delegationEvents: [],
       harnessEvents: [],
@@ -1777,5 +1779,176 @@ describe('ChatView empty-state component (I10)', () => {
 
     expect(wrapper.find('[data-testid="chat-empty-state"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="empty-state-agent-card"]').exists()).toBe(false)
+  })
+})
+
+// Bug-O — per-view swarm reattach on session-change.
+//
+// Pre-fix: ChatView's session-change watcher at lines 331-338 only scrolled.
+// swarmStore.connect() was called once in onMounted, capturing the session
+// at that time; navigating into a child session left the SSE socket pinned
+// to the parent. eventBelongsToSession dropped every grand-child event, the
+// panel stayed stale.
+//
+// Fix: the session-change watcher must also tear down the previous swarm
+// stream, clear the stale events, and reconnect with the new sessionId.
+//
+// Per-view semantics — the panel shows delegations belonging to the
+// currently viewed session, NOT the chain that opened the page. Per-chain
+// would require backend filter support; that's a separate feature.
+describe('ChatView swarm reattach on session-change (Bug-O)', () => {
+  // The mocked swarmStore at the top of the file exposes module-scoped
+  // connect/disconnect/clear spies. Calling useSwarmStore() (which is the
+  // mocked version inside this spec) returns an object that references
+  // those same spies, so assertions roundtrip cleanly.
+  beforeEach(async () => {
+    setActivePinia(createPinia())
+    // Fresh spies for each test — module-scoped vi.fn() persists across
+    // tests otherwise, polluting call counts.
+    const { useSwarmStore } = await import('@/stores/swarmStore')
+    const swarm = useSwarmStore() as unknown as {
+      connect: ReturnType<typeof vi.fn>
+      disconnect: ReturnType<typeof vi.fn>
+      clear: ReturnType<typeof vi.fn>
+    }
+    swarm.connect.mockClear()
+    swarm.disconnect.mockClear()
+    swarm.clear.mockClear()
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  async function getSwarmSpies(): Promise<{
+    connect: ReturnType<typeof vi.fn>
+    disconnect: ReturnType<typeof vi.fn>
+    clear: ReturnType<typeof vi.fn>
+  }> {
+    const { useSwarmStore } = await import('@/stores/swarmStore')
+    return useSwarmStore() as unknown as {
+      connect: ReturnType<typeof vi.fn>
+      disconnect: ReturnType<typeof vi.fn>
+      clear: ReturnType<typeof vi.fn>
+    }
+  }
+
+  it('on session-change: disconnects, clears events, and reconnects with the new sessionId', async () => {
+    // Pre-fix this watcher only called scrollMessagePaneToBottom — the
+    // SSE socket remained pinned to the session the page was opened on.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'session-parent'
+    await flushPromises()
+    await nextTick()
+
+    const spies = await getSwarmSpies()
+    // Reset after the mount-time connect so we measure ONLY the
+    // session-change behaviour, not the initial mount call.
+    spies.connect.mockClear()
+    spies.disconnect.mockClear()
+    spies.clear.mockClear()
+
+    // Navigate from parent to child.
+    chatStore.currentSessionId = 'session-child-1'
+    await nextTick()
+    await flushPromises()
+
+    // The watcher must invoke the full teardown→clear→reconnect cycle.
+    expect(spies.disconnect).toHaveBeenCalled()
+    expect(spies.clear).toHaveBeenCalled()
+    expect(spies.connect).toHaveBeenCalled()
+
+    // And the reconnect must thread the NEW session id explicitly — the
+    // store-capture-at-call-time path is the bug we're closing.
+    const lastConnectArgs = spies.connect.mock.calls.at(-1) ?? []
+    expect(lastConnectArgs[0]).toBe('session-child-1')
+
+    wrapper.unmount()
+  })
+
+  it('does not flap disconnect/reconnect when currentSessionId is set to its existing value', async () => {
+    // A reactive set with the same value should not trigger the watcher
+    // (Vue's `watch` on a primitive only fires on value change). This pin
+    // protects against a future "fix" that uses `{ immediate: true }` or
+    // a deep watch and would tear down the socket on no-op writes.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'session-constant'
+    await flushPromises()
+    await nextTick()
+
+    const spies = await getSwarmSpies()
+    spies.connect.mockClear()
+    spies.disconnect.mockClear()
+    spies.clear.mockClear()
+
+    // Write the same value back.
+    chatStore.currentSessionId = 'session-constant'
+    await nextTick()
+    await flushPromises()
+
+    expect(spies.disconnect).not.toHaveBeenCalled()
+    expect(spies.clear).not.toHaveBeenCalled()
+    expect(spies.connect).not.toHaveBeenCalled()
+
+    wrapper.unmount()
+  })
+
+  it('rapid back-and-forth navigation reconnects to the latest session, not an intermediate one', async () => {
+    // The user bounces parent → child-1 → child-2 → back-to-parent
+    // quickly. The final connect URL must be the parent's id, not a
+    // stale intermediate id. This is the "last writer wins" contract
+    // on the swarm panel — matches per-view semantics from the design
+    // decision.
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'session-parent'
+    await flushPromises()
+    await nextTick()
+
+    const spies = await getSwarmSpies()
+    spies.connect.mockClear()
+
+    chatStore.currentSessionId = 'session-child-1'
+    await nextTick()
+    chatStore.currentSessionId = 'session-child-2'
+    await nextTick()
+    chatStore.currentSessionId = 'session-parent'
+    await nextTick()
+    await flushPromises()
+
+    expect(spies.connect).toHaveBeenCalled()
+    const lastCall = spies.connect.mock.calls.at(-1) ?? []
+    expect(lastCall[0]).toBe('session-parent')
+
+    wrapper.unmount()
   })
 })

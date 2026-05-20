@@ -114,7 +114,12 @@ export const useSwarmStore = defineStore("swarm", () => {
     }
   }
 
-  async function connect(): Promise<void> {
+  // Bug-O (May 2026) per-view swarm reattach — connect() now accepts an
+  // explicit sessionId so the ChatView session-change watcher can reattach
+  // to the freshly-navigated-to session WITHOUT racing the chatStore
+  // mutation. Falling back to useChatStore().currentSessionId preserves the
+  // original onMounted call site (no-arg form). Explicit > magic capture.
+  async function connect(sessionIdArg?: string): Promise<void> {
     await disconnect();
     error.value = null;
     if (shouldResetReconnectAttempt) {
@@ -122,7 +127,8 @@ export const useSwarmStore = defineStore("swarm", () => {
     }
     shouldResetReconnectAttempt = true;
 
-    const sessionId = useChatStore().currentSessionId;
+    const sessionId =
+      sessionIdArg !== undefined ? sessionIdArg : useChatStore().currentSessionId;
     if (!sessionId) {
       error.value = "cannot connect to swarm events: no active session id";
       isLive.value = false;
@@ -206,6 +212,18 @@ export const useSwarmStore = defineStore("swarm", () => {
     isLive.value = false;
   }
 
+  // Bug-O (May 2026) per-view swarm reattach — clear() resets store state
+  // between sessions. ChatView's session-change watcher calls this between
+  // disconnect() and connect(newSessionId) so the panel doesn't carry the
+  // previous session's delegations / harness rows / errors into the new
+  // view. Reconnect counter resets too — a clean session-change should
+  // not drag the previous view's stall-ladder progress with it.
+  function clear(): void {
+    events.value = [];
+    reconnectAttempt.value = 0;
+    error.value = null;
+  }
+
   // Expose computed for template
   const eventCount = computed(() => events.value.length);
 
@@ -258,6 +276,7 @@ export const useSwarmStore = defineStore("swarm", () => {
     error,
     connect,
     disconnect,
+    clear,
     eventCount,
     delegationEvents,
     harnessEvents,
