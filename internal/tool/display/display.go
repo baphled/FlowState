@@ -295,13 +295,25 @@ func redactIfSensitive(key, value string) string {
 	return value
 }
 
-// compactJSONFallback builds a deterministic compact JSON object from the
-// string-coercible entries in args, redacting sensitive keys. Returns the
-// encoded string and true when at least one entry survived; otherwise returns
-// "" and false.
+// compactJSONFallback builds a deterministic compact JSON object from every
+// entry in args, redacting sensitive keys. String values are JSON-encoded as
+// strings; non-string values (numbers, bools, arrays, objects) are
+// JSON-marshalled verbatim so MCP tools with structured top-level args
+// (create_entities {entities: [...]}, add_observations
+// {observations: [...]}, open_nodes {names: [...]}, etc.) still produce a
+// useful display payload instead of an empty toolInput. Returns the encoded
+// string and true when args is non-empty; otherwise returns "" and false.
+//
+// Sensitive keys (matched by sensitiveKeySubstrings) have their value
+// replaced with the literal "[REDACTED]" regardless of the original type.
+//
+// Empty strings are dropped — they carry no signal and were dropped by the
+// previous string-only filter; keeping the same behaviour avoids cluttering
+// the rendered payload with `"k":""` entries.
 //
 // Determinism matters because a non-deterministic fallback would render
-// different values across reloads of the same session.
+// different values across reloads of the same session, so keys are sorted
+// before encoding.
 func compactJSONFallback(args map[string]any) (string, bool) {
 	if len(args) == 0 {
 		return "", false
@@ -312,32 +324,74 @@ func compactJSONFallback(args map[string]any) (string, bool) {
 	}
 	sort.Strings(keys)
 
-	filtered := make(map[string]string, len(keys))
-	orderedKeys := make([]string, 0, len(keys))
+	type entry struct {
+		key     string
+		encoded []byte
+	}
+	entries := make([]entry, 0, len(keys))
 	for _, k := range keys {
-		s, ok := args[k].(string)
-		if !ok || s == "" {
+		v, present := args[k]
+		if !present {
 			continue
 		}
-		filtered[k] = redactIfSensitive(k, s)
-		orderedKeys = append(orderedKeys, k)
+		if s, isStr := v.(string); isStr {
+			if s == "" {
+				continue
+			}
+			redacted := redactIfSensitive(k, s)
+			vJSON, err := json.Marshal(redacted)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, entry{key: k, encoded: vJSON})
+			continue
+		}
+		// Non-string value: marshal verbatim so arrays/objects/scalars
+		// reach the rendered payload. Redaction is applied at the value
+		// boundary by substituting the placeholder when the key matches a
+		// sensitive substring.
+		if isSensitiveKey(k) {
+			vJSON, err := json.Marshal(redactedPlaceholder)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, entry{key: k, encoded: vJSON})
+			continue
+		}
+		vJSON, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, entry{key: k, encoded: vJSON})
 	}
-	if len(filtered) == 0 {
+	if len(entries) == 0 {
 		return "", false
 	}
 
 	var sb strings.Builder
 	sb.WriteByte('{')
-	for i, k := range orderedKeys {
+	for i, e := range entries {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
-		kJSON, _ := json.Marshal(k)
-		vJSON, _ := json.Marshal(filtered[k])
+		kJSON, _ := json.Marshal(e.key)
 		sb.Write(kJSON)
 		sb.WriteByte(':')
-		sb.Write(vJSON)
+		sb.Write(e.encoded)
 	}
 	sb.WriteByte('}')
 	return sb.String(), true
+}
+
+// isSensitiveKey returns true when key matches any sensitiveKeySubstrings
+// entry case-insensitively. Used to gate non-string values, which can't go
+// through redactIfSensitive (that helper operates on string values only).
+func isSensitiveKey(key string) bool {
+	lower := strings.ToLower(key)
+	for _, sub := range sensitiveKeySubstrings {
+		if strings.Contains(lower, sub) {
+			return true
+		}
+	}
+	return false
 }

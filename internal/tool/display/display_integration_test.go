@@ -156,13 +156,111 @@ var _ = Describe("Display integration", Label("integration"), func() {
 				To(Equal(`mystery_tool: {"alpha":"first","zeta":"last"}`))
 		})
 
-		It("returns just the tool name when no string-valued args are present", func() {
+		It("renders scalar non-string args as JSON-encoded values so MCP tool calls do not persist with empty toolInput", func() {
+			// Bug fix: previously the canonical fallback path filtered the
+			// args map to string-typed entries only, so any tool whose args
+			// were entirely scalar-but-non-string (e.g. {"count": 5,
+			// "enabled": true}) silently rendered as the bare tool name and
+			// persisted with toolInput == "". Live evidence in session
+			// 7dfdb197 showed every create_entities / open_nodes /
+			// add_observations call persisting with toolInput: null because
+			// none of their args were string-typed. JSON-marshal non-string
+			// values so the persisted record carries the call payload.
 			args := map[string]any{"count": 5, "enabled": true}
-			Expect(tooldisplay.Summary("mystery_tool", args)).To(Equal("mystery_tool"))
+			result := tooldisplay.Summary("mystery_tool", args)
+			Expect(result).To(HavePrefix("mystery_tool: "))
+			Expect(result).To(ContainSubstring(`"count":5`))
+			Expect(result).To(ContainSubstring(`"enabled":true`))
 		})
 
 		It("returns just the tool name when args is nil", func() {
 			Expect(tooldisplay.Summary("mystery_tool", nil)).To(Equal("mystery_tool"))
+		})
+	})
+
+	Context("when an unknown tool has non-string structured args", func() {
+		// Bug: every MCP tool with array or object top-level args (e.g.
+		// create_entities {entities: [...]}, add_observations
+		// {observations: [...]}, open_nodes {names: [...]}) persisted with
+		// toolInput == "" because compactJSONFallback retained only
+		// string-typed entries. KB writes hit the MCP server fine but
+		// disappeared from the session history with their payload —
+		// silent data loss. Live evidence: session 7dfdb197 (z-ai) and
+		// session 0276aca4 (anthropic).
+
+		It("renders an array-valued top-level arg as serialised JSON", func() {
+			args := map[string]any{"entities": []any{"alpha", "beta", "gamma"}}
+			result := tooldisplay.Summary("create_entities", args)
+			Expect(result).To(HavePrefix("create_entities: "))
+			Expect(result).To(ContainSubstring(`"entities":["alpha","beta","gamma"]`))
+		})
+
+		It("renders an object-valued top-level arg as serialised JSON", func() {
+			args := map[string]any{"params": map[string]any{"foo": "bar", "baz": 1}}
+			result := tooldisplay.Summary("custom_tool", args)
+			Expect(result).To(HavePrefix("custom_tool: "))
+			Expect(result).To(ContainSubstring(`"params":`))
+			Expect(result).To(ContainSubstring(`"foo":"bar"`))
+			Expect(result).To(ContainSubstring(`"baz":1`))
+		})
+
+		It("renders a mixed-shape arg map with both string and structured values", func() {
+			// Real shape from add_observations calls — string entityName
+			// plus an array of observation strings. The preferred-fallback
+			// path picks no key here (none of "query"/"name"/"id"/etc are
+			// present), so the canonical JSON path must render BOTH the
+			// scalar and the structured entries.
+			args := map[string]any{
+				"entityName":   "FlowState",
+				"observations": []any{"obs one", "obs two"},
+			}
+			result := tooldisplay.Summary("add_observations", args)
+			Expect(result).To(HavePrefix("add_observations: "))
+			Expect(result).To(ContainSubstring(`"entityName":"FlowState"`))
+			Expect(result).To(ContainSubstring(`"observations":["obs one","obs two"]`))
+		})
+
+		It("renders nested objects within structured args (truncating only at the outer 80-char cap)", func() {
+			args := map[string]any{
+				"node": map[string]any{
+					"id":       "n1",
+					"children": []any{map[string]any{"id": "c1"}, map[string]any{"id": "c2"}},
+				},
+			}
+			result := tooldisplay.Summary("graph_tool", args)
+			Expect(result).To(HavePrefix("graph_tool: "))
+			// Even if the full payload exceeds 80 chars, the head must be
+			// recognisable structured JSON (not an empty fallback).
+			Expect(result).To(ContainSubstring(`"node":`))
+		})
+
+		It("truncates the JSON fallback when structured args exceed 80 characters", func() {
+			big := strings.Repeat("x", 200)
+			args := map[string]any{"payload": []any{big}}
+			result := tooldisplay.Summary("mcp_tool", args)
+			Expect(result).To(HaveSuffix("..."))
+			Expect(len(result)).To(BeNumerically("<=", len("mcp_tool: ")+truncateLen+len("...")))
+		})
+
+		It("redacts sensitive keys even when the value is structured", func() {
+			args := map[string]any{"credentials": map[string]any{"user": "alice", "password": "secret"}}
+			result := tooldisplay.Summary("custom_tool", args)
+			Expect(result).NotTo(ContainSubstring("alice"))
+			Expect(result).NotTo(ContainSubstring("secret"))
+			Expect(result).To(ContainSubstring("[REDACTED]"))
+		})
+
+		It("PrimaryArgValue returns ok=true for structured-only args so callers can persist a non-empty toolInput", func() {
+			// Direct contract check: the accumulator's toolArgValue delegate
+			// reads only the string return, but downstream callers (and
+			// future use) check the bool to decide whether the call had
+			// anything to display. Flip the bool to true whenever any
+			// representation is emitted, not just the string-arg path.
+			args := map[string]any{"entities": []any{"a", "b"}}
+			value, ok := tooldisplay.PrimaryArgValue("create_entities", args)
+			Expect(ok).To(BeTrue())
+			Expect(value).NotTo(BeEmpty())
+			Expect(value).To(ContainSubstring(`"entities":["a","b"]`))
 		})
 	})
 

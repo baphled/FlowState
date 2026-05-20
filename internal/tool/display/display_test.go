@@ -70,8 +70,15 @@ var _ = Describe("Summary", func() {
 			Expect(tooldisplay.Summary("bash", map[string]any{"command": ""})).To(Equal("bash"))
 		})
 
-		It("returns just the tool name when arg value is not a string", func() {
-			Expect(tooldisplay.Summary("bash", map[string]any{"command": 42})).To(Equal("bash"))
+		It("falls through to the canonical fallback when the primary arg value is not a string", func() {
+			// Bug fix: previously the non-string primary arg caused the
+			// canonical fallback to also drop the entry, so the rendered
+			// summary collapsed to the bare tool name. Now compactJSONFallback
+			// JSON-marshals non-string values, so even a misshapen bash call
+			// with command=42 retains its payload in the rendered summary
+			// (and therefore in the persisted toolInput).
+			Expect(tooldisplay.Summary("bash", map[string]any{"command": 42})).
+				To(Equal(`bash: {"command":42}`))
 		})
 	})
 
