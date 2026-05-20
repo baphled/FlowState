@@ -716,10 +716,14 @@ var _ = Describe("RunStream", func() {
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
 		}
-		Expect(chunks).To(HaveLen(3))
+		// Bug K (May 2026) added a stop_reason chunk on finish — the
+		// expected wire-shape is now [content, content, stop_reason, Done].
+		Expect(chunks).To(HaveLen(4))
 		Expect(chunks[0].Content).To(Equal("Hello"))
 		Expect(chunks[1].Content).To(Equal(" world!"))
-		Expect(chunks[2].Done).To(BeTrue())
+		Expect(chunks[2].EventType).To(Equal("stop_reason"))
+		Expect(chunks[2].StopReason).To(Equal("end_turn"))
+		Expect(chunks[3].Done).To(BeTrue())
 	})
 
 	It("streams tool call chunks", func() {
@@ -750,12 +754,16 @@ var _ = Describe("RunStream", func() {
 		for chunk := range ch {
 			chunks = append(chunks, chunk)
 		}
-		Expect(chunks).To(HaveLen(2))
+		// Bug K (May 2026) added a stop_reason chunk on finish — the
+		// expected wire-shape is now [tool_call, stop_reason, Done].
+		Expect(chunks).To(HaveLen(3))
 		Expect(chunks[0].ToolCall).NotTo(BeNil())
 		Expect(chunks[0].ToolCall.ID).To(Equal("call_abc"))
 		Expect(chunks[0].ToolCall.Name).To(Equal("get_weather"))
 		Expect(chunks[0].ToolCall.Arguments).To(HaveKeyWithValue("city", "London"))
-		Expect(chunks[1].Done).To(BeTrue())
+		Expect(chunks[1].EventType).To(Equal("stop_reason"))
+		Expect(chunks[1].StopReason).To(Equal("tool_use"))
+		Expect(chunks[2].Done).To(BeTrue())
 	})
 
 	It("emits tool calls when the terminal chunk combines delta and finish_reason (github-copilot shape)", func() {
@@ -1777,6 +1785,130 @@ var _ = Describe("RunStream", func() {
 			Expect(provErr.ErrorType).NotTo(BeEmpty(),
 				"ErrorType must be populated — even ErrorTypeUnknown is better than the empty-string silent-degrade behaviour")
 			Expect(provErr.Provider).To(Equal("test-provider"))
+		})
+	})
+
+	// Bug K (May 2026): openaicompat-routed providers (openai, openzen,
+	// zai, ollamacloud, github-copilot) never persisted the upstream
+	// stop_reason on the assistant message. Live evidence from session
+	// 7dfdb197-ce21-45a2-b5da-f2fa62dd293b shows 35/35 parent assistant
+	// messages with unset stopReason; the synthetic
+	// thinking_only / fabricated_completion / empty_turn values are the
+	// only stop reasons that ever made it to disk for these providers.
+	//
+	// The Anthropic provider mirrors message_delta's stop_reason into a
+	// dedicated StreamChunk (anthropic/streaming.go:166-188 — EventType
+	// "stop_reason", StopReason carries the parsed value), which the
+	// session accumulator consumes at accumulator.go:517-523. openaicompat
+	// observes FinishReason on the terminal chunk at openaicompat.go:486
+	// but never emits the equivalent stop_reason chunk, so the engine
+	// cannot distinguish a normal end_turn from a max-tokens truncation
+	// or a tool_use turn.
+	//
+	// Mirror the Anthropic shape, mapping OpenAI's vocabulary
+	// (stop / length / tool_calls / content_filter / function_call) to
+	// the Anthropic vocabulary the rest of the engine + UI already gate
+	// on (end_turn / max_tokens / tool_use / refusal).
+	Context("Bug K — stop_reason persistence (openaicompat finish_reason → stop_reason chunk)", func() {
+		// Spec helper: drive a single-chunk stream that finishes with the
+		// requested OpenAI finish_reason, collect every emitted chunk,
+		// and return the StopReason carried on the stop_reason chunk
+		// (or empty if none was emitted).
+		runStreamWithFinishReason := func(finishReason string) (string, []provider.StreamChunk) {
+			GinkgoHelper()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-stop","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":null}]}`,
+					fmt.Sprintf(
+						`{"id":"chatcmpl-stop","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":%q}]}`,
+						finishReason,
+					),
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			DeferCleanup(server.Close)
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "test-provider")
+			var collected []provider.StreamChunk
+			for chunk := range ch {
+				collected = append(collected, chunk)
+			}
+			var stopReason string
+			for _, c := range collected {
+				if c.EventType == "stop_reason" && c.StopReason != "" {
+					stopReason = c.StopReason
+					break
+				}
+			}
+			return stopReason, collected
+		}
+
+		It("emits a stop_reason chunk carrying end_turn when upstream finish_reason=stop", func() {
+			stopReason, chunks := runStreamWithFinishReason("stop")
+			Expect(stopReason).To(Equal("end_turn"),
+				"RunStream must mirror the Anthropic vocabulary (end_turn) for OpenAI's finish_reason=stop "+
+					"so consumers that already gate on Anthropic stop reasons (engine hop-counter, session "+
+					"fabrication-completion guard, MessageBubble banner) see the same shape regardless of provider")
+			var stopIdx, doneIdx int
+			stopIdx, doneIdx = -1, -1
+			for i, c := range chunks {
+				if c.EventType == "stop_reason" && stopIdx == -1 {
+					stopIdx = i
+				}
+				if c.Done && doneIdx == -1 {
+					doneIdx = i
+				}
+			}
+			Expect(stopIdx).To(BeNumerically(">=", 0), "RunStream must emit a stop_reason chunk")
+			Expect(doneIdx).To(BeNumerically(">=", 0), "RunStream must emit a Done chunk")
+			Expect(stopIdx).To(BeNumerically("<", doneIdx),
+				"the stop_reason chunk must precede Done so downstream consumers that stop "+
+					"reading on Done still observe the turn's stop reason")
+		})
+
+		It("emits stop_reason=tool_use when upstream finish_reason=tool_calls", func() {
+			stopReason, _ := runStreamWithFinishReason("tool_calls")
+			Expect(stopReason).To(Equal("tool_use"),
+				"tool_calls is the OpenAI vocabulary for what Anthropic calls tool_use — "+
+					"engine hop-counter and downstream gates key on tool_use")
+		})
+
+		It("emits stop_reason=max_tokens when upstream finish_reason=length", func() {
+			stopReason, _ := runStreamWithFinishReason("length")
+			Expect(stopReason).To(Equal("max_tokens"),
+				"length is the OpenAI vocabulary for what Anthropic calls max_tokens — "+
+					"the chat UI banner gates on max_tokens to surface truncation")
+		})
+
+		It("emits stop_reason=refusal when upstream finish_reason=content_filter", func() {
+			stopReason, _ := runStreamWithFinishReason("content_filter")
+			Expect(stopReason).To(Equal("refusal"),
+				"content_filter is the OpenAI vocabulary for what Anthropic calls refusal — "+
+					"both signal a model-side hard stop the UI must distinguish from end_turn")
+		})
+
+		It("falls back to the raw finish_reason when the upstream uses an unrecognised vocabulary", func() {
+			// Forward-compat: an upstream-specific finish_reason (e.g. a
+			// future OpenAI value, or a vendor extension) must still
+			// flow through verbatim rather than be silently dropped.
+			stopReason, _ := runStreamWithFinishReason("vendor_specific_reason")
+			Expect(stopReason).To(Equal("vendor_specific_reason"),
+				"unknown finish_reason values must still surface verbatim — silent-drop "+
+					"hides the very signal we are trying to plumb through")
 		})
 	})
 })

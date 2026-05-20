@@ -447,7 +447,11 @@ var _ = Describe("OpenAI Provider", func() {
 					chunks = append(chunks, chunk)
 				}
 
-				Expect(chunks).To(HaveLen(3))
+				// Bug K (May 2026): openaicompat now emits a stop_reason
+				// chunk on finish so downstream consumers can persist
+				// the upstream finish_reason. The wire shape becomes
+				// [content, stop_reason, Done].
+				Expect(chunks).To(HaveLen(4))
 				Expect(chunks[0].Content).To(Equal("Hello"))
 			})
 		})

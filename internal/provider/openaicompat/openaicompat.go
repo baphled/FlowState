@@ -487,6 +487,24 @@ func RunStreamWithObserver(
 				flushAccumulatedToolCalls(ctx, ch, &acc, emitted)
 				flushInlineExtractor(ctx, ch, &inlineExtractor, recoveredCalls, emitted)
 				recoveredCalls = nil
+				// Issue K (May 2026): mirror the upstream's finish_reason
+				// into a stop_reason StreamChunk so the session
+				// accumulator at accumulator.go:517-523 (which gates on
+				// `chunk.EventType == "stop_reason"`) can persist the
+				// turn's stop reason on the assistant message. Without
+				// this, every openaicompat-routed provider produced
+				// assistant messages with an unset StopReason — only
+				// the synthetic thinking_only / empty_turn /
+				// fabricated_completion values surfaced. Mapping to
+				// the Anthropic vocabulary (end_turn / max_tokens /
+				// tool_use / refusal) keeps engine + UI consumers
+				// (hop-counter, fabrication-completion guard,
+				// MessageBubble banner) provider-agnostic. Mirrors
+				// anthropic/streaming.go:handleMessageDelta:166-188.
+				shared.SendChunk(ctx, ch, provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: mapFinishReason(chunk.Choices[0].FinishReason),
+				})
 				sawFinish = true
 				// Deliberately DO NOT emit Done here. The terminal
 				// `stream_options.include_usage` chunk arrives AFTER
@@ -675,6 +693,39 @@ func extractReasoningContent(delta openaiAPI.ChatCompletionChunkChoiceDelta) str
 		return ""
 	}
 	return text
+}
+
+// mapFinishReason translates an OpenAI chat-completion finish_reason
+// into the Anthropic stop_reason vocabulary that the rest of FlowState
+// (session accumulator, engine hop counter, chat UI banner) already
+// gates on. The mapping is the minimal cross-vendor parity table —
+// unknown values pass through verbatim so a future or vendor-specific
+// finish_reason survives instead of being silently dropped.
+//
+// Expected:
+//   - reason is the OpenAI finish_reason string from
+//     chunk.Choices[0].FinishReason (may be empty when called on a
+//     chunk that has not yet finished).
+//
+// Returns:
+//   - The mapped Anthropic stop_reason string, or the input verbatim
+//     when no mapping exists. An empty input maps to the empty string.
+//
+// Side effects:
+//   - None.
+func mapFinishReason(reason string) string {
+	switch reason {
+	case "stop":
+		return "end_turn"
+	case "length":
+		return "max_tokens"
+	case "tool_calls", "function_call":
+		return "tool_use"
+	case "content_filter":
+		return "refusal"
+	default:
+		return reason
+	}
 }
 
 // flushAccumulatedToolCalls emits any tool calls that the openai-go accumulator
