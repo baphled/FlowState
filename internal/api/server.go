@@ -428,6 +428,27 @@ func (s *Server) SetCompletionOrchestrator(orch *engine.CompletionOrchestrator) 
 	s.completionOrchestrator = orch
 }
 
+// TurnRegistry returns the *turn.Registry the auto-constructed (or
+// option-installed) Dispatcher writes into during DispatchSessioned /
+// DispatchEphemeral. App-level wiring at internal/app.configureDelegateTool
+// consumes this so the DelegateTool's child-Turn lifecycle (PR2a's
+// executeSync + PR2b's swarm-fan-out) populates the SAME registry the
+// long-poll endpoint handleGetTurn reads from — closing the live-UI
+// parity gap for delegate-spawned children.
+//
+// Returns nil when no dispatcher is wired (legacy / minimal test
+// composition with no Streamer); App-side callers must nil-check before
+// invoking WithTurnRegistry on the DelegateTool — passing nil falls
+// through to the historical no-Turn-channel behaviour at every
+// lifecycle site per D7 back-compat. Plans/Child Session Turn Registry
+// Plumbing (May 2026) §Item 2 + §S8.1.
+func (s *Server) TurnRegistry() *turn.Registry {
+	if s.dispatcher == nil {
+		return nil
+	}
+	return s.dispatcher.TurnRegistry()
+}
+
 // NewServer creates a new API server with the given dependencies.
 //
 // Expected:

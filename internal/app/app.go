@@ -1679,6 +1679,26 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 	if eng != nil {
 		dt.WithEventBus(eng.EventBus())
 	}
+
+	// Install the API server's Turn registry so DelegateTool's
+	// per-child Turn lifecycle (PR2a's executeSync + PR2b's swarm-fan-
+	// out at bootstrapMemberSession / buildMemberRunner) writes into
+	// the SAME registry the API server's long-poll endpoint
+	// handleGetTurn reads from. Without this wiring the two registries
+	// would diverge — App's DelegateTool would mint child Turns on a
+	// fresh registry the polling path never sees, and the live-UI
+	// channel for delegate-spawned children would stay dark.
+	//
+	// Plans/Child Session Turn Registry Plumbing (May 2026) §Item 2 +
+	// §S8.1: the App-init test asserts api.Server.TurnRegistry() and
+	// the wired DelegateTool's turn registry point at the SAME
+	// instance. a.API may be nil in pre-API test compositions; that
+	// branch leaves DelegateTool with the historical no-Turn-channel
+	// behaviour (every lifecycle site short-circuits on
+	// d.turnRegistry == nil per D7).
+	if a.API != nil {
+		dt.WithTurnRegistry(a.API.TurnRegistry())
+	}
 }
 
 // buildSwarmGateRunner constructs the production swarm gate dispatcher

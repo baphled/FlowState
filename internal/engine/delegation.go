@@ -732,6 +732,40 @@ func (d *DelegateTool) GateRunner() swarm.GateRunner {
 	return d.gateRunner
 }
 
+// TurnRegistry returns the production *turn.Registry installed via
+// WithTurnRegistry (or nil when no registry / a spec-side spy has been
+// installed). Exposed so the App-level wiring test (Plans/Child Session
+// Turn Registry Plumbing (May 2026) §S8.1) can verify that the
+// App-constructed DelegateTool and the api.Server's Dispatcher share
+// the SAME *turn.Registry instance pointer — production wiring at
+// configureDelegateTool calls dt.WithTurnRegistry(a.API.TurnRegistry())
+// so a divergent registry on either side surfaces as a nil or distinct
+// pointer here.
+//
+// Mirrors GateRunner's pattern: a thin accessor for cross-package
+// wiring tests; production code never reads this field directly — the
+// dispatch path consults d.turnRegistry internally.
+//
+// The type assertion `d.turnRegistry.(*turn.Registry)` returns nil
+// when the field was installed via the spec seam (withChildTurnRegistry)
+// with a non-*turn.Registry spy — that branch is deliberately
+// out-of-scope for this accessor (S8.1 verifies production wiring,
+// which always installs the concrete pointer).
+//
+// Returns:
+//   - The installed *turn.Registry, or nil when no registry is wired
+//     or the field carries a spec-side spy.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) TurnRegistry() *turn.Registry {
+	if d.turnRegistry == nil {
+		return nil
+	}
+	reg, _ := d.turnRegistry.(*turn.Registry)
+	return reg
+}
+
 // RunnerFactory builds the *swarm.Runner the dispatch loop installs
 // for a given manifest. The runner is constructed once per swarm id
 // and cached; the factory is consulted only on the first dispatch
@@ -2999,26 +3033,148 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 		// sessionIDFromContext(dispatchCtx) call inside streamAndCollect
 		// — most importantly wrapWithAccumulator's sessionID arg —
 		// resolves to the child id, not the parent's.
-		dispatchCtx, cleanup := d.bootstrapMemberSession(ctx, target, swarmCtx.ChainPrefix)
+		//
+		// Plans/Child Session Turn Registry Plumbing (May 2026)
+		// §Item 2d: bootstrap also mints a per-member child Turn via
+		// StartOrReuse and injects the turn ctx triad into
+		// dispatchCtx — the accumulator's turnAwareAppender then
+		// fans every persisted child-session message onto the SAME
+		// registry the API server's long-poll endpoint reads from.
+		// handle.turnID is "" when the registry is nil (legacy test
+		// constructor) or StartOrReuse soft-fails; every lifecycle
+		// site below short-circuits on the empty id per D7.
+		dispatchCtx, handle, cleanup := d.bootstrapMemberSession(ctx, target, swarmCtx.ChainPrefix)
 		defer cleanup()
+
+		// Closure-internal attempt counter — Plans/Child Session
+		// Turn Registry Plumbing (May 2026) §S10.swarm retry-
+		// boundary mechanism. Mirrors executeSync's
+		// runStreamThroughRunner closure-counter at delegation.go:
+		// 2613-2625 (PR2a §Item 2c option (i)). The runner re-
+		// invokes this closure on every retry attempt; on attempts
+		// > 0 we wipe handle.turnID's MessagesAdded slice via
+		// ResetForRetry so attempt-N+1's chunks do NOT pile on top
+		// of attempt-N's stale partial-stream rows.
+		//
+		// Per-member isolation: the counter is captured fresh per
+		// closure invocation (one closure per member), so alpha's
+		// retry counter cannot trip a Reset on bravo's Turn even
+		// when both members are in flight. This is the load-bearing
+		// isolation §S10.swarm pins.
+		//
+		// Empty handle.turnID and nil registry short-circuit
+		// silently — the legacy no-turn-registry path keeps the
+		// historical behaviour.
 		var result delegationResult
-		return runner.Dispatch(dispatchCtx, memberID, func(innerCtx context.Context, _ string) error {
+		attempt := 0
+		dispatchErr := runner.Dispatch(dispatchCtx, memberID, func(innerCtx context.Context, _ string) error {
+			if attempt > 0 && d.turnRegistry != nil && handle.turnID != "" {
+				// ResetForRetry returns ErrTurnTerminal when the
+				// turn has already terminated; the caller-side
+				// discipline guarantees we never call it on a
+				// terminal turn so the swallow is a backstop, not
+				// a load-bearing path. Mirrors PR2a's pattern at
+				// delegation.go:2615-2621.
+				_ = d.turnRegistry.ResetForRetry(handle.turnID)
+			}
+			attempt++
 			return d.streamAndCollect(innerCtx, target, &result)
 		})
+
+		// Plans/Child Session Turn Registry Plumbing (May 2026)
+		// §D8 option (ii) — terminal discipline lives INSIDE the
+		// per-member closure (not at the cleanup defer) because the
+		// per-member ModelInfo only resolves here: target.engine is
+		// the member-specific engine, target.engine.LastModel() /
+		// LastProvider() carry the member's failover outcome.
+		// Hoisting Complete/Fail to the cleanup closure would lose
+		// that telemetry — the cleanup closure has no per-member
+		// ModelInfo in scope and would have to read LastModel /
+		// LastProvider AFTER the engine's per-call state has
+		// already been overwritten by the next member in the fan-
+		// out's iteration. Mirrors executeSync's terminal-then-
+		// cleanup ordering at delegation.go:2529-2536 / 2497-2511.
+		if dispatchErr != nil {
+			// Fail the per-member child Turn BEFORE the deferred
+			// cleanup runs. The handle's empty-turnID guard inside
+			// failMemberTurnIfOwned short-circuits on the registry-
+			// nil and soft-fail paths so back-compat for the
+			// pre-plumbing callsite footprint holds per D7.
+			d.failMemberTurnIfOwned(&handle, dispatchErr)
+			return dispatchErr
+		}
+
+		// Complete the per-member child Turn with the member's
+		// resolved (provider, model) pair. handle.ownedByCaller flip
+		// is the load-bearing guard for the §S7.5 R2-defence path
+		// where a gate failure (or any later surface) fires AFTER
+		// Complete: failMemberTurnIfOwned reads ownedByCaller FIRST
+		// and short-circuits before invoking Fail on a terminal
+		// Turn. Empty turnID short-circuits both the Complete and
+		// the ownedByCaller flip — the registry-nil and soft-fail
+		// paths leave the historical no-Turn-channel behaviour
+		// intact.
+		if d.turnRegistry != nil && handle.turnID != "" {
+			_ = d.turnRegistry.Complete(handle.turnID, turn.ModelInfo{
+				Provider: target.engine.LastProvider(),
+				Model:    target.engine.LastModel(),
+			})
+			handle.ownedByCaller = true
+		}
+		return nil
 	}
+}
+
+// memberTurnHandle carries the per-member child-Turn state between
+// bootstrapMemberSession (which mints the Turn) and the buildMemberRunner
+// closure (which Completes on success / Fails on dispatch error). The
+// `ownedByCaller` flag mirrors executeSync's `turnOwnedByWrap` (PR2a
+// §S4.2 R2 defence): the closure flips it to true the moment Complete
+// fires on the happy path, so any subsequent failure surface that
+// reaches failMemberTurnIfOwned short-circuits BEFORE Fail is invoked
+// on a terminal Turn — preserving the single-source-of-correctness
+// guard at the per-member layer that executeSync already provides at
+// the single-target layer.
+//
+// Empty `turnID` means: registry was nil at bootstrap (legacy test
+// composition) OR StartOrReuse failed soft. Every lifecycle site
+// downstream nil-checks the turnID before invoking
+// d.turnRegistry.* so back-compat for the dozens of pre-plumbing
+// callsites holds per D7.
+//
+// Plans/Child Session Turn Registry Plumbing (May 2026) §Item 2d +
+// §"Wire / data shapes" for the per-member layer. The shape is
+// deliberately minimal — only the two fields the per-member closure
+// reads; extending it to carry session id / chain prefix would invite
+// downstream sites to read those off the handle instead of off the
+// existing closure variables, which would couple the handle to seams
+// it should stay agnostic of.
+type memberTurnHandle struct {
+	turnID        string
+	ownedByCaller bool
 }
 
 // bootstrapMemberSession spawns a per-member child session, persists
 // the parent's brief into the child, attaches the member engine's
-// row store to the child's session id, and returns a ctx rebound to
-// the child sessionID (with masked provider/model overrides so the
-// parent's selection does not leak into the member engine).
+// row store to the child's session id, mints a per-member child Turn
+// via StartOrReuse on the spawned child session, and returns a ctx
+// rebound to the child sessionID (with masked provider/model overrides
+// so the parent's selection does not leak into the member engine) plus
+// a per-member turn handle the buildMemberRunner closure uses to
+// transition the Turn terminal (Complete on success / Fail on dispatch
+// error).
 //
 // Mirrors the seam executeSync uses for agent-target delegations
 // (resolveOrCreateSession → persistChildBrief → attachSessionStore →
-// context.WithValue(session.IDKey{}, child)). Pulling this into a
-// helper closes the swarm-target dispatch path's lack of child-session
-// spawn — the Delegation Regression Fix's load-bearing change.
+// StartOrReuse → context.WithValue(session.IDKey{}, child) +
+// turn.WithTurnID + session.WithAccumulatorTurnID +
+// session.WithTurnRecorder). Plans/Child Session Turn Registry
+// Plumbing (May 2026) §Item 2d (swarm-target plumbing, added in round
+// 2 per blocker B1): the ctx triad makes the child engine's
+// accumulator fan persisted child-session messages onto the SAME
+// registry the API server's long-poll endpoint projects from, closing
+// the swarm-path live-UI parity gap that PR2a closed only for the
+// single-target path.
 //
 // Expected:
 //   - ctx is the per-member dispatch ctx carrying the coordinator's
@@ -3030,8 +3186,18 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 //     to resolveOrCreateSession's synthetic-id branch.
 //
 // Returns:
-//   - dispatchCtx with session.IDKey rebound to the spawned child id
-//     and provider/model overrides masked.
+//   - dispatchCtx with session.IDKey rebound to the spawned child id,
+//     provider/model overrides masked, and (when the registry is
+//     wired) the turn ctx triad (turn.WithTurnID +
+//     session.WithAccumulatorTurnID + session.WithTurnRecorder)
+//     installed so the accumulator's turnAwareAppender fans every
+//     persisted child-session message onto the registry's
+//     MessagesAdded slice.
+//   - handle carries the per-member child Turn id and the
+//     ownedByCaller flag the per-member closure flips on Complete.
+//     handle.turnID is empty when the registry is nil OR StartOrReuse
+//     soft-fails — downstream lifecycle sites short-circuit on the
+//     empty id per D7.
 //   - cleanup is the closer the caller must defer; it closes the
 //     attached file store (no-op when no factory) and seals the
 //     spawned child session via closeSessionIfManaged.
@@ -3044,6 +3210,8 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 //     the child session row store.
 //   - May call attachSessionStore to swap the member engine's
 //     FileContextStore to the child id (no-op when storeFactory is nil).
+//   - May call d.turnRegistry.StartOrReuse to mint a child Turn keyed
+//     on the spawned child sessionID. Nil registry short-circuits.
 //
 // NOTE: this seam intentionally does NOT publish a `delegation.started`
 // / `delegation.completed` event. The swarm-target path emits its
@@ -3057,7 +3225,7 @@ func (d *DelegateTool) bootstrapMemberSession(
 	ctx context.Context,
 	target delegationTarget,
 	chainID string,
-) (context.Context, func()) {
+) (context.Context, memberTurnHandle, func()) {
 	childID := d.resolveOrCreateSession(ctx, target.agentID, "", chainID)
 	d.persistChildBrief(childID, target.agentID, target.message)
 	closeStore := d.attachSessionStore(target.engine, childID)
@@ -3068,11 +3236,83 @@ func (d *DelegateTool) bootstrapMemberSession(
 	// override check in engine.go. Mirrors executeSync line ~2261-2262.
 	dispatchCtx = context.WithValue(dispatchCtx, session.ProviderOverrideKey{}, "")
 	dispatchCtx = context.WithValue(dispatchCtx, session.ModelOverrideKey{}, "")
+
+	// Plans/Child Session Turn Registry Plumbing (May 2026) §Item 2d —
+	// mint a per-member child Turn keyed on the spawned childID
+	// immediately after attachSessionStore. StartOrReuse is the right
+	// primitive here per D1 (same rationale as executeSync's §Item 2b
+	// site): resolveOrCreateSession may return an existing child
+	// session whose prior Turn is stale, and StartOrReuse auto-
+	// completes the stale entry before minting fresh. A nil registry
+	// (legacy test constructors) short-circuits to the historical
+	// "no live channel for child swarm members" behaviour — back-
+	// compat for the pre-plumbing callsite footprint per D7.
+	var handle memberTurnHandle
+	if d.turnRegistry != nil {
+		if id, turnErr := d.turnRegistry.StartOrReuse(childID); turnErr == nil {
+			handle.turnID = id
+			// Inject the child Turn ctx triad. Mirrors executeSync at
+			// delegation.go:2467-2473. The accumulator's
+			// turnAwareAppender reads the recorder closure off ctx and
+			// fans every persisted child-session message (assistant,
+			// thinking, tool_call, tool_result, delegation_started,
+			// delegation) onto the registry's MessagesAdded slice,
+			// which the API server projects to the frontend via
+			// FindActiveBySession / handleListV1Sessions. Without the
+			// triad the registry would carry only the mint/terminate
+			// shell and the swarm-fan-out path would render an empty
+			// live channel — defeating the purpose of the plumbing.
+			dispatchCtx = turn.WithTurnID(dispatchCtx, id)
+			dispatchCtx = session.WithAccumulatorTurnID(dispatchCtx, id)
+			dispatchCtx = session.WithTurnRecorder(dispatchCtx, func(sid string, msg session.Message) {
+				_ = d.turnRegistry.Append(sid, msg)
+			})
+		}
+		// StartOrReuse's err surface is empty in practice (auto-
+		// complete cannot fail; mint cannot fail without OOM). On the
+		// soft-fail path handle.turnID stays "" and every downstream
+		// Turn lifecycle site at the per-member closure short-
+		// circuits — the swarm fan-out still completes, only the
+		// live channel stays dark, matching pre-plumbing behaviour.
+	}
+
 	cleanup := func() {
 		closeStore()
 		d.closeSessionIfManaged(childID)
 	}
-	return dispatchCtx, cleanup
+	return dispatchCtx, handle, cleanup
+}
+
+// failMemberTurnIfOwned mirrors executeSync's `failChildTurnIfOwned`
+// closure at the per-member layer. The handle's `ownedByCaller` flag
+// flips to true the moment Complete fires on the per-member happy
+// path; this helper reads the flag FIRST and short-circuits before
+// invoking turnRegistry.Fail. Single-source-of-correctness defence
+// (PR2a §S4.2 R2): the Fail-side ErrTurnTerminal silent-swallow at
+// turn.go:796-797 is the backstop, NOT a substitute for caller-side
+// discipline. Plans/Child Session Turn Registry Plumbing (May 2026)
+// §S7.5 spec asserts Fail call-count remains 0 across the
+// gate-after-Complete suffix on the swarm path identical to the
+// single-target path.
+//
+// Expected:
+//   - handle is the per-member handle returned by
+//     bootstrapMemberSession; nil-safe via the empty-turnID guard.
+//   - cause is the failure that triggered the call (dispatch error,
+//     per-member timeout, runner-level terminal error).
+//
+// Side effects:
+//   - May call d.turnRegistry.Fail when handle.ownedByCaller is false
+//     AND the registry is wired AND the handle carries a non-empty
+//     turnID. Every other case short-circuits silently.
+func (d *DelegateTool) failMemberTurnIfOwned(handle *memberTurnHandle, cause error) {
+	if handle == nil || handle.ownedByCaller {
+		return
+	}
+	if d.turnRegistry == nil || handle.turnID == "" {
+		return
+	}
+	_ = d.turnRegistry.Fail(handle.turnID, cause)
 }
 
 // memberTimeoutForSwarm returns the HarnessConfig.MemberTimeout for
