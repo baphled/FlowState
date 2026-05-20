@@ -39,6 +39,19 @@ const activeProviderStorageKey = 'chat.selectedProvider'
 // in the POST /sessions body still resolves to the same agent.
 export const DEFAULT_AGENT_ID = 'default-assistant'
 
+// TODO_TOOL_NAMES — the set of tool names whose tool_result content is the
+// canonical todo-list JSON the todoStore consumes. Centralised here so the
+// live-ingest gate (handleToolResultEvent) and the hydration filter
+// (todoStore.hydrateFromMessages) share a single source of truth and a
+// future tool rename (e.g. todo_update → todo_patch) is one-line touch
+// across both seams. The agent contract today is one `todowrite` (initial
+// list) + N × `todo_update` (per-status flip); both return the FULL
+// post-patch list in the same {content,status,priority} shape.
+//
+// See investigation note "Todo Tools UI Render Gaps (May 2026)" for the
+// TUI-parity counterpart at internal/tui/intents/chat/intent.go:4740-4748.
+export const TODO_TOOL_NAMES: ReadonlySet<string> = new Set(['todowrite', 'todo_update'])
+
 /**
  * TOOL_ACTIVITY_DISMISS_MS — how long after the LAST tool_call the rolling
  * activity toast lingers before auto-dismissing. Calibrated to feel "live"
@@ -3728,11 +3741,16 @@ export const useChatStore = defineStore('chat', {
         target.status = 'completed'
       }
 
-      // Route todowrite results into the todoStore. The agent emits the full
-      // todo array on every todowrite call, so the slice for the active
+      // Route todo-tool results into the todoStore. The agent emits the
+      // full todo array on every `todowrite` (initial list) AND every
+      // `todo_update` (per-status-flip) call, so the slice for the active
       // session is replaced rather than merged — matching the TUI which
-      // re-renders the full list on every todo_update message.
-      if (this.lastToolName === 'todowrite' && this.currentSessionId) {
+      // re-renders the full list on every emission (see
+      // internal/tui/intents/chat/intent.go:4740-4748 for the parity
+      // counterpart). The two names share a single ingestion path because
+      // the wire shape (and the backend Output contract — see
+      // internal/tool/todo/update.go:148-152) is identical.
+      if (this.lastToolName !== null && TODO_TOOL_NAMES.has(this.lastToolName) && this.currentSessionId) {
         const todoStore = useTodoStore()
         todoStore.ingestToolResult(this.currentSessionId, content)
       }

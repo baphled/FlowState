@@ -191,6 +191,88 @@ test.describe('Side panel reserved for todos', () => {
     await expect(panel.getByText('second one')).toBeVisible()
   })
 
+  // PR7 W5 — todo_update parity at the hydration seam. The agent's per-flip
+  // tool is `todo_update`, which returns the SAME full-list JSON as
+  // `todowrite`. Pre-PR7 the hydration filter only accepts toolName ===
+  // "todowrite", so a session whose latest todo state was set by a
+  // `todo_update` reload to an empty side panel — losing the in-progress
+  // / completed flips the user just saw live. This test seeds a history
+  // where the last todo-relevant message is a `todo_update` and asserts
+  // the panel renders the patched state, not the initial state.
+  test('hydrates side-panel todos when the latest todo state is a todo_update', async ({ page }) => {
+    await page.route('**/api/v1/sessions/**/messages', async (route) => {
+      const sessionId = getSessionId(route.request().url())
+      if (sessionId === 'session-parent-001') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify([
+            { id: 'm1', role: 'user', content: 'plan something', timestamp: '' },
+            // Initial todowrite — seeds the list with two pending items.
+            {
+              id: 'm2',
+              role: 'tool_result',
+              toolName: 'todowrite',
+              content: JSON.stringify([
+                { content: 'flip me to in_progress', status: 'pending', priority: 'high' },
+                { content: 'flip me to completed', status: 'pending', priority: 'low' },
+              ]),
+              timestamp: '',
+            },
+            // Agent then flips both via todo_update; the post-patch list
+            // is the canonical state. Pre-PR7 this row is invisible to
+            // todoStore.hydrateFromMessages and the panel falls back to
+            // the m2 snapshot.
+            {
+              id: 'm3',
+              role: 'tool_result',
+              toolName: 'todo_update',
+              content: JSON.stringify([
+                { content: 'flip me to in_progress', status: 'in_progress', priority: 'high' },
+                { content: 'flip me to completed', status: 'completed', priority: 'low' },
+              ]),
+              timestamp: '',
+            },
+          ]),
+        })
+        return
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(messagesBySession[sessionId] ?? []),
+      })
+    })
+
+    await page.reload()
+
+    const sidebar = page.getByTestId('swarm-pane')
+    const panel = sidebar.getByTestId('todo-list-panel')
+    await expect(panel).toBeVisible()
+    // The todos themselves are present — names are the same as the seed
+    // but the state must reflect the todo_update result.
+    await expect(panel.getByText('flip me to in_progress')).toBeVisible()
+    await expect(panel.getByText('flip me to completed')).toBeVisible()
+    // The completed flip MUST show as completed in the side panel (status
+    // class on the <li>). Pre-PR7 this fails because the panel hydrates
+    // from m2 only — both items are still pending.
+    const completedItems = panel.locator('.todo-item.completed')
+    await expect(completedItems).toHaveCount(1)
+    await expect(completedItems.first()).toContainText('flip me to completed')
+  })
+
+  // NOTE (resume engineer, PR7 W5): the live-ingest path (W1 renderer
+  // dispatch + W3 chatStore gate) is covered by unit specs at
+  // src/tools/registerTools.spec.ts (W1) and src/stores/chatStore.test.ts
+  // (W3 — drives a real `todo_update` tool_call/tool_result pair through
+  // applyContentEvent into todoStore.ingestToolResult). No e2e dual-pin
+  // exists because the web app does not expose chat/todo stores on
+  // `window` for test harness assertions, so driving the live path from
+  // Playwright would require shipping a production-touch test-only
+  // global. The static-hydration e2e above pins the W3 contract end-to-
+  // end through the production path (fetchSessionMessages → store →
+  // panel render) without that compromise.
+
   test('delegation events are reachable from the chat thread and switch session on click', async ({ page }) => {
     // The delegation event mocked above must surface inside the chat-main
     // region (DelegationStrip), NOT in the sidebar. Clicking it switches the

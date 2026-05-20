@@ -45,6 +45,15 @@ describe('registerTools', () => {
     expect(getToolComponent('websearch')).toBe(GenericTool)
     expect(getToolComponent('task')).toBe(GenericTool)
     expect(getToolComponent('todowrite')).toBe(TodoTool)
+    // PR7 W1 — `todo_update` is the per-status-transition tool the agent
+    // emits after the initial `todowrite`. Its Output is shape-compatible
+    // with todowrite (full JSON array of {content,status,priority}) so the
+    // same renderer covers both names. Without this registration, every
+    // `todo_update` falls through MessageBubble.vue's `?? GenericTool`
+    // fallback and the user sees the raw call args + JSON output instead
+    // of the checkbox card. See the investigation note
+    // "Todo Tools UI Render Gaps (May 2026)" for the full evidence chain.
+    expect(getToolComponent('todo_update')).toBe(TodoTool)
     expect(getToolComponent('search_context')).toBe(RecallSearchTool)
     expect(getToolComponent('chain_search_context')).toBe(RecallSearchTool)
     expect(getToolComponent('get_messages')).toBe(RecallSearchTool)

@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia'
 import type { Message } from '@/types'
 
+// TODO_TOOL_NAMES — local copy of the canonical set. The chatStore declares
+// the same set (exported as TODO_TOOL_NAMES) for its live-ingest gate;
+// duplicating the four bytes here avoids a circular import between
+// stores/chatStore.ts and stores/todoStore.ts (chatStore already imports
+// useTodoStore from this file). Keep the two literals in sync — a future
+// rename (e.g. todo_update → todo_patch) is a two-line touch.
+const TODO_TOOL_NAMES: ReadonlySet<string> = new Set(['todowrite', 'todo_update'])
+
 // Todo represents a single agent-emitted todo entry. The display shape mirrors
 // the JSON the `todowrite` tool emits — see internal/tui/uikit/widgets/
 // todo_widget.go:11-16 (todoItem) for the canonical Go counterpart. The TUI
@@ -125,14 +133,25 @@ export const useTodoStore = defineStore('todo', {
 
     // hydrateFromMessages derives the current todo list from a session's
     // persisted message history. The latest tool_result whose toolName is
-    // "todowrite" is the canonical state. If no such message is present the
-    // slice is reset to empty so a previously-active live state cannot
-    // bleed across reloads of a session that has cleared its todos.
+    // a recognised todo-tool name ('todowrite' OR 'todo_update') is the
+    // canonical state. If no such message is present the slice is reset
+    // to empty so a previously-active live state cannot bleed across
+    // reloads of a session that has cleared its todos.
+    //
+    // The agent's contract emits one `todowrite` (initial list) followed
+    // by N × `todo_update` (per-flip), so the latest message in a healthy
+    // session is almost always a `todo_update`. Both wire shapes are the
+    // same full {content,status,priority} array — see
+    // internal/tool/todo/update.go:148-152 and internal/tool/todo/todo.go:125-130.
     hydrateFromMessages(sessionId: string, messages: readonly Message[]): void {
       let latest: Todo[] = []
       let found = false
       for (const message of messages) {
-        if (message.role !== 'tool_result' || message.toolName !== 'todowrite') {
+        if (
+          message.role !== 'tool_result' ||
+          message.toolName === undefined ||
+          !TODO_TOOL_NAMES.has(message.toolName)
+        ) {
           continue
         }
         const parsed = parseTodowritePayload(message.content ?? '')

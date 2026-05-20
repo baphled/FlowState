@@ -37,6 +37,16 @@ export function registerTools(): void {
   // summarize_context) and internal/tool/recall/ (chain_search_context,
   // chain_get_messages).
   registerIfNeeded('todowrite', TodoTool)
+  // `todo_update` is the per-status-transition tool the agent emits after
+  // the initial `todowrite`. Its Output is shape-compatible (full JSON array
+  // of {content,status,priority}) so the same renderer handles both names —
+  // see internal/tool/todo/update.go:148-152 and internal/tui/intents/chat/
+  // intent.go:4740-4748 for the TUI counterpart that already collapses the
+  // two names onto one render path. Without this registration every
+  // todo_update emission falls through MessageBubble.vue's `?? GenericTool`
+  // fallback, surfacing raw call args + JSON output instead of the
+  // checkbox card the user expects.
+  registerIfNeeded('todo_update', TodoTool)
   registerIfNeeded('search_context', RecallSearchTool)
   registerIfNeeded('chain_search_context', RecallSearchTool)
   registerIfNeeded('get_messages', RecallSearchTool)

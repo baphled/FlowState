@@ -2316,6 +2316,114 @@ describe('chatStore - todoStore session swap on session switch', () => {
   })
 })
 
+// PR7 W3 — chatStore live-ingest gate widening.
+//
+// Pre-PR7 the live-ingest conditional in handleToolResultEvent only matches
+// lastToolName === 'todowrite', so an SSE tool_call/tool_result pair where
+// the call name is `todo_update` updates the chat thread but leaves the
+// shared todoStore stale. The side panel and any other todoStore consumer
+// keep showing the pre-update slice until the page reloads. Widening the
+// gate so `todo_update` also flows through to todoStore.ingestToolResult
+// brings live and hydrated state into agreement.
+//
+// The store's ingestToolResult is already shape-tolerant — `todo_update`'s
+// Output is the same full-list JSON as `todowrite`'s, so no parser change
+// is needed. This spec drives the SSE seam through applyContentEvent (the
+// same path the production EventSource uses) to keep the test honest about
+// end-to-end wiring rather than poking the internal handler directly.
+describe('chatStore - live todoStore ingestion for todo_update events', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('routes a tool_call/tool_result pair for todo_update into todoStore.ingestToolResult', async () => {
+    const { useTodoStore } = await import('./todoStore')
+
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-live-todo-update'
+
+    const todoStore = useTodoStore()
+    todoStore.setCurrentSession('session-live-todo-update')
+
+    // Wire format pin: the agent first emits the initial list via
+    // todowrite, then every status flip rides through todo_update with the
+    // full post-patch list. Both must hydrate the same store slice.
+    chat.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'todowrite', status: 'running' }))
+    chat.applyContentEvent(
+      JSON.stringify({
+        type: 'tool_result',
+        content: JSON.stringify([
+          { content: 'step one', status: 'pending', priority: 'high' },
+          { content: 'step two', status: 'pending', priority: 'low' },
+        ]),
+      }),
+    )
+
+    expect(todoStore.todos).toHaveLength(2)
+    expect(todoStore.todos[0].content).toBe('step one')
+    expect(todoStore.todos[0].status).toBe('pending')
+
+    // Now drive a todo_update flip. The store must mirror the new
+    // canonical state — the side panel reflects the live update without
+    // a reload. Pre-PR7 this assertion fails because lastToolName ===
+    // 'todo_update' does not match the 'todowrite'-only conditional.
+    chat.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'todo_update', status: 'running' }))
+    chat.applyContentEvent(
+      JSON.stringify({
+        type: 'tool_result',
+        content: JSON.stringify([
+          { content: 'step one', status: 'completed', priority: 'high' },
+          { content: 'step two', status: 'in_progress', priority: 'low' },
+        ]),
+      }),
+    )
+
+    expect(todoStore.todos).toHaveLength(2)
+    expect(todoStore.todos[0].content).toBe('step one')
+    expect(todoStore.todos[0].status).toBe('completed')
+    // 'in_progress' is the wider TUI vocabulary; todoStore collapses it
+    // onto the binary pending/completed model — anything that isn't
+    // 'completed' is 'pending' from the side-panel point of view.
+    expect(todoStore.todos[1].content).toBe('step two')
+    expect(todoStore.todos[1].status).toBe('pending')
+  })
+
+  it('does not double-route — the lastToolName gate clears after each tool_result', async () => {
+    const { useTodoStore } = await import('./todoStore')
+
+    const chat = useChatStore()
+    chat.currentSessionId = 'session-no-double-route'
+
+    const todoStore = useTodoStore()
+    todoStore.setCurrentSession('session-no-double-route')
+
+    chat.applyContentEvent(JSON.stringify({ type: 'tool_call', name: 'todo_update', status: 'running' }))
+    chat.applyContentEvent(
+      JSON.stringify({
+        type: 'tool_result',
+        content: JSON.stringify([
+          { content: 'only one', status: 'pending', priority: 'low' },
+        ]),
+      }),
+    )
+    expect(todoStore.todos).toHaveLength(1)
+
+    // A stray subsequent tool_result (e.g. a bash tool_result without a
+    // matching tool_call rebound) must not re-ingest the previous gate.
+    // The store slice should reflect only the most recent matching pair.
+    chat.applyContentEvent(
+      JSON.stringify({
+        type: 'tool_result',
+        content: 'not-a-todo-payload',
+      }),
+    )
+    expect(todoStore.todos).toHaveLength(1)
+    expect(todoStore.todos[0].content).toBe('only one')
+  })
+})
+
 describe('chatStore - revertToMessage', () => {
   beforeEach(() => {
     installLocalStorageStub()

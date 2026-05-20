@@ -199,6 +199,101 @@ describe('todoStore — hydration from session history', () => {
     expect(store.todos).toEqual([])
   })
 
+  // PR7 W4 — history hydration regression pin. A session whose latest todo
+  // state was set by `todo_update` (rather than `todowrite`) reloads to an
+  // empty panel pre-PR7 because the hydration filter accepts only the
+  // literal `"todowrite"`. The agent contract is: one `todowrite` (initial
+  // list) + N × `todo_update` (per-status-flip), so the most recent
+  // tool_result message on a healthy session is almost always a
+  // `todo_update`. The widened filter must accept both names AND respect
+  // the "latest wins" ordering — a later `todo_update` overrides an earlier
+  // `todowrite`. The body shape is identical (full post-patch list).
+  it('derives the current todo list from the latest todo_update tool_result in history', () => {
+    const store = useTodoStore()
+    const messages: Message[] = [
+      makeMessage({ id: 'm1', role: 'user', content: 'kick off' }),
+      makeMessage({
+        id: 'm2',
+        role: 'tool_result',
+        toolName: 'todowrite',
+        content: JSON.stringify([
+          { content: 'initial-1', status: 'pending', priority: 'low' },
+          { content: 'initial-2', status: 'pending', priority: 'low' },
+        ]),
+      }),
+      // The agent later flips initial-1 to completed via todo_update;
+      // todo_update returns the full updated list. Post-PR7 the hydration
+      // path must accept this as the canonical state. The 'completed' flip
+      // is load-bearing — todoStore's binary status model collapses
+      // 'in_progress' onto 'pending', so an in_progress flip would not
+      // distinguish m2 from m3 in the assertion. Using 'completed' makes
+      // the regression visible: pre-PR7 the hydration filter rejects m3,
+      // so initial-1 stays at the m2 'pending' snapshot.
+      makeMessage({
+        id: 'm3',
+        role: 'tool_result',
+        toolName: 'todo_update',
+        content: JSON.stringify([
+          { content: 'initial-1', status: 'completed', priority: 'low' },
+          { content: 'initial-2', status: 'pending', priority: 'low' },
+        ]),
+      }),
+    ]
+
+    store.setCurrentSession('session-update-hydrate')
+    store.hydrateFromMessages('session-update-hydrate', messages)
+
+    expect(store.todos).toHaveLength(2)
+    // Latest todo_update wins — initial-1 is now completed. Pre-PR7 the
+    // todo_update message is invisible to the loop and initial-1 reverts
+    // to the m2 'pending' snapshot.
+    expect(store.todos[0].content).toBe('initial-1')
+    expect(store.todos[0].status).toBe('completed')
+    expect(store.todos[1].content).toBe('initial-2')
+    expect(store.todos[1].status).toBe('pending')
+  })
+
+  // Walks the full agent flow: todowrite → todo_update → todo_update. The
+  // "latest wins" loop must observe ordering AND accept either tool name
+  // as a valid canonical-state source.
+  it('respects latest-wins ordering when todowrite and todo_update interleave', () => {
+    const store = useTodoStore()
+    const messages: Message[] = [
+      makeMessage({
+        id: 'm1',
+        role: 'tool_result',
+        toolName: 'todowrite',
+        content: JSON.stringify([
+          { content: 'step-a', status: 'pending', priority: 'high' },
+        ]),
+      }),
+      makeMessage({
+        id: 'm2',
+        role: 'tool_result',
+        toolName: 'todo_update',
+        content: JSON.stringify([
+          { content: 'step-a', status: 'in_progress', priority: 'high' },
+        ]),
+      }),
+      makeMessage({
+        id: 'm3',
+        role: 'tool_result',
+        toolName: 'todo_update',
+        content: JSON.stringify([
+          { content: 'step-a', status: 'completed', priority: 'high' },
+        ]),
+      }),
+    ]
+
+    store.setCurrentSession('session-interleave')
+    store.hydrateFromMessages('session-interleave', messages)
+
+    expect(store.todos).toHaveLength(1)
+    expect(store.todos[0].content).toBe('step-a')
+    // The last update flipped to completed — that's the canonical state.
+    expect(store.todos[0].status).toBe('completed')
+  })
+
   it('clears the slice for a session whose history holds no todowrite results', () => {
     const store = useTodoStore()
     // Pre-seed the session with stale todos (simulating a previous live ingestion).
