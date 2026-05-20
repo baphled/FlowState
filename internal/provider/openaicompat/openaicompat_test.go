@@ -1911,6 +1911,195 @@ var _ = Describe("RunStream", func() {
 					"hides the very signal we are trying to plumb through")
 		})
 	})
+
+	// Bug J (May 2026) — stray </think> leak from reasoning channel into
+	// user-facing content.
+	//
+	// Live reproducer: parent of session 7dfdb197 had two assistant
+	// messages whose Content carried a literal "</think>" delimiter:
+	//   17:09:59 — "Let me write the master bug report to the vault now.</think>--- ✅ ..."
+	//   19:49:18 — "I have the full report content. Let me ... has filesystem access.</think>"
+	// Both messages had thinkingBlocks already extracted (non-empty) and
+	// the leak was the closing marker only — no paired <think> opener.
+	// Cause: glm-4.6 occasionally emits the closing </think> tag as a
+	// content delta after switching from reasoning_content back to the
+	// content channel. The structured reasoning extraction has already
+	// recovered the thinking body, so the closing marker is a literal
+	// artefact that must not reach user-facing content.
+	//
+	// Contract: when delta.Content carries a stray </think> (or <think>)
+	// tag, openaicompat MUST strip it before emitting the StreamChunk so
+	// downstream consumers never see the raw delimiter. Plain prose
+	// without the tag flows unchanged.
+	Context("stray <think>/</think> tag stripping from content channel (Bug J)", func() {
+		It("strips a trailing </think> closing marker from delta.Content (glm-4.6 zai shape)", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// Real-shape: zai/glm-4.6 streamed reasoning_content in earlier
+				// chunks, then emitted a stray "</think>" as a content delta
+				// before the actual user-facing prose started.
+				chunks := []string{
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me write the master bug report to the vault now."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"content":"</think>---\n\n"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"content":"Master bug report written"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-think","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.6",
+				Messages: []provider.Message{{Role: "user", Content: "do work"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var contentChunks []provider.StreamChunk
+			for chunk := range ch {
+				if chunk.Content != "" {
+					contentChunks = append(contentChunks, chunk)
+				}
+			}
+			// The aggregate user-facing content must NOT contain the
+			// literal closing-marker.
+			var aggregate strings.Builder
+			for _, c := range contentChunks {
+				aggregate.WriteString(c.Content)
+			}
+			Expect(aggregate.String()).NotTo(ContainSubstring("</think>"),
+				"the literal </think> closing marker MUST be stripped from content chunks — "+
+					"the reasoning body has already been recovered via reasoning_content; "+
+					"the stray closing tag is a wire artefact, not user-facing prose")
+			Expect(aggregate.String()).To(ContainSubstring("Master bug report written"),
+				"prose AFTER the stripped marker MUST flow through verbatim — the strip "+
+					"removes only the tag, not surrounding content")
+			Expect(aggregate.String()).To(ContainSubstring("---"),
+				"prose attached to the marker in the SAME content delta MUST survive — "+
+					"the strip targets the tag literally, not the entire delta")
+		})
+
+		It("strips a </think> tag that appears mid-content with prose on both sides", func() {
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				// Single content delta with the tag sandwiched between prose.
+				chunks := []string{
+					`{"id":"chatcmpl-mid","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"I have the full report content. Let me store it with the path and delegate a writer that has filesystem access.</think>"},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-mid","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.6",
+				Messages: []provider.Message{{Role: "user", Content: "tell me more"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var aggregate strings.Builder
+			for chunk := range ch {
+				if chunk.Content != "" {
+					aggregate.WriteString(chunk.Content)
+				}
+			}
+			Expect(aggregate.String()).NotTo(ContainSubstring("</think>"),
+				"the stray closing marker MUST be stripped wherever it appears in content — "+
+					"trailing, leading, or mid-delta")
+			Expect(aggregate.String()).To(ContainSubstring("filesystem access"),
+				"the surrounding prose MUST survive the strip — only the literal tag is removed")
+		})
+
+		It("strips a stray <think> opening marker the same way", func() {
+			// Symmetry: while the dominant reproducer is closing-only, a
+			// stray opening tag in the content channel is the same wire
+			// artefact and must be stripped on the same code path.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-open","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","content":"<think>Let me reason then continue."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-open","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "glm-4.6",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "zai")
+			var aggregate strings.Builder
+			for chunk := range ch {
+				if chunk.Content != "" {
+					aggregate.WriteString(chunk.Content)
+				}
+			}
+			Expect(aggregate.String()).NotTo(ContainSubstring("<think>"),
+				"a stray opening <think> in the content channel is the same wire "+
+					"artefact as a stray closing tag and MUST be stripped")
+			Expect(aggregate.String()).To(ContainSubstring("reason then continue"),
+				"surrounding content MUST survive — only the literal tag is removed")
+		})
+
+		It("leaves plain content without think tags unchanged", func() {
+			// Negative case: providers that never emit stray tags MUST be
+			// unaffected — the strip is precise, not a blanket filter.
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				chunks := []string{
+					`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello world."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-plain","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
+				for _, chunk := range chunks {
+					fmt.Fprintf(w, "data: %s\n\n", chunk)
+					if f, ok := w.(http.Flusher); ok {
+						f.Flush()
+					}
+				}
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			client := openaiAPI.NewClient(option.WithAPIKey("test-key"), option.WithBaseURL(server.URL))
+			ctx := context.Background()
+			params := openaicompat.BuildParams(provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			})
+			ch := openaicompat.RunStream(ctx, client, params, "openai")
+			var aggregate strings.Builder
+			for chunk := range ch {
+				if chunk.Content != "" {
+					aggregate.WriteString(chunk.Content)
+				}
+			}
+			Expect(aggregate.String()).To(Equal("Hello world."),
+				"plain content with no stray tags MUST flow verbatim — the strip is "+
+					"precise and never mutates content that does not need it")
+		})
+	})
 })
 
 var _ = Describe("ParseProviderError", func() {

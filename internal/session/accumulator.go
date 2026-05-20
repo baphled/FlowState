@@ -826,6 +826,27 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	if !s.turnHadToolCall && !s.turnHadDelegation && matchesFabricationSignature(msg.Content) {
 		msg.StopReason = StopReasonFabricatedCompletion
 	}
+	// Abandoned-tool guard (Bug E, May 2026). When a content-bearing turn
+	// is whitespace-only AND carries reasoning AND produced NO tool_call
+	// AND NO delegation, the model committed to a tool call in the
+	// reasoning channel but never emitted it. The persisted assistant
+	// would otherwise carry a stray newline as content with an empty
+	// StopReason — the chat UI sees a "completed" turn with no work,
+	// no soft-error affordance, and the user's request is silently
+	// dropped. Stamp StopReasonAbandonedTool so the UI / audit can flag
+	// the abandoned plan; the thinking content survives on the message
+	// so the user can see what the model intended to do.
+	//
+	// Live reproducer: child session 3fcb56df-8224-485c-9187-2aaad9ed5879
+	// (glm-4.5 executor on zai). Sequence was thinking → content="\n"
+	// → done; no tool_call ever emitted despite the reasoning channel
+	// containing a fully-formed "Let me use the write tool" plan.
+	if !s.turnHadToolCall &&
+		!s.turnHadDelegation &&
+		len(s.thinkingBlocks) > 0 &&
+		strings.TrimSpace(msg.Content) == "" {
+		msg.StopReason = StopReasonAbandonedTool
+	}
 	appender.AppendMessage(s.sessionID, msg)
 	s.contentBuf.Reset()
 	s.thinkingBlocks = nil
@@ -898,6 +919,31 @@ const StopReasonEmptyTurn = "empty_turn"
 // branch and the audit pipeline; no backend consumer keys on the
 // specific string.
 const StopReasonFabricatedCompletion = "fabricated_completion"
+
+// StopReasonAbandonedTool is the synthetic stop reason stamped on a
+// content-bearing assistant Message whose content is whitespace-only AND
+// whose thinking is non-empty AND that produced NO tool_call AND NO
+// delegation. The model committed to a tool call in the reasoning channel
+// but never emitted it; the wire-level finish_reason claims completion
+// but the turn produced no actual work. Stamping the message lets
+// downstream consumers (chat UI, audit log) distinguish an abandoned-tool
+// turn from a legitimately empty answer, and the thinking blocks survive
+// on the persisted message so the user can see the abandoned plan and
+// re-issue.
+//
+// Live reproducer: child session 3fcb56df-8224-485c-9187-2aaad9ed5879
+// (glm-4.5 executor under coordinator on zai). The model's reasoning
+// channel said "Let me use the write tool to create this file" but the
+// content channel emitted only "\n" and no structured tool_call followed.
+// Pre-guard, the persisted assistant carried Content="\n", StopReason="",
+// and the chat UI rendered a silent "completed" bubble — the user's
+// "write the report" request was dropped without any signal that the
+// model had failed to act.
+//
+// Wire-format-stable: the value is read by the Vue MessageBubble render
+// branch and the audit pipeline; no backend consumer keys on the
+// specific string.
+const StopReasonAbandonedTool = "abandoned_tool"
 
 // fabricationPhrases is the set of self-reported-completion phrases that
 // trigger the StopReasonFabricatedCompletion stamp when present in an

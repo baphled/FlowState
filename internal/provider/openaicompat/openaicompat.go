@@ -447,7 +447,24 @@ func RunStreamWithObserver(
 			if len(chunk.Choices) > 0 {
 				delta := chunk.Choices[0].Delta
 				if delta.Content != "" {
-					shared.SendChunk(ctx, ch, provider.StreamChunk{Content: delta.Content})
+					// Bug J (May 2026): glm-4.5/4.6 (zai) occasionally
+					// leak a literal `</think>` (or `<think>`) tag into
+					// the content channel after switching from
+					// reasoning_content back to content. The structured
+					// reasoning extraction (Drop #1 below) has already
+					// recovered the thinking body via reasoning_content,
+					// so the stray tag is a wire artefact, not user-
+					// facing prose. Strip it before forwarding so
+					// downstream consumers (session.contentBuf, chat UI,
+					// audit) never see the raw delimiter.
+					//
+					// Live reproducer: parent of session 7dfdb197 had
+					// two assistant messages whose Content carried a
+					// literal "</think>" delimiter at 17:09:59 and
+					// 19:49:18 — closing-marker leaks on glm-4.6/zai.
+					if cleaned := stripStrayThinkTags(delta.Content); cleaned != "" {
+						shared.SendChunk(ctx, ch, provider.StreamChunk{Content: cleaned})
+					}
 				}
 				// Drop #1 — extract reasoning_content for OpenAI-compat
 				// providers that emit a separate reasoning channel
@@ -693,6 +710,52 @@ func extractReasoningContent(delta openaiAPI.ChatCompletionChunkChoiceDelta) str
 		return ""
 	}
 	return text
+}
+
+// stripStrayThinkTags removes literal `<think>` and `</think>` delimiters
+// from a content delta before it is forwarded as a user-facing
+// StreamChunk. The strip targets the tags themselves, not surrounding
+// prose — a delta of `"</think>--- ✅ ..."` becomes `"--- ✅ ..."` and a
+// delta of `"<think>more text"` becomes `"more text"`.
+//
+// Live reproducer: glm-4.5/4.6 (zai) occasionally leak the closing
+// `</think>` marker into the content channel after the model switches
+// from reasoning_content (where the structured reasoning body lives)
+// back to the content channel. The structured reasoning extraction has
+// already recovered the body via reasoning_content; the stray tag is a
+// wire artefact, not user-facing prose, and must be removed before
+// reaching the session contentBuf / chat UI / audit pipeline.
+//
+// Parent of session 7dfdb197 had two such leaks on 2026-05-20:
+//   - 17:09:59 — "Let me write the master bug report to the vault now.</think>--- ..."
+//   - 19:49:18 — "I have the full report content. Let me ... filesystem access.</think>"
+//
+// Both had thinkingBlocks already extracted (non-empty), confirming the
+// reasoning body landed via the structured channel; only the closing tag
+// leaked into content. The dominant pattern is closing-marker-only, but
+// the strip is symmetric (both `<think>` and `</think>`) so an opening-
+// only variant is also handled.
+//
+// Expected:
+//   - content is the raw delta.Content fragment from a single SDK chunk.
+//
+// Returns:
+//   - The fragment with all `<think>` and `</think>` literal occurrences
+//     removed. When the result is the empty string (the delta carried
+//     only the stray tag), the caller suppresses the StreamChunk emit.
+//
+// Side effects:
+//   - None.
+func stripStrayThinkTags(content string) string {
+	if content == "" {
+		return ""
+	}
+	if !strings.Contains(content, "<think>") && !strings.Contains(content, "</think>") {
+		return content
+	}
+	cleaned := strings.ReplaceAll(content, "</think>", "")
+	cleaned = strings.ReplaceAll(cleaned, "<think>", "")
+	return cleaned
 }
 
 // mapFinishReason translates an OpenAI chat-completion finish_reason

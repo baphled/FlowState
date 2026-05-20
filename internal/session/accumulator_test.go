@@ -1862,6 +1862,181 @@ var _ = Describe("AccumulateStream", func() {
 				"thinking-only synthesis path is independent of the fabrication guard")
 		})
 	})
+
+	// Bug E (May 2026) — abandoned-tool turn detection.
+	//
+	// Live reproducer: child session 3fcb56df-8224-485c-9187-2aaad9ed5879,
+	// glm-4.5 executor under coordinator on zai. Sequence:
+	//   1. user → "Writer: Write the master bug report ..."
+	//   2. thinking → model plans a `write` tool call in reasoning_content
+	//   3. assistant → Content="\n", ToolCalls=null, ThinkingBlocks={plan}
+	//
+	// The model committed to writing a file in the reasoning channel but
+	// never emitted the tool_call. The persisted assistant carried a stray
+	// newline as content, no tool_call, and an empty StopReason — the chat
+	// UI sees a "completed" turn with no work, no soft-error affordance,
+	// and the user's request is silently dropped.
+	//
+	// Guard contract: a turn whose content is whitespace-only AND whose
+	// thinking is non-empty AND that produced NO tool_call AND NO
+	// delegation must be stamped with StopReasonAbandonedTool. The
+	// accumulated thinking blocks MUST survive on the persisted message so
+	// the chat UI can render the abandoned plan as evidence and the user
+	// can compose a follow-up. Upstream stop_reason precedence does NOT
+	// apply on this path — the guard fires regardless of what the upstream
+	// provider claimed about the finish reason, because the wire-level
+	// completion signal is the actual fault we are correcting.
+	Context("when content is whitespace-only with thinking and no tool/delegation", func() {
+		It("stamps StopReasonAbandonedTool when content is a bare newline and thinking is non-empty", func() {
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "The user is asking me to write a master bug report to a specific file path in the vault. I need to write the content they provided to the exact file path they specified. Let me use the write tool to create this file.",
+				ProviderID: "zai",
+				ModelID:    "glm-4.5",
+			}
+			rawCh <- provider.StreamChunk{
+				Content:    "\n",
+				ProviderID: "zai",
+				ModelID:    "glm-4.5",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai", ModelID: "glm-4.5"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"a whitespace-only-content turn with abandoned thinking still produces "+
+					"exactly one persisted assistant message — the guard annotates, never "+
+					"duplicates or suppresses")
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonAbandonedTool),
+				"the model committed to a tool call in thinking but never emitted it — "+
+					"the turn MUST be stamped as abandoned so the chat UI surfaces "+
+					"the soft-error affordance instead of pretending the turn completed")
+			Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+				"the planning evidence MUST survive on the persisted message so the "+
+					"user can see what the model intended to do and re-issue")
+			Expect(assistantMsgs[0].ThinkingBlocks[0].Thinking).To(ContainSubstring("write tool"),
+				"the original thinking content MUST flow through verbatim — the guard "+
+					"only annotates StopReason, never mutates the thinking body")
+		})
+
+		It("stamps StopReasonAbandonedTool when content is multiple whitespace characters", func() {
+			// Defensive: glm variants have been observed emitting " \n", "\t\n",
+			// and other whitespace-only sequences after a fully reasoned plan.
+			// All of them are the same wire fault — a non-empty contentBuf
+			// that carries no signal — and must be detected uniformly.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "Planning the next call...", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Content: " \n\t", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonAbandonedTool),
+				"any whitespace-only content trip the guard — the only distinguishing "+
+					"feature is the absence of any meaningful payload alongside reasoning")
+		})
+
+		It("does NOT stamp the turn when a real tool_call accompanied the whitespace content", func() {
+			// A turn with real tool evidence is legitimate, even if its
+			// content body is whitespace-only — some providers separate
+			// content and tool channels. The guard reads turnHadToolCall.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "planning", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Content: "\n", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					ID:        "tc-write",
+					Name:      "write",
+					Arguments: map[string]any{"path": "/tmp/x"},
+				},
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			for _, m := range assistantMsgs {
+				Expect(m.StopReason).NotTo(Equal(session.StopReasonAbandonedTool),
+					"a turn with a real tool_call is legitimate — the guard MUST NOT "+
+						"false-flag tool-bearing turns whose content channel is empty")
+			}
+		})
+
+		It("does NOT stamp the turn when content is meaningful even with no tool_call", func() {
+			// A turn that produces real prose (no tools, no delegation) is
+			// a normal answer. The guard fires only on whitespace-only
+			// content with abandoned thinking.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Thinking: "thinking about it", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Content: "Here is my answer.", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonAbandonedTool),
+				"meaningful prose content is a real answer — the guard fires only on "+
+					"whitespace-only content that carries no signal")
+		})
+
+		It("does NOT stamp the turn when whitespace content arrives without any thinking", func() {
+			// A whitespace-only-content turn with no thinking is just the
+			// pre-existing empty-ish-content case (the model produced
+			// nothing). The empty-turn synthesizer handles that path; the
+			// abandoned-tool guard requires evidence of planning.
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{Content: "\n", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonAbandonedTool),
+				"abandoned-tool requires non-empty thinking — without planning evidence "+
+					"the turn is not an abandoned tool call, it is a different fault class")
+		})
+	})
 })
 
 var _ = Describe("MessageAppender interface", func() {
