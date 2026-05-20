@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -425,6 +426,222 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 			Expect(persona).NotTo(ContainSubstring("a-team"),
 				"coordinator persona must be generic — a-team reference belongs in the swarm "+
 					"manifest, not the agent prompt")
+		})
+
+		// Structural audit — gate vs agent-manifest output contract.
+		//
+		// Pins the load-bearing invariant that every post-member gate
+		// referencing a JSON schema (or the bug-findings-v1
+		// evidence-grounding shape) has its target agent's manifest
+		// EXPLICITLY promise to emit that schema. Drift here is the bug
+		// class that shipped in commit dff52884 — dev-swarm/engineer-swarm
+		// each landed with `builtin:result-schema` gates pointing at
+		// schema_refs the named agents never mention in their manifests,
+		// halting the swarm on every run with `schema validation failed:
+		// required: missing properties: ["verdict"]` (see vault note
+		// "Code-Reviewer Not Found After Recent Changes (May 2026)").
+		//
+		// Rule: for every post-member gate the audit knows how to read,
+		// the target agent's manifest must contain the gate's schema_ref
+		// (for builtin:result-schema) or `bug-findings-v1` (for
+		// builtin:evidence-grounding). ext:* gates are out of scope —
+		// they are validated by their own manifests under
+		// internal/app/gates/. This audit is intentionally narrow: it
+		// catches the EXACT drift class introduced by dff52884, not a
+		// general swarm validator.
+		It("pins every post-member gate's schema contract to the target agent's manifest", func() {
+			swarmsDir, err := fs.Sub(app.EmbeddedSwarmsFS(), "swarms")
+			Expect(err).NotTo(HaveOccurred())
+			agentsDir, err := fs.Sub(app.EmbeddedAgentsFS(), "agents")
+			Expect(err).NotTo(HaveOccurred())
+
+			swarmEntries, err := fs.ReadDir(swarmsDir, ".")
+			Expect(err).NotTo(HaveOccurred())
+
+			type gateAudit struct {
+				swarm  string
+				gate   swarm.GateSpec
+				expect string // the schema name the target manifest must mention
+			}
+			var audits []gateAudit
+			for _, entry := range swarmEntries {
+				if entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if !strings.HasSuffix(name, ".yml") && !strings.HasSuffix(name, ".yaml") {
+					continue
+				}
+				body, err := fs.ReadFile(swarmsDir, name)
+				Expect(err).NotTo(HaveOccurred(), "reading %s", name)
+
+				var m swarm.Manifest
+				Expect(yaml.Unmarshal(body, &m)).To(Succeed(), "parsing %s", name)
+
+				for _, gate := range m.Harness.Gates {
+					if gate.When != swarm.LifecyclePostMember {
+						continue
+					}
+					var expect string
+					switch {
+					case gate.Kind == "builtin:result-schema":
+						expect = gate.SchemaRef
+					case gate.Kind == swarm.EvidenceGroundingGateKind:
+						// The evidence-grounding runner projects the
+						// bug-findings-v1 shape (see internal/swarm/
+						// gate_evidence_grounding.go:115); agents
+						// gated by it must promise that shape.
+						expect = "bug-findings-v1"
+					default:
+						// ext:* gates carry their input contract on
+						// the gate manifest under internal/app/gates/,
+						// not on the swarm YAML. Out of scope for this
+						// audit.
+						continue
+					}
+					audits = append(audits, gateAudit{
+						swarm:  m.ID,
+						gate:   gate,
+						expect: expect,
+					})
+				}
+			}
+
+			// At least the planning-loop swarm always contributes
+			// audits; if the loop ever yields zero, the swarm
+			// directory got rewired and this audit is now silent.
+			Expect(audits).NotTo(BeEmpty(),
+				"audit yielded zero post-member result-schema/evidence-grounding gates — "+
+					"the swarm directory may have been rewired; re-verify the discovery loop")
+
+			swarmIDs := make(map[string]struct{})
+			memberCount := 0
+			for _, a := range audits {
+				swarmIDs[a.swarm] = struct{}{}
+				memberCount++
+
+				// `gate.Target` is the agent id; the manifest file is
+				// named `<id>.md` under EmbeddedAgentsFS / agents/.
+				manifestName := a.gate.Target + ".md"
+				manifest, err := fs.ReadFile(agentsDir, manifestName)
+				Expect(err).NotTo(HaveOccurred(),
+					"swarm %q gate %q targets agent %q but %q is not in the embedded agent set",
+					a.swarm, a.gate.Name, a.gate.Target, manifestName)
+
+				Expect(string(manifest)).To(ContainSubstring(a.expect),
+					"swarm %q gate %q (kind=%q, schema_ref=%q) expects agent %q to emit %q, "+
+						"but the bundled manifest %q never mentions that schema — this is the "+
+						"dff52884 drift class (gate enforces a contract the agent manifest does "+
+						"not promise). Fix: either change the gate's schema_ref / kind to match "+
+						"what the agent actually emits, or update the agent manifest to promise "+
+						"the schema_ref the gate enforces.",
+					a.swarm, a.gate.Name, a.gate.Kind, a.gate.SchemaRef, a.gate.Target,
+					a.expect, manifestName)
+			}
+
+			// Coverage breadcrumb: audit visited at least dev-swarm,
+			// engineer-swarm, and planning-loop (the three in-repo
+			// swarms with builtin:result-schema gates post-fix).
+			Expect(swarmIDs).To(HaveKey("planning-loop"),
+				"planning-loop ships builtin:result-schema gates and must be covered by this audit")
+			Expect(swarmIDs).To(HaveKey("dev-swarm"),
+				"dev-swarm ships gates introduced by dff52884 and must be covered by this audit "+
+					"(the originating drift case)")
+			Expect(swarmIDs).To(HaveKey("engineer-swarm"),
+				"engineer-swarm ships gates introduced by dff52884 and must be covered by this audit")
+		})
+
+		// Drift-1 specific pin — dev-swarm Code-Reviewer gate.
+		//
+		// The audit above catches the general class; this spec pins
+		// the SPECIFIC contract chosen for the fix so a future
+		// re-introduction of the `code-review-verdict-v1`
+		// builtin:result-schema gate (without updating the
+		// Code-Reviewer manifest to emit the verdict shape) flips
+		// red here with a targeted message naming the swarm + gate.
+		It("dev-swarm Code-Reviewer gate is contract-aligned with the agent's bug-findings-v1 output", func() {
+			swarmsDir, err := fs.Sub(app.EmbeddedSwarmsFS(), "swarms")
+			Expect(err).NotTo(HaveOccurred())
+			body, err := fs.ReadFile(swarmsDir, "dev-swarm.yml")
+			Expect(err).NotTo(HaveOccurred())
+
+			var m swarm.Manifest
+			Expect(yaml.Unmarshal(body, &m)).To(Succeed())
+
+			var found bool
+			for _, gate := range m.Harness.Gates {
+				if gate.Target != "Code-Reviewer" || gate.When != swarm.LifecyclePostMember {
+					continue
+				}
+				found = true
+				Expect(gate.Kind).To(Equal(swarm.EvidenceGroundingGateKind),
+					"dev-swarm Code-Reviewer gate must be builtin:evidence-grounding so the "+
+						"agent's bug-findings-v1 output is validated against its cited file "+
+						"snippets; a return to builtin:result-schema + code-review-verdict-v1 "+
+						"is the dff52884 regression")
+				Expect(gate.SchemaRef).To(BeEmpty(),
+					"builtin:evidence-grounding gates take no schema_ref — the runner projects "+
+						"bug-findings-v1 natively (see internal/swarm/gate_evidence_grounding.go)")
+			}
+			Expect(found).To(BeTrue(),
+				"expected at least one post-member Code-Reviewer gate on dev-swarm")
+		})
+
+		// Drift-2 specific pin — engineer-swarm QA-Engineer gate.
+		It("engineer-swarm QA-Engineer gate is contract-aligned with the agent's bug-findings-v1 output", func() {
+			swarmsDir, err := fs.Sub(app.EmbeddedSwarmsFS(), "swarms")
+			Expect(err).NotTo(HaveOccurred())
+			body, err := fs.ReadFile(swarmsDir, "engineer-swarm.yml")
+			Expect(err).NotTo(HaveOccurred())
+
+			var m swarm.Manifest
+			Expect(yaml.Unmarshal(body, &m)).To(Succeed())
+
+			var found bool
+			for _, gate := range m.Harness.Gates {
+				if gate.Target != "QA-Engineer" || gate.When != swarm.LifecyclePostMember {
+					continue
+				}
+				found = true
+				Expect(gate.Kind).To(Equal(swarm.EvidenceGroundingGateKind),
+					"engineer-swarm QA-Engineer gate must be builtin:evidence-grounding to "+
+						"match the agent's bug-findings-v1 output; review-verdict-v1 is the "+
+						"dff52884 drift")
+				Expect(gate.SchemaRef).To(BeEmpty(),
+					"builtin:evidence-grounding gates take no schema_ref")
+			}
+			Expect(found).To(BeTrue(),
+				"expected at least one post-member QA-Engineer gate on engineer-swarm")
+		})
+
+		// Drift-3 specific pin — dev-swarm Researcher gate.
+		//
+		// Chosen fix is option (a): drop the gate entirely. The
+		// researcher's manifest emits prose markdown at
+		// `a-team/{chainID}/output` (the path is hard-coded to the
+		// a-team chain_prefix, not the dispatching swarm's prefix),
+		// and dev-swarm's downstream consumers (Tech-Lead,
+		// Senior-Engineer) read the prose conversationally — no
+		// structured contract to enforce. Rewriting the gate to read
+		// markdown (option b) or rewriting Researcher.md to emit JSON
+		// (option c) both invite churn for no consumer benefit.
+		It("dev-swarm has no Researcher post-member gate — drift-3 resolved by drop", func() {
+			swarmsDir, err := fs.Sub(app.EmbeddedSwarmsFS(), "swarms")
+			Expect(err).NotTo(HaveOccurred())
+			body, err := fs.ReadFile(swarmsDir, "dev-swarm.yml")
+			Expect(err).NotTo(HaveOccurred())
+
+			var m swarm.Manifest
+			Expect(yaml.Unmarshal(body, &m)).To(Succeed())
+
+			for _, gate := range m.Harness.Gates {
+				Expect(gate.Target).NotTo(Equal("Researcher"),
+					"dev-swarm must not declare a post-member gate against Researcher — the "+
+						"agent emits markdown at `a-team/{chainID}/output`, not JSON at "+
+						"`dev-swarm/{chainID}/output`, so any structured gate against this "+
+						"target is contract-drift (dff52884 introduced the failing "+
+						"`post-member-researcher-evidence-bundle` gate; fix-option (a) drops it)")
+			}
 		})
 	})
 })

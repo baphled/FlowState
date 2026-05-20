@@ -58,23 +58,27 @@ harness:
   parallel: false
 
   gates:
-    # Researcher gate: evidence bundle must list at least one finding
-    # with a cited file path. Off-spec research is rejected so
-    # downstream implementation doesn't build on hallucinated data.
-    - name: post-member-researcher-evidence-bundle
-      kind: builtin:result-schema
-      schema_ref: evidence-bundle-v1
-      when: post-member
-      target: Researcher
-      output_key: output
-      precedence: MEDIUM
-      failurePolicy: halt
-
-    # Code-Reviewer gate: structured verdict shape so Team-Lead's
-    # merge synthesis can read verdict + summary mechanically.
-    - name: post-member-code-reviewer-verdict
-      kind: builtin:result-schema
-      schema_ref: code-review-verdict-v1
+    # Code-Reviewer gate: evidence-grounding pass over the agent's
+    # bug-findings-v1 output. The Code-Reviewer manifest (internal/
+    # app/agents/Code-Reviewer.md) tells the agent to emit
+    # `bug-findings-v1` (summary + findings[] with file/line/evidence);
+    # the builtin:evidence-grounding runner projects that shape
+    # natively and additionally verifies each finding's evidence
+    # snippet appears verbatim in the cited file. This replaces the
+    # `builtin:result-schema` + `code-review-verdict-v1` gate
+    # introduced by dff52884, which required a `verdict` field the
+    # Code-Reviewer manifest never promised to emit and failed every
+    # dev-swarm run (vault note: "Code-Reviewer Not Found After
+    # Recent Changes (May 2026)"). The Researcher gate that shipped
+    # in dff52884 (`post-member-researcher-evidence-bundle`,
+    # schema_ref evidence-bundle-v1) is intentionally dropped — the
+    # researcher manifest emits markdown at
+    # `a-team/{chainID}/output`, not JSON at
+    # `dev-swarm/{chainID}/output`, so any structured gate against
+    # this target is contract-drift; downstream consumers
+    # (Tech-Lead, Senior-Engineer) read the prose conversationally.
+    - name: post-member-code-reviewer-evidence-grounding
+      kind: builtin:evidence-grounding
       when: post-member
       target: Code-Reviewer
       output_key: output
