@@ -2203,6 +2203,333 @@ var _ = Describe("Registry", func() {
 				"the second wait must succeed — the notifier channel MUST be replenished after the prior timeout closed it (or after a prior broadcast); the registry's mutation path replaces the channel under lock")
 		})
 	})
+
+	// StartOrReuse is the delegation-site sibling of Start. The
+	// dispatcher / user-POST path uses Start (conflict-gated — second
+	// in-flight Turn for the same session surfaces ErrTurnConflict so
+	// the HTTP layer can map to 409). DelegateTool.executeSync /
+	// bootstrapMemberSession use StartOrReuse because resolveOrCreateSession
+	// may return the same child session id across repeated delegations
+	// in one chain — the prior Turn is logically terminal by the time
+	// the next executeSync re-enters, and a fresh Turn must be minted
+	// without tripping the v1 conflict gate. Plan §Item 1 + §D1.
+	Context("StartOrReuse", func() {
+		It("mints a fresh turn id in StatusRunning when no prior turn exists for the session (S1.1)", func() {
+			id, err := reg.StartOrReuse("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).NotTo(BeEmpty())
+
+			snap, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(snap.ID).To(Equal(id))
+			Expect(snap.SessionID).To(Equal("sess-1"))
+			Expect(snap.Status).To(Equal(turn.StatusRunning))
+			Expect(snap.StartedAt).NotTo(BeZero())
+			Expect(snap.CompletedAt).To(BeNil())
+			Expect(snap.MessagesAdded).To(BeEmpty(),
+				"with no prior turn for sess-1, StartOrReuse must behave identically to Start — fresh Turn, empty MessagesAdded, Running status")
+		})
+
+		It("auto-completes a prior Running turn and mints a fresh distinct turn id (S1.2)", func() {
+			priorID, err := reg.StartOrReuse("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			// Seed MessagesAdded on the prior turn so we can pin that
+			// the auto-complete path preserves the snapshot history
+			// rather than wiping it — only Status flips, not content.
+			Expect(reg.Append(priorID, session.Message{ID: "msg-1", Role: "assistant", Content: "prior-1"})).To(Succeed())
+			Expect(reg.Append(priorID, session.Message{ID: "msg-2", Role: "assistant", Content: "prior-2"})).To(Succeed())
+
+			freshID, err := reg.StartOrReuse("sess-1")
+			Expect(err).NotTo(HaveOccurred(),
+				"StartOrReuse with a prior Running turn must NOT return ErrTurnConflict — it auto-completes the prior turn before minting")
+			Expect(freshID).NotTo(Equal(priorID),
+				"the auto-completed prior turn must yield a fresh distinct id — the new Turn is its own row, not a mutation of the prior one")
+
+			priorSnap, getErr := reg.Get(priorID)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(priorSnap.Status).To(Equal(turn.StatusCompleted),
+				"the prior turn must transition to Completed so byActiveSession clears and the fresh Start succeeds")
+			Expect(priorSnap.CompletedAt).NotTo(BeNil(),
+				"CompletedAt must be stamped on the auto-completed prior turn so the wire shape is identical to an explicit Complete call")
+			Expect(priorSnap.MessagesAdded).To(HaveLen(2),
+				"auto-complete must preserve MessagesAdded snapshot history — the prior turn is terminal but its message rows must remain queryable")
+			Expect(priorSnap.MessagesAdded[0].Content).To(Equal("prior-1"))
+			Expect(priorSnap.MessagesAdded[1].Content).To(Equal("prior-2"))
+
+			freshSnap, getErr := reg.Get(freshID)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(freshSnap.Status).To(Equal(turn.StatusRunning))
+			Expect(freshSnap.MessagesAdded).To(BeEmpty(),
+				"the freshly-minted Turn starts empty — no carry-over from the auto-completed prior")
+
+			active, ok := reg.FindActiveBySession("sess-1")
+			Expect(ok).To(BeTrue())
+			Expect(active).To(Equal(freshID),
+				"byActiveSession must point at the fresh Turn — the next Append for sess-1 lands on freshID, not priorID")
+		})
+
+		It("preserves Start's conflict gate — Start on a session with an in-flight Turn still rejects (S1.3 — regression pin)", func() {
+			_, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err2 := reg.Start("sess-1")
+			Expect(err2).To(MatchError(turn.ErrTurnConflict),
+				"StartOrReuse MUST NOT weaken Start's conflict gate — the dispatcher / user-POST path relies on ErrTurnConflict surfacing as 409 Conflict, and shipping StartOrReuse alongside must not change Start's semantics")
+		})
+
+		It("is race-safe under concurrent StartOrReuse + Append contention (S1.4 — -race must report clean)", func() {
+			// Race-flagged concurrent test: spawns one writer that
+			// keeps calling StartOrReuse against the same session id
+			// (auto-completing prior turns and minting fresh ones) and
+			// one writer that calls Append against whatever the active
+			// turn id is. The suite is invoked with `-race` so any
+			// unsynchronised access trips the detector. We assert no
+			// panics and that the final FindActiveBySession resolves to
+			// a Running turn (i.e. the registry remained consistent).
+			var (
+				wg         sync.WaitGroup
+				stop       atomic.Bool
+				latestID   atomic.Pointer[string]
+				reuseCalls atomic.Int64
+			)
+			// Seed an initial turn so the Append goroutine has a non-empty
+			// target on iteration 1; the StartOrReuse goroutine will
+			// auto-complete it on its first iteration.
+			seed, err := reg.StartOrReuse("sess-race-reuse")
+			Expect(err).NotTo(HaveOccurred())
+			latestID.Store(&seed)
+
+			wg.Add(2)
+
+			// Writer 1 — StartOrReuse in a tight loop. Each iteration
+			// auto-completes the prior Turn and mints a fresh one.
+			go func() {
+				defer wg.Done()
+				for !stop.Load() {
+					id, sErr := reg.StartOrReuse("sess-race-reuse")
+					if sErr != nil {
+						// StartOrReuse never surfaces a conflict; an
+						// error here is a real bug. Surface via the
+						// final assertion (we cannot Fail() from a
+						// goroutine inside Ginkgo cleanly, so we
+						// stash the id pointer to a sentinel value
+						// and let the post-wait assertion catch it).
+						bad := "ERR:" + sErr.Error()
+						latestID.Store(&bad)
+						return
+					}
+					latestID.Store(&id)
+					reuseCalls.Add(1)
+				}
+			}()
+
+			// Writer 2 — Append against whatever the latest turn id is.
+			// Appends may race ahead of a StartOrReuse auto-complete and
+			// land on a now-Completed turn (ErrTurnTerminal); that's an
+			// expected categorised outcome under contention, NOT a race.
+			// What we're testing is the race detector — no torn map or
+			// slice writes.
+			go func() {
+				defer wg.Done()
+				for !stop.Load() {
+					ptr := latestID.Load()
+					if ptr == nil {
+						continue
+					}
+					_ = reg.Append(*ptr, session.Message{Role: "assistant", Content: "x"})
+				}
+			}()
+
+			// 50ms window matches the existing race-coverage idiom at
+			// line ~493 (SetHeartbeat race spec).
+			time.Sleep(50 * time.Millisecond)
+			stop.Store(true)
+			wg.Wait()
+
+			Expect(reuseCalls.Load()).To(BeNumerically(">", int64(0)),
+				"StartOrReuse goroutine must have fired at least once during the 50ms window")
+
+			finalPtr := latestID.Load()
+			Expect(finalPtr).NotTo(BeNil())
+			Expect(*finalPtr).NotTo(HavePrefix("ERR:"),
+				"StartOrReuse must not surface unexpected errors under contention")
+
+			// Final state must be a Running turn pointed at by
+			// byActiveSession — proves the auto-complete-then-mint
+			// transition is atomic under the mutex (no half-state
+			// where byActiveSession is stale or absent).
+			active, ok := reg.FindActiveBySession("sess-race-reuse")
+			Expect(ok).To(BeTrue(),
+				"after StartOrReuse contention concludes, byActiveSession must resolve to the latest minted Turn — a missing entry would indicate a torn auto-complete-then-mint pair")
+			Expect(active).To(Equal(*finalPtr),
+				"FindActiveBySession must agree with the writer's last-observed mint id")
+
+			finalSnap, gerr := reg.Get(active)
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(finalSnap.Status).To(Equal(turn.StatusRunning),
+				"the final active Turn must be Running — proves the auto-complete only flipped prior Turns, not the freshly-minted one")
+		})
+	})
+
+	// ResetForRetry clears MessagesAdded for the named Turn while
+	// preserving byActiveSession membership and Running status. Used
+	// at the runner-retry boundary in DelegateTool (PR2) so attempt-N's
+	// stale partial-stream rows do not accumulate alongside attempt-N+1's
+	// rows in the registry's MessagesAdded slice — provider-side message
+	// IDs are NOT generally stable across stream retries, so the
+	// id-keyed upsert in Append cannot collapse them. Plan §D5.
+	Context("ResetForRetry", func() {
+		It("clears MessagesAdded on a Running turn while preserving Status and byActiveSession (S2.1)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Append(id, session.Message{ID: "att1-msg1", Role: "assistant", Content: "attempt-1 partial"})).To(Succeed())
+			Expect(reg.Append(id, session.Message{ID: "att1-msg2", Role: "thinking", Content: "attempt-1 thinking"})).To(Succeed())
+
+			before, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(before.MessagesAdded).To(HaveLen(2))
+			Expect(before.Status).To(Equal(turn.StatusRunning))
+
+			Expect(reg.ResetForRetry(id)).To(Succeed())
+
+			after, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(after.MessagesAdded).To(BeEmpty(),
+				"ResetForRetry must clear the attempt-1 stale rows so attempt-2's chunks do not pile on top of them in MessagesAdded")
+			Expect(after.Status).To(Equal(turn.StatusRunning),
+				"ResetForRetry must NOT terminate the Turn — the retry loop reuses the same Turn across attempts; the recorder closure continues to Append against the same childTurnID")
+
+			active, ok := reg.FindActiveBySession("sess-1")
+			Expect(ok).To(BeTrue(),
+				"byActiveSession membership must survive ResetForRetry — the retry loop's next Append needs to find the Turn via the session id")
+			Expect(active).To(Equal(id))
+		})
+
+		It("is idempotent — calling on a Running turn with empty MessagesAdded is a success no-op (S2.2)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+
+			before, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(before.MessagesAdded).To(BeEmpty(),
+				"baseline — a freshly-Started Turn has empty MessagesAdded")
+
+			Expect(reg.ResetForRetry(id)).To(Succeed(),
+				"calling ResetForRetry on a Running turn with no rows must succeed; the retry loop may call it unconditionally per attempt without first checking message count")
+			Expect(reg.ResetForRetry(id)).To(Succeed(),
+				"second consecutive call is also a no-op success — idempotent")
+
+			after, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(after.MessagesAdded).To(BeEmpty())
+			Expect(after.Status).To(Equal(turn.StatusRunning))
+		})
+
+		It("returns ErrTurnTerminal on a Completed turn and makes no mutations (S2.3)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Append(id, session.Message{ID: "msg-1", Role: "assistant", Content: "final"})).To(Succeed())
+			Expect(reg.Complete(id, turn.ModelInfo{Provider: "anthropic", Model: "claude-opus-4-7"})).To(Succeed())
+
+			resetErr := reg.ResetForRetry(id)
+			Expect(resetErr).To(MatchError(turn.ErrTurnTerminal),
+				"ResetForRetry on a Completed turn must surface ErrTurnTerminal — the retry loop should treat a terminal Turn as 'no retry needed' and fall through, matching the existing Complete/Fail/Append pattern")
+
+			snap, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(snap.Status).To(Equal(turn.StatusCompleted),
+				"ResetForRetry on a terminal Turn must not mutate Status")
+			Expect(snap.MessagesAdded).To(HaveLen(1),
+				"ResetForRetry on a terminal Turn must not mutate MessagesAdded — the post-Complete snapshot is frozen")
+			Expect(snap.MessagesAdded[0].Content).To(Equal("final"))
+			Expect(snap.Model.Provider).To(Equal("anthropic"))
+			Expect(snap.Model.Model).To(Equal("claude-opus-4-7"))
+		})
+
+		It("returns ErrTurnTerminal on a Failed turn and makes no mutations (S2.4)", func() {
+			id, err := reg.Start("sess-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reg.Append(id, session.Message{ID: "msg-1", Role: "assistant", Content: "partial"})).To(Succeed())
+			Expect(reg.Fail(id, errors.New("provider explosion"))).To(Succeed())
+
+			resetErr := reg.ResetForRetry(id)
+			Expect(resetErr).To(MatchError(turn.ErrTurnTerminal),
+				"ResetForRetry on a Failed turn must surface ErrTurnTerminal — same semantics as Completed; a Failed Turn is terminal and not retry-eligible from the registry's perspective")
+
+			snap, getErr := reg.Get(id)
+			Expect(getErr).NotTo(HaveOccurred())
+			Expect(snap.Status).To(Equal(turn.StatusFailed),
+				"ResetForRetry on a Failed Turn must not mutate Status")
+			Expect(snap.MessagesAdded).To(HaveLen(1),
+				"ResetForRetry on a Failed Turn must not mutate MessagesAdded — the post-Fail snapshot is frozen")
+			Expect(snap.Error).To(Equal("provider explosion"))
+		})
+
+		It("is race-safe under concurrent Append contention (S2.5 — -race must report clean)", func() {
+			// Race-flagged concurrent test: spawns one ResetForRetry
+			// goroutine and two Append goroutines against the same
+			// Running Turn. The mutex must serialise the slice
+			// truncation with concurrent slice growth — any
+			// unsynchronised access trips the race detector.
+			id, err := reg.Start("sess-race-reset")
+			Expect(err).NotTo(HaveOccurred())
+
+			var (
+				wg          sync.WaitGroup
+				stop        atomic.Bool
+				resetCalls  atomic.Int64
+				appendCalls atomic.Int64
+			)
+			wg.Add(3)
+
+			go func() {
+				defer wg.Done()
+				for !stop.Load() {
+					_ = reg.ResetForRetry(id)
+					resetCalls.Add(1)
+				}
+			}()
+
+			go func() {
+				defer wg.Done()
+				i := 0
+				for !stop.Load() {
+					_ = reg.Append(id, session.Message{Role: "assistant", Content: "a"})
+					appendCalls.Add(1)
+					i++
+				}
+			}()
+
+			go func() {
+				defer wg.Done()
+				i := 0
+				for !stop.Load() {
+					_ = reg.Append(id, session.Message{Role: "thinking", Content: "t"})
+					appendCalls.Add(1)
+					i++
+				}
+			}()
+
+			time.Sleep(50 * time.Millisecond)
+			stop.Store(true)
+			wg.Wait()
+
+			Expect(resetCalls.Load()).To(BeNumerically(">", int64(0)),
+				"ResetForRetry goroutine must have fired at least once during the 50ms window")
+			Expect(appendCalls.Load()).To(BeNumerically(">", int64(0)),
+				"Append goroutines must have fired at least once during the 50ms window — proves the contention window actually overlapped")
+
+			snap, gerr := reg.Get(id)
+			Expect(gerr).NotTo(HaveOccurred())
+			Expect(snap.Status).To(Equal(turn.StatusRunning),
+				"the Turn must remain Running across the race window — ResetForRetry must not weaken Status, and concurrent Appends must not corrupt it")
+
+			active, ok := reg.FindActiveBySession("sess-race-reset")
+			Expect(ok).To(BeTrue(),
+				"byActiveSession membership must survive concurrent ResetForRetry + Append — proves the reset path does NOT touch the index map")
+			Expect(active).To(Equal(id))
+		})
+	})
 })
 
 var _ = Describe("Context propagation", func() {

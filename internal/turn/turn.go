@@ -811,6 +811,181 @@ func (r *Registry) Fail(turnID string, cause error) error {
 	return nil
 }
 
+// StartOrReuse mints a fresh turn_id for sessionID. When a Running
+// Turn already exists for the session, it is transitioned to
+// StatusCompleted (with empty ModelInfo) before the fresh Start, so
+// the byActiveSession entry clears and the new mint proceeds without
+// ErrTurnConflict.
+//
+// SCOPE — delegation site only. The dispatcher / user-POST handler
+// MUST use Start, NOT StartOrReuse. Start's per-session conflict gate
+// is load-bearing for the v1 "one in-flight turn per session" wire
+// contract — the HTTP layer maps ErrTurnConflict to 409 Conflict, and
+// StartOrReuse would silently weaken that surface if reused from the
+// POST path. StartOrReuse is named differently (rather than a flag on
+// Start) precisely so call-site discipline is encoded in the method
+// name — grep for callers, audit, done.
+//
+// Why delegation needs different semantics: DelegateTool.executeSync
+// resolves a child session via resolveOrCreateSession which may return
+// an EXISTING session id when the same agent is invoked twice in one
+// chain (per Plan §D1). The prior delegation's Turn is logically
+// terminal by the time the next executeSync re-enters (the engine
+// returned, the parent tool-loop is moving on), but the registry has
+// no explicit Complete call between delegations — the byActiveSession
+// entry survives unless we auto-complete it here. Start's conflict
+// gate is the wrong semantic at this site; the prior Turn is not a
+// concurrent in-flight Turn from the user's perspective, it is a
+// terminal Turn whose lifecycle the delegation site is responsible
+// for closing.
+//
+// ModelInfo: the auto-completed prior Turn is recorded with empty
+// ModelInfo. The (provider, model) pair carried on the prior Turn
+// from a possible earlier SetProviderModel call is left intact;
+// only the Status/CompletedAt fields flip. The freshly-minted Turn
+// starts with empty Model and is populated later via Complete or
+// SetProviderModel.
+//
+// Concurrency: acquires r.mu exactly once for the duration of the
+// auto-complete + mint sequence so peer goroutines never observe a
+// half-state (e.g. byActiveSession cleared but the new Turn not yet
+// inserted). Mirrors Start's lock discipline.
+//
+// Expected:
+//   - sessionID is non-empty. Empty sessionID is accepted verbatim;
+//     the auto-complete check still applies.
+//
+// Returns:
+//   - turnID is the freshly-minted UUID. Empty on error.
+//   - err is nil in practice — the auto-complete cannot fail (a
+//     Running Turn we already located transitions cleanly; a terminal
+//     prior Turn means the byActiveSession entry was stale and we
+//     simply delete it). Future evolution may add structured errors
+//     for the "registry shutting down" case.
+//
+// Side effects:
+//   - When a prior Running Turn exists: mutates that Turn's Status to
+//     Completed and stamps CompletedAt.
+//   - Clears the byActiveSession entry for sessionID.
+//   - Inserts a fresh Turn into byID and byActiveSession.
+//   - Broadcasts a change so long-poll waiters wake — the prior Turn
+//     just reached terminal status and the new Turn is now active.
+func (r *Registry) StartOrReuse(sessionID string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if existingID, ok := r.byActiveSession[sessionID]; ok {
+		if existing, found := r.byID[existingID]; found && existing.Status == StatusRunning {
+			now := r.clock()
+			existing.Status = StatusCompleted
+			existing.CompletedAt = &now
+			// ModelInfo deliberately left empty — the delegation site
+			// does not surface model metadata at the auto-complete
+			// boundary; the parent-side Turn carries the (provider,
+			// model) pair and the child engine restamps it on its own
+			// chunks via SetProviderModel / Complete.
+		}
+		// Whether the prior Turn was Running (just auto-completed) or
+		// already terminal (stale-entry defence in depth), the
+		// byActiveSession entry must clear so the new mint inserts
+		// cleanly. Mirrors Complete/Fail's cleanup discipline.
+		delete(r.byActiveSession, sessionID)
+	}
+
+	id := r.idGen()
+	t := &Turn{
+		ID:            id,
+		SessionID:     sessionID,
+		Status:        StatusRunning,
+		StartedAt:     r.clock(),
+		MessagesAdded: []session.Message{},
+	}
+	r.byID[id] = t
+	r.byActiveSession[sessionID] = id
+	// Broadcast — either the prior Turn just terminated (a state
+	// transition long-poll waiters may have parked on) or the new Turn
+	// became active. Single broadcast covers both cases.
+	r.broadcastChangeLocked()
+	return id, nil
+}
+
+// ResetForRetry clears MessagesAdded on the named Turn while
+// preserving byActiveSession membership and StatusRunning. Intended
+// for the runner-retry boundary inside DelegateTool (PR2 of the Child
+// Session Turn Registry Plumbing slice) — when a stream attempt fails
+// and the runner is about to re-invoke streamAndCollect, attempt-N's
+// stale partial chunks must be wiped from the registry's
+// MessagesAdded slice so attempt-N+1's chunks do not pile on top of
+// them.
+//
+// Why the id-keyed upsert in Append is insufficient: provider-side
+// message IDs are NOT generally stable across stream retries —
+// Anthropic and OpenAI-compat providers regenerate per-stream IDs.
+// The Append upsert collapses fan-out from the same stream (one
+// AppendMessage + N UpdateDelegation for the same ChainID), but it
+// cannot collapse cross-attempt rows because the IDs differ. A
+// per-attempt explicit clear is the right primitive.
+//
+// Idempotency: calling on a Running Turn with already-empty
+// MessagesAdded is a success no-op — the retry loop may call
+// ResetForRetry unconditionally per attempt without first checking
+// message count.
+//
+// Terminal-state behaviour: returns ErrTurnTerminal if the Turn is no
+// longer Running. The caller (PR2 retry boundary) should treat this
+// as "Turn already ended, no retry needed" and fall through. Matches
+// the existing Append/Complete/Fail error surface — terminal Turns
+// are queryable via Get but no longer mutable. No mutation occurs on
+// the terminal path; MessagesAdded, Status, byActiveSession, and the
+// long-poll change-channel are all untouched.
+//
+// Concurrency: acquires r.mu; safe to call from the runner's retry
+// goroutine while the recorder closure may concurrently call Append
+// from a producer goroutine — the mutex serialises the two. The
+// slice truncation (re-slicing to length zero while preserving the
+// underlying backing array) is single-threaded under the lock.
+//
+// Expected:
+//   - turnID is the turn_id minted by Start or StartOrReuse. Empty
+//     turnID is a silent no-op (returns nil) for symmetry with
+//     Append's no-op-on-empty path.
+//
+// Returns:
+//   - nil on success (including the idempotent already-empty case).
+//   - ErrTurnNotFound when turnID is unknown.
+//   - ErrTurnTerminal when the Turn is already Completed or Failed.
+//
+// Side effects:
+//   - Clears MessagesAdded on the named Turn when Running. byActiveSession
+//     and Status are untouched.
+//   - Broadcasts a change so long-poll waiters wake — MessagesAdded
+//     shrank past their captured baseline. This is the same broadcast
+//     semantic Append uses.
+func (r *Registry) ResetForRetry(turnID string) error {
+	if turnID == "" {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return ErrTurnNotFound
+	}
+	if t.Status != StatusRunning {
+		return ErrTurnTerminal
+	}
+	// Re-slice to length zero rather than reassigning to nil — the
+	// backing array survives so subsequent Appends reuse the capacity
+	// without re-allocation. The Get snapshot copy at snapshotLocked
+	// (line ~1519) returns `append([]session.Message(nil), ...)` so
+	// callers never observe the shared backing array even after a
+	// reset-then-append cycle.
+	t.MessagesAdded = t.MessagesAdded[:0]
+	r.broadcastChangeLocked()
+	return nil
+}
+
 // FindActiveBySession returns the turn_id of the currently-Running
 // turn for the supplied sessionID, or ("", false) when no Running
 // turn exists. Backed by the existing byActiveSession O(1) map — no
