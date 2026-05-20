@@ -25,7 +25,6 @@ import ModelPicker from '@/components/model-picker/ModelPicker.vue'
 import ContextToolGroup from '@/components/tools/ContextToolGroup.vue'
 import Icon from '@/components/common/Icon.vue'
 import KeyboardHelpModal from '@/components/common/KeyboardHelpModal.vue'
-import { registerTools } from '@/tools/registerTools'
 import { installSessionHierarchyNav } from '@/composables/useSessionHierarchyNav'
 import { showToast } from '@/composables/useToast'
 
@@ -441,7 +440,12 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
 }
 
 onMounted(async () => {
-  registerTools()
+  // Tool renderer registration moved to web/src/main.ts module init — see
+  // the comment there. Calling it here ran AFTER the first child render of
+  // MessageBubble, so the computed `toolComponent` (a non-reactive
+  // Map-lookup) latched on GenericTool for every todowrite / todo_update
+  // tool_result the session loaded with. Registering before app.mount()
+  // guarantees every bubble's first computed sees the populated registry.
   teardownHierarchyNav = installSessionHierarchyNav()
   // Principal F7: a network blip during initial hydration must surface a
   // toast and assign chatStore.error rather than leave the user staring at
