@@ -4376,8 +4376,29 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			// Tool-level timeout, not parent cancellation.
 			slog.Warn("tool execution error", "tool", toolCall.Name, "error", err)
 		}
-		result.Error = err
-		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, err, toolCall.ID, internalToolCallID)
+		// PR5 Item 4 (openaicompat tool_loop_retry storm spike, May 2026).
+		// Tools use two failure shapes. The (Result{}, err) shape carries the
+		// failure in the Go error return; the (Result{Error: someErr}, nil)
+		// shape carries it in Result.Error with a nil Go return (read, bash
+		// failure path, edit, multiedit, apply_patch, invalid). Earlier this
+		// site unconditionally ran `result.Error = err`, which OVERWROTE the
+		// tool's populated Result.Error with the nil Go-return — stripping
+		// every failure signal from these tools and producing the
+		// 1659-read-call retry storm captured in session
+		// e0c0dfdf-d3a1-4728-92b3-d3b41fe3187d. Now: copy the Go-return into
+		// Result.Error only when it's non-nil; the tool-encoded Result.Error
+		// otherwise survives intact to downstream IsError=true and persistent
+		// role='tool_error'.
+		if err != nil {
+			result.Error = err
+		}
+		// publishToolAfterEvent receives the effective error so observability
+		// bus events tag failures regardless of which shape the tool used.
+		effectiveErr := err
+		if effectiveErr == nil {
+			effectiveErr = result.Error
+		}
+		e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, effectiveErr, toolCall.ID, internalToolCallID)
 		// A *swarm.GateError signals that a post-member or post-swarm
 		// gate refused this tool call's output (or its preconditions).
 		// Returning nil here would let the parent agent's tool loop

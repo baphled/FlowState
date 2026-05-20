@@ -36,6 +36,24 @@ func (t *executableMockTool) Execute(_ context.Context, input tool.Input) (tool.
 }
 func (t *executableMockTool) Schema() tool.Schema { return tool.Schema{} }
 
+// resultOnlyErrorTool is the (Result{Error: ...}, nil) failure shape used by
+// real tools (read, bash failure path, edit, multiedit, apply_patch, invalid).
+// The Go-level error return is nil; the failure is encoded in Result.Error
+// only. The existing executableMockTool covers the (Result, err) shape; this
+// fixture covers the shape that triggers the PR5 Item 4 storm.
+type resultOnlyErrorTool struct {
+	name        string
+	description string
+	failure     error
+}
+
+func (t *resultOnlyErrorTool) Name() string        { return t.name }
+func (t *resultOnlyErrorTool) Description() string { return t.description }
+func (t *resultOnlyErrorTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	return tool.Result{Error: t.failure}, nil
+}
+func (t *resultOnlyErrorTool) Schema() tool.Schema { return tool.Schema{} }
+
 type streamSequenceProvider struct {
 	name      string
 	sequences [][]provider.StreamChunk
@@ -524,6 +542,117 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				}
 
 				Expect(chatProvider.callIndex).To(Equal(2))
+			})
+		})
+
+		// PR5 Item 4 (openaicompat tool_loop_retry storm spike, May 2026):
+		// Real tools (read, bash, edit, multiedit, apply_patch, invalid, ls,
+		// grep, ...) use the `return tool.Result{Error: someErr}, nil` shape
+		// — they encode the failure in Result.Error and return nil as the
+		// Go-level error. The engine at internal/engine/engine.go:4373-4379
+		// then runs `result.Error = err` which OVERWRITES the tool's
+		// populated Result.Error with the nil Go-return — silently stripping
+		// every failure signal these tools emit.
+		//
+		// Live evidence (captured glm-4.5 session
+		// e0c0dfdf-d3a1-4728-92b3-d3b41fe3187d): 1659 sequential `read`
+		// calls on a directory path, every tool_result persisted with empty
+		// content and role="tool_result" (not "tool_error"). The model gets
+		// no error signal back, so it retries the same call indefinitely —
+		// the surface symptom the PR5 brief describes as the
+		// "tool_loop_retry storm".
+		//
+		// Contract: when a tool returns (Result{Error: someErr}, nil), the
+		// engine MUST forward IsError=true and the error text on the
+		// tool_result chunk so the session accumulator persists tool_error
+		// and the next provider request carries the failure to the model.
+		// The pre-existing executableMockTool covers only (Result, err); a
+		// new fixture covers the (Result{Error}, nil) shape that ships.
+		Context("when tool returns Result.Error with nil Go return (read/bash/edit shape)", func() {
+			var (
+				resultErrorTool *resultOnlyErrorTool
+			)
+
+			BeforeEach(func() {
+				resultErrorTool = &resultOnlyErrorTool{
+					name:        "read",
+					description: "Read tool that mimics real Result-only failure shape",
+					failure:     errors.New("read failed: is a directory"),
+				}
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_resonly",
+								Name:      "read",
+								Arguments: map[string]interface{}{
+									"path": "/some/directory",
+								},
+							},
+						},
+					},
+					{
+						{Content: "I see the tool failed.", Done: true},
+					},
+				}
+			})
+
+			It("forwards IsError=true and the error text on the tool_result chunk", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{resultErrorTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Read a directory")
+				Expect(err).NotTo(HaveOccurred())
+
+				var toolResultChunk *provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
+				}
+
+				Expect(toolResultChunk).NotTo(BeNil(),
+					"engine must emit a tool_result chunk for Result.Error-shaped failures")
+				Expect(toolResultChunk.ToolResult.IsError).To(BeTrue(),
+					"Result.Error set by tool MUST propagate to IsError=true; otherwise the model "+
+						"sees the failure as a success-with-empty-output and retries indefinitely")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("read failed: is a directory"),
+					"tool_result content MUST carry the Error.Error() text so the model can react to the failure")
+			})
+
+			It("persists tool_error (not tool_result) when Result.Error is set", func() {
+				// Belt-and-braces: the accumulator (internal/session/accumulator.go:617)
+				// keys on chunk.ToolResult.IsError to decide the persisted role
+				// (tool_error vs tool_result). The IsError-passing-through is the
+				// behaviour pinned above; this spec pins the downstream effect on
+				// the session message stream that captured the
+				// e0c0dfdf-d3a1-4728-92b3-d3b41fe3187d storm.
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{resultErrorTool},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Read a directory")
+				Expect(err).NotTo(HaveOccurred())
+
+				var seenIsError bool
+				for chunk := range chunks {
+					if chunk.ToolResult != nil && chunk.ToolResult.IsError {
+						seenIsError = true
+					}
+				}
+				Expect(seenIsError).To(BeTrue(),
+					"at least one tool_result chunk MUST carry IsError=true so the session "+
+						"accumulator persists role='tool_error' and the next provider request "+
+						"surfaces the failure to the model")
 			})
 		})
 
