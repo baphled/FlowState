@@ -284,7 +284,17 @@ var _ = Describe("DelegationAllowlist", Label("integration"), func() {
 		_, err := delegateTool.Execute(ctx, input)
 
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("not in allowlist"))
+		// Wrapped sentinel substring (errAgentNotInAllowlist text) — the
+		// grep-stable string error-text tooling matches against.
+		Expect(err.Error()).To(ContainSubstring("agent not in delegation allowlist"))
+		// Standalone-branch label: post-rejection-format-fix, the body
+		// declares which list is gating the rejection (swarm vs
+		// standalone) instead of a bare `%v` slice dump.
+		Expect(err.Error()).To(ContainSubstring("not in standalone allowlist:"))
+		// The rejected target id and the active roster entry survive
+		// the format change so the model can still see both pieces.
+		Expect(err.Error()).To(ContainSubstring("blocked-agent"))
+		Expect(err.Error()).To(ContainSubstring("other-agent"))
 	})
 
 	It("allows all agents when allowlist is empty (backward compatible)", func() {

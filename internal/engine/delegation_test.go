@@ -2269,6 +2269,374 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 	})
 })
 
+// Bug 2 (May 2026) — Self-correcting delegate-rejection errors.
+//
+// Real session: a meta-coordinator at the top of a meta-swarm whose
+// Members[] only held sub-swarm ids (`a-team`, `dev-swarm`,
+// `planning-loop`, `board-room`) tried to call `delegate` with leaf
+// agents like `default-assistant`, `Knowledge-Base-Curator`,
+// `executor`, `writer`. All four bounced with the opaque
+// `agent not in delegation allowlist: "X" not in swarm members:
+// [a-team dev-swarm planning-loop board-room]`. The roster was a Go
+// `%v` slice dump, the active swarm was unnamed, and there was no
+// hint that the rejected leaves were members of one of the sub-
+// swarms already on the roster.
+//
+// The fix at resolveTargetWithOptions:
+//
+//   - Labels the active list (`swarm "X" members:` vs
+//     `standalone allowlist:`).
+//   - Renders members one-per-line with backticks (matching the
+//     prompt block at engine.go:2147-2202 the model already
+//     learned from).
+//   - Appends a self-correcting hint when the rejected target is a
+//     member of some OTHER known swarm, or a known agent.
+//
+// These specs pin the format and the three hint cases. The
+// pre-existing pins at delegation_test.go:2129-2134 (allowlist
+// substring + target id + roster element) and 2243-2248 (swarm-
+// shadow + roster element) remain green because the wrapped sentinel
+// text "agent not in delegation allowlist" survives the format
+// change unchanged.
+var _ = Describe("Delegate rejection error formatting (Bug 2)", func() {
+	// makeLeadWithSwarm constructs a lead engine running inside a
+	// swarm context whose roster lists Members. Optional registry
+	// arguments attach an agent registry and/or a swarm registry to
+	// the DelegateTool so the hint branches can fire.
+	makeLeadWithSwarm := func(swarmID, targetID string, members []string, agentReg *agent.Registry, swarmReg *swarm.Registry) *engine.DelegateTool {
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{name: "spy"})
+
+		leadEng := engine.New(engine.Config{
+			Manifest: agent.Manifest{
+				ID:   "lead",
+				Name: "Lead",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			},
+			AgentRegistry: agent.NewRegistry(),
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+		})
+
+		targetEng := engine.New(engine.Config{
+			ChatProvider: &mockProvider{
+				name:         "target",
+				streamChunks: []provider.StreamChunk{{Content: "ok", Done: true}},
+			},
+			Manifest: agent.Manifest{
+				ID:                targetID,
+				Name:              targetID,
+				Instructions:      agent.Instructions{SystemPrompt: "target"},
+				ContextManagement: agent.DefaultContextManagement(),
+			},
+		})
+
+		engines := map[string]*engine.Engine{targetID: targetEng}
+		delegateTool := engine.NewDelegateTool(engines, agent.Delegation{
+			CanDelegate: true,
+		}, "lead").WithOwnerEngine(leadEng)
+
+		if agentReg != nil {
+			delegateTool = delegateTool.WithRegistry(agentReg)
+		}
+		if swarmReg != nil {
+			delegateTool = delegateTool.WithSwarmRegistry(swarmReg)
+		}
+
+		leadEng.SetSwarmContext(&swarm.Context{
+			SwarmID:     swarmID,
+			LeadAgent:   "lead",
+			Members:     members,
+			ChainPrefix: swarmID,
+		})
+
+		return delegateTool
+	}
+
+	Context("swarm-branch rejection format", func() {
+		It("labels the swarm by name and renders members one-per-line with backticks", func() {
+			delegateTool := makeLeadWithSwarm(
+				"meta-swarm", "default-assistant",
+				[]string{"a-team", "dev-swarm", "planning-loop", "board-room"},
+				nil, nil,
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "default-assistant",
+					"message":       "leaf agent rejected by sub-swarm-only roster",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			// Wrapped-sentinel substring — grep-stable; the existing
+			// `errors.Is(err, errAgentNotInAllowlist)` checks and any
+			// log-grep tooling that pattern-matches on this string
+			// must keep working.
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			// Labels the source-of-truth: which swarm is gating?
+			Expect(err.Error()).To(ContainSubstring(`not in swarm "meta-swarm" members:`),
+				"the swarm name must label the roster so a meta-coordinator can disambiguate which swarm rejected it")
+			// Members rendered one-per-line with backticks, matching
+			// the prompt-block format at engine.go:2147-2202.
+			Expect(err.Error()).To(ContainSubstring("\n  - `a-team`"))
+			Expect(err.Error()).To(ContainSubstring("\n  - `dev-swarm`"))
+			Expect(err.Error()).To(ContainSubstring("\n  - `planning-loop`"))
+			Expect(err.Error()).To(ContainSubstring("\n  - `board-room`"))
+			// Bare slice-dump format MUST be gone — the `[a-team
+			// dev-swarm planning-loop board-room]` shape (Go's `%v`
+			// rendering of a string slice) was the unhelpful pre-fix
+			// output the model couldn't self-correct against.
+			Expect(err.Error()).NotTo(ContainSubstring("[a-team dev-swarm planning-loop board-room]"),
+				"the Go-slice %v dump format is replaced by the backtick-bullet shape; if this assertion regresses, an old format crept back")
+		})
+	})
+
+	Context("standalone-branch rejection format", func() {
+		It(`labels the active list "standalone allowlist:" and renders members with backticks`, func() {
+			// No swarm context installed — standalone path. Static
+			// allowlist gates the rejection. The target engine is
+			// registered in d.engines so resolveAgentID returns the
+			// verbatim id (the rejected target) instead of falling
+			// through to embedding discovery and emitting a
+			// `no agent configured for task type:` error before the
+			// allowlist check.
+			blockedEng := engine.New(engine.Config{
+				ChatProvider: &mockProvider{
+					name:         "blocked",
+					streamChunks: []provider.StreamChunk{{Content: "blocked", Done: true}},
+				},
+				Manifest: agent.Manifest{
+					ID:                "blocked-agent",
+					Name:              "Blocked Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "blocked"},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"blocked-agent": blockedEng},
+				agent.Delegation{
+					CanDelegate:         true,
+					DelegationAllowlist: []string{"senior-engineer", "mid-engineer"},
+				},
+				"coordinator",
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "blocked-agent",
+					"message":       "rejected by static allowlist",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			// Standalone-branch label distinguishes the path —
+			// crucial because the swarm vs standalone semantics
+			// differ (one shadows, one filters).
+			Expect(err.Error()).To(ContainSubstring("not in standalone allowlist:"),
+				"the standalone branch must label itself standalone — not swarm — so the consumer can tell which gate fired")
+			Expect(err.Error()).NotTo(ContainSubstring("swarm members:"),
+				"a standalone rejection must not pretend to be a swarm-members rejection")
+			Expect(err.Error()).To(ContainSubstring("\n  - `senior-engineer`"))
+			Expect(err.Error()).To(ContainSubstring("\n  - `mid-engineer`"))
+		})
+	})
+
+	Context("sub-swarm reverse-lookup hint", func() {
+		It("nudges the model toward the sub-swarm when the rejected target is a member of another known swarm", func() {
+			// Build a swarm registry that knows the meta-swarm's
+			// sub-swarms. The active swarm is `meta-swarm`; the
+			// rejected target `Knowledge-Base-Curator` is NOT in
+			// meta-swarm's roster but IS a member of `dev-swarm`.
+			// The hint should point the meta-coordinator at
+			// dev-swarm.
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "lead",
+				Members: []string{"a-team", "dev-swarm"},
+			})
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "dev-swarm",
+				Lead:    "Tech-Lead",
+				Members: []string{"Senior-Engineer", "Knowledge-Base-Curator", "Researcher"},
+			})
+
+			delegateTool := makeLeadWithSwarm(
+				"meta-swarm", "Knowledge-Base-Curator",
+				[]string{"a-team", "dev-swarm"},
+				nil, swarmReg,
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "Knowledge-Base-Curator",
+					"message":       "rejected leaf is in dev-swarm",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			// The hint is the load-bearing self-correction nudge.
+			Expect(err.Error()).To(ContainSubstring(`Hint: "Knowledge-Base-Curator" is a member of swarm "dev-swarm". Delegate to "dev-swarm" instead.`),
+				"sub-swarm reverse-lookup hint must name the containing swarm so the model can redirect its next delegate call")
+		})
+
+		It("skips the active swarm when scanning for containing swarms (no self-suggestion)", func() {
+			// The active swarm is `meta-swarm` and the rejected
+			// target is registered as a member of `meta-swarm`
+			// itself (but the in-flight context.Members has been
+			// narrowed for the run — e.g. dynamic membership). The
+			// scan must skip the active swarm and not produce a
+			// useless `Hint: ... is a member of swarm "meta-swarm".
+			// Delegate to "meta-swarm" instead.` line.
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "lead",
+				Members: []string{"Knowledge-Base-Curator", "other"},
+			})
+
+			delegateTool := makeLeadWithSwarm(
+				"meta-swarm", "Knowledge-Base-Curator",
+				// Active context.Members is narrower than the
+				// manifest's static Members — only "other" is in
+				// scope for this run.
+				[]string{"other"},
+				nil, swarmReg,
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "Knowledge-Base-Curator",
+					"message":       "active swarm self-suggestion would be useless",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).NotTo(ContainSubstring(`Delegate to "meta-swarm" instead`),
+				"the active swarm must not appear as a reverse-lookup hint — the model is already inside meta-swarm; suggesting it would not help self-correction")
+		})
+	})
+
+	Context(`"exists as an agent" hint`, func() {
+		It("nudges the model when the rejected target is a known agent but is not in any other swarm", func() {
+			// Agent registry knows the target; swarm registry has
+			// no other swarm containing it. Hint: it exists as an
+			// agent but isn't in this swarm's roster.
+			agentReg := agent.NewRegistry()
+			agentReg.Register(&agent.Manifest{ID: "writer", Name: "Writer"})
+
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "lead",
+				Members: []string{"a-team"},
+			})
+
+			delegateTool := makeLeadWithSwarm(
+				"meta-swarm", "writer",
+				[]string{"a-team"},
+				agentReg, swarmReg,
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "writer",
+					"message":       "known agent outside the swarm",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			Expect(err.Error()).To(ContainSubstring(`Hint: "writer" exists as an agent but isn't in this swarm's roster.`),
+				"the agent-exists hint tells the model the id is valid but out-of-scope — distinct from a typo")
+		})
+
+		It("prefers the sub-swarm hint over the agent-exists hint when both would apply", func() {
+			// Target is both a known agent AND a member of another
+			// swarm. The sub-swarm hint wins because it is the
+			// more actionable nudge (delegate to a swarm vs. give
+			// up).
+			agentReg := agent.NewRegistry()
+			agentReg.Register(&agent.Manifest{ID: "Researcher", Name: "Researcher"})
+
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "lead",
+				Members: []string{"dev-swarm"},
+			})
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "dev-swarm",
+				Lead:    "Tech-Lead",
+				Members: []string{"Researcher"},
+			})
+
+			delegateTool := makeLeadWithSwarm(
+				"meta-swarm", "Researcher",
+				[]string{"dev-swarm"},
+				agentReg, swarmReg,
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "Researcher",
+					"message":       "both hints would apply",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(`is a member of swarm "dev-swarm". Delegate to "dev-swarm" instead.`),
+				"sub-swarm hint must take precedence — it is the actionable nudge")
+			Expect(err.Error()).NotTo(ContainSubstring("exists as an agent but isn't in this swarm's roster"),
+				"when sub-swarm hint applies, the bare agent-exists hint is suppressed; one hint per rejection")
+		})
+	})
+
+	Context("no hint when target is unknown everywhere", func() {
+		It("emits no hint when neither the agent registry nor any swarm knows the target", func() {
+			// Empty registries; target is a genuine typo. The bare
+			// rejection (label + roster) is the right shape — no
+			// dangling Hint line.
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "meta-swarm",
+				Lead:    "lead",
+				Members: []string{"a-team"},
+			})
+
+			delegateTool := makeLeadWithSwarm(
+				"meta-swarm", "typo-agent",
+				[]string{"a-team"},
+				agent.NewRegistry(), swarmReg,
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "typo-agent",
+					"message":       "genuine typo; no hint applies",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			Expect(err.Error()).NotTo(ContainSubstring("Hint:"),
+				"unknown target → bare rejection; no Hint line should appear because no actionable nudge exists")
+		})
+	})
+})
+
 var _ = Describe("DelegateTool session metadata persistence", func() {
 	var (
 		sessionsDir  string

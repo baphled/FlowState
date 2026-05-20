@@ -3909,12 +3909,14 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 	// all). The standalone path (no active swarm context) is unchanged.
 	if swarmCtx, ok := d.activeSwarmContext(); ok {
 		if !containsAgent(swarmCtx.Members, targetAgentID) {
-			return delegationTarget{}, fmt.Errorf("%w: %q not in swarm members: %v",
-				errAgentNotInAllowlist, targetAgentID, swarmCtx.Members)
+			return delegationTarget{}, fmt.Errorf("%w: %s",
+				errAgentNotInAllowlist,
+				d.formatRejection(swarmCtx, swarmCtx.Members, targetAgentID))
 		}
 	} else if len(d.delegation.DelegationAllowlist) > 0 && !containsAgent(d.delegation.DelegationAllowlist, targetAgentID) {
-		return delegationTarget{}, fmt.Errorf("%w: %q not in allowlist: %v",
-			errAgentNotInAllowlist, targetAgentID, d.delegation.DelegationAllowlist)
+		return delegationTarget{}, fmt.Errorf("%w: %s",
+			errAgentNotInAllowlist,
+			d.formatRejection(nil, d.delegation.DelegationAllowlist, targetAgentID))
 	}
 
 	if err := checkDelegationCycle(d.sourceAgentID, targetAgentID, params.handoff); err != nil {
@@ -4745,4 +4747,146 @@ func containsAgent(allowlist []string, agentID string) bool {
 		}
 	}
 	return false
+}
+
+// formatRejection builds the human-readable body that follows the
+// `agent not in delegation allowlist:` sentinel wrap. The shape mirrors
+// the prompt block rendered at engine.go:2147-2202 so the model sees
+// the same roster format it was instructed against:
+//
+//	"foo" not in swarm "dev-swarm" members:
+//	  - `Tech-Lead`
+//	  - `Researcher`
+//
+// or for the standalone (non-swarm) branch:
+//
+//	"foo" not in standalone allowlist:
+//	  - `senior-engineer`
+//
+// The function additionally appends a self-correcting hint when:
+//   - swarmCtx is non-nil and the rejected target is a member of some
+//     OTHER known swarm in the registry (`Hint: 'foo' is a member of
+//     swarm 'sub'. Delegate to 'sub' instead.`); or
+//   - the rejected target is not in any other swarm but IS a known
+//     agent (`Hint: 'foo' exists as an agent but isn't in this swarm's
+//     roster.`).
+//
+// When the target is unknown to both registries, no hint is added so
+// the bare rejection stays the right shape for a typo.
+//
+// The body is returned without the wrapped sentinel so callers can
+// continue to use `fmt.Errorf("%w: %s", errAgentNotInAllowlist, body)`
+// and `errors.Is(err, errAgentNotInAllowlist)` checks survive.
+//
+// Expected:
+//   - swarmCtx is nil for the standalone branch, non-nil otherwise.
+//   - roster is the active list (swarmCtx.Members or
+//     d.delegation.DelegationAllowlist); may be empty.
+//   - targetID is the rejected agent id; non-empty.
+//
+// Returns:
+//   - A multi-line string ready to slot in after the wrapped sentinel.
+//
+// Side effects:
+//   - None (read-only access to d.swarmRegistry and d.registry).
+func (d *DelegateTool) formatRejection(swarmCtx *swarm.Context, roster []string, targetID string) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "%q not in ", targetID)
+	switch {
+	case swarmCtx != nil && swarmCtx.SwarmID != "":
+		fmt.Fprintf(&b, "swarm %q members:", swarmCtx.SwarmID)
+	case swarmCtx != nil:
+		// Defensive: a swarm context with an empty SwarmID. Should
+		// not happen in production (NewContext always sets it), but
+		// keep the label honest rather than rendering empty quotes.
+		b.WriteString("swarm members:")
+	default:
+		b.WriteString("standalone allowlist:")
+	}
+
+	if len(roster) == 0 {
+		b.WriteString("\n  (roster is empty)")
+	}
+	for _, id := range roster {
+		b.WriteString("\n  - `")
+		b.WriteString(id)
+		b.WriteString("`")
+	}
+
+	if hint := d.rejectionHint(swarmCtx, targetID); hint != "" {
+		b.WriteString("\n")
+		b.WriteString(hint)
+	}
+	return b.String()
+}
+
+// rejectionHint produces a single-line nudge to help the model self-
+// correct when its delegate target was rejected. Three cases:
+//
+//  1. Inside a swarm, the rejected target is a member of some OTHER
+//     known swarm — return `Hint: '<target>' is a member of swarm
+//     '<sub>'. Delegate to '<sub>' instead.`. This is the meta-
+//     coordinator failure mode: the rejected leaf agents were members
+//     of sub-swarms already listed in the parent's roster.
+//
+//  2. The rejected target is a known agent but not in any other
+//     swarm — return `Hint: '<target>' exists as an agent but isn't
+//     in this swarm's roster.`. Tells the model the id is valid but
+//     out-of-scope rather than misspelled.
+//
+//  3. Unknown to both registries — return the empty string so the
+//     bare rejection stays the right shape for a typo.
+//
+// The swarm-membership check skips the *active* swarm itself (a
+// target rejected against its own swarm is by construction not a
+// member, so suggesting its own swarm would be useless noise) and
+// short-circuits on the first match — multi-swarm membership picks
+// the first id seen via Registry.List (which is sorted, so the
+// behaviour is deterministic across processes).
+//
+// Expected:
+//   - swarmCtx may be nil (standalone branch).
+//   - targetID is the rejected agent id; non-empty.
+//
+// Returns:
+//   - A non-empty hint line when (1) or (2) match; empty string
+//     otherwise.
+//
+// Side effects:
+//   - None (read-only access via Registry.List and Registry.Get /
+//     GetByNameOrAlias).
+func (d *DelegateTool) rejectionHint(swarmCtx *swarm.Context, targetID string) string {
+	// Case 1: target is a member of another known swarm.
+	if d.swarmRegistry != nil {
+		var activeSwarmID string
+		if swarmCtx != nil {
+			activeSwarmID = swarmCtx.SwarmID
+		}
+		for _, m := range d.swarmRegistry.List() {
+			if m == nil {
+				continue
+			}
+			if activeSwarmID != "" && strings.EqualFold(m.ID, activeSwarmID) {
+				continue
+			}
+			if containsAgent(m.Members, targetID) {
+				return fmt.Sprintf("Hint: %q is a member of swarm %q. Delegate to %q instead.",
+					targetID, m.ID, m.ID)
+			}
+		}
+	}
+
+	// Case 2: target is a known agent (but not in any other swarm).
+	if d.registry != nil {
+		if _, ok := d.registry.Get(targetID); ok {
+			return fmt.Sprintf("Hint: %q exists as an agent but isn't in this swarm's roster.", targetID)
+		}
+		if _, ok := d.registry.GetByNameOrAlias(targetID); ok {
+			return fmt.Sprintf("Hint: %q exists as an agent but isn't in this swarm's roster.", targetID)
+		}
+	}
+
+	// Case 3: unknown — no hint.
+	return ""
 }
