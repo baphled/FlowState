@@ -1547,6 +1547,387 @@ describe('chatStore - pollTurnUntilTerminal no-op upsert short-circuit (Phase 4 
   })
 })
 
+// Sketch A — UI Delegation Chain Not Updating (May 2026), Issue B.A quick win.
+//
+// `ChildSessionsPanel` derives its rows from `chatStore.sessions`, which
+// is only populated by `loadSessions()`. Pre-fix, `loadSessions` was
+// fired from bootstrap, after a successful send, and after createSession
+// — never DURING a streaming turn. During a 30s delegation the user saw
+// no child in the "Delegated sessions" panel until the parent's turn
+// completed and the post-poll reconcile fired loadSessions.
+//
+// Quick-win contract: when `pollTurnUntilTerminal` observes a freshly-
+// appeared `delegation_started` row mid-poll (row not seen on the prior
+// iteration), trigger `loadSessions()` once per row so the persisted
+// session list grows the new child entry within one poll tick. The
+// per-row debounce — keyed by message id — prevents the same row firing
+// loadSessions on every subsequent poll while the delegation is in
+// flight (poll cadence is sub-second; without the debounce a 30s
+// delegation would hammer `GET /api/v1/sessions` ~120 times).
+//
+// Sibling track (Sketch B) is plumbing a child Turn through DelegateTool
+// so the child's own chat view long-polls live; THIS describe block
+// pins only the quick-win "child appears in the panel" behaviour, not
+// any child-view live-streaming behaviour (that's Sketch B's spec).
+//
+// Investigation note: ~/vaults/baphled/1. Projects/FlowState/Bug Fixes/
+//   UI Delegation Chain Not Updating (May 2026).md § Aggravating factor
+describe('chatStore - pollTurnUntilTerminal fires loadSessions on new delegation_started rows (Sketch A)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // L1 — first appearance of a delegation_started row triggers loadSessions
+  // in the same poll tick. This is the user-visible payoff: the child
+  // entry appears in ChildSessionsPanel within a single poll-cadence
+  // boundary instead of waiting for the post-completion reconcile.
+  it('fires loadSessions once when a new delegation_started row appears in a poll snapshot', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-l1'
+    store.messages = [
+      { id: 'u1', role: 'user', content: 'delegate this', timestamp: '' },
+    ]
+
+    const fs = vi.mocked(fetchSessions)
+    fs.mockReset()
+    // The default fetchSessions mock returns two seeded sessions; we
+    // reuse it here so the post-loadSessions state has SOMETHING to
+    // diff against (the assertion below counts the call, not the
+    // payload).
+    fs.mockResolvedValue([])
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    // First poll: new delegation_started row appears. The loop should
+    // fire loadSessions BEFORE returning on the terminal status (the
+    // refresh is the contract, not a side-effect of completion).
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-l1',
+      session_id: 'session-l1',
+      status: 'running',
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        {
+          id: 'del-1',
+          role: 'delegation_started',
+          content: '',
+          timestamp: '',
+          status: 'running',
+          chainId: 'chain-1',
+          targetAgent: 'executor',
+        },
+      ],
+    } as never)
+    // Second poll: terminal so the loop exits.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-l1',
+      session_id: 'session-l1',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-l1', 'turn-l1')
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(0)
+    await pollPromise
+
+    expect(fs).toHaveBeenCalledTimes(1)
+  })
+
+  // L2 — the per-row debounce. If the same delegation_started message
+  // id is present across MULTIPLE subsequent polls (the running-card
+  // case), loadSessions must fire ONCE total, not per-poll-tick. This
+  // is the regression pin against an "always refresh when present"
+  // implementation that would hammer the sessions endpoint at the
+  // poll cadence.
+  it('does not re-fire loadSessions on subsequent polls that carry the same delegation_started row id', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-l2'
+    store.messages = [
+      { id: 'u1', role: 'user', content: 'delegate this', timestamp: '' },
+    ]
+
+    const fs = vi.mocked(fetchSessions)
+    fs.mockReset()
+    fs.mockResolvedValue([])
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    const delegationRow = {
+      id: 'del-stable',
+      role: 'delegation_started',
+      content: '',
+      timestamp: '',
+      status: 'running',
+      chainId: 'chain-stable',
+      targetAgent: 'executor',
+    }
+    // Three consecutive running polls all carry the same row id.
+    for (let i = 0; i < 3; i++) {
+      ft.mockResolvedValueOnce({
+        turn_id: 'turn-l2',
+        session_id: 'session-l2',
+        status: 'running',
+        started_at: '',
+        completed_at: null,
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [{ ...delegationRow }],
+      } as never)
+    }
+    // Terminal so the loop exits.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-l2',
+      session_id: 'session-l2',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-l2', 'turn-l2')
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    await pollPromise
+
+    expect(fs).toHaveBeenCalledTimes(1)
+  })
+
+  // L3 — debounce is keyed per-row, not per-session. A second
+  // delegation (different message id, same parent session) MUST fire
+  // a second loadSessions so the new child enters the panel.
+  it('fires loadSessions a second time when a DIFFERENT delegation_started row id appears in a later poll', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-l3'
+    store.messages = [
+      { id: 'u1', role: 'user', content: 'delegate twice', timestamp: '' },
+    ]
+
+    const fs = vi.mocked(fetchSessions)
+    fs.mockReset()
+    fs.mockResolvedValue([])
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    // Poll 1: first delegation_started row.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-l3',
+      session_id: 'session-l3',
+      status: 'running',
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        {
+          id: 'del-A',
+          role: 'delegation_started',
+          content: '',
+          timestamp: '',
+          status: 'running',
+          chainId: 'chain-A',
+          targetAgent: 'executor',
+        },
+      ],
+    } as never)
+    // Poll 2: first delegation still present, SECOND delegation appears
+    // (different agent, different id, different chainId).
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-l3',
+      session_id: 'session-l3',
+      status: 'running',
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [
+        {
+          id: 'del-A',
+          role: 'delegation_started',
+          content: '',
+          timestamp: '',
+          status: 'running',
+          chainId: 'chain-A',
+          targetAgent: 'executor',
+        },
+        {
+          id: 'del-B',
+          role: 'delegation_started',
+          content: '',
+          timestamp: '',
+          status: 'running',
+          chainId: 'chain-B',
+          targetAgent: 'researcher',
+        },
+      ],
+    } as never)
+    // Terminal so the loop exits.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-l3',
+      session_id: 'session-l3',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    const pollPromise = store.pollTurnUntilTerminal('session-l3', 'turn-l3')
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(0)
+    }
+    await pollPromise
+
+    expect(fs).toHaveBeenCalledTimes(2)
+  })
+
+  // L4 — session-change isolation. The per-row seen-set must clear on
+  // session change so the next session does not inherit a stale
+  // debounce key (a hypothetical "same id reused across sessions"
+  // collision would otherwise suppress the new session's first
+  // refresh). loadSessionMessages is the canonical session-change
+  // entry-point and the analogue site for similar per-session resets
+  // already in the store (lastCompactionEventKey,
+  // lastGateFailureKey, lastCriticalErrorCorrelationId all clear at
+  // chatStore.ts:1520-1522).
+  it('clears the per-row seen-set on session change so the new session can re-fire loadSessions for a row with the same id', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+
+    const fs = vi.mocked(fetchSessions)
+    fs.mockReset()
+    fs.mockResolvedValue([
+      // Both sessions exist; loadSessions returns them so the
+      // post-fetch state is stable. Test only counts call frequency.
+      {
+        id: 'session-a',
+        agentId: 'agent-1',
+        title: 'A',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'session-b',
+        agentId: 'agent-1',
+        title: 'B',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ] as never)
+
+    const fsm = vi.mocked(fetchSessionMessages)
+    fsm.mockReset()
+    fsm.mockResolvedValue([])
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    const reusedRow = {
+      id: 'del-shared',
+      role: 'delegation_started',
+      content: '',
+      timestamp: '',
+      status: 'running',
+      chainId: 'chain-shared',
+      targetAgent: 'executor',
+    }
+    // Session A's poll sees del-shared and fires loadSessions once.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-a',
+      session_id: 'session-a',
+      status: 'running',
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [{ ...reusedRow }],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-a',
+      session_id: 'session-a',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    store.currentSessionId = 'session-a'
+    await store.pollTurnUntilTerminal('session-a', 'turn-a')
+    expect(fs).toHaveBeenCalledTimes(1)
+
+    // Switch to session-b. The session-change path (loadSessionMessages)
+    // must clear the seen-set; otherwise the same del-shared id in
+    // session B's snapshot would be deduped against the prior session.
+    await store.loadSessionMessages('session-b')
+
+    // Session B's poll sees a row with the SAME id. Without the
+    // session-change clear this dedups and the panel never refreshes
+    // for B's delegation.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-b',
+      session_id: 'session-b',
+      status: 'running',
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [{ ...reusedRow }],
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-b',
+      session_id: 'session-b',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+
+    // fetchSessions was called by loadSessionMessages? No — only
+    // loadSessions calls fetchSessions. loadSessionMessages does
+    // fetchSessionMessages. So the call count after session switch
+    // is still 1.
+    expect(fs).toHaveBeenCalledTimes(1)
+
+    await store.pollTurnUntilTerminal('session-b', 'turn-b')
+    expect(fs).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('chatStore - setAgent', () => {
   beforeEach(() => {
     installLocalStorageStub()

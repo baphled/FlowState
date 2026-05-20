@@ -749,6 +749,35 @@ export const useChatStore = defineStore('chat', {
     // critical event with the SAME id as a prior session's last one
     // (extremely unlikely, but the dedup must be per-session scoped).
     lastCriticalErrorCorrelationId: null as string | null,
+    // Sketch A — UI Delegation Chain Not Updating (May 2026) Issue B.A.
+    //
+    // Set of `delegation_started` message ids the active session's
+    // pollTurnUntilTerminal loop has ALREADY observed and used to
+    // trigger a `loadSessions()` refresh. Functions as a per-row debounce
+    // so the same row, present across every subsequent poll tick while
+    // the child runs, doesn't hammer `GET /api/v1/sessions`.
+    //
+    // Lifecycle:
+    //   - Add: on the FIRST poll iteration that surfaces a row whose
+    //     id is not yet present (and whose role === 'delegation_started').
+    //   - Read: on every subsequent merge iteration to decide whether
+    //     to skip the refresh fan-out.
+    //   - Clear: on session change in `loadSessionMessages`. The seen
+    //     set is per-session: the next session's poll loop starts with
+    //     an empty set so its first delegation_started row fires a
+    //     fresh refresh even if a prior session's row carried the
+    //     same id (vanishingly unlikely in practice, but the dedup must
+    //     be per-session scoped — mirrors the lastCompactionEventKey /
+    //     lastGateFailureKey / lastCriticalErrorCorrelationId pattern
+    //     at chatStore.ts:1520-1522).
+    //
+    // Why a Set<string> rather than a per-session Record: scope is the
+    // active session for the duration of its poll. Cross-session
+    // composition is supported by the per-session-singleton SSE / poll
+    // architecture (Slice B), but the loadSessions refresh fans out the
+    // full session list to all subscribers anyway, so a single
+    // top-level Set is the lightest correct primitive.
+    seenDelegationStartedIds: new Set<string>() as Set<string>,
     // ---- bootstrap singleton (App-level loading-overlay coordination) ----
     //
     // bootstrap() wraps restoreStateFromBackend so the App-level loading
@@ -1533,6 +1562,15 @@ export const useChatStore = defineStore('chat', {
       this.lastCompactionEventKey = null
       this.lastGateFailureKey = null
       this.lastCriticalErrorCorrelationId = null
+      // Sketch A — UI Delegation Chain Not Updating (May 2026). The
+      // per-row debounce for the mid-poll loadSessions refresh is
+      // per-session — the new session's poll must be able to fire a
+      // fresh refresh for ITS first delegation_started row even if a
+      // (vanishingly unlikely) collision would otherwise suppress it.
+      // Use `.clear()` so existing references stay live; consumers
+      // don't capture the set by reference but the explicit form is
+      // self-documenting next to the sibling resets.
+      this.seenDelegationStartedIds.clear()
       // Streaming Coherence Slice F — clear stale per-session phase
       // for the target session so its watchdog starts at the legacy
       // 60s default until the next engine heartbeat updates the phase.
@@ -1898,6 +1936,42 @@ export const useChatStore = defineStore('chat', {
         const incoming = state.messages ?? []
         for (const row of incoming) {
           if (!row || !row.id) continue
+          // Sketch A — UI Delegation Chain Not Updating (May 2026).
+          // First time we see this delegation_started row id, fan out a
+          // `loadSessions()` refresh so ChildSessionsPanel surfaces the
+          // newly-spawned child within one poll-tick of its first
+          // appearance in the Turn snapshot. The per-row debounce
+          // (seenDelegationStartedIds) ensures this fires ONCE per row
+          // — not on every subsequent poll that the row remains
+          // present.
+          //
+          // Why fan out here rather than after the merge: ordering does
+          // not matter for the refresh (loadSessions is fire-and-forget
+          // and merges into chatStore.sessions independently of
+          // this.messages), and fronting the check inside the row loop
+          // means a snapshot carrying multiple new delegation_started
+          // rows (the swarm-fan-out case where a coordinator spawns N
+          // children in the same dispatch tick) fires N refreshes if
+          // the rows arrive on the same poll — actually we only need
+          // ONE refresh per poll-tick regardless of how many rows are
+          // new, but each row adds itself to the seen set so subsequent
+          // ticks won't re-fire for the same id. The N-in-one-tick
+          // duplicate-refresh is harmless (fetchSessions is idempotent;
+          // the second call lands a microsecond later with byte-equal
+          // payload). If profiling shows it's actually expensive we can
+          // coalesce later with a `didFire` flag in this loop iteration.
+          //
+          // Sibling track Sketch B is plumbing a child Turn through
+          // DelegateTool so the child's own chat view long-polls live;
+          // THIS path closes only the "panel updates within seconds"
+          // gap as a no-architectural-change quick win.
+          if (
+            row.role === 'delegation_started' &&
+            !this.seenDelegationStartedIds.has(row.id)
+          ) {
+            this.seenDelegationStartedIds.add(row.id)
+            void this.loadSessions()
+          }
           const idx = this.messages.findIndex((m) => m.id === row.id)
           if (idx >= 0) {
             // Upsert by id — preserve position, replace contents IF
