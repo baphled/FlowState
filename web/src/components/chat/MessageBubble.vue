@@ -202,6 +202,30 @@ const isEmptyTurn = computed(() => {
   return props.message.stopReason === "empty_turn";
 });
 
+// Fabricated-completion annotation — Bug 1 (backend commit b23455b8
+// stamped `StopReason = "fabricated_completion"` on assistant turns
+// where the content matches a completion-claim signature ("written
+// to", "persisted to", "saved to", "created the file", "✅") AND the
+// turn produced no tool_call and no delegation; see
+// `internal/session/accumulator.go:826-828` for the stamp predicate).
+//
+// The UI surfaces this as a NON-BLOCKING warning banner layered above
+// the existing plain-render path: the message body may still contain
+// useful planning/analysis, so we annotate rather than replace. The
+// banner uses `role="status"` (mirrors the thinking-only-affordance
+// pattern) — informational, not assertive; CriticalErrorBanner owns
+// the `role="alert"` surface.
+//
+// Predicate is intentionally narrow: assistant role + exact sentinel
+// match. Other stopReasons (`empty_turn`, `thinking_only`,
+// `end_turn`, `tool_use`) flow through their existing branches
+// untouched.
+const isFabricatedCompletion = computed(
+  () =>
+    props.message.role === "assistant" &&
+    props.message.stopReason === "fabricated_completion",
+);
+
 // Both tool_result and an unmatched tool_call (one without a paired
 // tool_result — collapseToolPairs leaves it intact) render through the
 // same per-tool component. The collapsable card chrome already signals
@@ -435,6 +459,35 @@ async function handleRegenerate(): Promise<void> {
     :data-role="props.message.role"
     :data-status="props.message.status ?? ''"
   >
+    <!--
+      Fabricated-completion warning (Bug 1, backend commit b23455b8).
+      Layered ABOVE the v-if/v-else-if render chain — both this banner
+      AND the matching content branch (typically `isPlain`) fire on
+      the same bubble. The banner annotates the unverified claim
+      without suppressing the prose underneath, since the message body
+      may still hold useful planning or analysis text. Distinct
+      data-testid from the soft-error affordances so probes can target
+      this specific signal.
+    -->
+    <div
+      v-if="isFabricatedCompletion"
+      class="fabricated-completion-warning"
+      role="status"
+      data-testid="fabricated-completion-warning"
+    >
+      <span class="fabricated-completion-icon" aria-hidden="true">!</span>
+      <div class="fabricated-completion-content">
+        <span class="fabricated-completion-title"
+          >Unverified completion claim</span
+        >
+        <span class="fabricated-completion-message">
+          The model reported finishing work, but no tool action was recorded
+          for this turn. Treat the claim as unsubstantiated until you've
+          confirmed it.
+        </span>
+      </div>
+    </div>
+
     <component
       v-if="isToolInvocation"
       :is="toolComponent"
@@ -932,6 +985,71 @@ async function handleRegenerate(): Promise<void> {
 }
 
 .thinking-only-message {
+  color: var(--text-secondary, var(--text-primary));
+  word-wrap: break-word;
+  line-height: 1.4;
+}
+
+/* Fabricated-completion warning banner — Bug 1.
+ *
+ * Visual language mirrors the thinking-only-affordance (--warning
+ * palette, role="status", inline) because both surfaces communicate a
+ * post-hoc, informational annotation about a degraded turn. The
+ * fabricated case differs from thinking-only in semantics — the model
+ * produced visible prose claiming a completion, but the recorded
+ * tool history doesn't back the claim — so the banner sits ABOVE the
+ * preserved content rather than replacing it. A subtle margin
+ * separates it from the assistant content beneath.
+ *
+ * Colour comes from the theme's --warning token (see
+ * web/src/assets/themes.css). The fallback hex matches the
+ * thinking-only-affordance fallback so the visual register is
+ * consistent across both warning surfaces.
+ */
+.fabricated-completion-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  margin-bottom: 0.4rem;
+  border: 1px solid var(--warning, #e0af68);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated, transparent);
+  color: var(--text-primary);
+  font-size: 0.82rem;
+}
+
+.fabricated-completion-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--warning, #e0af68);
+  color: var(--bg-primary, #1a1b26);
+  font-weight: 700;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.fabricated-completion-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.fabricated-completion-title {
+  font-weight: 600;
+  color: var(--warning, #e0af68);
+  font-size: 0.85rem;
+}
+
+.fabricated-completion-message {
   color: var(--text-secondary, var(--text-primary));
   word-wrap: break-word;
   line-height: 1.4;

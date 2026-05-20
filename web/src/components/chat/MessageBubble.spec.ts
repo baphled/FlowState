@@ -1370,6 +1370,172 @@ describe("MessageBubble", () => {
   // (`precedingUserPrompt`) so the lookup is done ONCE in the parent
   // (ChatView.groupedMessages), and the bubble's per-chunk re-render cost
   // is O(1).
+  // Fabricated-completion annotation — Bug 1 (commit b23455b8) added the
+  // backend accumulator gate that stamps StopReason = "fabricated_completion"
+  // on an assistant turn when the content matches a completion-claim
+  // signature ("written to", "persisted to", "saved to", "created the
+  // file", "✅") AND the turn produced no tool_call and no delegation.
+  //
+  // The UI contract: don't BLOCK the message (the prose may still hold
+  // useful planning/analysis), but make the unverified-completion-claim
+  // status visible so the user doesn't silently trust a fabrication. We
+  // layer a warning banner ABOVE the existing plain-render content. The
+  // banner uses role="status" (informational, mirrors the existing
+  // thinking-only-degraded affordance) and a distinct testid so other
+  // surfaces can probe for it independently.
+  describe("fabricated-completion annotation", () => {
+    it("renders a warning banner when stopReason is fabricated_completion", () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "assistant",
+          content: "Done! I've written the README to /tmp/README.md.",
+          stopReason: "fabricated_completion",
+        }),
+      );
+
+      const banner = wrapper.find(
+        '[data-testid="fabricated-completion-warning"]',
+      );
+      expect(banner.exists()).toBe(true);
+      // Pin the user-visible contract on the banner copy, not the exact
+      // phrasing. The banner must communicate (a) the completion claim
+      // is unverified, and (b) why — no tool action recorded for the turn.
+      const text = banner.text();
+      expect(text).toMatch(/unverified|unsubstantiated|claim/i);
+      expect(text).toMatch(/no tool|without (a |any )?tool|tool action/i);
+    });
+
+    it("renders the original assistant content alongside the warning (annotate, don't replace)", () => {
+      // The backend annotation is informational — the message body may
+      // still hold useful prose. We surface the warning AND the content,
+      // not the warning instead of the content.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "assistant",
+          content: "Done! I've saved the file to /tmp/output.txt.",
+          stopReason: "fabricated_completion",
+        }),
+      );
+
+      expect(
+        wrapper.find('[data-testid="fabricated-completion-warning"]').exists(),
+      ).toBe(true);
+      // Content survives — both the banner and the plain assistant render
+      // path fire on the same bubble.
+      expect(wrapper.text()).toContain("saved the file to /tmp/output.txt");
+      expect(wrapper.find(".message-role").exists()).toBe(true);
+    });
+
+    it('uses role="status" so the warning is announced as informational', () => {
+      // Mirrors the existing thinking-only-affordance contract. This is
+      // a post-hoc annotation, not an urgent failure — `role="alert"` is
+      // owned by CriticalErrorBanner. The screen-reader announcement
+      // should be polite, not assertive.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "assistant",
+          content: "I have persisted the changes to disk.",
+          stopReason: "fabricated_completion",
+        }),
+      );
+
+      const banner = wrapper.find(
+        '[data-testid="fabricated-completion-warning"]',
+      );
+      expect(banner.exists()).toBe(true);
+      expect(banner.attributes("role")).toBe("status");
+    });
+
+    it("does NOT render the warning for a normal assistant message (no stopReason)", () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "assistant",
+          content: "Here is my answer.",
+        }),
+      );
+
+      expect(
+        wrapper.find('[data-testid="fabricated-completion-warning"]').exists(),
+      ).toBe(false);
+    });
+
+    it("does NOT render the warning for an end_turn stopReason", () => {
+      // Defensive narrowing: only the explicit fabricated_completion
+      // sentinel fires the banner. A normal turn with stopReason='end_turn'
+      // (the common case once an assistant produces a non-empty reply)
+      // must NOT collide with this affordance.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "assistant",
+          content: "Here is the analysis you asked for.",
+          stopReason: "end_turn",
+        }),
+      );
+
+      expect(
+        wrapper.find('[data-testid="fabricated-completion-warning"]').exists(),
+      ).toBe(false);
+    });
+
+    it("does NOT collide with the thinking-only-degraded affordance (different stop reason, different shape)", () => {
+      // The thinking-only branch has its own three-signal predicate
+      // (empty content + thinkingBlocks + non-empty stopReason). A
+      // fabricated_completion message has non-empty content and no
+      // thinkingBlocks, so the branches partition cleanly. Sanity-check
+      // both directions: a thinking-only-degraded turn must NOT pick up
+      // the fabricated-completion banner.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "assistant",
+          content: "",
+          stopReason: "end_turn",
+          thinkingBlocks: [{ thinking: "considering", signature: "sig" }],
+        }),
+      );
+
+      expect(
+        wrapper.find('[data-testid="thinking-only-affordance"]').exists(),
+      ).toBe(true);
+      expect(
+        wrapper.find('[data-testid="fabricated-completion-warning"]').exists(),
+      ).toBe(false);
+    });
+
+    it("does NOT collide with the empty-turn affordance (different stop reason, different shape)", () => {
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "assistant",
+          content: "",
+          stopReason: "empty_turn",
+        }),
+      );
+
+      expect(
+        wrapper.find('[data-testid="empty-turn-affordance"]').exists(),
+      ).toBe(true);
+      expect(
+        wrapper.find('[data-testid="fabricated-completion-warning"]').exists(),
+      ).toBe(false);
+    });
+
+    it("does NOT render the warning on a user message even with the stopReason set (defensive)", () => {
+      // Belt-and-braces: fabricated_completion is an ASSISTANT-side
+      // annotation. A user message carrying the field (shouldn't happen,
+      // but cheap to guard) must not surface the warning.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "user",
+          content: "Did you write the file?",
+          stopReason: "fabricated_completion",
+        }),
+      );
+
+      expect(
+        wrapper.find('[data-testid="fabricated-completion-warning"]').exists(),
+      ).toBe(false);
+    });
+  });
+
   describe("precedingUserPrompt prop hoist (P2-9)", () => {
     it("uses the precedingUserPrompt prop when supplied without scanning messages", async () => {
       const assistantMsg = makeMessage({
