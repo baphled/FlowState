@@ -2980,13 +2980,23 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 			child.Gates = append([]swarm.GateSpec(nil), subSwarm.Harness.Gates...)
 			return d.DispatchSwarmMembers(ctx, &child, subSwarm.Members, message)
 		}
-		eng, ok := d.engines[memberID]
-		if !ok || eng == nil {
+		// Case-insensitive engine resolution mirrors containsAgent's
+		// EqualFold contract at the first hop (in-swarm gate). YAML
+		// rosters in PascalCase (Tech-Lead, Senior-Engineer) vs LLM
+		// outputs in mixed case (tech-Lead) used to surface here as
+		// `no engine for swarm member "tech-Lead"` despite the in-
+		// swarm gate accepting the same id one hop earlier. canonicalID
+		// is the engines-map key (not memberID) so downstream
+		// delegationTarget.agentID carries the canonical case the rest
+		// of the engine indexes by — streamers map, session manager,
+		// transcript stamping.
+		canonicalID, eng, ok := d.lookupEngineByID(memberID)
+		if !ok {
 			return fmt.Errorf("no engine for swarm member %q", memberID)
 		}
 		runner := d.runnerForSwarm(swarmCtx.SwarmID, d.manifestForSwarm(swarmCtx.SwarmID))
 		target := delegationTarget{
-			agentID: memberID,
+			agentID: canonicalID,
 			engine:  eng,
 			message: message,
 		}
@@ -3067,7 +3077,7 @@ func (d *DelegateTool) buildMemberRunner(swarmCtx *swarm.Context, message string
 		// historical behaviour.
 		var result delegationResult
 		attempt := 0
-		dispatchErr := runner.Dispatch(dispatchCtx, memberID, func(innerCtx context.Context, _ string) error {
+		dispatchErr := runner.Dispatch(dispatchCtx, canonicalID, func(innerCtx context.Context, _ string) error {
 			if attempt > 0 && d.turnRegistry != nil && handle.turnID != "" {
 				// ResetForRetry returns ErrTurnTerminal when the
 				// turn has already terminated; the caller-side
@@ -4747,6 +4757,51 @@ func containsAgent(allowlist []string, agentID string) bool {
 		}
 	}
 	return false
+}
+
+// lookupEngineByID returns the engine registered under agentID, falling
+// back to a case-insensitive scan when the byte-exact key misses. The
+// engines map is keyed by `agentManifest.ID` (canonical case, see
+// internal/app/app.go:buildDelegateMaps), while swarm rosters in YAML
+// frequently list members with case variants (e.g. `Tech-Lead` in the
+// manifest, `tech-Lead` from a delegate-target invocation). The first
+// lookup hop (in-swarm gate at resolveTargetWithOptions) is already
+// case-folded via containsAgent; the second hop (this lookup, used by
+// buildMemberRunner + resolveSubSwarm) needs to mirror that contract
+// or a delegate-target dispatch surfaces `no engine for swarm member
+// "tech-Lead"` despite the member being a known agent.
+//
+// Forensic anchor: session 7dfdb197-ce21-45a2-b5da-f2fa62dd293b at
+// 17:57:05.214 — the orchestrator delegated to dev-swarm with
+// member `tech-Lead`; the in-swarm gate accepted under
+// containsAgent's EqualFold; this map lookup missed and the
+// dispatcher surfaced the "no engine" error.
+//
+// Expected:
+//   - agentID is the (possibly case-variant) target id.
+//
+// Returns:
+//   - The canonical (engines-map-keyed) id, the matching engine, and
+//     true when a match exists under any case.
+//   - The original agentID, nil, and false otherwise — preserves the
+//     existing sentinel-error shape so callers' error strings keep
+//     using the id the caller actually typed.
+//
+// Side effects:
+//   - None (read-only access to d.engines).
+func (d *DelegateTool) lookupEngineByID(agentID string) (string, *Engine, bool) {
+	if eng, ok := d.engines[agentID]; ok && eng != nil {
+		return agentID, eng, true
+	}
+	for id, eng := range d.engines {
+		if eng == nil {
+			continue
+		}
+		if strings.EqualFold(id, agentID) {
+			return id, eng, true
+		}
+	}
+	return agentID, nil, false
 }
 
 // formatRejection builds the human-readable body that follows the

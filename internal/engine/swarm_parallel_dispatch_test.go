@@ -380,4 +380,124 @@ var _ = Describe("SwarmParallelDispatch", func() {
 				"zero MemberTimeout must preserve the no-deadline contract")
 		})
 	})
+
+	// Bug C — Swarm-target dispatch case-fold. Forensic evidence:
+	// session 7dfdb197-ce21-45a2-b5da-f2fa62dd293b at 17:57:05.214
+	//
+	//   swarm-target dispatch "dev-swarm" failed:
+	//     no engine for swarm member "tech-Lead"
+	//
+	// The orchestrator delegated to a swarm whose Members[] referenced
+	// `tech-Lead`, but the per-agent engines map was keyed under the
+	// canonical `Tech-Lead`. The first lookup (in-swarm gate at
+	// resolveTargetWithOptions, fixed by Bug 2 / 576b8156 via
+	// containsAgent's strings.EqualFold) passed; the SECOND lookup
+	// (d.engines[memberID] at delegation.go:2983 inside buildMemberRunner)
+	// is a raw map access that's case-sensitive — so the dispatch
+	// surfaces "no engine for swarm member" despite the member being
+	// registered under a case-variant of the same id.
+	//
+	// Pin the case-fold contract end-to-end:
+	//   - canonical-registered Tech-Lead resolves under member id
+	//     `tech-Lead`, `TECH-LEAD`, and `tech-lead`.
+	//   - canonical-registered Senior-Engineer resolves under
+	//     `senior-engineer` and `Senior-engineer`.
+	//   - completely unknown ids still error with the existing
+	//     "no engine for swarm member" sentinel.
+	Context("Bug C — case-insensitive engine resolution under swarm-target dispatch", func() {
+		It("resolves Tech-Lead engine when the swarm member id case-differs (tech-Lead)", func() {
+			// Engines registered under canonical case.
+			lead, engines := buildLeadAndMemberEngines([]string{"Tech-Lead"})
+
+			// Manifest Members[] uses the case-variant the orchestrator
+			// actually typed in the forensic session.
+			memberAsCalled := "tech-Lead"
+			manifest := parallelManifest("dev-swarm", []string{memberAsCalled}, false, 0)
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			streamers := map[string]streaming.Streamer{
+				"Tech-Lead": trivialStreamer(nil),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(
+				context.Background(), &swarmCtx, []string{memberAsCalled}, "go")
+
+			Expect(err).NotTo(HaveOccurred(),
+				"buildMemberRunner must case-fold d.engines lookup so a case-variant member id ("+memberAsCalled+") resolves to the canonical engine (Tech-Lead) — mirrors Bug 2 / containsAgent's strings.EqualFold contract")
+		})
+
+		It("resolves the canonical engine across multiple case variants", func() {
+			// Multiple canonical-cased engines registered.
+			lead, engines := buildLeadAndMemberEngines([]string{"Tech-Lead", "Senior-Engineer"})
+
+			cases := []struct {
+				name          string
+				memberAsTyped string
+			}{
+				{"upper-case member id", "TECH-LEAD"},
+				{"all-lower member id", "tech-lead"},
+				{"mixed-case Senior-Engineer", "Senior-engineer"},
+				{"all-lower Senior-Engineer", "senior-engineer"},
+			}
+
+			for _, tc := range cases {
+				By(tc.name)
+				manifest := parallelManifest("dev-swarm-"+tc.memberAsTyped, []string{tc.memberAsTyped}, false, 0)
+				reg := swarm.NewRegistry()
+				reg.Register(manifest)
+				swarmCtx := swarm.NewContext(manifest.ID, manifest)
+				lead.SetSwarmContext(&swarmCtx)
+
+				streamers := map[string]streaming.Streamer{
+					"Tech-Lead":       trivialStreamer(nil),
+					"Senior-Engineer": trivialStreamer(nil),
+				}
+
+				delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+					WithStreamers(streamers).
+					WithSwarmRegistry(reg)
+
+				err := delegateTool.DispatchSwarmMembers(
+					context.Background(), &swarmCtx, []string{tc.memberAsTyped}, "go")
+
+				Expect(err).NotTo(HaveOccurred(),
+					"case variant "+tc.memberAsTyped+" must resolve to the canonical engine")
+			}
+		})
+
+		It("still surfaces 'no engine for swarm member' when the target is genuinely unknown", func() {
+			// Negative case — case-folding must NOT swallow real misses.
+			// A completely unknown member id (no matching engine under
+			// any case) must keep producing the existing sentinel error
+			// so honest typos still surface to the model.
+			lead, engines := buildLeadAndMemberEngines([]string{"Tech-Lead"})
+
+			unknown := "Completely-Unknown-Agent"
+			manifest := parallelManifest("dev-swarm-unknown", []string{unknown}, false, 0)
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(
+				context.Background(), &swarmCtx, []string{unknown}, "go")
+
+			Expect(err).To(HaveOccurred(),
+				"a member id with no canonical match under any case must still error — case-fold must not swallow real misses")
+			Expect(err.Error()).To(ContainSubstring("no engine for swarm member"),
+				"the sentinel error message stays unchanged so existing log/transcript filters keep working")
+			Expect(err.Error()).To(ContainSubstring(unknown),
+				"the rejected member id appears verbatim in the error so the model sees what it actually typed")
+		})
+	})
 })
