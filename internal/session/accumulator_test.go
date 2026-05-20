@@ -1602,6 +1602,266 @@ var _ = Describe("AccumulateStream", func() {
 					"the tool-bearing path inherits the same fix")
 		})
 	})
+
+	// Streaming Coherence — Fabricated-completion guard (May 2026).
+	// Live reproducer: a glm-5.1 coordinator session emitted assistant turns
+	// containing fabricated completion language
+	// (`✅ Master bug report written to: ~/vaults/...`) twice in a row with
+	// ZERO preceding `write`/`bash`/`delegate` tool calls. Nothing was saved
+	// — the model self-reported a file operation it never performed. The
+	// engine must annotate such turns so downstream consumers (chat UI,
+	// audit log, future blocking logic) can distinguish a fabricated
+	// completion claim from a real one.
+	//
+	// Guard contract: content-bearing assistant turn + completion-language
+	// signature + NO tool call AND NO delegation in this turn →
+	// Message.StopReason = StopReasonFabricatedCompletion. Content flows
+	// verbatim; only the StopReason is set.
+	Context("when a content-bearing turn matches the fabricated-completion signature", func() {
+		It("stamps StopReasonFabricatedCompletion when the turn has no tool_call and no delegation", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				Content:    "✅ Master bug report written to: ~/vaults/baphled/bugs/master.md",
+				ProviderID: "zai",
+				ModelID:    "glm-5.1",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai", ModelID: "glm-5.1"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"content-bearing turn produces exactly one assistant message — the "+
+					"guard sets StopReason but does NOT suppress or duplicate the message")
+			Expect(assistantMsgs[0].Content).To(Equal(
+				"✅ Master bug report written to: ~/vaults/baphled/bugs/master.md"),
+				"content MUST flow verbatim — the guard annotates, never mutates the body")
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonFabricatedCompletion),
+				"a self-reported file-write with no qualifying tool evidence in the turn "+
+					"MUST be stamped as fabricated so the UI / audit layer can flag it")
+		})
+
+		It("matches the bare check-mark glyph as a fabrication signature", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{Content: "✅ done", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonFabricatedCompletion),
+				"the literal ✅ glyph is part of the documented fabrication signature — "+
+					"glm-5.1 emits it as a completion claim in self-reported file-write turns")
+		})
+
+		It("matches case-insensitively on the phrase 'persisted to'", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{Content: "Persisted to /tmp/output.md.", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonFabricatedCompletion),
+				"the signature MUST be case-insensitive — 'Persisted to' and "+
+					"'persisted to' are both completion claims")
+		})
+
+		It("does NOT stamp the turn when a real tool_call accompanied the content", func() {
+			// A turn where the model says "saved to /tmp/x" and then issues
+			// an actual tool_call is an announcement of work it is doing
+			// in-band — that is NOT fabrication. The guard reads the
+			// per-turn flags (turnHadToolCall) so a real tool round
+			// suppresses the stamp.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				Content:    "✅ Master bug report written to: /tmp/master.md",
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{
+				ToolCall: &provider.ToolCall{
+					ID:        "tc-write",
+					Name:      "write",
+					Arguments: map[string]any{"path": "/tmp/master.md", "content": "..."},
+				},
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			// The flushed content message — produced before the tool_call —
+			// must NOT carry the fabrication stamp because the same turn
+			// also produced a real tool_call.
+			for _, m := range assistantMsgs {
+				Expect(m.StopReason).NotTo(Equal(session.StopReasonFabricatedCompletion),
+					"a turn carrying a real tool_call is announcement-then-action — "+
+						"the guard MUST NOT false-flag legitimate in-band tool use")
+			}
+		})
+
+		It("does NOT stamp the turn when a delegation accompanied the content", func() {
+			// Mirror of the tool_call gate: a coordinator turn that says
+			// "delegated to worker" while also producing a delegation
+			// chunk is legitimate. The guard reads turnHadDelegation.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{
+				Content:    "✅ Saved to plan.md — delegating now",
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{
+				DelegationInfo: &provider.DelegationInfo{
+					TargetAgent: "worker",
+					Status:      "started",
+					ChainID:     "c-1",
+				},
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			for _, m := range assistantMsgs {
+				Expect(m.StopReason).NotTo(Equal(session.StopReasonFabricatedCompletion),
+					"a turn carrying a real delegation is legitimate — "+
+						"the guard MUST NOT false-flag delegation-bearing turns")
+			}
+		})
+
+		It("does NOT stamp genuine content with no completion phrases", func() {
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				Content:    "Here is my plan: I will read the file first.",
+				ProviderID: "zai",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonFabricatedCompletion),
+				"genuine content with no completion signature MUST flow through unstamped — "+
+					"the guard is a precise detector, not a blanket filter")
+		})
+
+		It("preserves the upstream stop_reason precedence on content that does not match the signature", func() {
+			// When the upstream provider emits a real stop_reason and the
+			// content does NOT match the fabrication signature, the upstream
+			// value MUST survive — the guard does not overwrite a real
+			// stop_reason on legitimate content.
+			rawCh := make(chan provider.StreamChunk, 4)
+			rawCh <- provider.StreamChunk{Content: "All looks good.", ProviderID: "zai"}
+			rawCh <- provider.StreamChunk{EventType: "stop_reason", StopReason: "end_turn"}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1))
+			Expect(assistantMsgs[0].StopReason).To(Equal("end_turn"),
+				"the upstream stop_reason MUST be preserved on non-fabricated content — "+
+					"the guard only stamps when the content matches the signature AND "+
+					"no tool/delegation evidence exists this turn")
+		})
+
+		It("preserves the thinking-only and empty-turn sentinels on their respective paths", func() {
+			// Regression coverage: the fabrication guard fires only on the
+			// content-bearing flushContent path. The synthesizePlaceholder
+			// path (thinking-only, empty-turn) MUST still produce
+			// StopReasonThinkingOnly and StopReasonEmptyTurn respectively.
+
+			// Empty-turn path.
+			emptyAppender := &fakeAppender{}
+			emptyCh := make(chan provider.StreamChunk, 1)
+			emptyCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(emptyCh)
+			emptyOut := session.AccumulateStream(context.Background(), emptyAppender, "sess-1", "agent-1", emptyCh)
+			drainChannel(emptyOut)
+
+			var emptyMsgs []session.Message
+			for _, m := range emptyAppender.messages {
+				if m.Role == "assistant" {
+					emptyMsgs = append(emptyMsgs, m)
+				}
+			}
+			Expect(emptyMsgs).To(HaveLen(1))
+			Expect(emptyMsgs[0].StopReason).To(Equal(session.StopReasonEmptyTurn),
+				"empty-turn synthesis path is independent of the fabrication guard")
+
+			// Thinking-only path (raw thinking, no signature, no upstream stop_reason).
+			thinkingAppender := &fakeAppender{}
+			thinkingCh := make(chan provider.StreamChunk, 2)
+			thinkingCh <- provider.StreamChunk{Thinking: "reasoning only", ProviderID: "zai"}
+			thinkingCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+			close(thinkingCh)
+			thinkingOut := session.AccumulateStream(context.Background(), thinkingAppender, "sess-1", "agent-1", thinkingCh)
+			drainChannel(thinkingOut)
+
+			var thinkingMsgs []session.Message
+			for _, m := range thinkingAppender.messages {
+				if m.Role == "assistant" {
+					thinkingMsgs = append(thinkingMsgs, m)
+				}
+			}
+			Expect(thinkingMsgs).To(HaveLen(1))
+			Expect(thinkingMsgs[0].StopReason).To(Equal(session.StopReasonThinkingOnly),
+				"thinking-only synthesis path is independent of the fabrication guard")
+		})
+	})
 })
 
 var _ = Describe("MessageAppender interface", func() {

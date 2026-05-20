@@ -586,6 +586,14 @@ func applyThinkingAndContent(
 //   - Calls flushThinking and flushContent before appending the tool_call message.
 //   - Updates s.lastToolName and s.lastToolInput for later use by applyToolResult.
 func applyToolCall(appender MessageAppender, s *streamAccumState, tc *provider.ToolCall) {
+	// Fabricated-completion guard ordering: the per-turn flag MUST be
+	// set BEFORE flushContent so that a content-then-tool turn (the model
+	// announced what it was about to do, then issued a real tool_call) is
+	// recognised as legitimate by the guard at flushContent. Without this
+	// reorder, an announcement carrying completion-language (e.g. "✅
+	// about to save to /tmp/x") would be false-flagged because
+	// turnHadToolCall is still false at the point flushContent runs.
+	s.turnHadToolCall = true
 	flushThinking(appender, s)
 	flushContent(appender, s)
 	input := toolArgValue(tc.Name, tc.Arguments)
@@ -598,7 +606,6 @@ func applyToolCall(appender MessageAppender, s *streamAccumState, tc *provider.T
 	})
 	s.lastToolName = tc.Name
 	s.lastToolInput = input
-	s.turnHadToolCall = true
 	// Streaming Coherence Slice C — a tool round is a fresh turn signal;
 	// reset the per-turn placeholder gate.
 	s.turnPlaceholderEmitted = false
@@ -802,6 +809,23 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 		copy(blocks, s.thinkingBlocks)
 		msg.ThinkingBlocks = blocks
 	}
+	// Fabricated-completion guard (May 2026). When a content-bearing
+	// turn matches the documented fabrication signature AND the turn
+	// produced no tool_call AND no delegation, stamp the synthetic
+	// StopReasonFabricatedCompletion so downstream consumers (chat UI,
+	// audit, future blocking logic) can flag a self-reported file
+	// operation that has no qualifying evidence on the wire.
+	//
+	// Live reproducer: glm-5.1 coordinator turns emitted
+	// "✅ Master bug report written to: ~/vaults/..." twice in a row
+	// with ZERO preceding write/bash/delegate tool calls. The guard
+	// only sets StopReason — content flows verbatim — so the existing
+	// flushContent persistence shape is preserved and the guard is
+	// purely additive metadata. The upstream stop_reason is preserved
+	// when the content does NOT match the signature.
+	if !s.turnHadToolCall && !s.turnHadDelegation && matchesFabricationSignature(msg.Content) {
+		msg.StopReason = StopReasonFabricatedCompletion
+	}
 	appender.AppendMessage(s.sessionID, msg)
 	s.contentBuf.Reset()
 	s.thinkingBlocks = nil
@@ -851,6 +875,69 @@ const StopReasonThinkingOnly = "thinking_only"
 // Wire-format-stable: the value is read by the Vue `MessageBubble`
 // render branch, not by any backend consumer.
 const StopReasonEmptyTurn = "empty_turn"
+
+// StopReasonFabricatedCompletion is the synthetic stop reason stamped on
+// a content-bearing assistant Message when the turn matches the
+// documented fabrication signature (self-reported file operation phrases
+// like "✅", "written to", "persisted to", "saved to", "created the file")
+// AND the same turn produced NO tool_call AND NO delegation. The model
+// has self-reported a completed file operation it never performed;
+// stamping the message lets downstream consumers (chat UI, audit log,
+// future blocking logic) distinguish a fabricated completion claim from
+// a real one.
+//
+// Live reproducer: glm-5.1 acting as coordinator emitted assistant
+// turns containing "✅ Master bug report written to: ~/vaults/..." twice
+// in a row with ZERO preceding write/bash/delegate tool calls. Nothing
+// was saved. The guard is content-additive only — Message.Content flows
+// verbatim and only Message.StopReason is set. The guard fires only at
+// the content-bearing flushContent path; the thinking-only and
+// empty-turn synthesisers continue to set their own sentinels.
+//
+// Wire-format-stable: the value is read by the Vue MessageBubble render
+// branch and the audit pipeline; no backend consumer keys on the
+// specific string.
+const StopReasonFabricatedCompletion = "fabricated_completion"
+
+// fabricationPhrases is the set of self-reported-completion phrases that
+// trigger the StopReasonFabricatedCompletion stamp when present in an
+// assistant turn that produced no tool_call and no delegation. The set
+// matches what glm-5.1 actually emitted in the live reproducer. Add to
+// this list cautiously — the precision/recall trade-off is intentional;
+// the guard is meant to flag SELF-REPORTED FILE OPERATIONS, not generic
+// affirmations.
+var fabricationPhrases = []string{
+	"✅",
+	"written to",
+	"persisted to",
+	"saved to",
+	"created the file",
+}
+
+// matchesFabricationSignature reports whether content matches any phrase
+// in fabricationPhrases (case-insensitive for ASCII phrases; the literal
+// ✅ glyph is compared byte-for-byte since case-folding does not apply).
+func matchesFabricationSignature(content string) bool {
+	if content == "" {
+		return false
+	}
+	// Compare the lowercased content against the ASCII phrases. The
+	// non-ASCII glyph ✅ is checked against the original content so the
+	// case-folding is a no-op for it.
+	lower := strings.ToLower(content)
+	for _, phrase := range fabricationPhrases {
+		if phrase == "✅" {
+			if strings.Contains(content, phrase) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
 
 // StopReasonTurnInterrupted is the synthetic stop reason stamped on a
 // placeholder assistant Message when a tool-bearing turn ends due to a
