@@ -1621,6 +1621,28 @@ export const useChatStore = defineStore('chat', {
         const todoStore = useTodoStore()
         todoStore.setCurrentSession(sessionId)
         todoStore.hydrateFromMessages(sessionId, this.messages)
+
+        // Plans/Child Session Turn Registry Plumbing (May 2026) §S7 —
+        // PR4 audit found that clicking a child row in
+        // ChildSessionsPanel (or any session-switch path that lands
+        // here) did NOT reattach the long-poll. restoreStateFromBackend
+        // calls maybeReattachStream on initial mount (lines 1117/1150)
+        // but the runtime switch path was missing the equivalent call.
+        // Net effect pre-fix: the user lands on the child session and
+        // sees its static history, but the Turn registry's MessagesAdded
+        // slice never reaches the FE because pollTurnUntilTerminal was
+        // never started for the child's activeTurnId. PR3's backend-
+        // authoritative Live indicator on the LIST still lit up, but
+        // the user couldn't actually SEE the live chunks once inside
+        // the child. This is the canonical S7 contract — closing it
+        // here makes the chain `selectChild` → `loadSessionMessages` →
+        // `maybeReattachStream` → `pollTurnUntilTerminal` complete and
+        // mirrors the restore path's behaviour. `session` is the
+        // SessionSummary captured at the top of this try block; the
+        // post-fetch summaries map is not re-read because the registry-
+        // backed activeTurnId is what maybeReattachStream consults via
+        // its own this.sessions.find lookup at chatStore.ts:1173.
+        this.maybeReattachStream(sessionId, session?.isStreaming ?? false)
       } finally {
         // Per-session state — clear isLoading on the target session
         // (the message-history fetch is done). DO NOT clear isStreaming:

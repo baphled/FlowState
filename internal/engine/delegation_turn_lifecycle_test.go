@@ -65,6 +65,19 @@ import (
 //     returns `(turnID, true)` — consumer-visible verification of the
 //     load-bearing UI fix; the API server's `handleListV1Sessions`
 //     projection uses this exact lookup at server.go:1216-1224.
+//   - S9.1 (PR4): nested A → B → C delegation mints distinct child
+//     Turns per level. Each `executeSync` invocation calls
+//     `StartOrReuse` on its own delegateSessionID, so the recursion
+//     bottoms out by construction with no shared state across levels.
+//     Driven by chaining two `Execute` calls — the second uses the
+//     first call's child session id as the parent IDKey, simulating
+//     B's engine invoking `delegate` against C. Per plan §D4:
+//     "Yes, by construction — no depth limit needed."
+//   - S9.2 (PR4): nested A → B → C completes each level's Turn
+//     independently. After both Execute calls return, `byActiveSession`
+//     is empty for BOTH child sessions (each Complete cleared its own
+//     entry without touching the other's). Pinned via FindActiveBySession
+//     lookup on both child ids after the full nested chain unwinds.
 
 // spyRegistry wraps a real *turn.Registry and counts calls to Fail +
 // ResetForRetry so the S4.2 + S5.1 specs can assert their respective
@@ -538,6 +551,126 @@ var _ = Describe("DelegateTool child Turn lifecycle (executeSync)", func() {
 			slowStream <- provider.StreamChunk{Content: "released", Done: true}
 			close(slowStream)
 			Eventually(done, 2*time.Second).Should(BeClosed())
+		})
+	})
+
+	// Plans/Child Session Turn Registry Plumbing (May 2026) §D4 + §S9.
+	// PR4 closes the nested-delegation pin gap surfaced by the PR4
+	// S-table audit (Item 5 of the rollout). Every PR before PR4 covered
+	// either the single-target (executeSync) or swarm-target
+	// (bootstrapMemberSession) plumbing site in isolation; neither
+	// exercised the recursion property the plan claims under D4:
+	//
+	//   "Every executeSync invocation calls StartOrReuse on its own
+	//    delegateSessionID. When a great-grandchild's own delegate tool
+	//    fires, the great-grandchild's engine invokes the same
+	//    DelegateTool.executeSync path against a new child session,
+	//    which mints its own child Turn. The recursion bottoms out
+	//    naturally because each level operates on its own sessionID;
+	//    there is no shared state across levels."
+	//
+	// Drive the recursion synthetically: invoke `Execute` twice against
+	// the SAME DelegateTool, where the second call's parent IDKey is the
+	// first call's spawned child session id. This is exactly what would
+	// happen at runtime when B's engine tool-loops a delegate call into
+	// C: the engine resolves the parent from sessionIDFromContext(ctx);
+	// each invocation is self-contained at the executeSync layer.
+	Context("S9 — nested delegation A → B → C (D4 depth pin)", func() {
+		It("mints a distinct child Turn for each level of the recursion and bottoms out cleanly", func() {
+			parent, err := mgr.CreateSession("orchestrator")
+			Expect(err).NotTo(HaveOccurred())
+
+			spy := newSpyRegistry()
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithSessionManager(mgr).
+				WithChildTurnRegistryForTest(spy)
+
+			// Level 1: orchestrator (A) delegates to qa-agent (B).
+			// executeSync mints turn-B against the freshly spawned
+			// child-B session. closeSessionIfManaged tears child-B
+			// down on the happy path AFTER Complete clears
+			// byActiveSession.
+			levelOneCtx := context.WithValue(context.Background(), session.IDKey{}, parent.ID)
+			levelOneInput := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "level-1: handoff to B",
+				},
+			}
+			levelOneResult, err := delegateTool.Execute(levelOneCtx, levelOneInput)
+			Expect(err).NotTo(HaveOccurred(),
+				"the first delegation must complete cleanly — the recursion can only bottom out if each level returns")
+
+			childBID, ok := levelOneResult.Metadata["sessionId"].(string)
+			Expect(ok).To(BeTrue(),
+				"level-1 delegate must surface child-B's session id in result metadata — the simulated B engine would resolve this from its own sessionIDFromContext at the next executeSync call")
+			Expect(childBID).NotTo(BeEmpty())
+
+			// Re-register child-B because closeSessionIfManaged
+			// (executeSync:2378 happy path) removed it from the
+			// session manager. The runtime equivalent — B's engine
+			// actually running and looping its tool dispatch — would
+			// hold the session open across the entire B turn; here
+			// we re-register because the test slices across the
+			// boundary. This is a test-fixture concern, NOT a hole
+			// in the recursion-bottoms-out property: the production
+			// path NEVER calls closeSessionIfManaged for an engine
+			// that is itself mid-stream (it runs the child engine,
+			// then closes only after that engine drains).
+			mgr.RegisterSession(childBID, "qa-agent")
+
+			// Level 2: simulate B (running inside child-B) delegating
+			// to C. Drive this by invoking the SAME DelegateTool
+			// against a ctx whose IDKey is child-B's session id.
+			// executeSync mints turn-C against the freshly spawned
+			// child-C session. This is the canonical "B's engine
+			// invokes delegate" recursion shape — the engine's
+			// own tool-loop would do exactly the same thing at the
+			// runtime layer.
+			levelTwoCtx := context.WithValue(context.Background(), session.IDKey{}, childBID)
+			levelTwoInput := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "level-2: handoff to C",
+				},
+			}
+			levelTwoResult, err := delegateTool.Execute(levelTwoCtx, levelTwoInput)
+			Expect(err).NotTo(HaveOccurred(),
+				"the nested delegation must complete cleanly at level-2 — no shared state across levels prevents the inner call from minting its own Turn")
+
+			childCID, ok := levelTwoResult.Metadata["sessionId"].(string)
+			Expect(ok).To(BeTrue())
+			Expect(childCID).NotTo(BeEmpty())
+			Expect(childCID).NotTo(Equal(childBID),
+				"child-B and child-C must be DISTINCT sessions — resolveOrCreateSession spawns a fresh child per call, the recursion cannot collapse onto a single session id")
+
+			// Per-level lifecycle accounting. StartOrReuse fired
+			// once per executeSync invocation; with two levels in
+			// flight the spy records exactly two hits. The plan's
+			// D4 claim ("by construction; no depth limit") rests on
+			// this — if any level shared state with another level
+			// (e.g. via a shared mutable struct field on
+			// DelegateTool), the count would be wrong.
+			Expect(spy.startReuseHits.Load()).To(Equal(int32(2)),
+				"nested A → B → C must mint exactly 2 child Turns via StartOrReuse — one per executeSync invocation, no shared state across levels (plan §D4 + §S9.1 — recursion bottoms out by construction)")
+			Expect(spy.completeCalls.Load()).To(Equal(int32(2)),
+				"each level's happy-path Complete must fire independently — 2 levels = 2 Completes, no cross-level interference")
+			Expect(spy.failCalls.Load()).To(Equal(int32(0)),
+				"a clean nested chain must NOT call Fail at any level — the happy path is mutually exclusive with Fail per executeSync's terminal discipline")
+
+			// byActiveSession is empty for BOTH child sessions —
+			// each Complete cleared its own entry. The API server's
+			// long-poll projection at server.go:1216-1224 would
+			// report idle for both children after the chain
+			// unwinds, which is correct: nothing is in flight.
+			_, present := spy.FindActiveBySession(childBID)
+			Expect(present).To(BeFalse(),
+				"child-B's byActiveSession entry must clear on Complete — without this, the next delegate call against the same agent would weaken to a no-op auto-complete on a stale Running prior")
+			_, present = spy.FindActiveBySession(childCID)
+			Expect(present).To(BeFalse(),
+				"child-C's byActiveSession entry must clear on Complete — same invariant as child-B; the recursion's bottom-out property requires every level to be terminal at its own session id by the time the parent stack frame returns")
 		})
 	})
 })

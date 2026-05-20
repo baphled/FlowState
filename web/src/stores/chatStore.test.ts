@@ -7385,3 +7385,133 @@ describe('chatStore - sendMessage intercepts /compress', () => {
     expect(vi.mocked(compactSessionNow)).not.toHaveBeenCalled()
   })
 })
+
+// Plans/Child Session Turn Registry Plumbing (May 2026) §S7 — PR4
+// canonical contract pin. The plan claims:
+//
+//   "S7 — Clicking into a child session in ChildSessionsPanel triggers
+//    maybeReattachStream and starts pollTurnUntilTerminal against the
+//    child's turnID."
+//
+// PR4 audit found the chain was BROKEN at the runtime layer:
+// `ChildSessionsPanel.selectChild` calls `chatStore.loadSessionMessages`,
+// which set the active session and fetched messages but did NOT call
+// `maybeReattachStream`. Only the initial-mount path
+// (`restoreStateFromBackend` at lines 1117 / 1150) reattached. Net
+// effect pre-fix: PR3's backend-authoritative Live indicator lit up
+// correctly on the LIST surface, but once the user clicked through to
+// the child, the long-poll was never started — they saw static history
+// while the engine was actively producing chunks server-side.
+//
+// PR4 closes the gap by adding the `maybeReattachStream` call inside
+// `loadSessionMessages` after the message fetch + todoStore hydrate,
+// mirroring the restore path. These specs pin the chain end-to-end.
+describe('chatStore - loadSessionMessages reattaches long-poll on backend-streaming sessions (PR4 §S7)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('starts pollTurnUntilTerminal against the child\'s activeTurnId when a session with a non-empty activeTurnId is loaded', async () => {
+    // Simulate the PR3 surface: a backend-stamped child session row
+    // carries a non-empty activeTurnId (the engine's executeSync /
+    // bootstrapMemberSession path has minted a child Turn that is
+    // currently Running). The user clicks the child row in the panel,
+    // selectChild → loadSessionMessages fires. Post-PR4 the long-poll
+    // must attach to that child's turnID.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'child-mid-stream',
+        agentId: 'executor',
+        title: 'Mid-Stream Child',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: true,
+        // Stamped by handleListV1Sessions at server.go:1216-1224 from
+        // the Turn registry — the canonical signal the FE consumes
+        // post-PR3 for backend-authoritative liveness.
+        activeTurnId: 'turn-mid-stream-001',
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+    // The long-poll returns a terminal status immediately so the spec
+    // does not race on the loop's natural exit. The load-bearing
+    // assertion is the fetchTurn invocation shape — sessionId + turnId
+    // and `wait=true` to gate into the hold path.
+    vi.mocked(fetchTurn).mockResolvedValue({
+      turn_id: 'turn-mid-stream-001',
+      session_id: 'child-mid-stream',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'mock', model: 'mock' },
+      error: '',
+      messages: [],
+    } as never)
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.loadSessionMessages('child-mid-stream')
+
+    // Flush the maybeReattachStream → pollTurnUntilTerminal microtask
+    // queue. loadSessionMessages returns once the message fetch is
+    // sealed; the reattach fires-and-forgets a poll. Awaiting a
+    // resolved promise drains the queue.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Pin: fetchTurn was invoked with the child's session id AND the
+    // child's activeTurnId — the canonical S7 chain. Pre-PR4 this
+    // would have been zero calls because loadSessionMessages did not
+    // reach maybeReattachStream.
+    expect(vi.mocked(fetchTurn)).toHaveBeenCalled()
+    const firstCall = vi.mocked(fetchTurn).mock.calls[0]
+    expect(firstCall[0]).toBe('child-mid-stream')
+    expect(firstCall[1]).toBe('turn-mid-stream-001')
+
+    // Defence-in-depth: the long-poll options must opt into the
+    // server-side hold; without `wait=true` the loop degenerates into
+    // a tight spin and the live-chunk render budget evaporates. This
+    // mirrors the assertion at line 1081 for the post-send poll path.
+    const opts = firstCall[2] as { wait?: boolean; since?: number } | undefined
+    expect(opts?.wait).toBe(true)
+  })
+
+  it('does NOT start a long-poll when the loaded session has an empty activeTurnId (idle child)', async () => {
+    // The R8 boundary mirror: an idle child (no activeTurnId stamped
+    // by the backend) must not trigger a poll. maybeReattachStream's
+    // early-return at chatStore.ts:1175-1181 handles this on the
+    // restore path; loadSessionMessages's new reattach call must
+    // observe the same gate. Without this, every session switch would
+    // fire a useless long-poll against an empty turnID.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'child-idle',
+        agentId: 'executor',
+        title: 'Idle Child',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 5,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+        activeTurnId: '',
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.loadSessionMessages('child-idle')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Pin: fetchTurn was NOT called for an idle child — the empty
+    // activeTurnId short-circuited maybeReattachStream as designed.
+    expect(vi.mocked(fetchTurn)).not.toHaveBeenCalled()
+  })
+})
