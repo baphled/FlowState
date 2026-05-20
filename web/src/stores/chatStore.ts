@@ -778,6 +778,40 @@ export const useChatStore = defineStore('chat', {
     // full session list to all subscribers anyway, so a single
     // top-level Set is the lightest correct primitive.
     seenDelegationStartedIds: new Set<string>() as Set<string>,
+    // Bug fix — Child session "Live" indicator goes stale (May 2026).
+    //
+    // Symmetric counterpart to `seenDelegationStartedIds`. The
+    // `delegation_started` row above triggers a `loadSessions()`
+    // refresh so the child entry APPEARS in ChildSessionsPanel; this
+    // set drives the same refresh on the TERMINAL copy of the row
+    // (role === 'delegation', emitted by the engine's accumulator
+    // when the child finishes — accumulator.go:177-192 / turn.go:699
+    // — and dispatched into the messages array by the same Turn
+    // poll). Without it the panel's "Live" pulsing-green chip never
+    // flips back to idle because the parent's session list is never
+    // re-fetched to observe the child's status moving from
+    // 'running' to 'completed' / 'errored'.
+    //
+    // Lifecycle / scope is identical to the started-set above:
+    //   - Add: first poll iteration that surfaces a row whose id
+    //     is not yet present and whose role === 'delegation'.
+    //   - Read: every subsequent merge iteration, to skip the
+    //     refresh fan-out (a snapshot can carry the same terminal
+    //     row across every subsequent poll while the parent turn
+    //     keeps running).
+    //   - Clear: on session change in `loadSessionMessages` — the
+    //     dedup is per-session, mirroring the started-set's clear
+    //     at chatStore.ts:1573 and the wider per-session reset
+    //     pattern (lastCompactionEventKey / lastGateFailureKey /
+    //     lastCriticalErrorCorrelationId).
+    //
+    // Independent of `seenDelegationStartedIds`: a single poll that
+    // carries both a NEW started row and a NEW terminal row fires
+    // TWO refreshes (one each). That's intentional — they're
+    // separate panel transitions (new chip appears; existing chip
+    // flips to idle) and the panel needs the session list
+    // reconciled for each.
+    seenDelegationCompletedIds: new Set<string>() as Set<string>,
     // ---- bootstrap singleton (App-level loading-overlay coordination) ----
     //
     // bootstrap() wraps restoreStateFromBackend so the App-level loading
@@ -1571,6 +1605,13 @@ export const useChatStore = defineStore('chat', {
       // don't capture the set by reference but the explicit form is
       // self-documenting next to the sibling resets.
       this.seenDelegationStartedIds.clear()
+      // Bug fix — Child session "Live" indicator goes stale (May 2026).
+      // Symmetric per-session reset for the terminal-row dedup set.
+      // Same rationale as the started-set clear above: the new
+      // session's poll must be able to fire a fresh refresh for ITS
+      // first terminal `delegation` row even if the prior session's
+      // seen-set held the same id.
+      this.seenDelegationCompletedIds.clear()
       // Streaming Coherence Slice F — clear stale per-session phase
       // for the target session so its watchdog starts at the legacy
       // 60s default until the next engine heartbeat updates the phase.
@@ -1992,6 +2033,32 @@ export const useChatStore = defineStore('chat', {
             !this.seenDelegationStartedIds.has(row.id)
           ) {
             this.seenDelegationStartedIds.add(row.id)
+            void this.loadSessions()
+          }
+          // Bug fix — Child session "Live" indicator goes stale (May 2026).
+          //
+          // Symmetric trigger for the TERMINAL copy of the delegation
+          // row (role === 'delegation', emitted by the engine's
+          // accumulator when the child finishes — accumulator.go:177-192
+          // / turn.go:699). Same shape as the started block above:
+          // per-row debounce via a sibling Set keyed by message id,
+          // single `loadSessions()` fan-out on first sight. Closes the
+          // "Live" chip going stale: without this trigger the parent's
+          // session list never re-fetches when the child completes, so
+          // ChildSessionsPanel's pulsing-green affordance keeps pulsing
+          // forever until the user manually navigates or the next turn
+          // happens to fire a fresh delegation_started.
+          //
+          // Independent of the started block: a snapshot carrying both
+          // a new started row AND a new terminal row fires TWO
+          // refreshes (one each). They're separate panel transitions
+          // (new chip appears; existing chip flips to idle) and the
+          // panel needs the session list reconciled for each.
+          if (
+            row.role === 'delegation' &&
+            !this.seenDelegationCompletedIds.has(row.id)
+          ) {
+            this.seenDelegationCompletedIds.add(row.id)
             void this.loadSessions()
           }
           const idx = this.messages.findIndex((m) => m.id === row.id)
