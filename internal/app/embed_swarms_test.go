@@ -643,5 +643,68 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 						"`post-member-researcher-evidence-bundle` gate; fix-option (a) drops it)")
 			}
 		})
+
+		// Team-Lead pre-formatting anti-pattern (May 2026).
+		//
+		// Live session reproducer: a Team-Lead/coordinator agent
+		// assembled a full multi-section markdown report (95-bug
+		// summary) INSIDE its own assistant turns, then tried to
+		// delegate only the "typing it out" step to a writer member.
+		// The lead's existing anti-pattern block named code-reading
+		// and code-writing as STOP violations but did NOT forbid
+		// pre-formatting the deliverable itself in own prose. This
+		// spec pins the new guidance that closes that gap.
+		//
+		// Loose substring matching deliberately: future prose tweaks
+		// to the anti-pattern wording should be free, as long as the
+		// guidance is still present and still names legal synthesis
+		// targets the lead already has on its delegation_allowlist
+		// (Researcher and/or Knowledge-Base-Curator). The targets
+		// must be on the allowlist — adding `writer` or `analyst`
+		// here would be a separate routing decision.
+		It("Team-Lead.md forbids pre-formatting deliverables and routes synthesis to Researcher/KB-Curator", func() {
+			agentsDir, err := fs.Sub(app.EmbeddedAgentsFS(), "agents")
+			Expect(err).NotTo(HaveOccurred())
+
+			body, err := fs.ReadFile(agentsDir, "Team-Lead.md")
+			Expect(err).NotTo(HaveOccurred())
+			persona := string(body)
+
+			Expect(persona).To(ContainSubstring("Pre-formatting deliverables"),
+				"Team-Lead.md must call out 'Pre-formatting deliverables' as an anti-pattern — "+
+					"the live-session bug was a lead assembling a full markdown report inside "+
+					"its own turn before handing it to a writer member to type")
+
+			// The guidance must name at least one legal synthesis
+			// target — both Researcher and Knowledge-Base-Curator are
+			// on the lead's delegation_allowlist (lines 50-51). The
+			// anti-pattern block (around lines 199-203) names other
+			// agents elsewhere in the file, so we anchor on the
+			// "Pre-formatting" sentence specifically.
+			//
+			// Find the line containing the anti-pattern and assert
+			// it routes to a legal synthesis owner. Loose match — the
+			// reviewer should be free to rewrite the surrounding
+			// prose.
+			lines := strings.Split(persona, "\n")
+			var preFormatLine string
+			for _, line := range lines {
+				if strings.Contains(line, "Pre-formatting deliverables") {
+					preFormatLine = line
+					break
+				}
+			}
+			Expect(preFormatLine).NotTo(BeEmpty(),
+				"expected to locate the Pre-formatting deliverables anti-pattern bullet for "+
+					"target-name assertion")
+			Expect(preFormatLine).To(SatisfyAny(
+				ContainSubstring("Researcher"),
+				ContainSubstring("Knowledge-Base-Curator"),
+			),
+				"Pre-formatting deliverables anti-pattern must route synthesis to a legal "+
+					"target on Team-Lead's delegation_allowlist (Researcher or "+
+					"Knowledge-Base-Curator); adding `writer` or `analyst` here would be a "+
+					"separate routing decision")
+		})
 	})
 })
