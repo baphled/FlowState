@@ -129,12 +129,15 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 		return tool.Result{}, errors.New("task_id is required and must be a string")
 	}
 
-	task, found := b.manager.Get(taskID)
+	task, ambiguous, found := b.manager.FindByIDOrPrefix(taskID)
 	if !found {
-		return tool.Result{}, fmt.Errorf("task not found: %s", taskID)
+		return tool.Result{}, b.taskNotFoundError(taskID, ambiguous)
 	}
 
-	// Mark task as accessed so it can be evicted after user retrieval
+	// Mark task as accessed so it can be evicted after user retrieval.
+	// Use the resolved id (not the caller-supplied prefix) so an
+	// 8-char prefix lookup still flags the underlying task correctly.
+	taskID = task.ID
 	b.manager.MarkAccessed(taskID)
 
 	block := false
@@ -169,6 +172,62 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 	}
 
 	return tool.Result{Output: string(jsonBytes)}, nil
+}
+
+// taskNotFoundError builds the model-friendly error returned when a
+// task_id lookup misses. Two distinct shapes:
+//
+//  1. ambiguous != nil — the supplied id was a prefix matching multiple
+//     tasks; name every matching full id one-per-line in backticks so
+//     the model can re-issue with the disambiguated UUID.
+//  2. ambiguous == nil — no task (exact or prefix) matched; surface the
+//     currently-known task IDs in the same backtick-per-line form so
+//     the model has a grounded recovery target. When zero tasks are
+//     tracked, suggest `background_list` instead (it may not have been
+//     called yet, or the list may have evicted since).
+//
+// Shape mirrors the Bug 2 precedent for delegation-allowlist rejection
+// (`internal/engine/delegation.go` formatRejection at ~4847+) — the
+// matching ids labelled with a heading, then `  - \`<id>\`` lines —
+// because the same model surface consumes both errors.
+//
+// Expected:
+//   - taskID is the caller-supplied id; echoed back so the model can
+//     see what it actually passed.
+//   - ambiguous is the sorted matching-id slice when the lookup hit on
+//     a non-unique prefix; nil otherwise.
+//
+// Returns:
+//   - A formatted error suitable for surfacing through tool.Result.
+//
+// Side effects:
+//   - None (read-only access to the manager).
+func (b *BackgroundOutputTool) taskNotFoundError(taskID string, ambiguous []string) error {
+	if len(ambiguous) > 0 {
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "task_id %q matches multiple background tasks; pass the full id:", taskID)
+		for _, id := range ambiguous {
+			sb.WriteString("\n  - `")
+			sb.WriteString(id)
+			sb.WriteString("`")
+		}
+		return errors.New(sb.String())
+	}
+
+	known := b.manager.ListIDs()
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "task not found: %s", taskID)
+	if len(known) == 0 {
+		sb.WriteString(" (no background tasks are currently tracked — call `background_list` to confirm before retrying)")
+		return errors.New(sb.String())
+	}
+	sb.WriteString("\nKnown background task IDs (call `background_list` for full status):")
+	for _, id := range known {
+		sb.WriteString("\n  - `")
+		sb.WriteString(id)
+		sb.WriteString("`")
+	}
+	return errors.New(sb.String())
 }
 
 // pollUntilComplete polls a task until it reaches a terminal state or timeout.

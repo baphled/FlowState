@@ -334,6 +334,149 @@ var _ = Describe("BackgroundOutputTool", func() {
 			})
 		})
 
+		// Bugs A+B (forensic anchor: session 7dfdb197-ce21-45a2-b5da-f2fa62dd293b)
+		//
+		// background_list returns 8-char prefix forms of task IDs in its
+		// rendered output (e.g. "6b5ade98"); the model then passes that
+		// prefix to background_output, which previously errored with a
+		// bare "task not found: 6b5ade98" — no hint that prefix-match
+		// might work, no list of known IDs. That trained the model to
+		// retry with the full UUID (fine) and, on subsequent turns, to
+		// hallucinate plausible-shaped UUIDs (Bug A: d09e3939, 0529850f
+		// at 17:34:54 / 17:35:15).
+		//
+		// Fix: accept unique prefix matches; on ambiguous/no-match
+		// surface a model-friendly error in the Bug 2 precedent shape
+		// (one-per-line backtick-quoted; see
+		// internal/engine/delegation.go formatRejection at 4847+).
+		Context("when task_id is a unique prefix of an existing task", func() {
+			It("returns that task's output (prefix accepted)", func() {
+				task := manager.Launch(ctx, "6b5ade98-1234-5678-9abc-def012345678", "agent-prefix", "prefix task", func(ctx context.Context) (string, error) {
+					return "prefix-resolved result", nil
+				})
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "6b5ade98",
+					},
+				}
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["task_id"]).To(Equal(task.ID))
+				Expect(output["status"]).To(Equal("completed"))
+				Expect(output["result"]).To(Equal("prefix-resolved result"))
+			})
+		})
+
+		Context("when task_id is a prefix matching multiple tasks", func() {
+			It("returns an error naming all matching task IDs", func() {
+				id1 := "abc12345-1111-1111-1111-111111111111"
+				id2 := "abc12345-2222-2222-2222-222222222222"
+				manager.Launch(ctx, id1, "agent-amb", "first ambiguous", func(ctx context.Context) (string, error) {
+					return "r1", nil
+				})
+				manager.Launch(ctx, id2, "agent-amb", "second ambiguous", func(ctx context.Context) (string, error) {
+					return "r2", nil
+				})
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "abc12345",
+					},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				msg := err.Error()
+				Expect(msg).To(ContainSubstring("abc12345"))
+				Expect(msg).To(ContainSubstring(id1))
+				Expect(msg).To(ContainSubstring(id2))
+				// Bug 2 precedent: matching IDs rendered backtick-quoted, one per line.
+				Expect(msg).To(ContainSubstring("`" + id1 + "`"))
+				Expect(msg).To(ContainSubstring("`" + id2 + "`"))
+			})
+		})
+
+		Context("when task_id is a full UUID match (regression pin)", func() {
+			It("returns the task's output exactly as before the prefix fix", func() {
+				fullID := "deadbeef-cafe-babe-feed-0123456789ab"
+				task := manager.Launch(ctx, fullID, "agent-full", "full uuid task", func(ctx context.Context) (string, error) {
+					return "full-uuid result", nil
+				})
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": fullID,
+					},
+				}
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["task_id"]).To(Equal(fullID))
+				Expect(output["result"]).To(Equal("full-uuid result"))
+			})
+		})
+
+		Context("when task_id matches no known task", func() {
+			It("returns an error that names known task IDs (or suggests background_list when none)", func() {
+				existing := manager.Launch(ctx, "11111111-aaaa-bbbb-cccc-222222222222", "agent-known", "known task", func(ctx context.Context) (string, error) {
+					return "ok", nil
+				})
+				Eventually(func() string {
+					t, _ := manager.Get(existing.ID)
+					return t.Status.Load()
+				}, time.Second).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "d09e3939",
+					},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				msg := err.Error()
+				// Echoes the offending id so the model can see what it
+				// passed.
+				Expect(msg).To(ContainSubstring("d09e3939"))
+				// Lists the existing known IDs in backtick form so the
+				// model has a grounded recovery target instead of
+				// hallucinating a fresh UUID (Bug A shape).
+				Expect(msg).To(ContainSubstring("`" + existing.ID + "`"))
+			})
+
+			It("suggests background_list when no tasks are tracked", func() {
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": "0529850f",
+					},
+				}
+				_, err := botTool.Execute(ctx, input)
+				Expect(err).To(HaveOccurred())
+				msg := err.Error()
+				Expect(msg).To(ContainSubstring("0529850f"))
+				Expect(msg).To(ContainSubstring("background_list"))
+			})
+		})
+
 		Context("regression: multiple sequential background_output calls", func() {
 			It("successfully retrieves multiple different tasks without eviction conflicts", func() {
 				// Launch two background tasks

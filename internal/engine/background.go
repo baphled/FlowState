@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -480,6 +482,85 @@ func (m *BackgroundTaskManager) Get(id string) (BackgroundTask, bool) {
 		return BackgroundTask{}, false
 	}
 	return *task, true
+}
+
+// FindByIDOrPrefix locates a task by exact id, falling back to a unique
+// case-insensitive prefix match. The motivation is the
+// background_list / background_output handshake: list renders short
+// 8-char prefixes alongside descriptions, and the model would echo the
+// prefix back to background_output. Pre-fix that surfaced as
+// "task not found: <prefix>", which trained the model to retry with
+// fabricated full UUIDs (forensic anchor: session 7dfdb197 — Bug A
+// fabrications d09e3939, 0529850f).
+//
+// Expected:
+//   - id is a non-empty exact task identifier or a prefix of one.
+//
+// Returns:
+//   - When id is an exact key: a value copy, nil matches, true.
+//   - When id is a prefix uniquely matching one task: a value copy of
+//     that task, nil matches, true.
+//   - When id is a prefix matching N>1 tasks: the zero BackgroundTask,
+//     the matching ids (sorted) so the caller can surface them to the
+//     model, false.
+//   - When id matches nothing: the zero BackgroundTask, nil matches,
+//     false.
+//
+// Side effects:
+//   - None.
+func (m *BackgroundTaskManager) FindByIDOrPrefix(id string) (BackgroundTask, []string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Exact-match short-circuit: preserves pre-fix behaviour for full
+	// UUIDs so the regression pin in background_output_test holds.
+	if task, ok := m.tasks[id]; ok {
+		return *task, nil, true
+	}
+
+	if id == "" {
+		return BackgroundTask{}, nil, false
+	}
+
+	idLower := strings.ToLower(id)
+	var matches []string
+	for taskID := range m.tasks {
+		if strings.HasPrefix(strings.ToLower(taskID), idLower) {
+			matches = append(matches, taskID)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return BackgroundTask{}, nil, false
+	case 1:
+		return *m.tasks[matches[0]], nil, true
+	default:
+		sort.Strings(matches)
+		return BackgroundTask{}, matches, false
+	}
+}
+
+// ListIDs returns all currently tracked task IDs in sorted order.
+// Used by background_output's not-found error path to give the model a
+// grounded recovery target rather than letting it fabricate a fresh
+// UUID (Bug A shape).
+//
+// Returns:
+//   - A sorted slice of task IDs; empty when no tasks are tracked.
+//
+// Side effects:
+//   - None.
+func (m *BackgroundTaskManager) ListIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	ids := make([]string, 0, len(m.tasks))
+	for id := range m.tasks {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // Cancel requests cancellation of a running task by its identifier.
