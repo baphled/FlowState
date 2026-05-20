@@ -4287,19 +4287,31 @@ func (d *DelegateTool) Engines() map[string]*Engine {
 }
 
 // containsAgent reports whether agentID appears in the allowlist slice.
+// The comparison is case-insensitive: ResolveByNameOrAlias returns the
+// canonical lowercase manifest.ID, but swarm rosters in YAML
+// (dev-swarm, board-room, planning-loop, engineer-swarm) frequently
+// list members in PascalCase. The case-insensitive contract is
+// documented explicitly at internal/app/swarms/a-team.yml:14-16
+// ("Members resolve via the agent registry's case-insensitive
+// name+alias lookup") — pre-PR7 the resolve leg was case-insensitive
+// (via Registry.GetByNameOrAlias) but the membership-check leg was
+// byte-exact, breaking the dev-swarm path captured in session
+// 148ad4a2-9b52-4eed-a652-ed3f402538f9.
 //
 // Expected:
 //   - allowlist is a slice of agent ID strings (may be empty).
 //   - agentID is the resolved agent identifier to search for.
 //
 // Returns:
-//   - true if agentID matches any element in allowlist.
+//   - true if agentID matches any element in allowlist under
+//     strings.EqualFold (Unicode-aware case folding, the same
+//     comparator Registry.GetByNameOrAlias uses).
 //
 // Side effects:
 //   - None.
 func containsAgent(allowlist []string, agentID string) bool {
 	for _, id := range allowlist {
-		if id == agentID {
+		if strings.EqualFold(id, agentID) {
 			return true
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -2440,6 +2441,62 @@ func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool
 	return allowed
 }
 
+// effectiveAllowedToolsForCtx returns the allowed-tool set for the
+// manifest bound to ctx via WithBoundManifest, falling back to the
+// engine's active manifest when no binding is present. It is the
+// shared seam used by both the schema-advertisement gate
+// (assembleToolSchemasLocked, buildToolSchemasCtx) and the PR7
+// runtime tool gate at executeToolCall — sharing the routine
+// (rather than duplicating the per-manifest expansion logic at the
+// dispatch site) prevents the two surfaces from drifting and keeps
+// the contract "what the LLM sees" == "what the dispatch path will
+// run" as a single source of truth.
+//
+// Expected:
+//   - ctx is a valid context that may carry a boundManifestKey value.
+//
+// Returns:
+//   - A non-nil map of allowed tool names. See buildAllowedToolSetFor
+//     for the full set-construction contract (D1 inherit-by-default
+//     base toolset, bundle alias expansion, MCP server gating,
+//     ToolsDeny subtraction, suggest_delegate escape hatch).
+//
+// Side effects:
+//   - None.
+func (e *Engine) effectiveAllowedToolsForCtx(ctx context.Context) map[string]bool {
+	if bound, ok := manifestFromContext(ctx); ok {
+		return e.buildAllowedToolSetFor(bound)
+	}
+	e.mu.RLock()
+	m := e.manifest
+	e.mu.RUnlock()
+	return e.buildAllowedToolSetFor(m)
+}
+
+// sortedKeys returns the keys of a string-keyed set in
+// alphabetical order. Used by the PR7 runtime tool gate to render
+// the agent's effective toolset in a stable form so the rejection
+// body is deterministic across runs (matters for test assertions
+// and for the model's pattern-matching on retry — a random ordering
+// per call invites confusion).
+//
+// Expected:
+//   - set is a non-nil map (nil-safe — empty slice returned).
+//
+// Returns:
+//   - The keys of set, sorted with sort.Strings.
+//
+// Side effects:
+//   - None.
+func sortedKeys(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // buildPropertyMap converts a map of tool.Property definitions into the
 // JSON Schema property map expected by provider.ToolSchema.
 //
@@ -4371,6 +4428,51 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 	for _, t := range e.tools {
 		if t.Name() != toolCall.Name {
 			continue
+		}
+		// PR7 / Coordinator Over-Execution (May 2026) — runtime
+		// tool gate. buildAllowedToolSetFor filters which schemas
+		// the LLM sees; the schema list is the contract advertised
+		// to the provider. Permissive providers (glm-4.6/5 at zai,
+		// openzen) emit tool calls outside the advertised schema
+		// anyway and the pre-PR7 dispatch loop executed them —
+		// turning the schema-advertisement filter into a hint, not
+		// an enforcement boundary. Session
+		// fbdea3e6-6e00-4c96-89ec-0ab953799cee captured the bug:
+		// coordinator manifest tools = [coordination_store,
+		// skill_load, delegate, todowrite] yet the agent stamp ran
+		// 21 bash + 5 read calls direct. This gate closes the gap.
+		//
+		// Ordering:
+		//   - new gate fires BEFORE Execute when the tool name IS
+		//     matched in e.tools.
+		//   - new gate does NOT interpose on the unmatched-tool
+		//     fallthrough (skill-name redirect at PR2 / Item 3
+		//     Agent Runtime Quality), because the redirect body
+		//     is informational and never auto-invoked — that path
+		//     must still serve unknown tool names regardless of
+		//     manifest filtering.
+		//   - collision case (skill name == registered tool name):
+		//     the matched-tool branch reaches this gate first; if
+		//     the tool is not in the effective set, the rejection
+		//     cites the toolset (not the skill catalogue). See the
+		//     A.1.4 spec at runtime_tool_gate_test.go for the pin.
+		allowed := e.effectiveAllowedToolsForCtx(ctx)
+		if !allowed[toolCall.Name] {
+			names := sortedKeys(allowed)
+			msg := fmt.Sprintf(
+				"Error: '%s' is not in this agent's allowed toolset. Available tools: [%s]. Delegate to a specialist whose toolset includes '%s' if the work requires it.",
+				toolCall.Name, strings.Join(names, ", "), toolCall.Name,
+			)
+			slog.Warn("tool call rejected by runtime gate",
+				"tool", toolCall.Name,
+				"agent", e.activeAgentID(ctx),
+				"reason", "not in effective toolset",
+			)
+			return tool.Result{
+				Output:  msg,
+				IsError: true,
+				Error:   fmt.Errorf("%w: %s", tool.ErrToolNotAllowed, toolCall.Name),
+			}, nil
 		}
 		slog.Info("engine tool call", "tool", toolCall.Name)
 		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Engine wiring".

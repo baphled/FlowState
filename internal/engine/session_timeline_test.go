@@ -158,6 +158,12 @@ func timelineManifest() agent.Manifest {
 			SystemPrompt: "You are a helpful assistant.",
 		},
 		ContextManagement: agent.DefaultContextManagement(),
+		// PR7 (Coordinator Over-Execution, May 2026) — Scenario 2
+		// drives the `bash` tool through the dispatch path; the
+		// runtime gate at executeToolCall requires it in
+		// capabilities.tools or the tool call is rejected before
+		// the timeline recorder observes the chunk pair.
+		Capabilities: agent.Capabilities{Tools: []string{"bash"}},
 	}
 }
 

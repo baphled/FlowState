@@ -185,7 +185,19 @@ var _ = Describe("EventBus Integration", func() {
 					{{Content: "Done.", Done: true}},
 				},
 			}
-			toolManifest = agent.Manifest{ID: "test-agent", Name: "Test Agent", Instructions: agent.Instructions{SystemPrompt: "You are a helpful assistant."}, ContextManagement: agent.DefaultContextManagement()}
+			toolManifest = agent.Manifest{
+				ID:                "test-agent",
+				Name:              "Test Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a helpful assistant."},
+				ContextManagement: agent.DefaultContextManagement(),
+				// PR7 (Coordinator Over-Execution, May 2026) — the
+				// runtime tool gate rejects executeToolCall for tools
+				// outside Capabilities.Tools. The tool.execute.* event
+				// specs drive `test_tool` through the dispatch path;
+				// declaring it here keeps the gate transparent to the
+				// bus-emission contract being asserted.
+				Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
+			}
 		})
 
 		It("publishes tool.execute.before before tool execution", func() {

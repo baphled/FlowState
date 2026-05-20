@@ -2619,3 +2619,78 @@ var _ = Describe("Delegate session isolation", func() {
 		})
 	})
 })
+
+// PR7 / Coordinator Over-Execution (May 2026) — Layer 2: containsAgent
+// must compare allowlist entries case-insensitively.
+//
+// ResolveByNameOrAlias returns the canonical lowercase manifest.ID
+// (delegation.go:1052-1064). Swarm rosters in YAML are commonly
+// PascalCase (dev-swarm, board-room, planning-loop, engineer-swarm
+// each list members like `Researcher`, `Tech-Lead`). a-team.yml:14-16
+// explicitly documents the contract: "Members resolve via the agent
+// registry's case-insensitive name+alias lookup, so `researcher` and
+// `writer` route to the existing Researcher and Writer manifests".
+//
+// Pre-PR7 containsAgent at delegation.go:4300 used byte-exact `==`
+// against the resolved id. Session
+// 148ad4a2-9b52-4eed-a652-ed3f402538f9 captured 8 consecutive
+// `agent not in delegation allowlist: "researcher" not in swarm
+// members: [Researcher Tech-Lead ...]` errors — the lead's prompt
+// block rendered the YAML capitalisation, the model copied it back,
+// ResolveByNameOrAlias normalised it down, and the membership check
+// rejected the lowercase id against the uppercase roster.
+//
+// The fix swaps `==` for strings.EqualFold so the contract documented
+// in the swarm YAML is finally honoured at the membership-check leg
+// (the resolve leg was already case-insensitive via the registry's
+// GetByNameOrAlias).
+var _ = Describe("containsAgent case-insensitive membership (PR7 Layer 2)", func() {
+	It("(A.2.1) returns true when the resolved id is PascalCase and the roster is lowercase", func() {
+		// Resolved id "Senior-Engineer" must match the lowercase
+		// roster entry "senior-engineer". This is the symmetry case
+		// for when the swarm YAML uses lowercase (the manifest.ID
+		// canonical form) but the model has emitted the
+		// Title-Case alias.
+		Expect(engine.ContainsAgentForTest([]string{"senior-engineer"}, "Senior-Engineer")).To(BeTrue(),
+			"PascalCase id must match lowercase allowlist entry — the registry's case-insensitive resolve guarantees the canonical comparison happens here too")
+	})
+
+	It("(A.2.2) returns true when the resolved id is lowercase and the roster is PascalCase (symmetry)", func() {
+		// The mirror case from A.2.1. ResolveByNameOrAlias returns
+		// lowercase ids today; if a future change ever has the
+		// resolved id arrive PascalCase from a non-registry path
+		// (e.g. d.engines map fallback at delegation.go:3642), the
+		// roster comparison must still pass. EqualFold is
+		// symmetric, so this spec pins symmetry rather than
+		// piggy-backing on the A.2.1 assertion.
+		Expect(engine.ContainsAgentForTest([]string{"Senior-Engineer"}, "senior-engineer")).To(BeTrue(),
+			"lowercase id must match PascalCase allowlist entry — covers the d.engines fallback path where the id is passed through verbatim from the YAML roster")
+	})
+
+	It("(A.2.3) admits Researcher against a lowercase researcher roster (the dev-swarm case from session 148ad4a2)", func() {
+		// The exact failure mode from the investigation note:
+		// the resolved id was `researcher` (lowercase manifest.ID)
+		// and the roster carried `Researcher` (dev-swarm YAML
+		// PascalCase). Pre-PR7 the membership check rejected it
+		// and the lead fell back to working alone. Post-PR7 the
+		// admission succeeds and the lead can dispatch.
+		Expect(engine.ContainsAgentForTest([]string{"Researcher", "Tech-Lead", "Code-Reviewer"}, "researcher")).To(BeTrue(),
+			"the dev-swarm regression: Researcher in the YAML, researcher resolved from the registry; the membership check must finally honour the case-insensitive contract documented at internal/app/swarms/a-team.yml:14-16")
+	})
+
+	It("preserves the negative case — a genuinely-unknown id is still rejected", func() {
+		// Regression pin: EqualFold must not turn the predicate
+		// into a permissive substring or prefix match. An id that
+		// is neither in the roster nor a case-fold of any entry
+		// must continue to fail.
+		Expect(engine.ContainsAgentForTest([]string{"Researcher", "Tech-Lead"}, "Performance-Engineer")).To(BeFalse(),
+			"case-insensitive must be case-FOLD insensitive, not predicate-relaxation; non-members stay rejected")
+	})
+
+	It("handles an empty allowlist by returning false", func() {
+		// Defensive: pre-PR7 behaviour was to return false on
+		// empty allowlist; that contract is preserved.
+		Expect(engine.ContainsAgentForTest(nil, "Researcher")).To(BeFalse())
+		Expect(engine.ContainsAgentForTest([]string{}, "Researcher")).To(BeFalse())
+	})
+})

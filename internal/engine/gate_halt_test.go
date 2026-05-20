@@ -35,7 +35,24 @@ var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
 		providerReg := provider.NewRegistry()
 		providerReg.Register(&mockProvider{name: "spy"})
 		eng = engine.New(engine.Config{
-			Manifest:      agent.Manifest{ID: "lead", Name: "Lead"},
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// runtime tool gate now rejects tool calls that are not
+			// in the agent's effective toolset. The fakes below
+			// (`fake-gate-tool`, `fake-soft-tool`, `fake-clean-tool`)
+			// must therefore be declared in capabilities.tools or
+			// the gate intercepts before the original gate-error /
+			// soft-fail assertions can fire. The pre-PR7 fail-open
+			// runtime would have run them regardless of manifest
+			// declaration; the pin update keeps these specs
+			// focused on the swarm.GateError promotion contract
+			// rather than on the manifest gate that PR7 adds.
+			Manifest: agent.Manifest{
+				ID:   "lead",
+				Name: "Lead",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"fake-gate-tool", "fake-soft-tool", "fake-clean-tool"},
+				},
+			},
 			AgentRegistry: agent.NewRegistry(),
 			Registry:      providerReg,
 			ChatProvider:  &mockProvider{name: "spy"},
@@ -124,7 +141,22 @@ var _ = Describe("Engine.executeToolCall D9 todo_strict_mode gate", func() {
 		providerReg := provider.NewRegistry()
 		providerReg.Register(&mockProvider{name: "spy"})
 		eng := engine.New(engine.Config{
-			Manifest:       agent.Manifest{ID: "lead", Name: "Lead"},
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// D9 specs drive bash/read/todowrite through the
+			// dispatch path to exercise the chain counter. The
+			// runtime tool gate requires those tools to be in
+			// capabilities.tools; under the inheritance floor
+			// todowrite is implicit but bash and read must be
+			// declared. Without this declaration the new gate
+			// fires before todoStrictGate's chain counter
+			// observes the call.
+			Manifest: agent.Manifest{
+				ID:   "lead",
+				Name: "Lead",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "read"},
+				},
+			},
 			AgentRegistry:  agent.NewRegistry(),
 			Registry:       providerReg,
 			ChatProvider:   &mockProvider{name: "spy"},

@@ -301,3 +301,13 @@ func LevenshteinForTest(a, b string) int {
 	return levenshtein(a, b)
 }
 
+// ContainsAgentForTest exposes containsAgent so the PR7 case-insensitive
+// allowlist membership spec (Coordinator Over-Execution, May 2026
+// Layer 2) can drive the predicate directly without standing up a full
+// resolveTargetWithOptions chain. Test-only export — production callers
+// remain inside the engine package via the swarm-membership and
+// static-allowlist gates at delegation.go:3482 and :3486.
+func ContainsAgentForTest(allowlist []string, agentID string) bool {
+	return containsAgent(allowlist, agentID)
+}
+

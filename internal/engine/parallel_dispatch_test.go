@@ -46,7 +46,18 @@ var _ = Describe("Engine parallel tool dispatch", func() {
 
 	BeforeEach(func() {
 		registry = tool.NewRegistry()
-		manifest = agent.Manifest{ID: "parallel-test-agent"}
+		// PR7 (Coordinator Over-Execution, May 2026) — the runtime
+		// tool gate at executeToolCall rejects calls outside the
+		// agent's effective toolset. These specs register
+		// {tool_a, tool_b, alpha, beta, gamma} as fakes per case;
+		// declaring the superset here keeps the gate transparent
+		// to the parallel-dispatch contract being asserted.
+		manifest = agent.Manifest{
+			ID: "parallel-test-agent",
+			Capabilities: agent.Capabilities{
+				Tools: []string{"tool_a", "tool_b", "alpha", "beta", "gamma"},
+			},
+		}
 	})
 
 	Context("when the model emits two tool calls in a single message", func() {

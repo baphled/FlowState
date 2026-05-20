@@ -115,6 +115,13 @@ var _ = Describe("Engine Permission Check", func() {
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// runtime tool gate at executeToolCall rejects tool
+			// calls outside Capabilities.Tools. Declare the fake
+			// here so these specs exercise the permission /
+			// dispatch contracts without being intercepted by
+			// the manifest gate.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
 		}
 
 		testTool = &executableMockTool{
@@ -368,6 +375,18 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// runtime tool gate at executeToolCall rejects tool
+			// calls outside Capabilities.Tools. Declare the
+			// superset of fakes used across this Describe
+			// (test_tool, second_tool, search_context,
+			// get_messages, read) so the specs exercise their
+			// actual contracts — dispatch, multi-call sequencing,
+			// IsError propagation, context-query dispatch —
+			// without the manifest gate intercepting.
+			Capabilities: agent.Capabilities{
+				Tools: []string{"test_tool", "second_tool", "search_context", "get_messages", "read"},
+			},
 		}
 
 		testTool = &executableMockTool{
@@ -1118,6 +1137,13 @@ var _ = Describe("Engine tool call context store", func() {
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
 		}
 
 		eng := engine.New(engine.Config{
@@ -1223,6 +1249,13 @@ var _ = Describe("Engine tool call context store", func() {
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
 		}
 
 		eng := engine.New(engine.Config{
@@ -1307,6 +1340,13 @@ var _ = Describe("Engine tool call dispatch by chunk shape", func() {
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
 		}
 
 		eng := engine.New(engine.Config{
@@ -1379,6 +1419,13 @@ var _ = Describe("Engine tool result emission", func() {
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the runtime gate at executeToolCall
+			// admits the dispatch path; the surrounding spec
+			// exercises a different contract (context-store, chunk
+			// dispatch, result emission) and the gate must not
+			// intercept it.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
 		}
 
 		eng := engine.New(engine.Config{
@@ -1448,6 +1495,11 @@ var _ = Describe("Engine assistant turn artefact ordering", func() {
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — declare
+			// test_tool so the new runtime gate admits the dispatch
+			// path; this Describe asserts result-emission ordering,
+			// not the manifest gate, and the fake must reach Execute.
+			Capabilities: agent.Capabilities{Tools: []string{"test_tool"}},
 		}
 
 		testTool = &executableMockTool{
@@ -1703,6 +1755,15 @@ var _ = Describe("Engine per-tool execution timeout", Label("tool-timeout"), fun
 				SystemPrompt: "You are a helpful assistant.",
 			},
 			ContextManagement: agent.DefaultContextManagement(),
+			// PR7 (Coordinator Over-Execution, May 2026) — the
+			// timeout specs drive fake tool names (slow_shell,
+			// delegate_like, long_tool, cancellable_delegate)
+			// through the dispatch path to assert per-tool budget
+			// behaviour. The new runtime gate rejects unknown
+			// names, so the manifest must declare the supeset.
+			Capabilities: agent.Capabilities{
+				Tools: []string{"slow_shell", "delegate_like", "long_tool", "cancellable_delegate"},
+			},
 		}
 	})
 
