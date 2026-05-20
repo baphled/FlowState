@@ -2,10 +2,7 @@ package swarm
 
 import (
 	"context"
-	"errors"
 	"fmt"
-
-	"github.com/baphled/flowstate/internal/coordination"
 )
 
 // reviewerOutputKey is the canonical coord-store sub-key the
@@ -127,13 +124,18 @@ func preflightGate(gate GateSpec, args GateArgs) error {
 func readMemberOutput(gate GateSpec, args GateArgs) ([]byte, error) {
 	keys := candidateKeys(gate, args.ChainPrefix)
 	for _, key := range keys {
-		payload, err := args.CoordStore.Get(key)
-		if err == nil {
-			return payload, nil
+		exists, err := args.CoordStore.Exists(key)
+		if err != nil {
+			return nil, fmt.Errorf("probing coord-store key %q: %w", key, err)
 		}
-		if !errors.Is(err, coordination.ErrKeyNotFound) {
+		if !exists {
+			continue
+		}
+		payload, err := args.CoordStore.Get(key)
+		if err != nil {
 			return nil, fmt.Errorf("reading coord-store key %q: %w", key, err)
 		}
+		return payload, nil
 	}
 	return nil, fmt.Errorf("no member output found at %v", keys)
 }

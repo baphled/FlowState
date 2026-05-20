@@ -103,6 +103,51 @@ var _ = Describe("MemoryStore", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(HaveLen(goroutines))
 		})
+
+		It("handles concurrent Set and Exists from multiple goroutines without races", func() {
+			// Race-detector probe: producers Set known keys while checkers
+			// repeatedly call Exists. Exists must never panic, return an
+			// error, or deadlock under contention. The final assertion
+			// confirms every produced key is reported present.
+			var wg sync.WaitGroup
+			const producers = 25
+			const checkers = 25
+			const opsPerChecker = 20
+
+			wg.Add(producers)
+			for i := range producers {
+				go func(n int) {
+					defer GinkgoRecover()
+					defer wg.Done()
+
+					key := fmt.Sprintf("contention/%d", n)
+					Expect(store.Set(key, []byte("v"))).To(Succeed())
+				}(i)
+			}
+
+			wg.Add(checkers)
+			for i := range checkers {
+				go func(n int) {
+					defer GinkgoRecover()
+					defer wg.Done()
+
+					for j := range opsPerChecker {
+						key := fmt.Sprintf("contention/%d", (n+j)%producers)
+						_, err := store.Exists(key)
+						Expect(err).NotTo(HaveOccurred(),
+							"Exists must never error under read/write contention with Set")
+					}
+				}(i)
+			}
+			wg.Wait()
+
+			// All producers eventually committed — every key must now be present.
+			for i := range producers {
+				ok, err := store.Exists(fmt.Sprintf("contention/%d", i))
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+			}
+		})
 	})
 
 	Describe("Chain ID namespace isolation", func() {
@@ -125,6 +170,47 @@ var _ = Describe("MemoryStore", func() {
 			keysB, err := store.List("chainB/")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keysB).To(ConsistOf("chainB/requirements"))
+		})
+	})
+
+	Describe("Exists", func() {
+		Context("when the key is absent", func() {
+			It("returns (false, nil) — soft-miss, no ErrKeyNotFound wrapping", func() {
+				ok, err := store.Exists("nonexistent")
+				Expect(err).NotTo(HaveOccurred(),
+					"soft-miss API must not wrap ErrKeyNotFound — callers asked 'does it exist', not 'give me the value'")
+				Expect(ok).To(BeFalse())
+			})
+		})
+
+		Context("when the key is present", func() {
+			It("returns (true, nil) without touching the value", func() {
+				Expect(store.Set("present", []byte("v"))).To(Succeed())
+
+				ok, err := store.Exists("present")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+			})
+
+			It("reports an empty []byte value as present", func() {
+				Expect(store.Set("empty", []byte{})).To(Succeed())
+
+				ok, err := store.Exists("empty")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue(),
+					"zero-length value is still a present key; Exists answers presence, not non-emptiness")
+			})
+		})
+
+		Context("after Delete", func() {
+			It("returns (false, nil) for the deleted key", func() {
+				Expect(store.Set("delme", []byte("v"))).To(Succeed())
+				Expect(store.Delete("delme")).To(Succeed())
+
+				ok, err := store.Exists("delme")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeFalse())
+			})
 		})
 	})
 })

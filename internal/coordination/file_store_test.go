@@ -213,4 +213,47 @@ var _ = Describe("FileStore", func() {
 			var _ coordination.Store = store
 		})
 	})
+
+	Describe("Exists", func() {
+		BeforeEach(func() {
+			var err error
+			store, err = coordination.NewFileStore(path)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		Context("when the key is absent", func() {
+			It("returns (false, nil) — soft-miss, no ErrKeyNotFound wrapping", func() {
+				ok, err := store.Exists("nonexistent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeFalse())
+			})
+		})
+
+		Context("when the key is present", func() {
+			It("returns (true, nil)", func() {
+				Expect(store.Set("present", []byte("v"))).To(Succeed())
+
+				ok, err := store.Exists("present")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+			})
+		})
+
+		Context("across FileStore instances loading the same path", func() {
+			It("reports keys persisted by a prior instance as present", func() {
+				Expect(store.Set("persist/present", []byte("v"))).To(Succeed())
+
+				store2, err := coordination.NewFileStore(path)
+				Expect(err).NotTo(HaveOccurred())
+
+				ok, err := store2.Exists("persist/present")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+
+				ok, err = store2.Exists("persist/absent")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeFalse())
+			})
+		})
+	})
 })

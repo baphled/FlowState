@@ -24,6 +24,11 @@ type Store interface {
 	Delete(key string) error
 	// Increment atomically increments the integer counter stored at key and returns the new value.
 	Increment(key string) (int, error)
+	// Exists reports whether the given key is present.
+	// Returns (false, nil) for a missing key — no ErrKeyNotFound wrapping —
+	// so optional-read callers can branch without first having to discard
+	// a sentinel error. Implementation errors propagate as (false, err).
+	Exists(key string) (bool, error)
 }
 
 // MemoryStore is an in-memory implementation of Store using a map
@@ -67,6 +72,28 @@ func (s *MemoryStore) Get(key string) ([]byte, error) {
 	}
 
 	return val, nil
+}
+
+// Exists reports whether the given key is present in the store.
+//
+// Expected:
+//   - key is the string identifying the entry to probe.
+//
+// Returns:
+//   - (true, nil) when key is present.
+//   - (false, nil) when key is absent — no sentinel error wrapping, so
+//     optional-read callers can branch on the bool without filtering
+//     ErrKeyNotFound out of an error path.
+//
+// Side effects:
+//   - None.
+func (s *MemoryStore) Exists(key string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	_, ok := s.data[key]
+
+	return ok, nil
 }
 
 // Set stores a value under the given key.

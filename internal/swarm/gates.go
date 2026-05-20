@@ -486,16 +486,30 @@ func composeMultiKeyPayload(gate GateSpec, args GateArgs) ([]byte, error) {
 			member = gate.Target
 		}
 		key := joinKey(args.ChainPrefix, member, spec.OutputKey)
+
+		exists, err := args.CoordStore.Exists(key)
+		if err != nil {
+			return nil, &GateError{
+				GateName: gate.Name,
+				GateKind: gate.Kind,
+				When:     gate.When,
+				SwarmID:  args.SwarmID,
+				MemberID: args.MemberID,
+				Reason:   fmt.Sprintf("composing input %q: probing coord-store key %q: %s", spec.Name, key, err.Error()),
+				Cause:    err,
+			}
+		}
+		if !exists {
+			// Permissive missing-key path — embed JSON null and let
+			// the gate decide. The composer's contract is "produce
+			// valid JSON"; the gate's contract is "decide pass/fail
+			// from the payload it receives".
+			composed[spec.Name] = json.RawMessage("null")
+			continue
+		}
+
 		raw, err := args.CoordStore.Get(key)
 		if err != nil {
-			if errors.Is(err, coordination.ErrKeyNotFound) {
-				// Permissive missing-key path — embed JSON null and let
-				// the gate decide. The composer's contract is "produce
-				// valid JSON"; the gate's contract is "decide pass/fail
-				// from the payload it receives".
-				composed[spec.Name] = json.RawMessage("null")
-				continue
-			}
 			return nil, &GateError{
 				GateName: gate.Name,
 				GateKind: gate.Kind,

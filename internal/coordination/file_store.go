@@ -84,6 +84,27 @@ func (fs *FileStore) Get(key string) ([]byte, error) {
 	return val, nil
 }
 
+// Exists reports whether the given key is present in the store.
+//
+// Expected:
+//   - key is the string identifying the entry to probe.
+//
+// Returns:
+//   - (true, nil) when key is present.
+//   - (false, nil) when key is absent — no sentinel error wrapping; matches
+//     the soft-miss contract on the Store interface.
+//
+// Side effects:
+//   - None; does not re-read the backing file.
+func (fs *FileStore) Exists(key string) (bool, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+
+	_, ok := fs.data[key]
+
+	return ok, nil
+}
+
 // Set stores a value under the given key and persists to disk.
 //
 // Expected:

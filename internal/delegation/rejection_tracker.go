@@ -2,7 +2,6 @@ package delegation
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/coordination"
@@ -71,11 +70,17 @@ func (r *RejectionTracker) Record(_ context.Context, chainID string) (int, error
 // Side effects:
 //   - Reads the backing coordination store.
 func (r *RejectionTracker) Count(_ context.Context, chainID string) (int, error) {
-	val, err := r.store.Get(rejectionKey(chainID))
-	if errors.Is(err, coordination.ErrKeyNotFound) {
+	key := rejectionKey(chainID)
+
+	exists, err := r.store.Exists(key)
+	if err != nil {
+		return 0, fmt.Errorf("probing rejection count for chain %q: %w", chainID, err)
+	}
+	if !exists {
 		return 0, nil
 	}
 
+	val, err := r.store.Get(key)
 	if err != nil {
 		return 0, fmt.Errorf("reading rejection count for chain %q: %w", chainID, err)
 	}

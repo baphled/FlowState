@@ -151,6 +151,24 @@ var _ = Describe("PersistingStore", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(n).To(Equal(1))
 	})
+
+	Describe("Exists passthrough", func() {
+		It("delegates Exists to the inner store — soft-miss for absent keys, true for present", func() {
+			inner := coordination.NewMemoryStore()
+			ps := coordination.NewPersistingStore(inner, nil)
+
+			Expect(ps.Set("present", []byte("v"))).To(Succeed())
+
+			ok, err := ps.Exists("present")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			ok, err = ps.Exists("absent")
+			Expect(err).NotTo(HaveOccurred(),
+				"PersistingStore inherits Exists from the embedded Store; soft-miss must propagate without ErrKeyNotFound")
+			Expect(ok).To(BeFalse())
+		})
+	})
 })
 
 // errFakeWrite is the sentinel returned by erroringStore.Set so the spec
@@ -171,3 +189,4 @@ func (s *erroringStore) Set(string, []byte) error      { return s.err }
 func (s *erroringStore) List(string) ([]string, error) { return nil, s.err }
 func (s *erroringStore) Delete(string) error           { return s.err }
 func (s *erroringStore) Increment(string) (int, error) { return 0, s.err }
+func (s *erroringStore) Exists(string) (bool, error)   { return false, s.err }
