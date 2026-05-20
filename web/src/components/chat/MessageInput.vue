@@ -63,6 +63,14 @@ const fileInputRef = ref<HTMLInputElement | null>(null)
 // (per-session, not the legacy flat flag). Clicking Stop calls the
 // store's handleEscapeKey twice in quick succession so users do not
 // have to remember the undiscoverable Esc-twice keybinding.
+//
+// Stays on FE-only streamingFor: current-session optimistic UI between
+// chat-send resolve and long-poll attach. Child-session list surfaces
+// (ChildSessionsPanel, SessionBrowser, SessionSwitcher) use backend-
+// authoritative child.activeTurnId per Child Session Turn Registry plan
+// (May 2026) §Item 3 + §R8. The composer's Send/Stop swap is a
+// current-session affordance and must flip the instant the user clicks
+// Send — waiting for the backend round-trip would feel laggy.
 const streamingState = computed(() => store.streamingFor(store.currentSessionId))
 const isStreamingNow = computed(
   () => streamingState.value.isStreaming || streamingState.value.isLoading,

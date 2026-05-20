@@ -42,8 +42,22 @@ function rowTitle(child: SessionSummary): string {
   return child.id.length > 12 ? `${child.id.slice(0, 12)}…` : child.id
 }
 
+// Child Session Turn Registry Plumbing (May 2026) PR3 — backend-authoritative
+// Live indicator. Reads `activeTurnId` straight off the SessionSummary the
+// backend just shipped (handleListV1Sessions projects it from the Turn
+// registry). A non-empty string means a Running Turn exists for this child;
+// empty means idle. The FE-side `chatStore.streamingFor(child.id)` slot is
+// intentionally NOT consulted here — child sessions are spawned by the
+// engine, not by a user POST, so the parent-side optimistic UI gap that
+// motivates `streamingFor` does not apply to child rows.
+//
+// Dual-source boundary: current-session surfaces (ChatView, MessageInput)
+// keep reading `streamingFor` for optimistic UI between chat-send resolve
+// and long-poll attach; child-session list surfaces (this panel,
+// SessionBrowser, SessionSwitcher) read `activeTurnId`. See §R8 in the
+// Child Session Turn Registry Plumbing plan for the drift-risk note.
 function isStreaming(child: SessionSummary): boolean {
-  return chatStore.streamingFor(child.id).isStreaming
+  return !!child.activeTurnId
 }
 
 async function selectChild(child: SessionSummary): Promise<void> {

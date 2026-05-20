@@ -37,6 +37,12 @@ function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
 // hint when ANY non-current session is streaming; each row in the dropdown
 // surfaces its own per-session live indicator.
 //
+// Child Session Turn Registry Plumbing (May 2026) PR3 — backend-authoritative
+// Live indicator. Pre-PR3 the indicators gated on chatStore.streamingFor;
+// PR3 flipped them to consume SessionSummary.activeTurnId (projected from
+// the backend Turn registry by handleListV1Sessions). See plan §Item 3 +
+// §R8 for the dual-source boundary documentation.
+//
 // Test ordering note: SessionSwitcher.onMounted fires `loadSessions()` which
 // resolves the mocked `fetchSessions` returning `[]` and clobbers any
 // pre-mount `chatStore.sessions` assignment. We therefore seed the store
@@ -50,7 +56,8 @@ describe('SessionSwitcher activity indicators', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows a per-row live indicator on streaming sessions when the dropdown is open', async () => {
+  // S9.4 — backend-authoritative Live indicator driven by activeTurnId.
+  it('shows a per-row live indicator on sessions with a non-empty activeTurnId when the dropdown is open', async () => {
     const chatStore = useChatStore()
 
     const wrapper = mount(SessionSwitcher)
@@ -64,12 +71,9 @@ describe('SessionSwitcher activity indicators', () => {
 
     chatStore.sessions = [
       makeSession({ id: 'parent-A', title: 'Alpha' }),
-      makeSession({ id: 'parent-B', title: 'Beta' }),
+      makeSession({ id: 'parent-B', title: 'Beta', activeTurnId: 'turn-beta-001' }),
     ]
     chatStore.currentSessionId = 'parent-A'
-    chatStore.sessionStreaming = {
-      'parent-B': { isLoading: false, isStreaming: true },
-    }
     await nextTick()
 
     expect(wrapper.find('[data-testid="session-switcher-streaming-parent-B"]').exists()).toBe(true)
@@ -96,7 +100,9 @@ describe('SessionSwitcher activity indicators', () => {
     expect(wrapper.find('[data-testid="session-switcher-streaming-parent-B"]').exists()).toBe(false)
   })
 
-  it('shows a background-activity hint on the trigger when any non-current session is streaming', async () => {
+  // S9.4 — background-activity hint also reads activeTurnId. The hint must
+  // fire when any non-current session has a Running Turn.
+  it('shows a background-activity hint on the trigger when any non-current session has an active turn', async () => {
     const chatStore = useChatStore()
 
     const wrapper = mount(SessionSwitcher)
@@ -104,37 +110,31 @@ describe('SessionSwitcher activity indicators', () => {
 
     chatStore.sessions = [
       makeSession({ id: 'parent-A', title: 'Alpha' }),
-      makeSession({ id: 'parent-B', title: 'Beta' }),
+      makeSession({ id: 'parent-B', title: 'Beta', activeTurnId: 'turn-beta-bg' }),
     ]
     chatStore.currentSessionId = 'parent-A'
-    chatStore.sessionStreaming = {
-      'parent-B': { isLoading: false, isStreaming: true },
-    }
     await nextTick()
 
     expect(wrapper.find('[data-testid="session-switcher-background-activity"]').exists()).toBe(true)
   })
 
-  it('does not show the background-activity hint when only the current session is streaming', async () => {
+  it('does not show the background-activity hint when only the current session has an active turn', async () => {
     const chatStore = useChatStore()
 
     const wrapper = mount(SessionSwitcher)
     await flushPromises()
 
     chatStore.sessions = [
-      makeSession({ id: 'parent-A', title: 'Alpha' }),
+      makeSession({ id: 'parent-A', title: 'Alpha', activeTurnId: 'turn-A-self' }),
       makeSession({ id: 'parent-B', title: 'Beta' }),
     ]
     chatStore.currentSessionId = 'parent-A'
-    chatStore.sessionStreaming = {
-      'parent-A': { isLoading: false, isStreaming: true },
-    }
     await nextTick()
 
     expect(wrapper.find('[data-testid="session-switcher-background-activity"]').exists()).toBe(false)
   })
 
-  it('does not show the background-activity hint when no session is streaming', async () => {
+  it('does not show the background-activity hint when no session has an active turn', async () => {
     const chatStore = useChatStore()
 
     const wrapper = mount(SessionSwitcher)
@@ -147,6 +147,35 @@ describe('SessionSwitcher activity indicators', () => {
     chatStore.currentSessionId = 'parent-A'
     await nextTick()
 
+    expect(wrapper.find('[data-testid="session-switcher-background-activity"]').exists()).toBe(false)
+  })
+
+  // S9.4 — regression pin per R8. Seeding streamingFor with isStreaming=true
+  // but leaving activeTurnId empty must NOT light up the per-row indicator
+  // OR the trigger's background-activity hint. The list surface is
+  // backend-authoritative.
+  it('ignores chatStore.streamingFor entries — list rendering is backend-authoritative (R8 regression pin)', async () => {
+    const chatStore = useChatStore()
+
+    const wrapper = mount(SessionSwitcher)
+    await flushPromises()
+
+    await wrapper.find('[aria-haspopup="listbox"]').trigger('click')
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'parent-A', title: 'Alpha' }),
+      makeSession({ id: 'parent-B', title: 'Beta' }),
+    ]
+    chatStore.currentSessionId = 'parent-A'
+    // streamingFor slot reports isStreaming=true; the list surface must
+    // ignore it because activeTurnId is empty for both.
+    chatStore.sessionStreaming = {
+      'parent-B': { isLoading: false, isStreaming: true },
+    }
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="session-switcher-streaming-parent-B"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="session-switcher-background-activity"]').exists()).toBe(false)
   })
 })

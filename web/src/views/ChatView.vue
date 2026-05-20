@@ -111,6 +111,14 @@ function precedingUserPromptFor(messageId: string): { id: string; content: strin
 // the getter falls back to the legacy globals (e.g. for unit-test
 // mounts that set chatStore.isStreaming = true directly without
 // wiring a session id), preserving backwards compatibility.
+//
+// Stays on FE-only streamingFor: current-session optimistic UI between
+// chat-send resolve and long-poll attach. Child-session list surfaces
+// (ChildSessionsPanel, SessionBrowser, SessionSwitcher) use backend-
+// authoritative child.activeTurnId per Child Session Turn Registry plan
+// (May 2026) §Item 3 + §R8. The dual-source boundary is current-session
+// (here) vs list-rendering (those three components); see plan §R8 for
+// the drift-risk note and the future-work item to consolidate.
 const activeStreamingState = computed(() => chatStore.streamingFor(chatStore.currentSessionId))
 // UI Parity PR5 — Live token counter (May 2026).
 //

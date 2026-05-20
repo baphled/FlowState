@@ -131,8 +131,20 @@ function getAgentProvider(agentId: string): string {
 // per-row. SessionBrowser is the modal-style picker; we use the same
 // vocabulary as ChildSessionsPanel and SessionSwitcher (green pulsing dot)
 // so the affordance is consistent across every session-list surface.
+//
+// Child Session Turn Registry Plumbing (May 2026) PR3 — backend-authoritative
+// Live indicator. The session-list flavour reads `activeTurnId` from the
+// SessionSummary the backend ships (handleListV1Sessions projects it from
+// the Turn registry). A non-empty string means a Running Turn exists for
+// that session; empty means idle. The FE-side `chatStore.streamingFor`
+// slot is NOT consulted here — list rendering is a backend-authoritative
+// surface; the FE-side slot stays the source of truth only for
+// current-session optimistic UI (ChatView / MessageInput). See §R8 in the
+// Child Session Turn Registry Plumbing plan for the dual-source-drift
+// boundary documentation.
 function isSessionStreaming(sessionId: string): boolean {
-  return chatStore.streamingFor(sessionId).isStreaming
+  const summary = chatStore.sessions.find((s) => s.id === sessionId)
+  return !!summary?.activeTurnId
 }
 
 // QW-11 — Delete handlers. The trash icon arms the confirmation strip on

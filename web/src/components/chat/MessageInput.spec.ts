@@ -716,6 +716,55 @@ describe('MessageInput — stop button (B5)', () => {
     expect(escapeSpy).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
+
+  // S9.5 — current-session optimistic UI dual-source pin.
+  //
+  // Child Session Turn Registry Plumbing (May 2026) PR3 — backend-
+  // authoritative Live indicator flipped child-session LIST surfaces
+  // (ChildSessionsPanel, SessionBrowser, SessionSwitcher) to consume
+  // SessionSummary.activeTurnId. MessageInput intentionally STAYS on
+  // chatStore.streamingFor — the Send/Stop swap must flip the instant
+  // the user clicks Send (optimistic), without waiting for the backend
+  // round-trip to populate the Turn registry. See plan §R8.
+  //
+  // This spec is a regression pin: it proves the Stop button surfaces
+  // when streamingFor reports streaming, even when SessionSummary's
+  // activeTurnId is empty. A future "fix" that flips MessageInput to
+  // activeTurnId would fail this spec.
+  it('keeps the Stop button on streamingFor even when SessionSummary.activeTurnId is empty (S9.5 dual-source pin)', async () => {
+    const store = useChatStore()
+    vi.spyOn(store, 'loadAgents').mockResolvedValue()
+    store.currentSessionId = 'session-current'
+    store.sessions = [
+      {
+        id: 'session-current',
+        agentId: 'planner',
+        status: 'active',
+        depth: 0,
+        title: 'Current',
+        createdAt: '2026-05-20T09:00:00Z',
+        updatedAt: '2026-05-20T09:00:00Z',
+        messageCount: 0,
+        isStreaming: false,
+        activeTurnId: '',
+      },
+    ]
+    // streamingFor reports streaming for the current session, but the
+    // backend's SessionSummary.activeTurnId is still empty. The composer
+    // must flip Send → Stop nonetheless (current-session optimistic UI).
+    store.sessionStreaming = {
+      'session-current': { isLoading: false, isStreaming: true },
+    }
+    store.isStreaming = false
+    store.isLoading = false
+
+    const wrapper = mount(MessageInput, { attachTo: document.body })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="send-button"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="stop-button"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
 })
 
 // UI Parity PR2 B3 (May 2026) — Image / file attachment support. The

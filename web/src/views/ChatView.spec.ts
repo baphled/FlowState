@@ -1126,6 +1126,66 @@ describe('ChatView agent-activity indicator', () => {
 
     expect(wrapper.find('[data-testid="agent-activity-indicator"]').exists()).toBe(false)
   })
+
+  // S9.5 — current-session optimistic UI dual-source pin.
+  //
+  // Child Session Turn Registry Plumbing (May 2026) PR3 — backend-
+  // authoritative Live indicator flipped child-session LIST surfaces
+  // (ChildSessionsPanel, SessionBrowser, SessionSwitcher) to consume
+  // SessionSummary.activeTurnId. The current-session surfaces (ChatView,
+  // MessageInput) intentionally STAY on chatStore.streamingFor for the
+  // brief optimistic UI moment between chat-send resolve and long-poll
+  // attach. See plan §R8.
+  //
+  // This spec is a regression pin: it proves that ChatView's
+  // agent-activity-indicator continues to surface when streamingFor
+  // reports streaming, regardless of the SessionSummary's activeTurnId.
+  // A future "fix" that flips ChatView to activeTurnId would fail this
+  // spec, forcing the engineer to consult §R8 before changing the
+  // dual-source boundary.
+  it('keeps the current-session indicator on streamingFor even when SessionSummary.activeTurnId is empty (S9.5 dual-source pin)', async () => {
+    const wrapper = mount(ChatView, {
+      global: {
+        stubs: {
+          MessageInput: { template: '<div data-testid="message-input-stub"></div>' },
+          ContextToolGroup: { template: '<div data-testid="context-tool-group-stub"></div>' },
+        },
+      },
+    })
+    await flushPromises()
+
+    const chatStore = useChatStore()
+    chatStore.currentSessionId = 'session-current'
+    chatStore.agentId = 'planner'
+    // The SessionSummary carries an EMPTY activeTurnId — the backend has
+    // not yet seen the user's POST land in the Turn registry. But the FE
+    // has already optimistically marked the session as streaming via
+    // streamingFor (this is the current-session optimistic UI gap).
+    chatStore.sessions = [
+      {
+        id: 'session-current',
+        agentId: 'planner',
+        status: 'active',
+        depth: 0,
+        title: 'Current',
+        createdAt: '2026-05-20T09:00:00Z',
+        updatedAt: '2026-05-20T09:00:00Z',
+        messageCount: 0,
+        isStreaming: false,
+        activeTurnId: '',
+      },
+    ]
+    chatStore.sessionStreaming = {
+      'session-current': { isLoading: false, isStreaming: true },
+    }
+    chatStore.isStreaming = false
+    chatStore.isLoading = false
+    await wrapper.vm.$nextTick()
+
+    // The indicator MUST surface — streamingFor is the source of truth
+    // for current-session affordances.
+    expect(wrapper.find('[data-testid="agent-activity-indicator"]').exists()).toBe(true)
+  })
 })
 
 // UI Parity PR5 — Live token counter (May 2026).

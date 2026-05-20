@@ -34,8 +34,16 @@ function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
 // UX consolidation (May 2026) — every place that lists sessions must reveal
 // active streams so users notice background work. SessionBrowser is the
 // modal-style picker; rows must surface a compact live indicator (matching
-// ChildSessionsPanel's vocabulary) when the per-session streamingFor slot
-// reports isStreaming.
+// ChildSessionsPanel's vocabulary) when a Running Turn exists for the
+// session.
+//
+// Child Session Turn Registry Plumbing (May 2026) PR3 — backend-authoritative
+// Live indicator. Pre-PR3 the indicator gated on chatStore.streamingFor;
+// PR3 flipped this to consume SessionSummary.activeTurnId (projected by
+// handleListV1Sessions from the Turn registry). The dual-source boundary
+// is documented in plan §R8 — list-rendering surfaces (this component,
+// SessionSwitcher, ChildSessionsPanel) read activeTurnId; current-session
+// surfaces (ChatView, MessageInput) keep streamingFor for optimistic UI.
 //
 // Test ordering note: SessionBrowser.onMounted + open() both call
 // `chatStore.loadSessions()` which resolves the mocked `fetchSessions`
@@ -50,7 +58,45 @@ describe('SessionBrowser activity indicators', () => {
     vi.restoreAllMocks()
   })
 
-  it('shows a per-row live indicator on streaming sessions', async () => {
+  // S9.3 — backend-authoritative Live indicator driven by activeTurnId.
+  it('shows a per-row live indicator on sessions with a non-empty activeTurnId', async () => {
+    const chatStore = useChatStore()
+
+    const wrapper = mount(SessionBrowser)
+    ;(wrapper.vm as unknown as { open: () => void }).open()
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'session-A', title: 'Alpha' }),
+      makeSession({ id: 'session-B', title: 'Beta', activeTurnId: 'turn-beta-001' }),
+    ]
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="session-browser-streaming-session-B"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="session-browser-streaming-session-A"]').exists()).toBe(false)
+  })
+
+  it('does not render any indicator when no session has an active turn', async () => {
+    const chatStore = useChatStore()
+
+    const wrapper = mount(SessionBrowser)
+    ;(wrapper.vm as unknown as { open: () => void }).open()
+    await flushPromises()
+
+    chatStore.sessions = [
+      makeSession({ id: 'session-A', title: 'Alpha' }),
+      makeSession({ id: 'session-B', title: 'Beta' }),
+    ]
+    await nextTick()
+
+    expect(wrapper.findAll('[data-testid^="session-browser-streaming-"]')).toHaveLength(0)
+  })
+
+  // S9.3 — regression pin per R8. The session-list surface MUST consume
+  // activeTurnId and ignore any chatStore.streamingFor entry for the same
+  // session. Seeding streamingFor with isStreaming=true but leaving
+  // activeTurnId empty must NOT light up the indicator.
+  it('ignores chatStore.streamingFor entries — list rendering is backend-authoritative (R8 regression pin)', async () => {
     const chatStore = useChatStore()
 
     const wrapper = mount(SessionBrowser)
@@ -66,23 +112,8 @@ describe('SessionBrowser activity indicators', () => {
     }
     await nextTick()
 
-    expect(wrapper.find('[data-testid="session-browser-streaming-session-B"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="session-browser-streaming-session-A"]').exists()).toBe(false)
-  })
-
-  it('does not render any indicator when no session is streaming', async () => {
-    const chatStore = useChatStore()
-
-    const wrapper = mount(SessionBrowser)
-    ;(wrapper.vm as unknown as { open: () => void }).open()
-    await flushPromises()
-
-    chatStore.sessions = [
-      makeSession({ id: 'session-A', title: 'Alpha' }),
-      makeSession({ id: 'session-B', title: 'Beta' }),
-    ]
-    await nextTick()
-
+    // Both rows must be idle: A has no activeTurnId, B's streamingFor slot
+    // is irrelevant to the list-surface indicator.
     expect(wrapper.findAll('[data-testid^="session-browser-streaming-"]')).toHaveLength(0)
   })
 })

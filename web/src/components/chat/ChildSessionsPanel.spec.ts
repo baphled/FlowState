@@ -18,7 +18,13 @@ import type { SessionSummary } from '@/types'
 //   2. Renders one row per child of the active session.
 //   3. Clicking a row calls chatStore.loadSessionMessages(childId).
 //   4. Re-derives when chatStore.currentSessionId changes (Vue reactivity).
-//   5. Live-streaming children are flagged via chatStore.streamingFor(id).
+//   5. Live-streaming children are flagged via the SessionSummary's
+//      backend-authoritative `activeTurnId` field (Child Session Turn
+//      Registry Plumbing May 2026 §Item 3). Pre-PR3 this read from
+//      `chatStore.streamingFor(id)`; PR3 flipped it because child
+//      sessions are spawned by the engine, not by a user POST, and so
+//      the FE-side optimistic UI gap that motivates `streamingFor`
+//      never applies. See §R8 for the dual-source boundary.
 function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
     id: 'session-x',
@@ -130,17 +136,24 @@ describe('ChildSessionsPanel', () => {
     expect(wrapper.find('[data-testid="child-session-row-child-of-2"]').exists()).toBe(true)
   })
 
-  it('marks a child row as streaming when chatStore.streamingFor reports an active stream', async () => {
+  // S9.1 — backend-authoritative Live indicator. Pre-PR3 the panel read
+  // chatStore.streamingFor(child.id); PR3 flipped this to consume the
+  // SessionSummary.activeTurnId stamped by handleListV1Sessions from the
+  // backend Turn registry. The spec now seeds the summary with a non-empty
+  // activeTurnId and asserts the row carries the is-streaming class
+  // without touching chatStore.sessionStreaming.
+  it('marks a child row as streaming when the backend-stamped activeTurnId is non-empty', async () => {
     const chatStore = useChatStore()
     chatStore.sessions = [
       makeSession({ id: 'parent-1' }),
-      makeSession({ id: 'child-streaming', parentId: 'parent-1' }),
+      makeSession({
+        id: 'child-streaming',
+        parentId: 'parent-1',
+        activeTurnId: 'turn-abc-123',
+      }),
       makeSession({ id: 'child-idle', parentId: 'parent-1' }),
     ]
     chatStore.currentSessionId = 'parent-1'
-    chatStore.sessionStreaming = {
-      'child-streaming': { isLoading: false, isStreaming: true },
-    }
 
     const wrapper = mount(ChildSessionsPanel)
     await flushPromises()
@@ -152,6 +165,54 @@ describe('ChildSessionsPanel', () => {
     expect(idleRow.classes()).not.toContain('is-streaming')
   })
 
+  // S9.1 — empty-string activeTurnId behaves as idle. The backend serialises
+  // the field as `""` (not omitted) when no Running Turn exists; the FE
+  // must treat both empty-string and undefined identically.
+  it('treats an empty-string activeTurnId as idle (not streaming)', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      makeSession({ id: 'parent-1' }),
+      makeSession({ id: 'child-idle-empty', parentId: 'parent-1', activeTurnId: '' }),
+    ]
+    chatStore.currentSessionId = 'parent-1'
+
+    const wrapper = mount(ChildSessionsPanel)
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="child-session-row-child-idle-empty"]')
+    expect(row.classes()).not.toContain('is-streaming')
+  })
+
+  // S9.2 (regression pin) — backend-authoritative shift means the panel
+  // MUST NOT consume chatStore.streamingFor for any child. Pre-PR3 the
+  // panel consumed streamingFor(child.id); this spec asserts the FE-side
+  // optimistic-UI slot is now irrelevant to the indicator. Seeding
+  // streamingFor with isStreaming=true while leaving activeTurnId empty
+  // must NOT light up the row. (The complementary static-text pin lives
+  // in dualSourceBoundary.spec.ts, which asserts ChildSessionsPanel.vue
+  // contains no `streamingFor` token at all — a code-shape contract.)
+  it('does not surface a Live indicator when streamingFor reports streaming but activeTurnId is empty (R8 regression pin)', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      makeSession({ id: 'parent-1' }),
+      makeSession({ id: 'child-1', parentId: 'parent-1' }),
+    ]
+    chatStore.currentSessionId = 'parent-1'
+    // Seed streamingFor with isStreaming=true; the panel MUST ignore this
+    // because activeTurnId is empty. Pre-PR3 this would have lit up the
+    // child row erroneously.
+    chatStore.sessionStreaming = {
+      'child-1': { isLoading: false, isStreaming: true },
+    }
+
+    const wrapper = mount(ChildSessionsPanel)
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="child-session-row-child-1"]')
+    expect(row.exists()).toBe(true)
+    expect(row.classes()).not.toContain('is-streaming')
+  })
+
   // UX consolidation (May 2026) — accessibility hardening for streaming
   // affordance. The pre-existing green border + green dot fail for users with
   // green colour-blindness; pair the visual cue with a redundant text label
@@ -160,13 +221,16 @@ describe('ChildSessionsPanel', () => {
     const chatStore = useChatStore()
     chatStore.sessions = [
       makeSession({ id: 'parent-1' }),
-      makeSession({ id: 'child-streaming', parentId: 'parent-1' }),
+      // PR3 — backend-authoritative: drive the "Live" label off
+      // SessionSummary.activeTurnId instead of chatStore.sessionStreaming.
+      makeSession({
+        id: 'child-streaming',
+        parentId: 'parent-1',
+        activeTurnId: 'turn-xyz-456',
+      }),
       makeSession({ id: 'child-idle', parentId: 'parent-1' }),
     ]
     chatStore.currentSessionId = 'parent-1'
-    chatStore.sessionStreaming = {
-      'child-streaming': { isLoading: false, isStreaming: true },
-    }
 
     const wrapper = mount(ChildSessionsPanel)
     await flushPromises()

@@ -44,12 +44,23 @@ const parentSessions = computed(() =>
 // UX consolidation (May 2026) — per-session activity surface. The chat
 // header only surfaces the *current* session's streaming state; without
 // these helpers a parallel session running in the background was invisible
-// from the global navigation. Each row in the dropdown reads its own slot
-// via chatStore.streamingFor, and the trigger button lights up when ANY
-// non-current session is live so the user gets a peripheral cue even
-// before opening the dropdown.
+// from the global navigation. Each row in the dropdown reads the backend-
+// authoritative `activeTurnId` field on the SessionSummary, and the
+// trigger button lights up when ANY non-current session is live so the
+// user gets a peripheral cue even before opening the dropdown.
+//
+// Child Session Turn Registry Plumbing (May 2026) PR3 — backend-authoritative
+// Live indicator. The SessionSwitcher is a session-list surface; per the
+// plan's §Item 3 + §R8 it reads `activeTurnId` (projected by the backend's
+// handleListV1Sessions from the Turn registry) rather than the FE-side
+// `chatStore.streamingFor` slot. The FE-side slot is reserved for
+// current-session optimistic UI in ChatView / MessageInput, where the
+// gap between chat-send resolving and the long-poll attaching would
+// otherwise feel laggy. Child sessions never pass through that POST path
+// so list-surface backend-authoritative is the correct source of truth.
 function isSessionStreaming(sessionId: string): boolean {
-  return chatStore.streamingFor(sessionId).isStreaming
+  const summary = chatStore.sessions.find((s) => s.id === sessionId)
+  return !!summary?.activeTurnId
 }
 
 const hasBackgroundActivity = computed(() =>
