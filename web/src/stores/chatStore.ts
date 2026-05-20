@@ -998,6 +998,10 @@ export const useChatStore = defineStore('chat', {
       return this.bootstrapPromise
     },
 
+    resetBootstrap(): void {
+      this.bootstrapPromise = null
+    },
+
     async restoreStateFromBackend(): Promise<void> {
       await this.loadAgents()
       await this.loadSwarms()

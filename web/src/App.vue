@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import NavBar from '@/components/layout/NavBar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
 import LoadingOverlay from '@/components/common/LoadingOverlay.vue'
 import { useChatStore } from '@/stores/chatStore'
+import { isUnauthorizedError } from '@/lib/apiError'
 
 // appReady: drives the loading-overlay gate. Stays false until both
 // async bootstrap promises (the /api/health probe and chatStore.bootstrap)
@@ -19,6 +21,8 @@ import { useChatStore } from '@/stores/chatStore'
 const appReady = ref(false)
 const apiOnline = ref(true)
 const chatStore = useChatStore()
+const router = useRouter()
+const route = useRoute()
 
 // UI Parity PR6 N10 (May 2026) — min-duration gate.
 //
@@ -32,6 +36,10 @@ const chatStore = useChatStore()
 // chrome (so the page underneath stays hidden during real slow boots).
 const overlayVisible = ref(false)
 const OVERLAY_MIN_DELAY_MS = 200
+
+function isLoginRoute(): boolean {
+  return route.name === 'login' || route.path === '/login'
+}
 
 onMounted(async () => {
   // Tear down the index.html splash so the Vue overlay can take over
@@ -60,7 +68,13 @@ onMounted(async () => {
       apiOnline.value = false
     }
   })()
-  await Promise.allSettled([healthPromise, chatStore.bootstrap()])
+  const bootstrapPromise = isLoginRoute() ? Promise.resolve() : chatStore.bootstrap()
+  const results = await Promise.allSettled([healthPromise, bootstrapPromise])
+  const bootstrapResult = results[1]
+  if (bootstrapResult.status === 'rejected' && isUnauthorizedError(bootstrapResult.reason)) {
+    chatStore.resetBootstrap()
+    await router.replace('/login')
+  }
 
   clearTimeout(overlayTimer)
   appReady.value = true

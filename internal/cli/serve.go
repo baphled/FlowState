@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -273,10 +274,10 @@ const engineShutdownTimeout = 30 * time.Second
 //   - PrincipalID:    env FLOWSTATE_AUTH_PRINCIPAL_ID → cfg.Auth.PrincipalID
 //   - DisplayName:    env FLOWSTATE_AUTH_DISPLAY_NAME → cfg.Auth.DisplayName
 //   - AllowedOrigins: env FLOWSTATE_AUTH_ALLOWED_ORIGINS (CSV) →
-//                     cfg.Auth.AllowedOrigins → ["localhost:*"]
+//     cfg.Auth.AllowedOrigins → ["localhost:*"]
 //   - SecureCookies:  env FLOWSTATE_AUTH_SECURE_COOKIES → cfg.Auth.SecureCookies
 //   - CSRFKey:        env FLOWSTATE_AUTH_CSRF_KEY → cfg.Auth.CSRFKey →
-//                     FAIL (no ephemeral fallback per PR5/C10)
+//     FAIL (no ephemeral fallback per PR5/C10)
 //
 // Expected:
 //   - apiServer is non-nil.
@@ -379,16 +380,7 @@ func buildAuthBundle(cfg *config.AppConfig) (api.AuthBundle, *store.MemoryStore,
 	csrfCfg := auth.DefaultCSRFConfig()
 	csrfCfg.AuthKey = csrfKey
 	csrfCfg.SecureCookies = secureCookies
-	// QA WARN-5 fix (May 2026): thread the resolved AllowedOrigins
-	// allowlist through gorilla/csrf's TrustedOrigins. Without this,
-	// every cross-origin POST was rejected at the CSRF gate regardless
-	// of the auth allowlist — gorilla/csrf has its OWN Origin check
-	// (exact-host match against TrustedOrigins) that runs in parallel
-	// to RequireOrigin. Sharing the slice keeps the two layers in
-	// lockstep so a cross-origin request the perimeter accepts isn't
-	// silently dropped by the CSRF middleware. See
-	// internal/auth/csrf.go:35 (CSRFConfig.TrustedOrigins doc).
-	csrfCfg.TrustedOrigins = allowed
+	csrfCfg.TrustedOrigins = csrfTrustedOriginsFor(allowed)
 
 	bundle := api.AuthBundle{
 		Origin:  auth.OriginConfig{AllowedOrigins: allowed},
@@ -401,6 +393,52 @@ func buildAuthBundle(cfg *config.AppConfig) (api.AuthBundle, *store.MemoryStore,
 		IdentitySource: source,
 	}
 	return bundle, memStore, nil
+}
+
+func csrfTrustedOriginsFor(allowed []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(allowed))
+	add := func(host string) {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			return
+		}
+		if _, ok := seen[host]; ok {
+			return
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	addLocalDevHosts := func(hostname string) {
+		for _, port := range []string{"4173", "5173", "5174", "5175"} {
+			add(hostname + ":" + port)
+		}
+	}
+	for _, item := range allowed {
+		value := strings.TrimSpace(item)
+		switch value {
+		case "localhost:*":
+			addLocalDevHosts("localhost")
+			addLocalDevHosts("127.0.0.1")
+			addLocalDevHosts("[::1]")
+			continue
+		case "127.0.0.1:*":
+			addLocalDevHosts("127.0.0.1")
+			continue
+		case "[::1]:*":
+			addLocalDevHosts("[::1]")
+			continue
+		}
+		if strings.Contains(value, "://") {
+			parsed, err := url.Parse(value)
+			if err == nil && parsed.Host != "" {
+				add(parsed.Host)
+				continue
+			}
+		}
+		add(value)
+	}
+	return out
 }
 
 // resolveAuthConfig returns the effective config.AuthConfig after
@@ -509,9 +547,9 @@ func multiUserPath() string {
 // worse than refusing to start.
 //
 // Resolution order (highest precedence first):
-//   1. FLOWSTATE_AUTH_CSRF_KEY env var
-//   2. cfgKey (cfg.Auth.CSRFKey)
-//   3. ERROR — operator must configure a key.
+//  1. FLOWSTATE_AUTH_CSRF_KEY env var
+//  2. cfgKey (cfg.Auth.CSRFKey)
+//  3. ERROR — operator must configure a key.
 //
 // Key padding/truncation: a configured key is materialised into a
 // 32-byte slice. Keys shorter than 32 bytes are zero-padded (gorilla/csrf

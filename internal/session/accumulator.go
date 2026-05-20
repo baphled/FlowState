@@ -412,28 +412,13 @@ func AccumulateStream(
 			select {
 			case chunk, ok := <-rawCh:
 				if !ok {
-					flushThinking(appender, s)
-					flushContent(appender, s)
 					// Symmetric with the chunk.Done and ctx.Done() paths
 					// below: when a turn produced reasoning only and the
 					// upstream channel closes without ever emitting a
-					// terminal Done chunk, still synthesise the
-					// placeholder assistant Message so the persisted
-					// history holds the thinking blocks under an
-					// assistant turn (and not as a stranded Role:
-					// "thinking" with no enclosing assistant). The
-					// OpenAI-compat layer only emits Done when
-					// FinishReason != "" (see
-					// internal/provider/openaicompat/openaicompat.go:229-232),
-					// so a thinking-only turn from a reasoning provider
-					// (zai/glm-4.6, DeepSeek-R1) hits this branch in
-					// production whenever the engine's own Done
-					// injection is bypassed (direct accumulator callers,
-					// future regressions). The synthesis is gated on
-					// the same predicates as the Done path —
-					// content-only and thinking-then-tool-call turns are
-					// untouched.
-					synthesizePlaceholderAssistant(appender, s)
+					// terminal Done chunk, finalise the turn so the
+					// persisted history has a renderable assistant
+					// artefact instead of stranded thinking.
+					finalizeTurn(appender, s)
 					return
 				}
 				applyChunk(appender, s, chunk)
@@ -443,14 +428,11 @@ func AccumulateStream(
 				select {
 				case accumCh <- chunk:
 				case <-ctx.Done():
-					flushThinking(appender, s)
-					flushContent(appender, s)
+					finalizeTurn(appender, s)
 					return
 				}
 			case <-ctx.Done():
-				flushThinking(appender, s)
-				flushContent(appender, s)
-				synthesizePlaceholderAssistant(appender, s)
+				finalizeTurn(appender, s)
 				return
 			}
 		}
@@ -515,9 +497,7 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		// per-bubble usage badge) read them from the live stream.
 		return
 	case chunk.Done:
-		flushThinking(appender, s)
-		flushContent(appender, s)
-		synthesizePlaceholderAssistant(appender, s)
+		finalizeTurn(appender, s)
 	default:
 		if chunk.EventType != "" {
 			return
@@ -799,6 +779,104 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	// no-op rather than emitting an empty-turn placeholder beside the
 	// just-flushed content.
 	s.turnPlaceholderEmitted = true
+}
+
+// finalizeTurn drains any pending stream buffers and persists the assistant
+// artefact for the current turn.
+func finalizeTurn(appender MessageAppender, s *streamAccumState) {
+	if promoteTerminalThinkingToContent(appender, s) {
+		return
+	}
+	flushThinking(appender, s)
+	flushContent(appender, s)
+	synthesizePlaceholderAssistant(appender, s)
+}
+
+// promoteTerminalThinkingToContent handles OpenAI-compatible providers that
+// occasionally put the final user-facing answer on the reasoning channel
+// (`reasoning_content`) instead of the assistant content channel.
+//
+// The promotion is deliberately conservative: only unsigned, terminal,
+// answer-shaped thinking from non-unified providers is converted. Ordinary
+// reasoning still lands in a thinking message plus the existing degraded
+// placeholder, preserving the debugging affordance and avoiding accidental
+// exposure of scratchpad text as an assistant answer.
+func promoteTerminalThinkingToContent(appender MessageAppender, s *streamAccumState) bool {
+	if s.contentBuf.Len() != 0 || s.thinkingBuf.Len() == 0 {
+		return false
+	}
+	if providerProducesUnifiedAssistant(s.lastProviderID) {
+		return false
+	}
+	if s.pendingThinkingSignature != "" {
+		return false
+	}
+	thinking := s.thinkingBuf.String()
+	if !looksLikeAssistantAnswer(thinking) {
+		return false
+	}
+	msg := Message{
+		Role:         "assistant",
+		Content:      strings.TrimSpace(thinking),
+		AgentID:      s.agentID,
+		ModelName:    s.lastModelID,
+		ProviderName: s.lastProviderID,
+		StopReason:   s.turnStopReason,
+	}
+	if len(s.thinkingBlocks) > 0 {
+		blocks := make([]provider.ThinkingBlock, len(s.thinkingBlocks))
+		copy(blocks, s.thinkingBlocks)
+		msg.ThinkingBlocks = blocks
+	}
+	appender.AppendMessage(s.sessionID, msg)
+	s.thinkingBuf.Reset()
+	s.pendingThinkingSignature = ""
+	s.thinkingBlocks = nil
+	s.turnStopReason = ""
+	s.turnPlaceholderEmitted = true
+	return true
+}
+
+func looksLikeAssistantAnswer(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	lower := strings.ToLower(t)
+	reasoningPrefixes := []string{
+		"i need to",
+		"i should",
+		"i'll ",
+		"let me",
+		"looking at",
+		"now i",
+		"the user",
+		"we need to",
+	}
+	for _, prefix := range reasoningPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	answerPrefixes := []string{
+		"#",
+		"- ",
+		"1. ",
+		"done",
+		"all set",
+		"below ",
+		"here ",
+		"here's ",
+		"your ",
+	}
+	for _, prefix := range answerPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return strings.Contains(t, "\n## ") ||
+		strings.Contains(t, "\n### ") ||
+		strings.Contains(t, "\n|")
 }
 
 // StopReasonThinkingOnly is the synthetic stop reason stamped on a

@@ -53,10 +53,11 @@ var ErrNotImplemented = errors.New("auth/store: backend not implemented in v1; c
 //     Stamped at mint; checked at RequireSession (PR2/C4); mode-mismatch → 401.
 //   - PrincipalID — identity-source-provided principal id (e.g. username,
 //     deployment id).
-//   - CSRFToken   — unmasked plain-text token bound to this record. NOT the
-//     signed cookie value; the layered RequireCSRF middleware (PR2/C5)
-//     compares the X-CSRF-Token header against this field after gorilla/csrf
-//     has validated the signed cookie.
+//   - CSRFToken   — request token bound to this record. Browser login flows
+//     store the masked gorilla token returned in the login response; the
+//     layered RequireCSRF middleware (PR2/C5) compares the X-CSRF-Token
+//     header against this field after gorilla/csrf has validated the signed
+//     cookie.
 //   - CreatedAt   — mint timestamp.
 //   - ExpiresAt   — TTL boundary; Get returns ErrSessionNotFound past this
 //     instant. Cleanup sweeps records older than the supplied `before`.

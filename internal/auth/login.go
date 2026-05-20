@@ -50,9 +50,11 @@ type LoginPrincipalView struct {
 //	shape. Detailed reason is logged via slog.Warn for the operator.
 //
 // Per the plan §"Login request / response" line 445: login POST does NOT
-// require an inbound X-CSRF-Token. SameSite=Lax + Origin allowlist close
-// the cross-origin attack vector at the perimeter (RequireOrigin runs
-// before HandleLogin in the route wiring).
+// require an inbound X-CSRF-Token when called directly. The production
+// LoginChain still runs gorilla/csrf around this handler; when present,
+// HandleLogin returns the masked token from that layer and stores the same
+// value on the session record so the next protected request can satisfy both
+// CSRF checks with one X-CSRF-Token header.
 func HandleLogin(source identity.Source, sessionMgr *SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -104,6 +106,15 @@ func HandleLogin(source identity.Source, sessionMgr *SessionManager) http.Handle
 			slog.Error("auth login: post-mint lookup failed",
 				"mode", source.Mode(),
 				"err", errString(err),
+			)
+			http.Error(w, "session_mint_failed", http.StatusInternalServerError)
+			return
+		}
+
+		if err := bindLoginCSRFToken(r, sessionMgr, rec); err != nil {
+			slog.Error("auth login: csrf bind failed",
+				"mode", source.Mode(),
+				"err", err.Error(),
 			)
 			http.Error(w, "session_mint_failed", http.StatusInternalServerError)
 			return
@@ -271,6 +282,15 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func bindLoginCSRFToken(r *http.Request, sessionMgr *SessionManager, rec *store.Record) error {
+	token := csrf.Token(r)
+	if token == "" || token == rec.CSRFToken {
+		return nil
+	}
+	rec.CSRFToken = token
+	return sessionMgr.store.Put(r.Context(), rec)
 }
 
 // lookupForLogin is a thin wrapper around the SessionManager's store

@@ -3,6 +3,13 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import App from './App.vue'
 import { useChatStore } from '@/stores/chatStore'
+import { ApiError } from '@/lib/apiError'
+
+const routerReplaceMock = vi.hoisted(() => vi.fn())
+const routeState = vi.hoisted(() => ({
+  path: '/chat',
+  name: 'chat' as string | undefined,
+}))
 
 // App-level test surface — pins the loading-overlay contract that gates
 // first-paint of the application until bootstrap (health-check + the
@@ -36,8 +43,8 @@ vi.mock('@/api', async (importOriginal) => {
 // auto-resolution that the router plugin would normally provide.
 vi.mock('vue-router', () => ({
   RouterView: { name: 'RouterView', template: '<div data-testid="router-view-stub"></div>' },
-  useRouter: () => ({ push: vi.fn() }),
-  useRoute: () => ({ path: '/chat' }),
+  useRouter: () => ({ push: vi.fn(), replace: routerReplaceMock }),
+  useRoute: () => routeState,
 }))
 
 const mountOptions = {
@@ -63,6 +70,9 @@ vi.mock('@/components/common/ToastContainer.vue', () => ({
 describe('App loading overlay', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    routerReplaceMock.mockClear()
+    routeState.path = '/chat'
+    routeState.name = 'chat'
     // Default: a healthy backend so the health-check resolves quickly.
     vi.stubGlobal(
       'fetch',
@@ -129,6 +139,30 @@ describe('App loading overlay', () => {
 
     expect(wrapper.find('[data-testid="app-loading-overlay"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="router-view-stub"]').exists()).toBe(true)
+  })
+
+  it('redirects to /login when bootstrap rejects because the session is unauthorised', async () => {
+    const chatStore = useChatStore()
+    vi.spyOn(chatStore, 'bootstrap').mockRejectedValue(
+      new ApiError('Failed to fetch sessions: Unauthorized', 401, 'Unauthorized'),
+    )
+
+    mount(App, mountOptions)
+    await flushPromises()
+
+    expect(routerReplaceMock).toHaveBeenCalledWith('/login')
+  })
+
+  it('does not bootstrap chat history while the current route is /login', async () => {
+    routeState.path = '/login'
+    routeState.name = 'login'
+    const chatStore = useChatStore()
+    const bootstrapSpy = vi.spyOn(chatStore, 'bootstrap')
+
+    mount(App, mountOptions)
+    await flushPromises()
+
+    expect(bootstrapSpy).not.toHaveBeenCalled()
   })
 
   it('still dismisses the overlay when the health-check rejects', async () => {

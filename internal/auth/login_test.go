@@ -18,14 +18,14 @@ import (
 
 var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 	var (
-		mem  *store.MemoryStore
-		mgr  *auth.SessionManager
-		now  time.Time
+		mem *store.MemoryStore
+		mgr *auth.SessionManager
+		now time.Time
 	)
 
 	BeforeEach(func() {
 		mem = store.NewMemoryStore()
-		now = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+		now = time.Date(2030, 5, 13, 12, 0, 0, 0, time.UTC)
 	})
 
 	newMgr := func(mode string) *auth.SessionManager {
@@ -70,6 +70,88 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 			Expect(resp.CSRFToken).NotTo(BeEmpty())
 			Expect(resp.Principal.ID).To(Equal("default"))
 			Expect(resp.Principal.Mode).To(Equal(identity.ModeSharedSecret))
+		})
+
+		It("returns a CSRF token that passes the protected unsafe-method gate", func() {
+			src := identity.NewSharedSecretSource("hunter2")
+			mgr = newMgr(identity.ModeSharedSecret)
+			originCfg := auth.OriginConfig{AllowedOrigins: []string{"localhost:*"}}
+			csrfCfg := auth.CSRFConfig{
+				AuthKey:        []byte("32-byte-test-key-padding-ok-yes!"),
+				CookieName:     "_csrf",
+				CookiePath:     "/api",
+				SecureCookies:  false,
+				TrustedOrigins: []string{"localhost:5173"},
+			}
+			csrfH := auth.LoginChain(originCfg, csrfCfg, auth.HandleCSRFPrefetch())
+
+			csrfReq := httptest.NewRequest(http.MethodGet, "/api/auth/csrf", nil)
+			csrfReq.Header.Set("Sec-Fetch-Site", "same-origin")
+			csrfRec := httptest.NewRecorder()
+			csrfH.ServeHTTP(csrfRec, csrfReq)
+			Expect(csrfRec.Code).To(Equal(http.StatusOK))
+
+			var preflight struct {
+				CSRFToken string `json:"csrf_token"`
+			}
+			Expect(json.NewDecoder(csrfRec.Body).Decode(&preflight)).To(Succeed())
+			Expect(preflight.CSRFToken).NotTo(BeEmpty())
+
+			var csrfCookie *http.Cookie
+			for _, c := range csrfRec.Result().Cookies() {
+				if c.Name == "_csrf" {
+					csrfCookie = c
+				}
+			}
+			Expect(csrfCookie).NotTo(BeNil())
+
+			loginH := auth.LoginChain(originCfg, csrfCfg, auth.HandleLogin(src, mgr))
+			loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login",
+				strings.NewReader(`{"secret":"hunter2"}`))
+			loginReq.Header.Set("Origin", "http://localhost:5173")
+			loginReq.Header.Set("Sec-Fetch-Site", "same-origin")
+			loginReq.Header.Set("Content-Type", "application/json")
+			loginReq.Header.Set("X-CSRF-Token", preflight.CSRFToken)
+			loginReq.AddCookie(csrfCookie)
+			loginRec := httptest.NewRecorder()
+			loginH.ServeHTTP(loginRec, loginReq)
+			Expect(loginRec.Code).To(Equal(http.StatusOK))
+
+			var loginResp auth.LoginResponse
+			Expect(json.NewDecoder(loginRec.Body).Decode(&loginResp)).To(Succeed())
+			Expect(loginResp.CSRFToken).NotTo(BeEmpty())
+
+			var sessionCookie *http.Cookie
+			for _, c := range loginRec.Result().Cookies() {
+				if c.Name == "flowstate_session" {
+					sessionCookie = c
+				}
+				if c.Name == "_csrf" {
+					csrfCookie = c
+				}
+			}
+			Expect(sessionCookie).NotTo(BeNil())
+			Expect(csrfCookie).NotTo(BeNil())
+
+			protectedH := auth.Protected(originCfg, mgr,
+				auth.AuthConfig{Enabled: true, Mode: identity.ModeSharedSecret},
+				csrfCfg,
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				}),
+			)
+			protectedReq := httptest.NewRequest(http.MethodPost, "/api/v1/sessions",
+				strings.NewReader(`{"agent_id":"planner"}`))
+			protectedReq.Header.Set("Origin", "http://localhost:5173")
+			protectedReq.Header.Set("Sec-Fetch-Site", "same-origin")
+			protectedReq.Header.Set("Content-Type", "application/json")
+			protectedReq.Header.Set("X-CSRF-Token", loginResp.CSRFToken)
+			protectedReq.AddCookie(csrfCookie)
+			protectedReq.AddCookie(sessionCookie)
+			protectedRec := httptest.NewRecorder()
+			protectedH.ServeHTTP(protectedRec, protectedReq)
+
+			Expect(protectedRec.Code).To(Equal(http.StatusNoContent), protectedRec.Body.String())
 		})
 
 		// Plan §"Test Strategy" line 624.

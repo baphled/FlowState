@@ -1502,6 +1502,75 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
 		})
 
+		It("promotes answer-shaped terminal raw thinking from zai into assistant content", func() {
+			// Regression pin (May 2026): GLM via Z.ai can emit the final
+			// user-facing markdown answer on `reasoning_content` instead of
+			// `content`. If the accumulator blindly flushes that as Role:
+			// "thinking", the UI shows the real reply inside a THINKING
+			// block and then adds "Reply didn't come through" from the
+			// empty assistant placeholder. Answer-shaped terminal thinking
+			// from non-unified providers should render as the assistant
+			// reply instead.
+			rawCh := make(chan provider.StreamChunk, 3)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "## Your Life Admin Action Plan\n\nStart Here\n\n1. Find the reference number.",
+				ProviderID: "zai",
+				ModelID:    "glm-4.6",
+			}
+			rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai", ModelID: "glm-4.6"}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var thinkingMsgs []session.Message
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				switch m.Role {
+				case "thinking":
+					thinkingMsgs = append(thinkingMsgs, m)
+				case "assistant":
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(thinkingMsgs).To(BeEmpty(),
+				"the final user-facing answer must not be stranded in a visible THINKING block")
+			Expect(assistantMsgs).To(HaveLen(1),
+				"the answer-shaped terminal reasoning should become the assistant reply")
+			Expect(assistantMsgs[0].Content).To(ContainSubstring("Your Life Admin Action Plan"))
+			Expect(assistantMsgs[0].ThinkingBlocks).To(BeEmpty(),
+				"the promoted answer itself is not replayable model thinking")
+			Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonThinkingOnly),
+				"content-bearing promoted answers must not trigger the thinking-only UI affordance")
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
+			Expect(assistantMsgs[0].ModelName).To(Equal("glm-4.6"))
+		})
+
+		It("promotes answer-shaped terminal raw thinking on close-without-Done", func() {
+			rawCh := make(chan provider.StreamChunk, 2)
+			rawCh <- provider.StreamChunk{
+				Thinking:   "Here is the concise action plan.\n\n- Send the payment-plan email.",
+				ProviderID: "zai",
+				ModelID:    "glm-4.6",
+			}
+			close(rawCh)
+
+			out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+			drainChannel(out)
+
+			var assistantMsgs []session.Message
+			for _, m := range appender.messages {
+				if m.Role == "assistant" {
+					assistantMsgs = append(assistantMsgs, m)
+				}
+			}
+			Expect(assistantMsgs).To(HaveLen(1),
+				"the close-without-Done path should use the same terminal-answer promotion")
+			Expect(assistantMsgs[0].Content).To(ContainSubstring("concise action plan"))
+			Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonThinkingOnly))
+			Expect(assistantMsgs[0].ProviderName).To(Equal("zai"))
+		})
+
 		It("DOES synthesise an empty_turn placeholder when the turn produced no content AND no thinking AND no tools (Slice C — Streaming Coherence May 2026)", func() {
 			// Streaming Coherence Slice C — pre-slice this behaviour was
 			// "no placeholder; the in-flight bubble is left to the watchdog".

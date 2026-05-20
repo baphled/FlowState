@@ -10,8 +10,11 @@ import type {
   Swarm,
 } from '@/types'
 import { parseError } from '@/lib/parseError'
-import { isAllowedApiHost } from '@/lib/apiHostAllowlist'
+import { joinBaseURL } from '@/lib/apiBase'
+import { apiErrorFromResponse } from '@/lib/apiError'
 import { withCsrfHeader } from '@/lib/csrf'
+
+export { joinBaseURL } from '@/lib/apiBase'
 
 // PR3 / C8 — auth coordinated change. Every fetch() in this module
 // adds `credentials: 'include'` so the browser sends the
@@ -30,50 +33,6 @@ import { withCsrfHeader } from '@/lib/csrf'
 // CREDENTIALS_INCLUDE is the shared RequestCredentials literal so the
 // constant is referenced consistently across every fetch site.
 const CREDENTIALS_INCLUDE: RequestCredentials = 'include'
-
-const BASE = '/api'
-const API_HOST_STORAGE_KEY = 'flowstate-api-host'
-
-/**
- * getBaseURL returns the API base URL, validated against the host
- * allowlist. A localStorage value that fails the allowlist (e.g. injected
- * by an XSS vector or a malicious bookmarklet) is removed and the safe
- * BASE default is returned. See apiHostAllowlist.ts for the policy and
- * threat model.
- */
-function getBaseURL(): string {
-  let stored: string | null = null
-  try {
-    stored = localStorage.getItem(API_HOST_STORAGE_KEY)
-  } catch {
-    // localStorage unavailable (private mode, SSR) — fall through to default.
-    return BASE
-  }
-  if (!stored) return BASE
-  if (!isAllowedApiHost(stored)) {
-    // Hostile or malformed override — clear it and warn (validateApiHost
-    // would also warn, but we want to log AND remove). The next page load
-    // sees the BASE default; in-flight requests in the same tick still
-    // see BASE because we returned it below.
-    try {
-      localStorage.removeItem(API_HOST_STORAGE_KEY)
-    } catch {
-      // best effort — fall through
-    }
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[flowstate] cleared API host override that failed allowlist policy:',
-      stored,
-    )
-    return BASE
-  }
-  return stored
-}
-
-export function joinBaseURL(path: string): string {
-  const base = getBaseURL().replace(/\/$/, '')
-  return `${base}${path}`
-}
 
 export async function fetchAgents(): Promise<Agent[]> {
   const res = await fetch(joinBaseURL('/agents'), { credentials: CREDENTIALS_INCLUDE })
@@ -176,7 +135,7 @@ export async function fetchSwarmEvents(): Promise<unknown[]> {
 export async function fetchSessions(): Promise<SessionSummary[]> {
   const res = await fetch(joinBaseURL('/v1/sessions'), { credentials: CREDENTIALS_INCLUDE })
   if (!res.ok) {
-    throw new Error(`Failed to fetch sessions: ${res.statusText}`)
+    throw apiErrorFromResponse('Failed to fetch sessions', res)
   }
   return res.json()
 }

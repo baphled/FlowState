@@ -235,9 +235,13 @@ func TestBuildAuthBundle_ThreadsTrustedOrigins(t *testing.T) {
 	t.Setenv("FLOWSTATE_AUTH_CSRF_KEY", "")
 	t.Setenv("FLOWSTATE_AUTH_ALLOWED_ORIGINS", "")
 
-	want := []string{
+	allowed := []string{
 		"https://flowstate.example.com",
 		"https://flowstate-staging.example.com",
+	}
+	wantTrusted := []string{
+		"flowstate.example.com",
+		"flowstate-staging.example.com",
 	}
 	cfg := &config.AppConfig{
 		Auth: config.AuthConfig{
@@ -247,7 +251,7 @@ func TestBuildAuthBundle_ThreadsTrustedOrigins(t *testing.T) {
 			PrincipalID:    "operator-id",
 			CSRFKey:        strings.Repeat("a", 32),
 			SecureCookies:  true,
-			AllowedOrigins: want,
+			AllowedOrigins: allowed,
 		},
 	}
 
@@ -256,22 +260,19 @@ func TestBuildAuthBundle_ThreadsTrustedOrigins(t *testing.T) {
 		t.Fatalf("buildAuthBundle: %v", err)
 	}
 
-	// The CSRF allowlist must match the Origin allowlist byte-for-byte.
-	if len(bundle.CSRF.TrustedOrigins) != len(want) {
+	if len(bundle.CSRF.TrustedOrigins) != len(wantTrusted) {
 		t.Fatalf("CSRF.TrustedOrigins length: got %d, want %d",
-			len(bundle.CSRF.TrustedOrigins), len(want))
+			len(bundle.CSRF.TrustedOrigins), len(wantTrusted))
 	}
 	for i, got := range bundle.CSRF.TrustedOrigins {
-		if got != want[i] {
-			t.Errorf("CSRF.TrustedOrigins[%d]: got %q, want %q", i, got, want[i])
+		if got != wantTrusted[i] {
+			t.Errorf("CSRF.TrustedOrigins[%d]: got %q, want %q", i, got, wantTrusted[i])
 		}
 	}
 
-	// Origin allowlist must also match — the two are threaded from the
-	// same resolution slice; a regression would surface as a divergence.
-	if len(bundle.Origin.AllowedOrigins) != len(want) {
+	if len(bundle.Origin.AllowedOrigins) != len(allowed) {
 		t.Fatalf("Origin.AllowedOrigins length: got %d, want %d",
-			len(bundle.Origin.AllowedOrigins), len(want))
+			len(bundle.Origin.AllowedOrigins), len(allowed))
 	}
 }
 
@@ -305,8 +306,8 @@ func TestBuildAuthBundle_EnvOverrideThreadsTrustedOrigins(t *testing.T) {
 	}
 
 	wantHosts := []string{
-		"https://env.example.com",
-		"https://env-staging.example.com",
+		"env.example.com",
+		"env-staging.example.com",
 	}
 	if len(bundle.CSRF.TrustedOrigins) != len(wantHosts) {
 		t.Fatalf("env-override CSRF.TrustedOrigins length: got %v, want %v",
@@ -315,6 +316,48 @@ func TestBuildAuthBundle_EnvOverrideThreadsTrustedOrigins(t *testing.T) {
 	for i, got := range bundle.CSRF.TrustedOrigins {
 		if got != wantHosts[i] {
 			t.Errorf("CSRF.TrustedOrigins[%d]: got %q, want %q", i, got, wantHosts[i])
+		}
+	}
+}
+
+func TestBuildAuthBundle_ExpandsLocalhostWildcardForCSRFTrustedOrigins(t *testing.T) {
+	t.Setenv("FLOWSTATE_AUTH_ENABLED", "")
+	t.Setenv("FLOWSTATE_AUTH_CSRF_KEY", "")
+	t.Setenv("FLOWSTATE_AUTH_ALLOWED_ORIGINS", "")
+
+	cfg := &config.AppConfig{
+		Auth: config.AuthConfig{
+			Enabled:        true,
+			Mode:           identity.ModeDeploymentLogin,
+			Secret:         "operator-secret",
+			PrincipalID:    "operator-id",
+			CSRFKey:        strings.Repeat("a", 32),
+			SecureCookies:  false,
+			AllowedOrigins: []string{"localhost:*"},
+		},
+	}
+
+	bundle, _, err := buildAuthBundle(cfg)
+	if err != nil {
+		t.Fatalf("buildAuthBundle: %v", err)
+	}
+
+	wantHosts := []string{
+		"localhost:5173",
+		"localhost:5174",
+		"127.0.0.1:5173",
+		"127.0.0.1:5174",
+	}
+	for _, want := range wantHosts {
+		found := false
+		for _, got := range bundle.CSRF.TrustedOrigins {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("CSRF.TrustedOrigins missing %q in %v", want, bundle.CSRF.TrustedOrigins)
 		}
 	}
 }
