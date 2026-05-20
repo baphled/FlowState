@@ -9,8 +9,31 @@ import (
 	"github.com/baphled/flowstate/internal/delegation"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/turn"
 )
+
+// ChildTurnRegistryForTest is the test-visible alias of the
+// childTurnRegistry interface so spec wiring can declare a spy with
+// the exact method set executeSync invokes. Plans/Child Session Turn
+// Registry Plumbing (May 2026) §Item 2c — load-bearing R2 defence
+// requires a Fail-call-count spy at the §S4.2 spec; this alias plus
+// WithChildTurnRegistryForTest is the spec seam.
+type ChildTurnRegistryForTest interface {
+	StartOrReuse(sessionID string) (string, error)
+	Append(turnID string, msg session.Message) error
+	Complete(turnID string, info turn.ModelInfo) error
+	Fail(turnID string, cause error) error
+	ResetForRetry(turnID string) error
+}
+
+// WithChildTurnRegistryForTest installs the spec-side spy. Production
+// code MUST use the public WithTurnRegistry method which preserves the
+// concrete *turn.Registry signature.
+func (d *DelegateTool) WithChildTurnRegistryForTest(reg ChildTurnRegistryForTest) *DelegateTool {
+	return d.withChildTurnRegistry(reg)
+}
 
 // CollectWithProgressForTest exposes collectWithProgress for white-box testing of goroutine lifecycle.
 func CollectWithProgressForTest(ctx context.Context, d *DelegateTool, chunks <-chan provider.StreamChunk, startedAt time.Time) (delegationResult, error) {
