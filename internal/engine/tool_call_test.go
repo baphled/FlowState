@@ -465,16 +465,37 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				}
 
 				Expect(toolResultChunk).NotTo(BeNil())
-				// Drift repair (May 2026): provider.ToolResultInfo lost
-				// the separate Error/Output fields in favour of
-				// {Content, IsError}. These three assertions on HEAD
-				// reference the old shape and block the engine test
-				// binary from compiling. The swarm-allowlist commit
-				// repairs them in-place to unblock the targeted suite;
-				// flagged in the commit-author report.
+				// PR6/C1 close-out (May 2026): the chunk Content MUST
+				// carry the engine's rich tool-not-found message — the
+				// inventory + suggestion text built at
+				// `executeToolCall.availableToolNames`+`suggestTool`
+				// and surfaced through Result.Output. Pre-PR6 the chunk
+				// path stripped Output to `"Error: " + Error.Error()`
+				// (the wrapped sentinel `tool not found: X`), so the
+				// model lost both the tool inventory and (when within
+				// the Levenshtein threshold) the "Did you mean" hint.
+				// These assertions pin the post-fix shape at the
+				// consumer seam: the unknown name is named verbatim,
+				// the actually-registered tool is named so the model
+				// has something to retry against, and the helpful
+				// preamble is present.
+				//
+				// Note: `unknown_tool` is intentionally outside the
+				// fuzzy-suggest threshold against `test_tool`
+				// (Levenshtein distance 7 vs threshold len(req)/2 = 6),
+				// so no `Did you mean` clause fires. The
+				// fuzzy-suggest-fires case is pinned separately by
+				// `internal/engine/skill_redirect_test.go`'s `bashh ->
+				// bash` spec, and by the second `It` here (which
+				// asserts `Available tools:` propagates regardless of
+				// suggestion).
 				Expect(toolResultChunk.ToolResult.IsError).To(BeTrue())
-				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("unknown tool"))
-				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"))
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("unknown_tool"),
+					"the failing name must appear in the chunk content so the model can reason about what it tried")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"),
+					"the registered tool name must appear so the model has a recovery target")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("not found"),
+					"the failure framing must survive the chunk renderer — pre-PR6 this passed by accident via the sentinel; the rich Output keeps the human framing too")
 			})
 
 			It("returns tool result content listing available tools", func() {
@@ -498,10 +519,79 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				}
 
 				Expect(toolResultChunk).NotTo(BeNil())
+				// PR6/C1: the chunk MUST carry the full `Available tools: [...]`
+				// inventory the engine builds in `executeToolCall`. Pre-PR6
+				// this assertion failed because the chunk path overwrote
+				// `Result.Output` (which holds the inventory) with the wrapped
+				// sentinel `"Error: tool not found: unknown_tool"`.
 				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("not found"))
 				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("Available tools"))
 				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("test_tool"))
 				Expect(toolResultChunk.Error).To(BeNil())
+			})
+
+			// PR6/C1 close-out (May 2026): pin the Item 3 skill-name
+			// redirect at the Stream chunk seam. The `executeToolCall`
+			// return-value spec at internal/engine/skill_redirect_test.go
+			// asserts the redirect populates Result.Output with the
+			// `skill_load(name="X")` recovery hint, but it never
+			// observed the chunk path that ships the value to the
+			// model. The pre-PR6 chunk renderer stripped Output to
+			// `"Error: " + Error.Error()` (the wrapped sentinel) on
+			// every IsError result, so the redirect was invisible to
+			// the model in practice — the bug-shape Critical 1 covers.
+			// This spec extends the existing tool-not-found Describe
+			// with an unknown-tool name that exact-matches a known
+			// skill, configured via the engine's KnownSkillsFunc, and
+			// pins the redirect on the chunk content directly.
+			It("propagates the skill-name redirect hint to the chunk content when the unknown tool name matches a known skill", func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_redirect",
+								Name:      "task-tracker",
+								Arguments: map[string]interface{}{},
+							},
+						},
+					},
+					{
+						{Content: "Acknowledged the redirect.", Done: true},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+					KnownSkillsFunc: func() []string {
+						return []string{"task-tracker", "memory-keeper"}
+					},
+				})
+
+				ctx := context.Background()
+				chunks, err := eng.Stream(ctx, "test-agent", "Use task-tracker as if it were a tool")
+				Expect(err).NotTo(HaveOccurred())
+
+				var toolResultChunk *provider.StreamChunk
+				for chunk := range chunks {
+					if chunk.ToolResult != nil {
+						c := chunk
+						toolResultChunk = &c
+					}
+				}
+
+				Expect(toolResultChunk).NotTo(BeNil(),
+					"engine must emit a tool_result chunk for the redirect, not abort the stream")
+				Expect(toolResultChunk.ToolResult.IsError).To(BeTrue(),
+					"the redirect is an IsError result — it signals failure even though the body is recovery guidance")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring(`skill_load(name="task-tracker")`),
+					"the chunk MUST carry the canonical recovery hint; pre-PR6 the engine stripped Output to the sentinel and the model never saw the redirect")
+				Expect(toolResultChunk.ToolResult.Content).To(ContainSubstring("is a skill, not a tool"),
+					"the redirect's plain-English framing must propagate too — both halves are what the model trains against")
+				Expect(toolResultChunk.ToolResult.Content).NotTo(ContainSubstring("Available tools:"),
+					"the redirect path suppresses the generic tool inventory; only the fuzzy-suggest fallback carries it")
 			})
 		})
 

@@ -136,9 +136,7 @@ When the user asks about plans that already exist — "list my plans", "what pla
 
 ## Skill Loading
 
-Your always-active skills are automatically injected into your system prompt. Call `skill_load(name)` for each before beginning work.
-
-Call `skill_load(name)` for EACH skill before beginning any work.
+Your always-active skills are listed in the `<available_skills>` block above. Invoke `skill_load(name)` for a skill only when its domain becomes load-bearing for the current task — do NOT serial-load all skills at turn start. The first tool call on any multi-step planning task should be `todowrite` to capture the breakdown; skill loads come on the steps that need them.
 
 ## Deterministic Planning Loop Protocol
 

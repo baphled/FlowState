@@ -919,6 +919,86 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).NotTo(ContainSubstring("load when relevant:"))
 			Expect(systemContent).NotTo(ContainSubstring("session start — invoke before first response"))
 		})
+
+		// PR6/C4 close-out (May 2026): system-prompt budget guard. The
+		// resolver tests at internal/config/system_prompt_budget_test.go
+		// pin precedence (env/yaml) but no spec bounded the rendered
+		// `<available_skills>` block. The baseline-token spec at
+		// internal/engine/baseline_token_measurement_test.go asserted
+		// only `> 0` with no upper bound, so the lean injection could
+		// silently grow into the 10K+ byte range and both specs would
+		// still pass. This spec pins a defensible ceiling at the
+		// render seam — buildLeanInjection's output as it lands on the
+		// first system message.
+		//
+		// Empirical baseline (measured at PR6 time on this branch):
+		//   - default config + manifest with 1 always-active skill:
+		//       1092 bytes (the typical FlowState runtime shape).
+		//   - default config + manifest with 12 always-active skills:
+		//       1336 bytes (a heavier-than-typical configuration, above
+		//       the largest in-tree FlowState agent's
+		//       always-active-skills slice).
+		//
+		// The ceiling is set to 4096 bytes (4 KiB). Rationale:
+		//   - ~3× the heavy-case baseline, comfortably absorbing
+		//     incremental block additions and the small per-skill XML
+		//     overhead without alarming on routine growth.
+		//   - Two orders of magnitude below the 50 KiB worst-case
+		//     pathology the audit flagged — a ceiling that is too
+		//     close to the baseline triggers churn on every legitimate
+		//     skill addition, while a ceiling at the worst-case is
+		//     useless as a guard.
+		//   - Aligns with the per-skill content budget
+		//     (DefaultPerSkillMaxBytes = 5 KiB at
+		//     skill_autoloader_config.go:15): the lean injection is
+		//     names-only metadata; if any single skill body fits the
+		//     per-skill cap, the metadata block must comfortably fit
+		//     the whole-block cap.
+		//
+		// If a future engineer raises this ceiling, they should:
+		//   1. Re-measure with the heaviest realistic manifest shape.
+		//   2. Document the new measurement here.
+		//   3. Choose a new bound that is still meaningfully above
+		//      worst-case but well below the 50 KiB worst-case the
+		//      audit flagged.
+		It("renders the <available_skills> block under the documented byte ceiling for a representative manifest", func() {
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(len(systemContent)).To(BeNumerically("<", 4096),
+				"<system-reminder><available_skills> rendered block exceeded the 4 KiB ceiling (baseline ~1092 bytes); investigate growth source before raising the ceiling")
+		})
+
+		It("renders the <available_skills> block under the documented byte ceiling for a heavy manifest", func() {
+			heavyManifest := agent.Manifest{
+				ID:         "heavy",
+				Name:       "Heavy",
+				Complexity: "complex",
+				Capabilities: agent.Capabilities{
+					// 12 always-active skills exceeds any current
+					// in-tree FlowState agent — sized as a forward-
+					// looking stress case rather than a routine shape.
+					AlwaysActiveSkills: []string{
+						"clean-code", "architecture", "design-patterns", "refactor",
+						"security", "performance", "testing", "documentation",
+						"code-reviewer", "task-tracker", "memory-keeper", "pre-action",
+					},
+				},
+			}
+			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return heavyManifest }, nil, nil)
+			wrapped := autoloader(passthrough)
+
+			_, err := wrapped(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+
+			systemContent := capturedRequest.Messages[0].Content
+			Expect(len(systemContent)).To(BeNumerically("<", 4096),
+				"<system-reminder><available_skills> rendered block exceeded the 4 KiB ceiling under a heavy 12-always-active manifest (baseline ~1336 bytes); investigate growth source before raising the ceiling")
+		})
 	})
 })
 

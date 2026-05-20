@@ -3647,9 +3647,38 @@ func (e *Engine) streamWithToolLoop(
 		for _, er := range execResults {
 			e.storeToolResult(er.toolCall, er.toolResult)
 
+			// Precedence (PR6 close-out for S3/C1, May 2026): the chunk
+			// Content MUST prefer the tool's Output when it is non-empty,
+			// regardless of whether IsError is also set.
+			//
+			// Why: rich error messages set their text on `Result.Output`
+			// while keeping `Result.Error` populated with a sentinel
+			// (e.g. tool.ErrToolNotFound). Examples shipped on this code
+			// path:
+			//   - Item 3 skill-name redirect: Output carries the
+			//     `'X' is a skill, not a tool. Invoke it with
+			//     skill_load(name="X").` recovery hint.
+			//   - Fuzzy-suggest tool-not-found fallback: Output carries
+			//     the `Available tools: [...]. Did you mean 'X'?`
+			//     inventory + Levenshtein suggestion.
+			//   - Custom tool failure messages: any tool that returns
+			//     `Result{Output: humanText, Error: sentinel, IsError: true}`.
+			// The pre-PR6 path overwrote Output with
+			// `"Error: " + Error.Error()`, stripping every signal above
+			// before the chunk reached the model and the UI.
+			//
+			// The PR5 shape (`Result{Error: err}` with empty Output —
+			// real tools using the result-only-error pattern) still
+			// needs to surface the error text. Fall back to the wrapped
+			// `"Error: ..."` rendering only when Output is empty.
+			//
+			// Both spec harnesses (`executeToolCall` return value and
+			// the Stream chunk observer) now agree on what consumers
+			// see: the rich Output text when there is one, the
+			// `"Error: ..."` shorthand when there is not.
 			resultContent := er.toolResult.Output
-			isError := er.toolResult.Error != nil
-			if isError {
+			isError := er.toolResult.Error != nil || er.toolResult.IsError
+			if resultContent == "" && er.toolResult.Error != nil {
 				resultContent = "Error: " + er.toolResult.Error.Error()
 			}
 			// Strip the delegation `<task_result>` wrapper from the

@@ -108,6 +108,10 @@ Write your findings to `a-team/{chainID}/output` via `coordination_store` (the r
 - If you could not find reliable information on a key aspect of the task, say so explicitly rather than substituting speculation.
 - The relevance gate will check your output against the task plan. Stay on topic. If you find yourself writing extensively about something not in the task brief, either note it as tangential or confirm with the coordinator before proceeding.
 
+### A-Team scope guard
+
+When running inside the `a-team` swarm and the executor has already produced a tool/test output earlier in the chain: You receive the executor's last test output as input. Your job is to interpret and explain, not to re-read source files unless the executor's output explicitly cites a file you have not already seen in this chain.
+
 ## Routing Decision Tree
 
 ```mermaid

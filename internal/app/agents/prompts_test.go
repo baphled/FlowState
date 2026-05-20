@@ -202,6 +202,87 @@ var _ = Describe("Todo Discipline directive on agent prompts", func() {
 	})
 })
 
+// PR6/C2 close-out (May 2026): the embed seed contracts. PR4 rewrote the
+// per-user copies in `~/.config/flowstate/agents/` to remove the reflex
+// "Call skill_load(name) for EACH skill before beginning any work" anchor
+// and replace it with a lazy-load instruction. The audit found the
+// in-repo siblings (`internal/app/embed.go` `//go:embed agents/*.md`) —
+// the source of truth for fresh installs and CI test binaries — still
+// shipped the reflex prose. These contracts pin the embed seed so a
+// future engineer cannot regress to the reflex anchor on the in-repo
+// copies again. The per-user copy is reseeded from the embed FS on first
+// install; tightening the in-repo copy is the load-bearing fix.
+//
+// staleReflexSentence: the literal anchor PR4 retired. Any in-repo
+// manifest that re-introduces "for EACH skill before beginning" should
+// fail the contract. The wording is deliberately specific to the retired
+// version, so the assertion does not over-fire on related future
+// language about skill loading.
+const staleReflexSentence = "for EACH skill before beginning"
+
+// lazyLoadAnchor: the canonical replacement sentence shipped by PR4. The
+// in-repo executor.md MUST carry this exact phrasing so the embed FS
+// hands the lazy-load anchor to every fresh install. Sibling rewrites in
+// default-assistant.md and planner.md use the same first half but
+// diverge on the trailing clause ("plan-execution task" vs
+// "multi-step task" vs "multi-step planning task") — the shared prefix
+// is the structural pin.
+const lazyLoadAnchor = "Your always-active skills are listed in the `<available_skills>` block above. Invoke `skill_load(name)` for a skill only when its domain becomes load-bearing for the current task"
+
+// aTeamScopeGuardSentence: the canonical clause in researcher.md that
+// keeps the researcher from re-reading source files when running inside
+// the `a-team` swarm and the executor has already produced output. The
+// guard was shipped on the per-user copy by an earlier PR4 edit but the
+// in-repo seed never received it; PR6/C2 closes that gap.
+const aTeamScopeGuardSentence = "When running inside the `a-team` swarm and the executor has already produced a tool/test output earlier in the chain"
+
+// reflexEliminationManifests is the set of in-repo manifests that PR4
+// rewrote to remove the stale reflex sentence. Each manifest in this
+// list MUST NOT contain the retired anchor, and at least one MUST carry
+// the new lazy-load anchor. The map keys the relative filename inside
+// the agents package directory.
+var reflexEliminationManifests = []string{
+	"executor.md",
+	"default-assistant.md",
+	"planner.md",
+}
+
+var _ = Describe("PR6/C2 — embed seed reflex-elimination contract", func() {
+	// Bug provenance: post-PR4 audit found that the per-user copies at
+	// ~/.config/flowstate/agents/ had the reflex anchor rewritten, but
+	// the in-repo siblings embedded into the binary still shipped the
+	// retired prose. Fresh installs and CI test binaries would seed the
+	// reflex anchor unchanged, silently re-introducing the regression
+	// PR4 closed. These specs pin the seed, not the per-user copies.
+
+	for _, name := range reflexEliminationManifests {
+		manifestName := name // capture loop var for the closure
+		It("does NOT carry the retired reflex sentence: "+manifestName, func() {
+			content := readFile(manifestName)
+			Expect(content).NotTo(ContainSubstring(staleReflexSentence),
+				"in-repo manifest %s still embeds the retired 'EACH skill before beginning' reflex; the embed FS would seed it into fresh installs", manifestName)
+		})
+
+		It("carries the canonical lazy-load anchor: "+manifestName, func() {
+			content := readFile(manifestName)
+			Expect(content).To(ContainSubstring(lazyLoadAnchor),
+				"in-repo manifest %s missing the PR4 lazy-load anchor; the per-user copy carries it but the embed FS lags", manifestName)
+		})
+	}
+
+	It("researcher.md carries the A-Team scope guard sentence", func() {
+		// Bug provenance: PR4 added a scope guard to the researcher
+		// persona for the a-team swarm — when the executor has already
+		// run, the researcher should interpret the executor's output
+		// rather than re-read source files unprompted. The per-user
+		// copy carries the guard but the in-repo seed did not. PR6/C2
+		// closes the asymmetry.
+		content := readFile("researcher.md")
+		Expect(content).To(ContainSubstring(aTeamScopeGuardSentence),
+			"in-repo researcher.md missing the PR4 A-Team scope guard; the embed FS would seed an un-guarded researcher into fresh installs")
+	})
+})
+
 // listAgentPrompts returns absolute paths to every .md file in the package
 // directory. The package is loaded with its own working directory at test
 // time, so a relative read of "." is the agent prompt directory.
