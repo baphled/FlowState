@@ -22,6 +22,25 @@ const props = defineProps<{
   message: Message;
   agentName?: string;
   precedingUserPrompt?: { id: string; content: string } | null;
+  // Runtime-gate denial surfacing (May 2026 — PR7 follow-up). Optional
+  // attribution label for the agent that produced THIS tool-invocation
+  // row, surfaced as a chip on the tool card chrome. Resolved by the
+  // parent (ChatView) from the agents registry so the bubble doesn't
+  // re-scan on every chunk. When undefined, no chip is rendered —
+  // existing callers (and the tool_result/tool_call paths that didn't
+  // carry attribution pre-fix) keep their pre-fix appearance.
+  agentLabel?: string;
+  // Runtime-gate denial surfacing (May 2026 — PR7 follow-up). Optional
+  // sibling-resolved adjacent tool_error message. When present and the
+  // content matches the runtime-gate rejection signature (engine.go:4462
+  // sprintf "Error: '%s' is not in this agent's allowed toolset…"), the
+  // tool card surfaces a "denied by runtime gate" affordance + data-denied
+  // attribute. Mirrors the P2-9 precedingUserPrompt prop hoist pattern:
+  // an explicit value (including null) wins over the chatStore.messages
+  // fallback. The parent's groupedMessages builder is the intended
+  // caller; the fallback exists so isolated mounts (specs, ad-hoc
+  // renders) still get the affordance.
+  adjacentToolError?: { content: string } | null;
 }>();
 
 const chatStore = useChatStore();
@@ -432,6 +451,77 @@ const isFailedSend = computed(
   () => props.message.role === "user" && props.message.status === "failed",
 );
 
+// Runtime-gate denial detector (May 2026 — PR7 follow-up to commit 4b25f026).
+//
+// The engine's runtime tool gate at engine.go:4459-4475 rejects a tool
+// dispatch when the requested name is not in the agent's effective
+// toolset and writes a synthetic tool_error row carrying the message:
+//
+//   "Error: '<tool>' is not in this agent's allowed toolset. Available
+//    tools: [<list>]. Delegate to a specialist whose toolset includes
+//    '<tool>' if the work requires it."
+//
+// (engine.go:4462 sprintf — same wording as the user-facing copy.) The
+// accumulator stamps both the rejected tool_call and the resulting
+// tool_error with the same AgentID (accumulator.go:605, 633) and writes
+// them adjacently.
+//
+// The detector keys off the stable substring "not in this agent's
+// allowed toolset" rather than the full template — the [tool] name and
+// available-tools list vary, the rejection clause is invariant. This
+// distinguishes a real tool failure (bash exit 1, ENOENT, etc) from a
+// gate rejection so the affordance is narrow.
+//
+// Source resolution mirrors precedingUserPrompt (P2-9, May 2026):
+//   1. Explicit `adjacentToolError` prop wins. An explicit `null` means
+//      "the parent resolved there is no adjacent error" and suppresses
+//      the fallback — same explicit-null contract precedingUserPrompt
+//      uses.
+//   2. Undefined prop falls back to chatStore.messages: locate this
+//      bubble's message by id, peek at the next index, treat it as the
+//      adjacent message when its role is `tool_error`.
+//
+// The detector only fires on a tool-invocation render branch
+// (isToolInvocation). A tool_error row itself does not surface the
+// affordance — the ToolErrorCard already renders the rejection content;
+// the affordance is the LINK back to the attempt and belongs on the
+// tool-call card upstream.
+const GATE_REJECTION_SIGNATURE = "not in this agent's allowed toolset";
+
+const adjacentToolErrorContent = computed<string | null>(() => {
+  // Explicit prop (including null) takes precedence.
+  if (props.adjacentToolError !== undefined) {
+    return props.adjacentToolError === null
+      ? null
+      : props.adjacentToolError.content;
+  }
+  // Fallback: scan chatStore.messages for adjacency. Defensive against
+  // test mocks that don't seed the array.
+  const messages = chatStore.messages;
+  if (!Array.isArray(messages)) return null;
+  const idx = messages.findIndex((m) => m.id === props.message.id);
+  if (idx < 0 || idx >= messages.length - 1) return null;
+  const next = messages[idx + 1];
+  if (!next || next.role !== "tool_error") return null;
+  return next.content ?? "";
+});
+
+const isDeniedByGate = computed<boolean>(() => {
+  if (!isToolInvocation.value) return false;
+  const content = adjacentToolErrorContent.value;
+  if (typeof content !== "string" || content.length === 0) return false;
+  return content.includes(GATE_REJECTION_SIGNATURE);
+});
+
+// Agent attribution chip — surfaces the agent that produced THIS tool
+// invocation. Opt-in via the agentLabel prop so legacy callers keep
+// their pre-fix appearance. The chip applies only to tool-invocation
+// rows (tool_call / tool_result); plain assistant content already
+// renders the agent display name via .message-role.
+const showAgentChip = computed<boolean>(
+  () => isToolInvocation.value && typeof props.agentLabel === "string" && props.agentLabel.length > 0,
+);
+
 async function handleRevert(): Promise<void> {
   await chatStore.revertToMessage(props.message.id);
 }
@@ -488,16 +578,61 @@ async function handleRegenerate(): Promise<void> {
       </div>
     </div>
 
-    <component
+    <!--
+      Tool-invocation chrome — May 2026 PR7 follow-up wraps the per-tool
+      component in a container that carries the agent-attribution chip
+      and the runtime-gate denial affordance. The per-tool component
+      itself stays untouched (one tool invocation = one card chrome);
+      the chip + affordance layer in this wrapper without changing the
+      registered tool renderer's contract.
+
+      `data-denied` is the e2e probe + future styling hook — when the
+      detector matches (isToolInvocation + adjacent tool_error content
+      contains the gate-rejection signature) the attribute flips to
+      "true" and the affordance is announced via role="status".
+    -->
+    <div
       v-if="isToolInvocation"
-      :is="toolComponent"
-      :tool-name="toolSpec.toolName"
-      :heading="toolSpec.heading"
-      :body="toolSpec.body"
-      :status="toolStatus"
-      :tool-input="props.message.toolInput"
-      data-testid="tool-renderer"
-    />
+      class="tool-invocation"
+      :class="{ 'tool-invocation--denied': isDeniedByGate }"
+      :data-denied="isDeniedByGate ? 'true' : undefined"
+    >
+      <div v-if="showAgentChip || isDeniedByGate" class="tool-invocation-header">
+        <span
+          v-if="showAgentChip"
+          class="tool-card-agent-chip"
+          data-testid="tool-card-agent-chip"
+          :data-agent-id="props.message.agentId || undefined"
+          :aria-label="`Attempted by agent ${props.agentLabel}`"
+        >
+          <span class="tool-card-agent-chip__icon" aria-hidden="true">@</span>
+          <span class="tool-card-agent-chip__label">{{ props.agentLabel }}</span>
+        </span>
+        <span
+          v-if="isDeniedByGate"
+          class="tool-card-denied-affordance"
+          data-testid="tool-card-denied-affordance"
+          role="status"
+          :aria-label="`Tool call denied by runtime gate — not in this agent's allowed toolset`"
+        >
+          <span class="tool-card-denied-affordance__icon" aria-hidden="true"
+            >&#x26D4;</span
+          >
+          <span class="tool-card-denied-affordance__label">
+            Denied by runtime gate — tool not in this agent's allowed toolset
+          </span>
+        </span>
+      </div>
+      <component
+        :is="toolComponent"
+        :tool-name="toolSpec.toolName"
+        :heading="toolSpec.heading"
+        :body="toolSpec.body"
+        :status="toolStatus"
+        :tool-input="props.message.toolInput"
+        data-testid="tool-renderer"
+      />
+    </div>
 
     <ToolErrorCard
       v-else-if="isToolError"
@@ -1053,5 +1188,93 @@ async function handleRegenerate(): Promise<void> {
   color: var(--text-secondary, var(--text-primary));
   word-wrap: break-word;
   line-height: 1.4;
+}
+
+/*
+ * Tool-invocation wrapper — May 2026 PR7 follow-up. Hosts the agent-
+ * attribution chip + runtime-gate denial affordance above the per-tool
+ * renderer. Layout-only: no background / border of its own so the
+ * existing tool-card chrome remains the visual unit. The header row
+ * uses a small gap to separate chip from affordance.
+ */
+.tool-invocation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tool-invocation-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+}
+
+/* Agent-attribution chip. Uses theme tokens for colour (no hard-coded
+ * hex) so theme switches carry through. The chip sits to the left of
+ * the affordance and is independent of denial state — it appears on
+ * every tool card that supplies agentLabel. */
+.tool-card-agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius);
+  background: var(--bg-elevated, transparent);
+  border: 1px solid var(--border);
+  color: var(--text-secondary, var(--text-primary));
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.tool-card-agent-chip__icon {
+  color: var(--accent, var(--text-secondary));
+  font-weight: 600;
+}
+
+.tool-card-agent-chip__label {
+  color: var(--text-primary);
+}
+
+/* Denial affordance — surfaces "this tool call was rejected by the
+ * runtime gate". Visual register matches CriticalErrorBanner-ish
+ * (--error palette) but inline rather than top-of-chat. Distinct from
+ * the warning-palette thinking-only/fabricated affordances: a denied
+ * tool call is closer to an error than a warning — the call literally
+ * did not execute. Still uses role="status" (informational), not
+ * role="alert", because the engine already produced a recoverable
+ * artifact (the adjacent tool_error row shows the rejection text); the
+ * affordance is post-hoc attribution, not an immediate failure prompt.
+ */
+.tool-card-denied-affordance {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--error, var(--danger, #f87171));
+  background: var(--bg-elevated, transparent);
+  color: var(--error, var(--danger, #f87171));
+  font-weight: 600;
+  user-select: none;
+}
+
+.tool-card-denied-affordance__icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.tool-card-denied-affordance__label {
+  letter-spacing: 0.01em;
+}
+
+/* When denied, the tool card wrapper picks up a subtle left border to
+ * mirror the delegation-card chevron pattern — same visual hint as
+ * "this is a special-status invocation". */
+.tool-invocation--denied {
+  border-left: 2px solid var(--error, var(--danger, #f87171));
+  padding-left: 0.5rem;
 }
 </style>

@@ -1536,6 +1536,379 @@ describe("MessageBubble", () => {
     });
   });
 
+  // Runtime-gate denial surfacing (May 2026 — PR7 follow-up to commit 4b25f026).
+  //
+  // PR7 added a runtime tool gate at engine.go:4459-4475 that rejects a
+  // tool call when the dispatched name is not in the agent's effective
+  // toolset. The rejection emits a synthetic tool_error row carrying the
+  // gate's message text — "Error: '<tool>' is not in this agent's
+  // allowed toolset. Available tools: [...]. Delegate to a specialist
+  // whose toolset includes '<tool>' if the work requires it." — and a
+  // WARN log line at engine.go:4466. The accumulator stamps both the
+  // attempted tool_call row and the rejection tool_error row with the
+  // same AgentID (accumulator.go:605, 633) and writes them adjacently.
+  //
+  // Pre-fix the UI surface was indistinguishable from a normal tool call:
+  // the tool component rendered without any agent attribution chip, and
+  // the adjacent tool_error rendered as a separate ToolErrorCard with no
+  // visual link back to the attempt. Forensically this masked the
+  // coordinator-attempted-bash regression captured in session
+  // fbdea3e6-6e00-4c96-89ec-0ab953799cee — the gate caught the bug
+  // server-side but the UI never told the user.
+  //
+  // The fix has two pieces, both layered onto MessageBubble:
+  //   (1) Pass agentId through to the tool-card chrome so a coordinator-
+  //       attempted bash is visually distinct from a Curator-issued bash.
+  //   (2) Add a denial detector — when the next message in the rendered
+  //       stream is a tool_error matching the gate-rejection signature
+  //       ("not in this agent's allowed toolset"), mark the tool-card
+  //       with data-denied + a role="status" affordance.
+  //
+  // The detector mirrors the precedingUserPrompt prop-hoist pattern (P2-9):
+  // an optional prop carrying the adjacent tool_error message (resolved
+  // once by ChatView.groupedMessages), with a fallback that scans
+  // chatStore.messages so callers that mount the bubble in isolation
+  // still get the affordance.
+  describe("runtime-gate denial surfacing (PR7 follow-up)", () => {
+    // (1) Agent chip on tool-invocation cards.
+    it("renders an agent chip next to the tool card when an agentLabel prop is supplied", () => {
+      // The chip is the visible attribution: which agent attempted this
+      // tool call. Pre-fix the surface had no agent attribution so a
+      // coordinator-attempted bash and a Curator-issued bash looked
+      // identical. The chip carries the human-readable agent name.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "tool_call",
+            content: "",
+            toolName: "bash",
+            toolInput: JSON.stringify({ command: "ls" }),
+            agentId: "coordinator",
+          }),
+          agentLabel: "Coordinator",
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      const chip = wrapper.find('[data-testid="tool-card-agent-chip"]');
+      expect(chip.exists()).toBe(true);
+      expect(chip.text()).toContain("Coordinator");
+      // The chip carries the raw agentId so e2e probes / future styling
+      // hooks can target by agent without resolving the display name.
+      expect(chip.attributes("data-agent-id")).toBe("coordinator");
+    });
+
+    it("does NOT render the agent chip when no agentLabel prop is supplied", () => {
+      // Backwards compat: callers that mount the bubble without the prop
+      // (existing parent paths, ad-hoc renders, older specs) keep the
+      // pre-fix appearance. The chip is opt-in.
+      const wrapper = mountWithStubs(
+        makeMessage({
+          role: "tool_call",
+          content: "",
+          toolName: "bash",
+          toolInput: JSON.stringify({ command: "ls" }),
+        }),
+      );
+
+      expect(
+        wrapper.find('[data-testid="tool-card-agent-chip"]').exists(),
+      ).toBe(false);
+      // The tool card itself still renders unchanged.
+      expect(wrapper.find('[data-component="tool-renderer"]').exists()).toBe(
+        true,
+      );
+    });
+
+    it("renders the agent chip on tool_result rows too (consistent attribution)", () => {
+      // The attribution applies to the whole tool invocation card,
+      // regardless of whether it's the standalone tool_call or the paired
+      // tool_result. Both routes through the same MessageBubble
+      // tool-invocation branch.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "tool_result",
+            content: "file content",
+            toolName: "read",
+            toolInput: "foo.txt",
+            agentId: "knowledge-base-curator",
+          }),
+          agentLabel: "Knowledge-Base-Curator",
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      const chip = wrapper.find('[data-testid="tool-card-agent-chip"]');
+      expect(chip.exists()).toBe(true);
+      expect(chip.text()).toContain("Knowledge-Base-Curator");
+    });
+
+    // (2) Denial detector — when the adjacent next message is a tool_error
+    // whose content matches the gate-rejection signature.
+    it('marks the tool-card with data-denied="true" when adjacentToolError matches the gate-rejection signature', () => {
+      // The gate-rejection signature is the engine.go:4462 sprintf:
+      // "Error: '<tool>' is not in this agent's allowed toolset."
+      // The detector keys off "not in this agent's allowed toolset" to
+      // avoid coupling to the tool name or the available-tools list.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "tool_call",
+            content: "",
+            toolName: "bash",
+            toolInput: JSON.stringify({ command: "ls" }),
+            agentId: "coordinator",
+          }),
+          agentLabel: "Coordinator",
+          adjacentToolError: {
+            content:
+              "Error: 'bash' is not in this agent's allowed toolset. Available tools: [coordination_store, delegate, skill_load, todowrite]. Delegate to a specialist whose toolset includes 'bash' if the work requires it.",
+          },
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      // The card is marked as denied — the data attr is the e2e probe.
+      const denyMarker = wrapper.find('[data-denied="true"]');
+      expect(denyMarker.exists()).toBe(true);
+      // The visible affordance surfaces "denied by runtime gate" so the
+      // user can tell at a glance that this card represents a rejected
+      // attempt, not an executed call.
+      const affordance = wrapper.find(
+        '[data-testid="tool-card-denied-affordance"]',
+      );
+      expect(affordance.exists()).toBe(true);
+      // Pin the user-visible contract on the copy, not the exact phrasing.
+      // The affordance must communicate (a) the call was rejected, and
+      // (b) why — the runtime gate blocked it as out-of-toolset.
+      const text = affordance.text();
+      expect(text).toMatch(/denied|rejected|blocked/i);
+      expect(text).toMatch(/runtime gate|toolset|not (allowed|permitted)/i);
+      // role="status" — mirrors the thinking-only/fabricated affordances:
+      // informational, not assertive. CriticalErrorBanner owns role="alert".
+      expect(affordance.attributes("role")).toBe("status");
+    });
+
+    it("does NOT mark the card as denied when adjacentToolError is unrelated (tool-execution error, not gate rejection)", () => {
+      // A real tool failure (e.g. bash exited non-zero, file not found)
+      // also produces a tool_error row but with NON-gate content. The
+      // detector must be narrow — only the gate's signature triggers the
+      // affordance, otherwise every tool failure would surface as a
+      // denial.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "tool_call",
+            content: "",
+            toolName: "bash",
+            toolInput: JSON.stringify({ command: "ls /nonexistent" }),
+            agentId: "senior-engineer",
+          }),
+          agentLabel: "Senior-Engineer",
+          adjacentToolError: {
+            content:
+              "bash: line 1: ls: /nonexistent: No such file or directory\nexit code 2",
+          },
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      expect(wrapper.find('[data-denied="true"]').exists()).toBe(false);
+      expect(
+        wrapper.find('[data-testid="tool-card-denied-affordance"]').exists(),
+      ).toBe(false);
+    });
+
+    it("does NOT mark the card as denied when adjacentToolError is null (no error followed)", () => {
+      // Successful tool calls — no adjacent error at all — render the
+      // existing chrome shape, no denial state.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "tool_call",
+            content: "",
+            toolName: "bash",
+            toolInput: JSON.stringify({ command: "ls" }),
+            agentId: "senior-engineer",
+          }),
+          agentLabel: "Senior-Engineer",
+          adjacentToolError: null,
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      expect(wrapper.find('[data-denied="true"]').exists()).toBe(false);
+      expect(
+        wrapper.find('[data-testid="tool-card-denied-affordance"]').exists(),
+      ).toBe(false);
+      // The tool renderer still mounts — the success path is untouched.
+      expect(wrapper.find('[data-component="tool-renderer"]').exists()).toBe(
+        true,
+      );
+    });
+
+    it("falls back to chatStore.messages adjacency when no adjacentToolError prop is supplied (mirrors precedingUserPrompt pattern)", () => {
+      // P2-9 pattern: the bubble's primary path is the prop (resolved
+      // once by the parent's groupedMessages builder, O(1) on every
+      // chunk). The fallback exists so a caller mounting the bubble in
+      // isolation — or a test fixture seeding chatStore.messages directly
+      // — still gets the affordance.
+      const toolCallMsg = makeMessage({
+        id: "tc-1",
+        role: "tool_call",
+        content: "",
+        toolName: "bash",
+        toolInput: JSON.stringify({ command: "ls" }),
+        agentId: "coordinator",
+      });
+      const gateErrorMsg = makeMessage({
+        id: "te-1",
+        role: "tool_error",
+        toolName: "bash",
+        content:
+          "Error: 'bash' is not in this agent's allowed toolset. Available tools: [coordination_store, delegate]. Delegate to a specialist whose toolset includes 'bash' if the work requires it.",
+      });
+      mockChatStore.messages = [toolCallMsg, gateErrorMsg];
+
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: toolCallMsg,
+          agentLabel: "Coordinator",
+          // adjacentToolError prop intentionally not passed — fallback path.
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      expect(wrapper.find('[data-denied="true"]').exists()).toBe(true);
+      expect(
+        wrapper.find('[data-testid="tool-card-denied-affordance"]').exists(),
+      ).toBe(true);
+    });
+
+    it("explicit null adjacentToolError prop is respected over the fallback (defensive)", () => {
+      // Mirror P2-9's explicit-null handling: an explicit null prop tells
+      // the bubble "the parent has resolved there is no adjacent error"
+      // and the fallback must not override that.
+      const toolCallMsg = makeMessage({
+        id: "tc-1",
+        role: "tool_call",
+        content: "",
+        toolName: "bash",
+        toolInput: JSON.stringify({ command: "ls" }),
+        agentId: "coordinator",
+      });
+      // Seed messages with a gate-rejection error — the fallback WOULD
+      // detect it, but the explicit-null prop must win.
+      const gateErrorMsg = makeMessage({
+        id: "te-1",
+        role: "tool_error",
+        toolName: "bash",
+        content:
+          "Error: 'bash' is not in this agent's allowed toolset. Available tools: [].",
+      });
+      mockChatStore.messages = [toolCallMsg, gateErrorMsg];
+
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: toolCallMsg,
+          agentLabel: "Coordinator",
+          adjacentToolError: null,
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      expect(wrapper.find('[data-denied="true"]').exists()).toBe(false);
+    });
+
+    it("preserves the existing tool renderer regardless of denial state (the per-tool component still mounts)", () => {
+      // The denial affordance is layered alongside the tool card, not in
+      // place of it. The user still sees the attempted-tool chrome (tool
+      // name + body) so the context of WHAT was rejected stays visible.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "tool_call",
+            content: "",
+            toolName: "bash",
+            toolInput: JSON.stringify({ command: "ls" }),
+            agentId: "coordinator",
+          }),
+          agentLabel: "Coordinator",
+          adjacentToolError: {
+            content:
+              "Error: 'bash' is not in this agent's allowed toolset.",
+          },
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      expect(wrapper.find('[data-component="tool-renderer"]').exists()).toBe(
+        true,
+      );
+      expect(
+        wrapper.find('[data-component="tool-renderer"]').attributes("data-tool"),
+      ).toBe("bash");
+    });
+
+    it("does not surface the denial affordance on a non-tool message even with a matching adjacentToolError (defensive)", () => {
+      // Belt-and-braces: the detector only fires on the tool-invocation
+      // render branch. A plain assistant message that happens to be
+      // followed by a gate-rejection error (shouldn't happen by
+      // construction, but cheap to guard) must not surface the affordance
+      // because the visual surface that needs the denial label is the
+      // tool card, not the assistant prose.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "assistant",
+            content: "Some reasoning about what to try next.",
+          }),
+          adjacentToolError: {
+            content:
+              "Error: 'bash' is not in this agent's allowed toolset.",
+          },
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      expect(wrapper.find('[data-denied="true"]').exists()).toBe(false);
+      expect(
+        wrapper.find('[data-testid="tool-card-denied-affordance"]').exists(),
+      ).toBe(false);
+    });
+
+    it("does not mark a tool_error card itself as denied (the affordance lives on the tool-CALL, not on the error row)", () => {
+      // The ToolErrorCard is the existing surface that already displays
+      // the error body. The denial affordance is the LINK back to the
+      // attempt — it belongs on the tool-call card upstream. A tool_error
+      // row passing through MessageBubble must NOT get the affordance.
+      const wrapper = mount(MessageBubble, {
+        props: {
+          message: makeMessage({
+            role: "tool_error",
+            toolName: "bash",
+            content:
+              "Error: 'bash' is not in this agent's allowed toolset.",
+            agentId: "coordinator",
+          }),
+          agentLabel: "Coordinator",
+        },
+        global: { stubs: { ToolErrorCard, GenericTool } },
+      });
+
+      expect(wrapper.find('[data-denied="true"]').exists()).toBe(false);
+      expect(
+        wrapper.find('[data-testid="tool-card-denied-affordance"]').exists(),
+      ).toBe(false);
+      // The ToolErrorCard itself still renders — its content already
+      // surfaces the rejection text.
+      expect(wrapper.find('[data-testid="tool-error-renderer"]').exists()).toBe(
+        true,
+      );
+    });
+  });
+
   describe("precedingUserPrompt prop hoist (P2-9)", () => {
     it("uses the precedingUserPrompt prop when supplied without scanning messages", async () => {
       const assistantMsg = makeMessage({
