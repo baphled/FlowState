@@ -146,6 +146,21 @@ func runServe(cmd *cobra.Command, application *app.App, opts *ServeOptions) erro
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Operator-visible startup banner — pins the running binary's
+	// identity (VCS revision + build time + dirty flag + compiled-in
+	// fail-closed gates). May 2026 audit motivation: a pre-PR7 binary
+	// kept serving requests after PR7's source had landed; nothing in
+	// the running process signalled the gate was inactive. The banner
+	// emits to stdout BEFORE "Starting server on %s" so an operator
+	// tailing the log sees identity first. See internal/cli/build_info.go
+	// for the resolution precedence (ldflags > debug.BuildInfo VCS >
+	// "unknown") and the compiled-in gates list.
+	banner := resolveStartupBanner(versionInfo.version, versionInfo.commit, versionInfo.date)
+	slog.Info("startup banner",
+		"banner", banner,
+	)
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), banner)
+
 	errChan := make(chan error, 1)
 	go func() {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Starting server on %s\n", addr)
