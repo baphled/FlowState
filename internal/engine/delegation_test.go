@@ -3062,3 +3062,282 @@ var _ = Describe("containsAgent case-insensitive membership (PR7 Layer 2)", func
 		Expect(engine.ContainsAgentForTest([]string{}, "Researcher")).To(BeFalse())
 	})
 })
+
+// Permissive-orchestrator gate (May 2026).
+//
+// User-reported bug: "Orchestrators should be able to delegate to
+// agents AND swarms, but I'm getting an error stating that an agent
+// can only delegate to agents within a swarm." A meta-coordinator
+// inside meta-swarm (members: [a-team, dev-swarm, planning-loop,
+// board-room]) cannot reach Senior-Engineer directly without first
+// hopping through dev-swarm — even though Senior-Engineer is a
+// well-known registry resident.
+//
+// Resolution: introduce a per-agent `delegation.scope: permissive`
+// opt-in. When the lead's manifest declares permissive scope the gate
+// at resolveTargetWithOptions:3920-3940 and the swarm-target dispatcher
+// at tryDispatchSwarmTarget:2820-2830 bypass the active-swarm
+// Members[] / static allowlist check; the target only needs to exist
+// in the agent or swarm registry. Genuinely-unknown targets are still
+// rejected, but with a clarified rejection message that names the
+// permissive scope so the user knows the failure is a registry miss
+// rather than scope restriction.
+//
+// "Permissive first, restrictive last": top-level orchestrators
+// (coordinator, Team-Lead) declare permissive scope; leaf agents
+// (Senior-Engineer, KB-Curator) inherit the default restrictive
+// behaviour. Existing pre-PR7 tests for Members[]-only behaviour stay
+// green because the default scope is empty == restrictive.
+var _ = Describe("Permissive-orchestrator delegation scope", func() {
+	// makePermissiveLead constructs a lead engine whose Delegation
+	// declares `scope: permissive`. The lead is placed inside a swarm
+	// context whose Members[] does NOT include the test target — this
+	// is the exact condition that produces the user-reported rejection
+	// under the default (restrictive) scope, so the permissive bypass
+	// either admits the target (when it exists in the registries) or
+	// rejects with the clarified message (when it doesn't).
+	//
+	// `extraTargets` is the set of additional engine ids registered in
+	// d.engines so resolveAgentID can find them; one of them should
+	// also be registered in the agent registry (via agentReg) for the
+	// permissive admit path to fire. The swarm registry is wired so
+	// permissive swarm-target dispatch can succeed for known swarms.
+	makePermissiveLead := func(
+		swarmMembers []string,
+		extraTargets []string,
+		agentReg *agent.Registry,
+		swarmReg *swarm.Registry,
+	) (*engine.DelegateTool, map[string]*engine.Engine) {
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{name: "spy"})
+
+		leadEng := engine.New(engine.Config{
+			Manifest: agent.Manifest{
+				ID:   "lead",
+				Name: "Lead",
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+					Scope:       agent.DelegationScopePermissive,
+				},
+			},
+			AgentRegistry: agent.NewRegistry(),
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+		})
+
+		engines := map[string]*engine.Engine{}
+		for _, targetID := range extraTargets {
+			engines[targetID] = engine.New(engine.Config{
+				ChatProvider: &mockProvider{
+					name:         "target-" + targetID,
+					streamChunks: []provider.StreamChunk{{Content: "ok", Done: true}},
+				},
+				Manifest: agent.Manifest{
+					ID:                targetID,
+					Name:              targetID,
+					Instructions:      agent.Instructions{SystemPrompt: "target"},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+		}
+
+		delegateTool := engine.NewDelegateTool(engines, agent.Delegation{
+			CanDelegate: true,
+			Scope:       agent.DelegationScopePermissive,
+		}, "lead").WithOwnerEngine(leadEng)
+
+		if agentReg != nil {
+			delegateTool = delegateTool.WithRegistry(agentReg)
+		}
+		if swarmReg != nil {
+			delegateTool = delegateTool.WithSwarmRegistry(swarmReg)
+		}
+
+		leadEng.SetSwarmContext(&swarm.Context{
+			SwarmID:     "active-swarm",
+			LeadAgent:   "lead",
+			Members:     swarmMembers,
+			ChainPrefix: "active-swarm",
+		})
+
+		return delegateTool, engines
+	}
+
+	Context("when the lead declares delegation.scope: permissive", func() {
+		It("admits an agent NOT in the active swarm's Members[]", func() {
+			// The user's exact case: lead inside a swarm whose
+			// Members[] lists sub-swarm ids only; a leaf agent
+			// (Senior-Engineer) is registered globally but is not
+			// on this swarm's roster. Under restrictive scope this
+			// would bounce; under permissive scope the admission
+			// succeeds because the target is a registered agent.
+			agentReg := agent.NewRegistry()
+			agentReg.Register(&agent.Manifest{
+				ID:           "Senior-Engineer",
+				Name:         "Senior Engineer",
+				Capabilities: agent.Capabilities{},
+			})
+
+			delegateTool, _ := makePermissiveLead(
+				[]string{"a-team", "dev-swarm", "planning-loop", "board-room"},
+				[]string{"Senior-Engineer"},
+				agentReg, nil,
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "Senior-Engineer",
+					"message":       "cross-swarm delegation by permissive lead",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred(),
+				"permissive lead must admit a registered agent that isn't in the active swarm's Members[]")
+		})
+
+		It("admits a swarm-id target NOT in the active swarm's Members[]", func() {
+			// Permissive bypass at tryDispatchSwarmTarget: a
+			// permissive lead inside swarm A may dispatch swarm B
+			// even when swarm B isn't on swarm A's roster.
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "other-swarm",
+				Lead:    "coordinator",
+				Members: []string{"coordinator"},
+			})
+			agentReg := agent.NewRegistry()
+
+			delegateTool, _ := makePermissiveLead(
+				[]string{"a-team"}, // other-swarm NOT in Members
+				nil,
+				agentReg, swarmReg,
+			)
+
+			// We only need the gate to NOT short-circuit on the
+			// Members[] check; the downstream swarm-dispatch may
+			// fail for other reasons (no swarm runner wired in
+			// this fixture), but the rejection we're guarding
+			// against is the in-swarm-only one.
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "other-swarm",
+					"message":       "swarm-id target outside the active roster",
+				},
+			})
+
+			if err != nil {
+				Expect(err.Error()).NotTo(ContainSubstring("agent not in delegation allowlist"),
+					"permissive lead must NOT bounce a known swarm id through the allowlist gate")
+			}
+		})
+
+		It("rejects a target absent from BOTH registries with a clarified permissive-rejection message", func() {
+			// Permissive does NOT mean "anything goes": a target
+			// that is missing from BOTH the agent registry AND the
+			// swarm registry must still bounce. The rejection
+			// message names the permissive scope so the user knows
+			// the failure is a registry miss, not a roster gate.
+			//
+			// Fixture detail: the target IS registered in
+			// d.engines (so resolveAgentID's fallback at
+			// delegation.go:4110-4112 returns the verbatim id),
+			// but NOT in the agent registry (so isKnownDelegationTarget
+			// returns false), and the swarm registry is empty.
+			// This produces the exact "permissive lead, target
+			// nowhere in the registries" failure mode the new
+			// rejection message is designed to clarify.
+			agentReg := agent.NewRegistry()
+			delegateTool, _ := makePermissiveLead(
+				[]string{"a-team"},
+				[]string{"orphan-engine"}, // in d.engines, NOT in registries
+				agentReg, swarm.NewRegistry(),
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "orphan-engine",
+					"message":       "target exists as an engine but is in neither registry",
+				},
+			})
+
+			Expect(err).To(HaveOccurred())
+			// Wrapped-sentinel preserved so errors.Is checks keep
+			// working.
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			Expect(err.Error()).To(ContainSubstring("orphan-engine"))
+			Expect(err.Error()).To(ContainSubstring("not found in agent or swarm registry"),
+				"permissive rejection must name the registry-miss shape")
+			Expect(err.Error()).To(ContainSubstring("delegation.scope: permissive"),
+				"the rejection must declare the orchestrator's permissive scope so the user knows the failure isn't roster-based")
+		})
+	})
+
+	Context("when the lead declares the default (restrictive) scope", func() {
+		// Pinned: pre-existing Members[]-only behaviour is
+		// unchanged for non-permissive leads. This is the
+		// behaviour-pinning guard for the May-2026 shadow rule
+		// (project_flowstate_swarm_members_shadow_allowlist).
+		It("still rejects an agent NOT in the active swarm's Members[]", func() {
+			providerReg := provider.NewRegistry()
+			providerReg.Register(&mockProvider{name: "spy"})
+
+			leadEng := engine.New(engine.Config{
+				Manifest: agent.Manifest{
+					ID:   "restrictive-lead",
+					Name: "Restrictive Lead",
+					Delegation: agent.Delegation{
+						CanDelegate: true,
+						// Scope deliberately empty — default
+						// restrictive behaviour must survive.
+					},
+				},
+				AgentRegistry: agent.NewRegistry(),
+				Registry:      providerReg,
+				ChatProvider:  &mockProvider{name: "spy"},
+			})
+
+			engines := map[string]*engine.Engine{
+				"Senior-Engineer": engine.New(engine.Config{
+					ChatProvider: &mockProvider{
+						name:         "target",
+						streamChunks: []provider.StreamChunk{{Content: "ok", Done: true}},
+					},
+					Manifest: agent.Manifest{
+						ID:                "Senior-Engineer",
+						Name:              "Senior Engineer",
+						Instructions:      agent.Instructions{SystemPrompt: "target"},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				}),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{
+				CanDelegate: true,
+			}, "restrictive-lead").WithOwnerEngine(leadEng)
+
+			leadEng.SetSwarmContext(&swarm.Context{
+				SwarmID:     "active-swarm",
+				LeadAgent:   "restrictive-lead",
+				Members:     []string{"a-team"},
+				ChainPrefix: "active-swarm",
+			})
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "Senior-Engineer",
+					"message":       "restrictive lead reaching outside swarm",
+				},
+			})
+
+			Expect(err).To(HaveOccurred(),
+				"restrictive (default) scope must still gate against Members[] — the May-2026 shadow rule is unchanged")
+			Expect(err).To(MatchError(ContainSubstring("agent not in delegation allowlist")))
+			Expect(err.Error()).To(ContainSubstring(`not in swarm "active-swarm" members:`),
+				"restrictive rejection format must remain the Members[] roster shape, not the permissive registry-miss shape")
+		})
+	})
+})

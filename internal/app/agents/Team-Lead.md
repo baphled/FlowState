@@ -49,6 +49,13 @@ delegation:
     - Principal-Engineer
     - Researcher
     - Knowledge-Base-Curator
+  # Permissive orchestrator (May 2026): Team-Lead assembles squads
+  # across the full agent graph (specialists like writer, DevOps,
+  # Security-Engineer, Performance-Engineer that aren't always on
+  # the dev-swarm roster). `scope: permissive` lifts the swarm
+  # Members[] constraint so squad recruitment isn't artificially
+  # capped at whichever swarm context Team-Lead happens to be in.
+  scope: permissive
 orchestrator_meta:
   cost: "high"
   category: "orchestration"

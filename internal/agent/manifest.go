@@ -210,9 +210,62 @@ type OrchestratorMetadata struct {
 }
 
 // Delegation configures whether and how an agent can delegate tasks.
+//
+// Scope (May 2026) controls how the runtime gate at
+// internal/engine/delegation.go interprets the agent's delegation reach.
+// Two values are accepted:
+//
+//   - "" / "restrictive" (default): the agent is constrained by the
+//     active swarm.Context.Members[] when running inside a swarm, and
+//     by DelegationAllowlist when standalone. This is the historical
+//     behaviour and the safe default for leaf agents
+//     (Senior-Engineer, KB-Curator, etc.) that should not be able to
+//     reach beyond their immediate scope.
+//
+//   - "permissive": the agent is a designated orchestrator that may
+//     delegate to ANY registered agent or swarm, regardless of the
+//     active swarm.Context.Members[] or DelegationAllowlist. The gate
+//     still verifies that the target exists in the agent or swarm
+//     registry — a typo is rejected with a clarified message that
+//     names the permissive scope so the user knows the failure is
+//     "target unknown" not "scope-restricted".
+//
+// Principle: "permissive first, restrictive last." Top-level
+// orchestrators (coordinator, Team-Lead) declare scope: permissive so
+// they can route across the full agent graph; leaf agents inherit the
+// restrictive default so adding a tool-using agent never accidentally
+// widens its reach.
 type Delegation struct {
 	CanDelegate         bool     `json:"can_delegate" yaml:"can_delegate"`
 	DelegationAllowlist []string `json:"delegation_allowlist" yaml:"delegation_allowlist"`
+	// Scope selects the gate-interpretation. Empty / "restrictive" is
+	// the safe default; "permissive" opts the agent out of the
+	// Members[] and DelegationAllowlist checks. See the type doc for
+	// the contract.
+	Scope string `json:"scope,omitempty" yaml:"scope,omitempty"`
+}
+
+// Delegation scope constants. Empty string is treated as restrictive so
+// existing manifests need no migration.
+const (
+	DelegationScopeRestrictive = "restrictive"
+	DelegationScopePermissive  = "permissive"
+)
+
+// IsPermissive reports whether the agent is a permissive orchestrator
+// — i.e. allowed to delegate to any registered agent or swarm
+// regardless of the active swarm.Context.Members[] or
+// DelegationAllowlist. Empty Scope and "restrictive" both return false;
+// only "permissive" returns true.
+//
+// Returns:
+//   - true when Scope == "permissive".
+//   - false otherwise (including the zero value).
+//
+// Side effects:
+//   - None.
+func (d Delegation) IsPermissive() bool {
+	return d.Scope == DelegationScopePermissive
 }
 
 // HarnessConfig defines the output validation and quality layers for an agent.
@@ -376,6 +429,14 @@ func (m *Manifest) Validate() error {
 		return &ValidationError{
 			Field:   "model_policy",
 			Message: `must be "permissive", "strict", or empty`,
+		}
+	}
+	switch m.Delegation.Scope {
+	case "", DelegationScopeRestrictive, DelegationScopePermissive:
+	default:
+		return &ValidationError{
+			Field:   "delegation.scope",
+			Message: `must be "permissive", "restrictive", or empty`,
 		}
 	}
 	return nil

@@ -319,6 +319,77 @@ var _ = Describe("Manifest JSON deserialisation", func() {
 			_, found := delegationType.FieldByName("DelegationTable")
 			Expect(found).To(BeFalse(), "DelegationTable should be removed from Delegation struct")
 		})
+
+		// Permissive-orchestrator field (May 2026).
+		//
+		// `delegation.scope: permissive` lifts the active-swarm
+		// Members[] / static allowlist check at the gate so designated
+		// orchestrators can route across the full agent graph.
+		Describe("Scope field", func() {
+			It("defaults to empty (restrictive)", func() {
+				d := agent.Delegation{CanDelegate: true}
+				Expect(d.Scope).To(BeEmpty())
+				Expect(d.IsPermissive()).To(BeFalse(),
+					"empty scope must be treated as restrictive — the safe default for leaf agents")
+			})
+
+			It("IsPermissive returns true only for the permissive constant", func() {
+				Expect(agent.Delegation{Scope: agent.DelegationScopePermissive}.IsPermissive()).To(BeTrue())
+				Expect(agent.Delegation{Scope: agent.DelegationScopeRestrictive}.IsPermissive()).To(BeFalse())
+				Expect(agent.Delegation{Scope: ""}.IsPermissive()).To(BeFalse())
+				Expect(agent.Delegation{Scope: "PERMISSIVE"}.IsPermissive()).To(BeFalse(),
+					"value is case-sensitive — typos must NOT silently widen scope")
+			})
+
+			It("deserialises from JSON via delegation.scope", func() {
+				raw := `{
+					"id": "coord",
+					"name": "Coord",
+					"delegation": {
+						"can_delegate": true,
+						"delegation_allowlist": [],
+						"scope": "permissive"
+					}
+				}`
+				var m agent.Manifest
+				Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+				Expect(m.Delegation.Scope).To(Equal("permissive"))
+				Expect(m.Delegation.IsPermissive()).To(BeTrue())
+			})
+
+			It("deserialises from JSON omitting scope as empty (restrictive)", func() {
+				raw := `{
+					"id": "leaf",
+					"name": "Leaf",
+					"delegation": {"can_delegate": true, "delegation_allowlist": []}
+				}`
+				var m agent.Manifest
+				Expect(json.Unmarshal([]byte(raw), &m)).To(Succeed())
+				Expect(m.Delegation.Scope).To(BeEmpty())
+				Expect(m.Delegation.IsPermissive()).To(BeFalse())
+			})
+		})
+
+		Describe("Validate scope field", func() {
+			It("accepts empty scope", func() {
+				m := &agent.Manifest{ID: "x", Name: "X"}
+				Expect(m.Validate()).To(Succeed())
+			})
+
+			It("accepts permissive and restrictive", func() {
+				perm := &agent.Manifest{ID: "x", Name: "X", Delegation: agent.Delegation{Scope: "permissive"}}
+				rest := &agent.Manifest{ID: "x", Name: "X", Delegation: agent.Delegation{Scope: "restrictive"}}
+				Expect(perm.Validate()).To(Succeed())
+				Expect(rest.Validate()).To(Succeed())
+			})
+
+			It("rejects unknown scope values", func() {
+				m := &agent.Manifest{ID: "x", Name: "X", Delegation: agent.Delegation{Scope: "open"}}
+				err := m.Validate()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("delegation.scope"))
+			})
+		})
 	})
 
 	Describe("Model preferences", func() {

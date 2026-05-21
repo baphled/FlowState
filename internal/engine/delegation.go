@@ -2821,8 +2821,10 @@ func (d *DelegateTool) tryDispatchSwarmTarget(ctx context.Context, input tool.In
 	}
 	// Must be in the active swarm's Members[] — the in-swarm gate's
 	// shadow rule applies to swarm-id targets identically to agent-id
-	// targets.
-	if !containsAgent(swarmCtx.Members, subagentType) {
+	// targets. Permissive orchestrators bypass this check: a
+	// `delegation.scope: permissive` lead may dispatch any swarm in
+	// the registry regardless of the active swarm's roster.
+	if !d.delegation.IsPermissive() && !containsAgent(swarmCtx.Members, subagentType) {
 		return tool.Result{}, false, nil
 	}
 	// Must resolve to a swarm in the registry.
@@ -3917,7 +3919,32 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 	// the bug for swarm configs that legitimately have an empty roster
 	// (broken config) or list only the lead (no delegation targets at
 	// all). The standalone path (no active swarm context) is unchanged.
-	if swarmCtx, ok := d.activeSwarmContext(); ok {
+	// Permissive-orchestrator bypass (May 2026).
+	//
+	// When the lead agent's manifest declares `delegation.scope:
+	// permissive`, the gate accepts any target that resolves to a
+	// known agent OR a known swarm in the registries — regardless of
+	// the active swarm.Context.Members[] or DelegationAllowlist. This
+	// is the "permissive first, restrictive last" principle: top-level
+	// orchestrators (coordinator, Team-Lead) need to reach across the
+	// full agent graph, while leaf agents (Senior-Engineer,
+	// KB-Curator, etc.) stay scoped by the default restrictive
+	// behaviour above.
+	//
+	// Genuine unknowns are still rejected, but with a clarified
+	// message that names the permissive scope so the user sees
+	// "target not found in registries" rather than "scope-restricted".
+	if d.delegation.IsPermissive() {
+		if d.isKnownDelegationTarget(targetAgentID) {
+			// Known target — admit. Skip Members[] and allowlist
+			// checks entirely.
+		} else {
+			swarmCtx, _ := d.activeSwarmContext()
+			return delegationTarget{}, fmt.Errorf("%w: %s",
+				errAgentNotInAllowlist,
+				d.formatPermissiveRejection(swarmCtx, targetAgentID))
+		}
+	} else if swarmCtx, ok := d.activeSwarmContext(); ok {
 		if !containsAgent(swarmCtx.Members, targetAgentID) {
 			return delegationTarget{}, fmt.Errorf("%w: %s",
 				errAgentNotInAllowlist,
@@ -4873,6 +4900,86 @@ func (d *DelegateTool) formatRejection(swarmCtx *swarm.Context, roster []string,
 		b.WriteString("\n")
 		b.WriteString(hint)
 	}
+	return b.String()
+}
+
+// isKnownDelegationTarget reports whether targetID resolves to a known
+// agent OR a known swarm via the wired-in registries. This is the
+// "exists anywhere" lookup the permissive-orchestrator gate uses to
+// distinguish a typo (genuine miss) from a member-of-some-swarm hit.
+//
+// Lookup order:
+//
+//  1. Agent registry — match by id, case-insensitive id, or alias via
+//     Registry.GetByNameOrAlias. Mirrors the resolution path used by
+//     resolveAgentID and tryDispatchSwarmTarget so permissive admit
+//     is consistent with what the dispatch path actually accepts.
+//  2. Swarm registry — match by exact id via Registry.Get. Swarm ids
+//     are case-sensitive in the registry, so this lookup mirrors the
+//     dispatch-side check at tryDispatchSwarmTarget.
+//
+// Returns false when both registries are nil or no match is found.
+//
+// Expected:
+//   - targetID is the candidate agent or swarm id; non-empty.
+//
+// Returns:
+//   - true when the id is registered in either registry.
+//   - false otherwise.
+//
+// Side effects:
+//   - None (read-only access via Registry.GetByNameOrAlias / Get).
+func (d *DelegateTool) isKnownDelegationTarget(targetID string) bool {
+	if targetID == "" {
+		return false
+	}
+	if d.registry != nil {
+		if _, found := d.registry.GetByNameOrAlias(targetID); found {
+			return true
+		}
+	}
+	if d.swarmRegistry != nil {
+		if _, found := d.swarmRegistry.Get(targetID); found {
+			return true
+		}
+	}
+	return false
+}
+
+// formatPermissiveRejection builds the rejection body for a permissive
+// orchestrator whose target was not found in either registry. The
+// shape differs from formatRejection because the failure mode is
+// different: a permissive lead is not constrained by a roster, so
+// listing the swarm Members[] or static allowlist would be misleading.
+// The message names the permissive scope explicitly so the user knows
+// the target really doesn't exist anywhere — not that it was scope-
+// restricted.
+//
+// Example output:
+//
+//	"foo" not found in agent or swarm registry; this orchestrator declares delegation.scope: permissive (no scope restriction).
+//
+// The wrapped sentinel (`errAgentNotInAllowlist`) is preserved so
+// `errors.Is(err, errAgentNotInAllowlist)` checks at the call sites
+// continue to work — the rejection IS an allowlist-style decision,
+// just one made against the full registry rather than a scoped roster.
+//
+// Expected:
+//   - swarmCtx may be nil (standalone permissive delegation).
+//   - targetID is the rejected agent or swarm id; non-empty.
+//
+// Returns:
+//   - A multi-line string ready to slot in after the wrapped sentinel.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) formatPermissiveRejection(swarmCtx *swarm.Context, targetID string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%q not found in agent or swarm registry", targetID)
+	if swarmCtx != nil && swarmCtx.SwarmID != "" {
+		fmt.Fprintf(&b, " (active swarm %q)", swarmCtx.SwarmID)
+	}
+	b.WriteString("; this orchestrator declares delegation.scope: permissive (no scope restriction). Check the target id spelling — the rejection is a registry miss, not a roster gate.")
 	return b.String()
 }
 

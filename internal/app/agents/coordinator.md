@@ -31,6 +31,14 @@ context_management:
 delegation:
   can_delegate: true
   delegation_allowlist: []
+  # Permissive orchestrator (May 2026): the meta-coordinator routes
+  # across multiple sub-swarms and standalone agents at the top of
+  # any swarm graph. `scope: permissive` opts this agent out of the
+  # active swarm.Context.Members[] check so it can reach any
+  # registered agent or swarm — not just the ones listed in its
+  # immediate swarm's roster. Leaf agents inherit the default
+  # restrictive behaviour.
+  scope: permissive
 hooks:
   before: []
   after: []
