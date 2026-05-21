@@ -12,6 +12,11 @@ GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
 GOMOD=$(GOCMD) mod
 
+# Build identity (injected via -ldflags so startup banner reflects current HEAD)
+BUILD_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_LDFLAGS=-X main.commit=$(BUILD_COMMIT) -X main.date=$(BUILD_DATE)
+
 # Default target
 all: check build
 
@@ -22,7 +27,7 @@ all: check build
 build: ## Build the binary
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/flowstate
+	$(GOBUILD) -buildvcs=true -ldflags "$(BUILD_LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/flowstate
 
 run: build ## Build and run the application
 	@echo "Running $(BINARY_NAME)..."
