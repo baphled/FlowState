@@ -1085,6 +1085,32 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		if msg.ProviderName != "" && sess.CurrentProviderID != msg.ProviderName {
 			sess.CurrentProviderID = msg.ProviderName
 		}
+		// Stream-truncation surfaced-failure flip (Bug F, May 2026). When
+		// the accumulator stamps StopReasonStreamTruncated on the flushed
+		// assistant message (openaicompat wire cut before terminal
+		// finish_reason landed — live reproducers: glm-4.6 plan-writer
+		// session 8779c2ae-69a4-... and glm-5 plan-writer session
+		// 5e37d947-c049-4d5c-a209-658d9c6a5186 on zai), flip Status
+		// active -> failed so the chat UI, session list, and API expose
+		// the failure immediately rather than waiting on the 30-min
+		// boot-time orphan reap.
+		//
+		// Restricted to the assistant-role branch: a future refactor that
+		// accidentally populates StopReason on a tool_call / tool_result
+		// row must NOT trigger spurious failed states.
+		//
+		// The status guard mirrors MarkEndedFromEvent's precedence
+		// (manager.go:287-290): failed is the terminal state — already-
+		// failed sessions stay failed (idempotent); already-completed
+		// sessions DO escalate to failed because truncation is a
+		// higher-precedence signal than a (now-known-premature) seal;
+		// abandoned sessions are reaped artefacts that don't accept
+		// further mutations.
+		if msg.StopReason == StopReasonStreamTruncated &&
+			sess.Status != string(StatusFailed) &&
+			sess.Status != string(StatusAbandoned) {
+			sess.Status = string(StatusFailed)
+		}
 	}
 
 	// Snapshot the fields needed for persistence under the lock, then release

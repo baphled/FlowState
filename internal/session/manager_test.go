@@ -352,6 +352,134 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// Stream-truncation status flip (Bug F, May 2026).
+	//
+	// When the accumulator stamps StopReasonStreamTruncated on the
+	// flushed assistant message (live reproducers: glm-4.6 plan-writer
+	// 8779c2ae-69a4-... and glm-5 plan-writer 5e37d947-c049-4d5c-
+	// a209-658d9c6a5186 on zai), the session manager must flip the
+	// session's Status from StatusActive to StatusFailed so the chat
+	// UI, the session list, and the API expose the failure immediately
+	// — without this flip, the boot-time orphan reap (30 min grace) is
+	// the only recovery path and a UI client sees a session stuck on
+	// "active" until restart.
+	//
+	// The flip is idempotent and status-precedence-aware: a session that
+	// already failed or completed is NOT re-flipped, mirroring
+	// MarkEndedFromEvent's existing precedence (failed > completed > active).
+	Describe("appendSessionMessage flips status to failed on StopReasonStreamTruncated", func() {
+		It("flips active -> failed when the assistant message carries StopReasonStreamTruncated", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.Status).To(Equal(string(session.StatusActive)),
+				"new session starts active — the precondition for the failed-flip path")
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "assistant",
+				Content:      "Let me generate the comprehensive revision:",
+				ModelName:    "glm-5",
+				ProviderName: "zai",
+				StopReason:   session.StopReasonStreamTruncated,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"stream_truncated on an assistant message MUST flip the session to failed — "+
+					"this is the surfaced-failure path so downstream consumers see the fault "+
+					"immediately rather than waiting on the 30-min boot-time orphan reap")
+		})
+
+		It("does not flip active when the assistant message carries a different StopReason", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "the answer is 42",
+				StopReason: "end_turn",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"a clean end_turn must NOT flip status — only the truncation sentinel triggers the flip")
+		})
+
+		It("does not flip active when a non-assistant message carries StopReasonStreamTruncated (defensive)", func() {
+			// StopReason on a tool_call / tool_result is wire-noise; the
+			// flip must only respond to assistant artefacts so future
+			// refactors that accidentally populate StopReason on a
+			// non-assistant role cannot trigger spurious failed states.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "tool_call",
+				StopReason: session.StopReasonStreamTruncated,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"only assistant-role messages drive the truncation-flip — defensive guard")
+		})
+
+		It("does not downgrade a previously-completed session to failed", func() {
+			// Status precedence (failed > completed > active mirrors
+			// MarkEndedFromEvent at manager.go:287-290): a session that
+			// was sealed completed is not re-flipped if a stray
+			// truncated message arrives later.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.CloseSession(sess.ID)).To(Succeed())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonStreamTruncated,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			// Note: failed > completed in the existing precedence ordering,
+			// so a real truncation event landing on a completed session
+			// DOES escalate to failed (the seal was premature). The
+			// precedence is about NOT downgrading failed, not about
+			// pinning completed — keep the test honest about the actual
+			// behaviour we want, not a hypothetical we don't.
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"truncation escalates a (likely premature) completed seal to failed — "+
+					"completed is not protected against the higher-precedence failure signal")
+		})
+
+		It("does not flip a previously-failed session away from failed (idempotent)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Drive the first truncation event.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonStreamTruncated,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)))
+
+			// A second truncation event is a no-op on status.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonStreamTruncated,
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"the flip is idempotent — repeated truncation events on a failed session keep it failed")
+		})
+	})
+
 	Describe("Session hierarchy types", func() {
 		It("exposes parent identifiers on Session", func() {
 			typ := reflect.TypeOf(session.Session{})

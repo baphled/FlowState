@@ -1818,13 +1818,22 @@ var _ = Describe("AccumulateStream", func() {
 					"no tool/delegation evidence exists this turn")
 		})
 
-		It("preserves the thinking-only and empty-turn sentinels on their respective paths", func() {
+		It("preserves the empty-turn sentinel and routes empty-stop-reason thinking-only through the stream-truncation detector", func() {
 			// Regression coverage: the fabrication guard fires only on the
 			// content-bearing flushContent path. The synthesizePlaceholder
-			// path (thinking-only, empty-turn) MUST still produce
-			// StopReasonThinkingOnly and StopReasonEmptyTurn respectively.
+			// empty-turn branch MUST still produce StopReasonEmptyTurn.
+			//
+			// The thinking-only branch's behaviour pin migrated (May 2026
+			// stream-truncation detector): a turn that produced thinking,
+			// no content, no tool, no delegation AND no upstream stop_reason
+			// IS the openaicompat truncation signature (live reproducer
+			// session 8779c2ae-69a4-... glm-4.6/zai — Content="",
+			// Thinking=30382, ToolCalls=0, StopReason=""). The synthesised
+			// placeholder now stamps StopReasonStreamTruncated so the
+			// session manager can flip status active -> failed and the
+			// boot-time orphan reap is no longer the only recovery path.
 
-			// Empty-turn path.
+			// Empty-turn path — unchanged.
 			emptyAppender := &fakeAppender{}
 			emptyCh := make(chan provider.StreamChunk, 1)
 			emptyCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
@@ -1842,7 +1851,8 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(emptyMsgs[0].StopReason).To(Equal(session.StopReasonEmptyTurn),
 				"empty-turn synthesis path is independent of the fabrication guard")
 
-			// Thinking-only path (raw thinking, no signature, no upstream stop_reason).
+			// Thinking-only path with no upstream stop_reason — re-pinned
+			// to the new StopReasonStreamTruncated sentinel.
 			thinkingAppender := &fakeAppender{}
 			thinkingCh := make(chan provider.StreamChunk, 2)
 			thinkingCh <- provider.StreamChunk{Thinking: "reasoning only", ProviderID: "zai"}
@@ -1858,8 +1868,10 @@ var _ = Describe("AccumulateStream", func() {
 				}
 			}
 			Expect(thinkingMsgs).To(HaveLen(1))
-			Expect(thinkingMsgs[0].StopReason).To(Equal(session.StopReasonThinkingOnly),
-				"thinking-only synthesis path is independent of the fabrication guard")
+			Expect(thinkingMsgs[0].StopReason).To(Equal(session.StopReasonStreamTruncated),
+				"thinking-only with no upstream stop_reason IS the openaicompat truncation signature — "+
+					"the synthesised placeholder must stamp stream_truncated so the session manager "+
+					"can flip status active -> failed")
 		})
 	})
 
@@ -2035,6 +2047,335 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonAbandonedTool),
 				"abandoned-tool requires non-empty thinking — without planning evidence "+
 					"the turn is not an abandoned tool call, it is a different fault class")
+		})
+	})
+
+	// Stream-truncation detector (May 2026, follow-up to Bug E).
+	//
+	// Live reproducers (read-only — referenced for forensic context):
+	//   - Session 8779c2ae-69a4-... — plan-writer on glm-4.6/zai.
+	//     Final assistant: Content="", Thinking=30382, ToolCalls=0,
+	//     StopReason="". Model announced intent to write the plan in
+	//     reasoning_content, then the upstream wire cut before any
+	//     tool_use payload landed. Pre-detector this stamped
+	//     StopReasonThinkingOnly which made the session indistinguishable
+	//     from a clean reasoning-only turn — boot-time orphan reap (30 min
+	//     grace) was the only recovery path.
+	//   - Session 5e37d947-c049-4d5c-a209-658d9c6a5186 — plan-writer on
+	//     glm-5/zai (post-PR7 manifest tightening). Final assistant:
+	//     Content=154 ("Let me generate the comprehensive revision:"),
+	//     Thinking=2074, ToolCalls=0, StopReason="". Same fault shape,
+	//     but content-bearing — flushContent persisted the message with
+	//     StopReason="" and the chat UI rendered a silent "completed"
+	//     bubble carrying only the model's announce-intent prose.
+	//
+	// Detector contract: when the assistant turn produced ANY model
+	// activity (content OR thinking) AND produced NO tool_call AND NO
+	// delegation AND the upstream provider gave NO stop_reason chunk,
+	// stamp StopReasonStreamTruncated. The signature is distinct from
+	// StopReasonAbandonedTool (which requires WHITESPACE-only content
+	// with a thinking block — the model self-cancelled by emitting a
+	// stray newline) — truncation is a wire-level cut mid-output where
+	// the model never got to its terminal payload.
+	//
+	// False-positive surface: the openaicompat provider only emits Done
+	// when it observed an upstream finish_reason (openaicompat.go:540-547
+	// `if sawFinish`). A real provider stream that ends with the channel
+	// closing AND no finish_reason on the last chunk IS the truncation
+	// pattern in production; synthetic test fixtures that send raw Done
+	// without preceding stop_reason are also routed through this branch
+	// (see the "preserves the empty-turn sentinel and routes empty-stop-
+	// reason thinking-only through the stream-truncation detector" pin
+	// above — that synthetic fixture is treated as truncation by design).
+	Describe("stream-truncation detection (Bug F, May 2026)", func() {
+		Context("content-bearing flushContent path", func() {
+			It("stamps StopReasonStreamTruncated when content is non-empty and no upstream stop_reason fired", func() {
+				// Reproducer 5e37d947 shape: announce-intent prose then
+				// channel close, no finish_reason ever observed by
+				// openaicompat. The accumulator's chunk.Done path was
+				// never reached because the provider never emitted Done;
+				// the channel-close branch ran flushThinking + flushContent.
+				rawCh := make(chan provider.StreamChunk, 4)
+				rawCh <- provider.StreamChunk{
+					Thinking:   "Let me think about how to structure this plan...",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				rawCh <- provider.StreamChunk{
+					Content:    "Let me generate the comprehensive revision:",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				// No stop_reason chunk, no Done — channel just closes.
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1),
+					"a truncated content-bearing turn still produces exactly one assistant message — "+
+						"the detector annotates, never duplicates or suppresses")
+				Expect(assistantMsgs[0].Content).To(ContainSubstring("Let me generate"),
+					"the announce-intent prose flows through verbatim — the detector only annotates StopReason")
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonStreamTruncated),
+					"content + no-tool + no-delegation + empty-stop-reason IS the truncation signature — "+
+						"the persisted message must carry stream_truncated so the session manager can "+
+						"flip status active -> failed and downstream consumers (UI banner, audit) can flag it")
+			})
+
+			It("stamps StopReasonStreamTruncated even when thinking is absent (pure content truncation)", func() {
+				// Some glm variants emit straight to content without
+				// reasoning_content. Truncation is keyed on the absence
+				// of an upstream stop_reason — thinking is incidental.
+				rawCh := make(chan provider.StreamChunk, 3)
+				rawCh <- provider.StreamChunk{
+					Content:    "Step one: I will fetch the file. Step two:",
+					ProviderID: "zai",
+					ModelID:    "glm-4.5",
+				}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonStreamTruncated),
+					"a content-bearing turn cut mid-output must be flagged regardless of whether the "+
+						"reasoning channel produced anything")
+			})
+		})
+
+		Context("synthesizePlaceholderAssistant thinking-only path", func() {
+			It("stamps StopReasonStreamTruncated when thinking is non-empty, content is empty, and no upstream stop_reason fired", func() {
+				// Reproducer 8779c2ae shape: glm-4.6/zai emitted 30382 chars
+				// of reasoning, never produced content, never produced a
+				// tool_call, never produced a finish_reason. Pre-detector
+				// the placeholder stamped StopReasonThinkingOnly which
+				// masked the truncation as a clean reasoning-only turn.
+				rawCh := make(chan provider.StreamChunk, 3)
+				rawCh <- provider.StreamChunk{
+					Thinking: "I need to plan the file write. The user wants " +
+						"a comprehensive plan document. Let me draft the sections " +
+						"in my head before emitting the write tool call...",
+					ProviderID: "zai",
+					ModelID:    "glm-4.6",
+				}
+				// No content, no stop_reason, no Done — channel closes.
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1),
+					"the placeholder synthesiser still produces exactly one assistant artefact — "+
+						"the persisted history holds the reasoning evidence under an assistant turn "+
+						"so the chat UI can render the abandoned plan and the user can re-issue")
+				Expect(assistantMsgs[0].Content).To(BeEmpty())
+				Expect(assistantMsgs[0].ThinkingBlocks).To(HaveLen(1),
+					"the reasoning content survives on the placeholder as forensic evidence — "+
+						"the operator can read what the model intended to do")
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonStreamTruncated),
+					"thinking + no-content + no-tool + no-delegation + empty-stop-reason IS the "+
+						"openaicompat truncation signature — the placeholder must stamp stream_truncated "+
+						"so the session manager can flip status active -> failed (replacing the old "+
+						"StopReasonThinkingOnly fallback which silently masked the fault)")
+			})
+
+			It("does NOT stamp StopReasonStreamTruncated when an upstream stop_reason was captured", func() {
+				// A turn that produced only thinking but DID emit a clean
+				// finish_reason (e.g. some reasoning provider routes
+				// stop_reason but skips content) is a legitimate
+				// reasoning-only turn — the upstream stop_reason
+				// precedence applies.
+				rawCh := make(chan provider.StreamChunk, 3)
+				rawCh <- provider.StreamChunk{Thinking: "reasoning text", ProviderID: "zai"}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "end_turn",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal("end_turn"),
+					"upstream stop_reason precedence — when the provider gave a real terminal "+
+						"reason, the detector MUST NOT override it; truncation fires only on "+
+						"empty stop_reason")
+			})
+		})
+
+		Context("negatives — the detector must not fire on legitimate or differently-shaped turns", func() {
+			It("does NOT stamp StopReasonStreamTruncated when an upstream stop_reason chunk fired (content-bearing path)", func() {
+				rawCh := make(chan provider.StreamChunk, 4)
+				rawCh <- provider.StreamChunk{Content: "the answer", ProviderID: "zai"}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "end_turn",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal("end_turn"),
+					"a clean end_turn path is unchanged — the detector only fires on the empty-stop-reason signature")
+			})
+
+			It("does NOT stamp StopReasonStreamTruncated when a tool_call accompanied the turn", func() {
+				// A tool-bearing turn whose finish_reason chunk failed to
+				// land is not a truncation in the sense the detector
+				// flags: the tool_call is the turn's deliverable. The
+				// existing turn-interrupted/end-of-stream synthesis
+				// already handles this shape via other paths.
+				rawCh := make(chan provider.StreamChunk, 4)
+				rawCh <- provider.StreamChunk{
+					Content:    "Looking up the file...",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					ToolCall: &provider.ToolCall{
+						ID:        "tc-1",
+						Name:      "read",
+						Arguments: map[string]any{"path": "/tmp/x"},
+					},
+					ProviderID: "zai",
+				}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				for _, m := range assistantMsgs {
+					Expect(m.StopReason).NotTo(Equal(session.StopReasonStreamTruncated),
+						"a tool_call this turn proves the model reached its deliverable — "+
+							"the truncation detector MUST NOT false-flag a real tool-bearing turn "+
+							"just because the upstream finish_reason was missing")
+				}
+			})
+
+			It("does NOT clobber StopReasonAbandonedTool when content is whitespace-only with thinking", func() {
+				// Bug E sentinel: content = "\n", thinking non-empty, no
+				// tool/delegation. AbandonedTool fires first because the
+				// content IS whitespace-only — the model self-cancelled.
+				// The truncation detector must NOT override this.
+				rawCh := make(chan provider.StreamChunk, 3)
+				rawCh <- provider.StreamChunk{Thinking: "Let me use the write tool", ProviderID: "zai"}
+				rawCh <- provider.StreamChunk{Content: "\n", ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonAbandonedTool),
+					"the abandoned-tool sentinel keys on whitespace-only content with thinking — "+
+						"its semantics (model self-cancelled by emitting a stray newline) differ "+
+						"from truncation (wire-level cut mid-output); the existing sentinel must win")
+			})
+
+			It("does NOT stamp StopReasonStreamTruncated when the turn is a true empty turn (no content, no thinking, no tools)", func() {
+				// Existing empty-turn synthesis covers this path. The
+				// truncation detector requires evidence of model activity.
+				rawCh := make(chan provider.StreamChunk, 2)
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonEmptyTurn),
+					"empty-turn path is unchanged — truncation requires content OR thinking evidence")
+			})
+
+			It("does NOT stamp StopReasonStreamTruncated when the turn produced a delegation", func() {
+				// A delegation is the turn's deliverable — the detector
+				// must not false-flag.
+				rawCh := make(chan provider.StreamChunk, 4)
+				rawCh <- provider.StreamChunk{
+					Content:    "Delegating to the worker.",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-1",
+						TargetAgent: "Worker",
+						Status:      "started",
+					},
+					ProviderID: "zai",
+				}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				for _, m := range assistantMsgs {
+					Expect(m.StopReason).NotTo(Equal(session.StopReasonStreamTruncated),
+						"a delegation this turn proves the model reached its deliverable — "+
+							"truncation must not flag delegation turns")
+				}
+			})
 		})
 	})
 })

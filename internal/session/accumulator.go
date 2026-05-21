@@ -847,6 +847,35 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 		strings.TrimSpace(msg.Content) == "" {
 		msg.StopReason = StopReasonAbandonedTool
 	}
+	// Stream-truncation detector (Bug F, May 2026). When a content-bearing
+	// turn produced meaningful payload AND produced NO tool_call AND NO
+	// delegation AND the upstream provider gave NO stop_reason chunk,
+	// the openaicompat wire cut mid-output before the model reached its
+	// terminal payload. Stamp StopReasonStreamTruncated so the session
+	// manager can flip Status active -> failed and the chat UI / audit
+	// can surface the failure immediately rather than waiting on the
+	// 30-min boot-time orphan reap.
+	//
+	// Ordering: the AbandonedTool guard above fires FIRST because its
+	// signature (whitespace-only content + thinking) is mutually exclusive
+	// with this detector's "meaningful content" gate — that pre-existing
+	// sentinel keeps its sole-owner status on its specific shape. The
+	// FabricatedCompletion guard above also pre-empts when its phrases
+	// match, so a self-reported "✅ saved to ..." turn that lacked an
+	// upstream stop_reason still surfaces as fabrication (the dominant
+	// signal) rather than truncation.
+	//
+	// Live reproducer: session 5e37d947-c049-4d5c-a209-658d9c6a5186 —
+	// plan-writer on glm-5/zai. Final assistant Content was "Let me
+	// generate the comprehensive revision:" (154 chars), Thinking=2074,
+	// ToolCalls=0, StopReason="". The model announced intent and the
+	// stream cut before the planned tool_use payload landed.
+	if msg.StopReason == "" &&
+		!s.turnHadToolCall &&
+		!s.turnHadDelegation &&
+		strings.TrimSpace(msg.Content) != "" {
+		msg.StopReason = StopReasonStreamTruncated
+	}
 	appender.AppendMessage(s.sessionID, msg)
 	s.contentBuf.Reset()
 	s.thinkingBlocks = nil
@@ -944,6 +973,57 @@ const StopReasonFabricatedCompletion = "fabricated_completion"
 // branch and the audit pipeline; no backend consumer keys on the
 // specific string.
 const StopReasonAbandonedTool = "abandoned_tool"
+
+// StopReasonStreamTruncated is the synthetic stop reason stamped on an
+// assistant Message whose turn produced ANY model activity (content OR
+// thinking) AND produced NO tool_call AND NO delegation AND the upstream
+// provider gave NO stop_reason chunk. The signature is the openaicompat
+// truncation pattern: the model announced intent (in content or thinking)
+// then the wire cut before a terminal finish_reason landed, leaving the
+// session's chat history with a persisted assistant turn that carried
+// StopReason="" and the session metadata's Status stuck on "active"
+// indefinitely — the boot-time orphan reap (30 min grace) was the only
+// recovery path.
+//
+// Distinct from StopReasonAbandonedTool: that sentinel keys on
+// whitespace-only CONTENT with thinking (model self-cancelled by emitting
+// a stray newline alongside a complete reasoning chain). Truncation is a
+// wire-level cut MID-OUTPUT — the model never reached its terminal
+// payload, the upstream finish_reason was never emitted, and openaicompat
+// at openaicompat.go:540-547 (`if sawFinish`) consequently never emitted
+// Done. The accumulator's channel-close branch flushes whatever partial
+// content / thinking accumulated and synthesises the placeholder with
+// this sentinel so the session manager at manager.go:appendSessionMessage
+// can flip Status active -> failed and surface the failure.
+//
+// Live reproducers (read-only — referenced for forensic context):
+//   - Session 8779c2ae-69a4-... — plan-writer on glm-4.6/zai. Final
+//     assistant: Content="", Thinking=30382, ToolCalls=0, StopReason="".
+//   - Session 5e37d947-c049-4d5c-a209-658d9c6a5186 — plan-writer on
+//     glm-5/zai. Final assistant: Content=154 ("Let me generate the
+//     comprehensive revision:"), Thinking=2074, ToolCalls=0, StopReason="".
+//
+// False-positive surface: a synthetic test fixture that sends a raw Done
+// chunk WITHOUT a preceding stop_reason chunk also lands here — that
+// shape is not producible in production by the openaicompat provider
+// (which only emits Done when finish_reason was seen). The detector
+// treats those fixtures as truncation by design; see the existing
+// "preserves the empty-turn sentinel and routes empty-stop-reason
+// thinking-only through the stream-truncation detector" pin in
+// accumulator_test.go.
+//
+// Wire-format-stable: the value is read by the Vue MessageBubble render
+// branch (which keys on `stopReason !== ""` to surface a soft-error
+// affordance — see web/src/components/chat/MessageBubble.vue:239) and by
+// the session manager's status-flip path. The string literal is the
+// surface — downstream consumers must match exactly.
+//
+// Operator-visible behaviour after this lands: when glm truncates a
+// plan-writer dispatch, the session's Status flips from "active" to
+// "failed" the moment the placeholder lands, the chat UI renders a
+// soft-error affordance immediately, and the audit pipeline sees a
+// non-empty stopReason instead of a silent stuck-active row.
+const StopReasonStreamTruncated = "stream_truncated"
 
 // fabricationPhrases is the set of self-reported-completion phrases that
 // trigger the StopReasonFabricatedCompletion stamp when present in an
@@ -1109,14 +1189,27 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 	copy(blocks, s.thinkingBlocks)
 	stopReason := s.turnStopReason
 	if stopReason == "" {
-		// Reasoning providers can finish a turn after emitting only
-		// reasoning tokens with no structured stop_reason event. The
-		// Vue UI affordance from 0f27ac98 keys on `stopReason !== ""`
-		// to locate the placeholder, so stamp the synthetic
-		// "thinking_only" value here when no upstream reason was
-		// captured. Keeps the UI invariant intact without touching
-		// the Vue render branch.
-		stopReason = StopReasonThinkingOnly
+		// Stream-truncation detector (Bug F, May 2026). Pre-detector
+		// this branch stamped the synthetic StopReasonThinkingOnly so
+		// the Vue UI affordance from 0f27ac98 (which keys on
+		// `stopReason !== ""`) could locate the placeholder. Live
+		// production data — session 8779c2ae-69a4-... (glm-4.6 plan-
+		// writer on zai) had Content="", Thinking=30382, ToolCalls=0,
+		// StopReason="" — shows this signature IS the openaicompat
+		// truncation pattern: the model emitted reasoning tokens for
+		// the full plan, then the upstream wire cut before any
+		// terminal finish_reason or tool_use payload landed. The
+		// session was left stuck on Status="active" until the 30-min
+		// orphan reap.
+		//
+		// The new sentinel (a) preserves the UI invariant — stop_reason
+		// is still non-empty so the soft-error affordance lands — and
+		// (b) drives the session manager's flip from active to failed
+		// so the failure surfaces immediately. The render branch in
+		// the Vue MessageBubble (web/src/components/chat/MessageBubble.vue)
+		// already routes non-empty stop_reason values through the
+		// soft-error path, so no UI change is required.
+		stopReason = StopReasonStreamTruncated
 	}
 	appender.AppendMessage(s.sessionID, Message{
 		Role:           "assistant",
