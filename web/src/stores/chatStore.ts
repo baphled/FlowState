@@ -1964,13 +1964,32 @@ export const useChatStore = defineStore('chat', {
         } catch (err) {
           // Aborted by session switch (or component teardown): exit
           // cleanly without surfacing an error. AbortError is the
-          // typical shape; defensive .name check covers DOMException.
-          const aborted = err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message))
+          // typical shape; defensive .name check covers DOMException
+          // (which is NOT always `instanceof Error` in jsdom and older
+          // node runtimes — we must inspect the structural .name /
+          // .message fields directly rather than rely on the Error
+          // prototype chain).
+          const errAsObj = err as { name?: unknown; message?: unknown } | null | undefined
+          const errName = typeof errAsObj?.name === 'string' ? errAsObj.name : ''
+          const errMessage = typeof errAsObj?.message === 'string' ? errAsObj.message : ''
+          const aborted = errName === 'AbortError' || /abort/i.test(errMessage)
           if (aborted) {
             return
           }
-          // 404 / transient network blip — bail out and let the
-          // post-poll reconcile pull canonical state.
+          // M-01 (Vue Web Frontend Master Bug Report, May 2026): non-
+          // abort errors (TypeError "Failed to fetch", 5xx wrapped in
+          // Error, JSON parse failures) MUST surface to the user.
+          // Pre-fix this branch silently returned, leaving the chat
+          // gate cleared (the enclosing sendMessage finally / the
+          // maybeReattachStream finally clear flags) but with no
+          // user-visible signal — the user's message appeared then the
+          // composer flipped back to Send with no assistant reply and
+          // no explanation. Setting this.error lights up the existing
+          // chat-error footer; reconcileFromBackend on the outer turn
+          // path still runs to pull whatever canonical state the
+          // server managed to persist.
+          const surfaceMessage = errMessage || 'unknown error'
+          this.error = `Streaming connection failed: ${surfaceMessage}. The chat is recoverable — send another message to retry.`
           return
         }
         pollCount++
@@ -2588,6 +2607,22 @@ export const useChatStore = defineStore('chat', {
       const initialSessionId = this.currentSessionId
       this.setSessionStreaming(initialSessionId, { isLoading: true, isStreaming: false })
 
+      // M-04 (Vue Web Frontend Master Bug Report, May 2026) — capture
+      // the targeted session-id at function scope so the finally block
+      // can clear flags on the session this send actually targeted,
+      // independent of any concurrent navigation. Pre-fix the finally
+      // read `this.currentSessionId ?? initialSessionId`, which:
+      //   - Cleared the WRONG session when the user navigated to a
+      //     different existing session mid-flight (`?? initialSessionId`
+      //     does not engage because currentSessionId is non-null).
+      //   - Missed the lazy-create branch's freshly-minted session-id
+      //     when navigation away happened before finally fired.
+      // The captured id is reassigned inside the try block if the
+      // lazy-create branch synthesises a new session — that's the
+      // single canonical target for both flag-clear and queued-prompt
+      // drain.
+      let targetedSessionId: string | null = initialSessionId
+
       // Optimistic id is `temp-${Date.now()}-${rand}` rather than just
       // `temp-${Date.now()}` so concurrent sends within the same millisecond
       // (test harness, fast click) get distinct ids — otherwise the
@@ -2607,6 +2642,12 @@ export const useChatStore = defineStore('chat', {
           sessionId = session.id
           this.currentSessionId = sessionId
           persistSessionId(sessionId)
+          // M-04 (Vue Web Frontend Master Bug Report, May 2026) — keep
+          // the function-scoped targetedSessionId in lock-step with the
+          // lazy-created session id so the finally block clears the
+          // freshly-minted session, not whichever session
+          // currentSessionId happens to point at after navigation.
+          targetedSessionId = sessionId
           // Per-session state (Slice A) — the in-flight slot was attached
           // to the prior null id; transfer it to the freshly-created
           // session so the gate / indicator continue to read true.
@@ -2624,6 +2665,15 @@ export const useChatStore = defineStore('chat', {
             this.currentProviderId = session.currentProviderId
           }
         }
+
+        // Mirror the function-scoped capture: when the send entered with
+        // a pre-existing session (the if !sessionId branch did not run),
+        // targetedSessionId is still the initialSessionId — but if the
+        // initialSessionId was null (typical lazy-create), the assignment
+        // above covered it. This redundant assignment is the
+        // belt-and-braces safety against future refactors that introduce
+        // a third entry path.
+        targetedSessionId = sessionId
 
         const capturedSessionId = sessionId
 
@@ -2745,7 +2795,17 @@ export const useChatStore = defineStore('chat', {
         // Phase-4-Commit-2: pollTurnUntilTerminal awaited above drove
         // the turn to a terminal status via long-poll; no SSE was
         // opened so there is nothing to tear down here.
-        const completedSessionId = this.currentSessionId ?? initialSessionId
+        //
+        // M-04 (Vue Web Frontend Master Bug Report, May 2026): use the
+        // function-scoped targetedSessionId (captured at request-start
+        // and reassigned across the lazy-create branch) rather than
+        // this.currentSessionId — the live currentSessionId may have
+        // moved to a different session due to user navigation between
+        // send-start and finally, in which case the prior
+        // `this.currentSessionId ?? initialSessionId` would clear the
+        // wrong session's flags. The captured id is the canonical
+        // recipient of the send and the canonical owner of the cleanup.
+        const completedSessionId = targetedSessionId ?? initialSessionId
         this.setSessionStreaming(completedSessionId, { isLoading: false, isStreaming: false })
         // Streaming Coherence Slice E (May 2026) — queued-prompt drain.
         // After the outer turn completes, fire the next queued prompt
@@ -2786,9 +2846,20 @@ export const useChatStore = defineStore('chat', {
       const sessionId = this.currentSessionId
       if (!sessionId) return
 
-      // Gate: only cancel if actively streaming
+      // Gate: cancel if the turn is in-flight at all — either loading
+      // (POST resolved, long-poll waiting for the first chunk) OR
+      // streaming (chunks arriving). M-05 (Vue Web Frontend Master Bug
+      // Report, May 2026): pre-fix this gated exclusively on
+      // `state.isStreaming`, which only flips true once the first
+      // content chunk arrives (chatStore.ts applyContentEvent path).
+      // The pre-stream loading window — `isLoading: true,
+      // isStreaming: false` — silently dropped the gesture; the user
+      // hit Escape-Escape and nothing happened. Widening the gate to
+      // either flag covers the full in-flight lifecycle; the teardown
+      // (setSessionStreaming false/false) is consistent across both
+      // windows so behaviour after cancel is unchanged.
       const state = this.streamingFor(sessionId)
-      if (!state.isStreaming) return
+      if (!state.isStreaming && !state.isLoading) return
 
       this.escapePressCount++
 

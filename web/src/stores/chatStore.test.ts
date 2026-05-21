@@ -7870,3 +7870,332 @@ describe('chatStore - loadSessionMessages reattaches long-poll on backend-stream
     expect(vi.mocked(fetchTurn)).not.toHaveBeenCalled()
   })
 })
+
+// M-04 — `sendMessage` finally clears the WRONG session when the user
+// navigates mid-flight (Vue Web Frontend Master Bug Report, May 2026).
+//
+// Pre-fix, the finally block at chatStore.ts:2748 reads
+// `this.currentSessionId ?? initialSessionId` to decide which session's
+// `{isLoading, isStreaming}` slot to clear. If the user navigates to a
+// DIFFERENT existing session between send-start and finally (the long-
+// poll loop returned, post-send reconcile resolved), the live
+// `this.currentSessionId` no longer points at the session the send
+// targeted — and the ?? fallback does not engage because the value is
+// non-null. The fix captures the targeted session-id at function scope
+// (covering both the pre-existing session and lazy-create branches) and
+// the finally uses the captured id so flag teardown lands on the correct
+// slot regardless of intermediate navigation.
+describe('chatStore - sendMessage finally clears the ORIGINAL session, not the navigated-to one (M-04)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('clears isLoading/isStreaming flags on the session that originated the send when the user navigates to a different existing session mid-flight', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-origin'
+    store.messages = []
+
+    vi.mocked(sendSessionMessage).mockResolvedValueOnce({
+      turnId: 'turn-origin',
+      snapshot: {
+        id: 'session-origin',
+        agentId: 'agent-1',
+        messages: [],
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        createdAt: '',
+        updatedAt: '',
+      },
+    } as unknown as never)
+
+    // pollTurnUntilTerminal: simulate the user navigating to a different
+    // session in the middle of the poll loop. First iteration resolves
+    // running (still on origin), then the test mutates currentSessionId
+    // to a different session — the loop's top-of-iteration guard exits.
+    // The outer sendMessage's finally then runs with this.currentSessionId
+    // pointing at the navigated-to session, NOT the originating session.
+    vi.mocked(fetchTurn).mockImplementationOnce(async () => {
+      Promise.resolve().then(() => {
+        store.currentSessionId = 'session-navigated-to'
+      })
+      return {
+        turn_id: 'turn-origin',
+        session_id: 'session-origin',
+        status: 'running' as const,
+        started_at: '',
+        completed_at: null,
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [],
+      } as never
+    })
+
+    // Pre-seed the navigated-to session's slot so we can assert the
+    // finally did NOT touch it. If the bug is present, the finally will
+    // clear it to {isLoading:false, isStreaming:false}, wiping the
+    // pre-seeded marker.
+    store.sessionStreaming['session-navigated-to'] = { isLoading: true, isStreaming: true }
+
+    await store.sendMessage('hello')
+
+    // The originating session must have its flags cleared (the send
+    // resolved on it).
+    const originSlot = store.sessionStreaming['session-origin']
+    expect(originSlot).toBeDefined()
+    expect(originSlot?.isLoading).toBe(false)
+    expect(originSlot?.isStreaming).toBe(false)
+
+    // The navigated-to session's slot must be UNTOUCHED — its prior
+    // state (the user's other in-flight indicator, or any unrelated
+    // session-B state) must not be clobbered by session-A's finally.
+    const navigatedSlot = store.sessionStreaming['session-navigated-to']
+    expect(navigatedSlot).toBeDefined()
+    expect(navigatedSlot?.isLoading).toBe(true)
+    expect(navigatedSlot?.isStreaming).toBe(true)
+  })
+
+  it('clears flags on the originating session when the user navigates to a freshly-created session (currentSessionId is still non-null but different)', async () => {
+    // A sister-case to the above: instead of navigating to a pre-existing
+    // session, the user might trigger a New Session (synchronous) which
+    // assigns a brand-new currentSessionId. The fix must still target the
+    // original.
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-origin-2'
+    store.messages = []
+
+    vi.mocked(sendSessionMessage).mockResolvedValueOnce({
+      turnId: 'turn-origin-2',
+      snapshot: {
+        id: 'session-origin-2',
+        agentId: 'agent-1',
+        messages: [],
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        createdAt: '',
+        updatedAt: '',
+      },
+    } as unknown as never)
+
+    vi.mocked(fetchTurn).mockImplementationOnce(async () => {
+      Promise.resolve().then(() => {
+        // Simulate the user creating a new session client-side which
+        // assigns a fresh id.
+        store.currentSessionId = 'session-brand-new'
+      })
+      return {
+        turn_id: 'turn-origin-2',
+        session_id: 'session-origin-2',
+        status: 'running' as const,
+        started_at: '',
+        completed_at: null,
+        model: { provider: '', model: '' },
+        error: '',
+        messages: [],
+      } as never
+    })
+
+    store.sessionStreaming['session-brand-new'] = { isLoading: true, isStreaming: false }
+
+    await store.sendMessage('hi')
+
+    const originSlot = store.sessionStreaming['session-origin-2']
+    expect(originSlot?.isLoading).toBe(false)
+    expect(originSlot?.isStreaming).toBe(false)
+
+    // The new session's slot is unchanged.
+    const newSlot = store.sessionStreaming['session-brand-new']
+    expect(newSlot?.isLoading).toBe(true)
+    expect(newSlot?.isStreaming).toBe(false)
+  })
+})
+
+// M-05 — Cancel-key handler no-op during the pre-stream loading window
+// (Vue Web Frontend Master Bug Report, May 2026).
+//
+// Pre-fix, handleEscapeKey at chatStore.ts:2791 gates exclusively on
+// `state.isStreaming`. `isStreaming` only flips true once the first
+// content chunk arrives (chatStore.ts:3217, inside applyContentEvent);
+// the `isLoading` flag is the true source for "request is in-flight"
+// during the pre-stream window. A user who hits Escape-Escape while the
+// turn is loading (POST has resolved, fetchTurn long-poll is waiting
+// for the first message) sees the gesture silently dropped — the
+// session-streaming slot has `isLoading: true, isStreaming: false`,
+// the guard at line 2791 fires `return`, and the cancel is lost. The
+// fix accepts EITHER flag as evidence of "cancellable in-flight"; the
+// teardown (setSessionStreaming false/false) is consistent across both
+// windows.
+describe('chatStore - handleEscapeKey cancels during the pre-stream loading window (M-05)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('clears the session-streaming gate when Escape-Escape fires during the loading-but-not-yet-streaming window', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-pre-stream'
+
+    // Reproduce the exact pre-stream window: sendMessage has set
+    // isLoading=true (chatStore.ts:2589) but no chunk has arrived yet
+    // so isStreaming is still false (chatStore.ts:3217 not yet hit).
+    store.setSessionStreaming('session-pre-stream', { isLoading: true, isStreaming: false })
+
+    // Two escape presses inside the 600ms window: the SECOND should
+    // trip the cancel cascade. Pre-fix, the first press incremented
+    // (and started the timer) AND the second press returned at the
+    // `!state.isStreaming` guard before the >=2 branch could fire —
+    // so neither press lands meaningful state.
+    await store.handleEscapeKey()
+    await store.handleEscapeKey()
+
+    const slot = store.sessionStreaming['session-pre-stream']
+    expect(slot?.isLoading).toBe(false)
+    expect(slot?.isStreaming).toBe(false)
+  })
+
+  it('still cancels during the chunk-arriving window (regression guard for the existing happy-path)', async () => {
+    // The original guard semantics must be preserved for the
+    // already-streaming case — the fix widens the gate, it does not
+    // narrow it.
+    const store = useChatStore()
+    store.currentSessionId = 'session-streaming'
+    store.setSessionStreaming('session-streaming', { isLoading: true, isStreaming: true })
+
+    await store.handleEscapeKey()
+    await store.handleEscapeKey()
+
+    const slot = store.sessionStreaming['session-streaming']
+    expect(slot?.isLoading).toBe(false)
+    expect(slot?.isStreaming).toBe(false)
+  })
+
+  it('does NOT cancel when neither isLoading nor isStreaming is true (no spurious clears on an idle session)', async () => {
+    // Defence-in-depth: an idle session must not be affected by stray
+    // escape presses. The gate is "isLoading OR isStreaming", not "no
+    // gate".
+    const store = useChatStore()
+    store.currentSessionId = 'session-idle'
+    store.setSessionStreaming('session-idle', { isLoading: false, isStreaming: false })
+    // Pre-seed a sentinel; the cancel path would call
+    // setSessionStreaming(...{false, false}) which would write the slot.
+    // We assert NO write happened by checking the slot object identity
+    // remained the same across both presses.
+    const before = store.sessionStreaming['session-idle']
+
+    await store.handleEscapeKey()
+    await store.handleEscapeKey()
+
+    const after = store.sessionStreaming['session-idle']
+    expect(after).toBe(before)
+  })
+})
+
+// M-01 — long-poll error path silently swallows non-abort errors
+// (Vue Web Frontend Master Bug Report, May 2026).
+//
+// Pre-fix, the catch block at chatStore.ts:1964-1975 distinguishes
+// AbortError (clean exit, no error surfaced) from "everything else"
+// (also a silent return, no `this.error` mutation, no logging). A
+// genuine network blip on the long-poll fetch — TypeError from fetch,
+// a 5xx-wrapped Error from fetchTurn's response handler, an unexpected
+// JSON parse failure — silently returns. The outer sendMessage's
+// finally still clears the streaming gate (so the UI doesn't lock
+// forever), but the user sees no error footer, no toast, no signal
+// that the turn failed: their message appears optimistically, then the
+// composer flips back to Send with no assistant reply and no
+// explanation. The fix preserves the abort silent-exit but surfaces
+// non-abort errors via `this.error` so the existing chat-error footer
+// renders the failure and the user can retry.
+describe('chatStore - pollTurnUntilTerminal surfaces non-abort fetchTurn errors via this.error (M-01)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('sets store.error when fetchTurn rejects with a non-abort error (network blip / 5xx / parse failure)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-blip'
+    store.error = null
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    // A generic network failure shape: TypeError from fetch ("Failed to
+    // fetch") is the canonical browser-side blip, but the handler must
+    // treat any non-Abort rejection the same way. Use a plain Error so
+    // the test does not couple to one specific exception class.
+    ft.mockRejectedValueOnce(new Error('Failed to fetch'))
+
+    await store.pollTurnUntilTerminal('session-blip', 'turn-blip')
+
+    expect(store.error).toBeTruthy()
+    // The message text is not strictly contractual — the regression
+    // guard is "the user gets a visible error", not the exact wording.
+    // Loosely match on the network / stream vocabulary so a later
+    // rephrase doesn't break the test.
+    expect(String(store.error)).toMatch(/network|stream|connection|failed/i)
+  })
+
+  it('does NOT mutate store.error when fetchTurn rejects with AbortError (session-switch path stays silent)', async () => {
+    // Regression guard for the abort branch: navigating away from a
+    // session triggers an AbortError on the in-flight long-poll. That
+    // is the well-known happy-path teardown signal and must not surface
+    // as a user-visible error.
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-abort-quiet'
+    store.error = null
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockRejectedValueOnce(new DOMException('The operation was aborted', 'AbortError'))
+
+    await store.pollTurnUntilTerminal('session-abort-quiet', 'turn-abort-quiet')
+
+    expect(store.error).toBeNull()
+  })
+
+  it('does NOT mutate store.error when the session is switched mid-poll after the abort (the loop just exits cleanly)', async () => {
+    // Composite regression guard for the abort+session-switch path.
+    // First fetch resolves successfully (loop iterates), then the
+    // session-id is mutated and the second fetch rejects with
+    // AbortError — the canonical session-switch shape.
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-quiet'
+    store.error = null
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-quiet',
+      session_id: 'session-quiet',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+    } as never)
+    ft.mockImplementationOnce(async () => {
+      store.currentSessionId = 'session-other'
+      throw new DOMException('The operation was aborted', 'AbortError')
+    })
+
+    await store.pollTurnUntilTerminal('session-quiet', 'turn-quiet')
+
+    expect(store.error).toBeNull()
+  })
+})
