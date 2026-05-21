@@ -2,23 +2,26 @@ package tool
 
 import "errors"
 
-// ErrToolNotFound is returned when a tool lookup fails because the
-// requested tool name is not registered. Callers can use errors.Is to
-// distinguish "unknown tool" from a tool execution failure.
-var ErrToolNotFound = errors.New("tool not found")
-
-// ErrToolNotAllowed is returned when a tool dispatch is rejected
-// because the tool name is registered on the engine but NOT in the
-// active manifest's effective toolset. Sibling sentinel to
-// ErrToolNotFound: callers use errors.Is to distinguish "agent
-// manifest does not permit this tool" from "tool absent from the
-// registry" and from generic execution failure.
+// ErrToolNotFound is the canonical sentinel for "the engine cannot
+// dispatch the requested tool for the active agent". It covers two
+// shapes the engine treats uniformly:
 //
-// Surface: PR7 / Coordinator Over-Execution (May 2026). The runtime
-// tool gate at executeToolCall emits this sentinel before the tool's
-// Execute body runs. Pre-PR7 the engine relied on
-// buildAllowedToolSetFor schema-advertisement filtering alone;
-// permissive providers (glm-4.x at zai/openzen) emit out-of-schema
-// tool calls anyway and were silently executed. The dispatch-time
-// gate closes that gap with this sentinel as the failure signal.
-var ErrToolNotAllowed = errors.New("tool not allowed by manifest")
+//   - Registry absence: the tool name is not registered on the engine
+//     at all (the fuzzy-suggest fallback at the dispatch site renders
+//     a "Did you mean" hint and a list of available tools).
+//   - Out-of-manifest: the tool name IS registered but is NOT in the
+//     active manifest's effective allowed set (Option A, May 2026 —
+//     the runtime gate at executeToolCall returns a "not available to
+//     agent" rejection citing the agent identity and the effective
+//     toolset).
+//
+// Callers use errors.Is to distinguish "unknown tool" from a tool
+// execution failure. The shared sentinel mirrors the OpenAI Agents
+// SDK's ToolNotFoundBehavior="return_error_to_model" pattern: the
+// model receives a structured tool_result and self-corrects on the
+// next turn. Pre-Option-A the engine carried a separate
+// ErrToolNotAllowed sentinel for the out-of-manifest case; the
+// distinction was internal-only — the structured tool_result shape was
+// identical and no caller switched on which sentinel fired. Retiring
+// it keeps the public API minimal.
+var ErrToolNotFound = errors.New("tool not found")

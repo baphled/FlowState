@@ -26,11 +26,14 @@ import (
 // (manifest tools = [coordination_store, skill_load, delegate,
 // todowrite]) executing 21 bash + 5 read calls direct.
 //
-// PR7 closes the gap at the dispatch boundary: an executeToolCall
-// for a tool name that is registered on the engine but NOT in the
-// active manifest's effective toolset returns a structured
-// rejection result (IsError=true, Error wraps
-// tool.ErrToolNotAllowed) before t.Execute is invoked. The
+// Option A (May 2026) reframed this gate as the canonical "tool not
+// available to this agent, return error to the model" path. The
+// dispatch-time rejection now wraps tool.ErrToolNotFound (retiring
+// the short-lived tool.ErrToolNotAllowed sibling) so the engine
+// surfaces a single sentinel for the umbrella case "the model asked
+// for a tool the engine cannot dispatch for this agent". This
+// matches the OpenAI Agents SDK ToolNotFoundBehavior="return_error_to_model"
+// shape and lets the model self-correct on the next turn. The
 // behaviour matches the structured-rejection shape PR5/PR6
 // established for todo_strict_mode and skill-name redirect, so
 // providers' tool-result chunk handling continues to work
@@ -51,8 +54,8 @@ import (
 //   - the collision case (skill name and registered tool name
 //     coincide AND the tool IS in effective set): tool wins —
 //     normal execution. If tool is NOT in effective set, new gate
-//     fires with the "X is not in this agent's allowed toolset"
-//     body, not the skill redirect.
+//     fires with the "not available to agent" body and wraps
+//     ErrToolNotFound, not the skill redirect.
 var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 	makeEngine := func(manifest agent.Manifest, knownSkills []string) *engine.Engine {
 		providerReg := provider.NewRegistry()
@@ -136,14 +139,14 @@ var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 				"the gate emits an IsError tool_result, not a Go error — the agent's tool loop sees the rejection and is expected to pivot (delegate, todowrite breakdown, or stop) on the next turn")
 			Expect(result.IsError).To(BeTrue(),
 				"the call did not run; the rejection must be tagged IsError so the chunk path stamps role=tool_error and provider serialisers route through the failure shape")
-			Expect(result.Output).To(ContainSubstring("'bash' is not in this agent's allowed toolset"),
-				"the body must name the rejected tool verbatim so the model can reason about which call it issued out-of-scope")
+			Expect(result.Output).To(ContainSubstring("'bash' not available to agent 'coordinator'"),
+				"Option A: the body must name BOTH the rejected tool and the agent identity so the model can reason about which call it issued out-of-scope for which persona. The 'not available to agent' substring is the canonical detector for future grep tooling.")
 			Expect(result.Output).To(ContainSubstring("Available tools:"),
 				"the rejection must enumerate the agent's effective tools so the model has a list of legitimate alternatives — without it the model is left guessing why bash was refused")
 			Expect(result.Output).To(ContainSubstring("Delegate to a specialist"),
 				"the rejection body's call-to-action is delegation — the investigation note's Layer 3 finding (glm-4.x rationalises 'I'll just do it myself' when delegation seems unavailable) requires the engine to point the model at the alternative path")
-			Expect(errors.Is(result.Error, tool.ErrToolNotAllowed)).To(BeTrue(),
-				"the wrapped sentinel error lets callers distinguish 'tool not permitted by manifest' from 'tool not found' / generic execution failure — sibling of ErrToolNotFound")
+			Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue(),
+				"Option A: the gate wraps ErrToolNotFound, retiring the short-lived ErrToolNotAllowed sibling. Callers using errors.Is(tool.ErrToolNotFound) now match BOTH 'tool absent from registry' and 'tool not available to this agent' — the umbrella case 'engine cannot dispatch this tool for this agent', mirroring the OpenAI Agents SDK ToolNotFoundBehavior=return_error_to_model pattern.")
 			Expect(fakeBash.execCalled).To(BeFalse(),
 				"the load-bearing assertion: the gate fires BEFORE Execute — the side-effecting tool body must never run for an out-of-manifest call")
 		})
@@ -220,10 +223,10 @@ var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 				"the skill redirect must still fire for unknown tool names that match known skills — the gate sits in the matched-tool branch, not in the fallthrough path")
 			Expect(result.Output).To(ContainSubstring(`skill_load(name="task-tracker")`),
 				"the redirect body remains the canonical recovery action regardless of the agent's effective toolset — the engine never auto-invokes skill_load, so there is no recursion risk")
-			Expect(result.Output).NotTo(ContainSubstring("is not in this agent's allowed toolset"),
-				"the new gate must NOT pre-empt the skill redirect path for unmatched tool names; the two surfaces serve different cases")
+			Expect(result.Output).NotTo(ContainSubstring("not available to agent"),
+				"the new gate must NOT pre-empt the skill redirect path for unmatched tool names; the two surfaces serve different cases — the skill redirect cites the skill catalogue, the new gate cites the toolset")
 			Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue(),
-				"the skill redirect preserves the ErrToolNotFound sentinel for backward compatibility with callers that distinguish on it")
+				"the skill redirect preserves the ErrToolNotFound sentinel — the same sentinel the Option A registry filter and runtime gate now share")
 		})
 
 		It("fires the NEW gate (not the skill redirect) when the skill name COLLIDES with a registered tool that is NOT in the effective set", func() {
@@ -249,12 +252,12 @@ var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.IsError).To(BeTrue())
-			Expect(result.Output).To(ContainSubstring("'task-tracker' is not in this agent's allowed toolset"),
-				"the matched-tool branch reaches the new gate first; the rejection body must cite the toolset, not the skill catalogue")
+			Expect(result.Output).To(ContainSubstring("'task-tracker' not available to agent 'coordinator'"),
+				"the matched-tool branch reaches the new gate first; the rejection body must cite the toolset and agent identity, not the skill catalogue")
 			Expect(result.Output).NotTo(ContainSubstring("is a skill, not a tool"),
 				"the skill redirect lives in the unmatched-tool fallthrough; the matched-tool branch must not redirect through it under collision")
-			Expect(errors.Is(result.Error, tool.ErrToolNotAllowed)).To(BeTrue(),
-				"matched-tool rejection wraps ErrToolNotAllowed, not ErrToolNotFound — the two sentinels distinguish manifest gating from registry absence")
+			Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue(),
+				"Option A: matched-tool rejection wraps the shared ErrToolNotFound sentinel — the umbrella case 'engine cannot dispatch this tool for this agent', mirroring OpenAI Agents SDK ToolNotFoundBehavior=return_error_to_model")
 		})
 	})
 })

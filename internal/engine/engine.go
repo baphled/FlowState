@@ -2373,22 +2373,68 @@ func (e *Engine) buildAllowedToolSet() map[string]bool {
 // Side effects:
 //   - None.
 func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool {
-	// D1: inherit-by-default base toolset. EffectiveTools computes
-	// union(Capabilities.Tools, DefaultBaseTools) − Capabilities.ToolsDeny.
-	// We then expand bundle aliases the same way the pre-D1 loop did so
-	// the runtime surface (read/write from "file", lifecycle tools
-	// from "delegate", etc.) stays identical.
-	//
-	// Commit 3 (May 2026, Gap B) — the `delegate` bundle was narrowed
-	// to lifecycle tools only (delegate + background_output +
-	// background_cancel). Pre-commit-3 it also silently expanded into
-	// autoresearch_run + autoresearch_prune, letting a coordinator
-	// declaring `tools: [delegate]` do its own background research
-	// instead of delegating a researcher member. Agents that need
-	// autoresearch_* now declare it explicitly (the autoresearch_run
-	// alias still back-fills background_output + background_cancel,
-	// because those are the lifecycle pair for the autoresearch task
-	// itself, not for delegation).
+	return BuildAllowedToolSet(manifest, e.mcpServerTools)
+}
+
+// BuildAllowedToolSet computes the set of tool names an agent manifest is
+// permitted to invoke. It is the single source of truth for tool gating
+// and is shared by two call sites:
+//
+//   - The engine's runtime gate at executeToolCall and the schema
+//     advertisement path (via effectiveAllowedToolsForCtx) — gates
+//     dispatch and what reaches the provider request.
+//   - The app's delegate-engine registry construction (see
+//     buildToolsForManifestWithStore) — filters which concrete tool
+//     implementations the delegate engine's e.tools slice carries, so
+//     out-of-manifest tools are not just hidden from the model but
+//     absent from the registry entirely. Without this shared seam the
+//     two layers would drift: a permissive provider that emits an
+//     out-of-schema tool call could still reach a registered Execute
+//     body if the registry held it; with the seam shared, that path is
+//     closed at construction time and the runtime gate becomes a
+//     defence-in-depth for the primary engine's shared-slice case.
+//
+// Computation:
+//
+//   - effective := manifest.EffectiveTools()
+//     (union(Capabilities.Tools, DefaultBaseTools) − Capabilities.ToolsDeny)
+//   - bundle expansion: "file" → {read, write}; "delegate" → {delegate,
+//     background_output, background_cancel}; "autoresearch_run" →
+//     {autoresearch_run, background_output, background_cancel};
+//     "autoresearch_prune" → {autoresearch_prune}.
+//   - MCP server gating: each declared Capabilities.MCPServers entry
+//     contributes its tool names from mcpServerTools. Unknown server
+//     names are silently ignored.
+//   - ToolsDeny is re-applied over the expanded set so deny entries
+//     take effect on bundle-expanded names (e.g. tools=[delegate],
+//     tools_deny=[background_cancel] yields the delegate fan-out minus
+//     background_cancel).
+//   - suggest_delegate is force-added as the read-only escape hatch
+//     (P12). The concrete tool is only registered on CanDelegate=false
+//     engines, so the flag is a no-op when the tool is absent.
+//
+// Commit 3 (May 2026, Gap B) — the `delegate` bundle was narrowed to
+// lifecycle tools only (delegate + background_output +
+// background_cancel). Pre-commit-3 it also silently expanded into
+// autoresearch_run + autoresearch_prune, letting a coordinator
+// declaring `tools: [delegate]` do its own background research instead
+// of delegating a researcher member. Agents that need autoresearch_*
+// now declare it explicitly.
+//
+// Expected:
+//   - manifest is the manifest whose Capabilities drive the
+//     computation. A zero-value manifest yields DefaultBaseTools plus
+//     suggest_delegate.
+//   - mcpServerTools maps MCP server names to their available tool
+//     names. nil is treated as "no MCP gating contributions".
+//
+// Returns:
+//   - A non-nil map of allowed tool names. Always contains
+//     suggest_delegate. Never contains entries denied by ToolsDeny.
+//
+// Side effects:
+//   - None; pure computation.
+func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]string) map[string]bool {
 	effective := manifest.EffectiveTools()
 	allowed := make(map[string]bool, len(effective)+1)
 	for _, mt := range effective {
@@ -2412,7 +2458,7 @@ func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool
 	}
 
 	for _, serverName := range manifest.Capabilities.MCPServers {
-		for _, toolName := range e.mcpServerTools[serverName] {
+		for _, toolName := range mcpServerTools[serverName] {
 			allowed[toolName] = true
 		}
 	}
@@ -2420,22 +2466,16 @@ func (e *Engine) buildAllowedToolSetFor(manifest agent.Manifest) map[string]bool
 	// D1: re-apply ToolsDeny over the expanded set so deny entries
 	// take effect even on bundle-alias-expanded tool names (e.g. a
 	// manifest that lists `tools: [delegate]` and `tools_deny: [bash]`
-	// still gets the delegate fan-out but never sees bash). This is
-	// strictly cosmetic for the base set (todowrite/todo_update/
-	// skill_load don't expand to anything else) but matters for the
-	// general deny case so the field's semantics are predictable.
+	// still gets the delegate fan-out but never sees bash).
 	for _, denied := range manifest.Capabilities.ToolsDeny {
 		delete(allowed, denied)
 	}
 
-	// P12: suggest_delegate is a read-only escape hatch wired into every
-	// non-delegating agent's engine. It must always be visible to the
-	// model, even when the manifest restricts capabilities.tools to a
-	// fixed list — otherwise the model has no legitimate way to signal
-	// "the user wants me to delegate but I cannot". The corresponding
-	// tool is only attached to the engine for CanDelegate=false agents,
-	// so this flag is a no-op when the tool is absent. Not subject to
-	// ToolsDeny on purpose — escape hatches do not honour denials.
+	// P12: suggest_delegate is a read-only escape hatch. The
+	// corresponding tool is only attached to the engine for
+	// CanDelegate=false agents, so this flag is a no-op when the tool
+	// is absent. Not subject to ToolsDeny on purpose — escape hatches
+	// do not honour denials.
 	allowed["suggest_delegate"] = true
 
 	return allowed
@@ -4459,19 +4499,36 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		allowed := e.effectiveAllowedToolsForCtx(ctx)
 		if !allowed[toolCall.Name] {
 			names := sortedKeys(allowed)
+			agentID := e.activeAgentID(ctx)
+			// Option A (May 2026): the rejection mirrors the OpenAI
+			// Agents SDK ToolNotFoundBehavior=return_error_to_model
+			// shape — the model receives a structured tool_result
+			// (IsError=true) naming the rejected tool and the agent
+			// persona, enumerating the legitimate alternatives, and
+			// pointing at delegation as the recovery action. The
+			// "not available to agent" substring is the canonical
+			// detector for future grep tooling and downstream
+			// dashboards. The wrapped sentinel is the shared
+			// tool.ErrToolNotFound — Option A retired the
+			// short-lived ErrToolNotAllowed sibling so the engine
+			// surfaces a single sentinel for the umbrella case
+			// "engine cannot dispatch this tool for this agent"
+			// (regardless of whether the cause is registry absence
+			// or manifest scoping). Callers using
+			// errors.Is(tool.ErrToolNotFound) match both shapes.
 			msg := fmt.Sprintf(
-				"Error: '%s' is not in this agent's allowed toolset. Available tools: [%s]. Delegate to a specialist whose toolset includes '%s' if the work requires it.",
-				toolCall.Name, strings.Join(names, ", "), toolCall.Name,
+				"Error: '%s' not available to agent '%s'. Available tools: [%s]. Delegate to a specialist whose toolset includes '%s' if the work requires it.",
+				toolCall.Name, agentID, strings.Join(names, ", "), toolCall.Name,
 			)
 			slog.Warn("tool call rejected by runtime gate",
 				"tool", toolCall.Name,
-				"agent", e.activeAgentID(ctx),
+				"agent", agentID,
 				"reason", "not in effective toolset",
 			)
 			return tool.Result{
 				Output:  msg,
 				IsError: true,
-				Error:   fmt.Errorf("%w: %s", tool.ErrToolNotAllowed, toolCall.Name),
+				Error:   fmt.Errorf("%w: %s", tool.ErrToolNotFound, toolCall.Name),
 			}, nil
 		}
 		slog.Info("engine tool call", "tool", toolCall.Name)

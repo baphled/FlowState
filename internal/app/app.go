@@ -2039,12 +2039,34 @@ func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionCompo
 // buildToolsForManifestWithStore returns the tools available to an agent based on its
 // manifest capabilities, including the CoordinationTool when required.
 //
+// Option A (May 2026): the returned slice is filtered through
+// engine.BuildAllowedToolSet so it carries ONLY tools whose names are
+// in the manifest's effective allowed set (D1 inheritance floor +
+// declared tools + bundle expansion − ToolsDeny + suggest_delegate
+// escape hatch + MCP server gating). Pre-Option-A this routine
+// appended every tool the App had wired regardless of manifest scope,
+// relying on the engine's schema-advertisement filter to keep the
+// out-of-manifest tools off the LLM-visible surface and on the runtime
+// dispatch gate (engine.go:4459-4476) to refuse Execute when a
+// permissive provider emitted an out-of-schema tool call. With the
+// registry filter in place, out-of-manifest tools are absent from the
+// delegate engine's e.tools slice entirely — the runtime gate stays as
+// defence-in-depth for the primary engine's shared-slice case (Option B
+// is the longer-term restructuring that would extend Option A to the
+// primary engine).
+//
+// Shared seam: engine.BuildAllowedToolSet is the single source of truth
+// for "what tools is this manifest permitted to call" — used here, by
+// the runtime gate's effectiveAllowedToolsForCtx call, and by the
+// schema-advertisement filter. The three sites cannot drift.
+//
 // Expected:
 //   - manifest is the agent's manifest with capabilities.
 //   - store is the coordination store to use for the CoordinationTool.
 //
 // Returns:
-//   - A slice of tools available to the agent.
+//   - A slice of tools available to the agent, filtered by the
+//     manifest's effective allowed set.
 //
 // Side effects:
 //   - None.
@@ -2084,9 +2106,10 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 
 	// Append the MCP proxy tools so the delegate engine has something to
 	// invoke when its manifest's MCPServers gate authorises a name.
-	// buildAllowedToolSet (in the engine) is the single point of truth
-	// that filters by the manifest's MCPServers allowlist; appending the
-	// full set here is safe.
+	// engine.BuildAllowedToolSet is the single point of truth that
+	// filters by the manifest's MCPServers allowlist; appending the
+	// full set here is safe — the filter below drops any MCP tool the
+	// manifest does not authorise.
 	if len(a.mcpTools) > 0 {
 		tools = append(tools, a.mcpTools...)
 	}
@@ -2095,7 +2118,18 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 	tools = toolset.AppendVaultTools(tools, a.vaultHandler)
 	tools = toolset.AppendVaultIndexTools(tools, a.Config)
 
-	return tools
+	// Option A: filter the registry by the manifest's effective allowed
+	// set. Tools whose Name() is NOT in the allowed set are dropped
+	// from the returned slice so the delegate engine's e.tools holds
+	// only the implementations the manifest is permitted to invoke.
+	allowed := engine.BuildAllowedToolSet(manifest, a.mcpServerTools)
+	filtered := tools[:0]
+	for _, t := range tools {
+		if allowed[t.Name()] {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 // hasCoordinationTool checks if the manifest has coordination_store in its tools list.

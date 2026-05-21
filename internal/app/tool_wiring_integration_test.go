@@ -841,4 +841,150 @@ var _ = Describe("Tool wiring integration", func() {
 					"strip it just because CanDelegate flipped to false")
 		})
 	})
+
+	// Option A — delegate-engine registry filter (May 2026).
+	//
+	// Pre-Option-A, buildToolsForManifestWithStore returned every tool
+	// the App had wired (bash, read, write, web, skill_load, todowrite/
+	// todo_update, coordination_store, recall*, mcp proxies, memory*,
+	// vault*) regardless of the delegate manifest's effective toolset.
+	// The runtime gate at executeToolCall closed the gap for permissive
+	// providers that emit out-of-schema tool calls, but the registry
+	// itself remained over-broad: every delegate engine carried Execute
+	// bodies for tools its manifest had no business invoking.
+	//
+	// Option A filters the registry at construction. The seam is the
+	// shared engine.BuildAllowedToolSet so the two layers (registry
+	// filter and runtime gate) cannot drift. The runtime gate stays in
+	// place as defence-in-depth for the primary engine's shared-slice
+	// case (engine.go:4459-4476) — Option B (a separate planner-driven
+	// slice on the primary) is the longer-term restructuring.
+	Context("buildToolsForManifestWithStore per-manifest filtering (Option A)", func() {
+		toolNames := func(tools []tool.Tool) []string {
+			out := make([]string, 0, len(tools))
+			for _, t := range tools {
+				out = append(out, t.Name())
+			}
+			return out
+		}
+
+		It("returns only tools whose names are in the manifest's effective allowed set", func() {
+			// Team-Lead profile: capabilities.tools = [delegate]. The
+			// `delegate` bundle expands (via BuildAllowedToolSet) to
+			// {delegate, background_output, background_cancel}. The
+			// inheritance floor (DefaultBaseTools) adds todowrite,
+			// todo_update, skill_load. suggest_delegate is the
+			// always-on escape hatch. The registry must contain ONLY
+			// implementations whose Name() matches an entry in this
+			// set — bash, read, write, web must not be present even
+			// though buildToolsForManifestWithStore historically
+			// appended them unconditionally.
+			leadManifest := agent.Manifest{
+				ID:   "team-lead",
+				Name: "Team Lead",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"delegate"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			agentReg.Register(&leadManifest)
+			application.TodoStore = todotool.NewMemoryStore()
+
+			tools := application.buildToolsForManifestWithStore(leadManifest, nil)
+			names := toolNames(tools)
+
+			// Positive: base toolset survives.
+			Expect(names).To(ContainElement("todowrite"),
+				"DefaultBaseTools floor includes todowrite; the registry filter must keep it")
+			Expect(names).To(ContainElement("todo_update"),
+				"DefaultBaseTools floor includes todo_update; the registry filter must keep it")
+			// Negative: out-of-manifest tools are absent from the
+			// registry entirely. This is the load-bearing assertion
+			// — the runtime gate would mask their presence but they
+			// must not be in e.tools to begin with.
+			Expect(names).NotTo(ContainElement("bash"),
+				"bash is not in the Team-Lead manifest's effective toolset and "+
+					"must not be registered on the delegate engine. Pre-Option-A "+
+					"the App wired bash unconditionally; the registry filter is the "+
+					"single source of truth that closes the over-broad-registry gap.")
+			Expect(names).NotTo(ContainElement("read"),
+				"read is registered via the `file` bundle alias which Team-Lead "+
+					"does not declare; the registry must not surface it")
+			Expect(names).NotTo(ContainElement("write"),
+				"write is registered via the `file` bundle alias which Team-Lead "+
+					"does not declare; the registry must not surface it")
+			Expect(names).NotTo(ContainElement("web"),
+				"web is not in Team-Lead's effective toolset; the registry "+
+					"must not surface it")
+		})
+
+		It("preserves the `delegate` bundle expansion: registered delegate-lifecycle tools survive the filter", func() {
+			// The delegate-lifecycle trio (delegate, background_output,
+			// background_cancel) is wired by wireDelegateToolIfEnabled,
+			// not by buildToolsForManifestWithStore — so we cannot
+			// assert their presence in the registry returned here.
+			// What we CAN assert: nothing about the bundle expansion
+			// is broken by the filter. The filter keys off Name()
+			// matches against BuildAllowedToolSet output, so if a tool
+			// IS in the registry AND its name is in the allowed set,
+			// it survives. todowrite is the load-bearing example: the
+			// manifest declares no tools, EffectiveTools returns the
+			// base floor (todowrite/todo_update/skill_load), and the
+			// registry must include todowrite.
+			leadManifest := agent.Manifest{
+				ID:   "team-lead",
+				Name: "Team Lead",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"delegate"},
+				},
+				Delegation: agent.Delegation{
+					CanDelegate: true,
+				},
+			}
+			agentReg.Register(&leadManifest)
+			application.TodoStore = todotool.NewMemoryStore()
+
+			tools := application.buildToolsForManifestWithStore(leadManifest, nil)
+			names := toolNames(tools)
+
+			Expect(names).To(ContainElement("todowrite"),
+				"the base toolset floor survives the filter — Team-Lead can plan its work")
+			Expect(names).To(ContainElement("todo_update"),
+				"the base toolset floor survives the filter — Team-Lead can update its plan")
+		})
+
+		It("permits the `file` bundle alias: declaring `file` surfaces read and write but nothing else outside the floor", func() {
+			// File-capable agent: declares [bash, file]. The `file`
+			// bundle expands to {read, write}. Combined with the
+			// inheritance floor and the literal `bash`, the registry
+			// should contain read, write, bash, todowrite,
+			// todo_update, skill_load — but still NOT web (not
+			// declared).
+			fileAgent := agent.Manifest{
+				ID:   "senior-engineer",
+				Name: "Senior Engineer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&fileAgent)
+			application.TodoStore = todotool.NewMemoryStore()
+
+			tools := application.buildToolsForManifestWithStore(fileAgent, nil)
+			names := toolNames(tools)
+
+			Expect(names).To(ContainElement("bash"),
+				"`bash` is explicitly declared; the registry must keep it")
+			Expect(names).To(ContainElement("read"),
+				"the `file` bundle expands to {read, write}; read must survive")
+			Expect(names).To(ContainElement("write"),
+				"the `file` bundle expands to {read, write}; write must survive")
+			Expect(names).NotTo(ContainElement("web"),
+				"web is not declared; the registry filter must drop it even though "+
+					"buildToolsForManifestWithStore historically appended it")
+		})
+	})
 })
