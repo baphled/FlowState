@@ -653,6 +653,99 @@ func mustInlineMeta() ctxstore.SessionMetadata {
 	}
 }
 
+// Bug 3 of the May 2026 plan-writer forensic audit (session
+// 981b9fac-b6a4-4341-8ade-857107794c08): the run-path writes two
+// separate files for one session — `<id>.json` (context.FileSessionStore,
+// from saveSession) and `<id>.meta.json` (session.PersistSession, from
+// persistRootSessionMetadata at session creation). The .meta.json was
+// stamped once at creation with the user-requested agent and NEVER
+// refreshed thereafter. saveSession, on the other hand, wrote .json
+// from Engine.Manifest().ID at every terminal save. When the engine's
+// manifest drifted mid-run (per Bug 2, the spurious RestoreManifest at
+// terminal response), the two files diverged: .meta.json carried the
+// original `plan-writer`; .json carried the reverted `executor`.
+//
+// The fix: saveSession refreshes the .meta.json sidecar so both files
+// agree. The spec drives the saveSession path directly through the
+// export_test hook so the contract is pinned without needing to stand
+// up the full provider stream.
+var _ = Describe("CLI saveSession sidecar parity (Bug 3 — plan-writer forensic audit)", func() {
+	It("refreshes the .meta.json agent_id so it agrees with the .json on disk after every save", func() {
+		// App.SessionsDir() returns filepath.Join(DataDir, "sessions") —
+		// keep DataDir and SessionsDir aligned so saveSession's
+		// refreshRootSessionMetadata writes to the SAME directory the
+		// FileSessionStore writes to, mirroring the production wiring.
+		dataDir := GinkgoT().TempDir()
+		sessionsDir := filepath.Join(dataDir, "sessions")
+		Expect(os.MkdirAll(sessionsDir, 0o750)).To(Succeed())
+
+		testApp, err := app.NewForTest(app.TestConfig{
+			DataDir:     dataDir,
+			SessionsDir: sessionsDir,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// NewForTest leaves Engine nil; wire one up explicitly so
+		// Manifest()/ContextStore() return real values. Mirrors the
+		// pattern already used by buildRunTestApp earlier in this file.
+		atCreation := agent.Manifest{
+			ID:           "agent-at-creation",
+			Name:         "Agent at Creation",
+			Instructions: agent.Instructions{SystemPrompt: "session-creation manifest"},
+		}
+		testApp.Engine = engine.New(engine.Config{
+			ChatProvider: &runTestProvider{name: "bug3-test"},
+			Manifest:     atCreation,
+			Store:        recall.NewEmptyContextStore(""),
+		})
+
+		// Step 1 — Stamp the session as it would look at run-time start:
+		// persistRootSessionMetadata writes .meta.json with the
+		// caller-requested agent (`plan-writer` is the post-fix
+		// expectation; for the test we use "agent-at-creation").
+		sessionID := "save-sidecar-parity-" + uuid.NewString()
+		cli.PersistRootSessionMetadataForTest(sessionsDir, sessionID, "agent-at-creation")
+
+		// Step 2 — Drive the engine to a different manifest, mirroring
+		// the mid-run agent swap that `flowstate run --agent <id>` does
+		// via Engine.Stream's auto-swap (engine.go:2741-2769). The
+		// post-Bug-2 fix preserves this swap as the terminal state.
+		testApp.Engine.SetManifest(agent.Manifest{
+			ID:           "agent-at-save",
+			Name:         "Agent at Save",
+			Instructions: agent.Instructions{SystemPrompt: "post-swap manifest"},
+		})
+
+		// Step 3 — Fire the terminal save. saveSession reads
+		// Engine.Manifest().ID for the .json write and (post-fix) also
+		// refreshes the .meta.json sidecar.
+		cmd := &cobra.Command{}
+		cmd.SetErr(&bytes.Buffer{})
+		cli.SaveSessionForTest(cmd, testApp, sessionID)
+
+		// Step 4 — Both files must agree. Without the fix, .json shows
+		// `agent-at-save` (post-swap) but .meta.json shows
+		// `agent-at-creation` (the value persistRootSessionMetadata
+		// stamped). The forensic-audit symptom — two files, two answers
+		// — is the regression this guard prevents.
+		jsonBytes, err := os.ReadFile(filepath.Join(sessionsDir, sessionID+".json"))
+		Expect(err).NotTo(HaveOccurred(), "main JSON must exist after saveSession")
+		var jsonDoc map[string]any
+		Expect(json.Unmarshal(jsonBytes, &jsonDoc)).To(Succeed())
+		jsonAgent, _ := jsonDoc["agent_id"].(string)
+		Expect(jsonAgent).To(Equal("agent-at-save"),
+			"<id>.json's agent_id must reflect Engine.Manifest().ID at terminal save")
+
+		metaBytes, err := os.ReadFile(filepath.Join(sessionsDir, sessionID+".meta.json"))
+		Expect(err).NotTo(HaveOccurred(), ".meta.json sidecar must exist (written by persistRootSessionMetadata at session creation)")
+		var metaDoc map[string]any
+		Expect(json.Unmarshal(metaBytes, &metaDoc)).To(Succeed())
+		metaAgent, _ := metaDoc["agent_id"].(string)
+		Expect(metaAgent).To(Equal(jsonAgent),
+			".meta.json must refresh to match <id>.json after saveSession — the May 2026 plan-writer audit pinned the symptom: .meta.json frozen at creation while .json drifted, producing two-files-two-answers for downstream consumers reading either side")
+	})
+})
+
 type failingGateRunner struct {
 	err error
 }

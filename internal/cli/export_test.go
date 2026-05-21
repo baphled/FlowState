@@ -134,3 +134,24 @@ func SetStdinIsTerminal(probe func() bool) {
 func RestoreStdinIsTerminal() {
 	stdinIsTerminal = defaultStdinIsTerminal
 }
+
+// SaveSessionForTest exposes the unexported saveSession helper so the
+// May 2026 forensic-audit regression spec can pin that the .json /
+// .meta.json sidecar pair on disk agrees on agent_id after a run-path
+// terminal save. Bug 3 of the plan-writer dispatch audit (session
+// 981b9fac-…): the run-path's saveSession wrote .json with
+// Engine.Manifest().ID but never refreshed the .meta.json that
+// persistRootSessionMetadata had stamped at session creation. The
+// regression spec drives saveSession directly so it doesn't have to
+// stand up a full provider stream.
+func SaveSessionForTest(cmd *cobra.Command, application *app.App, sessionID string) {
+	saveSession(cmd, application, sessionID)
+}
+
+// PersistRootSessionMetadataForTest exposes the session-creation-time
+// .meta.json writer so the Bug 3 regression spec can simulate the
+// "session started, engine swapped agents mid-run, terminal save fires"
+// sequence without driving the full CLI command path.
+func PersistRootSessionMetadataForTest(sessionsDir, sessionID, agentID string) {
+	persistRootSessionMetadata(sessionsDir, sessionID, agentID)
+}

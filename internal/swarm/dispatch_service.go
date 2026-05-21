@@ -87,9 +87,30 @@ func DispatchSwarm(
 	// directive) requires both surfaces to revert the engine to its
 	// pre-dispatch manifest after the flush — restore is a no-op in
 	// the CLI process-exit case but load-bearing for the TUI.
+	//
+	// The snapshot+restore pair is GATED on swarmCtx != nil. When
+	// swarmCtx is nil the caller is running the plain-agent fast path
+	// (e.g. `flowstate run --agent plan-writer`) and the caller-
+	// requested agent swap is the DESIRED terminal state, not a swarm-
+	// lead override that needs unwinding. Pre-`d304ac20+` the
+	// snapshot+restore fired unconditionally, which captured the
+	// pre-Stream baseline (the configured default_agent) BEFORE the
+	// engine swapped to the caller-requested agent, then re-applied
+	// the baseline at terminal response — emitting a spurious
+	// `agent.switched` event AND corrupting the agent_id stamp the
+	// CLI's saveSession path later reads via Engine.Manifest().ID for
+	// the .json file write. The forensic-audit symptom (session
+	// 981b9fac-b6a4-4341-8ade-857107794c08): .meta.json sidecar held
+	// `plan-writer` (set at session creation) while .json held
+	// `executor` (the configured default, reverted at terminal save).
+	// SetSwarmContext is still called unconditionally so the existing
+	// SetSwarmContext(nil) wind-down contract (used by /api/chat per
+	// dispatcher.go:429-441) stays intact.
 	var preDispatch any
 	if eng != nil {
-		preDispatch = eng.ManifestSnapshot()
+		if swarmCtx != nil {
+			preDispatch = eng.ManifestSnapshot()
+		}
 		eng.SetSwarmContext(swarmCtx)
 	}
 
@@ -106,7 +127,16 @@ func DispatchSwarm(
 		// e.manifest.ID against swarmCtx.LeadAgent, so a manifest
 		// reverted to the pre-dispatch agent makes the lead-section
 		// emitter inert. The next dispatch overwrites the context.
-		eng.RestoreManifest(preDispatch)
+		//
+		// Symmetric guard: only restore when we captured a snapshot
+		// (i.e. swarmCtx != nil at the top of the function). Without
+		// this gate, the plain-agent fast path would call
+		// RestoreManifest(nil) which RestoreManifest's contract
+		// silently ignores — but skipping the call entirely is the
+		// explicit "no unwind needed" semantic the spec pins.
+		if swarmCtx != nil {
+			eng.RestoreManifest(preDispatch)
+		}
 	}
 
 	if streamErr != nil {

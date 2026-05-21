@@ -276,9 +276,24 @@ var _ = Describe("SessionOrchestrator", func() {
 				// the engine in single-agent shape.
 				Expect(eng.contexts).To(HaveLen(1))
 				Expect(eng.contexts[0]).To(BeNil())
-				// Symmetric snapshot/restore around the stream.
-				Expect(eng.snapshotCalls).To(Equal(1))
-				Expect(eng.restoreCalls).To(Equal(1))
+				// Bug 2 of the May 2026 plan-writer dispatch forensic
+				// audit (session 981b9fac-…): pre-fix, swarm.DispatchSwarm
+				// called ManifestSnapshot+RestoreManifest unconditionally,
+				// including on the swarmCtx=nil plain-agent path. That
+				// caused a spurious `agent.switched` event at terminal
+				// response and corrupted the agent_id stamp the CLI's
+				// saveSession later read for the .json file write. The
+				// post-fix gate: snapshot+restore are SWARM-LIFECYCLE
+				// concerns and MUST NOT fire when swarmCtx is nil — the
+				// caller-requested agent swap (Engine.Stream's auto-swap
+				// to whatever --agent the CLI asked for) IS the desired
+				// terminal state. FlushSwarmLifecycle still fires
+				// unconditionally (post-swarm gate cleanup is harmless
+				// on the no-swarm path).
+				Expect(eng.snapshotCalls).To(Equal(0),
+					"plain-agent path must NOT snapshot the manifest — there is no swarm-lead override to restore from (Bug 2 fix, session 981b9fac-…)")
+				Expect(eng.restoreCalls).To(Equal(0),
+					"plain-agent path must NOT restore the manifest — restoring reverts the engine to the configured default_agent at terminal response, emitting a spurious agent.switched event and corrupting the agent_id stamp the CLI's saveSession reads via Engine.Manifest().ID")
 				Expect(eng.flushCalls).To(Equal(1))
 			})
 		})

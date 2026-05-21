@@ -97,4 +97,32 @@ var _ = Describe("AgentManifest tool-declaration contracts", func() {
 				probe.Capabilities.Tools, required)
 		}
 	})
+
+	// PlanWriterManifest_BindsPlanWriteToToolCall pins the manifest body
+	// rule that drove the May 2026 forensic audit (session
+	// 981b9fac-b6a4-4341-8ade-857107794c08): the plan-writer's manifest
+	// MUST instruct the agent that the plan is delivered via a tool call,
+	// not via prose in the assistant content / thinking block. glm-5
+	// composed a 30k-character plan inside its reasoning block and never
+	// emitted a `plan_write` tool call because the manifest's existing
+	// "you MUST persist the plan" wording was soft enough to be satisfied
+	// by an "I will write the plan" acknowledgement.
+	//
+	// The contract is loose on prose tweaks but tight on the obligation
+	// shape: the body must contain BOTH the literal `plan_write` tool name
+	// AND a phrase that frames it as a required tool call rather than a
+	// suggestion. The "MUST call" substring guards against the soft
+	// "MUST persist" / "MUST use" wording that the manifest previously
+	// used (the model can satisfy "MUST persist" by promising to do so).
+	It("plan-writer.md frames plan_write as an obligation tool call rather than a soft 'MUST persist' prose hint", func() {
+		manifests := app.EmbeddedAgentsFS()
+		data, err := fs.ReadFile(manifests, "agents/plan-writer.md")
+		Expect(err).NotTo(HaveOccurred(), "read plan-writer.md")
+
+		body := string(data)
+		Expect(body).To(ContainSubstring("MUST call `plan_write`"),
+			"plan-writer.md body must contain the literal phrase \"MUST call `plan_write`\" so the model cannot satisfy the storage rule with a prose 'I will write the plan' acknowledgement")
+		Expect(body).To(ContainSubstring("tool call"),
+			"plan-writer.md body must reference \"tool call\" explicitly so the model knows prose/thinking-block plan content is not a complete delivery")
+	})
 })

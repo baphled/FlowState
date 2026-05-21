@@ -576,6 +576,12 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 		if err := application.Sessions.Save(sessionID, store, metadata); err != nil {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", err)
 		}
+		// Bug 3 of the May 2026 plan-writer forensic audit — refresh the
+		// .meta.json sidecar on the orchestrator-less path too so test
+		// fixtures see the same on-disk parity guarantee the production
+		// path provides. See the comment on the post-SaveTurnEnd refresh
+		// below for the full rationale.
+		refreshRootSessionMetadata(application.SessionsDir(), sessionID, metadata.AgentID)
 		return
 	}
 	snapshot := orchestrator.TurnSnapshot{
@@ -587,6 +593,62 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 	if err := orch.SaveTurnEnd(cmd.Context(), sessionID, snapshot); err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", err)
 	}
+
+	// Bug 3 of the May 2026 plan-writer dispatch forensic audit
+	// (session 981b9fac-b6a4-4341-8ade-857107794c08): the .json (written
+	// by orch.SaveTurnEnd above) and the .meta.json sidecar (written at
+	// session creation by persistRootSessionMetadata) are TWO DIFFERENT
+	// FILES that can disagree on agent_id. Pre-fix the .meta.json froze
+	// at the creation-time agent and never refreshed, so a mid-run
+	// manifest swap (legitimate or spurious) produced a divergence:
+	// downstream tools reading .meta.json saw a stale agent_id; tools
+	// reading .json saw the current one. After Bug 2 closes the
+	// spurious-revert flow, the run-path's only legitimate mid-run swap
+	// is the Engine.Stream auto-swap to the caller-requested --agent,
+	// which we WANT both files to reflect. Refresh the sidecar with the
+	// same agent_id the .json just received so cold-reload reads either
+	// file and gets the same answer.
+	refreshRootSessionMetadata(application.SessionsDir(), sessionID, snapshot.AgentID)
+}
+
+// refreshRootSessionMetadata rewrites the session's .meta.json sidecar
+// so its agent_id reflects the engine's current Manifest().ID. Called
+// from saveSession at terminal save so the .json (context store) and
+// .meta.json (session metadata) stay in lockstep on disk.
+//
+// Mirrors persistRootSessionMetadata's semantics: empty inputs are a
+// no-op; CreatedAt is preserved from any existing sidecar so the
+// session's first-seen timestamp doesn't drift; write failures are
+// swallowed because persistence must never block the user-facing
+// command (matches DelegateTool.persistSessionMetadata).
+//
+// Expected:
+//   - sessionsDir may be empty (disables persistence silently).
+//   - sessionID is the root session identifier; empty is a no-op.
+//   - agentID is the engine's manifest ID at terminal save; empty is
+//     also a no-op (no point refreshing to an empty value).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Rewrites <sessionsDir>/<sessionID>.meta.json with the supplied
+//     agent_id when all inputs are non-empty and the write succeeds.
+func refreshRootSessionMetadata(sessionsDir, sessionID, agentID string) {
+	if sessionsDir == "" || sessionID == "" || agentID == "" {
+		return
+	}
+	createdAt := time.Now()
+	if existing, err := session.LoadSessionMetadata(sessionsDir, sessionID); err == nil && existing != nil && !existing.CreatedAt.IsZero() {
+		createdAt = existing.CreatedAt
+	}
+	sess := &session.Session{
+		ID:        sessionID,
+		AgentID:   agentID,
+		Status:    string(session.StatusActive),
+		CreatedAt: createdAt,
+	}
+	_ = session.PersistSession(sessionsDir, sess)
 }
 
 // writeRunOutput writes the response in the requested format (JSON or plain text).

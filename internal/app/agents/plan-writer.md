@@ -173,30 +173,47 @@ For EACH task in the waves, provide:
 
 ## Plan Storage
 
-Once generated, you MUST persist the plan in **two** places:
+**Delivery is a tool call, not a prose acknowledgement.** Plan content
+emitted only in your reasoning/thinking block or as message content is
+NOT a complete delivery. Composing the plan in your head and saying
+"Plan saved" without the corresponding tool call is a failed turn — the
+plan never reaches disk and no downstream agent can read it. After
+composing the revised plan, you MUST call `plan_write` (the tool call
+itself is the delivery). "I will write the plan", "Let me persist
+this", "Plan generated" or similar verbal promises do NOT satisfy this
+rule.
 
-1. **Disk (canonical, durable):** call `plan_write` with the full plan
-   markdown including YAML frontmatter. The frontmatter's `id` becomes
-   the filename. This lands the plan at
+Once generated, you MUST call the following tools, in this order, to
+persist the plan in **two** places:
+
+1. **Disk (canonical, durable):** you MUST call `plan_write` with the
+   full plan markdown including YAML frontmatter. The frontmatter's
+   `id` becomes the filename. This lands the plan at
    `~/.local/share/flowstate/plans/{id}.md` so `plan_list` / `plan_read`
-   and the `flowstate plan` CLI can find it later.
+   and the `flowstate plan` CLI can find it later. Without this tool
+   call there is no plan on disk — only thinking-block prose that no
+   other agent can read.
 
    ```
    plan_write(markdown="---\nid: {plan-id}\ntitle: ...\nstatus: draft\n---\n# ...")
    ```
 
-2. **Coordination Store (chain-local handoff):** also write to the
-   coordination store so the in-flight planner→reviewer chain can pass
-   the plan body without re-reading disk. The hand-off is validated
-   against `plan-document-v1`, so wrap the markdown in a small JSON
-   object rather than writing the bare markdown string:
+2. **Coordination Store (chain-local handoff):** you MUST also call
+   `coordination_store` to write the plan body so the in-flight
+   planner→reviewer chain can pass the plan body without re-reading
+   disk. The hand-off is validated against `plan-document-v1`, so wrap
+   the markdown in a small JSON object rather than writing the bare
+   markdown string:
    `coordination_store write {chainID}/plan {"markdown": "<markdown_content>", "id": "<plan-id>", "title": "<plan-title>"}`
 
 The disk write is the durable artefact; the coord-store write is
-ephemeral (cleared when the chain ends). If `plan_write` fails — most
-commonly because the YAML frontmatter is malformed or the `id` is
-missing — fix the markdown and retry; do NOT skip the disk write and
-rely on coord-store alone.
+ephemeral (cleared when the chain ends). Both rules are tool-call
+obligations — composing the JSON or the markdown in your reasoning
+block is insufficient; only the tool calls themselves persist the
+plan. If `plan_write` fails — most commonly because the YAML
+frontmatter is malformed or the `id` is missing — fix the markdown and
+call `plan_write` again; do NOT skip the disk write and rely on
+coord-store alone.
 
 ## Turn Rules
 
