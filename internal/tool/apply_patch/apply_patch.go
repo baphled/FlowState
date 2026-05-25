@@ -134,7 +134,7 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 func loadPatchText(value string, guard *pathguard.Guard) (string, error) {
 	if info, err := os.Stat(value); err == nil && !info.IsDir() {
 		if guard != nil {
-			if err := guard.Check(value); err != nil {
+			if err := guard.CheckForTool("apply_patch", value); err != nil {
 				return "", err
 			}
 		}
@@ -193,7 +193,7 @@ func applyPatchText(patchText string, guard *pathguard.Guard) (string, error) {
 		path := strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
 		rawPath := strings.TrimSpace(path)
 		if guard != nil {
-			if err := guard.Check(rawPath); err != nil {
+			if err := guard.CheckForTool("apply_patch", rawPath); err != nil {
 				return "", err
 			}
 		}

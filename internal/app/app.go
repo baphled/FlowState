@@ -2633,13 +2633,42 @@ func (a *App) DisconnectAll() error {
 }
 
 // buildPathGuard constructs a pathguard.Guard that blocks access to the
-// configured vault directory. Returns a no-op guard when no vault path is set.
+// configured vault directory and, when a permissions.yaml file is present
+// under config.Dir(), consults the per-tool allow/deny rules first via
+// pathguard.NewWithPermissions.
+//
+// Behaviour:
+//   - No vault path AND no permissions.yaml → fully permissive guard.
+//   - Vault path set, no permissions.yaml → legacy denied-roots only.
+//   - permissions.yaml present → per-tool matcher consulted first by the
+//     *ForTool callers; legacy denied roots remain the floor for any
+//     (tool, path) the matcher has no opinion on.
+//   - permissions.yaml present but malformed (parse error, IO error
+//     other than missing): logs a slog warning, falls back to the
+//     legacy New(denied) constructor — never panics, never blocks
+//     startup. Missing files are already (nil, nil) from LoadPermissions
+//     so no warning is emitted in that path.
 func (a *App) buildPathGuard() *pathguard.Guard {
 	var denied []string
 	if a.Config != nil && a.Config.VaultPath != "" {
 		denied = append(denied, a.Config.VaultPath)
 	}
-	return pathguard.New(denied)
+
+	permsPath := filepath.Join(config.Dir(), "permissions.yaml")
+	perms, err := config.LoadPermissions(permsPath)
+	if err != nil {
+		slog.Warn("failed to load permissions.yaml — falling back to legacy denied-roots guard",
+			"path", permsPath,
+			"error", err,
+		)
+		return pathguard.New(denied)
+	}
+	if perms == nil {
+		// File absent OR unsupported version (LoadPermissions logs its
+		// own warning for the latter). Preserve the legacy code path.
+		return pathguard.New(denied)
+	}
+	return pathguard.NewWithPermissions(denied, perms)
 }
 
 // buildToolsSetup creates a tool registry and permission handler for the engine.

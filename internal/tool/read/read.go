@@ -125,7 +125,7 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	}
 
 	if t.guard != nil {
-		if err := t.guard.Check(cleaned); err != nil {
+		if err := t.guard.CheckForTool("read", cleaned); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}

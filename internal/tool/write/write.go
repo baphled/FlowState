@@ -101,7 +101,7 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 	}
 
 	if t.guard != nil {
-		if err := t.guard.Check(cleaned); err != nil {
+		if err := t.guard.CheckForTool("write", cleaned); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}

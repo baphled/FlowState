@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
@@ -222,6 +223,106 @@ var _ = Describe("Pathguard", func() {
 			// empty tool name → matcher skipped → legacy CheckCommand
 			// has no denied roots configured so should succeed.
 			Expect(g.CheckCommandForTool("", "cat /tmp/foo.md")).NotTo(HaveOccurred())
+		})
+	})
+})
+
+// Slice B of the Tool-Scoped Permissions plan wires permissions.yaml
+// through to per-tool Check calls in production (app.buildPathGuard
+// constructs the Guard via NewWithPermissions, and the seven file /
+// command callers route through *ForTool). The Slice A specs above
+// cover the sibling methods via stubMatcher in isolation; the cases
+// below pin the integration of the REAL *config.Permissions matcher
+// with the Guard's *ForTool decision flow, plus the backwards-compat
+// fall-through that legacy callers depend on.
+//
+// Numbering picks up from Slice A's existing 24 specs above.
+var _ = Describe("Pathguard — Slice B integration with *config.Permissions", func() {
+	const vaultRoot = "/vault"
+
+	Describe("CheckForTool with a real *config.Permissions matcher", func() {
+		// Case 7
+		It("allows a write under /vault/** when permissions.yaml grants write.allow=[/vault/**]", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"write": {Allow: []string{"/vault/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
+			Expect(g.CheckForTool("write", "/vault/file.md")).NotTo(HaveOccurred())
+		})
+
+		// Case 8 — deny-wins-over-allow at the real matcher layer
+		It("denies a specific file even when write.allow=[/vault/**] grants the parent, because write.deny wins", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"write": {
+						Allow: []string{"/vault/**"},
+						Deny:  []string{"/vault/foo.md"},
+					},
+				},
+			}
+			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
+			err := g.CheckForTool("write", "/vault/foo.md")
+			Expect(err).To(HaveOccurred())
+		})
+
+		// Case 9 — tool not in permissions.yaml falls through to legacy DENY
+		It("falls through to the legacy denied-roots check for a tool with no permissions.yaml entry", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					// only "write" is configured; "grep" has no entry
+					"write": {Allow: []string{"/vault/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
+			err := g.CheckForTool("grep", "/vault/file.md")
+			Expect(err).To(HaveOccurred())
+		})
+
+		// Case 10 — nil permissions (file absent) collapses to legacy DENY,
+		// proving the backwards-compat code path is selected when
+		// LoadPermissions returns (nil, nil).
+		It("collapses to the legacy DENY when LoadPermissions returned nil (no permissions.yaml on disk)", func() {
+			// Pass an explicit nil *config.Permissions to mirror the
+			// app.buildPathGuard branch where LoadPermissions returns
+			// (nil, nil) for a missing file.
+			var perms *config.Permissions
+			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
+			err := g.CheckForTool("write", "/vault/file.md")
+			Expect(err).To(HaveOccurred())
+		})
+
+		// Case 11 — proves the `**` doublestar wiring all the way through
+		// pathguard → config.Permissions → doublestar.PathMatch.
+		It("matches recursive ** depth through the real config matcher (deep subdir under /vault/**)", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"write": {Allow: []string{"/vault/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
+			Expect(g.CheckForTool("write", "/vault/subdir/deep/file.md")).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("CheckCommandForTool with a real *config.Permissions matcher", func() {
+		// Case 12 — proves the command tokeniser hands each path-shaped
+		// token to the real matcher and that an allow short-circuits the
+		// legacy denied-roots check.
+		It("allows `cat /vault/file.md` when bash.allow=[/vault/**] grants the path, despite the legacy denied root", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"bash": {Allow: []string{"/vault/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
+			Expect(g.CheckCommandForTool("bash", "cat /vault/file.md")).NotTo(HaveOccurred())
 		})
 	})
 })

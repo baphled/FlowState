@@ -128,7 +128,7 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 
 	rawPath := strings.TrimSpace(file)
 	if t.guard != nil {
-		if err := t.guard.Check(rawPath); err != nil {
+		if err := t.guard.CheckForTool("edit", rawPath); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}
