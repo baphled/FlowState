@@ -163,6 +163,74 @@ type App struct {
 	// completes while the Tracker is still queryable. Nil when
 	// persistence is disabled.
 	quotaCacheController *quotaCacheController
+	// bootstrapDeferred is set when the App was constructed via
+	// NewWithOptions(NewOptions{SkipBootstrap:true}) — i.e. the
+	// `cmd/flowstate/main.go` path that runs before Cobra resolves a
+	// subcommand. The cli root's PersistentPreRunE checks this gate (via
+	// BootstrapDeferred()) so it only invokes app.Bootstrap on apps that
+	// actually deferred it. Apps constructed via the legacy app.New path
+	// (Bootstrap already ran inline) or via NewForTest (no bootstrap
+	// expected at all) return false; PersistentPreRunE then skips the
+	// extra Bootstrap call rather than re-seeding the same dirs (in
+	// app.New's case) or polluting a test's isolated agentsDir (in
+	// NewForTest's case).
+	bootstrapDeferred bool
+}
+
+// BootstrapDeferred reports whether the App was constructed with
+// NewOptions{SkipBootstrap:true}, meaning the eight first-run XDG-mutating
+// side effects in Bootstrap have NOT been run yet. The cli root's
+// PersistentPreRunE consults this gate so apps constructed via NewForTest
+// (which never expect Bootstrap to fire) are not re-bootstrapped against
+// their isolated test agentsDir.
+//
+// Expected:
+//   - a is a non-nil App.
+//
+// Returns:
+//   - true when construction skipped Bootstrap (main.go's path).
+//   - false otherwise (app.New legacy path or NewForTest).
+//
+// Side effects:
+//   - None.
+func (a *App) BootstrapDeferred() bool {
+	if a == nil {
+		return false
+	}
+	return a.bootstrapDeferred
+}
+
+// markBootstrapRan clears the deferred flag once Bootstrap has actually
+// fired. The cli root's PersistentPreRunE calls this immediately after
+// invoking app.Bootstrap so a subsequent re-entry (e.g. a subcommand whose
+// own RunE re-builds the root) does not double-bootstrap. Bootstrap itself
+// is idempotent so the second call would only be a wasted walk of the
+// embedded FS, but the flag flip keeps the intent observable.
+//
+// Expected:
+//   - a is a non-nil App.
+//
+// Side effects:
+//   - Mutates a.bootstrapDeferred to false.
+func (a *App) markBootstrapRan() {
+	if a == nil {
+		return
+	}
+	a.bootstrapDeferred = false
+}
+
+// MarkBootstrapRan is the exported entry point cli callers use after
+// running app.Bootstrap themselves. Splitting export from the receiver
+// keeps the test helpers (which set the flag directly in fixtures) from
+// having to import an unexported method.
+//
+// Expected:
+//   - a is a non-nil App.
+//
+// Side effects:
+//   - Sets a.bootstrapDeferred to false.
+func (a *App) MarkBootstrapRan() {
+	a.markBootstrapRan()
 }
 
 // pluginRuntime groups the plugin wiring created during application startup.
@@ -178,7 +246,31 @@ type pluginRuntime struct {
 	externalStarted bool
 }
 
-// New creates a new App instance with all components initialised.
+// NewOptions tunes App construction. The zero value preserves the legacy
+// `app.New` contract: every XDG-mutating first-run side effect listed in
+// Bootstrap runs eagerly. Commands that resolve before user intent is known
+// (`cmd/flowstate/main.go` — the App is constructed before Cobra picks a
+// subcommand) flip SkipBootstrap to true so `flowstate version`, `flowstate
+// help`, `flowstate <typo>` etc. don't materialise files. The cli root's
+// PersistentPreRunE then runs Bootstrap explicitly for commands annotated
+// via internal/cli.AnnotationBootstrap.
+//
+// Tests calling `app.New` keep the old "registries populated from seeded
+// disk" semantics — only the binary entry point sets SkipBootstrap.
+type NewOptions struct {
+	// SkipBootstrap, when true, omits the eight first-run side effects
+	// (agent/skill/swarm/gate migration + seeding, mem0 wrapper
+	// materialisation, permissions.yaml write). Defaults to false so
+	// existing callers — including internal/cli test specs that load
+	// agents from `${XDG_CONFIG_HOME}/flowstate/agents` — keep their
+	// historical behaviour.
+	SkipBootstrap bool
+}
+
+// New creates a new App instance with all components initialised. It is a
+// thin wrapper over NewWithOptions(cfg, NewOptions{}) preserving the legacy
+// signature for the 50+ test fixtures and library callers that depend on
+// "construct + bootstrap" as a single step.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with provider and directory settings.
@@ -188,89 +280,53 @@ type pluginRuntime struct {
 //   - An error if any component fails to initialise.
 //
 // Side effects:
+//   - Runs Bootstrap(cfg) (agent/skill/swarm/gate seeding, mem0 wrapper
+//     materialisation, permissions.yaml write).
 //   - Reads agent manifests from the configured agent directory.
 //   - Reads skill files from the configured skill directory.
 //   - Creates session and context store directories if they do not exist.
 //   - Connects to configured MCP servers.
 func New(cfg *config.AppConfig) (*App, error) {
+	return NewWithOptions(cfg, NewOptions{})
+}
+
+// NewWithOptions creates a new App instance with explicit construction
+// options. The bootstrap-skipping path is the binary entry point's tool:
+// `cmd/flowstate/main.go` constructs the App before Cobra resolves a
+// subcommand, then the cli root's PersistentPreRunE invokes Bootstrap on
+// demand for commands annotated as bootstrap-needing.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with provider and directory settings.
+//   - opts.SkipBootstrap=true requires the caller to invoke app.Bootstrap
+//     separately for any command that mutates or reads the seeded XDG dirs.
+//
+// Returns:
+//   - A fully initialised App with all components wired together.
+//   - An error if any component fails to initialise.
+//
+// Side effects:
+//   - When opts.SkipBootstrap is false: runs Bootstrap(cfg) (agent/skill/
+//     swarm/gate seeding, mem0 wrapper materialisation, permissions.yaml
+//     write).
+//   - Reads agent manifests from the configured agent directory.
+//   - Reads skill files from the configured skill directory.
+//   - Creates session and context store directories if they do not exist.
+//   - Connects to configured MCP servers.
+func NewWithOptions(cfg *config.AppConfig, opts NewOptions) (*App, error) {
 	// Apply the cluster-wide embedding-model knob before any manifest
 	// is loaded — applyDefaults consumes the package-level fallback,
 	// so seeding it here ensures freshly-seeded agent manifests inherit
 	// the configured value rather than the historical default.
 	agent.SetDefaultEmbeddingModel(cfg.ResolvedEmbeddingModel())
 
-	// One-time XDG_DATA -> XDG_CONFIG migration: agent manifests and
-	// skill bundles used to live in `~/.local/share/flowstate/{agents,skills}/`
-	// but they are user-edited config and now belong in
-	// `~/.config/flowstate/{agents,skills}/`. The helpers are no-ops when
-	// the new dir already exists or the legacy dir is empty/missing, so
-	// they are safe to call unconditionally on startup.
-	migrateAgentsFromLegacyDataDir(cfg)
-	migrateSkillsFromLegacyDataDir(cfg)
-
-	if err := SeedAgentsDir(EmbeddedAgentsFS(), cfg.AgentDir); err != nil {
-		log.Printf("warning: seeding agents to %q: %v", cfg.AgentDir, err)
-	} else {
-		log.Printf("info: agents seeded to %q", cfg.AgentDir)
-	}
-
-	// Seed the bundled skill manifests into cfg.SkillDir so the
-	// engine's prompt-build path (loadSkills + LoadAlwaysActiveSkills)
-	// finds the four always-active skills (pre-action, discipline,
-	// skill-discovery, agent-discovery) and the rest of the baseline
-	// on a fresh install. Without this seed step the loader walks an
-	// empty dir and silently returns the empty slice — see
-	// internal/skill/loader.go:44-46.
-	if err := SeedSkillsDir(EmbeddedSkillsFS(), cfg.SkillDir); err != nil {
-		log.Printf("warning: seeding skills to %q: %v", cfg.SkillDir, err)
-	} else {
-		log.Printf("info: skills seeded to %q", cfg.SkillDir)
-	}
-
-	swarmDir := resolveSwarmDir(cfg)
-	if err := SeedSwarmsDir(EmbeddedSwarmsFS(), swarmDir); err != nil {
-		log.Printf("warning: seeding swarms to %q: %v", swarmDir, err)
-	} else {
-		log.Printf("info: swarms seeded to %q", swarmDir)
-	}
-
-	// Seed the bundled gate bundles into cfg.GatesDir so the swarm
-	// runner's `ext:*` kinds resolve to a registered runner on a fresh
-	// install. Without this seed step the user has to manually
-	// `cp -r examples/gates/<name> ~/.config/flowstate/gates/` before
-	// any `ext:*` gate dispatch succeeds — see SeedGatesDir's godoc and
-	// embed_gates.go for the bundled set.
-	if cfg.GatesDir != "" {
-		if err := SeedGatesDir(EmbeddedGatesFS(), cfg.GatesDir); err != nil {
-			log.Printf("warning: seeding gates to %q: %v", cfg.GatesDir, err)
-		} else {
-			log.Printf("info: gates seeded to %q", cfg.GatesDir)
-		}
-	}
-
-	// Auto-materialise the bundled mem0 MCP wrapper before the tool
-	// pipeline assembles its MCP servers. DiscoverMCPServers probes
-	// the install location first, so a freshly-materialised binary is
-	// picked up on the same startup with no operator action. The hook
-	// is idempotent (skip-on-existing) and failure-tolerant — a write
-	// failure logs a warning but lets app init continue without
-	// memory.
-	MaterialiseMemoryToolsOnStartup(DefaultMemoryToolsDir())
-
-	// Tool-Scoped Permissions plan (Slice C): materialise the embedded
-	// default permissions.yaml under the XDG config dir on first run.
-	// Idempotent (skip-on-existing) so operator customisation is never
-	// overwritten; downgrades unwritable-dir and write-failure cases to
-	// slog warnings so boot is never blocked. Behaviour-Pinned:
-	// buildPathGuard at app.go:2651 reads <config.Dir()>/permissions.yaml
-	// on every call, so this is the single ingestion point.
-	if err := config.EnsurePermissionsFile(config.Dir(), cfg.VaultPath); err != nil {
-		log.Printf("warning: bootstrapping permissions.yaml: %v", err)
+	if !opts.SkipBootstrap {
+		Bootstrap(cfg)
 	}
 
 	providerRegistry, ollamaProvider, providerFailures := providers.BuildWithFailures(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
-	swarmRegistry := setupSwarmRegistry(swarmDir, agentRegistry)
+	swarmRegistry := setupSwarmRegistry(resolveSwarmDir(cfg), agentRegistry)
 	setupSwarmSchemas(cfg)
 	for _, err := range RegisterDiscoveredGates(context.Background(), cfg) {
 		slog.Warn("ext gate registration failed", "err", err)
@@ -327,6 +383,7 @@ func New(cfg *config.AppConfig) (*App, error) {
 		pluginRuntime:    pluginRT,
 	})
 	configureApplicationAfterBuild(app, cfg, runtime, defaultManifest, pluginRT)
+	app.bootstrapDeferred = opts.SkipBootstrap
 	return app, nil
 }
 

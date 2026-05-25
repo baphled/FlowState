@@ -49,7 +49,18 @@ func run() int {
 
 	app.ConfigureLogging(cfg.LogLevel, logWriter)
 
-	application, err := app.New(cfg)
+	// SkipBootstrap=true defers the eight first-run XDG-mutating side
+	// effects (agent/skill/swarm/gate migration + seeding, mem0 wrapper
+	// materialisation, permissions.yaml write) until after Cobra has
+	// resolved the subcommand. The cli root's PersistentPreRunE then
+	// invokes app.Bootstrap explicitly for commands annotated via
+	// cli.AnnotationBootstrap. Pre-this flip, every invocation —
+	// including `flowstate --version`, `flowstate help`, and `flowstate
+	// <typo>` — materialised seven directories plus permissions.yaml
+	// under whichever XDG_CONFIG_HOME resolved. See internal/app.Bootstrap
+	// godoc + internal/cli/bootstrap_annotation.go for the gating
+	// contract.
+	application, err := app.NewWithOptions(cfg, app.NewOptions{SkipBootstrap: true})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
