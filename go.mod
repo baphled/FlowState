@@ -6,13 +6,13 @@ require (
 	filippo.io/age v1.3.1
 	github.com/alexedwards/scs/v2 v2.9.0
 	github.com/anthropics/anthropic-sdk-go v1.27.0
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.6
-	github.com/coder/websocket v1.8.14
 	github.com/cucumber/godog v0.15.1
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
@@ -27,6 +27,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/crypto v0.47.0
+	golang.org/x/term v0.39.0
 	golang.org/x/text v0.33.0
 	golang.org/x/tools v0.41.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -104,6 +105,5 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )

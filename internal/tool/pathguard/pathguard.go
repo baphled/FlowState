@@ -13,15 +13,52 @@ import (
 	"strings"
 )
 
-// Guard checks filesystem paths against a deny list.
+// PermissionsMatcher is the minimal interface pathguard needs from a
+// tool-scoped permissions matcher. The concrete implementation lives in
+// internal/config (config.Permissions). The interface is declared here
+// to keep pathguard zero-dep on the config package and to give callers
+// an easy seam for tests or alternative matchers.
+//
+// The contract mirrors config.Permissions.Match:
+//
+//   - ("deny",  true)  → caller MUST deny the access.
+//   - ("allow", true)  → caller MAY allow the access (and SHOULD short
+//     circuit the legacy deny-list check).
+//   - ("",      false) → matcher has no opinion; caller falls through
+//     to the legacy Check / CheckCommand semantics.
+type PermissionsMatcher interface {
+	Match(tool, path string) (decision string, matched bool)
+}
+
+// Guard checks filesystem paths against a deny list, optionally
+// consulting a per-tool PermissionsMatcher first.
 type Guard struct {
 	denied []string
+	perms  PermissionsMatcher
 }
 
 // New creates a Guard that blocks access to any path under the given denied
 // directories. Each entry must be an absolute path; relative paths are
 // silently ignored. Nil or empty denied is a no-op (all paths allowed).
+//
+// The returned Guard has no PermissionsMatcher attached — all *ForTool
+// methods fall straight through to the legacy Check / CheckCommand
+// logic. Use NewWithPermissions to wire a matcher in.
 func New(denied []string) *Guard {
+	abs := normaliseDenied(denied)
+	return &Guard{denied: abs}
+}
+
+// NewWithPermissions creates a Guard that consults perms first via the
+// *ForTool methods, then falls through to the legacy denied-roots
+// check when perms has no opinion. perms may be nil, in which case
+// behaviour matches New(denied).
+func NewWithPermissions(denied []string, perms PermissionsMatcher) *Guard {
+	abs := normaliseDenied(denied)
+	return &Guard{denied: abs, perms: perms}
+}
+
+func normaliseDenied(denied []string) []string {
 	abs := make([]string, 0, len(denied))
 	for _, d := range denied {
 		if d == "" {
@@ -33,12 +70,15 @@ func New(denied []string) *Guard {
 		}
 		abs = append(abs, a)
 	}
-	return &Guard{denied: abs}
+	return abs
 }
 
 // Check returns an error when path resolves inside any denied directory.
 // If the current working directory is itself inside a denied directory,
 // the check passes (the user chose to work inside that directory).
+//
+// Check is equivalent to CheckForTool("", path) — it never consults the
+// PermissionsMatcher and uses only the legacy denied-roots semantics.
 func (g *Guard) Check(path string) error {
 	if len(g.denied) == 0 {
 		return nil
@@ -63,6 +103,10 @@ func (g *Guard) Check(path string) error {
 
 // CheckCommand scans a bash command string for unquoted argv tokens that
 // resolve under a denied directory.
+//
+// CheckCommand is equivalent to CheckCommandForTool("", command) — it
+// never consults the PermissionsMatcher and uses only the legacy
+// denied-roots semantics.
 //
 // The implementation tokenises the command in a quote-aware way: text
 // enclosed in single or double quotes (including heredoc bodies on
@@ -269,6 +313,97 @@ func looksLikePath(tok string) bool {
 		return true
 	}
 	return false
+}
+
+// CheckForTool first consults the configured PermissionsMatcher for an
+// allow / deny verdict on (tool, path), then falls through to the
+// legacy Check semantics when the matcher has no opinion.
+//
+// Decision flow:
+//   - matcher returns "deny"  → returns an access-denied error and
+//     does NOT consult the legacy denied roots.
+//   - matcher returns "allow" → returns nil and does NOT consult the
+//     legacy denied roots (the explicit allow grants the access).
+//   - matcher returns ""      → defers entirely to Check(path).
+//
+// A nil matcher (or a Guard built via New) collapses to Check(path).
+// An empty tool name behaves the same: the matcher has no entry, so
+// Check(path) runs.
+func (g *Guard) CheckForTool(tool, path string) error {
+	if g.perms != nil && tool != "" {
+		abs, err := filepath.Abs(path)
+		if err == nil {
+			if decision, matched := g.perms.Match(tool, abs); matched {
+				switch decision {
+				case "deny":
+					return fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config", path, tool)
+				case "allow":
+					return nil
+				}
+			}
+		}
+	}
+	return g.Check(path)
+}
+
+// CheckCommandForTool tokenises command and consults the configured
+// PermissionsMatcher for each path-shaped token under (tool, <token>),
+// then falls back to the legacy CheckCommand semantics for any token
+// the matcher had no opinion on.
+//
+// Per-token decision flow:
+//   - matcher returns "deny"  → returns an access-denied error
+//     immediately.
+//   - matcher returns "allow" → that token is exempt from the legacy
+//     denied-roots check; evaluation continues with the next token.
+//   - matcher returns ""      → that token still gets the legacy
+//     denied-roots check (mirroring the in-place CheckCommand logic).
+//
+// A nil matcher (or empty tool name) collapses to CheckCommand(command).
+func (g *Guard) CheckCommandForTool(tool, command string) error {
+	if g.perms == nil || tool == "" {
+		return g.CheckCommand(command)
+	}
+
+	home, _ := os.UserHomeDir()
+	cwd, _ := os.Getwd()
+
+	for _, tok := range tokenize(command) {
+		if !looksLikePath(tok) {
+			continue
+		}
+
+		expanded := expandHome(tok, home)
+		abs, err := filepath.Abs(expanded)
+		if err != nil {
+			continue
+		}
+		abs = filepath.Clean(abs)
+
+		if decision, matched := g.perms.Match(tool, abs); matched {
+			switch decision {
+			case "deny":
+				return fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config", abs, tool)
+			case "allow":
+				continue // exempt from legacy check
+			}
+		}
+
+		// Matcher had no opinion — fall through to the legacy
+		// denied-roots check for this token only.
+		if len(g.denied) == 0 {
+			continue
+		}
+		for _, d := range g.denied {
+			if cwd != "" && strings.HasPrefix(cwd, d+string(filepath.Separator)) {
+				continue
+			}
+			if strings.HasPrefix(abs, d+string(filepath.Separator)) || abs == d {
+				return fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d)
+			}
+		}
+	}
+	return nil
 }
 
 // expandHome replaces a leading `~` or `$HOME` with the supplied home

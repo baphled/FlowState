@@ -142,4 +142,107 @@ var _ = Describe("Pathguard", func() {
 			Expect(open.CheckCommand("cat " + filepath.Join(denied, "x.md"))).NotTo(HaveOccurred())
 		})
 	})
+
+	// Slice A of the Tool-Scoped Permissions plan adds the *ForTool
+	// variants that consult a PermissionsMatcher before falling
+	// through to the legacy denied-roots semantics. Existing Check /
+	// CheckCommand callers are unaffected — the legacy behaviour is
+	// pinned by the cases above.
+	Describe("CheckForTool — permissions matcher integration", func() {
+		It("returns nil when the matcher explicitly allows the path, even under a denied root", func() {
+			matcher := stubMatcher{decision: "allow", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			Expect(g.CheckForTool("read", filepath.Join(denied, "ok.md"))).NotTo(HaveOccurred())
+		})
+
+		It("returns an error when the matcher explicitly denies the path, even outside the denied roots", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions(nil, matcher)
+			Expect(g.CheckForTool("read", "/tmp/elsewhere/file.md")).To(HaveOccurred())
+		})
+
+		It("falls through to the legacy Check when the matcher has no opinion", func() {
+			matcher := stubMatcher{matched: false}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			err := g.CheckForTool("read", filepath.Join(denied, "still-blocked.md"))
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("collapses to legacy Check when tool is empty", func() {
+			matcher := stubMatcher{decision: "allow", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			// empty tool name → matcher MUST be skipped → legacy denies
+			err := g.CheckForTool("", filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("collapses to legacy Check when no matcher is wired", func() {
+			g := pathguard.New([]string{denied})
+			err := g.CheckForTool("read", filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("CheckCommandForTool — permissions matcher integration", func() {
+		It("denies a tokenised path when the matcher denies it", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions(nil, matcher)
+			cmd := "cat /tmp/anywhere/secret.txt"
+			Expect(g.CheckCommandForTool("bash", cmd)).To(HaveOccurred())
+		})
+
+		It("allows a tokenised path under a legacy-denied root when the matcher explicitly allows it", func() {
+			matcher := stubMatcher{decision: "allow", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			cmd := "cat " + filepath.Join(denied, "notes.md")
+			Expect(g.CheckCommandForTool("bash", cmd)).NotTo(HaveOccurred())
+		})
+
+		It("falls through to legacy denied-roots when the matcher has no opinion", func() {
+			matcher := stubMatcher{matched: false}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			cmd := "cat " + filepath.Join(denied, "notes.md")
+			Expect(g.CheckCommandForTool("bash", cmd)).To(HaveOccurred())
+		})
+
+		It("preserves the quote-aware tokeniser — quoted mentions of the denied path do not trip the matcher", func() {
+			// stub counts how many tokens the matcher saw — quoted text
+			// is discarded by tokenize so the matcher must see zero
+			// path-shaped tokens here.
+			counter := &countingMatcher{}
+			g := pathguard.NewWithPermissions(nil, counter)
+			cmd := `echo "TODO: ` + denied + `/notes.md is internal"`
+			Expect(g.CheckCommandForTool("bash", cmd)).NotTo(HaveOccurred())
+			Expect(counter.calls).To(Equal(0))
+		})
+
+		It("collapses to legacy CheckCommand when tool is empty", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions(nil, matcher)
+			// empty tool name → matcher skipped → legacy CheckCommand
+			// has no denied roots configured so should succeed.
+			Expect(g.CheckCommandForTool("", "cat /tmp/foo.md")).NotTo(HaveOccurred())
+		})
+	})
 })
+
+// stubMatcher returns a fixed verdict for every (tool, path) tuple.
+type stubMatcher struct {
+	decision string
+	matched  bool
+}
+
+func (s stubMatcher) Match(string, string) (string, bool) {
+	return s.decision, s.matched
+}
+
+// countingMatcher records the number of Match calls so tests can
+// assert that quoted tokens never reach the matcher.
+type countingMatcher struct {
+	calls int
+}
+
+func (c *countingMatcher) Match(string, string) (string, bool) {
+	c.calls++
+	return "", false
+}
