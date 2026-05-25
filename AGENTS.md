@@ -417,7 +417,7 @@ make test          # Go tests
 
 ## Qdrant Vector Store
 
-FlowState uses Qdrant for vector-backed recall and learning pipelines. The recall feature is **optional** at runtime — if `QDRANT_URL` is unset or unreachable, FlowState boots normally and logs a warning that the recall broker is disabled (`internal/app/app.go`). It is, however, a **required dev dependency** for anyone working on `internal/recall/...`, `cmd/flowstate-vault-server`, or vector-learning pipelines.
+FlowState uses Qdrant for vector-backed recall and learning pipelines. The recall feature is **optional** at runtime — if `QDRANT_URL` is unset or unreachable, FlowState boots normally and logs a warning that the recall broker is disabled (`internal/app/app.go`). It is, however, a **required dev dependency** for anyone working on `internal/recall/...`, `internal/vaultindex/...` (the in-process vault-rag surface — `buildVaultQueryHandler` plus the `vault_index` / `vault_sync` admin tools), or vector-learning pipelines.
 
 ### Setup (recommended: docker-compose.dev.yml)
 

@@ -257,6 +257,17 @@ func New(cfg *config.AppConfig) (*App, error) {
 	// memory.
 	MaterialiseMemoryToolsOnStartup(DefaultMemoryToolsDir())
 
+	// Tool-Scoped Permissions plan (Slice C): materialise the embedded
+	// default permissions.yaml under the XDG config dir on first run.
+	// Idempotent (skip-on-existing) so operator customisation is never
+	// overwritten; downgrades unwritable-dir and write-failure cases to
+	// slog warnings so boot is never blocked. Behaviour-Pinned:
+	// buildPathGuard at app.go:2651 reads <config.Dir()>/permissions.yaml
+	// on every call, so this is the single ingestion point.
+	if err := config.EnsurePermissionsFile(config.Dir(), cfg.VaultPath); err != nil {
+		log.Printf("warning: bootstrapping permissions.yaml: %v", err)
+	}
+
 	providerRegistry, ollamaProvider, providerFailures := providers.BuildWithFailures(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
 	swarmRegistry := setupSwarmRegistry(swarmDir, agentRegistry)
@@ -3961,8 +3972,9 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 //
 // The collection-name fallback uses toolset.DefaultVaultCollection so the
 // two callers (this handler and toolset.AppendVaultIndexTools) stay in
-// lock-step on the canonical collection name. Must stay in sync with
-// cmd/flowstate-vault-server/main.go:defaultQdrantCollection.
+// lock-step on the canonical collection name. Both ultimately share the
+// `flowstate-vault` constant defined alongside DefaultVaultCollection in
+// internal/tool/toolset/app_tools.go.
 func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester) toolsvault.Handler {
 	if cfg == nil || cfg.Qdrant.URL == "" {
 		return nil
@@ -3993,10 +4005,11 @@ const defaultQdrantDistance = "Cosine"
 // converge on this constant so the architectural intent stays
 // explicit at every wiring site.
 //
-// Note: this is distinct from the vault-server's `flowstate-vault`
-// default (cmd/flowstate-vault-server/main.go) — that collection
-// indexes the Obsidian vault for cross-agent recall and lives next
-// to this one in the same Qdrant instance.
+// Note: this is distinct from the in-process vault-index surface's
+// `flowstate-vault` default (toolset.DefaultVaultCollection, exercised
+// by buildVaultQueryHandler and the vault_index / vault_sync admin
+// tools) — that collection indexes the Obsidian vault for cross-agent
+// recall and lives next to this one in the same Qdrant instance.
 const canonicalRecallCollection = "flowstate-recall"
 
 // resolveRecallCollection returns the effective recall collection

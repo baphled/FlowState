@@ -64,12 +64,11 @@ func LoadPermissions(path string) (*Permissions, error) {
 		return nil, fmt.Errorf("read permissions: %w", err)
 	}
 
-	var perms Permissions
-	if err := yaml.Unmarshal(data, &perms); err != nil {
-		return nil, fmt.Errorf("parse permissions: %w", err)
+	perms, err := parsePermissionsBytes(data)
+	if err != nil {
+		return nil, err
 	}
-
-	if perms.Version > supportedPermissionsVersion {
+	if perms != nil && perms.Version > supportedPermissionsVersion {
 		slog.Warn("unknown permissions version — ignoring file",
 			"path", path,
 			"version", perms.Version,
@@ -77,7 +76,28 @@ func LoadPermissions(path string) (*Permissions, error) {
 		)
 		return nil, nil
 	}
+	return perms, nil
+}
 
+// parsePermissionsBytes unmarshals a permissions.yaml payload.
+//
+// It does NOT enforce the supported-version check: callers may want
+// to distinguish "version too high → fall back to legacy guard" from
+// "version too high → parse error" depending on whether the source is
+// the operator's file (the former) or the embedded default (the
+// latter must always be in-range or the build is broken).
+//
+// Returns:
+//   - A parsed *Permissions on success.
+//   - A wrapped YAML parse error on malformed input.
+//
+// Side effects:
+//   - None.
+func parsePermissionsBytes(data []byte) (*Permissions, error) {
+	var perms Permissions
+	if err := yaml.Unmarshal(data, &perms); err != nil {
+		return nil, fmt.Errorf("parse permissions: %w", err)
+	}
 	return &perms, nil
 }
 

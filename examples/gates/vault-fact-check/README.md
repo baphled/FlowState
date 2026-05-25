@@ -15,7 +15,7 @@ Or override `gates_dir` in your `config.yaml` to point at `examples/gates/` dire
 ## Run requirements
 
 - Python 3.9+ (uses stdlib only — no `pip install`)
-- A reachable `flowstate-vault-server` (or any Qdrant collection populated with `nomic-embed-text` vectors)
+- A Qdrant collection populated with `nomic-embed-text` vectors (typically via the in-process `vault_index` / `vault_sync` admin tools or the `flowstate vault` CLI)
 - Ollama serving `nomic-embed-text`
 
 ## Configuration

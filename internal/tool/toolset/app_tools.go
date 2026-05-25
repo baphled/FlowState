@@ -20,10 +20,13 @@ import (
 	"github.com/baphled/flowstate/internal/tool/write"
 )
 
-// DefaultVaultCollection is the Qdrant collection used by
-// flowstate-vault-server. Exposed as a constant so callers that build
-// vault-index tooling can resolve the same fallback the composition root
-// historically used.
+// DefaultVaultCollection is the canonical Qdrant collection name for
+// vault-rag indices. It is consumed by buildVaultQueryHandler (the
+// in-process mcp_vault-rag_query_vault read tool) and by the
+// vault_index / vault_sync admin tools registered through
+// AppendVaultIndexTools. Exposed as a package-level constant so every
+// site that names a collection resolves the same fallback when the
+// operator has not overridden cfg.VaultCollection.
 const DefaultVaultCollection = "flowstate-vault"
 
 // BuildAppTools returns the base tool slice the FlowState engine starts

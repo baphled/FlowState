@@ -2440,8 +2440,21 @@ func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]st
 	for _, mt := range effective {
 		switch mt {
 		case "file":
+			// Tool-Scoped Permissions plan (Slice C): the `file` bundle
+			// expands to every filesystem-mutating tool that pathguard
+			// now gates. Pre-Slice C the bundle was {read, write}, which
+			// meant a manifest declaring `tools: [file]` silently lost
+			// access to edit/multiedit/apply_patch even though the
+			// pathguard *ForTool routes (wired in Slice B) treat all
+			// five symmetrically. Keeping the bundle narrow would force
+			// every operator to enumerate the extras by hand and would
+			// leave the per-tool allow/deny rules in permissions.yaml
+			// unreachable from the most common manifest shape.
 			allowed["read"] = true
 			allowed["write"] = true
+			allowed["edit"] = true
+			allowed["multiedit"] = true
+			allowed["apply_patch"] = true
 		case "delegate":
 			allowed["delegate"] = true
 			allowed["background_output"] = true

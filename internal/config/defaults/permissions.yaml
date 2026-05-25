@@ -1,0 +1,23 @@
+version: 1
+tools:
+  bash:
+    deny:
+      - ${FLOWSTATE_VAULT_ROOT}/.obsidian/**
+      - ${FLOWSTATE_VAULT_ROOT}/.git/**
+  read:
+    allow:
+      - ${FLOWSTATE_VAULT_ROOT}/**
+  write:
+    allow:
+      - ${FLOWSTATE_VAULT_ROOT}/**
+    deny:
+      - ${FLOWSTATE_VAULT_ROOT}/.obsidian/**
+  edit:
+    allow:
+      - ${FLOWSTATE_VAULT_ROOT}/**
+  multiedit:
+    allow:
+      - ${FLOWSTATE_VAULT_ROOT}/**
+  apply_patch:
+    allow:
+      - ${FLOWSTATE_VAULT_ROOT}/**

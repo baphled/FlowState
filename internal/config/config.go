@@ -486,11 +486,12 @@ type QdrantConfig struct {
 
 // QdrantURLEnv is the environment variable consulted by ResolvedQdrantURL
 // as a fallback when AppConfig.Qdrant.URL is empty. Honouring the env var
-// keeps `flowstate run` aligned with `flowstate-vault-server`, which has
-// always read QDRANT_URL — operators expect the same env-var override
-// surface across both binaries, and the user-facing warning at
-// internal/app/app.go:3920 names QDRANT_URL by name. Without this resolver
-// the warning was a contract lie.
+// keeps `flowstate run` aligned with the in-process vault-rag surface
+// (buildVaultQueryHandler + the vault_index / vault_sync admin tools),
+// which has always read QDRANT_URL — operators expect the same env-var
+// override regardless of which entry point opens the Qdrant connection,
+// and the user-facing warning at internal/app/app.go names QDRANT_URL by
+// name. Without this resolver the warning was a contract lie.
 const QdrantURLEnv = "QDRANT_URL"
 
 // ResolvedQdrantURL returns the effective Qdrant base URL for the recall

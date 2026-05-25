@@ -233,6 +233,46 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 			})
 		})
 
+		Context("when manifest declares the `file` bundle alias", func() {
+			// Tool-Scoped Permissions plan (Slice C): the `file` bundle
+			// alias must expand to every filesystem-mutating tool the
+			// pathguard *ForTool wires gate. Pre-Slice C the alias
+			// resolved to {read, write} only, which made per-tool
+			// allow/deny rules for edit/multiedit/apply_patch in
+			// permissions.yaml unreachable from the common
+			// `tools: [file]` manifest shape. The schema-based
+			// ConsistOf checks above can't catch the gap because the
+			// shared allTools fixture doesn't register edit/multiedit/
+			// apply_patch as schema tools — so this assertion uses
+			// BuildAllowedToolSetForTest to pin the `allowed[]`
+			// membership directly.
+			It("expands the bundle to read+write+edit+multiedit+apply_patch", func() {
+				manifest := agent.Manifest{
+					ID:   "file-bundle",
+					Name: "File Bundle",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"file"},
+					},
+				}
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        allTools,
+				})
+
+				allowed := eng.BuildAllowedToolSetForTest(manifest)
+
+				Expect(allowed).To(HaveKey("read"))
+				Expect(allowed).To(HaveKey("write"))
+				Expect(allowed).To(HaveKey("edit"),
+					"the file bundle must surface edit so per-tool allow/deny rules in permissions.yaml are reachable")
+				Expect(allowed).To(HaveKey("multiedit"),
+					"the file bundle must surface multiedit so per-tool allow/deny rules in permissions.yaml are reachable")
+				Expect(allowed).To(HaveKey("apply_patch"),
+					"the file bundle must surface apply_patch so per-tool allow/deny rules in permissions.yaml are reachable")
+			})
+		})
+
 		Context("when manifest has empty tools list", func() {
 			// Behaviour-Pinned: pre-D1 this was "fail-closed → only
 			// suggest_delegate". After D1 (Agent Runtime Quality plan,
