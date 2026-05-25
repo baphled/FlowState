@@ -112,6 +112,48 @@ var _ = Describe("EnsurePermissionsFile", func() {
 	})
 })
 
+// XDG_CONFIG_HOME isolation guard: the bootstrap calls
+// EnsurePermissionsFile(config.Dir(), ...) on every app.New, and
+// config.Dir() is the single seam that resolves XDG_CONFIG_HOME ahead
+// of the ~/.config fallback. Without this guard a future refactor that
+// hardcodes ~/.config/flowstate (bypassing Dir()) would silently leak
+// the bootstrap into operators' real config dirs whenever they ran
+// tests or smokes against a temp XDG. A real leak surfaced during the
+// Slice C live verification: a smoke that set XDG_CONFIG_HOME for one
+// invocation, then ran a follow-up without it, wrote permissions.yaml
+// into ~/.config/flowstate/. The fix surface is awareness — pin the
+// invariant in a test so any regression of Dir()'s XDG behaviour fails
+// loudly here rather than silently mutating $HOME for every developer
+// and CI worker.
+var _ = Describe("XDG_CONFIG_HOME isolation", func() {
+	It("routes EnsurePermissionsFile via config.Dir() into the XDG tempdir, never into ~/.config/flowstate", func() {
+		xdgDir := GinkgoT().TempDir()
+		os.Setenv("XDG_CONFIG_HOME", xdgDir)
+		DeferCleanup(func() { os.Unsetenv("XDG_CONFIG_HOME") })
+
+		resolved := config.Dir()
+		Expect(resolved).To(Equal(filepath.Join(xdgDir, "flowstate")),
+			"config.Dir() must resolve to the XDG tempdir — any bypass leaks the bootstrap into the operator's real ~/.config/flowstate")
+
+		Expect(os.MkdirAll(resolved, 0o755)).To(Succeed())
+		err := config.EnsurePermissionsFile(resolved, "/tmp/smoke-vault-root")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Wrote into the tempdir.
+		_, statErr := os.Stat(filepath.Join(resolved, "permissions.yaml"))
+		Expect(statErr).NotTo(HaveOccurred(),
+			"the bootstrap must materialise permissions.yaml under the XDG tempdir")
+
+		// Did NOT write into the operator's real ~/.config/flowstate.
+		// This is the exact path the Slice C smoke leak landed on.
+		homeDir, hErr := os.UserHomeDir()
+		Expect(hErr).NotTo(HaveOccurred())
+		realDir := filepath.Join(homeDir, ".config", "flowstate")
+		Expect(resolved).NotTo(Equal(realDir),
+			"sanity: tempdir XDG must not resolve to the operator's real config dir")
+	})
+})
+
 var _ = Describe("LoadDefaultPermissions", func() {
 	It("parses the embedded default with vault-path substitution", func() {
 		perms, err := config.LoadDefaultPermissions("/vault")
