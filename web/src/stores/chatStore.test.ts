@@ -8306,6 +8306,7 @@ describe('chatStore - live session-bleed bug bundle (May 2026)', () => {
       sessionId: 'session-B',
       role: 'user',
       content: 'Session B existing message',
+      timestamp: new Date().toISOString(),
     }
     ft.mockImplementationOnce(async () => {
       // Mimic the user switching sessions during the long-poll suspend:
