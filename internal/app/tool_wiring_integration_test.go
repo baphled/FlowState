@@ -987,4 +987,116 @@ var _ = Describe("Tool wiring integration", func() {
 					"buildToolsForManifestWithStore historically appended it")
 		})
 	})
+
+	// Pathguard coverage symmetry — May 2026.
+	//
+	// Pre-fix, only bash/read/write went through pathguard.NewWithGuard;
+	// edit/multiedit/apply_patch were absent from the delegate engine's
+	// registry entirely. With them added under NewWithGuard the agent
+	// surface becomes coherent — a manifest that bans an absolute vault
+	// path via `write` cannot evade the ban by switching to `edit`.
+	//
+	// These specs verify the wiring at the seam buildToolsForManifestWithStore:
+	// the tool surfaces in the delegate registry when the manifest declares
+	// the name, and the surfaced tool refuses a path under VaultPath.
+	Context("pathguard wiring symmetry on edit/multiedit/apply_patch", func() {
+		const vaultPath = "/tmp/pathguard-asymmetry-fixture-vault"
+
+		findTool := func(tools []tool.Tool, name string) tool.Tool {
+			for _, t := range tools {
+				if t.Name() == name {
+					return t
+				}
+			}
+			return nil
+		}
+
+		It("surfaces edit with the pathguard wired against the configured vault", func() {
+			application.Config = &config.AppConfig{VaultPath: vaultPath}
+			editAgent := agent.Manifest{
+				ID:   "engineer-with-edit",
+				Name: "Engineer (edit)",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"edit"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&editAgent)
+
+			tools := application.buildToolsForManifestWithStore(editAgent, nil)
+			editTool := findTool(tools, "edit")
+			Expect(editTool).NotTo(BeNil(), "edit must be present in the delegate registry when the manifest declares it")
+
+			result, err := editTool.Execute(context.Background(), tool.Input{
+				Name: "edit",
+				Arguments: map[string]interface{}{
+					"file":       vaultPath + "/foo.md",
+					"old_string": "hello",
+					"new_string": "goodbye",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred(), "edit must refuse a vault path when pathguard is wired")
+			Expect(result.Error.Error()).To(ContainSubstring("access denied"),
+				"edit must surface the pathguard's access-denied message, not the IsLocal "+
+					"\"path traversal\" message — the symmetry fix routes the deny through the guard")
+		})
+
+		It("surfaces multiedit with the pathguard wired against the configured vault", func() {
+			application.Config = &config.AppConfig{VaultPath: vaultPath}
+			multieditAgent := agent.Manifest{
+				ID:   "engineer-with-multiedit",
+				Name: "Engineer (multiedit)",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"multiedit"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&multieditAgent)
+
+			tools := application.buildToolsForManifestWithStore(multieditAgent, nil)
+			multieditTool := findTool(tools, "multiedit")
+			Expect(multieditTool).NotTo(BeNil(), "multiedit must be present when the manifest declares it")
+
+			result, err := multieditTool.Execute(context.Background(), tool.Input{
+				Name: "multiedit",
+				Arguments: map[string]any{
+					"file_path": vaultPath + "/foo.md",
+					"edits": []any{
+						map[string]any{"old_string": "a", "new_string": "b"},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred(), "multiedit must refuse a vault path when pathguard is wired")
+			Expect(result.Error.Error()).To(ContainSubstring("access denied"))
+		})
+
+		It("surfaces apply_patch with the pathguard wired against the configured vault", func() {
+			application.Config = &config.AppConfig{VaultPath: vaultPath}
+			patchAgent := agent.Manifest{
+				ID:   "engineer-with-apply-patch",
+				Name: "Engineer (apply_patch)",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"apply_patch"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&patchAgent)
+
+			tools := application.buildToolsForManifestWithStore(patchAgent, nil)
+			patchTool := findTool(tools, "apply_patch")
+			Expect(patchTool).NotTo(BeNil(), "apply_patch must be present when the manifest declares it")
+
+			result, err := patchTool.Execute(context.Background(), tool.Input{
+				Name: "apply_patch",
+				Arguments: map[string]interface{}{
+					"patch": "*** Begin Patch\n*** Update File: " + vaultPath + "/foo.md\n@@\n-a\n+b\n*** End Patch\n",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred(), "apply_patch must refuse a vault target when pathguard is wired")
+			Expect(result.Error.Error()).To(ContainSubstring("access denied"))
+		})
+	})
 })

@@ -10,10 +10,13 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
 // Tool implements exact string replacement in files.
-type Tool struct{}
+type Tool struct {
+	guard *pathguard.Guard
+}
 
 // New creates a new edit tool instance.
 //
@@ -27,6 +30,15 @@ type Tool struct{}
 //   - None.
 func New() *Tool {
 	return &Tool{}
+}
+
+// NewWithGuard creates an edit tool that denies access to protected paths.
+//
+// The guard is consulted with the resolved path before the file is read
+// or written, mirroring read.NewWithGuard and write.NewWithGuard so the
+// agent surface remains consistent across mutating file tools.
+func NewWithGuard(g *pathguard.Guard) *Tool {
+	return &Tool{guard: g}
 }
 
 // Name returns the tool identifier.
@@ -115,6 +127,11 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 	}
 
 	rawPath := strings.TrimSpace(file)
+	if t.guard != nil {
+		if err := t.guard.Check(rawPath); err != nil {
+			return tool.Result{Error: err}, nil
+		}
+	}
 	if !filepath.IsLocal(rawPath) {
 		return tool.Result{Error: errors.New("path traversal not allowed")}, nil
 	}

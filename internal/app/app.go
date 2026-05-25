@@ -49,9 +49,12 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	applypatch "github.com/baphled/flowstate/internal/tool/apply_patch"
 	"github.com/baphled/flowstate/internal/tool/bash"
 	coordinationtool "github.com/baphled/flowstate/internal/tool/coordination"
+	"github.com/baphled/flowstate/internal/tool/edit"
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
+	"github.com/baphled/flowstate/internal/tool/multiedit"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 	"github.com/baphled/flowstate/internal/tool/read"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
@@ -2072,10 +2075,21 @@ func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionCompo
 //   - None.
 func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coordination.Store) []tool.Tool {
 	guard := a.buildPathGuard()
+	// Mutating file tools (bash, read, write, edit, multiedit, apply_patch)
+	// all route through the same pathguard so the agent surface stays
+	// coherent — a manifest that bans an absolute vault path via `write`
+	// cannot evade the ban by switching to `edit`. Read-only enumeration
+	// tools (grep, glob, ls, lsp) intentionally remain unguarded: the
+	// design direction is "filesystem reads are the canonical path for
+	// agents working in the vault" so listing or searching directories is
+	// not the asymmetry the guard exists to close.
 	tools := []tool.Tool{
 		bash.NewWithGuard(guard),
 		read.NewWithGuard(guard),
 		write.NewWithGuard(guard),
+		edit.NewWithGuard(guard),
+		multiedit.NewWithGuard(guard),
+		applypatch.NewWithGuard(guard),
 		web.New(),
 	}
 

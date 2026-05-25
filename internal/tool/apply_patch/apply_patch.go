@@ -9,10 +9,13 @@ import (
 	"strings"
 
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
 // Tool applies unified diffs to files.
-type Tool struct{}
+type Tool struct {
+	guard *pathguard.Guard
+}
 
 // New creates a new apply_patch tool instance.
 //
@@ -26,6 +29,15 @@ type Tool struct{}
 //   - None.
 func New() *Tool {
 	return &Tool{}
+}
+
+// NewWithGuard creates an apply_patch tool that denies access to
+// protected paths via the supplied pathguard. The guard is consulted
+// against each `*** Update File:` target inside the patch text, and
+// against the patch source path when the patch argument is loaded from
+// disk.
+func NewWithGuard(g *pathguard.Guard) *Tool {
+	return &Tool{guard: g}
 }
 
 // Name returns the tool identifier.
@@ -95,12 +107,12 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 		return tool.Result{}, errors.New("patch argument is required")
 	}
 
-	patchText, err := loadPatchText(patchValue)
+	patchText, err := loadPatchText(patchValue, t.guard)
 	if err != nil {
 		return tool.Result{Error: err}, nil
 	}
 
-	result, err := applyPatchText(patchText)
+	result, err := applyPatchText(patchText, t.guard)
 	if err != nil {
 		return tool.Result{Error: err}, nil
 	}
@@ -112,14 +124,20 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 //
 // Expected:
 //   - value may be an inline patch or a path to a patch file.
+//   - guard, when non-nil, denies reads of patch files under protected paths.
 //
 // Returns:
 //   - The patch text to apply or an error.
 //
 // Side effects:
 //   - May read a patch file from disk.
-func loadPatchText(value string) (string, error) {
+func loadPatchText(value string, guard *pathguard.Guard) (string, error) {
 	if info, err := os.Stat(value); err == nil && !info.IsDir() {
+		if guard != nil {
+			if err := guard.Check(value); err != nil {
+				return "", err
+			}
+		}
 		if !filepath.IsLocal(value) {
 			return "", errors.New("path traversal not allowed")
 		}
@@ -141,13 +159,14 @@ func loadPatchText(value string) (string, error) {
 //
 // Expected:
 //   - patchText contains a valid unified diff.
+//   - guard, when non-nil, denies updates to files under protected paths.
 //
 // Returns:
 //   - A summary of updated files or an error.
 //
 // Side effects:
 //   - Reads and writes files in the current directory.
-func applyPatchText(patchText string) (string, error) {
+func applyPatchText(patchText string, guard *pathguard.Guard) (string, error) {
 	root, err := os.OpenRoot(".")
 	if err != nil {
 		return "", fmt.Errorf("open root failed: %w", err)
@@ -173,6 +192,11 @@ func applyPatchText(patchText string) (string, error) {
 
 		path := strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
 		rawPath := strings.TrimSpace(path)
+		if guard != nil {
+			if err := guard.Check(rawPath); err != nil {
+				return "", err
+			}
+		}
 		if !filepath.IsLocal(rawPath) {
 			return "", errors.New("path traversal not allowed")
 		}

@@ -52,6 +52,11 @@ func NewDefaultRegistry(websearchAPIKey, plansDir string) *tool.Registry {
 	r.Register(applypatch.New())
 	r.Register(web.New())
 	r.Register(websearch.New("https://api.exa.ai/search", websearchAPIKey))
+	// grep and ls are read-only filesystem enumeration: by design they are
+	// the canonical path for agents working alongside the vault, so they
+	// are not routed through the pathguard. Only mutating file ops (bash,
+	// read, write, edit, multiedit, apply_patch) are guarded — see
+	// app.buildToolsForManifestWithStore.
 	r.Register(grep.New())
 	r.Register(ls.New())
 	return r
