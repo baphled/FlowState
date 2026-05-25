@@ -1596,6 +1596,16 @@ export const useChatStore = defineStore('chat', {
       this.lastCompactionEventKey = null
       this.lastGateFailureKey = null
       this.lastCriticalErrorCorrelationId = null
+      // Live session-bleed bug bundle (May 2026, Bug 1) — the context_usage
+      // dedup gate (§1c-β) is GLOBAL and the JSDoc at chatStore.ts:711-712
+      // explicitly states it must be cleared on session change so a fresh
+      // session's first figure is never suppressed by the prior session's
+      // last figure. Symmetric with the §1c-γ sibling resets above.
+      // Without this clear, session B's first context_usage event sharing
+      // session A's four-field tuple is dropped by the dedup gate at
+      // handleContextUsageEvent — the chip retains A's percentage
+      // indefinitely.
+      this.lastContextUsageKey = null
       // Sketch A — UI Delegation Chain Not Updating (May 2026). The
       // per-row debounce for the mid-poll loadSessions refresh is
       // per-session — the new session's poll must be able to fire a
@@ -1993,6 +2003,23 @@ export const useChatStore = defineStore('chat', {
           return
         }
         pollCount++
+        // Live session-bleed bug bundle (May 2026, Bug 2) — POST-await
+        // session-switch guard. The pre-await guard at the top of the
+        // loop (chatStore.ts:1942-1944) only covers the steady-state
+        // case; the long-poll fetch above can suspend for up to 25s and
+        // during that window the user can navigate to a different
+        // session via loadSessionMessages. If we don't re-check here,
+        // the merge below writes this poll's incoming rows (which belong
+        // to the captured `sessionId`) into `this.messages` (which now
+        // belongs to the NEW currentSessionId). Same intent as the
+        // existing per-iteration AbortController + AbortError catch
+        // above — that path covers an in-flight cancel, this one covers
+        // the race where the fetch resolved cleanly with stale-session
+        // data before the AbortController could fire (e.g. the response
+        // was already in the network buffer at switch time).
+        if (this.currentSessionId !== sessionId) {
+          return
+        }
         // Sync lastMessageCount AFTER the merge below — see comment
         // there for ordering. The actual update happens at the end of
         // the loop body.

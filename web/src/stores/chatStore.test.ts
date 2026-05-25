@@ -8199,3 +8199,141 @@ describe('chatStore - pollTurnUntilTerminal surfaces non-abort fetchTurn errors 
     expect(store.error).toBeNull()
   })
 })
+
+// Live session-bleed bug bundle (May 2026)
+//
+// Two bleeds, both in chatStore, both triggered by rapid session switches:
+//
+//   1. context_usage chip shows the prior session's percentage. The
+//      `lastContextUsageKey` dedup gate (chatStore.ts:713) is GLOBAL and
+//      the JSDoc at 711-712 explicitly states it must be cleared on
+//      session change — but it was missing from loadSessionMessages's
+//      reset block (chatStore.ts:1596-1598) alongside its siblings
+//      (lastCompactionEventKey, lastGateFailureKey,
+//      lastCriticalErrorCorrelationId). Symptom: session A emits key K,
+//      session B emits the same K, B's mutation is suppressed and the
+//      chip retains A's figure indefinitely.
+//
+//   2. Messages from session A appear in session B's history after a
+//      rapid session switch during an in-flight turn. The session-equality
+//      guard at pollTurnUntilTerminal (chatStore.ts:1942-1944) runs at the
+//      TOP of the iteration, but the merge step at line 2083-2122 runs
+//      AFTER the long-poll await — the user can switch sessions during
+//      the suspended fetch and the merge then writes session A's rows
+//      into session B's live `this.messages` array.
+describe('chatStore - live session-bleed bug bundle (May 2026)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  // Bug 1 — context_usage chip retains prior session's figure when the
+  // new session's first emission shares the four-field dedup key.
+  it('clears lastContextUsageKey on session switch so a fresh session can re-emit the same figure', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-A'
+    store.contextUsageBySession = {}
+
+    // Session A: first emission for figure K. The chip pivots, the
+    // dedup gate latches the key.
+    store.handleContextUsageEvent(
+      { inputTokens: 1234, outputReserve: 8192, limit: 200000, percentage: 1 },
+      'session-A',
+    )
+    expect(store.currentContextUsage).not.toBeNull()
+    expect(store.currentContextUsage!.inputTokens).toBe(1234)
+
+    // User switches to session B. fetchSessionMessages returns an empty
+    // history; loadSessionMessages MUST clear lastContextUsageKey so
+    // session B is not gated on session A's last key.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      { id: 'session-B', agentId: 'agent-1', title: 'B', createdAt: '', updatedAt: '', messageCount: 0 },
+    ] as never)
+    vi.mocked(fetchSessionMessages).mockResolvedValueOnce([])
+    await store.loadSessionMessages('session-B')
+
+    expect(store.currentSessionId).toBe('session-B')
+
+    // Session B's first emission carries the same numeric tuple K. The
+    // GLOBAL dedup gate would skip the mutation if it still held A's
+    // key; after the fix the gate is cleared, so the chip must reflect
+    // B's figure.
+    //
+    // Observable proof: drop B's currentContextUsage to null first to
+    // make the "did the gate fire?" check unambiguous. A suppressed
+    // mutation leaves null; an applied mutation produces a non-null
+    // figure with the expected fields.
+    store.currentContextUsage = null
+    store.handleContextUsageEvent(
+      { inputTokens: 1234, outputReserve: 8192, limit: 200000, percentage: 1 },
+      'session-B',
+    )
+
+    expect(store.currentContextUsage).not.toBeNull()
+    expect(store.currentContextUsage!.inputTokens).toBe(1234)
+    expect(store.currentContextUsage!.percentage).toBe(1)
+  })
+
+  // Bug 2 — pollTurnUntilTerminal merge step runs AFTER the suspending
+  // fetchTurn await. If the user switches sessions during the suspension,
+  // the merge writes session A's rows into session B's `this.messages`.
+  it('does NOT merge poll-returned rows into this.messages when the session was switched during the await', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-A'
+    store.messages = []
+
+    // First fetch: while the promise is pending we flip currentSessionId
+    // to 'session-B' AND seed B's messages with a sentinel row that must
+    // be preserved untouched. Then resolve with session A's turn data
+    // carrying an assistant row that would bleed under the bug.
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    const bleedRow = {
+      id: 'msg-bleed-A',
+      sessionId: 'session-A',
+      role: 'assistant',
+      content: 'Session A content that must NOT appear in B',
+      status: 'completed',
+    }
+    const sessionBSentinel = {
+      id: 'msg-B-sentinel',
+      sessionId: 'session-B',
+      role: 'user',
+      content: 'Session B existing message',
+    }
+    ft.mockImplementationOnce(async () => {
+      // Mimic the user switching sessions during the long-poll suspend:
+      // chatStore-external code mutates currentSessionId AND replaces
+      // this.messages with B's slice (what loadSessionMessages would do
+      // on completion).
+      store.currentSessionId = 'session-B'
+      store.messages = [sessionBSentinel]
+      return {
+        turn_id: 'turn-A',
+        session_id: 'session-A',
+        status: 'completed',
+        started_at: '',
+        completed_at: '',
+        model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+        error: '',
+        messages: [bleedRow],
+      } as never
+    })
+
+    await store.pollTurnUntilTerminal('session-A', 'turn-A')
+
+    // Session B's messages array must be untouched — neither augmented
+    // with session A's row nor mutated in place.
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0]?.id).toBe('msg-B-sentinel')
+    // Defence-in-depth: the bleed row's id must not have leaked into B's
+    // slice via the upsert path.
+    expect(store.messages.some((m) => m.id === 'msg-bleed-A')).toBe(false)
+  })
+})
