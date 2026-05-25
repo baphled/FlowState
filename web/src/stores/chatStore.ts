@@ -1526,44 +1526,44 @@ export const useChatStore = defineStore('chat', {
       }
     },
 
-    async newSession(): Promise<void> {
-      const session = await createSession(this.agentId)
-      this.currentSessionId = session.id
-      persistSessionId(session.id)
-      // Propagate the (provider, model) pair the backend seeded onto the
-      // session from the agent manifest's first PreferredModels entry. The
-      // POST /sessions response now carries these fields populated when
-      // the manifest declares any preferred model, so the persistent
-      // activity-indicator chip can render `on <model> · <provider>` as
-      // soon as the user issues a prompt — no waiting for a failover
-      // transition or a manual model selection. Empty strings (manifest
-      // had no PreferredModels) keep the chip hidden, matching the
-      // legacy degraded-session behaviour.
-      if (session.currentModelId) {
-        this.currentModelId = session.currentModelId
-      }
-      if (session.currentProviderId) {
-        this.currentProviderId = session.currentProviderId
-      }
-      // A new session has no history yet, so the todoStore slice should be
-      // empty for the panel to render the "No todos in this session yet"
-      // empty state until the agent emits its first todowrite.
-      const todoStore = useTodoStore()
-      todoStore.setCurrentSession(session.id)
-      todoStore.hydrateFromMessages(session.id, [])
-    },
-
-    async loadSessionMessages(sessionId: string): Promise<void> {
-      // Per-session SSE singleton (Slice B — Streaming Coherence May 2026):
-      // do NOT disconnect the prior session's stream on switch. Each
-      // session keeps its own EventSource so session A continues to
-      // stream in the background while the user reads / composes in B.
-      // The chunk handler's `currentSessionId !== capturedSessionId`
-      // guard prevents A's chunks from landing on B's view; A's
-      // canonical state is recovered via reconcileFromBackend when the
-      // user returns to A (or when A's stream completes server-side).
-      this.setSessionStreaming(sessionId, { isLoading: true })
+    // resetSessionScopedState — shared reset surface for every
+    // session-change entry-point. Pre-fix (May 2026 live bleed) the reset
+    // block lived inline in `loadSessionMessages` and `newSession`
+    // duplicated none of it, leaving every session-scoped dedup gate,
+    // counter, banner, and per-session heartbeat slot leaking from the
+    // prior session into the new one when the user clicked
+    // "New Session" in SessionSwitcher.vue. The architectural fix —
+    // extract once, route both entry-points through it — guarantees
+    // future session-scoped state additions cannot drift across the two
+    // paths.
+    //
+    // Each slice cleared here has documentation adjacent to its
+    // declaration stating "Cleared on session change"; this method is
+    // that contract's single implementation. Order matches the original
+    // loadSessionMessages reset block for review continuity.
+    //
+    // Caller responsibilities (NOT in this helper):
+    //   - setSessionStreaming(sessionId, { isLoading: true }) — only
+    //     loadSessionMessages needs the loading flash because newSession
+    //     synchronously creates a fresh session-shell.
+    //   - currentSessionId assignment + persistSessionId — caller-shape
+    //     specific (newSession reads from createSession's response,
+    //     loadSessionMessages reads from its argument after a setAgent
+    //     handshake).
+    //   - todoStore.setCurrentSession + hydrateFromMessages — caller
+    //     decides whether to hydrate from fetched history or seed empty.
+    //   - currentModelId / currentProviderId — newSession propagates
+    //     from createSession response; loadSessionMessages reads from
+    //     the SessionSummary.
+    resetSessionScopedState(sessionId: string): void {
       this.error = null
+      // Messages slice — newSession has no fetch so the prior session's
+      // residue must be cleared explicitly here. loadSessionMessages
+      // overwrites this with the fetched history a few lines later;
+      // the brief empty-array intermediate state matches the
+      // "user is looking at empty composer state" UX comment in the
+      // session-switcher selectSession path.
+      this.messages = []
       // A critical-class banner from a prior session is no longer
       // relevant once the user switches contexts. The banner is bound
       // to the failing session — the new one starts clean. A fresh
@@ -1601,26 +1601,22 @@ export const useChatStore = defineStore('chat', {
       // explicitly states it must be cleared on session change so a fresh
       // session's first figure is never suppressed by the prior session's
       // last figure. Symmetric with the §1c-γ sibling resets above.
-      // Without this clear, session B's first context_usage event sharing
-      // session A's four-field tuple is dropped by the dedup gate at
-      // handleContextUsageEvent — the chip retains A's percentage
-      // indefinitely.
       this.lastContextUsageKey = null
+      // Provider/model failover toast dedup — JSDoc at chatStore.ts:688-690
+      // explicitly states cleared on session change "via the shared
+      // reset path". Pre-helper-extraction the prose was aspirational —
+      // the inline reset block in loadSessionMessages never actually
+      // touched this field. Including it here closes that latent
+      // adjacent surface while we are reworking the reset path.
+      this.lastProviderChangeKey = null
       // Sketch A — UI Delegation Chain Not Updating (May 2026). The
       // per-row debounce for the mid-poll loadSessions refresh is
       // per-session — the new session's poll must be able to fire a
       // fresh refresh for ITS first delegation_started row even if a
       // (vanishingly unlikely) collision would otherwise suppress it.
-      // Use `.clear()` so existing references stay live; consumers
-      // don't capture the set by reference but the explicit form is
-      // self-documenting next to the sibling resets.
       this.seenDelegationStartedIds.clear()
       // Bug fix — Child session "Live" indicator goes stale (May 2026).
       // Symmetric per-session reset for the terminal-row dedup set.
-      // Same rationale as the started-set clear above: the new
-      // session's poll must be able to fire a fresh refresh for ITS
-      // first terminal `delegation` row even if the prior session's
-      // seen-set held the same id.
       this.seenDelegationCompletedIds.clear()
       // Streaming Coherence Slice F — clear stale per-session phase
       // for the target session so its watchdog starts at the legacy
@@ -1634,6 +1630,63 @@ export const useChatStore = defineStore('chat', {
       delete this.tokenCountBySession[sessionId]
       delete this.tokensPerSecondBySession[sessionId]
       delete this.lastHeartbeatAtBySession[sessionId]
+    },
+
+    async newSession(): Promise<void> {
+      const session = await createSession(this.agentId)
+      // Route through the shared reset surface BEFORE the
+      // currentSessionId flip so the helper's resets are bound to the
+      // new session id (the per-session keyed deletes target the new
+      // id, which is harmless idempotent — but explicit). This is the
+      // architectural close on the live bleed the user reproduced
+      // post-15f30f6e: clicking "New Session" left the prior
+      // session's context_usage chip, dedup gates, and per-session
+      // heartbeat residue in place because newSession ran none of
+      // loadSessionMessages's reset protocol.
+      this.resetSessionScopedState(session.id)
+      this.currentSessionId = session.id
+      persistSessionId(session.id)
+      // Propagate the (provider, model) pair the backend seeded onto the
+      // session from the agent manifest's first PreferredModels entry. The
+      // POST /sessions response now carries these fields populated when
+      // the manifest declares any preferred model, so the persistent
+      // activity-indicator chip can render `on <model> · <provider>` as
+      // soon as the user issues a prompt — no waiting for a failover
+      // transition or a manual model selection. Empty strings (manifest
+      // had no PreferredModels) keep the chip hidden, matching the
+      // legacy degraded-session behaviour.
+      if (session.currentModelId) {
+        this.currentModelId = session.currentModelId
+      }
+      if (session.currentProviderId) {
+        this.currentProviderId = session.currentProviderId
+      }
+      // A new session has no history yet, so the todoStore slice should be
+      // empty for the panel to render the "No todos in this session yet"
+      // empty state until the agent emits its first todowrite.
+      const todoStore = useTodoStore()
+      todoStore.setCurrentSession(session.id)
+      todoStore.hydrateFromMessages(session.id, [])
+    },
+
+    async loadSessionMessages(sessionId: string): Promise<void> {
+      // Per-session SSE singleton (Slice B — Streaming Coherence May 2026):
+      // do NOT disconnect the prior session's stream on switch. Each
+      // session keeps its own EventSource so session A continues to
+      // stream in the background while the user reads / composes in B.
+      // The chunk handler's `currentSessionId !== capturedSessionId`
+      // guard prevents A's chunks from landing on B's view; A's
+      // canonical state is recovered via reconcileFromBackend when the
+      // user returns to A (or when A's stream completes server-side).
+      this.setSessionStreaming(sessionId, { isLoading: true })
+      // Route through the shared reset surface — see
+      // resetSessionScopedState for the full per-slice rationale and
+      // the May 2026 live-bleed bundle. Pre-helper-extraction this
+      // block was inline here and newSession (the "New Session" button
+      // path) duplicated none of it, so every session-scoped dedup
+      // gate, banner, counter, and per-session heartbeat slot leaked
+      // into the new session.
+      this.resetSessionScopedState(sessionId)
       try {
         const session = this.sessions.find((item) => item.id === sessionId)
         const sessionAgentId = session?.currentAgentId ?? session?.agentId

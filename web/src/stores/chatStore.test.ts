@@ -8337,4 +8337,128 @@ describe('chatStore - live session-bleed bug bundle (May 2026)', () => {
     // slice via the upsert path.
     expect(store.messages.some((m) => m.id === 'msg-bleed-A')).toBe(false)
   })
+
+  // Bug 3 — the "New Session" button at SessionSwitcher.vue:135 dispatches
+  // chatStore.newSession(), NOT loadSessionMessages(). Pre-fix newSession
+  // was a minimal-init path (createSession + currentSessionId + model
+  // propagation + todoStore sync) that did NOT run any of the
+  // session-change reset protocol that loadSessionMessages runs at
+  // chatStore.ts:1565-1636. Net effect: every session-scoped dedup gate,
+  // counter, error banner, and per-session heartbeat slot leaked from
+  // the prior session into the new one — including the
+  // lastContextUsageKey that the previous fix (15f30f6e) added to
+  // loadSessionMessages's reset block.
+  //
+  // Live repro: send a message on session A so the chip shows a figure
+  // (chip latches the four-field dedup key). Click "New Session". The
+  // chip retains A's figure because newSession did not re-hydrate
+  // currentContextUsage from contextUsageBySession AND did not clear
+  // lastContextUsageKey — so B's first context_usage event sharing
+  // A's tuple is suppressed by the GLOBAL gate.
+  //
+  // Architectural fix: extract the reset block into a shared private
+  // helper and route BOTH newSession and loadSessionMessages through it
+  // so future session-scoped state additions can never drift.
+  it('newSession runs the session-scoped reset protocol so chip + dedup gates do not bleed from prior session', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-A'
+
+    // Seed every state slice the helper must reset. Each slice is
+    // documented adjacent to its declaration in chatStore.ts as
+    // "Cleared on session change" — newSession must honour the same
+    // contract as loadSessionMessages.
+    store.error = 'prior session error'
+    store.messages = [
+      // Cast to a relaxed shape to avoid forcing every Message field;
+      // the assertion below only checks the array is cleared.
+      { id: 'msg-stale-A', sessionId: 'session-A', role: 'user', content: 'stale' } as never,
+    ]
+    store.criticalError = {
+      title: 'prior critical',
+      description: 'prior',
+      correlationId: 'corr-A',
+    } as never
+    store.currentContextUsage = {
+      inputTokens: 13000,
+      outputReserve: 4096,
+      limit: 33000,
+      percentage: 39,
+    }
+    store.compactionEventCount = 3
+    store.lastCompaction = {
+      originalTokens: 100000,
+      summaryTokens: 5000,
+      latencyMs: 250,
+      trigger: 'auto',
+      at: Date.now(),
+    } as never
+    store.lastGateFailure = {
+      reason: 'prior gate halt',
+      gate: 'prior-gate',
+      at: Date.now(),
+    } as never
+    store.lastCompactionEventKey = '100000:5000:250:auto'
+    store.lastGateFailureKey = 'prior-gate-key'
+    store.lastCriticalErrorCorrelationId = 'corr-A'
+    store.lastContextUsageKey = '13000:4096:33000:39'
+    store.lastProviderChangeKey = 'anthropic+claude-opus-4-7'
+    store.seenDelegationStartedIds.add('delegation-A-1')
+    store.seenDelegationCompletedIds.add('delegation-A-1')
+    store.streamingPhase = { 'session-new': 'thinking' } as never
+    store.tokenCountBySession = { 'session-new': 1234 } as never
+    store.tokensPerSecondBySession = { 'session-new': 42 } as never
+    store.lastHeartbeatAtBySession = { 'session-new': Date.now() } as never
+
+    // createSession default mock returns id 'session-new'. After
+    // newSession, the chip-bound state and dedup gates must all
+    // reflect a brand-new session — not session A's residue.
+    vi.mocked(createSession).mockClear()
+    await store.newSession()
+
+    expect(store.currentSessionId).toBe('session-new')
+
+    // Core chip-bound state — the live bleed the user observed.
+    // currentContextUsage rehydrates from contextUsageBySession[sessionId]
+    // which is empty for a brand-new session, so it must be null.
+    expect(store.currentContextUsage).toBeNull()
+    expect(store.lastContextUsageKey).toBeNull()
+
+    // Messages slice — no fetch happens on newSession so it must be
+    // empty array, not the prior session's residue.
+    expect(store.messages).toEqual([])
+
+    // Error + critical banner — session-bound; the new session starts
+    // clean.
+    expect(store.error).toBeNull()
+    expect(store.criticalError).toBeNull()
+    expect(store.lastCriticalErrorCorrelationId).toBeNull()
+
+    // Compaction telemetry — per-session.
+    expect(store.compactionEventCount).toBe(0)
+    expect(store.lastCompaction).toBeNull()
+    expect(store.lastCompactionEventKey).toBeNull()
+
+    // Gate halts — session-bound.
+    expect(store.lastGateFailure).toBeNull()
+    expect(store.lastGateFailureKey).toBeNull()
+
+    // Provider/model failover dedup — JSDoc at chatStore.ts:688-690
+    // explicitly says cleared on session change via the shared reset
+    // path.
+    expect(store.lastProviderChangeKey).toBeNull()
+
+    // Delegation poll dedup sets — same per-session reset rationale as
+    // loadSessionMessages's reset block.
+    expect(store.seenDelegationStartedIds.size).toBe(0)
+    expect(store.seenDelegationCompletedIds.size).toBe(0)
+
+    // Per-session keyed slots for the new session id — heartbeat etc.
+    // are cleared so the new session's watchdog starts at the legacy
+    // 60s default until the next heartbeat updates them.
+    expect(store.streamingPhase['session-new']).toBeUndefined()
+    expect(store.tokenCountBySession['session-new']).toBeUndefined()
+    expect(store.tokensPerSecondBySession['session-new']).toBeUndefined()
+    expect(store.lastHeartbeatAtBySession['session-new']).toBeUndefined()
+  })
 })
