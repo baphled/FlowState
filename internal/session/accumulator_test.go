@@ -2378,6 +2378,266 @@ var _ = Describe("AccumulateStream", func() {
 			})
 		})
 	})
+
+	// Tool-use-no-calls detection (Bug G, May 2026).
+	//
+	// Live reproducer: session 8169ca2d-5536-41af-b947-ba3fd7514416 —
+	// plan-writer agent on glm-5/zai. Final assistant message
+	// (msg[263]) carried Content="Now I'll generate the full plan. Let
+	// me compose the Expanded OMO plan document:", ToolCalls=0, and the
+	// upstream stop_reason was "tool_use". The provider claimed
+	// tool_use as the wire-contract finish reason but emitted zero
+	// tool_call blocks; the plan was never written and the session
+	// completed silently with no signal to the user that the plan-
+	// writer dispatch failed.
+	//
+	// Detector contract: when the upstream stop_reason is the literal
+	// "tool_use" AND the turn produced NO tool_call AND NO delegation,
+	// stamp StopReasonToolUseNoCalls. The signature is distinct from
+	// the three sibling detectors:
+	//   - StopReasonAbandonedTool requires WHITESPACE-only content with
+	//     thinking; this detector fires on non-empty content (announce-
+	//     intent prose).
+	//   - StopReasonStreamTruncated requires EMPTY stop_reason; this
+	//     detector fires when stop_reason IS present and IS specifically
+	//     "tool_use".
+	//   - StopReasonFabricatedCompletion requires self-reported-file-op
+	//     phrasing in content; this detector keys on the upstream
+	//     stop_reason value, not on content text.
+	Describe("tool-use-no-calls detection (Bug G, May 2026)", func() {
+		Context("content-bearing flushContent path", func() {
+			It("stamps StopReasonToolUseNoCalls when stop_reason is tool_use and zero tool_call blocks landed", func() {
+				// Reproducer 8169ca2d shape: announce-intent prose, then
+				// the upstream provider emits stop_reason="tool_use",
+				// then Done — but no tool_call ever lands. The wire
+				// contract says tool_use requires tool_call blocks; the
+				// provider violated it.
+				rawCh := make(chan provider.StreamChunk, 4)
+				rawCh <- provider.StreamChunk{
+					Content:    "Now I'll generate the full plan. Let me compose the Expanded OMO plan document:",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai", ModelID: "glm-5"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1),
+					"a contract-violating turn still produces exactly one persisted assistant message — "+
+						"the detector annotates, never duplicates or suppresses")
+				Expect(assistantMsgs[0].Content).To(ContainSubstring("Expanded OMO plan"),
+					"the announce-intent prose flows through verbatim — the detector only annotates StopReason")
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonToolUseNoCalls),
+					"upstream stop_reason \"tool_use\" with zero tool_call blocks IS the contract-"+
+						"violation signature — the persisted message must carry tool_use_no_calls so the "+
+						"session manager flips status active -> failed and the chat UI / audit surface the fault")
+			})
+
+			It("stamps StopReasonToolUseNoCalls even when thinking is absent", func() {
+				// Some glm variants emit straight to content. The
+				// detector keys on stop_reason + tool-call absence,
+				// not on reasoning state.
+				rawCh := make(chan provider.StreamChunk, 4)
+				rawCh <- provider.StreamChunk{
+					Content:    "Let me invoke the write tool to create the file:",
+					ProviderID: "zai",
+					ModelID:    "glm-4.6",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonToolUseNoCalls),
+					"the detector fires on stop_reason+tool-absence regardless of whether the "+
+						"reasoning channel produced anything")
+			})
+		})
+
+		Context("negatives — the detector must not fire on legitimate or differently-shaped turns", func() {
+			It("does NOT stamp StopReasonToolUseNoCalls when a real tool_call accompanied the tool_use stop_reason", func() {
+				// The happy path: stop_reason="tool_use" alongside a real
+				// tool_call. The wire contract is honoured; the detector
+				// MUST NOT false-flag.
+				rawCh := make(chan provider.StreamChunk, 5)
+				rawCh <- provider.StreamChunk{
+					Content:    "I'll write the file now.",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					ToolCall: &provider.ToolCall{
+						ID:        "tc-write",
+						Name:      "write",
+						Arguments: map[string]any{"path": "/tmp/x"},
+					},
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				for _, m := range assistantMsgs {
+					Expect(m.StopReason).NotTo(Equal(session.StopReasonToolUseNoCalls),
+						"a real tool_call honoured the wire contract — the detector MUST NOT "+
+							"false-flag the happy path just because stop_reason is tool_use")
+				}
+			})
+
+			It("does NOT stamp StopReasonToolUseNoCalls when stop_reason is end_turn (normal text response)", func() {
+				// A clean text-only response with stop_reason=end_turn
+				// and no tool_call is a normal answer — the detector
+				// MUST NOT fire on the end_turn signature.
+				rawCh := make(chan provider.StreamChunk, 4)
+				rawCh <- provider.StreamChunk{
+					Content:    "The answer is 42.",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "end_turn",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal("end_turn"),
+					"a clean end_turn path is unchanged — the detector keys on the literal "+
+						"tool_use stop_reason, not on the absence of tool_call alone")
+				Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonToolUseNoCalls),
+					"end_turn with no tool_call is the normal happy path for a text answer — "+
+						"the detector MUST NOT fire here")
+			})
+
+			It("does NOT stamp StopReasonToolUseNoCalls when stop_reason is tool_use accompanied by a delegation", func() {
+				// A delegation is a structured tool-call equivalent —
+				// the turn's deliverable. The detector reads
+				// turnHadDelegation as well as turnHadToolCall.
+				rawCh := make(chan provider.StreamChunk, 5)
+				rawCh <- provider.StreamChunk{
+					Content:    "Delegating to the worker.",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-g",
+						TargetAgent: "Worker",
+						Status:      "started",
+					},
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				for _, m := range assistantMsgs {
+					Expect(m.StopReason).NotTo(Equal(session.StopReasonToolUseNoCalls),
+						"a delegation is structured tool-call evidence — the detector MUST NOT "+
+							"false-flag delegation turns regardless of upstream stop_reason")
+				}
+			})
+
+			It("does NOT clobber StopReasonAbandonedTool when content is whitespace-only with thinking and stop_reason is tool_use", func() {
+				// Ordering pin: AbandonedTool (whitespace + thinking)
+				// claims ownership over a tool_use stop_reason on its
+				// specific signature. The new detector must fire only
+				// when AbandonedTool's predicate did not match.
+				rawCh := make(chan provider.StreamChunk, 5)
+				rawCh <- provider.StreamChunk{
+					Thinking:   "I should use the write tool to create the file.",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					Content:    "\n",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).To(HaveLen(1))
+				Expect(assistantMsgs[0].StopReason).To(Equal(session.StopReasonAbandonedTool),
+					"the AbandonedTool signature (whitespace-only content + thinking) is more "+
+						"specific and runs first; the tool-use-no-calls detector must respect "+
+						"the existing ordering and not overwrite the more specific sentinel")
+			})
+		})
+	})
 })
 
 var _ = Describe("MessageAppender interface", func() {

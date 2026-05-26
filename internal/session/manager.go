@@ -1115,15 +1115,23 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		if msg.ProviderName != "" && sess.CurrentProviderID != msg.ProviderName {
 			sess.CurrentProviderID = msg.ProviderName
 		}
-		// Stream-truncation surfaced-failure flip (Bug F, May 2026). When
-		// the accumulator stamps StopReasonStreamTruncated on the flushed
-		// assistant message (openaicompat wire cut before terminal
-		// finish_reason landed — live reproducers: glm-4.6 plan-writer
-		// session 8779c2ae-69a4-... and glm-5 plan-writer session
-		// 5e37d947-c049-4d5c-a209-658d9c6a5186 on zai), flip Status
-		// active -> failed so the chat UI, session list, and API expose
-		// the failure immediately rather than waiting on the 30-min
-		// boot-time orphan reap.
+		// Surfaced-failure flip (Bugs F and G, May 2026). When the
+		// accumulator stamps a surfaced-failure sentinel on the flushed
+		// assistant message, flip Status active -> failed so the chat UI,
+		// session list, and API expose the failure immediately rather
+		// than waiting on the 30-min boot-time orphan reap.
+		//
+		// Sentinels that drive the flip:
+		//   - StopReasonStreamTruncated (Bug F): openaicompat wire cut
+		//     before terminal finish_reason landed. Live reproducers —
+		//     glm-4.6 plan-writer session 8779c2ae-69a4-... and glm-5
+		//     plan-writer session 5e37d947-c049-4d5c-a209-658d9c6a5186 on zai.
+		//   - StopReasonToolUseNoCalls (Bug G): provider announced
+		//     "tool_use" as finish_reason but emitted zero tool_call
+		//     blocks — wire contract violation. Live reproducer —
+		//     plan-writer session 8169ca2d-5536-41af-b947-ba3fd7514416
+		//     on glm-5/zai. The plan was never written; pre-flip the
+		//     session completed silently.
 		//
 		// Restricted to the assistant-role branch: a future refactor that
 		// accidentally populates StopReason on a tool_call / tool_result
@@ -1132,11 +1140,11 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		// The status guard mirrors MarkEndedFromEvent's precedence
 		// (manager.go:287-290): failed is the terminal state — already-
 		// failed sessions stay failed (idempotent); already-completed
-		// sessions DO escalate to failed because truncation is a
+		// sessions DO escalate to failed because a surfaced failure is a
 		// higher-precedence signal than a (now-known-premature) seal;
 		// abandoned sessions are reaped artefacts that don't accept
 		// further mutations.
-		if msg.StopReason == StopReasonStreamTruncated &&
+		if (msg.StopReason == StopReasonStreamTruncated || msg.StopReason == StopReasonToolUseNoCalls) &&
 			sess.Status != string(StatusFailed) &&
 			sess.Status != string(StatusAbandoned) {
 			sess.Status = string(StatusFailed)

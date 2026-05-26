@@ -650,6 +650,127 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// Tool-use-no-calls status flip (Bug G, May 2026).
+	//
+	// When the accumulator stamps StopReasonToolUseNoCalls on the
+	// flushed assistant message (live reproducer: plan-writer session
+	// 8169ca2d-5536-41af-b947-ba3fd7514416 on glm-5/zai — provider
+	// announced stop_reason="tool_use" but emitted zero tool_call
+	// blocks), the session manager must flip the session's Status from
+	// StatusActive to StatusFailed so the chat UI, the session list,
+	// and the API expose the failure immediately — without this flip,
+	// the contract-violating session completes silently and the user
+	// has no signal that the plan-writer dispatch failed.
+	//
+	// The flip shares the same status-precedence guards as the
+	// StopReasonStreamTruncated path: idempotent on failed, escalates
+	// from completed (the seal was premature), pinned on abandoned
+	// (terminal reaped artefact).
+	Describe("appendSessionMessage flips status to failed on StopReasonToolUseNoCalls", func() {
+		It("flips active -> failed when the assistant message carries StopReasonToolUseNoCalls", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.Status).To(Equal(string(session.StatusActive)),
+				"new session starts active — the precondition for the failed-flip path")
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "assistant",
+				Content:      "Now I'll generate the full plan. Let me compose the Expanded OMO plan document:",
+				ModelName:    "glm-5",
+				ProviderName: "zai",
+				StopReason:   session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"tool_use_no_calls on an assistant message MUST flip the session to failed — "+
+					"the provider violated the wire contract and the failure must surface "+
+					"immediately rather than completing silently")
+		})
+
+		It("does not flip active when a non-assistant message carries StopReasonToolUseNoCalls (defensive)", func() {
+			// Mirrors the truncation-path defensive guard: StopReason on
+			// a tool_call / tool_result row is wire-noise and must not
+			// drive the flip.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "tool_call",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"only assistant-role messages drive the contract-violation flip — defensive guard")
+		})
+
+		It("does not downgrade a previously-completed session to failed (escalates instead)", func() {
+			// Same precedence as the truncation path: completed is not
+			// protected against the higher-precedence failure signal.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.CloseSession(sess.ID)).To(Succeed())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"a contract-violation event escalates a (likely premature) completed seal to failed — "+
+					"completed is not protected against the higher-precedence failure signal")
+		})
+
+		It("does not flip a previously-failed session away from failed (idempotent)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)))
+
+			// A second event of the same shape is a no-op on status.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"the flip is idempotent — repeated contract-violation events on a failed session keep it failed")
+		})
+
+		It("does not flip when the assistant message carries a clean stop_reason", func() {
+			// Independence pin: end_turn / tool_use (with calls) / etc
+			// must not trigger the flip — only the synthetic sentinels do.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "Here is the answer.",
+				StopReason: "end_turn",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"clean end_turn must NOT flip — only the contract-violation sentinel does")
+		})
+	})
+
 	Describe("Session hierarchy types", func() {
 		It("exposes parent identifiers on Session", func() {
 			typ := reflect.TypeOf(session.Session{})

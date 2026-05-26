@@ -847,6 +847,37 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 		strings.TrimSpace(msg.Content) == "" {
 		msg.StopReason = StopReasonAbandonedTool
 	}
+	// Tool-use-no-calls detector (Bug G, May 2026). When the upstream
+	// stop_reason is "tool_use" AND the turn produced NO tool_call AND
+	// NO delegation, the provider violated its own wire contract — the
+	// "tool_use" finish_reason claims a tool_call block will accompany
+	// the message, and zero such blocks landed. The accumulator stamps
+	// StopReasonToolUseNoCalls so the session manager's status-flip
+	// path marks the session failed and the chat UI / audit can flag
+	// the contract violation rather than rendering a silent "completed"
+	// bubble whose content body only announced intent.
+	//
+	// Ordering: this guard fires AFTER FabricatedCompletion and
+	// AbandonedTool because their signatures are more specific
+	// (self-reported file-op phrases or whitespace-only content with
+	// thinking) and SHOULD claim ownership on overlap. The
+	// StreamTruncated detector below predicates on `msg.StopReason ==
+	// ""` so it is naturally mutually exclusive with this guard, which
+	// requires `msg.StopReason == "tool_use"`. Independence preserved
+	// across the four sentinels: each owns a distinct stop_reason key.
+	//
+	// Live reproducer: session 8169ca2d-5536-41af-b947-ba3fd7514416 —
+	// plan-writer agent on glm-5/zai. Final assistant Content="Now I'll
+	// generate the full plan. Let me compose the Expanded OMO plan
+	// document:" (88 chars), ToolCalls=0, upstream stop_reason
+	// "tool_use". The plan was never written; pre-detector the session
+	// completed silently and the user had no signal that the plan-
+	// writer dispatch failed the provider contract.
+	if msg.StopReason == "tool_use" &&
+		!s.turnHadToolCall &&
+		!s.turnHadDelegation {
+		msg.StopReason = StopReasonToolUseNoCalls
+	}
 	// Stream-truncation detector (Bug F, May 2026). When a content-bearing
 	// turn produced meaningful payload AND produced NO tool_call AND NO
 	// delegation AND the upstream provider gave NO stop_reason chunk,
@@ -1024,6 +1055,55 @@ const StopReasonAbandonedTool = "abandoned_tool"
 // soft-error affordance immediately, and the audit pipeline sees a
 // non-empty stopReason instead of a silent stuck-active row.
 const StopReasonStreamTruncated = "stream_truncated"
+
+// StopReasonToolUseNoCalls is the synthetic stop reason stamped on a
+// content-bearing assistant Message whose upstream stop_reason claims
+// `tool_use` (the wire contract: "the response MUST include tool_call
+// blocks") AND that produced NO tool_call AND NO delegation. The
+// provider lied about the wire contract — it announced tool_use as the
+// finish reason and emitted zero tool calls. Stamping the message lets
+// downstream consumers (chat UI, audit log, session manager status-flip
+// path) distinguish a provider contract violation from a clean turn
+// and surface the failure immediately.
+//
+// Distinct from the three sibling detectors:
+//   - StopReasonAbandonedTool: requires WHITESPACE-only content AND
+//     non-empty thinking; the model self-cancelled in the reasoning
+//     channel. This sentinel fires on NON-EMPTY content (the model
+//     emitted prose narrating intent) with ANY thinking state.
+//   - StopReasonStreamTruncated: requires EMPTY upstream stop_reason;
+//     the wire cut before a terminal finish_reason arrived. This
+//     sentinel fires when stop_reason IS present and IS specifically
+//     `tool_use` — the wire reached its terminal signal but the signal
+//     itself is a contract lie.
+//   - StopReasonFabricatedCompletion: requires content matching the
+//     self-reported-file-op signature ("✅", "written to", etc). This
+//     sentinel keys on the upstream stop_reason value, not on content
+//     phrasing — so it catches contract violations whose content does
+//     not happen to match the fabrication phrase set.
+//
+// Live reproducer: session 8169ca2d-5536-41af-b947-ba3fd7514416 —
+// plan-writer agent on glm-5/zai. Final assistant message (msg[263])
+// carried Content="Now I'll generate the full plan. Let me compose
+// the Expanded OMO plan document:", ToolCalls=0, and the upstream
+// stop_reason was "tool_use". The plan was never written; the session
+// status was "completed" with no signal to the user that the turn
+// silently failed the provider contract.
+//
+// Wire-format-stable: the value is read by the Vue MessageBubble
+// render branch (which keys on `stopReason !== ""` to surface a
+// soft-error affordance — see web/src/components/chat/MessageBubble.vue:239)
+// and by the session manager's status-flip path
+// (manager.go:appendSessionMessage). The string literal is the
+// surface — downstream consumers must match exactly.
+//
+// Operator-visible behaviour after this lands: when a glm-family
+// provider announces tool_use without emitting tool calls, the
+// session's Status flips from "active" to "failed" the moment the
+// placeholder lands, the chat UI renders a soft-error affordance
+// immediately, and the audit pipeline sees `stop_reason:
+// "tool_use_no_calls"` instead of a silent "completed" row.
+const StopReasonToolUseNoCalls = "tool_use_no_calls"
 
 // fabricationPhrases is the set of self-reported-completion phrases that
 // trigger the StopReasonFabricatedCompletion stamp when present in an
