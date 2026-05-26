@@ -2539,6 +2539,102 @@ describe('chatStore - setModel', () => {
   })
 })
 
+describe('chatStore - permissionMode (Slice 2)', () => {
+  // Slice 2 of the Permission Modes (May 2026) plan — localStorage-only
+  // hydration / write-through. The store action keys persistence under
+  // `flowstate.permissionMode.<sessionId>` so per-session selection
+  // survives reload independently of any other session's chip state.
+  //
+  // No backend POST in Slice 2 — the store mutates local state, marks
+  // dirty for Slice 3's backend wiring, and writes the localStorage key.
+  // Behaviour pinned here is exactly the surface the chip relies on.
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('defaults to "default" when no session and no persisted value', () => {
+    const store = useChatStore()
+    expect(store.permissionMode).toBe('default')
+  })
+
+  it('setPermissionMode updates state and persists to localStorage keyed by session', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    store.setPermissionMode('yolo')
+
+    expect(store.permissionMode).toBe('yolo')
+    expect(window.localStorage.getItem('flowstate.permissionMode.session-1')).toBe('yolo')
+  })
+
+  it('setPermissionMode is a no-op when value is not a recognised mode', () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+    store.permissionMode = 'default'
+
+    // @ts-expect-error — exercising the invalid-input guard.
+    store.setPermissionMode('eldritch')
+
+    expect(store.permissionMode).toBe('default')
+    // Invalid value must not be persisted — that would silently corrupt
+    // the per-session key for any future hydrate.
+    expect(window.localStorage.getItem('flowstate.permissionMode.session-1')).toBeNull()
+  })
+
+  it('hydratePermissionMode reads the per-session key and adopts it', () => {
+    window.localStorage.setItem('flowstate.permissionMode.session-1', 'accept_edits')
+    const store = useChatStore()
+
+    store.hydratePermissionMode('session-1')
+
+    expect(store.permissionMode).toBe('accept_edits')
+  })
+
+  it('hydratePermissionMode falls back to "default" when the persisted value is unrecognised', () => {
+    // Invalid persisted values (corruption, manual edit, schema drift)
+    // must not leak through to the chip — fall back to the safe default.
+    window.localStorage.setItem('flowstate.permissionMode.session-1', 'bogus')
+    const store = useChatStore()
+    store.permissionMode = 'yolo'
+
+    store.hydratePermissionMode('session-1')
+
+    expect(store.permissionMode).toBe('default')
+  })
+
+  it('hydratePermissionMode falls back to "default" when the key is absent', () => {
+    const store = useChatStore()
+    store.permissionMode = 'yolo'
+
+    store.hydratePermissionMode('session-without-key')
+
+    expect(store.permissionMode).toBe('default')
+  })
+
+  it('loadSessionMessages hydrates permissionMode from the per-session localStorage key', async () => {
+    window.localStorage.setItem('flowstate.permissionMode.session-1', 'plan')
+    const store = useChatStore()
+    await store.loadSessions()
+
+    await store.loadSessionMessages('session-1')
+
+    expect(store.permissionMode).toBe('plan')
+  })
+
+  it('newSession resets permissionMode to "default" for the freshly created session', async () => {
+    const store = useChatStore()
+    store.permissionMode = 'yolo' // residue from a prior session
+
+    await store.newSession()
+
+    // Brand-new session has no persisted entry; hydrate falls back to
+    // the safe default rather than carrying YOLO across the gap.
+    expect(store.permissionMode).toBe('default')
+  })
+})
+
 describe('chatStore - loadModels', () => {
   beforeEach(() => {
     installLocalStorageStub()

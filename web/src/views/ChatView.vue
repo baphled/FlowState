@@ -12,6 +12,7 @@ import {
 import type { GroupedMessageEntry } from '@/views/chatViewHelpers'
 import type { Message } from '@/types'
 import ContextUsageChip from '@/components/chat/ContextUsageChip.vue'
+import PermissionModeChip from '@/components/chat/PermissionModeChip.vue'
 import QuotaChip from '@/components/chat/QuotaChip.vue'
 import CriticalErrorBanner from '@/components/chat/CriticalErrorBanner.vue'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
@@ -630,6 +631,15 @@ onBeforeUnmount(() => {
         </span>
         <ContextUsageChip />
         <QuotaChip />
+        <!--
+          Permission Modes (May 2026) — Slice 2. Mounted immediately to
+          the left of the ModelPicker so the chip + picker read as one
+          "this turn's policies" unit (plan §3). Hidden on read-only
+          child sessions because the dispatched agent's mode is bound
+          to whatever the dispatcher chose — the operator inside the
+          child has no authority to flip it.
+        -->
+        <PermissionModeChip v-if="!isChildSession" />
         <ModelPicker :readonly="isChildSession" />
         <!--
           UI Parity PR6 — Collapse all / Expand all (I4 extension). Bulk

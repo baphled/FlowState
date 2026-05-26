@@ -27,6 +27,57 @@ const activeAgentStorageKey = 'chat.agentId'
 const activeModelStorageKey = 'chat.selectedModel'
 const activeProviderStorageKey = 'chat.selectedProvider'
 
+// Permission Modes (May 2026) — Slice 2 keys the chip's selection under
+// `flowstate.permissionMode.<sessionId>` so each session keeps its own
+// mode independently. Slice 3 will move the canonical persistence to
+// the backend session sidecar; localStorage then becomes an offline
+// fallback only.
+const permissionModeStorageKeyPrefix = 'flowstate.permissionMode.'
+
+/**
+ * PermissionMode — closed vocabulary mirroring `internal/permissionmode`
+ * (backend, Slice 1, commit 26f9d864). Underscored `accept_edits` keeps
+ * the wire shape identical between the localStorage value and the
+ * backend's `PermissionMode` field so Slice 3 can POST the same string.
+ */
+export type PermissionMode = 'plan' | 'default' | 'accept_edits' | 'yolo'
+
+export const PERMISSION_MODES: readonly PermissionMode[] = [
+  'plan',
+  'default',
+  'accept_edits',
+  'yolo',
+] as const
+
+export const DEFAULT_PERMISSION_MODE: PermissionMode = 'default'
+
+function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === 'string'
+    && (PERMISSION_MODES as readonly string[]).includes(value)
+}
+
+function permissionModeStorageKey(sessionId: string): string {
+  return `${permissionModeStorageKeyPrefix}${sessionId}`
+}
+
+function getPersistedPermissionMode(sessionId: string): PermissionMode {
+  if (typeof window === 'undefined') {
+    return DEFAULT_PERMISSION_MODE
+  }
+  const raw = window.localStorage.getItem(permissionModeStorageKey(sessionId))
+  if (raw && isPermissionMode(raw)) {
+    return raw
+  }
+  return DEFAULT_PERMISSION_MODE
+}
+
+function persistPermissionMode(sessionId: string, mode: PermissionMode): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.setItem(permissionModeStorageKey(sessionId), mode)
+}
+
 // default-assistant is the friendly general-purpose chat agent — it answers
 // directly when it can and delegates to specialists when the request needs
 // one. It is the right starting point for open-ended user requests, in
@@ -367,6 +418,24 @@ export const useChatStore = defineStore('chat', {
     currentSessionId: null as string | null,
     sessions: [] as SessionSummary[],
     messages: [] as Message[],
+    // Permission Modes (May 2026) — Slice 2 (localStorage-only).
+    //
+    // The active session's permissioning dial, displayed by the
+    // PermissionModeChip in the composer toolbar. Default mirrors the
+    // backend constant `permissionmode.ModeDefault` (Slice 1) so the
+    // chip's first render of a fresh session never disagrees with what
+    // the engine would compute for an unset field.
+    //
+    // Persistence in this slice is localStorage only, keyed per session
+    // under `flowstate.permissionMode.<sessionId>` — see
+    // `permissionModeStorageKeyPrefix`. Slice 3 moves the canonical
+    // persistence to the backend session sidecar and POSTs the value;
+    // this slice deliberately stops at the wire.
+    //
+    // Hydration is wired through every session-change entry-point
+    // (restoreStateFromBackend, loadSessionMessages, newSession) so the
+    // chip never bleeds the previous session's value across the gap.
+    permissionMode: DEFAULT_PERMISSION_MODE as PermissionMode,
     // chainSessions — Bug Hunt (May 2026) sibling-confusion fix for the
     // in-thread delegation card.
     //
@@ -1120,6 +1189,12 @@ export const useChatStore = defineStore('chat', {
         }
 
         this.currentSessionId = sessionForAgent.id
+        // Permission Modes (May 2026) — Slice 2 hydration on the
+        // alternate-agent branch of restoreStateFromBackend so a
+        // reload that lands on a different session than the persisted
+        // currentSessionId still picks up the chip's per-session
+        // value.
+        this.hydratePermissionMode(sessionForAgent.id)
         // Prefer the session's own model; fall back to a validated localStorage
         // value when the session has never had a model set.
         {
@@ -1153,6 +1228,11 @@ export const useChatStore = defineStore('chat', {
       }
 
       this.currentSessionId = session.id
+      // Permission Modes (May 2026) — Slice 2 hydration on the
+      // session-matches-agent branch of restoreStateFromBackend.
+      // Symmetric with the alternate-agent branch above so cold-boot
+      // always lands on the per-session persisted value.
+      this.hydratePermissionMode(session.id)
       // Prefer the session's own model; fall back to a validated localStorage
       // value when the session has never had a model set.
       {
@@ -1341,6 +1421,47 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to update session model'
       }
+    },
+
+    /**
+     * Permission Modes (May 2026) — Slice 2 setter.
+     *
+     * Writes the chip's selection to per-session localStorage. The
+     * value is validated against the closed-vocabulary `PERMISSION_MODES`
+     * tuple — an invalid string (manual edit, schema drift, stray test
+     * input) is a no-op rather than corrupting the slot. The chip's
+     * click handler only ever passes one of the four canonical values
+     * but the validation defends the store boundary for any caller
+     * that bypasses the chip.
+     *
+     * Slice 3 will extend this to POST `/api/sessions/{id}/permission-mode`
+     * with optimistic local update + rollback on 4xx. For now the
+     * action stops at the wire and Slice 3 layers the network on top.
+     */
+    setPermissionMode(mode: PermissionMode): void {
+      if (!isPermissionMode(mode)) {
+        return
+      }
+      this.permissionMode = mode
+      if (this.currentSessionId) {
+        persistPermissionMode(this.currentSessionId, mode)
+      }
+    },
+
+    /**
+     * Permission Modes (May 2026) — Slice 2 hydration helper.
+     *
+     * Called from every session-change entry-point (loadSessionMessages,
+     * newSession, restoreStateFromBackend) to read the per-session
+     * localStorage key and adopt it as the active mode. Fresh sessions
+     * (no key set) fall back to the safe default, matching the backend's
+     * zero-value semantics.
+     *
+     * Centralised here so the same hydration rule fires regardless of
+     * which path the user took to land on the session.
+     */
+    hydratePermissionMode(sessionId: string): void {
+      this.permissionMode = getPersistedPermissionMode(sessionId)
     },
 
     /**
@@ -1630,6 +1751,14 @@ export const useChatStore = defineStore('chat', {
       delete this.tokenCountBySession[sessionId]
       delete this.tokensPerSecondBySession[sessionId]
       delete this.lastHeartbeatAtBySession[sessionId]
+      // Permission Modes (May 2026) — Slice 2. Rebind the chip's
+      // selection to the new session's persisted value (or the safe
+      // default when no record exists). Without this hop the chip
+      // would carry the prior session's mode across the switch — a
+      // YOLO chip silently following the operator into a fresh
+      // session is exactly the foot-gun the per-session keying is
+      // designed to prevent.
+      this.hydratePermissionMode(sessionId)
     },
 
     async newSession(): Promise<void> {
