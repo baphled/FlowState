@@ -66,8 +66,19 @@ type SessionResponse struct {
 	// `Chat Sibling Confusion (May 2026)` vault note for context.
 	ChainID      string          `json:"chainId,omitempty"`
 	ContextUsage json.RawMessage `json:"contextUsage,omitempty"`
-	CreatedAt    time.Time       `json:"createdAt"`
-	UpdatedAt    time.Time       `json:"updatedAt"`
+	// PermissionMode mirrors Session.PermissionMode (the per-session
+	// safety dial introduced by the Permission Modes plan, May 2026).
+	// Surfaced on every session-returning endpoint so the Vue
+	// chatStore can hydrate the chip from the backend payload on
+	// cold load — backend is the canonical source of truth, with
+	// localStorage as the offline-boot fall-back only. Omitted when
+	// the persisted Session has no mode set (legacy sidecars that
+	// predate the field) so the wire shape stays byte-identical for
+	// sessions that have never opted in. Slice 3 wires the read side
+	// here and the write side on POST /api/v1/sessions/{id}/permission-mode.
+	PermissionMode string    `json:"permissionMode,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // sessionResponseOptions holds functional-option state for NewSessionResponse.
@@ -147,6 +158,7 @@ func NewSessionResponse(sess *session.Session, opts ...SessionResponseOption) *S
 		ActiveTurnID:      o.activeTurnID,
 		ChainID:           sess.ChainID,
 		ContextUsage:      o.contextUsage,
+		PermissionMode:    sess.PermissionMode,
 		CreatedAt:         sess.CreatedAt,
 		UpdatedAt:         sess.UpdatedAt,
 	}

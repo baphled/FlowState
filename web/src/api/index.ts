@@ -773,6 +773,43 @@ export async function updateSessionModel(
   return (await res.json()) as Session;
 }
 
+/**
+ * Permission Modes (May 2026) Slice 3 — write the chip's selection
+ * to the backend so the value survives a process restart.
+ *
+ * Distinct from `updateSessionAgent` / `updateSessionModel` because
+ * the wire shape is intentionally minimal: only `{id, permission_mode}`
+ * round-trips, so the chip's write path does not re-fetch the entire
+ * message log on every click. The read side (hydration on cold load)
+ * uses the full Session payload via the existing session-returning
+ * endpoints, which now carry `permissionMode` after Slice 3.
+ *
+ * Throws on any non-2xx so the caller can fall back to the
+ * graceful-degradation path (preserve the optimistic local state and
+ * the localStorage write — the next reload reconciles with the
+ * backend snapshot).
+ */
+export async function updateSessionPermissionMode(
+  sessionId: string,
+  mode: string,
+): Promise<{ id: string; permission_mode: string }> {
+  const res = await fetch(
+    joinBaseURL(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/permission-mode`,
+    ),
+    {
+      method: "POST",
+      headers: withCsrfHeader({ "Content-Type": "application/json" }),
+      credentials: CREDENTIALS_INCLUDE,
+      body: JSON.stringify({ mode }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return (await res.json()) as { id: string; permission_mode: string };
+}
+
 export async function fetchModels(): Promise<Model[]> {
   const res = await fetch(joinBaseURL("/v1/models"), {
     credentials: CREDENTIALS_INCLUDE,

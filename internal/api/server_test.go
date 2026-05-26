@@ -1992,6 +1992,118 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/model JSON contract", func() {
 	})
 })
 
+// Permission Modes plan (May 2026) §4 Slice 3 — POST endpoint that
+// writes the chip's selection to the session and persists the change
+// to the sidecar so a process restart preserves it. The endpoint is
+// POST (not PATCH, unlike /agent and /model) per the brief; the
+// closed vocabulary keeps validation centralised in
+// session.Manager.UpdatePermissionMode.
+var _ = Describe("POST /api/v1/sessions/{id}/permission-mode JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		streamer *mockStreamer
+		mgr      *session.Manager
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		mgr = session.NewManager(streamer)
+		registry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			streamer,
+			registry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+		)
+	})
+
+	It("writes the new mode onto the session and returns {id, permission_mode}", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"mode":"yolo"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-mode", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		updated, err := mgr.GetSession(sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(updated.PermissionMode).To(Equal("yolo"),
+			"the chip's selection must persist on the session so the next SendMessage's ctx-stamp picks it up")
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		Expect(out).To(HaveKeyWithValue("id", sess.ID))
+		Expect(out).To(HaveKeyWithValue("permission_mode", "yolo"))
+	})
+
+	It("accepts each canonical mode value", func() {
+		// The endpoint must accept every member of the closed vocabulary
+		// without surprise; a regression that allows yolo but rejects
+		// accept_edits would silently break the chip's other options.
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		for _, mode := range []string{"plan", "default", "accept_edits", "yolo"} {
+			rec := httptest.NewRecorder()
+			body := `{"mode":"` + mode + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-mode", strings.NewReader(body))
+			srv.Handler().ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK), mode)
+
+			updated, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.PermissionMode).To(Equal(mode))
+		}
+	})
+
+	It("returns 400 for an unknown mode", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"mode":"eldritch"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-mode", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+
+		// In-memory state must NOT have flipped on the failed write.
+		updated, err := mgr.GetSession(sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(updated.PermissionMode).To(Equal("default"),
+			"rejected payloads must leave the persisted mode untouched at its default")
+	})
+
+	It("returns 400 for an empty mode (closed vocabulary excludes the empty string)", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"mode":""}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-mode", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("returns 400 for a malformed JSON body", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-mode", strings.NewReader(`{"mode":`))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("returns 404 when the session does not exist", func() {
+		body := `{"mode":"yolo"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/nonexistent/permission-mode", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusNotFound))
+	})
+})
+
 var _ = Describe("GET /api/v1/models", func() {
 	It("returns providers grouped from the injected ModelLister, sorted alphabetically by provider", func() {
 		lister := func() ([]provider.Model, error) {

@@ -256,6 +256,18 @@ export interface Session {
     provider: string;
     model: string;
   };
+  /**
+   * Permission Modes (May 2026) Slice 3 — per-session safety dial
+   * mirrored from `Session.PermissionMode` on the backend. One of
+   * `'plan' | 'default' | 'accept_edits' | 'yolo'`, or absent for
+   * legacy sessions persisted before the field existed (treated as
+   * "default" by the chatStore hydration helper). Backend payload is
+   * the canonical source on cold load; localStorage is the offline
+   * boot fall-back. Typed as `string` here to avoid a circular import
+   * into the chatStore's PermissionMode tuple — the chatStore validates
+   * against the closed vocabulary before adopting the value.
+   */
+  permissionMode?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -288,6 +300,14 @@ export interface SessionSummary {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Permission Modes (May 2026) Slice 3 — mirrors `Session.PermissionMode`.
+   * Surfaced on every summary so `restoreStateFromBackend` can hydrate
+   * the chip from the list response directly, with localStorage as
+   * the offline boot fall-back. Absent for sessions persisted before
+   * the field existed (treated as "default" by the chatStore).
+   */
+  permissionMode?: string;
   messageCount: number;
   /**
    * True when the session has an active Running Turn in the registry.

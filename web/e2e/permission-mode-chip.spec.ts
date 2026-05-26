@@ -2,35 +2,51 @@ import { test, expect, Page } from "@playwright/test";
 
 /**
  * Live UI verification for the PermissionModeChip (Permission Modes
- * (May 2026), Slice 2).
+ * (May 2026), Slice 2 + Slice 3).
  *
  * Behaviour pinned (user-observable, not internal):
- *   - The chip is visible in the composer toolbar on initial page
- *     load.
- *   - Clicking the chip opens the popover containing the four
- *     canonical modes.
- *   - The loud-disclosure paragraph for Default mode is rendered in
- *     the DOM (not hover-only) when the popover is open. This is
- *     the v1 mitigation for the "Default does not prompt per call"
- *     surface — plan §5 requires the operator see it at the
- *     decision point.
- *   - Selecting YOLO updates the chip label and the data-mode
- *     attribute reactively, with no backend round-trip.
- *   - Refreshing the page persists the selection from localStorage
- *     keyed under `flowstate.permissionMode.<sessionId>`.
+ *   - Slice 2: The chip is visible in the composer toolbar on initial
+ *     page load. Clicking opens the popover with the four canonical
+ *     modes plus the loud-disclosure paragraph for Default mode
+ *     (plan §5).
+ *   - Slice 2: Selecting YOLO updates the chip label and the
+ *     data-mode attribute reactively, and writes localStorage.
+ *   - Slice 3: Selecting a mode also POSTs to the backend at
+ *     `/api/v1/sessions/{id}/permission-mode` with `{"mode": "<value>"}`.
+ *   - Slice 3: After a page reload, the chip restores from the backend
+ *     payload (the session list's `permissionMode` field), winning
+ *     over any stale localStorage value. This is the canonical
+ *     precedence (backend > localStorage > default).
  *   - The screenshot snapshot of the chip with the popover open is
  *     written to /tmp/slice2-chip.png for the slice's evidence.
  *
- * Slice 3 will switch the persistence layer to a backend POST. This
- * spec deliberately exercises localStorage-only behaviour because
- * that is the contract Slice 2 ships.
- *
- * Mocking patterns mirror `context-usage-chip.spec.ts`. The chip
- * itself makes no fetch calls in Slice 2, so the route table only
- * needs the bootstrap surface (agents / models / sessions / health).
+ * Mocking patterns mirror `context-usage-chip.spec.ts`. Slice 3
+ * adds a backend mock for the POST endpoint and threads the
+ * `permissionMode` field through the session-list mock so the
+ * reload-rehydration test exercises the backend-precedence path.
  */
 
-async function bootstrapMocks(page: Page): Promise<void> {
+interface BootstrapOptions {
+  /**
+   * Permission Modes (May 2026) Slice 3 — the value the session-list
+   * mock should report for `permissionMode`. Drives the chip's
+   * cold-load hydration via the backend-precedence path. Omit to
+   * test the legacy / pre-Slice-1 absence shape.
+   */
+  sessionPermissionMode?: string;
+  /**
+   * Captures the latest POST body sent to the per-session
+   * permission-mode endpoint. Tests assert against this to prove the
+   * chip's selection round-tripped to the backend rather than only
+   * writing to localStorage.
+   */
+  recordedPermissionModePosts?: { sessionId: string; body: string }[];
+}
+
+async function bootstrapMocks(
+  page: Page,
+  opts: BootstrapOptions = {},
+): Promise<void> {
   const messages = [
     {
       id: "s1-u",
@@ -83,24 +99,57 @@ async function bootstrapMocks(page: Page): Promise<void> {
     });
   });
   await page.route("**/api/v1/sessions", async (route) => {
+    const summary: Record<string, unknown> = {
+      id: "session-1",
+      agentId: "agent-1",
+      currentAgentId: "agent-1",
+      currentProviderId: "anthropic",
+      currentModelId: "claude-sonnet-4-6",
+      title: "Test",
+      createdAt: "2026-05-26T00:00:00Z",
+      updatedAt: "2026-05-26T00:00:01Z",
+      messageCount: messages.length,
+    };
+    if (opts.sessionPermissionMode !== undefined) {
+      summary["permissionMode"] = opts.sessionPermissionMode;
+    }
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify([
-        {
-          id: "session-1",
-          agentId: "agent-1",
-          currentAgentId: "agent-1",
-          currentProviderId: "anthropic",
-          currentModelId: "claude-sonnet-4-6",
-          title: "Test",
-          createdAt: "2026-05-26T00:00:00Z",
-          updatedAt: "2026-05-26T00:00:01Z",
-          messageCount: messages.length,
-        },
-      ]),
+      body: JSON.stringify([summary]),
     });
   });
+  // Permission Modes Slice 3 — backend POST seam. The route MUST be
+  // registered before `/api/v1/sessions/*` (the bare-session fall-through
+  // could swallow a more specific path under Playwright's longest-match
+  // semantics). Record the body so the spec can assert the chip's
+  // selection round-tripped.
+  await page.route(
+    "**/api/v1/sessions/*/permission-mode",
+    async (route, request) => {
+      if (request.method() !== "POST") {
+        await route.fulfill({ status: 405 });
+        return;
+      }
+      const body = request.postData() ?? "";
+      const match = request.url().match(/\/sessions\/([^/]+)\/permission-mode/);
+      const sessionId = match ? decodeURIComponent(match[1]) : "";
+      if (opts.recordedPermissionModePosts) {
+        opts.recordedPermissionModePosts.push({ sessionId, body });
+      }
+      let mode = "";
+      try {
+        mode = (JSON.parse(body) as { mode?: string }).mode ?? "";
+      } catch {
+        // ignore — assertion below will catch a malformed body
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ id: sessionId, permission_mode: mode }),
+      });
+    },
+  );
   await page.route("**/api/v1/sessions/*/messages", async (route) => {
     if (route.request().method() === "POST") {
       await route.fulfill({
@@ -140,13 +189,12 @@ const DEV_BASE_URL =
 test.use({ baseURL: DEV_BASE_URL });
 
 test.describe("Permission mode chip — live UI", () => {
-  test.beforeEach(async ({ page }) => {
-    await bootstrapMocks(page);
-  });
-
-  test("chip renders in the composer toolbar, opens the popover with all four modes plus the Default disclosure, selects YOLO, and persists across reload", async ({
+  test("chip renders, opens the popover, selects YOLO, POSTs to the backend (Slice 3), and writes localStorage", async ({
     page,
   }) => {
+    const recordedPosts: { sessionId: string; body: string }[] = [];
+    await bootstrapMocks(page, { recordedPermissionModePosts: recordedPosts });
+
     await page.goto("/chat");
     await expect(page.getByTestId("message-input")).toBeVisible();
 
@@ -191,9 +239,18 @@ test.describe("Permission mode chip — live UI", () => {
       "Default mode does not prompt per tool call. Review the session timeline for what ran.",
     );
 
-    // Capture the popover-open screenshot as Slice 2's evidence
+    // Capture the popover-open screenshot as Slice 2/3's evidence
     // before clicking through and dismissing the popover.
-    await page.screenshot({ path: "/tmp/slice2-chip.png", fullPage: false });
+    await page.screenshot({ path: "/tmp/slice3-chip.png", fullPage: false });
+
+    // Pre-bind a waitForRequest BEFORE the click so the POST never
+    // races us — Playwright's auto-waiting on .click() resolves
+    // before the in-flight fetch lands.
+    const postPromise = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        /\/api\/v1\/sessions\/[^/]+\/permission-mode$/.test(req.url()),
+    );
 
     // Select YOLO — chip pivots to the danger palette.
     await page.locator('[data-testid="permission-mode-option-yolo"]').click();
@@ -205,21 +262,61 @@ test.describe("Permission mode chip — live UI", () => {
     // Popover closed on selection.
     await expect(popover).not.toBeVisible();
 
-    // localStorage carries the per-session key — Slice 2 contract.
+    // Slice 3 contract — the chip POSTs to the backend with the
+    // selected mode. The waitForRequest above asserts the request
+    // fired; the mock recorder asserts the body shape so a future
+    // refactor that drops the `mode` key gets caught.
+    const post = await postPromise;
+    expect(post.postDataJSON()).toEqual({ mode: "yolo" });
+    expect(recordedPosts).toHaveLength(1);
+    expect(recordedPosts[0]?.sessionId).toBe("session-1");
+    expect(JSON.parse(recordedPosts[0]?.body ?? "{}")).toEqual({
+      mode: "yolo",
+    });
+
+    // localStorage carries the per-session key — Slice 2 contract
+    // preserved as the offline-boot fall-back.
     const stored = await page.evaluate(() =>
       window.localStorage.getItem("flowstate.permissionMode.session-1"),
     );
     expect(stored).toBe("yolo");
+  });
 
-    // Reload — the chip rehydrates from localStorage.
-    await page.reload();
+  test("reload rehydrates the chip from the backend payload, overriding a stale localStorage value (Slice 3 backend-precedence)", async ({
+    page,
+  }) => {
+    // The canonical precedence is backend > localStorage > default.
+    // Seed localStorage with a STALE value before navigation so the
+    // chip would render "plan" if localStorage won; then have the
+    // session-list mock report "yolo" so the assertion proves the
+    // backend payload took precedence.
+    await bootstrapMocks(page, { sessionPermissionMode: "yolo" });
+    await page.addInitScript(() => {
+      // Prime stale localStorage BEFORE the page loads so the race
+      // is real — at first paint both sources are populated and the
+      // hydration helper must explicitly prefer the backend.
+      window.localStorage.setItem("flowstate.permissionMode.session-1", "plan");
+    });
+
+    await page.goto("/chat");
     await expect(page.getByTestId("message-input")).toBeVisible();
-    const chipAfterReload = page.locator(
-      '[data-testid="permission-mode-chip"]',
-    );
-    await expect(chipAfterReload).toHaveAttribute("data-mode", "yolo");
+
+    const chip = page.locator('[data-testid="permission-mode-chip"]');
+    await expect(chip).toBeVisible();
+    // Backend wins — the chip MUST render "yolo" even though
+    // localStorage said "plan". A regression that flipped the
+    // precedence (localStorage > backend) would render "Plan" here.
+    await expect(chip).toHaveAttribute("data-mode", "yolo");
     await expect(
       page.locator('[data-testid="permission-mode-chip-label"]'),
     ).toContainText("YOLO");
+
+    // localStorage is reconciled to the backend's view so a
+    // subsequent offline boot reflects the canonical value rather
+    // than the stale prior selection.
+    const stored = await page.evaluate(() =>
+      window.localStorage.getItem("flowstate.permissionMode.session-1"),
+    );
+    expect(stored).toBe("yolo");
   });
 });

@@ -14,6 +14,7 @@ import {
   truncateSessionMessages,
   updateSessionAgent,
   updateSessionModel,
+  updateSessionPermissionMode,
   type TurnState,
 } from '@/api'
 import { recordStreamEvent } from '@/lib/streamLog'
@@ -1189,12 +1190,16 @@ export const useChatStore = defineStore('chat', {
         }
 
         this.currentSessionId = sessionForAgent.id
-        // Permission Modes (May 2026) — Slice 2 hydration on the
-        // alternate-agent branch of restoreStateFromBackend so a
-        // reload that lands on a different session than the persisted
-        // currentSessionId still picks up the chip's per-session
-        // value.
-        this.hydratePermissionMode(sessionForAgent.id)
+        // Permission Modes (May 2026) — Slice 3 hydration on the
+        // alternate-agent branch of restoreStateFromBackend. Backend
+        // value wins over localStorage per the canonical precedence
+        // (see hydratePermissionMode JSDoc); when the summary omits
+        // the field (legacy sessions persisted before Slice 1) the
+        // helper falls back to localStorage and then "default".
+        this.hydratePermissionMode(
+          sessionForAgent.id,
+          sessionForAgent.permissionMode,
+        )
         // Prefer the session's own model; fall back to a validated localStorage
         // value when the session has never had a model set.
         {
@@ -1228,11 +1233,12 @@ export const useChatStore = defineStore('chat', {
       }
 
       this.currentSessionId = session.id
-      // Permission Modes (May 2026) — Slice 2 hydration on the
+      // Permission Modes (May 2026) — Slice 3 hydration on the
       // session-matches-agent branch of restoreStateFromBackend.
-      // Symmetric with the alternate-agent branch above so cold-boot
-      // always lands on the per-session persisted value.
-      this.hydratePermissionMode(session.id)
+      // Symmetric with the alternate-agent branch above — backend
+      // value (when present on the summary) wins, with localStorage
+      // as the offline-boot fall-back.
+      this.hydratePermissionMode(session.id, session.permissionMode)
       // Prefer the session's own model; fall back to a validated localStorage
       // value when the session has never had a model set.
       {
@@ -1424,43 +1430,90 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * Permission Modes (May 2026) — Slice 2 setter.
+     * Permission Modes (May 2026) — Slice 3 setter.
      *
-     * Writes the chip's selection to per-session localStorage. The
-     * value is validated against the closed-vocabulary `PERMISSION_MODES`
-     * tuple — an invalid string (manual edit, schema drift, stray test
-     * input) is a no-op rather than corrupting the slot. The chip's
-     * click handler only ever passes one of the four canonical values
-     * but the validation defends the store boundary for any caller
-     * that bypasses the chip.
+     * Writes the chip's selection to:
+     *   1. In-memory store state — the chip reflects the change
+     *      optimistically before the network round-trip.
+     *   2. The backend POST `/api/v1/sessions/{id}/permission-mode`
+     *      so the value survives a process restart.
+     *   3. Per-session localStorage — the offline boot fall-back so
+     *      a hard reload before the backend list endpoint responds
+     *      still renders the chip in the user's last-chosen mode.
      *
-     * Slice 3 will extend this to POST `/api/sessions/{id}/permission-mode`
-     * with optimistic local update + rollback on 4xx. For now the
-     * action stops at the wire and Slice 3 layers the network on top.
+     * Graceful degradation: a backend POST failure (4xx/5xx, network
+     * outage, missing session id) does NOT block the optimistic local
+     * update or the localStorage write. Rationale: the chip's job is
+     * to feel responsive; a transient outage shouldn't lock the user
+     * out of changing modes for the rest of the session, and the
+     * next backend round-trip (or the next reload's hydration via
+     * the session-list payload) will reconcile state. The error is
+     * stamped on `this.error` so any error banner picks it up but no
+     * rollback happens.
+     *
+     * The value is validated against the closed-vocabulary
+     * `PERMISSION_MODES` tuple — an invalid string (manual edit,
+     * schema drift, stray test input) is a no-op rather than
+     * corrupting the slot.
      */
-    setPermissionMode(mode: PermissionMode): void {
+    async setPermissionMode(mode: PermissionMode): Promise<void> {
       if (!isPermissionMode(mode)) {
         return
       }
       this.permissionMode = mode
-      if (this.currentSessionId) {
-        persistPermissionMode(this.currentSessionId, mode)
+      const sessionId = this.currentSessionId
+      if (!sessionId) {
+        return
+      }
+      // localStorage write first — even if the backend POST fails the
+      // offline-boot fall-back still reflects the user's selection on
+      // the next reload, until the session-list payload reconciles it.
+      persistPermissionMode(sessionId, mode)
+      try {
+        await updateSessionPermissionMode(sessionId, mode)
+      } catch (error) {
+        // Graceful degradation: log on the error slot but do NOT roll
+        // back the optimistic local update or the localStorage write.
+        // The next cold load will reconcile against the backend's
+        // canonical value via restoreStateFromBackend.
+        this.error =
+          error instanceof Error
+            ? error.message
+            : 'Failed to update permission mode'
       }
     },
 
     /**
-     * Permission Modes (May 2026) — Slice 2 hydration helper.
+     * Permission Modes (May 2026) — Slice 3 hydration helper.
      *
-     * Called from every session-change entry-point (loadSessionMessages,
-     * newSession, restoreStateFromBackend) to read the per-session
-     * localStorage key and adopt it as the active mode. Fresh sessions
-     * (no key set) fall back to the safe default, matching the backend's
-     * zero-value semantics.
+     * Adopt the per-session mode using the canonical precedence:
+     *   1. Backend payload (`session.permissionMode` from the session
+     *      list / single-session GET / POST response).
+     *   2. localStorage (offline boot fall-back).
+     *   3. Default ("default") — both above absent.
      *
-     * Centralised here so the same hydration rule fires regardless of
-     * which path the user took to land on the session.
+     * `backendValue` is optional so call sites that don't have the
+     * backend payload in hand (legacy code path, transitional callers)
+     * can still trigger localStorage-only hydration by passing
+     * `undefined`. When `backendValue` is one of the four canonical
+     * modes the backend always wins, even when localStorage holds a
+     * different value — the backend is the canonical store and a
+     * stale localStorage entry MUST NOT override a known-fresh
+     * server-side value.
+     *
+     * Called from every session-change entry-point
+     * (loadSessionMessages, newSession, restoreStateFromBackend) so
+     * the same hydration rule fires regardless of which path the user
+     * took to land on the session.
      */
-    hydratePermissionMode(sessionId: string): void {
+    hydratePermissionMode(sessionId: string, backendValue?: string): void {
+      if (backendValue && isPermissionMode(backendValue)) {
+        this.permissionMode = backendValue
+        // Reconcile localStorage so a subsequent offline boot reflects
+        // the backend's view rather than a stale prior selection.
+        persistPermissionMode(sessionId, backendValue)
+        return
+      }
       this.permissionMode = getPersistedPermissionMode(sessionId)
     },
 
@@ -1835,6 +1888,17 @@ export const useChatStore = defineStore('chat', {
         if (session) {
           this.currentModelId = session.currentModelId ?? ''
           this.currentProviderId = session.currentProviderId ?? ''
+        }
+
+        // Permission Modes (May 2026) — Slice 3. resetSessionScopedState
+        // above ran the localStorage-fall-back hydration before the
+        // sessions[] summary was in hand. Override now with the backend
+        // value when it's present so the canonical precedence (backend
+        // > localStorage > default) holds even when localStorage carries
+        // a stale value from a prior write the user later reverted on a
+        // different device.
+        if (session?.permissionMode) {
+          this.hydratePermissionMode(sessionId, session.permissionMode)
         }
 
         const loaded = await fetchSessionMessages(sessionId)

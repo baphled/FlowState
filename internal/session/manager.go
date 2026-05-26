@@ -193,9 +193,17 @@ type Summary struct {
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
 	ActiveTurnID string    `json:"activeTurnId"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
-	MessageCount int       `json:"messageCount"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	// PermissionMode mirrors Session.PermissionMode so the Vue
+	// chatStore can hydrate the chip directly from the session list
+	// on cold load — backend payload is the canonical source per the
+	// Permission Modes plan (May 2026) Slice 3, with localStorage as
+	// the offline boot fall-back only. Omitted when empty so sessions
+	// persisted before the field existed stay byte-identical to their
+	// pre-field summary shape.
+	PermissionMode string `json:"permissionMode,omitempty"`
+	MessageCount   int    `json:"messageCount"`
 }
 
 // Recorder captures stream chunks for session recording.
@@ -838,6 +846,7 @@ func (m *Manager) ListSessions() []*Summary {
 			Title:             deriveSummaryTitle(sess),
 			CreatedAt:         sess.CreatedAt,
 			UpdatedAt:         updatedAt,
+			PermissionMode:    sess.PermissionMode,
 			MessageCount:      len(sess.Messages),
 		})
 	}
@@ -1528,6 +1537,79 @@ func (m *Manager) UpdateSessionModel(sessionID, providerID, modelID string) erro
 
 	sess.CurrentProviderID = providerID
 	sess.CurrentModelID = modelID
+	sessionsDir := m.sessionsDir
+	persistFn := m.persistFn
+	var snapshot *Session
+	if sessionsDir != "" {
+		snap := *sess
+		msgs := make([]Message, len(sess.Messages))
+		copy(msgs, sess.Messages)
+		snap.Messages = msgs
+		snapshot = &snap
+	}
+	m.mu.Unlock()
+
+	if snapshot != nil {
+		fn := persistFn
+		if fn == nil {
+			fn = PersistSession
+		}
+		_ = fn(sessionsDir, snapshot)
+	}
+	return nil
+}
+
+// ErrInvalidPermissionMode is returned by UpdatePermissionMode when the
+// caller-supplied mode is outside the closed vocabulary defined by
+// permissionmode. The handler at the API seam maps this to a 400 so
+// schema-drift (typo, stale client) never silently writes an unknown
+// string onto the session.
+var ErrInvalidPermissionMode = errors.New("invalid permission mode")
+
+// UpdatePermissionMode sets the per-session permission mode and
+// persists the change so a process restart keeps the user's selection.
+//
+// Permission Modes plan (May 2026), §4 Slice 3.
+//
+// Expected:
+//   - sessionID identifies an existing session.
+//   - mode is one of the four canonical permissionmode constants
+//     (ModePlan / ModeDefault / ModeAcceptEdits / ModeYolo). Other
+//     values, including the empty string, are rejected so the
+//     persisted value can never be a non-vocabulary string the
+//     pathguard short-circuit doesn't recognise.
+//
+// Returns:
+//   - nil when the mode is updated successfully.
+//   - ErrSessionNotFound when no session matches the identifier.
+//   - ErrInvalidPermissionMode when mode is outside the vocabulary.
+//
+// Side effects:
+//   - Sets PermissionMode on the in-memory Session so the next
+//     SendMessage's ctx-stamp picks it up (manager.go around the
+//     `permMode := sess.PermissionMode` snapshot inside SendMessage).
+//   - Writes the updated session sidecar via PersistSession so the
+//     selection survives a `flowstate serve` restart.
+func (m *Manager) UpdatePermissionMode(sessionID, mode string) error {
+	switch mode {
+	case permissionmode.ModePlan,
+		permissionmode.ModeDefault,
+		permissionmode.ModeAcceptEdits,
+		permissionmode.ModeYolo:
+		// valid — fall through.
+	default:
+		return ErrInvalidPermissionMode
+	}
+
+	m.mu.Lock()
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrSessionNotFound
+	}
+
+	sess.PermissionMode = mode
+	sess.UpdatedAt = time.Now()
 	sessionsDir := m.sessionsDir
 	persistFn := m.persistFn
 	var snapshot *Session

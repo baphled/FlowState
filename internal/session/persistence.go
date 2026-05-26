@@ -39,8 +39,17 @@ type Metadata struct {
 	// sessions stay byte-identical to their pre-field sidecar shape and a
 	// missing key on load is interpreted as the legacy "no chain in
 	// scope" condition. See Session.ChainID for the full rationale.
-	ChainID  string    `json:"chain_id,omitempty"`
-	Messages []Message `json:"messages,omitempty"`
+	ChainID string `json:"chain_id,omitempty"`
+	// PermissionMode mirrors Session.PermissionMode and surfaces in the
+	// .meta.json sidecar as "permission_mode". Omitted when empty so
+	// legacy sidecars that predate the field (Permission Modes plan
+	// §4 Slice 1 introduced the in-memory field; Slice 3 wires the
+	// sidecar so a POST /permission-mode survives a process restart)
+	// stay byte-identical to their previous shape. A missing key on
+	// load is interpreted as "default" by permissionmode.FromContext.
+	// See Session.PermissionMode for the canonical vocabulary.
+	PermissionMode string    `json:"permission_mode,omitempty"`
+	Messages       []Message `json:"messages,omitempty"`
 }
 
 // PersistSession writes session metadata to a .meta.json file in sessionsDir.
@@ -67,6 +76,7 @@ func PersistSession(sessionsDir string, sess *Session) error {
 		CreatedAt:         sess.CreatedAt,
 		EmbeddingModel:    sess.EmbeddingModel,
 		ChainID:           sess.ChainID,
+		PermissionMode:    sess.PermissionMode,
 		Messages:          sess.Messages,
 	}
 
@@ -164,6 +174,7 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		CreatedAt:         meta.CreatedAt,
 		EmbeddingModel:    meta.EmbeddingModel,
 		ChainID:           meta.ChainID,
+		PermissionMode:    meta.PermissionMode,
 		Messages:          meta.Messages,
 	}, nil
 }
@@ -200,6 +211,7 @@ func loadMetaFile(path string) *Session {
 		CreatedAt:         meta.CreatedAt,
 		EmbeddingModel:    meta.EmbeddingModel,
 		ChainID:           meta.ChainID,
+		PermissionMode:    meta.PermissionMode,
 		Messages:          meta.Messages,
 	}
 }

@@ -264,6 +264,99 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// UpdatePermissionMode + sidecar round-trip — Permission Modes plan
+	// §4 Slice 3 (May 2026). Slice 1 added the in-memory field; Slice 3
+	// adds the manager update entry-point and persists the field to the
+	// .meta.json sidecar so a `flowstate serve` restart preserves the
+	// user's selection. Without sidecar persistence, the chip would
+	// silently snap back to "default" on every reboot.
+	Describe("UpdatePermissionMode", func() {
+		It("returns ErrSessionNotFound when the session id is unknown", func() {
+			err := mgr.UpdatePermissionMode("nope", "yolo")
+			Expect(err).To(MatchError(session.ErrSessionNotFound))
+		})
+
+		It("returns ErrInvalidPermissionMode for a value outside the closed vocabulary", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			err = mgr.UpdatePermissionMode(sess.ID, "eldritch")
+			Expect(err).To(MatchError(session.ErrInvalidPermissionMode))
+		})
+
+		It("returns ErrInvalidPermissionMode for the empty string", func() {
+			// The default constructor stamps "default" — UpdatePermissionMode
+			// MUST reject "" rather than silently revert the persisted
+			// value to the legacy empty-string shape.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			err = mgr.UpdatePermissionMode(sess.ID, "")
+			Expect(err).To(MatchError(session.ErrInvalidPermissionMode))
+		})
+
+		It("updates the in-memory PermissionMode for each canonical value", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			for _, mode := range []string{"plan", "default", "accept_edits", "yolo"} {
+				Expect(mgr.UpdatePermissionMode(sess.ID, mode)).To(Succeed(), mode)
+				loaded, err := mgr.GetSession(sess.ID)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(loaded.PermissionMode).To(Equal(mode))
+			}
+		})
+
+		It("round-trips PermissionMode through the .meta.json sidecar via PersistSession + LoadSessionMetadata", func() {
+			// Configure a sessions dir so UpdatePermissionMode hits the
+			// persistence path. Slice 1 only proved the in-memory JSON
+			// shape; Slice 3 must prove the sidecar surface too so a
+			// restart preserves the user's choice.
+			tmp, err := os.MkdirTemp("", "permission-mode-sidecar-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(tmp) })
+			mgr.SetSessionsDir(tmp)
+
+			// CreateSessionWithDefaults persists synchronously — bare
+			// CreateSession is in-memory-only on the first call (see
+			// memory `project_flowstate_session_create_persistence_asymmetry`).
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.UpdatePermissionMode(sess.ID, "yolo")).To(Succeed())
+
+			// Confirm the sidecar carries the permission_mode key on disk.
+			path := filepath.Join(tmp, sess.ID+".meta.json")
+			raw, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(raw)).To(ContainSubstring(`"permission_mode":"yolo"`),
+				"the .meta.json sidecar must carry permission_mode so a server restart preserves the user's selection")
+
+			// LoadSessionMetadata projects the field back onto Session.
+			loaded, err := session.LoadSessionMetadata(tmp, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.PermissionMode).To(Equal("yolo"))
+		})
+
+		It("omits permission_mode from the sidecar when the field is empty (legacy compat)", func() {
+			// Direct PersistSession with an empty PermissionMode must
+			// preserve the legacy byte-identical shape. A future
+			// LoadSessionMetadata against that sidecar yields "" which
+			// permissionmode.FromContext canonicalises to "default".
+			tmp, err := os.MkdirTemp("", "permission-mode-legacy-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(tmp) })
+
+			legacy := &session.Session{
+				ID:      "legacy-sess",
+				AgentID: "agent-x",
+				Status:  "active",
+			}
+			Expect(session.PersistSession(tmp, legacy)).To(Succeed())
+			raw, err := os.ReadFile(filepath.Join(tmp, "legacy-sess.meta.json"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(raw)).NotTo(ContainSubstring("permission_mode"))
+		})
+	})
+
 	// ChainID stamp — Bug Hunt (May 2026) sibling-confusion fix, cold-reload
 	// hole closure. Today's commit a488b858 closed the live-click sibling-
 	// confusion path on the inline delegation card by carrying the runtime

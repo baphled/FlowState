@@ -35,6 +35,7 @@ import {
   truncateSessionMessages,
   updateSessionAgent,
   updateSessionModel,
+  updateSessionPermissionMode,
 } from '../api'
 import {
   DEFAULT_AGENT_ID,
@@ -140,6 +141,14 @@ vi.mock('../api', () => ({
     createdAt: '',
     updatedAt: '',
   })),
+  // Permission Modes (May 2026) Slice 3 — the chip's network seam.
+  // Default mock resolves with the matching {id, permission_mode}
+  // tuple. Per-test overrides can `mockRejectedValueOnce` to exercise
+  // the graceful-degradation path that preserves the optimistic local
+  // update + the localStorage write.
+  updateSessionPermissionMode: vi.fn((sessionId: string, mode: string) =>
+    Promise.resolve({ id: sessionId, permission_mode: mode }),
+  ),
   fetchModels: vi.fn(() => Promise.resolve([
     { id: 'claude-opus', name: 'Claude Opus', providerId: 'anthropic' },
     { id: 'gpt-4o', name: 'GPT-4o', providerId: 'openai' },
@@ -2559,23 +2568,23 @@ describe('chatStore - permissionMode (Slice 2)', () => {
     expect(store.permissionMode).toBe('default')
   })
 
-  it('setPermissionMode updates state and persists to localStorage keyed by session', () => {
+  it('setPermissionMode updates state and persists to localStorage keyed by session', async () => {
     const store = useChatStore()
     store.currentSessionId = 'session-1'
 
-    store.setPermissionMode('yolo')
+    await store.setPermissionMode('yolo')
 
     expect(store.permissionMode).toBe('yolo')
     expect(window.localStorage.getItem('flowstate.permissionMode.session-1')).toBe('yolo')
   })
 
-  it('setPermissionMode is a no-op when value is not a recognised mode', () => {
+  it('setPermissionMode is a no-op when value is not a recognised mode', async () => {
     const store = useChatStore()
     store.currentSessionId = 'session-1'
     store.permissionMode = 'default'
 
     // @ts-expect-error — exercising the invalid-input guard.
-    store.setPermissionMode('eldritch')
+    await store.setPermissionMode('eldritch')
 
     expect(store.permissionMode).toBe('default')
     // Invalid value must not be persisted — that would silently corrupt
@@ -2632,6 +2641,181 @@ describe('chatStore - permissionMode (Slice 2)', () => {
     // Brand-new session has no persisted entry; hydrate falls back to
     // the safe default rather than carrying YOLO across the gap.
     expect(store.permissionMode).toBe('default')
+  })
+})
+
+describe('chatStore - permissionMode (Slice 3)', () => {
+  // Slice 3 wires the backend POST and pivots hydration so backend
+  // payload > localStorage > default. The Slice 2 block above pins
+  // localStorage-only behaviour for the offline-boot fall-back; this
+  // block layers the network seam on top.
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('setPermissionMode POSTs to /api/v1/sessions/{id}/permission-mode with the new value', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    await store.setPermissionMode('yolo')
+
+    expect(vi.mocked(updateSessionPermissionMode)).toHaveBeenCalledWith(
+      'session-1',
+      'yolo',
+    )
+  })
+
+  it('setPermissionMode does NOT POST when there is no current session id', async () => {
+    const store = useChatStore()
+    store.currentSessionId = null
+
+    await store.setPermissionMode('yolo')
+
+    // The chip is bound to a session; without one we still mutate
+    // in-memory state but never hit the network seam.
+    expect(store.permissionMode).toBe('yolo')
+    expect(vi.mocked(updateSessionPermissionMode)).not.toHaveBeenCalled()
+  })
+
+  it('preserves the optimistic local state + localStorage write when the backend POST fails (graceful degradation)', async () => {
+    vi.mocked(updateSessionPermissionMode).mockRejectedValueOnce(
+      new Error('backend exploded'),
+    )
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    await store.setPermissionMode('yolo')
+
+    // The chip's job is to feel responsive. A transient backend
+    // failure does NOT roll back the optimistic update — the user
+    // sees the new mode immediately and the next cold load
+    // reconciles against the backend's canonical value.
+    expect(store.permissionMode).toBe('yolo')
+    expect(window.localStorage.getItem('flowstate.permissionMode.session-1')).toBe(
+      'yolo',
+    )
+    // The error is surfaced on the standard error slot so any banner
+    // picks it up, but the action does not throw — callers (the chip)
+    // don't need a try/catch.
+    expect(store.error).toContain('backend exploded')
+  })
+
+  it('restoreStateFromBackend prefers the session list\'s permissionMode over a stale localStorage value', async () => {
+    // localStorage holds a stale value from a prior write on this
+    // device; the backend has since been updated (perhaps via
+    // another tab / device) and the canonical truth is "yolo".
+    window.localStorage.setItem('flowstate.permissionMode.session-1', 'plan')
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        permissionMode: 'yolo',
+      },
+    ])
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    // Backend wins — the canonical precedence (backend > localStorage
+    // > default) MUST hold on cold load so a stale offline write can
+    // never override a known-fresh server-side value.
+    expect(store.permissionMode).toBe('yolo')
+    // Reconciliation: localStorage is updated to match so a
+    // subsequent offline boot reflects the backend's view rather
+    // than the now-overridden prior selection.
+    expect(window.localStorage.getItem('flowstate.permissionMode.session-1')).toBe(
+      'yolo',
+    )
+  })
+
+  it('falls back to the localStorage value when the session summary omits permissionMode (legacy session)', async () => {
+    // Legacy session persisted before Slice 1 — the .meta.json
+    // sidecar (and therefore the summary) carries no permission_mode
+    // key. Hydration MUST then read localStorage so the offline-boot
+    // fall-back keeps working until the user explicitly clicks the
+    // chip and writes a fresh value.
+    window.localStorage.setItem('flowstate.permissionMode.session-1', 'accept_edits')
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        // No permissionMode — legacy session.
+      },
+    ])
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.permissionMode).toBe('accept_edits')
+  })
+
+  it('falls back to "default" when neither the summary nor localStorage carries a value', async () => {
+    // Brand-new session on a fresh browser. Both sources are empty,
+    // so the chatStore's safe default takes over.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ])
+    window.localStorage.setItem('chat.currentSessionId', 'session-1')
+
+    const store = useChatStore()
+    await store.restoreStateFromBackend()
+
+    expect(store.permissionMode).toBe('default')
+  })
+
+  it('loadSessionMessages reads permissionMode from the backend summary, overriding stale localStorage', async () => {
+    // The other entry-point for session switching. Symmetric with
+    // restoreStateFromBackend so the canonical precedence holds no
+    // matter how the user lands on the session.
+    window.localStorage.setItem('flowstate.permissionMode.session-1', 'plan')
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-1',
+        agentId: 'agent-1',
+        title: 'Session 1',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        permissionMode: 'accept_edits',
+      },
+    ])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    await store.loadSessionMessages('session-1')
+
+    expect(store.permissionMode).toBe('accept_edits')
   })
 })
 

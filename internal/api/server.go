@@ -784,6 +784,12 @@ func (s *Server) setupRoutes() {
 	s.registerProtected("DELETE /api/v1/sessions/{id}/messages/from/{messageId}", s.handleTruncateMessages)
 	s.registerProtected("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
 	s.registerProtected("PATCH /api/v1/sessions/{id}/model", s.handleUpdateSessionModel)
+	// Permission Modes plan (May 2026) §4 Slice 3 — POST per the
+	// brief; semantically a state replacement (whole body replaces
+	// the prior mode), so POST is acceptable even though the agent
+	// and model adjacent routes use PATCH. The closed vocabulary
+	// keeps validation centralised in session.Manager.UpdatePermissionMode.
+	s.registerProtected("POST /api/v1/sessions/{id}/permission-mode", s.handleUpdateSessionPermissionMode)
 	s.registerProtected("GET /api/v1/tasks", s.handleListTasks)
 	s.registerProtected("GET /api/v1/tasks/{id}", s.handleGetTask)
 	s.registerProtected("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
@@ -2469,6 +2475,72 @@ func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request
 	// limit immediately rather than waiting for the next pre-send.
 	usage := s.contextUsageForSnapshot(&snap)
 	writeJSON(w, NewSessionResponse(&snap, WithContextUsage(usage)))
+}
+
+// permissionModeResponse is the wire shape returned by POST
+// /api/v1/sessions/{id}/permission-mode. Two fields, snake_case
+// permission_mode to mirror the persisted JSON tag on Session and
+// keep the wire shape symmetrical with the inbound request body.
+//
+// Distinct from NewSessionResponse so the chip's write path doesn't
+// need to round-trip the entire message log on every selection — the
+// Vue chatStore only needs the (id, mode) tuple to confirm the write
+// landed. Read-side hydration uses the full SessionResponse via the
+// existing session-returning endpoints (which now carry the
+// permissionMode field after Slice 3).
+type permissionModeResponse struct {
+	ID             string `json:"id"`
+	PermissionMode string `json:"permission_mode"`
+}
+
+// handleUpdateSessionPermissionMode sets the per-session permission
+// mode and persists the change so a process restart preserves the
+// user's selection.
+//
+// Permission Modes plan (May 2026), §4 Slice 3.
+//
+// Expected:
+//   - Request path parameter "id" identifies an existing session.
+//   - Request body is JSON of the form {"mode":"plan|default|accept_edits|yolo"}.
+//
+// Side effects:
+//   - Sets PermissionMode on the session so the next SendMessage's
+//     ctx-stamp picks it up (see SendMessage's permMode snapshot).
+//   - Persists the session sidecar (PersistSession via the manager).
+//   - Writes {id, permission_mode} as JSON on success.
+//   - Returns 400 for an unknown mode (closed vocabulary) or a
+//     malformed body, 404 for an unknown session id, 501 when the
+//     session manager has not been configured.
+func (s *Server) handleUpdateSessionPermissionMode(w http.ResponseWriter, r *http.Request) {
+	if s.sessionManager == nil {
+		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "session id is required", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if err := s.sessionManager.UpdatePermissionMode(id, req.Mode); err != nil {
+		switch {
+		case errors.Is(err, session.ErrInvalidPermissionMode):
+			http.Error(w, "invalid permission mode", http.StatusBadRequest)
+		case errors.Is(err, session.ErrSessionNotFound):
+			http.Error(w, "session not found", http.StatusNotFound)
+		default:
+			http.Error(w, "failed to update permission mode", http.StatusInternalServerError)
+		}
+		return
+	}
+	writeJSON(w, permissionModeResponse{ID: id, PermissionMode: req.Mode})
 }
 
 // compressionConfigResponse is the wire shape for the GET / PATCH
