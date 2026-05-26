@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -969,6 +970,163 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				// Base set inherited: skill_load + todowrite. Plan filter
 				// doesn't strike either because neither is mutating.
 				Expect(names).To(ConsistOf("skill_load", "todowrite"))
+			})
+		})
+
+		// Runtime gate parity — Permission Modes plan Slice 4 follow-up.
+		//
+		// Slice 4 (commit 45efec09) added the Plan-mode filter inside
+		// assembleToolSchemasLocked so the schema advertised to the LLM
+		// excludes the mutating tool set. Live verification with glm-4.6
+		// surfaced the gap: when a permissive provider hallucinates a
+		// `write` tool_use OUTSIDE the advertised schema, the runtime
+		// gate at executeToolCall consulted effectiveAllowedToolsForCtx —
+		// which was mode-blind — and dispatched the call. The file was
+		// written despite Plan mode.
+		//
+		// The fix restores the documented "shared seam == single source
+		// of truth" invariant (engine.go effectiveAllowedToolsForCtx
+		// docstring): the Plan-mode filter must apply at the seam BOTH
+		// surfaces share, so a stray tool_use returns the same tool-not-
+		// found rejection the runtime gate already emits for out-of-
+		// manifest calls (PR7 / Option A). The rejection wraps
+		// tool.ErrToolNotFound and tags IsError so the LLM's tool loop
+		// sees the structured failure and can pivot on the next turn.
+		Context("when Plan-mode ctx reaches executeToolCall with a hallucinated mutating tool", func() {
+			It("rejects the call at the runtime gate without invoking Execute", func() {
+				// Manifest declares the `file` bundle. Under Default mode
+				// the bundle expansion would let executeToolCall dispatch
+				// `write` directly. Under Plan mode the seam must strip
+				// the mutating tools from the allowed set BEFORE the gate
+				// checks the call.
+				manifest := agent.Manifest{
+					ID:   "plan-runtime-gate-agent",
+					Name: "Plan Runtime Gate Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"file"},
+					},
+				}
+
+				// executableMockTool tracks execCalled so the load-bearing
+				// assertion below ("the tool body never ran") can fire.
+				fakeWrite := &executableMockTool{
+					name:        "write",
+					description: "fake write",
+					execResult:  tool.Result{Output: "should never run"},
+				}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				eng := engine.New(engine.Config{
+					Manifest:      manifest,
+					AgentRegistry: agent.NewRegistry(),
+					Registry:      providerReg,
+					ChatProvider:  &mockProvider{name: "spy"},
+				})
+				eng.AddTool(fakeWrite)
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-plan-runtime-gate", &provider.ToolCall{
+					ID:        "call-write-hallucinated",
+					Name:      "write",
+					Arguments: map[string]any{"path": "/tmp/plan-mode-rejected.md", "content": "should not appear"},
+				})
+
+				Expect(err).NotTo(HaveOccurred(),
+					"the gate emits an IsError tool_result, not a Go error — matches the OpenAI Agents SDK ToolNotFoundBehavior=return_error_to_model shape so the LLM's tool loop can self-correct on the next turn")
+				Expect(result.IsError).To(BeTrue(),
+					"the call did not run; the rejection must be tagged IsError so the chunk path stamps role=tool_error and the provider serialiser routes through the failure shape")
+				Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue(),
+					"Plan-mode runtime rejection shares the PR7 Option A sentinel: tool.ErrToolNotFound covers BOTH 'tool absent from registry' and 'tool not available to this agent under the current mode' — callers using errors.Is(tool.ErrToolNotFound) continue to recognise the failure shape")
+				Expect(result.Output).To(ContainSubstring("'write' not available"),
+					"the rejection body must name the rejected tool so the model can reason about which call was refused")
+				Expect(fakeWrite.execCalled).To(BeFalse(),
+					"the load-bearing assertion: the gate must fire BEFORE Execute under Plan mode — the side-effecting tool body must never run for a hallucinated mutating call, which is the scenario the live glm-4.6 probe captured against commit 45efec09")
+			})
+
+			It("permits read-only tools from the same bundle — Plan strips ONLY the mutating subset", func() {
+				// Companion pin: the same manifest under Plan mode must
+				// still let `read` reach Execute. The filter is a strict
+				// subset (MutatingTools), not a wholesale bundle ban.
+				manifest := agent.Manifest{
+					ID:   "plan-read-agent",
+					Name: "Plan Read Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"file"},
+					},
+				}
+
+				fakeRead := &executableMockTool{
+					name:        "read",
+					description: "fake read",
+					execResult:  tool.Result{Output: "read output"},
+				}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				eng := engine.New(engine.Config{
+					Manifest:      manifest,
+					AgentRegistry: agent.NewRegistry(),
+					Registry:      providerReg,
+					ChatProvider:  &mockProvider{name: "spy"},
+				})
+				eng.AddTool(fakeRead)
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-plan-read", &provider.ToolCall{
+					ID:        "call-read-allowed",
+					Name:      "read",
+					Arguments: map[string]any{"path": "/tmp/probe"},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsError).To(BeFalse(),
+					"read is in the file bundle and is not in MutatingTools — Plan mode must not strip it")
+				Expect(fakeRead.execCalled).To(BeTrue(),
+					"the read call must reach Execute — the runtime gate's mode-aware filter is a strict subset, not a bundle-level ban")
+			})
+
+			It("permits the same hallucinated mutating tool under Default mode — proves Plan-mode specificity", func() {
+				// Symmetry pin: without ModePlan in ctx, the same call
+				// shape executes normally. This catches a regression
+				// where the runtime gate accidentally over-filters
+				// regardless of mode.
+				manifest := agent.Manifest{
+					ID:   "default-mutating-agent",
+					Name: "Default Mutating Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"file"},
+					},
+				}
+
+				fakeWrite := &executableMockTool{
+					name:        "write",
+					description: "fake write",
+					execResult:  tool.Result{Output: "write output"},
+				}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				eng := engine.New(engine.Config{
+					Manifest:      manifest,
+					AgentRegistry: agent.NewRegistry(),
+					Registry:      providerReg,
+					ChatProvider:  &mockProvider{name: "spy"},
+				})
+				eng.AddTool(fakeWrite)
+
+				// No mode stamp — FromContext canonicalises to Default.
+				result, err := eng.ExecuteToolCallForTest(context.Background(), "sess-default-write", &provider.ToolCall{
+					ID:        "call-write-default",
+					Name:      "write",
+					Arguments: map[string]any{"path": "/tmp/default-write.md", "content": "ok"},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsError).To(BeFalse(),
+					"Default mode must let `write` through — the gate filter is mode-gated")
+				Expect(fakeWrite.execCalled).To(BeTrue(),
+					"under Default mode the runtime gate must not invoke the Plan-mode filter — write reaches Execute")
 			})
 		})
 

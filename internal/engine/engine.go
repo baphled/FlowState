@@ -2506,25 +2506,90 @@ func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]st
 // the contract "what the LLM sees" == "what the dispatch path will
 // run" as a single source of truth.
 //
+// Permission Modes Slice 4 follow-up: the Plan-mode mutating-tool
+// filter applies HERE rather than at the schema-build call site so
+// both surfaces (schema advertisement and runtime gate) consult an
+// identically filtered allowed-set. Pre-fix the filter lived inside
+// assembleToolSchemasLocked, which left the runtime gate mode-blind:
+// glm-4.6 hallucinated a `write` tool_use outside the advertised
+// schema and the dispatch path executed it because
+// buildAllowedToolSetFor was the only consultation. Routing the Plan-
+// mode subtraction through this seam restores the documented "what
+// the LLM sees" == "what the dispatch path will run" invariant.
+//
 // Expected:
-//   - ctx is a valid context that may carry a boundManifestKey value.
+//   - ctx is a valid context that may carry a boundManifestKey value
+//     and/or a permission-mode value (via WithPermissionMode).
 //
 // Returns:
 //   - A non-nil map of allowed tool names. See buildAllowedToolSetFor
-//     for the full set-construction contract (D1 inherit-by-default
+//     for the base set-construction contract (D1 inherit-by-default
 //     base toolset, bundle alias expansion, MCP server gating,
-//     ToolsDeny subtraction, suggest_delegate escape hatch).
+//     ToolsDeny subtraction, suggest_delegate escape hatch). When
+//     permissionmode.FromContext(ctx) == ModePlan the returned map is
+//     a copy with every tool name in permissionmode.MutatingTools
+//     removed.
 //
 // Side effects:
 //   - None.
 func (e *Engine) effectiveAllowedToolsForCtx(ctx context.Context) map[string]bool {
-	if bound, ok := manifestFromContext(ctx); ok {
-		return e.buildAllowedToolSetFor(bound)
+	if _, ok := manifestFromContext(ctx); ok {
+		// Bound path takes no engine lock — the manifest is carried by
+		// ctx and buildAllowedToolSetFor is pure over its inputs.
+		return e.effectiveAllowedToolsForCtxLocked(ctx)
 	}
 	e.mu.RLock()
-	m := e.manifest
-	e.mu.RUnlock()
-	return e.buildAllowedToolSetFor(m)
+	defer e.mu.RUnlock()
+	return e.effectiveAllowedToolsForCtxLocked(ctx)
+}
+
+// effectiveAllowedToolsForCtxLocked is the lock-free body of
+// effectiveAllowedToolsForCtx. Callers that already hold e.mu (read
+// or write) invoke this directly to avoid the RWMutex non-reentrancy
+// trap — sync.RWMutex does not permit recursive RLock from the same
+// goroutine when a writer is waiting (it can deadlock against itself),
+// and the unbound path in buildToolSchemasCtx holds the write lock
+// when it calls into the schema-build seam. Routing both surfaces
+// through this Locked variant keeps the Plan-mode subtraction at the
+// shared seam without re-entering the engine mutex.
+//
+// Expected:
+//   - e.mu is held by the caller (read or write) when ctx has no
+//     bound manifest. Bound-manifest ctx reads only ctx state and
+//     does not need the engine lock; callers may invoke this with
+//     no lock in that case.
+//   - ctx carries the manifest binding and/or permission mode.
+//
+// Returns:
+//   - Same contract as effectiveAllowedToolsForCtx.
+//
+// Side effects:
+//   - None.
+func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[string]bool {
+	var allowed map[string]bool
+	if bound, ok := manifestFromContext(ctx); ok {
+		allowed = e.buildAllowedToolSetFor(bound)
+	} else {
+		allowed = e.buildAllowedToolSetFor(e.manifest)
+	}
+
+	if permissionmode.FromContext(ctx) != permissionmode.ModePlan {
+		return allowed
+	}
+
+	// Plan-mode: copy-on-write subtract MutatingTools. The map returned
+	// by buildAllowedToolSetFor is a freshly composed value (see
+	// BuildAllowedToolSet) but treating it as caller-owned would invite
+	// future drift if that contract changes; copy defensively so the
+	// Plan path can never poison a sibling Default caller against the
+	// same manifest.
+	filtered := make(map[string]bool, len(allowed))
+	for name, ok := range allowed {
+		if ok && !permissionmode.IsMutating(name) {
+			filtered[name] = true
+		}
+	}
+	return filtered
 }
 
 // sortedKeys returns the keys of a string-keyed set in
@@ -2619,10 +2684,10 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
 	mode := permissionmode.FromContext(ctx)
 
-	if bound, ok := manifestFromContext(ctx); ok {
+	if _, ok := manifestFromContext(ctx); ok {
 		e.mu.RLock()
 		defer e.mu.RUnlock()
-		return e.assembleToolSchemasLocked(bound, mode)
+		return e.assembleToolSchemasLocked(ctx)
 	}
 
 	// Plan-mode bypasses the cache. The cache stores the unfiltered
@@ -2635,7 +2700,7 @@ func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
 	if mode == permissionmode.ModePlan {
 		e.mu.RLock()
 		defer e.mu.RUnlock()
-		return e.assembleToolSchemasLocked(e.manifest, mode)
+		return e.assembleToolSchemasLocked(ctx)
 	}
 
 	e.mu.RLock()
@@ -2653,7 +2718,7 @@ func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
 		return e.cachedToolSchemas
 	}
 
-	tools := e.assembleToolSchemasLocked(e.manifest, mode)
+	tools := e.assembleToolSchemasLocked(ctx)
 	e.cachedToolSchemas = tools
 	return tools
 }
@@ -2664,54 +2729,27 @@ func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
 // sufficient because no engine state is mutated; the unbound path
 // already holds the write lock for cache update).
 //
+// Permission Modes Slice 4 follow-up: this routine no longer carries
+// a Plan-mode parameter. The Plan-mode mutating-tool subtraction was
+// hoisted into effectiveAllowedToolsForCtx so the schema-build path
+// and the runtime tool gate at executeToolCall consult the same
+// filtered allowed-set — restoring the "what the LLM sees" == "what
+// the dispatch path will run" invariant. The mode is still read from
+// ctx by the caller (buildToolSchemasCtx) to drive the cache bypass.
+//
 // Expected:
 //   - e.mu is held (read or write).
-//   - manifest is the manifest to filter the engine's registered
-//     tools against.
-//   - mode is the active permission mode for the call. When equal to
-//     permissionmode.ModePlan, every tool name in
-//     permissionmode.MutatingTools is filtered out of the result —
-//     Plan-mode agents never see the schema for write-like tools and
-//     a stray tool_use returns tool-not-found rather than access-
-//     denied. Any other mode (including the empty string) is treated
-//     as "no Plan filter".
+//   - ctx carries the manifest binding (manifestFromContext) and the
+//     permission mode (permissionmode.FromContext). The seam dispatches
+//     on both.
 //
 // Returns:
 //   - The composed provider tool schemas slice.
 //
 // Side effects:
 //   - None.
-func (e *Engine) assembleToolSchemasLocked(manifest agent.Manifest, mode string) []provider.Tool {
-	allowedSet := e.buildAllowedToolSetFor(manifest)
-
-	// Plan-mode filter: subtract mutating tools from the effective
-	// surface BEFORE schema composition so the LLM never sees them.
-	// When allowedSet is nil (no upstream restriction), synthesise a
-	// deny-only allowedSet keyed on every registered tool name — the
-	// inner loop then short-circuits on the mutating entries.
-	if mode == permissionmode.ModePlan {
-		if allowedSet == nil {
-			synthetic := make(map[string]bool, len(e.tools))
-			for _, t := range e.tools {
-				if !permissionmode.IsMutating(t.Name()) {
-					synthetic[t.Name()] = true
-				}
-			}
-			allowedSet = synthetic
-		} else {
-			// Copy-on-write: the caller's allowedSet may be cached
-			// inside buildAllowedToolSetFor or shared across goroutines.
-			// Mutating it directly would poison sibling callers using
-			// the same manifest under a non-Plan mode.
-			filtered := make(map[string]bool, len(allowedSet))
-			for name, ok := range allowedSet {
-				if ok && !permissionmode.IsMutating(name) {
-					filtered[name] = true
-				}
-			}
-			allowedSet = filtered
-		}
-	}
+func (e *Engine) assembleToolSchemasLocked(ctx context.Context) []provider.Tool {
+	allowedSet := e.effectiveAllowedToolsForCtxLocked(ctx)
 
 	tools := make([]provider.Tool, 0, len(e.tools))
 	for _, t := range e.tools {

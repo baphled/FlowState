@@ -86,11 +86,17 @@ func FromContext(ctx context.Context) Mode {
 }
 
 // MutatingTools is the canonical set of tool names considered mutating
-// for Plan-mode filtering. The engine's schema assembly path
-// (assembleToolSchemasLocked) removes every entry in this set from the
-// per-call tool registry when the active mode is ModePlan, so the LLM
-// never sees the schema and a stray tool_use returns a tool-not-found
-// surface instead of an access-denied surface.
+// for Plan-mode filtering. The engine's shared allowed-set seam
+// (effectiveAllowedToolsForCtx, consulted by BOTH the schema
+// assembly path and the runtime tool gate at executeToolCall) removes
+// every entry in this set from the per-call tool registry when the
+// active mode is ModePlan, so the LLM never sees the schema AND a
+// hallucinated out-of-schema tool_use returns a tool-not-found
+// surface from the runtime gate instead of executing. Slice 4 follow-
+// up: the subtraction was hoisted out of the schema-build call site so
+// the schema-visible surface and the runtime-dispatchable surface
+// stay identical — a permissive provider's hallucinated `write` no
+// longer slips past the dispatch path.
 //
 // The set is enumerated explicitly rather than derived from a tool
 // interface flag because:
