@@ -771,6 +771,98 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// Abandoned-tool status flip (Bug E, May 2026).
+	//
+	// When the accumulator stamps StopReasonAbandonedTool on the
+	// flushed assistant message (accumulator.go:844-849 — content is
+	// whitespace-only, thinking is non-empty, zero tool_calls, zero
+	// delegations: the model committed to a tool call in the reasoning
+	// channel but never emitted it), the session manager must flip the
+	// session's Status from StatusActive to StatusFailed.
+	//
+	// Pre-flip the abandoned-tool turn rendered as a "completed"
+	// session with no deliverable and no soft-error affordance — the
+	// user-facing dogfood blocker (glm-5 plan-writer abandons mid-tool
+	// on large plans; user sees "completed" with no plan and no
+	// signal). Live reproducer — child session
+	// 3fcb56df-8224-485c-9187-2aaad9ed5879 (glm-4.5 executor on zai).
+	//
+	// The flip shares the same status-precedence guards as the
+	// StopReasonStreamTruncated / StopReasonToolUseNoCalls paths:
+	// idempotent on failed, escalates from completed (the seal was
+	// premature), pinned on abandoned (terminal reaped artefact).
+	Describe("appendSessionMessage flips status to failed on StopReasonAbandonedTool", func() {
+		It("flips active -> failed when the assistant message carries StopReasonAbandonedTool", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.Status).To(Equal(string(session.StatusActive)),
+				"new session starts active — the precondition for the failed-flip path")
+
+			// Live-reproducer shape: whitespace content (the accumulator
+			// has already stamped the sentinel by the time this row
+			// reaches the manager).
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "assistant",
+				Content:      "\n",
+				ModelName:    "glm-4.5",
+				ProviderName: "zai",
+				StopReason:   session.StopReasonAbandonedTool,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"abandoned_tool on an assistant message MUST flip the session to failed — "+
+					"the model committed to a tool call in thinking but never emitted it; "+
+					"the failure must surface immediately rather than completing silently")
+		})
+
+		It("does not flip a previously-failed session away from failed (idempotent)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonAbandonedTool,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)))
+
+			// A second event of the same shape is a no-op on status.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonAbandonedTool,
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"the flip is idempotent — repeated abandoned-tool events on a failed session keep it failed")
+		})
+
+		It("does not flip when the assistant message has a real tool_call and a clean stop_reason (regression detector)", func() {
+			// Independence pin: a turn that DID emit a tool_call with a
+			// clean stop_reason must NOT flip. Only the synthetic
+			// sentinel drives the failed-flip path.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "Using the write tool to save the plan.",
+				StopReason: "tool_use",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"a healthy tool_use turn (provider's clean stop_reason, real tool_call upstream) "+
+					"must NOT flip — only the synthetic StopReasonAbandonedTool sentinel does")
+		})
+	})
+
 	Describe("Session hierarchy types", func() {
 		It("exposes parent identifiers on Session", func() {
 			typ := reflect.TypeOf(session.Session{})

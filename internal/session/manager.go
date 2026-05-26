@@ -1115,7 +1115,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		if msg.ProviderName != "" && sess.CurrentProviderID != msg.ProviderName {
 			sess.CurrentProviderID = msg.ProviderName
 		}
-		// Surfaced-failure flip (Bugs F and G, May 2026). When the
+		// Surfaced-failure flip (Bugs E, F and G, May 2026). When the
 		// accumulator stamps a surfaced-failure sentinel on the flushed
 		// assistant message, flip Status active -> failed so the chat UI,
 		// session list, and API expose the failure immediately rather
@@ -1132,6 +1132,15 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		//     plan-writer session 8169ca2d-5536-41af-b947-ba3fd7514416
 		//     on glm-5/zai. The plan was never written; pre-flip the
 		//     session completed silently.
+		//   - StopReasonAbandonedTool (Bug E): whitespace-only content
+		//     with non-empty reasoning and zero tool_calls — model
+		//     committed to a tool call in the thinking channel but never
+		//     emitted it. The accumulator stamps the sentinel at
+		//     accumulator.go:844-849; without this flip the session
+		//     remained "completed" with no deliverable. Live reproducer —
+		//     child session 3fcb56df-8224-485c-9187-2aaad9ed5879 on
+		//     glm-4.5/zai (executor) and glm-5 plan-writer abandons on
+		//     large plans (user-facing dogfood blocker).
 		//
 		// Restricted to the assistant-role branch: a future refactor that
 		// accidentally populates StopReason on a tool_call / tool_result
@@ -1144,7 +1153,9 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		// higher-precedence signal than a (now-known-premature) seal;
 		// abandoned sessions are reaped artefacts that don't accept
 		// further mutations.
-		if (msg.StopReason == StopReasonStreamTruncated || msg.StopReason == StopReasonToolUseNoCalls) &&
+		if (msg.StopReason == StopReasonStreamTruncated ||
+			msg.StopReason == StopReasonToolUseNoCalls ||
+			msg.StopReason == StopReasonAbandonedTool) &&
 			sess.Status != string(StatusFailed) &&
 			sess.Status != string(StatusAbandoned) {
 			sess.Status = string(StatusFailed)
