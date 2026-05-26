@@ -415,3 +415,712 @@ body.carbonyl-mode .message-input-attachment {
   background: var(--bg-primary) !important;
 }
 
+/* ---------------------------------------------------------------- */
+/* C4: MessageBubble card chrome                                    */
+/*                                                                  */
+/* Class names sourced directly from `MessageBubble.vue` — `.message*/
+/* -bubble` is the real wrapper (plan guess correct), with the role */
+/* appended as a second class (`.user`, `.assistant`, `.system`,    */
+/* `.tool_result`, `.tool_error`, `.delegation`, `.delegation_      */
+/* started`). The component reads `--user-bubble` and `--assistant- */
+/* bubble` directly (already overridden in C1) so the fill colours  */
+/* flip automatically; the 1px white border the scoped style sets   */
+/* sample-fragments into dotted noise — we override to 2px solid    */
+/* and differentiate user vs assistant by border-colour instead of  */
+/* relying on the dim navy-vs-black fill contrast (the terminal     */
+/* sampler can't reliably tell #000080 apart from #000000 once the  */
+/* glyph block lands on top).                                       */
+/* ---------------------------------------------------------------- */
+
+/* Base bubble chrome: 2px border, padding tightened so the box still
+   fits inside a Carbonyl row. The component sets `max-width: 85%`,
+   which we leave alone — that's a layout decision, not a render-
+   quality one. */
+body.carbonyl-mode .message-bubble {
+  padding: 0.5rem 0.75rem !important;
+  border-width: 2px !important;
+  border-style: solid !important;
+}
+
+/* User bubble: cyan border so the user's own messages are visually
+   distinct from the assistant's. Navy fill carries via --user-bubble
+   from C1. */
+body.carbonyl-mode .message-bubble.user {
+  border-color: var(--accent) !important;
+  background: var(--user-bubble) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Assistant bubble: white border on black fill. Same fill as the
+   page background, but the 2px white frame draws a clear card edge
+   that the terminal renderer cannot blur. */
+body.carbonyl-mode .message-bubble.assistant {
+  border-color: var(--border) !important;
+  background: var(--assistant-bubble) !important;
+  color: var(--text-primary) !important;
+}
+
+/* System bubble: the scoped style uses `border: 1px dashed` +
+   `opacity: 0.7`. Both are carbonyl-hostile (dashed half-samples to
+   gaps; opacity drops contrast below the legibility floor). Snap to
+   solid yellow border on black, full opacity — yellow is the warning
+   primary so system banners still read as "this is meta, not chat". */
+body.carbonyl-mode .message-bubble.system {
+  border-color: var(--text-secondary) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-secondary) !important;
+  opacity: 1 !important;
+  font-style: normal !important;
+}
+
+/* Failed user-send: replace the muted danger tint with a thick red
+   border so the failure is unmistakable. The `--danger` fallback in
+   the scoped style (#f87171) doesn't map to a primary; the carbonyl
+   override pulls in --error (#ff0000) explicitly. */
+body.carbonyl-mode .message-bubble--failed.message-bubble.user {
+  border-color: var(--error) !important;
+}
+
+/* Tool-result / tool-error / delegation rows: the component
+   deliberately strips chrome here (`background: transparent; border:
+   none`) so the inner ToolError / GenericTool card carries the
+   visual weight. We respect that intent — no border on the outer
+   wrapper. The inner cards pick up generic 2px treatment via the
+   global border-style we're not adding (we'd over-reach the spec).
+   The delegation-card rule below covers the inflight/done cards
+   explicitly. */
+body.carbonyl-mode .message-bubble.tool_result,
+body.carbonyl-mode .message-bubble.tool_error,
+body.carbonyl-mode .message-bubble.delegation,
+body.carbonyl-mode .message-bubble.delegation_started {
+  border: none !important;
+  padding: 0 !important;
+}
+
+/* Delegation cards: the scoped style draws a 1px border + a 2px
+   coloured left bar. The 1px frame fragments; we widen to 2px solid
+   and keep the coloured left bar as a 4px stripe so the delegation
+   accent reads through the carbonyl sampler. */
+body.carbonyl-mode .delegation-card {
+  border: 2px solid var(--border) !important;
+  border-left: 4px solid var(--event-delegation) !important;
+  background: var(--bg-primary) !important;
+  padding: 0.5rem 0.75rem !important;
+}
+body.carbonyl-mode .delegation-card--inflight {
+  border-left-color: var(--accent) !important;
+}
+
+/* Delegation-spinner is a pulsing `⋯` glyph that animates opacity.
+   The animation alone is harmless (no gradient/shadow) but the
+   pulse becomes a flicker once the terminal samples it. Pin to
+   full opacity; the static glyph still reads as "in-flight". */
+body.carbonyl-mode .delegation-spinner {
+  animation: none !important;
+  opacity: 1 !important;
+  color: var(--accent) !important;
+}
+
+/* Delegation-agent-link is a button-shaped link with a dotted under-
+   line. Dotted-underline samples to gaps; replace with solid. */
+body.carbonyl-mode .delegation-agent-link {
+  border-bottom: 1px solid var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* Role label inside the bubble: the scoped style uses --text-muted
+   (grey) for the default and --accent for the user role. C1's
+   palette already lands those on legible primaries — only override
+   if the user variant needs a stronger differentiation. We leave it. */
+
+/* Message-actions toolbar (Regenerate / Revert / Copy chips). The
+   per-button chrome comes from each button's scoped style; the C3
+   button rules cover most cases. The .revert-button is a borderless
+   text-only chip in the original — fine on a pale theme, invisible
+   on black. Give it a 2px outline so the button is locatable. */
+body.carbonyl-mode .revert-button {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0.15rem 0.4rem !important;
+}
+body.carbonyl-mode .revert-button:hover {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--accent) !important;
+}
+
+/* Failed-marker inline label: snap the danger tint to the carbonyl
+   --error primary so the warning glyph + text reads in pure red. */
+body.carbonyl-mode .failed-marker {
+  color: var(--error) !important;
+}
+
+/* Thinking-only / empty-turn affordance: scoped style draws a 1px +
+   3px-left amber frame. Widen to 2px solid amber all-round so the
+   box reads consistently after sampling. */
+body.carbonyl-mode .thinking-only-affordance {
+  border: 2px solid var(--warning) !important;
+  border-left-width: 4px !important;
+  background: var(--bg-primary) !important;
+}
+
+/* The round amber icon-badge in the affordance: the scoped style
+   uses `border-radius: 50%` (the global reset already nils that)
+   plus an amber fill with bg-primary text. Replace the circular
+   chip with a square 2px-outlined badge — same colour vocabulary,
+   carbonyl-safe geometry. */
+body.carbonyl-mode .thinking-only-icon {
+  border: 2px solid var(--warning) !important;
+  background: var(--bg-primary) !important;
+  color: var(--warning) !important;
+  width: 1.5rem !important;
+  height: 1.5rem !important;
+}
+
+/* ---------------------------------------------------------------- */
+/* C5: Sidebars, modals, overlays                                   */
+/*                                                                  */
+/* Class names sourced from each component's <template>:            */
+/*   ToastContainer   → .toast-container, .toast-item,              */
+/*                       .toast-item--{success,error,loading,...}   */
+/*   LoadingOverlay   → .loading-overlay, .loading-wordmark,        */
+/*                       .loading-spinner, .loading-dot             */
+/*   SessionSwitcher  → .session-switcher, .session-dropdown,       */
+/*                       .session-option(.active), .dropdown-       */
+/*                       backdrop                                   */
+/*   SessionBrowser   → .session-browser(-overlay|-content|-header  */
+/*                       |-controls|-body), .session-card(.active), */
+/*                       .search-input, .agent-filter-trigger       */
+/*   FuzzySearchModal → .fuzzy-search-backdrop, .fuzzy-search-modal,*/
+/*                       .fuzzy-search-input, .fuzzy-search-item    */
+/*                       (.--highlighted), .fuzzy-search-group-...  */
+/*   ModelSwitcher    → .model-switcher(-trigger|-dropdown), .model-*/
+/*                       option, .provider-group                    */
+/*   KeyboardHelpModal→ .keyboard-help-overlay, .keyboard-help-     */
+/*                       backdrop, .keyboard-help-panel,            */
+/*                       .keyboard-help-kbd                         */
+/*   ChatView sidebar → .chat-sidebar, .sidebar-panel, .todo-list-  */
+/*                       panel                                      */
+/* ---------------------------------------------------------------- */
+
+/* ----- Loading overlay ------------------------------------------ */
+
+/* The pulsing wordmark + bouncing dots are pure animation. In
+   browser mode the dots help signal "we're alive"; in carbonyl the
+   animation flickers and the wordmark pulse is invisible (every
+   keyframe lands on a primary). Replace with static text. */
+body.carbonyl-mode .loading-wordmark {
+  animation: none !important;
+  border: 2px solid var(--accent) !important;
+  padding: 0.5rem 1rem !important;
+  letter-spacing: 0.1em !important;
+}
+
+/* Replace the bouncing-dots row with static `[...]`. The dots are
+   inline-block elements with their own animations; we hide the
+   originals and synthesise a single bracketed marker on the wrapper. */
+body.carbonyl-mode .loading-dot {
+  display: none !important;
+}
+body.carbonyl-mode .loading-spinner::after {
+  content: '[loading...]';
+  color: var(--text-secondary);
+  letter-spacing: 0.1em;
+}
+
+body.carbonyl-mode .loading-message {
+  color: var(--text-muted) !important;
+}
+
+/* ----- Toast notifications -------------------------------------- */
+
+/* Toast-container sits top-right via Teleport. The wrapper has no
+   chrome; per-item rules below handle the colour swaps. */
+
+/* Toast item base: the scoped style uses a 1px border + drop shadow
+   + rgba severity fills. All three are carbonyl-hostile. Snap to
+   2px solid borders, solid backgrounds, and remove the shadow (the
+   global reset already kills shadow but let's be explicit on the
+   border + bg). */
+body.carbonyl-mode .toast-item {
+  border-width: 2px !important;
+  border-style: solid !important;
+  background: var(--bg-primary) !important;
+  border-color: var(--border) !important;
+  min-width: 320px !important;
+}
+
+/* Severity variants: snap the rgba tints to pure primaries via the
+   --success/--warning/--error vars (already set to pure primaries in
+   C1). Bg stays black; the border carries the severity colour. */
+body.carbonyl-mode .toast-item--success {
+  border-color: var(--success) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .toast-item--error {
+  border-color: var(--error) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .toast-item--loading {
+  border-color: var(--accent) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .toast-item--default {
+  border-color: var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+
+/* Toast title: bright white, no font-weight shenanigans needed. */
+body.carbonyl-mode .toast-title {
+  color: var(--text-primary) !important;
+}
+body.carbonyl-mode .toast-message {
+  color: var(--text-primary) !important;
+}
+
+/* Toast action button: the scoped style draws a 1px accent outline
+   on a transparent bg. Widen to 2px so the chip is locatable. */
+body.carbonyl-mode .toast-action-btn {
+  border: 2px solid var(--accent) !important;
+  background: var(--bg-primary) !important;
+  color: var(--accent) !important;
+  padding: 0.2rem 0.5rem !important;
+}
+body.carbonyl-mode .toast-action-btn:hover {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+}
+
+/* Toast close button: borderless × in the original. Give it a 2px
+   frame so the user can hit the small target. */
+body.carbonyl-mode .toast-close-btn {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0 0.4rem !important;
+  font-size: 1rem !important;
+}
+body.carbonyl-mode .toast-close-btn:hover {
+  background: var(--error) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--error) !important;
+}
+
+/* ----- Modal backdrops ------------------------------------------ */
+
+/* All three modal families (fuzzy-search, keyboard-help, session-
+   browser) drop a semi-transparent rgba(0,0,0,0.6) backdrop. In
+   carbonyl the rgba overlay samples to dithered stippling — replace
+   with solid black. The modal panel sits on top so the user still
+   reads the modal as "elevated" via its bright 2px frame. */
+body.carbonyl-mode .fuzzy-search-backdrop,
+body.carbonyl-mode .keyboard-help-backdrop,
+body.carbonyl-mode .session-browser-overlay {
+  background: var(--bg-primary) !important;
+  /* The global resets nil background-image; explicitly nil the
+     backdrop-filter (blur(2px) in keyboard-help) — it's a no-op in
+     carbonyl but worth being explicit so future readers don't add
+     more blurs assuming they work. */
+  backdrop-filter: none !important;
+}
+
+/* ----- FuzzySearchModal ----------------------------------------- */
+
+/* Modal panel: 2px solid white frame, solid black fill, no rounding
+   (global reset). */
+body.carbonyl-mode .fuzzy-search-modal {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+
+/* Input row: thicker bottom border so the input is visually
+   separated from the result list. */
+body.carbonyl-mode .fuzzy-search-input {
+  background: var(--bg-primary) !important;
+  border-bottom: 2px solid var(--border) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Result item separator: light bottom border so each row is a clear
+   strip. Group headers stay readable via --text-muted. */
+body.carbonyl-mode .fuzzy-search-item {
+  border-bottom: 1px solid var(--border) !important;
+  padding: 0.4rem 0.75rem !important;
+}
+body.carbonyl-mode .fuzzy-search-item:last-child {
+  border-bottom: none !important;
+}
+
+/* Highlighted (keyboard-active or hover) row: cyan bg + black fg.
+   The scoped style already does this via --accent + --bg-primary,
+   which the C1 overrides snap to pure primaries — confirm it sticks
+   even when the hover rule also sets accent (it does, the cascade
+   picks the more specific :hover/--highlighted rule). */
+body.carbonyl-mode .fuzzy-search-item--highlighted,
+body.carbonyl-mode .fuzzy-search-item:hover {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+}
+body.carbonyl-mode .fuzzy-search-item--highlighted .fuzzy-search-item-meta,
+body.carbonyl-mode .fuzzy-search-item:hover .fuzzy-search-item-meta {
+  color: var(--bg-primary) !important;
+  opacity: 1 !important;
+}
+
+/* ----- KeyboardHelpModal ---------------------------------------- */
+
+body.carbonyl-mode .keyboard-help-panel {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .keyboard-help-header {
+  border-bottom: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .keyboard-help-close {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0.15rem 0.4rem !important;
+}
+body.carbonyl-mode .keyboard-help-close:hover {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--accent) !important;
+}
+
+/* The `<kbd>` chips render the shortcut keys. The scoped style does
+   a clever skeuomorphic 3D look via border-bottom-width: 2px. In
+   carbonyl we want uniform 2px on all sides so the chip reads as a
+   square key cap. */
+body.carbonyl-mode .keyboard-help-kbd {
+  border: 2px solid var(--accent) !important;
+  background: var(--bg-primary) !important;
+  color: var(--accent) !important;
+  padding: 0.05rem 0.4rem !important;
+}
+
+/* ----- SessionSwitcher (the dropdown variant) ------------------- */
+
+/* Trigger button: 2px frame so it lines up with the nav buttons. */
+body.carbonyl-mode .session-switcher-trigger {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0.2rem 0.6rem !important;
+}
+body.carbonyl-mode .session-switcher-trigger:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* Background-activity dot: the scoped style uses a glowing orange
+   chip with a box-shadow halo. Replace with a solid square chip in
+   the warning primary; the chip still reads as "something else is
+   running" without the shadow. */
+body.carbonyl-mode .background-activity-dot {
+  background: var(--warning) !important;
+  width: 10px !important;
+  height: 10px !important;
+  animation: none !important;
+}
+
+/* Per-row green pulsing streaming dot: pin to solid green, no
+   animation. */
+body.carbonyl-mode .option-streaming-dot {
+  color: var(--success) !important;
+  animation: none !important;
+}
+
+/* Dropdown frame: 2px white border, solid black bg. */
+body.carbonyl-mode .session-dropdown {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+
+/* Per-option row: clear bottom separator, hover/active flip. */
+body.carbonyl-mode .session-option {
+  border-bottom: 1px solid var(--border) !important;
+  padding: 0.4rem 0.75rem !important;
+}
+body.carbonyl-mode .session-option:last-child {
+  border-bottom: none !important;
+}
+body.carbonyl-mode .session-option:hover {
+  background: var(--bg-primary) !important;
+  color: var(--accent) !important;
+}
+body.carbonyl-mode .session-option.active {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+}
+body.carbonyl-mode .session-option.active .option-title,
+body.carbonyl-mode .session-option.active .option-meta {
+  color: var(--bg-primary) !important;
+}
+
+/* New-session row: emphasise as the primary action. */
+body.carbonyl-mode .session-option.new-session {
+  border-bottom: 2px solid var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* Section divider header: bright yellow text on black. */
+body.carbonyl-mode .session-divider {
+  color: var(--text-secondary) !important;
+  border-top: 2px solid var(--border) !important;
+}
+
+/* Per-row delete button: the original is opacity-revealed-on-hover.
+   In carbonyl opacity transitions don't render — force visible at
+   all times so the user can find the affordance without hover-
+   discovering it. */
+body.carbonyl-mode .option-delete-button {
+  opacity: 1 !important;
+  border: 2px solid var(--border) !important;
+  color: var(--text-primary) !important;
+  background: var(--bg-primary) !important;
+  padding: 0 0.3rem !important;
+}
+body.carbonyl-mode .option-delete-button:hover {
+  background: var(--error) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--error) !important;
+}
+
+/* Confirm strip: the scoped style uses rgba-tinted backgrounds; snap
+   to solid primaries with 2px frames. */
+body.carbonyl-mode .option-delete-cancel,
+body.carbonyl-mode .option-delete-confirm-btn {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+body.carbonyl-mode .option-delete-confirm-btn {
+  border-color: var(--error) !important;
+  background: var(--error) !important;
+  color: var(--bg-primary) !important;
+}
+
+/* Dropdown backdrop is a click-trap div — keep it transparent so the
+   underlying nav is still visible (the dropdown itself draws the
+   chrome). */
+body.carbonyl-mode .dropdown-backdrop {
+  background: transparent !important;
+}
+
+/* ----- SessionBrowser (the modal variant) ----------------------- */
+
+body.carbonyl-mode .session-browser-content {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .session-browser-header {
+  border-bottom: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .session-browser-controls {
+  border-bottom: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+
+/* Search input: 2px frame, solid bg. */
+body.carbonyl-mode .search-input {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+body.carbonyl-mode .search-input:focus {
+  border-color: var(--accent) !important;
+  outline: none !important;
+}
+
+/* Agent-filter trigger button: 2px white frame, hover surfaces cyan
+   border. */
+body.carbonyl-mode .agent-filter-trigger {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+body.carbonyl-mode .agent-filter-trigger:hover,
+body.carbonyl-mode .agent-filter-trigger:focus-visible {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* New-session button in the browser header: solid cyan fill, black
+   text — matches the C2 active-nav pattern. */
+body.carbonyl-mode .new-session-button {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+  border: 2px solid var(--accent) !important;
+  padding: 0.4rem 0.8rem !important;
+  filter: none !important;
+}
+body.carbonyl-mode .new-session-button:hover {
+  background: var(--bg-primary) !important;
+  color: var(--accent) !important;
+}
+
+/* Close-button in the header: tiny X chip. The C3 icon fallback
+   synthesises `[x]` for the embedded close icon, but this surface
+   uses a literal × character in some variants — keep a clear 2px
+   frame either way. */
+body.carbonyl-mode .close-button {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0.15rem 0.5rem !important;
+}
+body.carbonyl-mode .close-button:hover {
+  background: var(--error) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--error) !important;
+}
+
+/* Session-card list rows: 2px white frame, hover surfaces cyan
+   border + a translateY(-1px) lift in the scoped style — we kill
+   the lift (the global transition: none reset already does, but
+   transform isn't a transition so we override explicitly). */
+body.carbonyl-mode .session-card {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  padding: 0.6rem 0.8rem !important;
+}
+body.carbonyl-mode .session-card:hover {
+  border-color: var(--accent) !important;
+  transform: none !important;
+}
+body.carbonyl-mode .session-card.active {
+  border-color: var(--accent) !important;
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+}
+body.carbonyl-mode .session-card.active * {
+  color: var(--bg-primary) !important;
+}
+
+/* ----- ModelSwitcher (the toolbar dropdown) --------------------- */
+
+body.carbonyl-mode .model-switcher-trigger {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0.2rem 0.6rem !important;
+}
+body.carbonyl-mode .model-switcher-trigger:hover {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+body.carbonyl-mode .model-switcher-dropdown {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+
+body.carbonyl-mode .provider-group {
+  border-bottom: 1px solid var(--border) !important;
+}
+body.carbonyl-mode .provider-group:last-child {
+  border-bottom: none !important;
+}
+body.carbonyl-mode .provider-name {
+  color: var(--text-secondary) !important;
+  border-bottom: 1px solid var(--border) !important;
+  padding: 0.3rem 0.75rem !important;
+}
+
+body.carbonyl-mode .model-option {
+  border-bottom: 1px solid var(--border) !important;
+  padding: 0.3rem 0.75rem !important;
+}
+body.carbonyl-mode .model-option:last-child {
+  border-bottom: none !important;
+}
+body.carbonyl-mode .model-option:hover {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+}
+
+/* ----- Right sidebar (TODOS panel) ------------------------------ */
+
+/* Right-side aside, sourced from ChatView.vue. The scoped style for
+   .chat-sidebar lives in ChatView; we apply a 2px left border so
+   the sidebar reads as a separate column from the chat pane. */
+body.carbonyl-mode .chat-sidebar {
+  border-left: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+
+body.carbonyl-mode .sidebar-panel,
+body.carbonyl-mode .todo-list-panel {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  padding: 0.5rem 0.75rem !important;
+}
+
+/* Panel header row inside the sidebar (used by TodoListPanel and
+   ChildSessionsPanel, both use `.panel-header / .panel-title /
+   .panel-counter`). The header sits inside the framed panel, so
+   it needs its own bottom rule to separate from the list rows
+   below. */
+body.carbonyl-mode .panel-header {
+  border-bottom: 1px solid var(--border) !important;
+  padding-bottom: 0.3rem !important;
+  margin-bottom: 0.3rem !important;
+}
+body.carbonyl-mode .panel-title {
+  color: var(--text-secondary) !important;
+  font-weight: 700 !important;
+}
+body.carbonyl-mode .panel-counter {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0 0.3rem !important;
+}
+
+/* Per-todo item: solid status colour, no rounding. The component
+   sets a `.status-icon.status-<state>` chip — we let the colour
+   come from the severity vars (success / warning / accent) and just
+   ensure the row separator reads. */
+body.carbonyl-mode .todo-item {
+  border-bottom: 1px solid var(--border) !important;
+  padding: 0.2rem 0 !important;
+}
+body.carbonyl-mode .todo-item:last-child {
+  border-bottom: none !important;
+}
+body.carbonyl-mode .todo-item.completed {
+  color: var(--text-muted) !important;
+}
+
+/* ChildSessionsPanel entries — same pattern as session-option rows.
+   The component lives under the message-pane, not the right-side
+   sidebar, but it surfaces in the same family ("a list of sessions")
+   so it gets the same treatment for consistency. */
+body.carbonyl-mode .child-sessions-panel {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  padding: 0.4rem 0.6rem !important;
+}
+body.carbonyl-mode .panel-entry {
+  border-bottom: 1px solid var(--border) !important;
+  padding: 0.3rem 0.4rem !important;
+}
+body.carbonyl-mode .panel-entry:last-child {
+  border-bottom: none !important;
+}
+body.carbonyl-mode .panel-entry:hover {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+}
+body.carbonyl-mode .panel-entry.is-streaming {
+  border-left: 4px solid var(--success) !important;
+}
+body.carbonyl-mode .panel-live {
+  color: var(--success) !important;
+  animation: none !important;
+}
+
