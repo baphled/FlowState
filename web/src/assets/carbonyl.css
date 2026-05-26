@@ -1,0 +1,127 @@
+/* FlowState — Carbonyl mode overrides.
+ *
+ * Activated by `body.carbonyl-mode`, which `main.ts` adds when the
+ * Go bridge (`internal/carbonyl/run.go`) appends `?carbonyl=1` to the
+ * SPA URL. Browser-mode (no flag, no class) is completely unaffected.
+ *
+ * Why this file exists: Carbonyl renders the page by sampling each
+ * 1x2 pixel cell down to a terminal glyph. Anti-aliased text, sub-
+ * pixel borders, gradients, soft shadows and rounded corners all
+ * fragment into block-character noise (`▄`, `▀`, dithered greys).
+ * To survive quantization cleanly we need: pure primaries, solid
+ * fills, square corners, no shadows, no gradients, monospace text.
+ *
+ * Strategy: override the theme custom properties at the
+ * `body.carbonyl-mode` level so the existing cascade does almost all
+ * the work — Vue components read `var(--bg-primary)` etc. and
+ * automatically pick up the carbonyl palette without per-component
+ * patches. A small universal-selector reset kills the few properties
+ * (radius, shadow, gradients, transitions) that aren't variable-
+ * driven. C1 covers globals only; per-component tuning (NavBar,
+ * MessageInput, MessageBubble, sidebars) lives in later chunks.
+ */
+
+/* ---------------------------------------------------------------- */
+/* Theme variable overrides                                         */
+/*                                                                  */
+/* All seven `[data-theme]` palettes in `themes.css` share the same */
+/* variable names, so a single `body.carbonyl-mode` override sheet  */
+/* re-skins every theme to the same high-contrast carbonyl palette. */
+/* `body.carbonyl-mode` (class on body) beats `[data-theme]` (attr  */
+/* on <html>) by specificity, so no `!important` is needed here.    */
+/* ---------------------------------------------------------------- */
+
+body.carbonyl-mode {
+  /* Surfaces — all pure black so the terminal grid renders as solid
+     cells with no dithered greys between fills. */
+  --bg-primary: #000000;
+  --bg-secondary: #000000;
+  --bg-elevated: #000000;
+
+  /* Borders — pure white so 1px lines, even when sampled into a
+     terminal cell, fall on a primary that survives quantization. */
+  --border: #ffffff;
+
+  /* Text — white primary on black, yellow for accents, light grey
+     for muted (still inside the 16-colour palette so xterm-256 maps
+     it cleanly). */
+  --text-primary: #ffffff;
+  --text-secondary: #ffff00;
+  --text-muted: #c0c0c0;
+
+  /* Accents — cyan reads as a strong primary in every terminal
+     palette; the hover state stays cyan to avoid a colour shift that
+     would otherwise become a flicker in the terminal sampler. */
+  --accent: #00ffff;
+  --accent-hover: #00ffff;
+
+  /* Bubbles — user gets navy fill, assistant stays black; bordered
+     by white via the `--border` override above. */
+  --user-bubble: #000080;
+  --assistant-bubble: #000000;
+
+  /* Severity / event vars — themes.css uses these in non-bubble UI
+     (status dots, event badges). Snap each to a pure primary so they
+     don't drop to dithered intermediates after carbonyl sampling.
+     Not in the original C1 spec but included to prevent stray off-
+     palette colours leaking through from theme defaults. */
+  --success: #00ff00;
+  --warning: #ffff00;
+  --error: #ff0000;
+  --event-delegation: #00ffff;
+  --event-tool-call: #00ff00;
+  --event-plan: #ffff00;
+  --event-review: #ff00ff;
+
+  /* Geometry — square corners, no shadow. The universal resets
+     below enforce these on hard-coded values too. */
+  --radius: 0px;
+  --shadow: none;
+
+  /* Fonts — collapse the two stacks to a single monospace family so
+     any component reading `var(--font-sans)` directly also gets the
+     terminal-aligned look. The universal `font-family` rule below
+     catches everything else. */
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', monospace;
+  --font-sans: 'JetBrains Mono', 'Cascadia Code', monospace;
+}
+
+/* ---------------------------------------------------------------- */
+/* Global resets                                                    */
+/*                                                                  */
+/* These hit every element to neutralise the carbonyl-hostile       */
+/* styling that components hard-code in scoped styles (radius,      */
+/* shadow, gradient, transition). `!important` is required to beat  */
+/* Vue scoped-style attribute selectors that bake non-variable      */
+/* values directly into rules.                                      */
+/* ---------------------------------------------------------------- */
+
+body.carbonyl-mode *,
+body.carbonyl-mode *::before,
+body.carbonyl-mode *::after {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  transition: none !important;
+  /* Kill gradients — they always quantize to dithered blocks. */
+  background-image: none !important;
+}
+
+/* ---------------------------------------------------------------- */
+/* Monospace typography                                             */
+/*                                                                  */
+/* `font-smoothing: none` disables sub-pixel anti-aliasing; the      */
+/* terminal can only sample a binary "is this pixel on" — smoothed   */
+/* glyphs degrade into block noise. Letter spacing forced to 0 so   */
+/* glyphs land on cell boundaries. `line-height` deliberately left  */
+/* alone — touching it globally breaks bubble layout, per-component */
+/* tuning is a later chunk.                                         */
+/* ---------------------------------------------------------------- */
+
+body.carbonyl-mode,
+body.carbonyl-mode * {
+  font-family: 'JetBrains Mono', 'Cascadia Code', monospace !important;
+  font-size: 14px !important;
+  letter-spacing: 0 !important;
+  -webkit-font-smoothing: none !important;
+}

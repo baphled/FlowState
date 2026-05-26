@@ -4,6 +4,7 @@ import App from './App.vue'
 import router from './router'
 import { useUIStore, detectCarbonylMode } from './stores/uiStore'
 import './assets/themes.css'
+import './assets/carbonyl.css'
 
 const app = createApp(App)
 const pinia = createPinia()
