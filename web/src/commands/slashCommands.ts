@@ -31,7 +31,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     description: "Launch an autoresearch optimisation run interactively",
   },
   {
-    name: "compress",
+    name: "compact",
     description: "Force-compact the current session’s context now",
   },
 ];

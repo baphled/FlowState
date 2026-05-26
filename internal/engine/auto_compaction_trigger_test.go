@@ -498,3 +498,256 @@ var _ = Describe("Engine.buildContextWindow auto-compaction trigger", func() {
 		}).NotTo(Panic())
 	})
 })
+
+// Stage-1 prune pass — OpenCode-shape port (May 2026 /compress→/compact
+// rename bundle). The L2 auto-compactor runs a cheap prune over old
+// tool-result messages BEFORE invoking the LLM summariser; the
+// summariser is the expensive fallback when pruning alone is
+// insufficient to drop below the threshold.
+//
+// These specs pin the behaviour at the engine seam — the same place
+// the existing T10 trigger specs above live — so the prune contract
+// stays auditable next to the trigger it short-circuits.
+//
+// Geometry of the seeded fixture (seedToolWave below):
+//   - 2 leading filler assistant messages (so the slice has more than
+//     just tool-call pairs).
+//   - For each tool name in the slice, one assistant tool_use + one
+//     tool tool_result pair, the tool_result body sized via bodyChars.
+//
+// Sliding-window default is 10 entries. With 2 fillers + 4 tool pairs
+// (= 10 entries) the recent slice contains everything. The tail-guard
+// is counted by TOOL-RESULT messages (1 by default), so it always
+// protects the very last tool_result regardless of how many
+// non-tool messages sit between the tail tool result and the slice
+// end.
+var _ = Describe("Engine auto-compaction Stage-1 prune pass", func() {
+	seedToolWave := func(store *recall.FileContextStore, toolNamePerIdx []string, bodyChars int) {
+		for range 2 {
+			store.Append(provider.Message{Role: "assistant", Content: strings.Repeat("w ", 5)})
+		}
+		for i, name := range toolNamePerIdx {
+			callID := "call-" + name + "-" + string(rune('a'+i))
+			store.Append(provider.Message{
+				Role: "assistant",
+				ToolCalls: []provider.ToolCall{{
+					ID: callID, Name: name, Arguments: map[string]any{},
+				}},
+			})
+			body := strings.Repeat("tok ", bodyChars/4)
+			store.Append(provider.Message{
+				Role:      "tool",
+				Content:   body,
+				ToolCalls: []provider.ToolCall{{ID: callID, Name: name}},
+			})
+		}
+	}
+
+	subscribeOne := func(eng *engine.Engine) (*sync.Mutex, *[]pluginevents.ContextCompactedEventData) {
+		mu := &sync.Mutex{}
+		observed := &[]pluginevents.ContextCompactedEventData{}
+		eng.EventBus().Subscribe(pluginevents.EventContextCompacted, func(evt any) {
+			e, ok := evt.(*pluginevents.ContextCompactedEvent)
+			Expect(ok).To(BeTrue())
+			mu.Lock()
+			*observed = append(*observed, e.Data)
+			mu.Unlock()
+		})
+		return mu, observed
+	}
+
+	It("truncates non-protected tool-result messages above the 2000-char ceiling and stamps the prune count", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
+
+		// 3 tool waves with 4000-char bodies (twice the prune
+		// ceiling). Tail-guard of 1 protects the most recent
+		// tool_result ("edit"). Eligible: bash + read = 2.
+		seedToolWave(store, []string{"bash", "read", "edit"}, 4000)
+
+		mu, observed := subscribeOne(eng)
+
+		_ = eng.BuildContextWindowForTest(context.Background(), "sess-prune-truncate", "next user turn")
+		Eventually(func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(*observed)
+		}, 500*time.Millisecond).Should(Equal(1))
+
+		mu.Lock()
+		got := (*observed)[0]
+		mu.Unlock()
+
+		Expect(got.PrunedToolOutputs).To(Equal(2),
+			"3 oversized tool outputs with tail-guard=1 must yield exactly 2 truncations")
+	})
+
+	It("leaves the trailing tail-guard tool-result untouched even when oversized", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
+
+		// 4 oversized tool waves; tail-guard of 1 protects the
+		// most recent tool ("grep"). Eligible: bash + read + edit.
+		seedToolWave(store, []string{"bash", "read", "edit", "grep"}, 4000)
+
+		mu, observed := subscribeOne(eng)
+		_ = eng.BuildContextWindowForTest(context.Background(), "sess-tail-guard", "next user turn")
+		Eventually(func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(*observed)
+		}, 500*time.Millisecond).Should(Equal(1))
+
+		mu.Lock()
+		got := (*observed)[0]
+		mu.Unlock()
+
+		Expect(got.PrunedToolOutputs).To(Equal(3),
+			"tail-guard=1 must protect exactly the most recent tool-result message")
+	})
+
+	It("skips protected tool names regardless of size", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
+
+		// plan_write at position 0 — eligible by position. Tail-
+		// guard protects only the last tool (edit). plan_write is
+		// protected BY NAME so should NOT be pruned.
+		seedToolWave(store, []string{"plan_write", "bash", "read", "edit"}, 4000)
+
+		mu, observed := subscribeOne(eng)
+		_ = eng.BuildContextWindowForTest(context.Background(), "sess-protected-head", "next user turn")
+		Eventually(func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(*observed)
+		}, 500*time.Millisecond).Should(Equal(1))
+
+		mu.Lock()
+		got := (*observed)[0]
+		mu.Unlock()
+
+		// 4 tools; tail-guard protects "edit"; plan_write at pos 0
+		// is protected by name. Eligible truncations: bash + read = 2.
+		Expect(got.PrunedToolOutputs).To(Equal(2),
+			"plan_write must be protected by name even when position-eligible")
+	})
+
+	It("skips the LLM summariser when pruning alone drops below the threshold", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		// Use the high-budget engine so gate-proximity does NOT
+		// force-fire (which would bypass the prune-only short-
+		// circuit). Threshold 0.05 + a fixture that lands at ~0.08
+		// pre-prune lets the ratio tier alone drive the decision.
+		eng, store := pruneShortCircuitEngine(summariser, 0.05)
+
+		// 4 tool waves with 8000-char bodies = 2000 word-tokens
+		// each. Total fullWindow ≈ 8020 tokens. Against budget
+		// 100000 → ratio 0.080, ratio threshold 0.05 → fires.
+		// Prune saves ~1497 tokens per truncation × 3 truncated =
+		// ~4491 tokens reclaimed. Post-prune ≈ 3529 → ratio 0.035 →
+		// below 0.05 threshold → skip summariser.
+		seedToolWave(store, []string{"bash", "read", "edit", "grep"}, 8000)
+
+		mu, observed := subscribeOne(eng)
+
+		_ = eng.BuildContextWindowForTest(context.Background(), "sess-prune-only", "next user turn")
+		Eventually(func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(*observed)
+		}, 500*time.Millisecond).Should(Equal(1),
+			"the prune-only short-circuit MUST still publish a context-compacted event so observability sees the fire")
+
+		mu.Lock()
+		got := (*observed)[0]
+		mu.Unlock()
+
+		Expect(got.SummaryGenerated).To(BeFalse(),
+			"prune-only short-circuit must not invoke the summariser")
+		Expect(summariser.calls.Load()).To(Equal(int32(0)),
+			"the summariser must not be called when pruning alone reclaimed enough tokens")
+		Expect(got.PrunedToolOutputs).To(BeNumerically(">=", 1),
+			"the event must report the prune count even on the short-circuit path")
+	})
+
+	It("invokes the summariser when pruning alone is insufficient and stamps SummaryGenerated=true", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		// Small-budget engine — prune savings cannot drop the
+		// ratio below the threshold here, so the trigger must
+		// fall through to the summariser.
+		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
+
+		seedToolWave(store, []string{"bash", "read", "edit"}, 4000)
+
+		mu, observed := subscribeOne(eng)
+		_ = eng.BuildContextWindowForTest(context.Background(), "sess-prune-then-summarise", "next user turn")
+		Eventually(func() int {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(*observed)
+		}, 500*time.Millisecond).Should(Equal(1))
+
+		mu.Lock()
+		got := (*observed)[0]
+		mu.Unlock()
+
+		Expect(got.SummaryGenerated).To(BeTrue(),
+			"insufficient prune must fall through to the summariser")
+		Expect(summariser.calls.Load()).To(Equal(int32(1)),
+			"the summariser must fire exactly once on the prune-then-summarise path")
+		Expect(got.PrunedToolOutputs).To(BeNumerically(">=", 1),
+			"the event must surface the prune count even when summarisation also fires")
+	})
+})
+
+// pruneShortCircuitEngine constructs an engine wired with a token
+// counter whose limit is sized so that the seedToolWave fixture's
+// fullWindow ratio lands BETWEEN the threshold and the post-prune
+// figure — i.e. pruning alone is enough to drop below the threshold.
+// Used by the prune-only short-circuit spec.
+//
+// limit=100000 keeps fullWindow utilisation low enough that the
+// gate-proximity force-fire path does NOT trip (which would bypass
+// the prune-only short-circuit). The ratio threshold trigger is the
+// only fire path this fixture exercises.
+//
+// The fullWindow figure is artificially padded by the test fixture
+// (via a heavy assistant prefix) so the ratio against this high
+// budget still crosses the configured threshold.
+func pruneShortCircuitEngine(summariser ctxstore.Summariser, threshold float64) (*engine.Engine, *recall.FileContextStore) {
+	tempDir, err := os.MkdirTemp("", "engine-prune-shortcircuit-*")
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = os.RemoveAll(tempDir) })
+
+	store, err := recall.NewFileContextStore(filepath.Join(tempDir, "context.json"), "test-model")
+	Expect(err).NotTo(HaveOccurred())
+
+	counter := &wordTokenCounter{limit: 100000}
+	compactor := ctxstore.NewAutoCompactor(summariser)
+
+	cfg := ctxstore.DefaultCompressionConfig()
+	cfg.AutoCompaction.Enabled = true
+	cfg.AutoCompaction.Threshold = threshold
+
+	cm := agent.DefaultContextManagement()
+	cm.CompactionThreshold = 0
+
+	manifest := agent.Manifest{
+		ID:                "prune-short-circuit-agent",
+		Name:              "Prune Short-Circuit Agent",
+		Instructions:      agent.Instructions{SystemPrompt: "sys"},
+		ContextManagement: cm,
+	}
+
+	eng := engine.New(engine.Config{
+		ChatProvider:      &t10FakeProvider{},
+		Manifest:          manifest,
+		Store:             store,
+		TokenCounter:      counter,
+		AutoCompactor:     compactor,
+		CompressionConfig: cfg,
+	})
+
+	return eng, store
+}

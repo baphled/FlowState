@@ -5326,7 +5326,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		return ""
 	}
 
-	recent, recentTokens, fire := e.autoCompactionCandidates(manifest, tokenBudget, threshold, forceFire)
+	recent, recentTokens, fullWindowTokens, fire := e.autoCompactionCandidates(manifest, tokenBudget, threshold, forceFire)
 	if !fire {
 		// Below threshold — clear the cross-session pointer as
 		// before. Same per-session-memo retention rationale applies.
@@ -5336,11 +5336,80 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		return ""
 	}
 
+	// Stage-1 prune — the OpenCode-shape port (May 2026 rename
+	// bundle). Before invoking the LLM summariser, truncate old
+	// tool-result outputs to a fixed character ceiling. The prune
+	// pass is the cheap layer that reclaims tokens without paying
+	// for a summariser call; the summariser is the expensive fallback
+	// when pruning alone is insufficient.
+	//
+	// The prune output replaces `recent` for the rest of the trigger:
+	//   - H2 memo hash sees the pruned content (changes invalidate
+	//     prior memo entries — the right behaviour because the
+	//     summariser input is materially different).
+	//   - Summariser, when invoked, consumes the smaller pruned slice
+	//     (cheaper inputs).
+	//
+	// Note the doc-comment lie at autoCompactionCandidates: the
+	// fullWindowTokens it returns is the PRE-prune figure across
+	// e.store.AllMessages(). Pruning only touches Content on
+	// tool-result messages inside `recent`; tool-call args on the
+	// preceding assistant messages are untouched. So subtracting
+	// the prune's tokensSaved from fullWindowTokens yields the
+	// post-prune full-window count without re-iterating the store.
+	prunedRecent, prunedToolOutputs, prunedTokensSaved := pruneOldToolOutputs(recent, e.tokenCounter)
+	recent = prunedRecent
+	recentTokens -= prunedTokensSaved
+	if recentTokens < 0 {
+		recentTokens = 0
+	}
+
+	// Prune-only short-circuit. When the soft-ratio tier fired (NOT
+	// a force-fire path) AND the prune pass reclaimed enough tokens
+	// to drop the post-prune full-window ratio below the threshold,
+	// skip the LLM summariser entirely. Pruning succeeded as the sole
+	// reclaim mechanism; the summariser cost is wasted on this turn.
+	//
+	// The force-fire paths (gate_proximity, model_switch,
+	// tool_result_wave, manual /compact) bypass this short-circuit —
+	// those callers explicitly want a fresh summary regardless of
+	// what pruning saved.
+	if !forceFire && prunedToolOutputs > 0 {
+		postPruneFullWindowTokens := fullWindowTokens - prunedTokensSaved
+		if postPruneFullWindowTokens < 0 {
+			postPruneFullWindowTokens = 0
+		}
+		postPruneRatio := float64(postPruneFullWindowTokens) / float64(tokenBudget)
+		if postPruneRatio <= threshold {
+			// Mirror the !fire branch's bookkeeping: pruning replaced
+			// the summary as the reclaim mechanism on this turn.
+			e.buildStateMu.Lock()
+			e.lastCompactionSummary = nil
+			e.buildStateMu.Unlock()
+			// Publish a no-summary compaction event so observability
+			// surfaces the prune-only fire ("pruned X tool outputs,
+			// no summary needed"). OriginalTokens is the pre-prune
+			// recent-message count so the event's saved-tokens delta
+			// is honest; SummaryTokens is zero because no summary
+			// was generated. The publish helper handles negative-
+			// delta accounting via the existing overhead path.
+			e.publishContextCompactedEvent(sessionID, manifest.ID,
+				recentTokens+prunedTokensSaved, "", 0,
+				ratioOrForceTrigger(forceTrigger),
+				prunedToolOutputs, false)
+			return ""
+		}
+	}
+
 	// H2 memoisation. Hash the cold-range identity; if the session's
 	// stored entry matches AND a summary is cached, reuse that summary
 	// instead of re-invoking the summariser. Per-session keying: a
 	// hash collision between two sessions does not rob session B of
 	// its own ContextCompactedEvent and per-session metrics bump.
+	//
+	// The hash is computed against the PRUNED slice; turns whose
+	// prune decision differs (different size threshold met, different
+	// protected names) produce different hashes and re-fire.
 	currentHash := coldRangeHash(recent)
 	if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
 		return reused
@@ -5384,12 +5453,22 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	// the operator wants. Empty force-trigger means the ratio tier was
 	// the deciding voice; stamp "ratio" so subscribers can distinguish
 	// the soft-heuristic fire from the hard force tiers.
-	trigger := forceTrigger
-	if trigger == "" {
-		trigger = "ratio"
-	}
-	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency, trigger)
+	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency,
+		ratioOrForceTrigger(forceTrigger),
+		prunedToolOutputs, true)
 	return summaryText
+}
+
+// ratioOrForceTrigger maps the maybeAutoCompact-internal forceTrigger
+// string to the closed-vocabulary discriminant stamped on the
+// ContextCompactedEvent. Empty force-trigger means the ratio tier
+// drove the decision; the explicit string preserves the cause
+// attribution operators want.
+func ratioOrForceTrigger(forceTrigger string) string {
+	if forceTrigger == "" {
+		return "ratio"
+	}
+	return forceTrigger
 }
 
 // reuseMemoisedSummary looks up the per-session H2 memo and returns a
@@ -5718,6 +5797,171 @@ func insertBeforeUserTurn(msgs, rehydrated []provider.Message) []provider.Messag
 	return out
 }
 
+// toolOutputPruneCharLimit is the per-tool-result truncation ceiling
+// applied by the Stage-1 prune pass. Tool-result messages whose Content
+// exceeds this length are cut to the limit and stamped with a
+// "[...truncated, N tokens]" sentinel so the remaining context still
+// signals what was there.
+//
+// 2000 chars ≈ 500-700 tokens depending on the counter; the figure is
+// borrowed from OpenCode's pruning policy (port reference: May 2026
+// OpenCode-shape auto-compact rename bundle) and is intentionally
+// generous — the prune pass is the cheap layer that runs BEFORE the
+// LLM summariser, so it errs on the side of preserving signal.
+const toolOutputPruneCharLimit = 2000
+
+// toolOutputPruneTailGuard is the count of trailing tool-RESULT
+// messages the Stage-1 prune pass leaves untouched (counted by
+// tool-result message, not by raw slice index). The model's live
+// work happens at the tail of the sliding window; pruning the most
+// recent tool outputs would defeat the point of having them in
+// context at all.
+//
+// 1 is conservative: only the most recent tool-result message is
+// guaranteed to stay intact. Anything older is fair game for the
+// size + name gates. The figure can grow if observability shows the
+// model losing context on the second-most-recent tool result;
+// growing it must come with a behaviour pin in
+// auto_compaction_trigger_test.go.
+const toolOutputPruneTailGuard = 1
+
+// protectedCompactionToolNames is the closed set of tool names whose
+// outputs the Stage-1 prune pass MUST leave intact even when they
+// exceed toolOutputPruneCharLimit. These are tools whose results are
+// load-bearing for downstream agents or for plan correctness — a
+// truncated plan_write return, for example, drops the persisted plan
+// ID downstream readers need.
+//
+// Option (b) (per the May 2026 rename brief) — protect by tool name
+// list. The simpler choice over a `Tool.PreserveOnCompact() bool`
+// interface marker because:
+//   - The set is small and stable (the load-bearing tools are well
+//     known).
+//   - Adding the marker to the Tool interface would touch every tool
+//     implementation in the registry; a name list keeps the policy
+//     in one place at the prune site.
+//   - The tool-result message ALREADY carries the originating
+//     tool name via ToolCalls[0].Name (see engine/tool_call_test.go
+//     L1181) so the lookup is a pure read against existing data.
+//
+// Subscribers who want a more flexible protection rule can grow this
+// into a Tool-interface marker later without changing the prune
+// surface — this name set then becomes the default for tools that
+// did not opt in.
+var protectedCompactionToolNames = map[string]struct{}{
+	"plan_write":         {},
+	"coordination_store": {},
+	"recall_search":      {},
+	"question_request":   {},
+}
+
+// pruneOldToolOutputs runs the Stage-1 prune pass over the cold-range
+// slice that the L2 auto-compactor is about to summarise. Tool-result
+// messages whose Content exceeds toolOutputPruneCharLimit are
+// truncated to that ceiling and stamped with a token-count sentinel.
+//
+// Tail-guard: the last toolOutputPruneTailGuard TOOL-RESULT messages
+// are left untouched (counted by tool-result, NOT by raw slice
+// index — the live work tail may be assistant/user messages between
+// tool calls and a fixed slice-index guard would protect the wrong
+// rows). The most recent tool result is the live one the model is
+// mid-reasoning over; truncating it defeats the prune's "cheap
+// pre-summary reclaim" rationale.
+//
+// Name-guard: tool-result messages whose originating tool name is in
+// protectedCompactionToolNames are left intact regardless of size —
+// their content is load-bearing for downstream agents.
+//
+// The returned slice is a fresh copy; the input is NOT mutated. That
+// means the H2 memoisation hash naturally distinguishes a turn that
+// was pruned from one that was not (the pruned Content bytes differ),
+// preserving the H2 invariant that identical inputs reuse the cached
+// summary and changed inputs re-fire.
+//
+// Expected:
+//   - recent is the cold-range slice from autoCompactionCandidates.
+//   - counter is the engine's TokenCounter; used to estimate the
+//     dropped-token figure for the sentinel and the tokensSaved
+//     return.
+//
+// Returns:
+//   - out: the pruned copy (same length, same order; only Content of
+//     eligible tool-result messages changes).
+//   - prunedCount: how many messages had their Content truncated.
+//   - tokensSaved: estimated token reclaim from the prune pass; sum
+//     across all truncated messages of (original-tokens - kept-tokens).
+//
+// Side effects:
+//   - None. Pure function (does not touch the engine, store, or bus).
+func pruneOldToolOutputs(recent []provider.Message, counter ctxstore.TokenCounter) ([]provider.Message, int, int) {
+	if len(recent) == 0 {
+		return recent, 0, 0
+	}
+	out := make([]provider.Message, len(recent))
+	copy(out, recent)
+	if counter == nil {
+		return out, 0, 0
+	}
+	// First pass: count tool-result messages and identify the index
+	// of the toolOutputPruneTailGuard-th most recent tool result.
+	// Everything at or after this index is guarded. Iterate from the
+	// end so we can stop as soon as the guard quota is filled.
+	guardStopIndex := len(out)
+	{
+		seen := 0
+		for i := len(out) - 1; i >= 0; i-- {
+			if out[i].Role != "tool" {
+				continue
+			}
+			seen++
+			if seen >= toolOutputPruneTailGuard {
+				guardStopIndex = i
+				break
+			}
+		}
+	}
+
+	var (
+		prunedCount int
+		tokensSaved int
+	)
+	for i := 0; i < guardStopIndex; i++ {
+		m := &out[i]
+		if m.Role != "tool" {
+			continue
+		}
+		if len(m.Content) <= toolOutputPruneCharLimit {
+			continue
+		}
+		// Name-guard: read the originating tool name from the
+		// tool-result message's own ToolCalls slice. The engine
+		// stamps the name at construction time (see
+		// internal/engine/tool_call_test.go L1181 for the
+		// invariant); a tool-result message without a ToolCalls
+		// entry is unusual but treated as "unknown" — fall through
+		// to the size guard rather than crashing.
+		if len(m.ToolCalls) > 0 {
+			if _, protected := protectedCompactionToolNames[m.ToolCalls[0].Name]; protected {
+				continue
+			}
+		}
+		originalTokens := counter.Count(m.Content)
+		truncated := m.Content[:toolOutputPruneCharLimit]
+		droppedTokens := counter.Count(m.Content[toolOutputPruneCharLimit:])
+		m.Content = truncated + fmt.Sprintf("\n[...truncated, %d tokens]", droppedTokens)
+		keptTokens := counter.Count(m.Content)
+		prunedCount++
+		tokensSaved += originalTokens - keptTokens
+		if tokensSaved < 0 {
+			// Defensive: sentinel inflation must never report
+			// negative savings. Zero is the honest figure when the
+			// truncated form costs more tokens than the original.
+			tokensSaved = 0
+		}
+	}
+	return out, prunedCount, tokensSaved
+}
+
 // coldRangeHash produces a deterministic SHA-256 of the given message
 // slice in a form that distinguishes any semantic change: role,
 // content, ModelID, tool-call IDs, and tool-call arguments all
@@ -5844,26 +6088,32 @@ func (e *Engine) autoCompactionThreshold(manifest *agent.Manifest, tokenBudget i
 // Returns:
 //   - recent: the recent-message slice counted against the budget.
 //   - recentTokens: sum of token counts for those messages.
+//   - fullWindowTokens: token count across e.store.AllMessages() (the
+//     scope the chip and the proactive gate use). Returned regardless
+//     of fire so the Stage-1 prune pass in maybeAutoCompact can
+//     re-check the ratio after truncating tool outputs without
+//     re-iterating the store. Zero when forceFire short-circuits the
+//     full-window count.
 //   - fire: true when (ratio > threshold OR forceFire) and there is
 //     content to summarise; false when compaction should be skipped.
 //
 // Side effects:
 //   - None.
-func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, bool) {
+func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, int, bool) {
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
 		slidingWindowSize = 10
 	}
 	recent := e.store.GetRecent(slidingWindowSize)
 	if len(recent) == 0 {
-		return nil, 0, false
+		return nil, 0, 0, false
 	}
 	var recentTokens int
 	for i := range recent {
 		recentTokens += e.tokenCounter.Count(recent[i].Content)
 	}
 	if forceFire {
-		return recent, recentTokens, true
+		return recent, recentTokens, 0, true
 	}
 	// Bug Hunt (May 2026) — soft trigger measures the FULL persisted
 	// window, not the sliding-window subset. Pre-fix the ratio
@@ -5903,9 +6153,9 @@ func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget 
 	}
 	ratio := float64(fullWindowTokens) / float64(tokenBudget)
 	if ratio <= threshold {
-		return nil, 0, false
+		return nil, 0, fullWindowTokens, false
 	}
-	return recent, recentTokens, true
+	return recent, recentTokens, fullWindowTokens, true
 }
 
 // shouldAutoCompactForGate reports whether the proactive saturation
@@ -6460,14 +6710,25 @@ func preferredProviderModel(manifest *agent.Manifest) (string, string) {
 //   - sessionID and agentID identify the emission source.
 //   - recentTokens is the pre-compaction token count the summary replaces.
 //   - summaryText is the final "[auto-compacted summary]: <json>" string
-//     injected into the built window.
-//   - latency is the wall-clock duration of the Compact call.
+//     injected into the built window. Empty when summaryGenerated is
+//     false (the Stage-1 prune-only short-circuit) — summaryTokens
+//     then evaluates to 0 and the delta accounting reports the prune
+//     reclaim as raw savings.
+//   - latency is the wall-clock duration of the Compact call. Zero on
+//     the prune-only short-circuit path (no LLM call was made).
 //   - trigger is the closed-vocabulary discriminant identifying the
 //     fire path. Empty is tolerated for forward-compatibility.
+//   - prunedToolOutputs is the count of tool-result messages whose
+//     Content the Stage-1 prune pass truncated on this turn. Zero is
+//     the honest figure for fires that did not benefit from pruning
+//     (no eligible messages or all protected by name).
+//   - summaryGenerated is true when the LLM summariser was invoked
+//     and produced summaryText; false when pruning alone reclaimed
+//     enough tokens to drop below the threshold.
 //
 // Side effects:
 //   - Publishes one event on the engine bus if non-nil; otherwise no-op.
-func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration, trigger string) {
+func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration, trigger string, prunedToolOutputs int, summaryGenerated bool) {
 	summaryTokens := e.tokenCounter.Count(summaryText)
 	delta := recentTokens - summaryTokens
 	if e.compressionMetrics != nil {
@@ -6503,12 +6764,14 @@ func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentT
 		return
 	}
 	e.bus.Publish(events.EventContextCompacted, events.NewContextCompactedEvent(events.ContextCompactedEventData{
-		SessionID:      sessionID,
-		AgentID:        agentID,
-		OriginalTokens: recentTokens,
-		SummaryTokens:  summaryTokens,
-		LatencyMS:      latency.Milliseconds(),
-		Trigger:        trigger,
+		SessionID:         sessionID,
+		AgentID:           agentID,
+		OriginalTokens:    recentTokens,
+		SummaryTokens:     summaryTokens,
+		LatencyMS:         latency.Milliseconds(),
+		Trigger:           trigger,
+		PrunedToolOutputs: prunedToolOutputs,
+		SummaryGenerated:  summaryGenerated,
 	}))
 }
 

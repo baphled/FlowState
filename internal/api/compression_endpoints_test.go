@@ -184,7 +184,7 @@ var _ = Describe("Compression endpoints", func() {
 		})
 	})
 
-	Describe("POST /api/v1/sessions/{id}/compress", func() {
+	Describe("POST /api/v1/sessions/{id}/compact", func() {
 		It("invokes CompactNow on the wired controller and surfaces the fire/no-fire signal", func() {
 			fake := &fakeCompactionController{
 				compactNowSummary: "[auto-compacted summary]: {\"intent\":\"x\"}",
@@ -192,7 +192,7 @@ var _ = Describe("Compression endpoints", func() {
 			}
 			server := newCompressionTestServer(fake)
 
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/abc/compress", http.NoBody)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/abc/compact", http.NoBody)
 			recorder := httptest.NewRecorder()
 			server.Handler().ServeHTTP(recorder, req)
 
@@ -213,7 +213,7 @@ var _ = Describe("Compression endpoints", func() {
 			fake := &fakeCompactionController{compactNowFired: false}
 			server := newCompressionTestServer(fake)
 
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/empty/compress", http.NoBody)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/empty/compact", http.NoBody)
 			recorder := httptest.NewRecorder()
 			server.Handler().ServeHTTP(recorder, req)
 
@@ -232,11 +232,33 @@ var _ = Describe("Compression endpoints", func() {
 			disc := discovery.NewAgentDiscovery(nil)
 			server := api.NewServer(nil, registry, disc, nil)
 
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/x/compress", http.NoBody)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/x/compact", http.NoBody)
 			recorder := httptest.NewRecorder()
 			server.Handler().ServeHTTP(recorder, req)
 
 			Expect(recorder.Code).To(Equal(http.StatusNotImplemented))
+		})
+
+		It("does NOT route the legacy /compress URL to CompactNow — hard rename, no alias", func() {
+			fake := &fakeCompactionController{compactNowFired: true}
+			server := newCompressionTestServer(fake)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/abc/compress", http.NoBody)
+			recorder := httptest.NewRecorder()
+			server.Handler().ServeHTTP(recorder, req)
+
+			// Go's enhanced ServeMux returns 405 (method not
+			// allowed) for an unmatched method on a registered
+			// path-shape AND 404 for an entirely unknown path.
+			// The behaviour we care about is: NOT 200 and the
+			// controller never sees the call — the rename
+			// truly broke the legacy URL.
+			Expect(recorder.Code).NotTo(Equal(http.StatusOK),
+				"legacy /compress path must NOT serve 200 OK after the rename")
+			Expect(recorder.Code).To(BeNumerically(">=", 400),
+				"legacy /compress path must return a 4xx error after the rename")
+			Expect(fake.calls()).To(BeEmpty(),
+				"legacy URL must not reach the controller")
 		})
 	})
 })

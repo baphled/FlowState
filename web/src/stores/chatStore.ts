@@ -2822,7 +2822,7 @@ export const useChatStore = defineStore('chat', {
       }
       const attachmentIds = options?.attachmentIds ?? []
       // UI Parity PR2 B4 (May 2026) — prompt history for ArrowUp recall.
-      // Record every non-empty send (including /compress and queued
+      // Record every non-empty send (including /compact and queued
       // prompts) onto the ring buffer so the composer's history walk
       // reaches the canonical list of what the user actually submitted.
       // Dedup against the most recent entry — re-running the same prompt
@@ -2831,11 +2831,12 @@ export const useChatStore = defineStore('chat', {
       // Deliverable 3 (May 2026 context-accuracy bundle) — slash
       // commands that are handled entirely client-side must
       // short-circuit BEFORE the optimistic-bubble push so the
-      // composer does not leak a "/compress" user message into the
-      // transcript. Only /compress currently uses this path; future
-      // client-handled commands would join the if-chain here.
-      if (text === '/compress') {
-        await this.compressCurrentSession()
+      // composer does not leak a "/compact" user message into the
+      // transcript. Only /compact (renamed from /compress in the
+      // May 2026 OpenCode-shape rename) currently uses this path;
+      // future client-handled commands would join the if-chain here.
+      if (text === '/compact') {
+        await this.compactCurrentSession()
         return
       }
       // Pre-fix this branch silently early-returned when isLoading was true.
@@ -4303,10 +4304,11 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * compressCurrentSession is the action behind the /compress slash
-     * command (Deliverable 3 of the May 2026 context-accuracy
+     * compactCurrentSession is the action behind the /compact slash
+     * command (renamed from /compress in the May 2026 OpenCode-shape
+     * rename — was Deliverable 3 of the May 2026 context-accuracy
      * bundle). Force-fires the engine's L2 auto-compactor against the
-     * current session via POST /api/v1/sessions/{id}/compress.
+     * current session via POST /api/v1/sessions/{id}/compact.
      *
      * Branches on the server's `fired` discriminant for the toast
      * copy:
@@ -4320,14 +4322,14 @@ export const useChatStore = defineStore('chat', {
      *     than appearing to do nothing).
      *
      * Errors are caught and surfaced as a toast so the slash command
-     * never propagates a rejection back into the composer — a /compress
+     * never propagates a rejection back into the composer — a /compact
      * failure should not put the chat input into an error state.
      *
      * No-op when no session is currently active (the user has not
      * created or selected one yet); silent rather than toast-warning
      * because the precondition is obvious in the UI.
      */
-    async compressCurrentSession(): Promise<void> {
+    async compactCurrentSession(): Promise<void> {
       const sessionId = this.currentSessionId
       if (!sessionId) {
         return
@@ -4336,7 +4338,7 @@ export const useChatStore = defineStore('chat', {
         const result = await compactSessionNow(sessionId)
         if (result.fired) {
           showToast({
-            title: 'Compressed',
+            title: 'Compacted',
             message: 'Context compacted.',
             variant: 'default',
             duration: 4000,

@@ -307,8 +307,9 @@ func WithContextUsageProvider(p ContextUsageProvider) ServerOption {
 // CompactionController is the engine-side surface the compression
 // config + manual-compact endpoints call into. Deliverable 2 + 3 of
 // the May 2026 context-accuracy bundle: operators want a runtime-
-// tunable soft threshold AND a /compress slash command that bypasses
-// every guard and force-fires the L2 compactor on the current session.
+// tunable soft threshold AND a /compact slash command (renamed from
+// /compress in May 2026) that bypasses every guard and force-fires
+// the L2 compactor on the current session.
 //
 // Production wires (*engine.Engine) — see engine.SetAutoCompactionThreshold,
 // engine.AutoCompactionThreshold, engine.CompactNow. The api layer
@@ -334,7 +335,7 @@ type CompactionController interface {
 
 // WithCompactionController installs the engine-side controller for
 // the compression endpoints. Without this option the server returns
-// 501 on /api/v1/config/compression and /api/v1/sessions/{id}/compress
+// 501 on /api/v1/config/compression and /api/v1/sessions/{id}/compact
 // — operators see "wired but disabled" rather than a 404 confusion.
 func WithCompactionController(c CompactionController) ServerOption {
 	return func(s *Server) { s.compactionController = c }
@@ -801,11 +802,18 @@ func (s *Server) setupRoutes() {
 	s.registerProtected("GET /api/swarm/events", s.handleSwarmEvents)
 
 	// Deliverable 2 / 3 of the May 2026 context-accuracy bundle —
-	// runtime-tunable compression threshold + manual /compress
+	// runtime-tunable compression threshold + manual /compact
 	// endpoint. Session-scoped mutations → protected.
+	//
+	// The slash command was renamed from /compress to /compact (May
+	// 2026 OpenCode-shape rename); the path mirrors the user-facing
+	// command. The config endpoint stays at /api/v1/config/compression
+	// because its field naming (CompressionConfig.threshold) is wider
+	// than the slash command — a config-endpoint rename is a separate
+	// migration.
 	s.registerProtected("GET /api/v1/config/compression", s.handleGetCompressionConfig)
 	s.registerProtected("PATCH /api/v1/config/compression", s.handleUpdateCompressionConfig)
-	s.registerProtected("POST /api/v1/sessions/{id}/compress", s.handleCompactNow)
+	s.registerProtected("POST /api/v1/sessions/{id}/compact", s.handleCompactNow)
 	// Chat Attachments Backend PR1 — plan "Chat Attachments Backend
 	// (May 2026)" §6 task-03. Session-scoped upload + retrieval →
 	// protected.
@@ -2617,9 +2625,9 @@ func (s *Server) handleUpdateCompressionConfig(w http.ResponseWriter, r *http.Re
 }
 
 // compactNowResponse is the wire shape returned by POST
-// /api/v1/sessions/{id}/compress. Carries the fired discriminant
+// /api/v1/sessions/{id}/compact. Carries the fired discriminant
 // (true iff the compactor produced a non-empty summary) and the
-// summary text on a fire. The Vue UI's `/compress` slash command
+// summary text on a fire. The Vue UI's `/compact` slash command
 // branches on fired to choose between the "compacted X→Y" confirmation
 // toast and the "nothing to compact" empty-state toast.
 type compactNowResponse struct {
@@ -2627,8 +2635,9 @@ type compactNowResponse struct {
 	Summary string `json:"summary,omitempty"`
 }
 
-// handleCompactNow is the api seam for the /compress slash command
-// and the SettingsView's "compact now" button. Routes through the
+// handleCompactNow is the api seam for the /compact slash command
+// (renamed from /compress in the May 2026 OpenCode-shape rename) and
+// the SettingsView's "compact now" button. Routes through the
 // CompactionController so the engine's locking discipline and the
 // ContextCompactedEvent bus emission stay on the engine side.
 //

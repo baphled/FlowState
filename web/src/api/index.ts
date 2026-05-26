@@ -940,8 +940,9 @@ export async function updateCompressionThreshold(
 }
 
 // Deliverable 3 — CompactNowResult is the wire shape returned by
-// POST /api/v1/sessions/{id}/compress. `fired` is the discriminant
-// the /compress slash command branches on for its toast copy:
+// POST /api/v1/sessions/{id}/compact (renamed from /compress in the
+// May 2026 OpenCode-shape rename). `fired` is the discriminant the
+// /compact slash command branches on for its toast copy:
 //   - fired=true  → "compacted (saved ~X tokens)"
 //   - fired=false → "nothing to compact"
 // Summary is the JSON-encoded summary text when fired=true; absent
@@ -961,7 +962,7 @@ export async function compactSessionNow(
   sessionId: string,
 ): Promise<CompactNowResult> {
   const url = joinBaseURL(
-    `/v1/sessions/${encodeURIComponent(sessionId)}/compress`,
+    `/v1/sessions/${encodeURIComponent(sessionId)}/compact`,
   );
   const res = await fetch(url, {
     method: "POST",

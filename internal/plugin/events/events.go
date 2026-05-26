@@ -1460,6 +1460,29 @@ type ContextCompactedEventData struct {
 	// (defence in depth — historical events that pre-date the field
 	// remain decodable) but is never produced by current emit sites.
 	Trigger string
+	// PrunedToolOutputs counts how many tool-result messages had their
+	// Content truncated by the Stage-1 prune pass (OpenCode-shape
+	// auto-compact, May 2026 rename bundle). The prune pass runs
+	// BEFORE the LLM summariser inside maybeAutoCompact and reclaims
+	// tokens from old, large tool outputs cheaply; pruning alone may
+	// be sufficient to drop below the threshold, in which case the
+	// summariser is skipped and SummaryGenerated is false.
+	//
+	// Zero is the default for events emitted before the prune stage
+	// landed AND for fires where no tool-result message was eligible
+	// for pruning (all under the 2000-char ceiling, or all protected
+	// by name). Subscribers MUST tolerate zero — defence in depth.
+	PrunedToolOutputs int
+	// SummaryGenerated is true when the LLM summariser was actually
+	// invoked on this compaction, false when the Stage-1 prune pass
+	// alone reclaimed enough tokens to drop below the threshold and
+	// the summariser was skipped. The chip / observability surface
+	// can branch on this to show "pruned X tool outputs, no summary
+	// needed" vs "pruned + summarised". Always true on the manual
+	// /compact and force-fire paths (gate_proximity, model_switch,
+	// tool_result_wave) because those bypass the ratio gate and want
+	// a fresh summary regardless of pruning savings.
+	SummaryGenerated bool
 }
 
 // ContextCompactedEvent is published when auto-compaction produces a
