@@ -847,35 +847,67 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 		strings.TrimSpace(msg.Content) == "" {
 		msg.StopReason = StopReasonAbandonedTool
 	}
-	// Tool-use-no-calls detector (Bug G, May 2026). When the upstream
-	// stop_reason is "tool_use" AND the turn produced NO tool_call AND
-	// NO delegation, the provider violated its own wire contract — the
-	// "tool_use" finish_reason claims a tool_call block will accompany
-	// the message, and zero such blocks landed. The accumulator stamps
+	// Tool-use-no-calls detector (Bug G, May 2026; predicate widened
+	// May 2026 after the dogfood session 32ab2e60-a69d-4bfc-9f64-1d5ae0734b39
+	// repro). When the upstream stop_reason is "tool_use" on a
+	// flushContent-emitted assistant message, the provider violated its
+	// own wire contract — the "tool_use" finish_reason claims a
+	// tool_call block will accompany the message and zero such blocks
+	// landed on THIS message. The accumulator stamps
 	// StopReasonToolUseNoCalls so the session manager's status-flip
 	// path marks the session failed and the chat UI / audit can flag
 	// the contract violation rather than rendering a silent "completed"
 	// bubble whose content body only announced intent.
 	//
+	// Predicate scope is message-local, not turn-local. The original
+	// gating also required `!s.turnHadToolCall && !s.turnHadDelegation`,
+	// which silently excused a contract violation on the FINAL response
+	// of any turn that had performed earlier tool-call or delegation
+	// work. Dogfood session 32ab2e60 caught the planner-on-glm-5 path
+	// where an earlier @plan-writer delegation succeeded, then the
+	// wrap-up assistant message emitted stop_reason="tool_use" with
+	// zero tool_call blocks — the over-narrow turn-scope check skipped
+	// the detector and the user saw status=active on a malformed final
+	// response. The wire contract is per-message: the assistant message
+	// carrying stop_reason="tool_use" must itself be accompanied by a
+	// tool_call block. Earlier tool-call or delegation activity is
+	// orthogonal and does not excuse a broken final response.
+	//
+	// By construction, a flushContent-emitted assistant message never
+	// carries inline tool_call data — Message.ToolCalls is a count summary
+	// and is always zero when flushContent builds msg above. Tool calls
+	// are persisted as separate Role:"tool_call" messages emitted by
+	// applyToolCall, which calls flushContent FIRST with a still-empty
+	// turnStopReason — so a healthy turn (content → tool_call →
+	// stop_reason → Done) flushes the content message with StopReason=""
+	// at applyToolCall time and the Done-time flushContent on an empty
+	// buffer is a no-op. The "tool_use" stop_reason only lands on a
+	// persisted assistant message when it arrived before any subsequent
+	// tool_call — which IS the contract-violation shape.
+	//
 	// Ordering: this guard fires AFTER FabricatedCompletion and
 	// AbandonedTool because their signatures are more specific
 	// (self-reported file-op phrases or whitespace-only content with
-	// thinking) and SHOULD claim ownership on overlap. The
+	// thinking) and SHOULD claim ownership on overlap. Both stamp a
+	// non-"tool_use" StopReason before this guard, so the literal
+	// match below naturally yields ownership to them. The
 	// StreamTruncated detector below predicates on `msg.StopReason ==
-	// ""` so it is naturally mutually exclusive with this guard, which
-	// requires `msg.StopReason == "tool_use"`. Independence preserved
-	// across the four sentinels: each owns a distinct stop_reason key.
+	// ""` so it is naturally mutually exclusive with this guard.
+	// Independence preserved across the four sentinels: each owns a
+	// distinct stop_reason key.
 	//
-	// Live reproducer: session 8169ca2d-5536-41af-b947-ba3fd7514416 —
-	// plan-writer agent on glm-5/zai. Final assistant Content="Now I'll
-	// generate the full plan. Let me compose the Expanded OMO plan
-	// document:" (88 chars), ToolCalls=0, upstream stop_reason
-	// "tool_use". The plan was never written; pre-detector the session
-	// completed silently and the user had no signal that the plan-
-	// writer dispatch failed the provider contract.
-	if msg.StopReason == "tool_use" &&
-		!s.turnHadToolCall &&
-		!s.turnHadDelegation {
+	// Live reproducers:
+	//   - session 8169ca2d-5536-41af-b947-ba3fd7514416 (original Bug G,
+	//     no prior tool work this turn) — plan-writer agent on glm-5/zai
+	//     emitted Content="Now I'll generate the full plan..." with
+	//     stop_reason="tool_use" and zero tool_calls.
+	//   - session 32ab2e60-a69d-4bfc-9f64-1d5ae0734b39 (predicate-widen
+	//     repro, turn HAD earlier delegations) — planner agent on glm-5
+	//     delegated to plan-reviewer + plan-writer earlier in the turn,
+	//     then its wrap-up message emitted stop_reason="tool_use" with
+	//     toolCalls=None. The over-narrow turn-scope gate skipped the
+	//     detector and the session stayed active.
+	if msg.StopReason == "tool_use" {
 		msg.StopReason = StopReasonToolUseNoCalls
 	}
 	// Stream-truncation detector (Bug F, May 2026). When a content-bearing

@@ -2481,6 +2481,144 @@ var _ = Describe("AccumulateStream", func() {
 			})
 		})
 
+		// Predicate-widen positives (May 2026, dogfood session
+		// 32ab2e60-a69d-4bfc-9f64-1d5ae0734b39). The original Bug G
+		// predicate also required `!s.turnHadToolCall &&
+		// !s.turnHadDelegation`, which silently excused a contract
+		// violation on the FINAL response of any turn that had earlier
+		// tool-call or delegation activity. The wire contract is per-
+		// message: the assistant message carrying stop_reason="tool_use"
+		// must itself be accompanied by a tool_call block. Earlier
+		// in-turn tool work does not honour the contract on a later
+		// content-only response.
+		Context("predicate is message-scoped, not turn-scoped", func() {
+			It("stamps StopReasonToolUseNoCalls when an EARLIER delegation succeeded but the FINAL response has stop_reason=tool_use and zero tool_call blocks", func() {
+				// Dogfood reproducer session 32ab2e60 — planner agent
+				// on glm-5/zai delegated to plan-writer earlier in the
+				// turn, then its wrap-up assistant message emitted
+				// stop_reason="tool_use" with toolCalls=None. The pre-
+				// widen predicate read turnHadDelegation=true and
+				// skipped the detector; the user saw status=active on
+				// a malformed final response.
+				rawCh := make(chan provider.StreamChunk, 8)
+				// Earlier in the turn: announce + dispatch a delegation.
+				rawCh <- provider.StreamChunk{
+					Content:    "Delegating to plan-writer to apply the nits.",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-32ab2e60",
+						TargetAgent: "plan-writer",
+						Status:      "started",
+					},
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-32ab2e60",
+						TargetAgent: "plan-writer",
+						Status:      "completed",
+					},
+					ProviderID: "zai",
+				}
+				// Final assistant message — wrap-up prose, no tool_call,
+				// upstream still emits stop_reason="tool_use".
+				rawCh <- provider.StreamChunk{
+					Content:    "Good, I have the full plan. Now I'll apply all five nits systematically...",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				// The final assistant message — the wrap-up "Good, I
+				// have the full plan..." prose — must carry the
+				// contract-violation stamp. The earlier announce-prose
+				// message (flushed at applyDelegation time) flushed
+				// before turnStopReason was set, so it carries
+				// StopReason="" and is unaffected.
+				Expect(assistantMsgs).NotTo(BeEmpty(),
+					"the wrap-up assistant message must be persisted so the detector has a "+
+						"message to annotate")
+				final := assistantMsgs[len(assistantMsgs)-1]
+				Expect(final.Content).To(ContainSubstring("Good, I have the full plan"),
+					"the final assistant content message is the one carrying stop_reason='tool_use'")
+				Expect(final.StopReason).To(Equal(session.StopReasonToolUseNoCalls),
+					"the wire contract is per-message: an earlier successful delegation does NOT "+
+						"excuse a final response that claims stop_reason='tool_use' with zero "+
+						"accompanying tool_call blocks — dogfood session 32ab2e60 lived because the "+
+						"old predicate read turnHadDelegation=true and skipped this case")
+			})
+
+			It("stamps StopReasonToolUseNoCalls when an EARLIER tool_call fired but the FINAL response has stop_reason=tool_use and zero tool_call blocks", func() {
+				// Same shape as the delegation case but with a real
+				// tool_call earlier in the turn rather than a
+				// delegation. The pre-widen predicate read
+				// turnHadToolCall=true and skipped the detector.
+				rawCh := make(chan provider.StreamChunk, 8)
+				// Earlier in the turn: announce + execute a real tool_call.
+				rawCh <- provider.StreamChunk{
+					Content:    "Let me check the file first.",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					ToolCall: &provider.ToolCall{
+						ID:        "tc-read-earlier",
+						Name:      "read",
+						Arguments: map[string]any{"path": "/tmp/x"},
+					},
+					ProviderID: "zai",
+				}
+				// Final assistant message — wrap-up prose, no further
+				// tool_call, upstream still emits stop_reason="tool_use".
+				rawCh <- provider.StreamChunk{
+					Content:    "Now I'll write the result. Let me compose the output:",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).NotTo(BeEmpty())
+				final := assistantMsgs[len(assistantMsgs)-1]
+				Expect(final.Content).To(ContainSubstring("Now I'll write the result"),
+					"the final assistant content message is the one carrying stop_reason='tool_use'")
+				Expect(final.StopReason).To(Equal(session.StopReasonToolUseNoCalls),
+					"the wire contract is per-message: an earlier successful tool_call does NOT "+
+						"excuse a final response that claims stop_reason='tool_use' with zero "+
+						"accompanying tool_call blocks; the predicate must be message-scoped")
+			})
+		})
+
 		Context("negatives — the detector must not fire on legitimate or differently-shaped turns", func() {
 			It("does NOT stamp StopReasonToolUseNoCalls when a real tool_call accompanied the tool_use stop_reason", func() {
 				// The happy path: stop_reason="tool_use" alongside a real
@@ -2556,47 +2694,6 @@ var _ = Describe("AccumulateStream", func() {
 				Expect(assistantMsgs[0].StopReason).NotTo(Equal(session.StopReasonToolUseNoCalls),
 					"end_turn with no tool_call is the normal happy path for a text answer — "+
 						"the detector MUST NOT fire here")
-			})
-
-			It("does NOT stamp StopReasonToolUseNoCalls when stop_reason is tool_use accompanied by a delegation", func() {
-				// A delegation is a structured tool-call equivalent —
-				// the turn's deliverable. The detector reads
-				// turnHadDelegation as well as turnHadToolCall.
-				rawCh := make(chan provider.StreamChunk, 5)
-				rawCh <- provider.StreamChunk{
-					Content:    "Delegating to the worker.",
-					ProviderID: "zai",
-				}
-				rawCh <- provider.StreamChunk{
-					DelegationInfo: &provider.DelegationInfo{
-						ChainID:     "chain-g",
-						TargetAgent: "Worker",
-						Status:      "started",
-					},
-					ProviderID: "zai",
-				}
-				rawCh <- provider.StreamChunk{
-					EventType:  "stop_reason",
-					StopReason: "tool_use",
-					ProviderID: "zai",
-				}
-				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
-				close(rawCh)
-
-				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
-				drainChannel(out)
-
-				var assistantMsgs []session.Message
-				for _, m := range appender.messages {
-					if m.Role == "assistant" {
-						assistantMsgs = append(assistantMsgs, m)
-					}
-				}
-				for _, m := range assistantMsgs {
-					Expect(m.StopReason).NotTo(Equal(session.StopReasonToolUseNoCalls),
-						"a delegation is structured tool-call evidence — the detector MUST NOT "+
-							"false-flag delegation turns regardless of upstream stop_reason")
-				}
 			})
 
 			It("does NOT clobber StopReasonAbandonedTool when content is whitespace-only with thinking and stop_reason is tool_use", func() {
