@@ -1125,7 +1125,16 @@ type toolPipelineResult struct {
 func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	mcpMgr := mcpclient.NewManager()
 	todoStore := todotool.NewMemoryStore()
-	appTools := toolset.BuildAppTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation())
+	// Pre-existing wiring bug surfaced by live verification of the
+	// Plan-mode output-dir slice (cbe4464e): the main engine's seed
+	// tool slice was constructed without a pathguard, so every
+	// pathguard.CheckForTool overlay (permissions.yaml Slices A+B+C,
+	// Plan-mode output-dir Slice 1) was silently inactive for the
+	// default-assistant session. Threading the guard through
+	// BuildAppTools closes the gap so the main engine and the
+	// per-manifest delegate engines both call into the same Guard.
+	guard := buildPathGuardFromConfig(cfg)
+	appTools := toolset.BuildAppTools(skill.NewFileSkillLoader(cfg.SkillDir), todoStore, cfg.ResolvedPlanLocation(), guard)
 	allServers := appmcp.MergeServers(cfg.MCPServers, config.DiscoverMCPServers())
 	mcpTools, results, serverToolNames := ConnectMCPServers(context.Background(), mcpMgr, allServers)
 	appTools = append(appTools, mcpTools...)
@@ -2717,9 +2726,41 @@ func (a *App) DisconnectAll() error {
 //     startup. Missing files are already (nil, nil) from LoadPermissions
 //     so no warning is emitted in that path.
 func (a *App) buildPathGuard() *pathguard.Guard {
+	return buildPathGuardFromConfig(a.Config)
+}
+
+// buildPathGuardFromConfig is the config-only twin of App.buildPathGuard.
+// It is invoked from buildToolPipeline (a free function constructed
+// before the App struct exists) so the main engine's seed tool slice
+// — bash, read, write — can be threaded through the same pathguard
+// the per-manifest factory at App.buildToolsForManifestWithStore uses.
+//
+// Without this seam BuildAppTools constructed guard-less tool
+// instances and the main engine's pathguard overlay (permissions.yaml
+// Slices A+B+C, Plan-mode output-dir Slice 1) was silently bypassed
+// for the default-assistant session — proved in cbe4464e live probe
+// where t.guard == nil at write.Execute. The body is the prior
+// App.buildPathGuard body verbatim apart from reading cfg instead of
+// a.Config; the App method now delegates here so both call sites
+// drift in lockstep.
+//
+// Expected:
+//   - cfg may be nil (tests / boot-time pre-config paths). A nil cfg
+//     yields a fully permissive guard.
+//
+// Returns:
+//   - A *pathguard.Guard composed from the vault deny-root, the
+//     permissions.yaml matcher (when present), and the Plan-mode
+//     output-dir overlay (when configured).
+//
+// Side effects:
+//   - May emit slog.Warn on permissions.yaml load failure and
+//     slog.Info on Plan-mode bootstrap. Identical to the prior
+//     App.buildPathGuard side effects.
+func buildPathGuardFromConfig(cfg *config.AppConfig) *pathguard.Guard {
 	var denied []string
-	if a.Config != nil && a.Config.VaultPath != "" {
-		denied = append(denied, a.Config.VaultPath)
+	if cfg != nil && cfg.VaultPath != "" {
+		denied = append(denied, cfg.VaultPath)
 	}
 
 	permsPath := filepath.Join(config.Dir(), "permissions.yaml")

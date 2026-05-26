@@ -1,6 +1,10 @@
 package toolset_test
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -8,6 +12,7 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/tool/toolset"
 )
@@ -17,7 +22,7 @@ var _ = Describe("BuildAppTools", func() {
 		loader := skill.NewFileSkillLoader("")
 		todos := todotool.NewMemoryStore()
 
-		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans")
+		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", nil)
 
 		Expect(tools).To(HaveLen(9))
 		names := make([]string, 0, len(tools))
@@ -35,6 +40,118 @@ var _ = Describe("BuildAppTools", func() {
 			"plan_list",
 			"plan_read",
 		}))
+	})
+
+	// Pre-existing wiring bug surfaced by live verification of cbe4464e:
+	// BuildAppTools constructed write.New() / read.New() / bash.New()
+	// with no pathguard, leaving the main engine's mutating-FS tools
+	// silently un-guarded. The default-assistant session's pathguard
+	// overlay (Plan-mode + permissions.yaml) was never reached because
+	// CheckForTool is called from each tool's Execute only when
+	// t.guard != nil. The fix threads a pathguard.Guard through
+	// BuildAppTools so the wired tool instances honour pathguard
+	// decisions end-to-end.
+	Context("when a pathguard.Guard is supplied", func() {
+		var (
+			deniedRoot string
+			deniedPath string
+			ctx        context.Context
+		)
+
+		BeforeEach(func() {
+			var err error
+			deniedRoot, err = os.MkdirTemp("", "buildapptools-guard-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(deniedRoot) })
+			deniedPath = filepath.Join(deniedRoot, "escape.md")
+			ctx = context.Background()
+		})
+
+		It("returns a write tool that DENIES writes under a guarded root", func() {
+			loader := skill.NewFileSkillLoader("")
+			todos := todotool.NewMemoryStore()
+			guard := pathguard.New([]string{deniedRoot})
+
+			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard)
+
+			var writeTool tool.Tool
+			for _, t := range tools {
+				if t.Name() == "write" {
+					writeTool = t
+					break
+				}
+			}
+			Expect(writeTool).NotTo(BeNil(), "write tool must be present in BuildAppTools slice")
+
+			result, err := writeTool.Execute(ctx, tool.Input{
+				Name: "write",
+				Arguments: map[string]interface{}{
+					"path":    deniedPath,
+					"content": "bypass attempt",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred(), "pathguard denied root should block the write")
+			_, statErr := os.Stat(deniedPath)
+			Expect(os.IsNotExist(statErr)).To(BeTrue(), "no file should have been created on disk")
+		})
+
+		It("returns a read tool that DENIES reads under a guarded root", func() {
+			// Seed a file under the denied root so a guard-less read
+			// would succeed — proving the guard is the reason the
+			// read is rejected, not absence of the file.
+			Expect(os.WriteFile(deniedPath, []byte("sentinel"), 0o600)).To(Succeed())
+
+			loader := skill.NewFileSkillLoader("")
+			todos := todotool.NewMemoryStore()
+			guard := pathguard.New([]string{deniedRoot})
+
+			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard)
+
+			var readTool tool.Tool
+			for _, t := range tools {
+				if t.Name() == "read" {
+					readTool = t
+					break
+				}
+			}
+			Expect(readTool).NotTo(BeNil(), "read tool must be present in BuildAppTools slice")
+
+			result, err := readTool.Execute(ctx, tool.Input{
+				Name: "read",
+				Arguments: map[string]interface{}{
+					"path": deniedPath,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred(), "pathguard denied root should block the read")
+		})
+
+		It("returns a bash tool that DENIES commands referencing a guarded root", func() {
+			loader := skill.NewFileSkillLoader("")
+			todos := todotool.NewMemoryStore()
+			guard := pathguard.New([]string{deniedRoot})
+
+			tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", guard)
+
+			var bashTool tool.Tool
+			for _, t := range tools {
+				if t.Name() == "bash" {
+					bashTool = t
+					break
+				}
+			}
+			Expect(bashTool).NotTo(BeNil(), "bash tool must be present in BuildAppTools slice")
+
+			result, err := bashTool.Execute(ctx, tool.Input{
+				Name: "bash",
+				Arguments: map[string]interface{}{
+					"command": "cat " + deniedPath,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).To(HaveOccurred(), "pathguard denied root should block bash referencing it")
+		})
 	})
 })
 

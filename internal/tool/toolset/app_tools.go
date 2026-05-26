@@ -9,6 +9,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/bash"
 	toolmemory "github.com/baphled/flowstate/internal/tool/memory"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 	"github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
 	toolrecall "github.com/baphled/flowstate/internal/tool/recall"
@@ -38,11 +39,29 @@ const DefaultVaultCollection = "flowstate-vault"
 // Both todo tools share a single todoStore so todo_update patches the same
 // per-session list that todowrite creates.
 //
+// When guard is non-nil, the three mutating-filesystem tools in this
+// base slice (bash, read, write) are constructed via NewWithGuard so
+// the main engine's per-call dispatch routes through
+// pathguard.Guard.CheckForTool. Without this wiring the main engine
+// dispatched guard-less tool instances and silently bypassed the
+// permissions.yaml overlay (Slices A+B+C) AND the Plan-mode
+// output-dir overlay (Slice 1, cbe4464e) — the engine schema filter
+// closed the LLM-visible surface for Plan mode, but a permissive
+// provider that emitted an out-of-schema tool call would land on
+// guard-less Execute and the file write would succeed. Mirrors the
+// per-manifest tool factory at app.buildToolsForManifestWithStore so
+// both engines (main + delegate) honour the same pathguard
+// decisions. A nil guard preserves the legacy fully-permissive
+// behaviour for tests and other call sites that explicitly do not
+// want pathguard enforcement.
+//
 // Expected:
 //   - skillLoader is the FileSkillLoader used by the skill_load tool.
 //   - todoStore backs both the todowrite and todo_update tools.
 //   - plansDir is the resolved plan directory; an empty string is
 //     permitted for tests that do not exercise the plan tools.
+//   - guard, when non-nil, is wired into bash/read/write so
+//     CheckForTool fires on every Execute. May be nil.
 //
 // Returns:
 //   - The base tool slice; the caller appends domain tools and registers
@@ -50,11 +69,25 @@ const DefaultVaultCollection = "flowstate-vault"
 //
 // Side effects:
 //   - None.
-func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store, plansDir string) []tool.Tool {
+func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store, plansDir string, guard *pathguard.Guard) []tool.Tool {
+	var (
+		bashTool  tool.Tool
+		readTool  tool.Tool
+		writeTool tool.Tool
+	)
+	if guard != nil {
+		bashTool = bash.NewWithGuard(guard)
+		readTool = read.NewWithGuard(guard)
+		writeTool = write.NewWithGuard(guard)
+	} else {
+		bashTool = bash.New()
+		readTool = read.New()
+		writeTool = write.New()
+	}
 	return []tool.Tool{
-		bash.New(),
-		read.New(),
-		write.New(),
+		bashTool,
+		readTool,
+		writeTool,
 		web.New(),
 		skilltool.New(skillLoader),
 		todotool.New(todoStore),
