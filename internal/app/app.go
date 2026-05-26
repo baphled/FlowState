@@ -2736,7 +2736,19 @@ func (a *App) buildPathGuard() *pathguard.Guard {
 		// own warning for the latter). Preserve the legacy code path.
 		return pathguard.New(denied)
 	}
-	return pathguard.NewWithPermissions(denied, perms)
+
+	// Plan-Mode Output Directory plan §3 Slice 1: route the
+	// operator's configured plan_output_dir through to the pathguard
+	// overlay so Plan-mode write/edit/multiedit/apply_patch calls
+	// are scoped to that directory. Loud-disclosure log surfaces the
+	// constraint on the bash-stays-filtered limitation at startup
+	// (the Vue chip popover surface is deferred to Slice 2).
+	if perms.PlanOutputDir != "" {
+		slog.Info("Plan mode: bash filtered at schema, file tools restricted to plan_output_dir",
+			"plan_output_dir", perms.PlanOutputDir,
+		)
+	}
+	return pathguard.NewWithPermissionsAndPlanOutputDir(denied, perms, perms.PlanOutputDir)
 }
 
 // buildToolsSetup creates a tool registry and permission handler for the engine.

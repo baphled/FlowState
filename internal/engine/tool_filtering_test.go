@@ -738,15 +738,29 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 		})
 	})
 
-	// Plan-mode schema filter — Permission Modes plan (May 2026) §4 Slice 4.
+	// Plan-mode schema filter — Permission Modes plan (May 2026) §4 Slice 4,
+	// revised by Plan-Mode Output Directory plan (May 2026) §3 Slice 1.
+	//
 	// When the active permission mode is "plan", the engine subtracts the
-	// canonical mutating-tool set (permissionmode.MutatingTools) from the
-	// per-call schema BEFORE the LLM sees it. A stray tool_use therefore
-	// returns the tool-not-found surface, not the access-denied surface.
+	// canonical strip set (permissionmode.PlanModeStrippedTools = {bash})
+	// from the per-call schema BEFORE the LLM sees it. The four
+	// remaining mutating tools (write/edit/multiedit/apply_patch) STAY
+	// in the schema and are path-scoped at the pathguard layer to the
+	// operator's plan_output_dir — so the LLM can still emit Plan-mode
+	// writes scoped to the configured plan-output directory while bash
+	// (which has no path-scoping option) returns tool-not-found.
 	Describe("Plan-mode schema filter", func() {
 		var (
 			planAllTools     []tool.Tool
-			mutatingToolNames = []string{"bash", "write", "edit", "multiedit", "apply_patch"}
+			// strippedToolNames are removed entirely from the schema under Plan mode.
+			strippedToolNames = []string{"bash"}
+			// planScopedToolNames REMAIN in the schema under Plan mode and
+			// are path-scoped at pathguard runtime.
+			planScopedToolNames = []string{"write", "edit", "multiedit", "apply_patch"}
+			// allMutatingToolNames is the legacy union used by Default/Yolo
+			// mode assertions that still require every mutating tool to
+			// surface in the schema.
+			allMutatingToolNames = []string{"bash", "write", "edit", "multiedit", "apply_patch"}
 		)
 
 		BeforeEach(func() {
@@ -771,7 +785,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 		})
 
 		Context("when ctx carries ModePlan", func() {
-			It("filters bash/write/edit/multiedit/apply_patch out of the assembled schemas", func() {
+			It("filters bash out of the schema but KEEPS write/edit/multiedit/apply_patch (path-scoped at pathguard)", func() {
 				manifest := agent.Manifest{
 					ID:   "plan-agent",
 					Name: "Plan Agent",
@@ -798,20 +812,62 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(chatProvider.capturedRequest).NotTo(BeNil())
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				for _, mutator := range mutatingToolNames {
-					Expect(names).NotTo(ContainElement(mutator),
-						"Plan mode must filter %q out of the schema", mutator)
+				// bash has no path-scoping option (the shell can do
+				// anything) so Plan mode strips it from the schema
+				// entirely. Plan-Mode Output Directory §3 Slice 1.
+				for _, stripped := range strippedToolNames {
+					Expect(names).NotTo(ContainElement(stripped),
+						"Plan mode must filter %q out of the schema", stripped)
+				}
+				// The four file-writers remain — pathguard's mode-overlay
+				// scopes them to plan_output_dir at dispatch time. The
+				// LLM still sees the tools so a Plan-mode write to the
+				// scoped directory is possible without a fresh Default-
+				// mode turn.
+				for _, scoped := range planScopedToolNames {
+					Expect(names).To(ContainElement(scoped),
+						"Plan mode must KEEP %q in the schema — pathguard path-scopes it to plan_output_dir", scoped)
 				}
 				// Read-only tools from the `file` bundle expansion + base
-				// inherited tools should still surface. The `file` bundle
-				// is read+write+edit+multiedit+apply_patch; Plan strips
-				// the mutating four, leaving read.
+				// inherited tools should still surface.
 				Expect(names).To(ContainElement("read"),
 					"Plan mode must preserve read tools from the file bundle")
 				Expect(names).To(ContainElement("skill_load"),
 					"Plan mode must preserve inherited base tools")
 				Expect(names).To(ContainElement("todowrite"),
 					"Plan mode must preserve inherited base tools")
+			})
+
+			// Regression pin per the brief: explicitly assert the filtered
+			// surface still excludes bash. A future change that removed
+			// bash from PlanModeStrippedTools without adding a
+			// path-scoping story would silently widen Plan-mode capability;
+			// this pin fails loudly.
+			It("filtered surface still excludes bash (regression detector)", func() {
+				manifest := agent.Manifest{
+					ID:   "plan-bash-regression",
+					Name: "Plan Bash Regression",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        planAllTools,
+				})
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
+				chunks, err := eng.Stream(ctx, "", "anything")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				Expect(names).NotTo(ContainElement("bash"),
+					"Plan mode MUST strip bash from the schema — no path-scoping option exists for a shell")
 			})
 		})
 
@@ -839,7 +895,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				for _, mutator := range mutatingToolNames {
+				for _, mutator := range allMutatingToolNames {
 					Expect(names).To(ContainElement(mutator),
 						"Yolo mode must NOT filter %q — Plan filter is mode-gated", mutator)
 				}
@@ -870,7 +926,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				for _, mutator := range mutatingToolNames {
+				for _, mutator := range allMutatingToolNames {
 					Expect(names).To(ContainElement(mutator),
 						"Default mode must NOT filter %q", mutator)
 				}
@@ -901,7 +957,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				for _, mutator := range mutatingToolNames {
+				for _, mutator := range allMutatingToolNames {
 					Expect(names).To(ContainElement(mutator),
 						"Accept-Edits mode must NOT filter %q — auto-accept lives in the prompt layer, schema is unchanged", mutator)
 				}
@@ -931,7 +987,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				}
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
-				for _, mutator := range mutatingToolNames {
+				for _, mutator := range allMutatingToolNames {
 					Expect(names).To(ContainElement(mutator),
 						"Unstamped ctx must behave as Default — %q must surface", mutator)
 				}
@@ -968,51 +1024,103 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
 				// Base set inherited: skill_load + todowrite. Plan filter
-				// doesn't strike either because neither is mutating.
+				// doesn't strike either because neither is in
+				// PlanModeStrippedTools (= {bash}).
 				Expect(names).To(ConsistOf("skill_load", "todowrite"))
 			})
 		})
 
-		// Runtime gate parity — Permission Modes plan Slice 4 follow-up.
+		// Runtime gate parity — Permission Modes plan Slice 4 follow-up,
+		// revised by Plan-Mode Output Directory plan §3 Slice 1.
 		//
 		// Slice 4 (commit 45efec09) added the Plan-mode filter inside
 		// assembleToolSchemasLocked so the schema advertised to the LLM
-		// excludes the mutating tool set. Live verification with glm-4.6
-		// surfaced the gap: when a permissive provider hallucinates a
-		// `write` tool_use OUTSIDE the advertised schema, the runtime
-		// gate at executeToolCall consulted effectiveAllowedToolsForCtx —
-		// which was mode-blind — and dispatched the call. The file was
-		// written despite Plan mode.
+		// excludes the mutating tool set. The live glm-4.6 probe
+		// surfaced the gap: a permissive provider hallucinating a
+		// `write` tool_use outside the advertised schema would reach
+		// the runtime gate, which was mode-blind, and dispatch it.
 		//
-		// The fix restores the documented "shared seam == single source
-		// of truth" invariant (engine.go effectiveAllowedToolsForCtx
-		// docstring): the Plan-mode filter must apply at the seam BOTH
-		// surfaces share, so a stray tool_use returns the same tool-not-
-		// found rejection the runtime gate already emits for out-of-
-		// manifest calls (PR7 / Option A). The rejection wraps
-		// tool.ErrToolNotFound and tags IsError so the LLM's tool loop
-		// sees the structured failure and can pivot on the next turn.
-		Context("when Plan-mode ctx reaches executeToolCall with a hallucinated mutating tool", func() {
-			It("rejects the call at the runtime gate without invoking Execute", func() {
-				// Manifest declares the `file` bundle. Under Default mode
-				// the bundle expansion would let executeToolCall dispatch
-				// `write` directly. Under Plan mode the seam must strip
-				// the mutating tools from the allowed set BEFORE the gate
-				// checks the call.
+		// Plan-Mode Output Directory §3 Slice 1 narrows the engine
+		// strip set to {bash} only — write/edit/multiedit/apply_patch
+		// remain in the schema under Plan mode and are path-scoped to
+		// plan_output_dir at the pathguard layer. Bash has no
+		// path-scoping option, so the runtime gate continues to reject
+		// it. The fix restores the "shared seam == single source of
+		// truth" invariant for the narrowed strip set: a hallucinated
+		// bash call returns tool.ErrToolNotFound; a hallucinated write
+		// call now reaches Execute (the path-scoping concern is
+		// pathguard's, not the runtime gate's).
+		Context("when Plan-mode ctx reaches executeToolCall with a hallucinated stripped tool", func() {
+			It("rejects a hallucinated bash call at the runtime gate without invoking Execute", func() {
+				// Manifest declares the `file` bundle (no bash entry).
+				// Even if a permissive provider hallucinated bash, Plan
+				// mode strips it at the seam BEFORE the gate checks the
+				// call. The rejection wraps tool.ErrToolNotFound so the
+				// LLM's tool loop sees the structured failure and can
+				// pivot on the next turn.
 				manifest := agent.Manifest{
 					ID:   "plan-runtime-gate-agent",
 					Name: "Plan Runtime Gate Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file"},
+					},
+				}
+
+				fakeBash := &executableMockTool{
+					name:        "bash",
+					description: "fake bash",
+					execResult:  tool.Result{Output: "should never run"},
+				}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				eng := engine.New(engine.Config{
+					Manifest:      manifest,
+					AgentRegistry: agent.NewRegistry(),
+					Registry:      providerReg,
+					ChatProvider:  &mockProvider{name: "spy"},
+				})
+				eng.AddTool(fakeBash)
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-plan-runtime-gate", &provider.ToolCall{
+					ID:        "call-bash-hallucinated",
+					Name:      "bash",
+					Arguments: map[string]any{"command": "rm -rf /"},
+				})
+
+				Expect(err).NotTo(HaveOccurred(),
+					"the gate emits an IsError tool_result, not a Go error — matches the OpenAI Agents SDK ToolNotFoundBehavior=return_error_to_model shape so the LLM's tool loop can self-correct on the next turn")
+				Expect(result.IsError).To(BeTrue(),
+					"the call did not run; the rejection must be tagged IsError so the chunk path stamps role=tool_error and the provider serialiser routes through the failure shape")
+				Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue(),
+					"Plan-mode runtime rejection shares the PR7 Option A sentinel: tool.ErrToolNotFound covers BOTH 'tool absent from registry' and 'tool not available to this agent under the current mode'")
+				Expect(result.Output).To(ContainSubstring("'bash' not available"),
+					"the rejection body must name the rejected tool so the model can reason about which call was refused")
+				Expect(fakeBash.execCalled).To(BeFalse(),
+					"the load-bearing assertion: bash is in PlanModeStrippedTools — the runtime gate MUST fire BEFORE Execute under Plan mode for the stripped set")
+			})
+
+			// Plan-Mode Output Directory §3 Slice 1: write is NO LONGER
+			// stripped at the runtime gate under Plan mode — it remains
+			// in the schema and the path-scoping enforcement moves to
+			// pathguard. The runtime gate dispatches the call; pathguard
+			// then enforces "path must be under plan_output_dir" at
+			// Execute time. This test pins the gate's mode-agnostic
+			// admission of the four file-writers.
+			It("ADMITS a write call under Plan mode — path-scoping is enforced at pathguard, not the runtime gate", func() {
+				manifest := agent.Manifest{
+					ID:   "plan-runtime-write-admit",
+					Name: "Plan Runtime Write Admit",
 					Capabilities: agent.Capabilities{
 						Tools: []string{"file"},
 					},
 				}
 
-				// executableMockTool tracks execCalled so the load-bearing
-				// assertion below ("the tool body never ran") can fire.
 				fakeWrite := &executableMockTool{
 					name:        "write",
 					description: "fake write",
-					execResult:  tool.Result{Output: "should never run"},
+					execResult:  tool.Result{Output: "write output"},
 				}
 
 				providerReg := provider.NewRegistry()
@@ -1026,28 +1134,24 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				eng.AddTool(fakeWrite)
 
 				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
-				result, err := eng.ExecuteToolCallForTest(ctx, "sess-plan-runtime-gate", &provider.ToolCall{
-					ID:        "call-write-hallucinated",
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-plan-write-admit", &provider.ToolCall{
+					ID:        "call-write-admitted",
 					Name:      "write",
-					Arguments: map[string]any{"path": "/tmp/plan-mode-rejected.md", "content": "should not appear"},
+					Arguments: map[string]any{"path": "/tmp/plan-mode-permitted.md", "content": "ok"},
 				})
 
-				Expect(err).NotTo(HaveOccurred(),
-					"the gate emits an IsError tool_result, not a Go error — matches the OpenAI Agents SDK ToolNotFoundBehavior=return_error_to_model shape so the LLM's tool loop can self-correct on the next turn")
-				Expect(result.IsError).To(BeTrue(),
-					"the call did not run; the rejection must be tagged IsError so the chunk path stamps role=tool_error and the provider serialiser routes through the failure shape")
-				Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue(),
-					"Plan-mode runtime rejection shares the PR7 Option A sentinel: tool.ErrToolNotFound covers BOTH 'tool absent from registry' and 'tool not available to this agent under the current mode' — callers using errors.Is(tool.ErrToolNotFound) continue to recognise the failure shape")
-				Expect(result.Output).To(ContainSubstring("'write' not available"),
-					"the rejection body must name the rejected tool so the model can reason about which call was refused")
-				Expect(fakeWrite.execCalled).To(BeFalse(),
-					"the load-bearing assertion: the gate must fire BEFORE Execute under Plan mode — the side-effecting tool body must never run for a hallucinated mutating call, which is the scenario the live glm-4.6 probe captured against commit 45efec09")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.IsError).To(BeFalse(),
+					"Plan mode no longer strips write at the schema — pathguard does the path-scoping, the runtime gate must admit the call")
+				Expect(fakeWrite.execCalled).To(BeTrue(),
+					"the mock tool body must run: pathguard enforcement is a tool-body concern wrapped via Guard.CheckForTool, not the engine's runtime gate")
 			})
 
-			It("permits read-only tools from the same bundle — Plan strips ONLY the mutating subset", func() {
+			It("permits read-only tools from the same bundle — Plan strips ONLY PlanModeStrippedTools", func() {
 				// Companion pin: the same manifest under Plan mode must
 				// still let `read` reach Execute. The filter is a strict
-				// subset (MutatingTools), not a wholesale bundle ban.
+				// subset (PlanModeStrippedTools = {bash}), not a wholesale
+				// bundle ban.
 				manifest := agent.Manifest{
 					ID:   "plan-read-agent",
 					Name: "Plan Read Agent",
@@ -1081,7 +1185,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.IsError).To(BeFalse(),
-					"read is in the file bundle and is not in MutatingTools — Plan mode must not strip it")
+					"read is in the file bundle and is not in PlanModeStrippedTools — Plan mode must not strip it")
 				Expect(fakeRead.execCalled).To(BeTrue(),
 					"the read call must reach Execute — the runtime gate's mode-aware filter is a strict subset, not a bundle-level ban")
 			})
@@ -1138,7 +1242,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 		// disables manifest restrictions, so we pin the helper contract.
 		Context("permissionmode.IsMutating helper", func() {
 			It("returns true for every canonical mutating tool", func() {
-				for _, name := range mutatingToolNames {
+				for _, name := range allMutatingToolNames {
 					Expect(permissionmode.IsMutating(name)).To(BeTrue(),
 						"%q must be classed as mutating", name)
 				}
@@ -1148,6 +1252,26 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				for _, name := range []string{"read", "grep", "glob", "ls", "lsp", "skill_load", "todowrite"} {
 					Expect(permissionmode.IsMutating(name)).To(BeFalse(),
 						"%q must NOT be classed as mutating", name)
+				}
+			})
+		})
+
+		// Plan-Mode Output Directory plan §3 Slice 1: the engine schema
+		// strip set is now PlanModeStrippedTools (strict subset of
+		// MutatingTools). Pin the contract in a whitebox helper test
+		// alongside IsMutating so a future widening of the strip set
+		// surfaces here loudly.
+		Context("permissionmode.IsStrippedUnderPlan helper", func() {
+			It("returns true ONLY for bash — the strip set excludes the path-scopeable file tools", func() {
+				Expect(permissionmode.IsStrippedUnderPlan("bash")).To(BeTrue(),
+					"bash MUST be in the Plan-mode strip set (no path-scoping option for a shell)")
+				for _, scoped := range []string{"write", "edit", "multiedit", "apply_patch"} {
+					Expect(permissionmode.IsStrippedUnderPlan(scoped)).To(BeFalse(),
+						"%q MUST NOT be in the Plan-mode strip set — pathguard path-scopes it instead", scoped)
+				}
+				for _, readonly := range []string{"read", "grep", "glob", "ls", "lsp", "skill_load", "todowrite"} {
+					Expect(permissionmode.IsStrippedUnderPlan(readonly)).To(BeFalse(),
+						"%q is read-only, not in the strip set", readonly)
 				}
 			})
 		})

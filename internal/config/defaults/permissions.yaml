@@ -1,4 +1,5 @@
 version: 1
+plan_output_dir: ${XDG_DATA_HOME_PLACEHOLDER}/flowstate/plans
 tools:
   bash:
     deny:

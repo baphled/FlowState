@@ -35,9 +35,36 @@ type PermissionsMatcher interface {
 
 // Guard checks filesystem paths against a deny list, optionally
 // consulting a per-tool PermissionsMatcher first.
+//
+// planOutputDir, when non-empty, scopes Plan-mode file-mutation tools
+// (write/edit/multiedit/apply_patch) to paths under it. Under Plan
+// mode the operator-supplied allow rules in PermissionsMatcher for
+// those four tools are REPLACED by "path must be under
+// planOutputDir"; the matcher's deny rules still apply (deny wins
+// over allow, mirroring config.Permissions.Match precedence at
+// permissions.go:127-129).
+//
+// Plan-Mode Output Directory plan (May 2026) §3 Slice 1.
 type Guard struct {
-	denied []string
-	perms  PermissionsMatcher
+	denied        []string
+	perms         PermissionsMatcher
+	planOutputDir string
+}
+
+// planScopedTools is the set of file-mutating tools that pathguard's
+// Plan-mode overlay re-scopes to planOutputDir. It mirrors
+// permissionmode.MutatingTools minus bash (bash is fully stripped at
+// the engine schema layer; pathguard never sees a Plan-mode bash call
+// because the schema filter removes it before dispatch).
+//
+// Kept in this package rather than imported from permissionmode to
+// preserve pathguard's "consumer of permissionmode for the ctx key
+// only" stance — the strip-vs-scope split is a pathguard concern.
+var planScopedTools = map[string]struct{}{
+	"write":       {},
+	"edit":        {},
+	"multiedit":   {},
+	"apply_patch": {},
 }
 
 // New creates a Guard that blocks access to any path under the given denied
@@ -59,6 +86,29 @@ func New(denied []string) *Guard {
 func NewWithPermissions(denied []string, perms PermissionsMatcher) *Guard {
 	abs := normaliseDenied(denied)
 	return &Guard{denied: abs, perms: perms}
+}
+
+// NewWithPermissionsAndPlanOutputDir creates a Guard wired with both a
+// PermissionsMatcher and the operator's resolved plan_output_dir. Under
+// Plan mode, the four file-mutating tools (write/edit/multiedit/
+// apply_patch) are constrained to paths inside planOutputDir regardless
+// of the matcher's allow rules; the matcher's DENY rules still fire so
+// "deny wins over allow" precedence is preserved.
+//
+// Empty planOutputDir collapses to NewWithPermissions semantics — the
+// Plan-mode overlay is a no-op and the call falls through to the
+// matcher / legacy guard. This is the safe fall-back when XDG resolution
+// failed at bootstrap time; Plan-mode writes then fail closed via the
+// matcher (no allow rule matches the path).
+func NewWithPermissionsAndPlanOutputDir(denied []string, perms PermissionsMatcher, planOutputDir string) *Guard {
+	abs := normaliseDenied(denied)
+	g := &Guard{denied: abs, perms: perms}
+	if planOutputDir != "" {
+		if absPath, err := filepath.Abs(planOutputDir); err == nil {
+			g.planOutputDir = absPath
+		}
+	}
+	return g
 }
 
 func normaliseDenied(denied []string) []string {
@@ -343,9 +393,23 @@ func looksLikePath(tok string) bool {
 // wired the engine seam still get the safe pre-Permission-Modes
 // behaviour. Permission Modes plan §4 Slice 1.
 func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
-	if permissionmode.FromContext(ctx) == permissionmode.ModeYolo {
+	mode := permissionmode.FromContext(ctx)
+	if mode == permissionmode.ModeYolo {
 		return nil
 	}
+
+	// Plan-Mode Output Directory overlay (Plan §3 Slice 1):
+	// for the four file-mutating tools under Plan mode, replace the
+	// matcher's allow rules with "path must be under planOutputDir".
+	// The matcher's deny rules still apply — config.Permissions.Match
+	// returns "deny" first when both match (permissions.go:127-129),
+	// so deny-wins-over-allow precedence is preserved.
+	if mode == permissionmode.ModePlan {
+		if _, scoped := planScopedTools[tool]; scoped {
+			return g.checkPlanModeScoped(tool, path)
+		}
+	}
+
 	if g.perms != nil && tool != "" {
 		abs, err := filepath.Abs(path)
 		if err == nil {
@@ -360,6 +424,53 @@ func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
 		}
 	}
 	return g.Check(path)
+}
+
+// checkPlanModeScoped applies the Plan-mode overlay for a single
+// path-shaped argument: the file mutation is permitted only when the
+// path resolves inside planOutputDir AND the configured matcher does
+// not deny it. The matcher's allow rules are intentionally NOT
+// consulted — the overlay replaces them entirely so the operator-set
+// vault root cannot accidentally widen Plan-mode write access.
+//
+// Returns:
+//   - nil when the absolute path resolves under planOutputDir and the
+//     matcher has no deny verdict.
+//   - An access-denied error when planOutputDir is empty, when the
+//     path resolves outside planOutputDir, or when the matcher
+//     explicitly denies the path.
+//
+// Side effects:
+//   - None.
+func (g *Guard) checkPlanModeScoped(tool, path string) error {
+	if g.planOutputDir == "" {
+		return fmt.Errorf("access denied: Plan mode requires plan_output_dir to be configured (%q tool blocked: %s)", tool, path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("access denied: %s is not under plan_output_dir (%q tool, Plan mode)", path, tool)
+	}
+	if !isUnderDir(abs, g.planOutputDir) {
+		return fmt.Errorf("access denied: %s is not under plan_output_dir %s (%q tool, Plan mode)", abs, g.planOutputDir, tool)
+	}
+	// Deny rules still apply — e.g. .obsidian under the plan_output_dir.
+	if g.perms != nil {
+		if decision, matched := g.perms.Match(tool, abs); matched && decision == "deny" {
+			return fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config (Plan mode)", abs, tool)
+		}
+	}
+	return nil
+}
+
+// isUnderDir reports whether abs (a cleaned absolute path) resolves
+// inside dir (also expected absolute). Both equal-to-dir and a strict
+// descendant return true; the function is used to scope Plan-mode
+// writes to the operator's plan_output_dir.
+func isUnderDir(abs, dir string) bool {
+	if abs == dir {
+		return true
+	}
+	return strings.HasPrefix(abs, dir+string(filepath.Separator))
 }
 
 // CheckCommandForTool tokenises command and consults the configured
@@ -385,9 +496,23 @@ func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
 // wired the engine seam still get the safe pre-Permission-Modes
 // behaviour. Permission Modes plan §4 Slice 1.
 func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) error {
-	if permissionmode.FromContext(ctx) == permissionmode.ModeYolo {
+	mode := permissionmode.FromContext(ctx)
+	if mode == permissionmode.ModeYolo {
 		return nil
 	}
+
+	// Plan-mode overlay for command-shaped tool invocations. In
+	// practice the engine schema strips bash before dispatch under
+	// Plan mode (permissionmode.PlanModeStrippedTools), so this code
+	// path is defence-in-depth for any future command-style file
+	// tool that lands in planScopedTools — each path-shaped token
+	// must resolve under planOutputDir.
+	if mode == permissionmode.ModePlan {
+		if _, scoped := planScopedTools[tool]; scoped {
+			return g.checkPlanModeCommand(tool, command)
+		}
+	}
+
 	if g.perms == nil || tool == "" {
 		return g.CheckCommand(command)
 	}
@@ -427,6 +552,46 @@ func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) e
 			}
 			if strings.HasPrefix(abs, d+string(filepath.Separator)) || abs == d {
 				return fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d)
+			}
+		}
+	}
+	return nil
+}
+
+// checkPlanModeCommand applies the Plan-mode overlay to a tokenised
+// command. Every path-shaped token must resolve inside planOutputDir
+// and survive the matcher's deny check. See checkPlanModeScoped for
+// the per-path semantics.
+//
+// Returns:
+//   - nil when planOutputDir is set and every path-shaped token is
+//     under it (and not matcher-denied).
+//   - An access-denied error otherwise.
+//
+// Side effects:
+//   - Reads $HOME / cwd via os.UserHomeDir / os.Getwd (mirrors the
+//     legacy CheckCommand tokenisation path).
+func (g *Guard) checkPlanModeCommand(tool, command string) error {
+	if g.planOutputDir == "" {
+		return fmt.Errorf("access denied: Plan mode requires plan_output_dir to be configured (%q tool blocked)", tool)
+	}
+	home, _ := os.UserHomeDir()
+	for _, tok := range tokenize(command) {
+		if !looksLikePath(tok) {
+			continue
+		}
+		expanded := expandHome(tok, home)
+		abs, err := filepath.Abs(expanded)
+		if err != nil {
+			return fmt.Errorf("access denied: command token %q is not under plan_output_dir (%q tool, Plan mode)", tok, tool)
+		}
+		abs = filepath.Clean(abs)
+		if !isUnderDir(abs, g.planOutputDir) {
+			return fmt.Errorf("access denied: %s is not under plan_output_dir %s (%q tool, Plan mode)", abs, g.planOutputDir, tool)
+		}
+		if g.perms != nil {
+			if decision, matched := g.perms.Match(tool, abs); matched && decision == "deny" {
+				return fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config (Plan mode)", abs, tool)
 			}
 		}
 	}

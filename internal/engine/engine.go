@@ -2527,8 +2527,12 @@ func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]st
 //     base toolset, bundle alias expansion, MCP server gating,
 //     ToolsDeny subtraction, suggest_delegate escape hatch). When
 //     permissionmode.FromContext(ctx) == ModePlan the returned map is
-//     a copy with every tool name in permissionmode.MutatingTools
-//     removed.
+//     a copy with every tool name in permissionmode.PlanModeStrippedTools
+//     removed. The strict subset (currently {bash}) is the only set of
+//     tools removed at the schema layer; the remaining four mutating
+//     tools (write/edit/multiedit/apply_patch) are kept in the schema
+//     so pathguard can path-scope them to the operator's
+//     plan_output_dir at runtime (Plan-Mode Output Directory plan).
 //
 // Side effects:
 //   - None.
@@ -2577,15 +2581,23 @@ func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[stri
 		return allowed
 	}
 
-	// Plan-mode: copy-on-write subtract MutatingTools. The map returned
-	// by buildAllowedToolSetFor is a freshly composed value (see
-	// BuildAllowedToolSet) but treating it as caller-owned would invite
-	// future drift if that contract changes; copy defensively so the
-	// Plan path can never poison a sibling Default caller against the
-	// same manifest.
+	// Plan-mode: copy-on-write subtract PlanModeStrippedTools. The map
+	// returned by buildAllowedToolSetFor is a freshly composed value
+	// (see BuildAllowedToolSet) but treating it as caller-owned would
+	// invite future drift if that contract changes; copy defensively
+	// so the Plan path can never poison a sibling Default caller
+	// against the same manifest.
+	//
+	// Plan-Mode Output Directory plan (May 2026) §3 Slice 1: the
+	// strip set is now PlanModeStrippedTools (= {bash}) rather than
+	// the full MutatingTools set. The four file-writers
+	// (write/edit/multiedit/apply_patch) remain in the schema and are
+	// path-scoped at the pathguard layer to the operator's
+	// plan_output_dir. bash has no path-scoping option (a shell can
+	// invoke anything) so it stays fully filtered.
 	filtered := make(map[string]bool, len(allowed))
 	for name, ok := range allowed {
-		if ok && !permissionmode.IsMutating(name) {
+		if ok && !permissionmode.IsStrippedUnderPlan(name) {
 			filtered[name] = true
 		}
 	}

@@ -3,6 +3,7 @@ package config_test
 import (
 	"bytes"
 	"log/slog"
+	"os"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -109,6 +110,47 @@ var _ = Describe("Permissions", func() {
 			decision, matched := perms.Match("recursive", "/tmp/deep/a/b/c/d/file.txt")
 			Expect(matched).To(BeTrue())
 			Expect(decision).To(Equal("allow"))
+		})
+	})
+
+	// Plan-Mode Output Directory plan (May 2026) §3 Slice 1 adds
+	// plan_output_dir to the permissions schema. The field carries the
+	// absolute directory under which Plan mode permits write/edit/
+	// multiedit/apply_patch — see pathguard.NewWithPermissionsAndPlanOutputDir
+	// for the overlay that consumes the value.
+	Describe("PlanOutputDir field (Slice 1)", func() {
+		It("parses a populated plan_output_dir field from YAML", func() {
+			yamlContent := []byte(`version: 1
+plan_output_dir: /tmp/flowstate-plans
+tools:
+  write:
+    allow:
+      - /vault/**
+`)
+			path := filepath.Join(GinkgoT().TempDir(), "permissions.yaml")
+			Expect(os.WriteFile(path, yamlContent, 0o600)).To(Succeed())
+
+			perms, err := config.LoadPermissions(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perms).NotTo(BeNil())
+			Expect(perms.PlanOutputDir).To(Equal("/tmp/flowstate-plans"))
+		})
+
+		It("leaves plan_output_dir empty when the field is absent", func() {
+			yamlContent := []byte(`version: 1
+tools:
+  write:
+    allow:
+      - /vault/**
+`)
+			path := filepath.Join(GinkgoT().TempDir(), "permissions.yaml")
+			Expect(os.WriteFile(path, yamlContent, 0o600)).To(Succeed())
+
+			perms, err := config.LoadPermissions(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(perms).NotTo(BeNil())
+			Expect(perms.PlanOutputDir).To(BeEmpty(),
+				"missing plan_output_dir MUST default to empty so the overlay collapses safely (Plan-mode writes fail closed)")
 		})
 	})
 })

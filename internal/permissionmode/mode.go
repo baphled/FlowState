@@ -132,3 +132,32 @@ func IsMutating(toolName string) bool {
 	_, ok := MutatingTools[toolName]
 	return ok
 }
+
+// PlanModeStrippedTools is the SUBSET of MutatingTools that Plan mode
+// removes entirely from the schema. Tools in this set have no
+// path-scoping option (bash executes arbitrary commands; restricting
+// it to "writes only under plan_output_dir" is meaningless because
+// the shell can do anything), so the only safe handling under Plan
+// mode is full removal at the engine schema seam.
+//
+// The other four mutating tools (write/edit/multiedit/apply_patch)
+// remain in the schema under Plan mode and are instead path-scoped
+// at the pathguard layer to the operator's plan_output_dir. This is
+// the Plan-Mode Output Directory plan (May 2026) §3 Slice 1.
+//
+// Kept as the same map[string]struct{} shape as MutatingTools so the
+// predicate helper (IsStrippedUnderPlan) and any future scope-membership
+// rewrites stay uniform with IsMutating.
+var PlanModeStrippedTools = map[string]struct{}{
+	"bash": {},
+}
+
+// IsStrippedUnderPlan reports whether the named tool is in the
+// PlanModeStrippedTools set. The engine's effectiveAllowedToolsForCtx
+// seam consults this predicate when subtracting tools under Plan mode;
+// callers in other packages can use it without importing the map
+// directly.
+func IsStrippedUnderPlan(toolName string) bool {
+	_, ok := PlanModeStrippedTools[toolName]
+	return ok
+}

@@ -412,6 +412,149 @@ var _ = Describe("Pathguard — Slice B integration with *config.Permissions", f
 	})
 })
 
+// Plan-Mode Output Directory plan (May 2026) §3 Slice 1 wires a
+// plan_output_dir overlay into pathguard. Under ModePlan, file-mutation
+// tools (write/edit/multiedit/apply_patch) are constrained to paths
+// under planOutputDir regardless of the matcher's allow rules; the
+// matcher's deny rules still apply so deny-wins-over-allow precedence
+// holds (config.Permissions.Match permissions.go:127-129).
+var _ = Describe("Pathguard — Plan-Mode Output Directory overlay (Slice 1)", func() {
+	var (
+		planOutputDir string
+		denied        string
+	)
+
+	BeforeEach(func() {
+		planOutputDir = "/tmp/pathguard-plan-out"
+		denied = "/tmp/pathguard-plan-vault"
+	})
+
+	planCtx := func() context.Context {
+		return permissionmode.WithMode(context.Background(), permissionmode.ModePlan)
+	}
+
+	Describe("CheckForTool under Plan mode", func() {
+		It("ALLOWS write under plan_output_dir", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					// Operator-set rule for the vault; the overlay
+					// MUST replace this under Plan mode.
+					"write": {Allow: []string{denied + "/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, perms, planOutputDir)
+			err := g.CheckForTool(planCtx(), "write", filepath.Join(planOutputDir, "turn.md"))
+			Expect(err).NotTo(HaveOccurred(),
+				"Plan mode MUST allow write under plan_output_dir — the overlay's positive case")
+		})
+
+		It("DENIES write at a path outside plan_output_dir but inside the vault (overlay overrides operator allow)", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"write": {Allow: []string{denied + "/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, perms, planOutputDir)
+			err := g.CheckForTool(planCtx(), "write", filepath.Join(denied, "doc.md"))
+			Expect(err).To(HaveOccurred(),
+				"Plan mode MUST replace the operator allow with 'must be under plan_output_dir' — vault paths outside plan_output_dir are denied")
+		})
+
+		It("DENIES write at a path outside the vault and outside plan_output_dir", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"write": {Allow: []string{denied + "/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, perms, planOutputDir)
+			err := g.CheckForTool(planCtx(), "write", "/tmp/escape.md")
+			Expect(err).To(HaveOccurred(),
+				"Plan mode MUST deny writes outside plan_output_dir even when no legacy denied root applies")
+		})
+
+		It("DENIES write at a path under plan_output_dir that the matcher ALSO denies (deny wins over plan_output_dir allow)", func() {
+			// Plan-Mode Output Directory plan §3 Slice 1 nit 4: the
+			// matcher's DENY rules MUST still apply under the overlay.
+			// config.Permissions.Match returns "deny" first when both
+			// match (permissions.go:127-129), so a deny rule pointing
+			// at .obsidian inside plan_output_dir keeps Plan-mode
+			// writes from clobbering the operator's metadata directory.
+			obsidian := filepath.Join(planOutputDir, ".obsidian", "workspace.json")
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"write": {Deny: []string{planOutputDir + "/.obsidian/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, perms, planOutputDir)
+			err := g.CheckForTool(planCtx(), "write", obsidian)
+			Expect(err).To(HaveOccurred(),
+				"matcher deny MUST still fire under the overlay — deny-wins-over-allow precedence holds (permissions.go:127-129)")
+		})
+
+		It("DENIES write when plan_output_dir is empty (fails closed)", func() {
+			// Bootstrap mkdir failure → empty plan_output_dir → Plan-
+			// mode write fails closed with an explicit denial rather
+			// than silently succeeding.
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, nil, "")
+			err := g.CheckForTool(planCtx(), "write", filepath.Join(planOutputDir, "turn.md"))
+			Expect(err).To(HaveOccurred(),
+				"empty plan_output_dir MUST fail closed under Plan mode — silent allow would defeat the overlay")
+		})
+
+		It("applies the overlay to all four planScopedTools", func() {
+			perms := &config.Permissions{Version: 1}
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, perms, planOutputDir)
+			ctx := planCtx()
+			for _, tool := range []string{"write", "edit", "multiedit", "apply_patch"} {
+				// Inside plan_output_dir → allow.
+				inErr := g.CheckForTool(ctx, tool, filepath.Join(planOutputDir, "x.md"))
+				Expect(inErr).NotTo(HaveOccurred(), "%q MUST be permitted under plan_output_dir", tool)
+				// Outside plan_output_dir → deny.
+				outErr := g.CheckForTool(ctx, tool, "/tmp/escape.md")
+				Expect(outErr).To(HaveOccurred(), "%q MUST be denied outside plan_output_dir", tool)
+			}
+		})
+
+		It("does NOT apply the overlay to read (read is not in planScopedTools)", func() {
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"read": {Allow: []string{denied + "/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, perms, planOutputDir)
+			// read under the operator's vault — matcher allow takes
+			// effect normally, the Plan-mode overlay never fires.
+			err := g.CheckForTool(planCtx(), "read", filepath.Join(denied, "doc.md"))
+			Expect(err).NotTo(HaveOccurred(),
+				"read MUST follow the standard matcher path under Plan mode — the overlay is scoped to file-mutation tools")
+		})
+	})
+
+	Describe("CheckForTool under Default mode", func() {
+		It("does NOT apply the overlay — Default mode follows the standard matcher path", func() {
+			// Pin the negative side: outside Plan mode, the same path
+			// that Plan would deny is permitted by the operator's
+			// allow rule (write.allow = vault/**).
+			perms := &config.Permissions{
+				Version: 1,
+				Tools: map[string]config.ToolRules{
+					"write": {Allow: []string{denied + "/**"}},
+				},
+			}
+			g := pathguard.NewWithPermissionsAndPlanOutputDir([]string{denied}, perms, planOutputDir)
+			ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeDefault)
+			err := g.CheckForTool(ctx, "write", filepath.Join(denied, "doc.md"))
+			Expect(err).NotTo(HaveOccurred(),
+				"Default mode MUST defer to the operator's allow — the overlay fires ONLY under Plan")
+		})
+	})
+})
+
 // stubMatcher returns a fixed verdict for every (tool, path) tuple.
 type stubMatcher struct {
 	decision string

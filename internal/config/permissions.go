@@ -20,6 +20,7 @@ import (
 // Schema:
 //
 //	version: 1
+//	plan_output_dir: <absolute path>
 //	tools:
 //	  <tool-name>:
 //	    allow: [<glob>, ...]
@@ -27,9 +28,15 @@ import (
 //
 // Globs use the doublestar dialect (full ** recursion). Allow and deny
 // are independent — deny always wins when both match.
+//
+// PlanOutputDir is the absolute directory under which the engine permits
+// file-mutating tools (write/edit/multiedit/apply_patch) when the active
+// permission mode is Plan. Empty means "no plan-mode write target
+// configured" — every file mutation is denied under Plan mode.
 type Permissions struct {
-	Version int                  `yaml:"version" json:"version"`
-	Tools   map[string]ToolRules `yaml:"tools" json:"tools"`
+	Version       int                  `yaml:"version" json:"version"`
+	PlanOutputDir string               `yaml:"plan_output_dir,omitempty" json:"plan_output_dir,omitempty"`
+	Tools         map[string]ToolRules `yaml:"tools" json:"tools"`
 }
 
 // ToolRules holds the allow and deny glob lists for a single tool.
