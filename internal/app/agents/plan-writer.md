@@ -12,8 +12,15 @@ complexity: medium
 # plan must come from the provided inputs, not past turns. Keep off.
 uses_recall: false
 capabilities:
+  # bash is intentionally absent. Plan persistence + revision MUST go
+  # through `write` / `edit` / `multiedit` (provided by the `file`
+  # bundle expansion at engine.go:2442) so pathguard's per-tool
+  # permissions and Plan-mode path-scoping enforce on every write.
+  # bash sed/echo for file mutation bypasses path-scoping and was
+  # observed in session 32ab2e60-... — see Bug Fixes / Plan-Writer
+  # Bash Persistence (May 2026). For shell-style queries the agent
+  # should ask the orchestrator to delegate to a generalist.
   tools:
-    - bash
     - file
     - web
     - skill_load
@@ -214,6 +221,28 @@ plan. If `plan_write` fails — most commonly because the YAML
 frontmatter is malformed or the `id` is missing — fix the markdown and
 call `plan_write` again; do NOT skip the disk write and rely on
 coord-store alone.
+
+### Revising a vault-hosted plan in place
+
+When the canonical plan lives at a vault path (e.g. an Obsidian note
+under `~/vaults/.../Plans/...md`) and a review cycle requires applying
+nits, use `edit` or `multiedit` directly on the vault file. **Never
+use `bash sed` / `echo >>` / heredocs for plan revisions** — bash is
+not in your tool list precisely for this reason: pathguard's per-tool
+permissions and Plan-mode path-scoping only enforce on structured
+file tools, and bash bypasses both. `edit` accepts an `old_string` →
+`new_string` pair and applies one replacement; `multiedit` batches
+several. For each nit:
+
+1. Read the surrounding context with `read` to anchor the
+   `old_string`.
+2. Apply `edit` with the precise old/new pair.
+3. For multi-edit revisions in one file, prefer one `multiedit` call
+   over N `edit` calls.
+
+`plan_write` is still the right tool for FRESH plan creation; `edit`
+/ `multiedit` are the right tools for AMENDING an existing plan
+already on disk.
 
 ## Turn Rules
 
