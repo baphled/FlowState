@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chatStore'
+import { useUIStore } from '@/stores/uiStore'
 import FuzzySearchModal from '@/components/common/FuzzySearchModal.vue'
 import Icon from '@/components/common/Icon.vue'
 import { detectTrigger, insertToken, type TriggerDescriptor } from '@/composables/useInputTriggers'
@@ -12,6 +13,7 @@ import { uploadAttachments as apiUploadAttachments } from '@/api'
 defineOptions({ name: 'MessageInput' })
 
 const store = useChatStore()
+const ui = useUIStore()
 const inputText = ref('')
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
@@ -555,6 +557,20 @@ onMounted(() => {
   // the overlay. Use capture so a drop on a child that stops
   // propagation still resets the composer's state defensively.
   window.addEventListener('drop', handleWindowDragEnd, { capture: true })
+
+  // Carbonyl-mode focus seeding. Without this, ./flowstate chat boots
+  // the SPA with document.activeElement === document.body and every
+  // keystroke Carbonyl forwards to Chromium hits nothing — the textarea
+  // renders but never accepts characters. We deliberately do NOT do
+  // this in browser mode: useFocusTrap's contract explicitly avoids
+  // autofocus-stealing for accessibility, and we honour that here too.
+  // preventScroll keeps the chat viewport from jumping when focus moves
+  // (Carbonyl's tty viewport is brittle around layout shifts).
+  if (ui.carbonylMode) {
+    void nextTick(() => {
+      textareaRef.value?.focus({ preventScroll: true })
+    })
+  }
 })
 
 onBeforeUnmount(() => {

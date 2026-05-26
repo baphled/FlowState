@@ -253,15 +253,18 @@ type APIServer interface {
 }
 
 func buildTargetURL(baseURL, agentID, sessionID string) string {
-	params := []string{}
+	// carbonyl=1 is always appended so the SPA can detect when it is
+	// being rendered inside Carbonyl (Chromium-in-terminal). The Vue
+	// boot path reads this flag to (a) set body.carbonyl-mode for future
+	// CSS overrides and (b) take ownership of initial focus on the
+	// composer — keystrokes Carbonyl forwards to Chromium otherwise hit
+	// document.body and are dropped.
+	params := []string{"carbonyl=1"}
 	if sessionID != "" {
 		params = append(params, "session="+sessionID)
 	}
 	if agentID != "" {
 		params = append(params, "agent="+agentID)
-	}
-	if len(params) == 0 {
-		return baseURL
 	}
 	return baseURL + "?" + strings.Join(params, "&")
 }

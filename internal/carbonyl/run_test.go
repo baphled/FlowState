@@ -60,28 +60,28 @@ func TestBuildTargetURL(t *testing.T) {
 		want      string
 	}{
 		{
-			name:    "both empty",
+			name:    "both empty still emits carbonyl flag",
 			baseURL: "http://127.0.0.1:42137",
-			want:    "http://127.0.0.1:42137",
+			want:    "http://127.0.0.1:42137?carbonyl=1",
 		},
 		{
 			name:      "session only",
 			baseURL:   "http://127.0.0.1:42137",
 			sessionID: "sess-123",
-			want:      "http://127.0.0.1:42137?session=sess-123",
+			want:      "http://127.0.0.1:42137?carbonyl=1&session=sess-123",
 		},
 		{
 			name:    "agent only",
 			baseURL: "http://127.0.0.1:42137",
 			agentID: "my-agent",
-			want:    "http://127.0.0.1:42137?agent=my-agent",
+			want:    "http://127.0.0.1:42137?carbonyl=1&agent=my-agent",
 		},
 		{
 			name:      "both present",
 			baseURL:   "http://127.0.0.1:42137",
 			agentID:   "my-agent",
 			sessionID: "sess-123",
-			want:      "http://127.0.0.1:42137?session=sess-123&agent=my-agent",
+			want:      "http://127.0.0.1:42137?carbonyl=1&session=sess-123&agent=my-agent",
 		},
 	}
 
@@ -91,6 +91,13 @@ func TestBuildTargetURL(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("buildTargetURL(%q, %q, %q) = %q, want %q",
 					tt.baseURL, tt.agentID, tt.sessionID, got, tt.want)
+			}
+			// Defence-in-depth: even if the table-driven `want` is ever
+			// updated incorrectly, the carbonyl flag must always be
+			// present — the Vue boot path keys focus stealing off it.
+			if !strings.Contains(got, "carbonyl=1") {
+				t.Errorf("buildTargetURL(%q, %q, %q) = %q, missing carbonyl=1 flag",
+					tt.baseURL, tt.agentID, tt.sessionID, got)
 			}
 		})
 	}
