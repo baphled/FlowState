@@ -125,3 +125,293 @@ body.carbonyl-mode * {
   letter-spacing: 0 !important;
   -webkit-font-smoothing: none !important;
 }
+
+/* ---------------------------------------------------------------- */
+/* C3 priority: icon → text fallback                                */
+/*                                                                  */
+/* Lucide SVG strokes at 12–18px collapse into quadrant-block noise */
+/* once Carbonyl samples them — they're the single worst-rendering  */
+/* element in the current TUI. Strategy:                            */
+/*                                                                  */
+/*   1. `Icon.vue` puts a `.icon` class on every rendered SVG and a */
+/*      `data-icon-name="<name>"` attribute. We hide the SVG and    */
+/*      lean on labels — either a sibling text element that already */
+/*      exists, or a `::after` we synthesise on the icon's parent   */
+/*      wrapper using `:has()` (Chromium ≥105, Carbonyl is on a     */
+/*      current Chromium, so safe).                                 */
+/*                                                                  */
+/*   2. Pseudo-elements don't render on `<svg>` (it's a replaced    */
+/*      element), so the `::after` MUST live on the icon's parent,  */
+/*      not on `[data-icon-name=…]` itself. We select the parent    */
+/*      with `*:has(> [data-icon-name="<name>"])`.                  */
+/*                                                                  */
+/*   3. Buttons that already pair an icon with a text sibling (e.g. */
+/*      `.stop-button` renders `<Icon name="stop"/><span>Stop</…>`) */
+/*      do NOT need the fallback — hiding the icon leaves the text  */
+/*      intact. The `:has()` rules below are guarded so they only   */
+/*      fire when the parent wrapper has no other visible text      */
+/*      content (i.e. the icon was the sole label-carrier).         */
+/* ---------------------------------------------------------------- */
+
+/* Hide every Lucide SVG. `.icon` is set by Icon.vue on the rendered
+   element; pairing the rule with `svg[data-icon-name]` catches any
+   future regressions where the class is stripped but the attribute
+   remains. */
+body.carbonyl-mode .icon,
+body.carbonyl-mode svg[data-icon-name] {
+  display: none !important;
+}
+
+/* Generic fallback for the icon-only call sites: the icon's parent
+   contains nothing else, so we synthesise a label via `::after`. The
+   `:not(:has(> :not([data-icon-name]):not(style)))` predicate keeps
+   the rule from firing on wrappers that have a text-bearing sibling
+   (label spans, button text, etc.) — those already read fine without
+   any synthetic label. */
+body.carbonyl-mode *:has(> [data-icon-name="trash"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[del]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="close"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[x]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="attach"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[+]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="stop"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[stop]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="plus"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[+]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="search"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[/]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="message"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[msg]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="bot"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[bot]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="document"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[doc]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="clock"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[t]';
+  color: var(--text-secondary);
+}
+body.carbonyl-mode *:has(> [data-icon-name="inbox"]):not(:has(> :not([data-icon-name]):not(style)))::after {
+  content: '[in]';
+  color: var(--text-secondary);
+}
+
+/* ---------------------------------------------------------------- */
+/* C2: NavBar                                                       */
+/*                                                                  */
+/* Class names sourced from `NavBar.vue` directly (plan's `.nav-bar`*/
+/* / `.nav-item` guesses are correct; `.nav-logo` and `.nav-items`  */
+/* are the actual surrounding elements). The logo `<img>` cannot    */
+/* survive Carbonyl sampling, so we hide it and surface a text      */
+/* wordmark via `::before` on the `.nav-bar` itself — that puts the */
+/* mark in the same flex slot the logo occupied.                    */
+/* ---------------------------------------------------------------- */
+
+/* Wordmark replacement for the SVG logo. `display: none` on the
+   `<img>` so Carbonyl never even attempts to sample its bitmap; the
+   `.nav-bar::before` produces a high-contrast text mark in cyan
+   (the same `--accent` the original SVG inherited via currentColor).
+   `letter-spacing` overrides the global 0 reset for this one element
+   so the wordmark reads as a deliberate brand block, not flat text. */
+body.carbonyl-mode .nav-bar .nav-logo {
+  display: none !important;
+}
+body.carbonyl-mode .nav-bar::before {
+  content: 'FLOWSTATE';
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.1em !important;
+  padding: 0 0.5rem;
+  border: 2px solid var(--accent);
+  /* The 2px border eats one terminal row top + bottom; matches the
+     button border thickness so the nav-rail visually rhymes with the
+     rest of the carbonyl chrome. */
+}
+
+/* 2px solid bottom border for the nav rail — replaces the 1px
+   var(--border) the component sets in its scoped style. 1px borders
+   half-sample into dotted noise in Carbonyl; 2px lands a full row. */
+body.carbonyl-mode .nav-bar {
+  border-bottom: 2px solid var(--border) !important;
+}
+
+/* Nav items: square outline so the click target is visible even
+   without hover state. The plan calls for "2px solid borders on the
+   nav rail / nav items where appropriate" — we apply 2px outline to
+   every item so the user can see the click region. */
+body.carbonyl-mode .nav-bar .nav-item {
+  border: 2px solid var(--border) !important;
+  padding: 0.15rem 0.6rem !important;
+}
+
+/* Active state: solid colour swap (cyan bg + black fg) so the
+   selected route is unmistakable. We override BOTH the .active
+   colour rule and its background (the scoped style sets `color:
+   var(--accent)` on its own line, which we keep beaten via the
+   specificity of `.nav-bar .nav-item.active`). */
+body.carbonyl-mode .nav-bar .nav-item.active {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--accent) !important;
+}
+
+/* ---------------------------------------------------------------- */
+/* C3: MessageInput composer                                        */
+/*                                                                  */
+/* Class names sourced directly from `MessageInput.vue` — the plan's*/
+/* generic `.composer` guess does not exist; the wrapper is         */
+/* `.message-input-wrap`, the textarea is `.message-input`, and the */
+/* primary actions are `.send-button` / `.stop-button` /            */
+/* `.attach-button`. Every rule beats the component's scoped styles */
+/* via the `body.carbonyl-mode` prefix (specificity 0,1,1 + element */
+/* selector — strictly higher than the scoped attribute selector).  */
+/* ---------------------------------------------------------------- */
+
+/* Composer top border: 2px solid white to match the nav rail. The
+   scoped style uses 1px var(--border) which already picks up white
+   from the theme override, but the 1px width is what fragments. */
+body.carbonyl-mode .message-input-wrap {
+  border-top: 2px solid var(--border) !important;
+  /* Drop the green is-dragging tint — that branch sets an rgba()
+     gradient-ish background which sample-quantises to dithered
+     blocks. Keep it black; the drop overlay carries enough signal
+     via the dashed border + label below. */
+}
+body.carbonyl-mode .message-input-wrap.is-dragging {
+  background: var(--bg-primary) !important;
+}
+
+/* Drag-and-drop overlay: solid border, no rgba background; the text
+   label is the affordance in carbonyl mode. */
+body.carbonyl-mode .message-input-drag-overlay {
+  background: var(--bg-primary) !important;
+  border: 2px solid var(--accent) !important;
+  /* `border: dashed` half-samples to dotted-line gaps in Carbonyl,
+     which the user reads as a broken border. Solid 2px lands clean. */
+}
+
+/* Textarea: 2px white border, no rounding (already nilled by global
+   reset), no focus colour shift (a colour swap mid-edit becomes a
+   flicker in Carbonyl's sampler). Focus surfaces via the border
+   thickening from 2px to a clearer state — same width, brighter
+   accent. */
+body.carbonyl-mode .message-input {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+body.carbonyl-mode .message-input:focus {
+  border-color: var(--accent) !important;
+  outline: none !important;
+}
+
+/* Send button: solid navy fill, white text, 2px white border. Hover
+   / focus inverts to cyan-on-black so users get unambiguous state
+   feedback in mono-friendly primaries. The original scoped style
+   uses `background: var(--accent)` with `color: var(--bg-primary)` —
+   in carbonyl mode `--accent` is cyan and `--bg-primary` is black,
+   which sample-quantises FINE, but the original lacks a border so
+   the button reads as floating text. We add the border. */
+body.carbonyl-mode .send-button {
+  background: #000080 !important;
+  color: #ffffff !important;
+  border: 2px solid #ffffff !important;
+  padding: 0.4rem 1rem !important;
+  height: auto !important;
+}
+body.carbonyl-mode .send-button:hover:not(:disabled),
+body.carbonyl-mode .send-button:focus-visible {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--accent) !important;
+  outline: none !important;
+}
+/* Disabled: keep the border so the button is still locatable, but
+   dim the fill to the disabled-grey from the muted palette. Opacity
+   alone (the scoped style's `opacity: 0.4`) drops the contrast below
+   carbonyl's legibility floor — replace with a borderless-but-bright
+   muted state. */
+body.carbonyl-mode .send-button:disabled {
+  background: var(--bg-primary) !important;
+  color: var(--text-muted) !important;
+  border-color: var(--text-muted) !important;
+  opacity: 1 !important;
+}
+
+/* Stop button: red destructive fill in browser mode (`#f87171`)
+   samples to a dusty pink in carbonyl. Snap to pure red + white text
+   + 2px white border so the button reads as an unambiguous halt
+   action. */
+body.carbonyl-mode .stop-button {
+  background: var(--error) !important;
+  color: #ffffff !important;
+  border: 2px solid #ffffff !important;
+  padding: 0.4rem 1rem !important;
+  height: auto !important;
+}
+body.carbonyl-mode .stop-button:hover,
+body.carbonyl-mode .stop-button:focus-visible {
+  background: var(--bg-primary) !important;
+  color: var(--error) !important;
+  border-color: var(--error) !important;
+  outline: none !important;
+}
+
+/* Attach button: outline-only by default (no fill — preserves the
+   secondary visual weight); hover inverts to cyan fill on black so
+   the user can see they've targeted it. Same 2px border treatment
+   as send/stop so the three buttons share a vocabulary. The icon
+   inside is hidden by the global `.icon` rule and the [+] label is
+   synthesised by the icon-fallback `::after`. */
+body.carbonyl-mode .attach-button {
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  border: 2px solid var(--border) !important;
+  height: auto !important;
+  padding: 0.3rem 0.6rem !important;
+}
+body.carbonyl-mode .attach-button:hover {
+  background: var(--accent) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--accent) !important;
+}
+
+/* Per-attachment remove button: tiny icon-only [x] chip beside each
+   staged file. Make sure the user can still see/find it once the
+   icon is hidden. The fallback ::after rule above synthesises `[x]`;
+   we just need to make the button itself bordered. */
+body.carbonyl-mode .message-input-attachment-remove {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+  padding: 0.1rem 0.3rem !important;
+}
+body.carbonyl-mode .message-input-attachment-remove:hover {
+  background: var(--error) !important;
+  color: var(--bg-primary) !important;
+  border-color: var(--error) !important;
+}
+
+/* Staged-attachment chip: chunky outline so the user can see where
+   one chip ends and the next begins on the row. */
+body.carbonyl-mode .message-input-attachment {
+  border: 2px solid var(--border) !important;
+  background: var(--bg-primary) !important;
+}
+
