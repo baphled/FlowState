@@ -19,6 +19,7 @@ import (
 	"github.com/baphled/flowstate/internal/context/compaction"
 	"github.com/baphled/flowstate/internal/context/factstore"
 	"github.com/baphled/flowstate/internal/hook"
+	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
@@ -2616,10 +2617,25 @@ func (e *Engine) buildToolSchemas() []provider.Tool {
 //   - Updates the engine's tool-schema cache only on the unbound
 //     path.
 func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
+	mode := permissionmode.FromContext(ctx)
+
 	if bound, ok := manifestFromContext(ctx); ok {
 		e.mu.RLock()
 		defer e.mu.RUnlock()
-		return e.assembleToolSchemasLocked(bound)
+		return e.assembleToolSchemasLocked(bound, mode)
+	}
+
+	// Plan-mode bypasses the cache. The cache stores the unfiltered
+	// schema keyed on the engine's active manifest; serving a Plan
+	// session from cache would either (a) poison the cache for a
+	// concurrent Default session if we cached the filtered result,
+	// or (b) leak mutating tools to the Plan session if we served
+	// the unfiltered cached entry. Plan turns are rare enough that
+	// rebuilding on every call is the safe trade.
+	if mode == permissionmode.ModePlan {
+		e.mu.RLock()
+		defer e.mu.RUnlock()
+		return e.assembleToolSchemasLocked(e.manifest, mode)
 	}
 
 	e.mu.RLock()
@@ -2637,7 +2653,7 @@ func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
 		return e.cachedToolSchemas
 	}
 
-	tools := e.assembleToolSchemasLocked(e.manifest)
+	tools := e.assembleToolSchemasLocked(e.manifest, mode)
 	e.cachedToolSchemas = tools
 	return tools
 }
@@ -2652,14 +2668,50 @@ func (e *Engine) buildToolSchemasCtx(ctx context.Context) []provider.Tool {
 //   - e.mu is held (read or write).
 //   - manifest is the manifest to filter the engine's registered
 //     tools against.
+//   - mode is the active permission mode for the call. When equal to
+//     permissionmode.ModePlan, every tool name in
+//     permissionmode.MutatingTools is filtered out of the result —
+//     Plan-mode agents never see the schema for write-like tools and
+//     a stray tool_use returns tool-not-found rather than access-
+//     denied. Any other mode (including the empty string) is treated
+//     as "no Plan filter".
 //
 // Returns:
 //   - The composed provider tool schemas slice.
 //
 // Side effects:
 //   - None.
-func (e *Engine) assembleToolSchemasLocked(manifest agent.Manifest) []provider.Tool {
+func (e *Engine) assembleToolSchemasLocked(manifest agent.Manifest, mode string) []provider.Tool {
 	allowedSet := e.buildAllowedToolSetFor(manifest)
+
+	// Plan-mode filter: subtract mutating tools from the effective
+	// surface BEFORE schema composition so the LLM never sees them.
+	// When allowedSet is nil (no upstream restriction), synthesise a
+	// deny-only allowedSet keyed on every registered tool name — the
+	// inner loop then short-circuits on the mutating entries.
+	if mode == permissionmode.ModePlan {
+		if allowedSet == nil {
+			synthetic := make(map[string]bool, len(e.tools))
+			for _, t := range e.tools {
+				if !permissionmode.IsMutating(t.Name()) {
+					synthetic[t.Name()] = true
+				}
+			}
+			allowedSet = synthetic
+		} else {
+			// Copy-on-write: the caller's allowedSet may be cached
+			// inside buildAllowedToolSetFor or shared across goroutines.
+			// Mutating it directly would poison sibling callers using
+			// the same manifest under a non-Plan mode.
+			filtered := make(map[string]bool, len(allowedSet))
+			for name, ok := range allowedSet {
+				if ok && !permissionmode.IsMutating(name) {
+					filtered[name] = true
+				}
+			}
+			allowedSet = filtered
+		}
+	}
 
 	tools := make([]provider.Tool, 0, len(e.tools))
 	for _, t := range e.tools {

@@ -84,3 +84,45 @@ func FromContext(ctx context.Context) Mode {
 	}
 	return v
 }
+
+// MutatingTools is the canonical set of tool names considered mutating
+// for Plan-mode filtering. The engine's schema assembly path
+// (assembleToolSchemasLocked) removes every entry in this set from the
+// per-call tool registry when the active mode is ModePlan, so the LLM
+// never sees the schema and a stray tool_use returns a tool-not-found
+// surface instead of an access-denied surface.
+//
+// The set is enumerated explicitly rather than derived from a tool
+// interface flag because:
+//
+//  1. The pathguard *ForTool wires gate a broader surface — file I/O
+//     under Default mode still flows through permissions.yaml. The
+//     Plan-mode filter is a strict SUBSET (the five tools whose only
+//     purpose is workspace mutation) so deriving it from "anything
+//     pathguard gates" would over-filter (e.g. it would block `read`,
+//     which is read-only but still gated for denied-roots).
+//
+//  2. Adding a new mutating tool is a deliberate trust decision. The
+//     plan calls out that "if unsure, default to include" — keeping
+//     the list in one well-known spot makes the audit step explicit.
+//
+// Future additions: any tool whose Execute body writes the filesystem,
+// shells out, or otherwise mutates external state. Grep
+// internal/tool/<name>/<name>.go for write-like side effects when
+// promoting a new tool through the registry.
+var MutatingTools = map[string]struct{}{
+	"bash":        {},
+	"write":       {},
+	"edit":        {},
+	"multiedit":   {},
+	"apply_patch": {},
+}
+
+// IsMutating reports whether the named tool is in the MutatingTools
+// set. Provided so engine-side callers don't have to import the map
+// directly (and so a future move to a richer predicate — e.g. one
+// that consults a tool-side flag — is non-breaking).
+func IsMutating(toolName string) bool {
+	_, ok := MutatingTools[toolName]
+	return ok
+}

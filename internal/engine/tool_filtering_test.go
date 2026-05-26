@@ -8,6 +8,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -732,6 +733,264 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 				Expect(childNames).NotTo(ContainElement("bash"))
 				Expect(childNames).NotTo(ContainElement("create_entities"))
 				Expect(childNames).NotTo(ContainElement("search_nodes"))
+			})
+		})
+	})
+
+	// Plan-mode schema filter — Permission Modes plan (May 2026) §4 Slice 4.
+	// When the active permission mode is "plan", the engine subtracts the
+	// canonical mutating-tool set (permissionmode.MutatingTools) from the
+	// per-call schema BEFORE the LLM sees it. A stray tool_use therefore
+	// returns the tool-not-found surface, not the access-denied surface.
+	Describe("Plan-mode schema filter", func() {
+		var (
+			planAllTools     []tool.Tool
+			mutatingToolNames = []string{"bash", "write", "edit", "multiedit", "apply_patch"}
+		)
+
+		BeforeEach(func() {
+			// Use a dedicated fixture that registers every mutating tool
+			// by canonical name plus a representative non-mutating set
+			// so the Plan-mode filter is observable end-to-end at the
+			// provider request layer.
+			planAllTools = []tool.Tool{
+				&mockTool{name: "bash", description: "Execute commands"},
+				&mockTool{name: "write", description: "Write files"},
+				&mockTool{name: "edit", description: "Edit files"},
+				&mockTool{name: "multiedit", description: "Multi-edit files"},
+				&mockTool{name: "apply_patch", description: "Apply diffs"},
+				&mockTool{name: "read", description: "Read files"},
+				&mockTool{name: "grep", description: "Grep files"},
+				&mockTool{name: "glob", description: "Glob files"},
+				&mockTool{name: "ls", description: "List directories"},
+				&mockTool{name: "lsp", description: "LSP queries"},
+				&mockTool{name: "skill_load", description: "Load skills"},
+				&mockTool{name: "todowrite", description: "Write todos"},
+			}
+		})
+
+		Context("when ctx carries ModePlan", func() {
+			It("filters bash/write/edit/multiedit/apply_patch out of the assembled schemas", func() {
+				manifest := agent.Manifest{
+					ID:   "plan-agent",
+					Name: "Plan Agent",
+					Instructions: agent.Instructions{
+						SystemPrompt: "You are a planning agent.",
+					},
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        planAllTools,
+				})
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
+				chunks, err := eng.Stream(ctx, "", "plan a refactor")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				Expect(chatProvider.capturedRequest).NotTo(BeNil())
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				for _, mutator := range mutatingToolNames {
+					Expect(names).NotTo(ContainElement(mutator),
+						"Plan mode must filter %q out of the schema", mutator)
+				}
+				// Read-only tools from the `file` bundle expansion + base
+				// inherited tools should still surface. The `file` bundle
+				// is read+write+edit+multiedit+apply_patch; Plan strips
+				// the mutating four, leaving read.
+				Expect(names).To(ContainElement("read"),
+					"Plan mode must preserve read tools from the file bundle")
+				Expect(names).To(ContainElement("skill_load"),
+					"Plan mode must preserve inherited base tools")
+				Expect(names).To(ContainElement("todowrite"),
+					"Plan mode must preserve inherited base tools")
+			})
+		})
+
+		Context("when ctx carries ModeYolo", func() {
+			It("does NOT filter mutating tools — every declared tool surfaces", func() {
+				manifest := agent.Manifest{
+					ID:   "yolo-agent",
+					Name: "Yolo Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        planAllTools,
+				})
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModeYolo)
+				chunks, err := eng.Stream(ctx, "", "do anything")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				for _, mutator := range mutatingToolNames {
+					Expect(names).To(ContainElement(mutator),
+						"Yolo mode must NOT filter %q — Plan filter is mode-gated", mutator)
+				}
+			})
+		})
+
+		Context("when ctx carries ModeDefault", func() {
+			It("does NOT filter mutating tools — every declared tool surfaces", func() {
+				manifest := agent.Manifest{
+					ID:   "default-agent",
+					Name: "Default Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        planAllTools,
+				})
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModeDefault)
+				chunks, err := eng.Stream(ctx, "", "work as normal")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				for _, mutator := range mutatingToolNames {
+					Expect(names).To(ContainElement(mutator),
+						"Default mode must NOT filter %q", mutator)
+				}
+			})
+		})
+
+		Context("when ctx carries ModeAcceptEdits", func() {
+			It("does NOT filter mutating tools — Accept-Edits enforcement is pathguard-side, not engine-side", func() {
+				manifest := agent.Manifest{
+					ID:   "accept-edits-agent",
+					Name: "Accept Edits Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        planAllTools,
+				})
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModeAcceptEdits)
+				chunks, err := eng.Stream(ctx, "", "edit a file")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				for _, mutator := range mutatingToolNames {
+					Expect(names).To(ContainElement(mutator),
+						"Accept-Edits mode must NOT filter %q — auto-accept lives in the prompt layer, schema is unchanged", mutator)
+				}
+			})
+		})
+
+		Context("when ctx is unstamped (no permission_mode key)", func() {
+			It("does NOT filter mutating tools — FromContext defaults to Default", func() {
+				manifest := agent.Manifest{
+					ID:   "unstamped-agent",
+					Name: "Unstamped Agent",
+					Capabilities: agent.Capabilities{
+						Tools: []string{"bash", "file"},
+					},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        planAllTools,
+				})
+
+				chunks, err := eng.Stream(context.Background(), "", "work")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				for _, mutator := range mutatingToolNames {
+					Expect(names).To(ContainElement(mutator),
+						"Unstamped ctx must behave as Default — %q must surface", mutator)
+				}
+			})
+		})
+
+		// Synthetic deny-set case: a manifest with no Capabilities.Tools
+		// declared still inherits the base set. The buildAllowedToolSetFor
+		// path returns a non-nil allowed map in that case, so this Context
+		// validates the "copy-on-write filter" branch of the implementation
+		// — the case where allowedSet is non-nil and Plan mode subtracts
+		// mutators from it. The complementary "allowedSet == nil" branch
+		// is exercised by the AllowedToolSet whitebox spec below.
+		Context("when manifest inherits the base set (no Capabilities.Tools)", func() {
+			It("Plan mode preserves the inherited non-mutating base set", func() {
+				manifest := agent.Manifest{
+					ID:           "base-only-agent",
+					Name:         "Base Only Agent",
+					Capabilities: agent.Capabilities{},
+				}
+
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        planAllTools,
+				})
+
+				ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
+				chunks, err := eng.Stream(ctx, "", "plan only")
+				Expect(err).NotTo(HaveOccurred())
+				for v := range chunks {
+					_ = v
+				}
+
+				names := toolNames(chatProvider.capturedRequest.Tools)
+				// Base set inherited: skill_load + todowrite. Plan filter
+				// doesn't strike either because neither is mutating.
+				Expect(names).To(ConsistOf("skill_load", "todowrite"))
+			})
+		})
+
+		// Whitebox: documents the allowedSet=nil branch by exercising
+		// MutatingTools / IsMutating directly. The engine-side equivalent
+		// branch fires only when buildAllowedToolSetFor returns nil, which
+		// the production path (manifest inheritance) avoids — but the
+		// branch is reachable via test seam if a future code path
+		// disables manifest restrictions, so we pin the helper contract.
+		Context("permissionmode.IsMutating helper", func() {
+			It("returns true for every canonical mutating tool", func() {
+				for _, name := range mutatingToolNames {
+					Expect(permissionmode.IsMutating(name)).To(BeTrue(),
+						"%q must be classed as mutating", name)
+				}
+			})
+
+			It("returns false for canonical read-only tools", func() {
+				for _, name := range []string{"read", "grep", "glob", "ls", "lsp", "skill_load", "todowrite"} {
+					Expect(permissionmode.IsMutating(name)).To(BeFalse(),
+						"%q must NOT be classed as mutating", name)
+				}
 			})
 		})
 	})
