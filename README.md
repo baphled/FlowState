@@ -125,11 +125,30 @@ For a full walkthrough, see the [Demo Guide](docs/DEMO.md).
 
 ## Context Compression
 
-FlowState ships a three-layer compression pipeline that keeps long-running sessions inside provider token budgets without mutating the canonical transcript. Layer 2 (auto-compaction) is enabled by default since the May 2026 Phase-4 follow-ups; the more invasive Layer 1 (micro-compaction) and Layer 3 (session-memory) layers stay opt-in. To disable Layer 2 set `compression.auto_compaction.enabled: false` in `config.yaml`. Each layer can be tuned via the `compression:` block.
+FlowState ships a three-layer compression pipeline that keeps long-running sessions inside provider token budgets without mutating the canonical transcript. Layer 2 (auto-compaction) is enabled by default since the May 2026 Phase-4 follow-ups; the more invasive Layer 1 (micro-compaction) and Layer 3 (session-memory) layers stay opt-in. Each layer can be tuned via the `compression:` block.
+
+> **`compression.auto_compaction.enabled` is the master switch for Layer 2.** It gates BOTH automatic firing (ratio, gate-proximity, manifest-override tiers) AND the manual `/compact` slash command / `POST /api/v1/sessions/{id}/compact` endpoint. With `enabled: false` no compaction can fire — automatic or manual. The in-source default is `true`; if a manual `/compact` appears to do nothing, check that the active `config.yaml` is not overriding the default to `false`.
 
 - **Layer 1 — Micro-compaction** (`micro_compaction`) replaces older tool-heavy units with short placeholders while keeping the recent "hot tail" verbatim. Spilled payloads land under `~/.flowstate/compacted/{session-id}/` and can be rehydrated on demand.
-- **Layer 2 — Auto-compaction** (`auto_compaction`) fires when recent-message tokens exceed the configured fraction of the model context window. A summariser produces a structured `CompactionSummary` (intent, decisions, next steps, files-to-restore) that is injected as a single assistant message in place of the cold range. Compaction is strictly view-only: `session.Messages` is never mutated.
+- **Layer 2 — Auto-compaction** (`auto_compaction`) fires when recent-message tokens exceed the configured fraction of the model context window. Before invoking the LLM summariser, a **Stage-1 prune pass** truncates oversized tool outputs (see below) and may short-circuit the trigger entirely if pruning alone drops the post-prune full-window ratio below threshold (force-fire paths skip this short-circuit and always summarise). When a summary is needed, the summariser produces a structured `CompactionSummary` (intent, decisions, next steps, files-to-restore) that is injected as a single assistant message in place of the cold range. Compaction is strictly view-only: `session.Messages` is never mutated.
 - **Layer 3 — Session memory** (`session_memory`) distils facts, conventions, and preferences from the transcript into a per-session knowledge store under `~/.flowstate/session-memory/{session-id}/`. Extraction runs asynchronously after each stream completes; retrieval surfaces the top-relevance entries as a prefix block in subsequent windows.
+
+### Stage-1 tool-output prune
+
+Inside the Layer 2 trigger, the cold-range slice that the summariser would otherwise consume first runs through a Stage-1 prune pass:
+
+- Tool-result messages whose content exceeds **2000 characters** are truncated to that ceiling and stamped with a `[...truncated, N tokens]` sentinel. The figure is borrowed from OpenCode's pruning policy and is intentionally generous — the prune is the cheap layer that runs before the LLM summariser.
+- The most recent tool-result message is left untouched (tail guard) so the model's live work has its anchor intact.
+- A closed **protected tool-name list** — `plan_write`, `coordination_store`, `recall_search`, `question_request` — is exempt from truncation regardless of output size. These tools return load-bearing identifiers (plan IDs, coordination keys, recall hits, question payloads) that downstream consumers cannot reconstruct from a truncated tail.
+- If the prune alone reclaims enough tokens to drop the post-prune full-window ratio below threshold AND no force-fire tier is engaged, the trigger exits without calling the LLM summariser. The `context.compacted` bus event still fires, surfacing the prune-only outcome ("pruned X tool outputs, no summary needed"). Force-fire paths (gate-proximity, manual `/compact`) ignore the short-circuit and always summarise.
+
+### Manual compaction
+
+Operators and the chat UI can force-fire compaction without waiting for an automatic trigger:
+
+- **Slash command:** `/compact` in the Vue chat (`web/src/commands/slashCommands.ts`). Renamed from the earlier `/compress` in May 2026; the old name no longer exists. The TUI does not currently register a `/compact` builtin.
+- **HTTP endpoint:** `POST /api/v1/sessions/{id}/compact`. Renamed from `POST /api/v1/sessions/{id}/compress`; the old path now returns 405. The `compression` segment is retained for the config endpoints (`GET / PATCH /api/v1/config/compression`) because they tune the broader `compression:` block, not the per-session compact action.
+- **Master switch still applies.** Both paths honour `compression.auto_compaction.enabled` — if Layer 2 is disabled, the manual command is a no-op.
 
 Compaction honours two ADRs:
 - **View-Only Context Compaction** — artefacts are parallel state, never rewrites of the canonical transcript.
