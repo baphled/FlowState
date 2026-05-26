@@ -1,6 +1,7 @@
 package pathguard_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -8,6 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/config"
+	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
@@ -153,19 +155,19 @@ var _ = Describe("Pathguard", func() {
 		It("returns nil when the matcher explicitly allows the path, even under a denied root", func() {
 			matcher := stubMatcher{decision: "allow", matched: true}
 			g := pathguard.NewWithPermissions([]string{denied}, matcher)
-			Expect(g.CheckForTool("read", filepath.Join(denied, "ok.md"))).NotTo(HaveOccurred())
+			Expect(g.CheckForTool(context.Background(), "read", filepath.Join(denied, "ok.md"))).NotTo(HaveOccurred())
 		})
 
 		It("returns an error when the matcher explicitly denies the path, even outside the denied roots", func() {
 			matcher := stubMatcher{decision: "deny", matched: true}
 			g := pathguard.NewWithPermissions(nil, matcher)
-			Expect(g.CheckForTool("read", "/tmp/elsewhere/file.md")).To(HaveOccurred())
+			Expect(g.CheckForTool(context.Background(), "read", "/tmp/elsewhere/file.md")).To(HaveOccurred())
 		})
 
 		It("falls through to the legacy Check when the matcher has no opinion", func() {
 			matcher := stubMatcher{matched: false}
 			g := pathguard.NewWithPermissions([]string{denied}, matcher)
-			err := g.CheckForTool("read", filepath.Join(denied, "still-blocked.md"))
+			err := g.CheckForTool(context.Background(), "read", filepath.Join(denied, "still-blocked.md"))
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -173,13 +175,13 @@ var _ = Describe("Pathguard", func() {
 			matcher := stubMatcher{decision: "allow", matched: true}
 			g := pathguard.NewWithPermissions([]string{denied}, matcher)
 			// empty tool name → matcher MUST be skipped → legacy denies
-			err := g.CheckForTool("", filepath.Join(denied, "foo.md"))
+			err := g.CheckForTool(context.Background(), "", filepath.Join(denied, "foo.md"))
 			Expect(err).To(HaveOccurred())
 		})
 
 		It("collapses to legacy Check when no matcher is wired", func() {
 			g := pathguard.New([]string{denied})
-			err := g.CheckForTool("read", filepath.Join(denied, "foo.md"))
+			err := g.CheckForTool(context.Background(), "read", filepath.Join(denied, "foo.md"))
 			Expect(err).To(HaveOccurred())
 		})
 	})
@@ -189,21 +191,21 @@ var _ = Describe("Pathguard", func() {
 			matcher := stubMatcher{decision: "deny", matched: true}
 			g := pathguard.NewWithPermissions(nil, matcher)
 			cmd := "cat /tmp/anywhere/secret.txt"
-			Expect(g.CheckCommandForTool("bash", cmd)).To(HaveOccurred())
+			Expect(g.CheckCommandForTool(context.Background(), "bash", cmd)).To(HaveOccurred())
 		})
 
 		It("allows a tokenised path under a legacy-denied root when the matcher explicitly allows it", func() {
 			matcher := stubMatcher{decision: "allow", matched: true}
 			g := pathguard.NewWithPermissions([]string{denied}, matcher)
 			cmd := "cat " + filepath.Join(denied, "notes.md")
-			Expect(g.CheckCommandForTool("bash", cmd)).NotTo(HaveOccurred())
+			Expect(g.CheckCommandForTool(context.Background(), "bash", cmd)).NotTo(HaveOccurred())
 		})
 
 		It("falls through to legacy denied-roots when the matcher has no opinion", func() {
 			matcher := stubMatcher{matched: false}
 			g := pathguard.NewWithPermissions([]string{denied}, matcher)
 			cmd := "cat " + filepath.Join(denied, "notes.md")
-			Expect(g.CheckCommandForTool("bash", cmd)).To(HaveOccurred())
+			Expect(g.CheckCommandForTool(context.Background(), "bash", cmd)).To(HaveOccurred())
 		})
 
 		It("preserves the quote-aware tokeniser — quoted mentions of the denied path do not trip the matcher", func() {
@@ -213,7 +215,7 @@ var _ = Describe("Pathguard", func() {
 			counter := &countingMatcher{}
 			g := pathguard.NewWithPermissions(nil, counter)
 			cmd := `echo "TODO: ` + denied + `/notes.md is internal"`
-			Expect(g.CheckCommandForTool("bash", cmd)).NotTo(HaveOccurred())
+			Expect(g.CheckCommandForTool(context.Background(), "bash", cmd)).NotTo(HaveOccurred())
 			Expect(counter.calls).To(Equal(0))
 		})
 
@@ -222,7 +224,90 @@ var _ = Describe("Pathguard", func() {
 			g := pathguard.NewWithPermissions(nil, matcher)
 			// empty tool name → matcher skipped → legacy CheckCommand
 			// has no denied roots configured so should succeed.
-			Expect(g.CheckCommandForTool("", "cat /tmp/foo.md")).NotTo(HaveOccurred())
+			Expect(g.CheckCommandForTool(context.Background(), "", "cat /tmp/foo.md")).NotTo(HaveOccurred())
+		})
+	})
+
+	// Permission Modes plan §4 Slice 1 (May 2026). The new Cases 13–17
+	// pin the ctx-aware behaviour the *ForTool methods now expose:
+	//
+	//   - YOLO short-circuits to PASS at the top of both methods,
+	//     ahead of any matcher consultation or denied-roots check.
+	//   - Plan and Default leave the legacy decision flow alone
+	//     (Plan-mode enforcement is engine-side, not pathguard).
+	//   - A missing mode binding (or nil ctx) canonicalises to
+	//     Default via permissionmode.FromContext.
+	Describe("CheckForTool — permission-mode ctx integration (Slice 1)", func() {
+		// Case 13 — YOLO short-circuits even with a permissions
+		// matcher actively denying the path.
+		It("Case 13: returns nil under mode=yolo even when matcher would deny", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeYolo)
+			err := g.CheckForTool(ctx, "write", filepath.Join(denied, "foo.md"))
+			Expect(err).NotTo(HaveOccurred(), "YOLO MUST bypass the permissions matcher and denied roots")
+		})
+
+		// Case 14 — Default mode preserves the pre-Slice-1 behaviour:
+		// the matcher deny still fires.
+		It("Case 14: denies under mode=default when matcher denies (current behaviour preserved)", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeDefault)
+			err := g.CheckForTool(ctx, "write", filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred(), "Default MUST defer to the matcher; YOLO is the only bypass")
+		})
+
+		// Case 16 — Plan mode does NOT short-circuit pathguard. The
+		// engine-side schema filter is what enforces Plan; pathguard
+		// MUST treat Plan identically to Default so a future bug that
+		// confuses the two cannot silently leak write access.
+		It("Case 16: denies under mode=plan when matcher denies (Plan != YOLO)", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			ctx := permissionmode.WithMode(context.Background(), permissionmode.ModePlan)
+			err := g.CheckForTool(ctx, "write", filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred(), "Plan MUST behave like Default in pathguard — Plan enforcement is engine-side")
+		})
+
+		// Case 17 — missing mode binding canonicalises to Default.
+		// Uses a bare context.Background() with no WithMode stamp.
+		It("Case 17: denies when ctx carries no mode binding (defaults to Default)", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			err := g.CheckForTool(context.Background(), "write", filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred(), "missing mode binding MUST canonicalise to Default, not YOLO")
+		})
+
+		// Belt-and-braces: an explicit empty mode also defaults safely.
+		It("denies when ctx carries empty-string mode (canonicalised to Default)", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			// WithMode("") short-circuits to the same ctx, so this
+			// exercises the FromContext "" → default branch directly.
+			ctx := permissionmode.WithMode(context.Background(), "")
+			err := g.CheckForTool(ctx, "write", filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred())
+		})
+	})
+
+	Describe("CheckCommandForTool — permission-mode ctx integration (Slice 1)", func() {
+		// Case 15 — YOLO short-circuits the command-token scan too.
+		It("Case 15: returns nil under mode=yolo for a denied bash command", func() {
+			g := pathguard.New([]string{denied})
+			ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeYolo)
+			cmd := "cat " + filepath.Join(denied, "secrets.md")
+			err := g.CheckCommandForTool(ctx, "bash", cmd)
+			Expect(err).NotTo(HaveOccurred(), "YOLO MUST bypass the per-token denied-roots scan")
+		})
+
+		// Pairing pin: Default mode still denies the same command.
+		It("denies the same bash command under mode=default", func() {
+			g := pathguard.New([]string{denied})
+			ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeDefault)
+			cmd := "cat " + filepath.Join(denied, "secrets.md")
+			err := g.CheckCommandForTool(ctx, "bash", cmd)
+			Expect(err).To(HaveOccurred())
 		})
 	})
 })
@@ -250,7 +335,7 @@ var _ = Describe("Pathguard — Slice B integration with *config.Permissions", f
 				},
 			}
 			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
-			Expect(g.CheckForTool("write", "/vault/file.md")).NotTo(HaveOccurred())
+			Expect(g.CheckForTool(context.Background(), "write", "/vault/file.md")).NotTo(HaveOccurred())
 		})
 
 		// Case 8 — deny-wins-over-allow at the real matcher layer
@@ -265,7 +350,7 @@ var _ = Describe("Pathguard — Slice B integration with *config.Permissions", f
 				},
 			}
 			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
-			err := g.CheckForTool("write", "/vault/foo.md")
+			err := g.CheckForTool(context.Background(), "write", "/vault/foo.md")
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -279,7 +364,7 @@ var _ = Describe("Pathguard — Slice B integration with *config.Permissions", f
 				},
 			}
 			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
-			err := g.CheckForTool("grep", "/vault/file.md")
+			err := g.CheckForTool(context.Background(), "grep", "/vault/file.md")
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -292,7 +377,7 @@ var _ = Describe("Pathguard — Slice B integration with *config.Permissions", f
 			// (nil, nil) for a missing file.
 			var perms *config.Permissions
 			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
-			err := g.CheckForTool("write", "/vault/file.md")
+			err := g.CheckForTool(context.Background(), "write", "/vault/file.md")
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -306,7 +391,7 @@ var _ = Describe("Pathguard — Slice B integration with *config.Permissions", f
 				},
 			}
 			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
-			Expect(g.CheckForTool("write", "/vault/subdir/deep/file.md")).NotTo(HaveOccurred())
+			Expect(g.CheckForTool(context.Background(), "write", "/vault/subdir/deep/file.md")).NotTo(HaveOccurred())
 		})
 	})
 
@@ -322,7 +407,7 @@ var _ = Describe("Pathguard — Slice B integration with *config.Permissions", f
 				},
 			}
 			g := pathguard.NewWithPermissions([]string{vaultRoot}, perms)
-			Expect(g.CheckCommandForTool("bash", "cat /vault/file.md")).NotTo(HaveOccurred())
+			Expect(g.CheckCommandForTool(context.Background(), "bash", "cat /vault/file.md")).NotTo(HaveOccurred())
 		})
 	})
 })

@@ -101,7 +101,7 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - Reads and writes one file on disk.
-func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	filePath, ok := input.Arguments["file_path"].(string)
 	if !ok || strings.TrimSpace(filePath) == "" {
 		return tool.Result{}, errors.New("file_path argument is required")
@@ -114,7 +114,7 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 
 	rawPath := strings.TrimSpace(filePath)
 	if t.guard != nil {
-		if err := t.guard.CheckForTool("multiedit", rawPath); err != nil {
+		if err := t.guard.CheckForTool(ctx, "multiedit", rawPath); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}

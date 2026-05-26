@@ -3,12 +3,14 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
@@ -259,5 +261,106 @@ var _ = Describe("Engine.executeToolCall D9 todo_strict_mode gate", func() {
 			Expect(result.IsError).To(BeFalse(),
 				"per-session counters prevent one agent's behaviour from gating another")
 		})
+	})
+})
+
+// Permission Modes plan §4 Slice 1 (May 2026). The engine's tool
+// dispatch path MUST preserve the per-session permission mode on the
+// ctx that reaches Tool.Execute — without this, pathguard's YOLO
+// short-circuit (and any future mode-aware tool) cannot observe the
+// caller-stamped value. Pinning the property at executeToolCall
+// confirms deriveToolCtx (the WithTimeout / WithCancel derivation that
+// wraps every tool invocation) does NOT strip context values bound
+// upstream by session.Manager.SendMessage.
+//
+// Seam decision: dispatch boundary (executeToolCall entry) — the same
+// seam the D9 todo_strict_mode gate and gate-error promotion specs
+// pin. The fake tool below records the ctx it received so the spec
+// can read the bound mode back via permissionmode.FromContext.
+type ctxCapturingTool struct {
+	name string
+	mu   sync.Mutex
+	last context.Context
+}
+
+func (c *ctxCapturingTool) Name() string        { return c.name }
+func (c *ctxCapturingTool) Description() string { return "captures ctx for mode-propagation test" }
+func (c *ctxCapturingTool) Schema() tool.Schema { return tool.Schema{Type: "object"} }
+func (c *ctxCapturingTool) Execute(ctx context.Context, _ tool.Input) (tool.Result, error) {
+	c.mu.Lock()
+	c.last = ctx
+	c.mu.Unlock()
+	return tool.Result{Output: "captured"}, nil
+}
+func (c *ctxCapturingTool) capturedCtx() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.last
+}
+
+var _ = Describe("Engine.executeToolCall — permission-mode ctx propagation (Slice 1)", func() {
+	var (
+		eng     *engine.Engine
+		capture *ctxCapturingTool
+	)
+
+	BeforeEach(func() {
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{name: "spy"})
+		capture = &ctxCapturingTool{name: "ctx-capture"}
+		eng = engine.New(engine.Config{
+			Manifest: agent.Manifest{
+				ID:   "lead",
+				Name: "Lead",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"ctx-capture"},
+				},
+			},
+			AgentRegistry: agent.NewRegistry(),
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+		})
+		eng.AddTool(capture)
+	})
+
+	It("preserves mode=yolo on the ctx delivered to Tool.Execute", func() {
+		ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModeYolo)
+
+		_, err := eng.ExecuteToolCallForTest(ctx, "sess-yolo", &provider.ToolCall{
+			ID:        "call-1",
+			Name:      "ctx-capture",
+			Arguments: map[string]any{},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(engine.PermissionModeFromContext(capture.capturedCtx())).To(Equal(permissionmode.ModeYolo),
+			"the engine's tool-dispatch path MUST thread the mode through deriveToolCtx so pathguard can short-circuit on YOLO")
+	})
+
+	It("preserves mode=plan on the ctx delivered to Tool.Execute", func() {
+		ctx := engine.WithPermissionMode(context.Background(), permissionmode.ModePlan)
+
+		_, err := eng.ExecuteToolCallForTest(ctx, "sess-plan", &provider.ToolCall{
+			ID:        "call-2",
+			Name:      "ctx-capture",
+			Arguments: map[string]any{},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(engine.PermissionModeFromContext(capture.capturedCtx())).To(Equal(permissionmode.ModePlan),
+			"Plan mode must reach the tool even though pathguard does not short-circuit on it — future engine-side schema filter consumes this")
+	})
+
+	It("falls back to default when ctx carries no mode binding", func() {
+		_, err := eng.ExecuteToolCallForTest(context.Background(), "sess-bare", &provider.ToolCall{
+			ID:        "call-3",
+			Name:      "ctx-capture",
+			Arguments: map[string]any{},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Bare context.Background() has no mode stamp; FromContext
+		// canonicalises to "default" — proving the safe-fallback path.
+		Expect(engine.PermissionModeFromContext(capture.capturedCtx())).To(Equal(permissionmode.ModeDefault))
 	})
 })

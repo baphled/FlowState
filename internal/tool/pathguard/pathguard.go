@@ -7,10 +7,13 @@
 package pathguard
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/baphled/flowstate/internal/permissionmode"
 )
 
 // PermissionsMatcher is the minimal interface pathguard needs from a
@@ -315,11 +318,14 @@ func looksLikePath(tok string) bool {
 	return false
 }
 
-// CheckForTool first consults the configured PermissionsMatcher for an
-// allow / deny verdict on (tool, path), then falls through to the
-// legacy Check semantics when the matcher has no opinion.
+// CheckForTool first inspects the session's permission mode on ctx —
+// when the mode is YOLO the call short-circuits to PASS before any
+// matcher / denied-roots check runs. Otherwise it consults the
+// configured PermissionsMatcher for an allow / deny verdict on
+// (tool, path), then falls through to the legacy Check semantics when
+// the matcher has no opinion.
 //
-// Decision flow:
+// Decision flow (mode != YOLO):
 //   - matcher returns "deny"  → returns an access-denied error and
 //     does NOT consult the legacy denied roots.
 //   - matcher returns "allow" → returns nil and does NOT consult the
@@ -329,7 +335,17 @@ func looksLikePath(tok string) bool {
 // A nil matcher (or a Guard built via New) collapses to Check(path).
 // An empty tool name behaves the same: the matcher has no entry, so
 // Check(path) runs.
-func (g *Guard) CheckForTool(tool, path string) error {
+//
+// The ctx parameter MUST be the tool-invocation ctx (the same ctx
+// handed to Tool.Execute by the engine's dispatch path); a missing
+// mode binding canonicalises to "default" via
+// permissionmode.FromContext so legacy callers that have not yet
+// wired the engine seam still get the safe pre-Permission-Modes
+// behaviour. Permission Modes plan §4 Slice 1.
+func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
+	if permissionmode.FromContext(ctx) == permissionmode.ModeYolo {
+		return nil
+	}
 	if g.perms != nil && tool != "" {
 		abs, err := filepath.Abs(path)
 		if err == nil {
@@ -349,9 +365,10 @@ func (g *Guard) CheckForTool(tool, path string) error {
 // CheckCommandForTool tokenises command and consults the configured
 // PermissionsMatcher for each path-shaped token under (tool, <token>),
 // then falls back to the legacy CheckCommand semantics for any token
-// the matcher had no opinion on.
+// the matcher had no opinion on. When ctx carries permission mode
+// YOLO the call short-circuits to PASS before tokenisation runs.
 //
-// Per-token decision flow:
+// Per-token decision flow (mode != YOLO):
 //   - matcher returns "deny"  → returns an access-denied error
 //     immediately.
 //   - matcher returns "allow" → that token is exempt from the legacy
@@ -360,7 +377,17 @@ func (g *Guard) CheckForTool(tool, path string) error {
 //     denied-roots check (mirroring the in-place CheckCommand logic).
 //
 // A nil matcher (or empty tool name) collapses to CheckCommand(command).
-func (g *Guard) CheckCommandForTool(tool, command string) error {
+//
+// The ctx parameter MUST be the tool-invocation ctx (the same ctx
+// handed to Tool.Execute by the engine's dispatch path); a missing
+// mode binding canonicalises to "default" via
+// permissionmode.FromContext so legacy callers that have not yet
+// wired the engine seam still get the safe pre-Permission-Modes
+// behaviour. Permission Modes plan §4 Slice 1.
+func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) error {
+	if permissionmode.FromContext(ctx) == permissionmode.ModeYolo {
+		return nil
+	}
 	if g.perms == nil || tool == "" {
 		return g.CheckCommand(command)
 	}

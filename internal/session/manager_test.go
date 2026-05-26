@@ -187,6 +187,83 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// PermissionMode field — Permission Modes plan §4 Slice 1 (May 2026).
+	// Three invariants pinned here:
+	//   1. Every constructor defaults the field to "default", never "".
+	//   2. The field round-trips through the JSON encoding/decoding so a
+	//      restart preserves a user-set mode.
+	//   3. `omitempty` on the struct tag means legacy sidecars without
+	//      the field encode cleanly (we don't write the field when it
+	//      is empty after explicit clearing).
+	//
+	// The four valid values ("plan", "default", "accept_edits", "yolo")
+	// are policed in the engine schema-filter layer and in the API
+	// validation handler; here we only pin the storage contract.
+	Describe("PermissionMode default + JSON round-trip", func() {
+		It("CreateSession defaults PermissionMode to \"default\"", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.PermissionMode).To(Equal("default"))
+		})
+
+		It("CreateSessionWithDefaults defaults PermissionMode to \"default\"", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.PermissionMode).To(Equal("default"))
+		})
+
+		It("CreateWithParent defaults child PermissionMode to \"default\"", func() {
+			parent, err := mgr.CreateSession("parent-agent")
+			Expect(err).NotTo(HaveOccurred())
+			child, err := mgr.CreateWithParent(parent.ID, "child-agent")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(child.PermissionMode).To(Equal("default"))
+		})
+
+		It("EnsureSession defaults PermissionMode to \"default\"", func() {
+			mgr.EnsureSession("ensured-id", "agent-x")
+			loaded, err := mgr.GetSession("ensured-id")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.PermissionMode).To(Equal("default"))
+		})
+
+		It("round-trips a non-default mode through JSON encoding", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			sess.PermissionMode = "yolo"
+
+			encoded, err := json.Marshal(sess)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(encoded)).To(ContainSubstring(`"permission_mode":"yolo"`),
+				"the struct tag must use snake_case permission_mode to match the JSON contract for the API surface")
+
+			var decoded session.Session
+			Expect(json.Unmarshal(encoded, &decoded)).To(Succeed())
+			Expect(decoded.PermissionMode).To(Equal("yolo"))
+		})
+
+		It("omits the field when empty (omitempty preserves legacy sidecar shape)", func() {
+			// Use a zero-value Session so the default-set constructors
+			// don't pre-populate PermissionMode. The on-disk sidecar
+			// for sessions persisted before this field existed must
+			// re-encode without a permission_mode key.
+			var legacy session.Session
+			encoded, err := json.Marshal(legacy)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(encoded)).NotTo(ContainSubstring("permission_mode"),
+				"omitempty on PermissionMode keeps legacy sidecars byte-identical until a non-empty value is set")
+		})
+
+		It("decodes a legacy sidecar (no permission_mode key) as an empty string", func() {
+			// Mimic loading a session persisted before this field existed.
+			const legacyJSON = `{"id":"abc","agent_id":"agent-x","status":"active","parent_id":"","parent_session_id":"","depth":0,"messages":[],"created_at":"0001-01-01T00:00:00Z","updated_at":"0001-01-01T00:00:00Z"}`
+			var decoded session.Session
+			Expect(json.Unmarshal([]byte(legacyJSON), &decoded)).To(Succeed())
+			Expect(decoded.PermissionMode).To(BeEmpty(),
+				"legacy decode produces empty; permissionmode.FromContext canonicalises empty → default so the runtime treats it safely")
+		})
+	})
+
 	// ChainID stamp — Bug Hunt (May 2026) sibling-confusion fix, cold-reload
 	// hole closure. Today's commit a488b858 closed the live-click sibling-
 	// confusion path on the inline delegation card by carrying the runtime

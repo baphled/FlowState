@@ -99,7 +99,7 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	}
 
 	if t.guard != nil {
-		if err := t.guard.CheckCommandForTool("bash", command); err != nil {
+		if err := t.guard.CheckCommandForTool(ctx, "bash", command); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}

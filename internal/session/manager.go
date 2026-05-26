@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/google/uuid"
@@ -115,6 +116,19 @@ type Session struct {
 	// in the FlowState vault and memory entry
 	// `project_flowstate_recall_silent_zero_failure`.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// PermissionMode is the per-session safety dial introduced by the
+	// Permission Modes plan (May 2026). Valid values are:
+	//
+	//   - "plan"          read-only; engine filters write tools out
+	//   - "default"       permissions.yaml + legacy denied-roots both apply
+	//   - "accept_edits"  auto-accept Write/Edit/MultiEdit prompts
+	//   - "yolo"          full pathguard bypass (trusted sandboxes only)
+	//
+	// Empty string is canonicalised to "default" by every reader
+	// (permissionmode.FromContext, the constructor defaults below).
+	// Persisted with omitempty so legacy session sidecars stay
+	// byte-identical until a mode other than "default" is set.
+	PermissionMode string `json:"permission_mode,omitempty"`
 	// ChainID stamps the delegation coordination chain identifier on a
 	// child session at spawn time. Empty for top-level (non-delegated)
 	// sessions, populated for any session created via
@@ -464,6 +478,11 @@ func (m *Manager) RegisterSession(id, agentID string) {
 		// failure on this session is later diagnosable from the .meta.json
 		// sidecar. See SetEmbeddingModel for rationale.
 		EmbeddingModel: m.embeddingModel,
+		// Default the permission mode so every reader sees a stable
+		// value (Permission Modes plan §4 Slice 1). FromContext also
+		// canonicalises empty → "default", so this is belt-and-braces
+		// for any direct reader that touches sess.PermissionMode.
+		PermissionMode: permissionmode.ModeDefault,
 	}
 }
 
@@ -528,6 +547,7 @@ func (m *Manager) CreateSessionWithDefaults(agentID, providerID, modelID string)
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		EmbeddingModel:    embeddingModel,
+		PermissionMode:    permissionmode.ModeDefault,
 	}
 
 	m.sessions[sess.ID] = sess
@@ -625,6 +645,7 @@ func (m *Manager) CreateWithParentAndChain(parentID, agentID, chainID string) (*
 		UpdatedAt:         now,
 		EmbeddingModel:    embeddingModel,
 		ChainID:           chainID,
+		PermissionMode:    permissionmode.ModeDefault,
 	}
 	m.sessions[sess.ID] = sess
 	m.mu.Unlock()
@@ -1293,6 +1314,10 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	sess.UpdatedAt = time.Now()
 	modelOverride := sess.CurrentModelID
 	providerOverride := sess.CurrentProviderID
+	// Snapshot the per-session permission mode under the lock so a
+	// concurrent UpdatePermissionMode call cannot tear the value
+	// between read and ctx-stamp. Permission Modes plan §4 Slice 1.
+	permMode := sess.PermissionMode
 	// Capture prior messages before releasing the lock so we can pass them
 	// to SeedHistory outside the critical section.
 	priorMessages := make([]Message, len(sess.Messages)-1)
@@ -1385,6 +1410,12 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	if modelOverride != "" {
 		ctx = context.WithValue(ctx, ModelOverrideKey{}, modelOverride)
 	}
+	// Stamp the session's permission mode onto ctx so the engine's
+	// tool-dispatch path can hand it to pathguard. permissionmode.WithMode
+	// short-circuits on empty input — legacy sessions persisted before
+	// the field existed flow through unchanged and FromContext returns
+	// the canonical "default". Permission Modes plan §4 Slice 1.
+	ctx = permissionmode.WithMode(ctx, permMode)
 	rawCh, err := m.streamer.Stream(ctx, agentID, message)
 	if err != nil {
 		// Clean up the registered cancel on stream error

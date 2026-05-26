@@ -101,18 +101,18 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - Reads and writes files in the current working directory.
-func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	patchValue, ok := input.Arguments["patch"].(string)
 	if !ok || strings.TrimSpace(patchValue) == "" {
 		return tool.Result{}, errors.New("patch argument is required")
 	}
 
-	patchText, err := loadPatchText(patchValue, t.guard)
+	patchText, err := loadPatchText(ctx, patchValue, t.guard)
 	if err != nil {
 		return tool.Result{Error: err}, nil
 	}
 
-	result, err := applyPatchText(patchText, t.guard)
+	result, err := applyPatchText(ctx, patchText, t.guard)
 	if err != nil {
 		return tool.Result{Error: err}, nil
 	}
@@ -131,10 +131,10 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 //
 // Side effects:
 //   - May read a patch file from disk.
-func loadPatchText(value string, guard *pathguard.Guard) (string, error) {
+func loadPatchText(ctx context.Context, value string, guard *pathguard.Guard) (string, error) {
 	if info, err := os.Stat(value); err == nil && !info.IsDir() {
 		if guard != nil {
-			if err := guard.CheckForTool("apply_patch", value); err != nil {
+			if err := guard.CheckForTool(ctx, "apply_patch", value); err != nil {
 				return "", err
 			}
 		}
@@ -166,7 +166,7 @@ func loadPatchText(value string, guard *pathguard.Guard) (string, error) {
 //
 // Side effects:
 //   - Reads and writes files in the current directory.
-func applyPatchText(patchText string, guard *pathguard.Guard) (string, error) {
+func applyPatchText(ctx context.Context, patchText string, guard *pathguard.Guard) (string, error) {
 	root, err := os.OpenRoot(".")
 	if err != nil {
 		return "", fmt.Errorf("open root failed: %w", err)
@@ -193,7 +193,7 @@ func applyPatchText(patchText string, guard *pathguard.Guard) (string, error) {
 		path := strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
 		rawPath := strings.TrimSpace(path)
 		if guard != nil {
-			if err := guard.CheckForTool("apply_patch", rawPath); err != nil {
+			if err := guard.CheckForTool(ctx, "apply_patch", rawPath); err != nil {
 				return "", err
 			}
 		}

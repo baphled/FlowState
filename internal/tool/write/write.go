@@ -84,7 +84,7 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - Creates parent directories and writes to the filesystem.
-func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	path, ok := input.Arguments["path"].(string)
 	if !ok || path == "" {
 		return tool.Result{}, errors.New("path argument is required")
@@ -101,7 +101,7 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 	}
 
 	if t.guard != nil {
-		if err := t.guard.CheckForTool("write", cleaned); err != nil {
+		if err := t.guard.CheckForTool(ctx, "write", cleaned); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}

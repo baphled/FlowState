@@ -110,7 +110,7 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - Reads and writes a file on disk.
-func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	file, ok := input.Arguments["file"].(string)
 	if !ok || file == "" {
 		return tool.Result{}, errors.New("file argument is required")
@@ -128,7 +128,7 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 
 	rawPath := strings.TrimSpace(file)
 	if t.guard != nil {
-		if err := t.guard.CheckForTool("edit", rawPath); err != nil {
+		if err := t.guard.CheckForTool(ctx, "edit", rawPath); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}
