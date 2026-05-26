@@ -3,6 +3,7 @@ package carbonyl
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,12 +15,20 @@ import (
 )
 
 // RunOptions configures the terminal rendering session.
+//
+// Stdin/Stdout/Stderr are forwarded to the Carbonyl subprocess. They default
+// to the parent's controlling terminal so Carbonyl can ioctl on the tty; tests
+// override with nil/Discard to keep fake-binary subprocesses from holding the
+// test runner's stdio past Cmd.WaitDelay.
 type RunOptions struct {
 	BinaryPath string
 	FPS        int
 	Zoom       int
 	StaticDir  string
 	APIMux     http.Handler
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
 }
 
 // Run starts an ephemeral API server serving the Vue SPA and launches
@@ -54,6 +63,9 @@ func DefaultRunOptions() RunOptions {
 		FPS:        defaultFPS,
 		Zoom:       defaultZoom,
 		StaticDir:  resolveStaticDir(),
+		Stdin:      os.Stdin,
+		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
 	}
 }
 
@@ -107,6 +119,11 @@ func RunWithOptions(application AppInterface, agentID string, sessionID string, 
 	defer cancel()
 
 	bridge := New(cfg)
+	if opts.Stdin != nil || opts.Stdout != nil || opts.Stderr != nil {
+		bridge.Stdin = opts.Stdin
+		bridge.Stdout = opts.Stdout
+		bridge.Stderr = opts.Stderr
+	}
 	if err := bridge.Start(ctx); err != nil {
 		return fmt.Errorf("carbonyl: failed to start bridge: %w", err)
 	}

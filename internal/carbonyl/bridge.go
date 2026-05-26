@@ -23,6 +23,14 @@ type Bridge struct {
 	done      chan error
 	mu        sync.Mutex
 	stopped   bool
+
+	// Carbonyl is a Chromium TUI: stdio defaults to the parent's controlling
+	// terminal so the renderer can ioctl on the tty and surface its own errors.
+	// Tests override with Discard/nil so fake-binary subprocesses do not pin
+	// the test runner's stdio past Cmd.WaitDelay.
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 func New(cfg Config) *Bridge {
@@ -31,6 +39,9 @@ func New(cfg Config) *Bridge {
 		crashChan: make(chan error, 1),
 		done:      make(chan error, 1),
 		stopChan:  make(chan struct{}),
+		Stdin:     os.Stdin,
+		Stdout:    os.Stdout,
+		Stderr:    os.Stderr,
 	}
 }
 
@@ -50,17 +61,20 @@ func (b *Bridge) Start(ctx context.Context) error {
 	b.crashChan = make(chan error, 1)
 	b.mu.Unlock()
 
+	// Carbonyl parses --fps/--zoom only with =value syntax; space-separated
+	// values are treated as positional targets, which triggers Chromium's
+	// "Multiple targets are not supported" error.
 	args := []string{
-		"--fps", fmt.Sprintf("%d", b.cfg.FPS),
-		"--zoom", fmt.Sprintf("%d", b.cfg.Zoom),
+		fmt.Sprintf("--fps=%d", b.cfg.FPS),
+		fmt.Sprintf("--zoom=%d", b.cfg.Zoom),
 		"--disable-gpu",
 		b.cfg.URL,
 	}
 
 	b.cmd = exec.CommandContext(ctx, b.cfg.BinaryPath, args...)
-	b.cmd.Stdin = nil
-	b.cmd.Stdout = io.Discard
-	b.cmd.Stderr = io.Discard
+	b.cmd.Stdin = b.Stdin
+	b.cmd.Stdout = b.Stdout
+	b.cmd.Stderr = b.Stderr
 	b.cmd.WaitDelay = 2 * time.Second
 
 	if err := b.cmd.Start(); err != nil {

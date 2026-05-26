@@ -3,6 +3,7 @@ package carbonyl
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -114,6 +115,9 @@ func TestRunSetsAgentManifest(t *testing.T) {
 			Zoom:       100,
 			StaticDir:  "",
 			APIMux:     http.NewServeMux(),
+			Stdin:      nil,
+			Stdout:     io.Discard,
+			Stderr:     io.Discard,
 		}
 		_ = RunWithOptions(app, "test-agent", "sess-1", opts)
 		done <- struct{}{}
@@ -156,6 +160,9 @@ func TestRunEmptyAgentSkipsManifest(t *testing.T) {
 			Zoom:       100,
 			StaticDir:  "",
 			APIMux:     http.NewServeMux(),
+			Stdin:      nil,
+			Stdout:     io.Discard,
+			Stderr:     io.Discard,
 		}
 		_ = RunWithOptions(app, "", "sess-2", opts)
 		done <- struct{}{}
@@ -333,6 +340,9 @@ func TestRunCreatesSessionMetadata(t *testing.T) {
 			Zoom:       100,
 			StaticDir:  "",
 			APIMux:     http.NewServeMux(),
+			Stdin:      nil,
+			Stdout:     io.Discard,
+			Stderr:     io.Discard,
 		}
 		_ = RunWithOptions(app, "my-agent", "sess-abc", opts)
 		done <- struct{}{}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,18 @@ import (
 	"testing"
 	"time"
 )
+
+// newTestBridge constructs a Bridge with stdio detached from the test runner.
+// Production code inherits the controlling terminal so Carbonyl can ioctl on
+// the tty; tests use sleep-style fake binaries that would otherwise hold the
+// test process's stdio open past Cmd.WaitDelay and trip "I/O incomplete".
+func newTestBridge(cfg Config) *Bridge {
+	b := New(cfg)
+	b.Stdin = nil
+	b.Stdout = io.Discard
+	b.Stderr = io.Discard
+	return b
+}
 
 func makeFakeBinary(t *testing.T, name string, script string) string {
 	t.Helper()
@@ -98,7 +111,7 @@ func TestConfigTerminalSize(t *testing.T) {
 
 func TestStartWithMissingBinary(t *testing.T) {
 	cfg := DefaultConfig().WithBinary("/nonexistent/carbonyl").WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Start(context.Background())
 	if err == nil {
@@ -120,7 +133,7 @@ func TestStartWithNonExecutableBinary(t *testing.T) {
 	}
 
 	cfg := DefaultConfig().WithBinary(path).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Start(context.Background())
 	if err == nil {
@@ -137,7 +150,7 @@ func TestStartWithDirectoryAsBinary(t *testing.T) {
 	dir := t.TempDir()
 
 	cfg := DefaultConfig().WithBinary(dir).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Start(context.Background())
 	if err == nil {
@@ -154,7 +167,7 @@ func TestStartWithEmptyURL(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Start(context.Background())
 	if err == nil {
@@ -170,7 +183,7 @@ func TestStartWithZeroFPS(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := Config{BinaryPath: fakeBin, URL: "http://localhost:5173", FPS: 0, Zoom: 100}
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Start(context.Background())
 	if err == nil {
@@ -186,7 +199,7 @@ func TestStartWithZeroZoom(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := Config{BinaryPath: fakeBin, URL: "http://localhost:5173", FPS: 15, Zoom: 0}
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Start(context.Background())
 	if err == nil {
@@ -202,7 +215,7 @@ func TestStartAndStop(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -228,7 +241,7 @@ func TestDoubleStart(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -250,7 +263,7 @@ func TestDoubleStart(t *testing.T) {
 
 func TestStopWhenNotRunning(t *testing.T) {
 	cfg := DefaultConfig()
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Stop()
 	if err == nil {
@@ -265,7 +278,7 @@ func TestStopWhenNotRunning(t *testing.T) {
 
 func TestWaitWhenNotRunning(t *testing.T) {
 	cfg := DefaultConfig()
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Wait()
 	if err == nil {
@@ -282,7 +295,7 @@ func TestWaitReturnsOnProcessExit(t *testing.T) {
 	fakeBin := makeFakeBinary(t, "fake-carbonyl", "sleep 5")
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -318,7 +331,7 @@ func TestWatchdogDetectsCrash(t *testing.T) {
 		FPS:        15,
 		Zoom:       100,
 	}
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -351,7 +364,7 @@ func TestStartDetectsImmediateExit(t *testing.T) {
 	fakeBin := makeFakeBinary(t, "fake-carbonyl", "exit 1")
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	err := b.Start(context.Background())
 	if err == nil {
@@ -372,7 +385,7 @@ func TestDoubleStop(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -400,7 +413,7 @@ func TestContextCancellation(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -424,7 +437,7 @@ func TestIsRunningAtomicTransitions(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -508,7 +521,7 @@ func TestBridgeArgs(t *testing.T) {
 		FPS:        20,
 		Zoom:       130,
 	}
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -549,7 +562,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 	fakeBin := makeLongLivedBinary(t)
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -579,7 +592,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 
 func TestNewReturnsCorrectDefaults(t *testing.T) {
 	cfg := DefaultConfig()
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	if b.IsRunning() {
 		t.Fatal("new bridge should not be running")
@@ -590,7 +603,7 @@ func TestForceKillAfterGracePeriod(t *testing.T) {
 	fakeBin := makeFakeBinary(t, "fake-carbonyl", "trap '' TERM\nsleep 300")
 
 	cfg := DefaultConfig().WithBinary(fakeBin).WithURL("http://localhost:5173")
-	b := New(cfg)
+	b := newTestBridge(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
