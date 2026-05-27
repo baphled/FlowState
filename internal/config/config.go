@@ -657,6 +657,24 @@ type FailoverConfig struct {
 //     to opt in without a code change.
 type FeaturesConfig struct {
 	TodoStrictMode bool `json:"todo_strict_mode" yaml:"todo_strict_mode"`
+
+	// PermissionGrantForeverEnabled controls whether the ModeAskUser
+	// "Forever" grant scope persists to permissions.yaml. Permission
+	// Mode ModeAskUser Extension plan (May 2026), Slice 4 §4.
+	//
+	// Default true via DefaultConfig — the YAML writer (atomic
+	// temp+rename+fsync under flock) is the v1-shipping behaviour the
+	// plan acceptance bullet requires. Operators opt out by setting
+	// `features.permission_grant_forever_enabled: false`, in which
+	// case scope=="forever" falls through to GrantSession semantics
+	// (in-memory only, lost on daemon restart) — the existing pre-
+	// Slice-4 wire shape.
+	//
+	// Rollback path: flip this flag false. The "Forever" button
+	// remains visible in the UI (the wire shape is stable across
+	// slices) but no file is written; the operator's intent is
+	// honoured for the rest of the session via in-memory state.
+	PermissionGrantForeverEnabled bool `json:"permission_grant_forever_enabled" yaml:"permission_grant_forever_enabled"`
 }
 
 // AuthConfig holds the FlowState API Auth Track (May 2026) config layer.
@@ -1216,6 +1234,15 @@ func DefaultConfig() *AppConfig {
 		Quota:               DefaultQuotaConfig(),
 		ToolCapableModels:   defaultToolCapableModels(),
 		ToolIncapableModels: defaultToolIncapableModels(),
+		Features: FeaturesConfig{
+			// PermissionGrantForeverEnabled defaults true — Slice 4
+			// of the Permission Mode ModeAskUser Extension plan
+			// (May 2026) ships the atomic-flock YAML writer as the
+			// v1 behaviour. Operators opt out via config.yaml; the
+			// false path preserves the in-memory-only semantics of
+			// Slices 1-3.
+			PermissionGrantForeverEnabled: true,
+		},
 	}
 }
 

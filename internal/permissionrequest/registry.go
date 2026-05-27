@@ -248,6 +248,29 @@ func (r *Registry) PendingForSession(sessionID string) []string {
 	return out
 }
 
+// Lookup returns the registered PermissionRequest for requestID. The
+// second return value is false when the request_id is unknown (already
+// resolved, never registered, or evicted). The returned struct is a
+// VALUE copy — callers cannot mutate registry state through it.
+//
+// Used by handlePermissionGrant in Slice 4 to discover the (tool,
+// resource) pair before invoking the permissions.yaml writer: the
+// "forever" scope needs to know which tool's allow list to append to,
+// and what glob to write. The grant payload only carries (request_id,
+// scope) so the registry is the lookup site.
+//
+// Concurrency: takes the registry mutex internally; callers MUST NOT
+// hold r.mu.
+func (r *Registry) Lookup(requestID string) (PermissionRequest, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending, ok := r.byID[requestID]
+	if !ok {
+		return PermissionRequest{}, false
+	}
+	return pending.req, true
+}
+
 // PendingCount returns the total number of in-flight permission
 // requests across all sessions. Used by the R4 gauge cross-check tests
 // (and by future ops dashboards) without exposing the internal maps.

@@ -39,8 +39,10 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
+	"gopkg.in/yaml.v3"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -2317,6 +2319,228 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant JSON contract", fu
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
 		srvNoReg.Handler().ServeHTTP(recorder, req)
 		Expect(recorder.Code).To(Equal(http.StatusNotImplemented))
+	})
+})
+
+// Slice 4 — Forever scope persists to permissions.yaml via the
+// pathguard.Writer wired with WithPermissionWriter +
+// WithPermissionGrantForeverEnabled(true). Permission Mode ModeAskUser
+// Extension plan (May 2026) §4 + §12 R1 + §13 R1 row.
+var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — scope=forever wiring (Slice 4)", func() {
+	var (
+		recorder  *httptest.ResponseRecorder
+		streamer  *mockStreamer
+		mgr       *session.Manager
+		reg       *permissionrequest.Registry
+		permsPath string
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		mgr = session.NewManager(streamer)
+		reg = permissionrequest.NewRegistry()
+
+		dir := GinkgoT().TempDir()
+		permsPath = filepath.Join(dir, "permissions.yaml")
+	})
+
+	// seedPending registers a pending PermissionRequest with the
+	// tool/resource the writer needs to compute the glob. Mirrors the
+	// existing seedPending closure in the Slice 3 Describe block but
+	// kept local to this Describe to keep Slice 4 specs self-contained.
+	seedPending := func(sessionID, requestID, toolName, resource string) {
+		Expect(reg.Register(permissionrequest.PermissionRequest{
+			RequestID: requestID,
+			ToolName:  toolName,
+			AgentName: "coordinator",
+			Resource:  resource,
+			SessionID: sessionID,
+			Mode:      "ask",
+		})).To(Succeed())
+	}
+
+	makeServer := func(writer *pathguard.Writer, foreverEnabled bool) *api.Server {
+		opts := []api.ServerOption{
+			api.WithSessionManager(mgr),
+			api.WithPermissionRegistry(reg),
+			api.WithPermissionGrantForeverEnabled(foreverEnabled),
+		}
+		if writer != nil {
+			opts = append(opts, api.WithPermissionWriter(writer))
+		}
+		return api.NewServer(streamer, agent.NewRegistry(), discovery.NewAgentDiscovery(nil), nil, opts...)
+	}
+
+	driveWait := func(requestID string) chan permissionrequest.PermissionGrant {
+		grantC := make(chan permissionrequest.PermissionGrant, 1)
+		go func() {
+			defer GinkgoRecover()
+			g, werr := reg.Wait(context.Background(), requestID)
+			if werr == nil {
+				grantC <- g
+			}
+		}()
+		time.Sleep(20 * time.Millisecond)
+		return grantC
+	}
+
+	It("invokes the writer with the registered (tool, resource) and resolves the grant", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+		seedPending(sess.ID, "req-forever", "read", "/home/baphled/secrets/api-key.txt")
+
+		// Seed an empty permissions.yaml so the writer has a file to
+		// round-trip against. The writer would also create one from
+		// scratch but seeding makes the post-condition assertion cleaner.
+		Expect(os.WriteFile(permsPath, []byte("version: 1\n"), 0o644)).To(Succeed())
+		writer := pathguard.NewWriter(permsPath, nil)
+
+		srv := makeServer(writer, true)
+		grantC := driveWait("req-forever")
+
+		body := `{"request_id":"req-forever","scope":"forever"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK),
+			"forever scope with a wired writer must return 200")
+
+		// The file must contain the new allow glob. AppendAllow uses
+		// the resource verbatim as the glob — the operator's grant
+		// intent is "this exact path forever".
+		raw, rerr := os.ReadFile(permsPath)
+		Expect(rerr).NotTo(HaveOccurred())
+		var parsed struct {
+			Version int                            `yaml:"version"`
+			Tools   map[string]struct {
+				Allow []string `yaml:"allow"`
+				Deny  []string `yaml:"deny"`
+			} `yaml:"tools"`
+		}
+		Expect(yaml.Unmarshal(raw, &parsed)).To(Succeed())
+		Expect(parsed.Tools["read"].Allow).To(ContainElement("/home/baphled/secrets/api-key.txt"),
+			"the writer must append the registered resource verbatim under tools[tool].allow")
+
+		// And Resolve must still fire — the suspended goroutine is
+		// the one consuming the grant.
+		var g permissionrequest.PermissionGrant
+		Eventually(grantC, "1s").Should(Receive(&g))
+		Expect(g.Scope).To(Equal(permissionrequest.ScopeForever))
+	})
+
+	It("returns 500 and does NOT resolve when the writer errors (atomicity guard)", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+		seedPending(sess.ID, "req-writer-fail", "read", "/anywhere/secret.txt")
+
+		// Point the writer at a directory we made read-only so the
+		// write fails. The handler must surface 500 + skip Resolve;
+		// the suspended goroutine times out per the existing path
+		// (we observe by asserting the grant channel never receives).
+		Expect(os.WriteFile(permsPath, []byte("version: 1\n"), 0o644)).To(Succeed())
+		Expect(os.Chmod(filepath.Dir(permsPath), 0o555)).To(Succeed())
+		DeferCleanup(func() { _ = os.Chmod(filepath.Dir(permsPath), 0o755) })
+
+		writer := pathguard.NewWriterWithLockTimeout(permsPath, nil, 200*time.Millisecond)
+		srv := makeServer(writer, true)
+		grantC := driveWait("req-writer-fail")
+
+		body := `{"request_id":"req-writer-fail","scope":"forever"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusInternalServerError),
+			"writer failure must surface as 500 so the operator sees the failure")
+
+		// Resolve must NOT have fired — the pending entry is still
+		// in the registry and the Wait goroutine is still blocked.
+		Consistently(grantC, "100ms").ShouldNot(Receive(),
+			"Resolve must NOT be called when AppendAllow fails — the suspended goroutine times out per the existing path")
+		Expect(reg.PendingCount()).To(Equal(1),
+			"the pending entry must remain after a failed writer call so the operator can retry")
+	})
+
+	It("falls through to in-memory semantics when the feature flag is OFF", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+		seedPending(sess.ID, "req-flag-off", "read", "/anywhere/secret.txt")
+
+		// Writer is wired BUT the feature flag is false. The handler
+		// must skip AppendAllow and just call Resolve — proves the
+		// no-code-change rollback path documented in plan §4 Slice 4.
+		Expect(os.WriteFile(permsPath, []byte("version: 1\n"), 0o644)).To(Succeed())
+		writer := pathguard.NewWriter(permsPath, nil)
+		srv := makeServer(writer, false)
+		grantC := driveWait("req-flag-off")
+
+		body := `{"request_id":"req-flag-off","scope":"forever"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		// The file must be byte-identical to the seed — no write
+		// happened.
+		raw, _ := os.ReadFile(permsPath)
+		Expect(string(raw)).To(Equal("version: 1\n"),
+			"flag-off path must NOT call AppendAllow")
+
+		// And Resolve fires — Forever still resumes the goroutine.
+		var g permissionrequest.PermissionGrant
+		Eventually(grantC, "1s").Should(Receive(&g))
+		Expect(g.Scope).To(Equal(permissionrequest.ScopeForever))
+	})
+
+	It("falls through to in-memory semantics when no writer is wired (back-compat with Slice 3)", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+		seedPending(sess.ID, "req-no-writer", "read", "/anywhere/secret.txt")
+
+		// Flag ON, writer NOT wired (the pre-Slice-4 Server
+		// composition). The handler must NOT panic and must NOT
+		// surface 500 — it falls through to Resolve as before.
+		srv := makeServer(nil, true)
+		grantC := driveWait("req-no-writer")
+
+		body := `{"request_id":"req-no-writer","scope":"forever"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK),
+			"missing writer must NOT make Forever fail — the SPA's wire shape is stable across slices")
+
+		var g permissionrequest.PermissionGrant
+		Eventually(grantC, "1s").Should(Receive(&g))
+		Expect(g.Scope).To(Equal(permissionrequest.ScopeForever))
+	})
+
+	It("does NOT invoke the writer for non-Forever scopes", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Make the directory read-only so a write WOULD fail — but
+		// the handler must not even attempt a write for non-Forever
+		// scopes. If it did, we'd see a 500; the spec passes only
+		// when the writer is bypassed entirely.
+		Expect(os.WriteFile(permsPath, []byte("version: 1\n"), 0o644)).To(Succeed())
+		Expect(os.Chmod(filepath.Dir(permsPath), 0o555)).To(Succeed())
+		DeferCleanup(func() { _ = os.Chmod(filepath.Dir(permsPath), 0o755) })
+
+		writer := pathguard.NewWriterWithLockTimeout(permsPath, nil, 200*time.Millisecond)
+		srv := makeServer(writer, true)
+
+		for _, scope := range []string{"once", "session", "deny"} {
+			rid := "req-not-forever-" + scope
+			seedPending(sess.ID, rid, "read", "/anywhere")
+			go func(rid string) {
+				defer GinkgoRecover()
+				_, _ = reg.Wait(context.Background(), rid)
+			}(rid)
+			time.Sleep(10 * time.Millisecond)
+
+			rec := httptest.NewRecorder()
+			body := `{"request_id":"` + rid + `","scope":"` + scope + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK), "scope %q must succeed without invoking the writer", scope)
+		}
 	})
 })
 

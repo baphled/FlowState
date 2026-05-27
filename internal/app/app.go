@@ -935,6 +935,14 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		// pre-Slice-2 fixtures) Registry() returns nil and the grant
 		// endpoint surfaces 501.
 		api.WithPermissionRegistry(askUserPrompter.Registry()),
+		// Permission Mode ModeAskUser Extension plan (May 2026), Slice 4.
+		// The "Forever" grant scope persists to permissions.yaml via
+		// the writer's atomic temp+rename+fsync under flock. Nil writer
+		// OR features.permission_grant_forever_enabled=false routes the
+		// scope through GrantSession semantics (the in-memory-only
+		// fall-back) — the no-code-change rollback path per plan §4.
+		api.WithPermissionWriter(buildPermissionsWriter(params.cfg)),
+		api.WithPermissionGrantForeverEnabled(params.cfg.Features.PermissionGrantForeverEnabled),
 	)
 	return &runtimeComponents{
 		engine:               eng,
@@ -2957,6 +2965,51 @@ func buildPathGuardFromConfig(cfg *config.AppConfig) *pathguard.Guard {
 		)
 	}
 	return pathguard.NewWithPermissionsAndPlanOutputDir(denied, perms, perms.PlanOutputDir)
+}
+
+// buildPermissionsWriter constructs the pathguard.Writer that handles
+// the ModeAskUser "Forever" grant scope. Permission Mode ModeAskUser
+// Extension plan (May 2026) Slice 4 §17.4 — the writer is the lift
+// point handlePermissionGrant invokes BEFORE Resolve so the suspended
+// goroutine resumes against the updated matcher.
+//
+// Behaviour:
+//   - cfg nil OR features.permission_grant_forever_enabled=false →
+//     returns nil; the API server then routes scope=="forever" through
+//     the in-memory GrantSession fall-back.
+//   - cfg present → constructs a Writer pointed at config.Dir()/
+//     permissions.yaml. The reloader argument is nil today because the
+//     buildPathGuard wiring loads the matcher at boot only — a future
+//     enhancement can swap in a ReloadablePermissions wrapper so the
+//     in-memory matcher updates without daemon restart. The on-disk
+//     file is the source of truth in either case.
+//
+// Expected:
+//   - cfg may be nil.
+//
+// Returns:
+//   - A non-nil *pathguard.Writer when the feature flag is on; nil
+//     otherwise.
+//
+// Side effects:
+//   - None at construction. The first AppendAllow lazily reads /
+//     writes the YAML file.
+func buildPermissionsWriter(cfg *config.AppConfig) *pathguard.Writer {
+	if cfg == nil {
+		return nil
+	}
+	if !cfg.Features.PermissionGrantForeverEnabled {
+		return nil
+	}
+	permsPath := filepath.Join(config.Dir(), "permissions.yaml")
+	// Reloader is intentionally nil: today the matcher is constructed
+	// once at boot via buildPathGuardFromConfig and the on-disk file
+	// is the source of truth (operator restart re-reads it). A future
+	// enhancement can introduce a reloadable matcher wrapper here so
+	// the running daemon picks up the new allow glob on the next
+	// Check without restart; the writer's nil-reloader path is the
+	// safe v1 default.
+	return pathguard.NewWriter(permsPath, nil)
 }
 
 // buildToolsSetup creates a tool registry and permission handler for the engine.

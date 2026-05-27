@@ -27,6 +27,7 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
+	"github.com/baphled/flowstate/internal/tool/pathguard"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
 )
@@ -108,6 +109,28 @@ type Server struct {
 	// Nil makes POST /permission-grant return 501 so the SPA can
 	// distinguish "feature not wired" from "no in-flight request".
 	permissionRegistry *permissionrequest.Registry
+
+	// permissionWriter persists "Forever" scope grants to
+	// permissions.yaml via an atomic temp+rename+fsync under flock.
+	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 4
+	// §4 + §17.4 — the writer is the lift point that fills the
+	// scope=="forever" branch handlePermissionGrant left as a Slice 4
+	// TODO in Slice 3.
+	//
+	// Nil (or permissionGrantForeverEnabled=false) routes
+	// scope=="forever" through GrantSession semantics — the in-memory-
+	// only fall-back the pre-Slice-4 prompter already implements via
+	// the registry's ScopeForever → pathguard.GrantForever mapping.
+	permissionWriter *pathguard.Writer
+
+	// permissionGrantForeverEnabled mirrors
+	// features.permission_grant_forever_enabled from config.yaml. The
+	// flag exists as a no-code-change rollback path per plan §4 Slice 4
+	// risk register: a faulty YAML write can be disabled without
+	// rebuilding the binary by flipping the config flag. Default true
+	// via the WithPermissionGrantForeverEnabled option — the v1-ship
+	// path is "writer wired and on".
+	permissionGrantForeverEnabled bool
 }
 
 // DispatcherService is the narrow surface the Dispatcher Service
@@ -218,6 +241,45 @@ func WithDispatcher(d DispatcherService) ServerOption {
 //     read the field.
 func WithPermissionRegistry(reg *permissionrequest.Registry) ServerOption {
 	return func(s *Server) { s.permissionRegistry = reg }
+}
+
+// WithPermissionWriter installs the permissions.yaml writer the
+// scope=="forever" branch of handlePermissionGrant invokes before
+// resolving the suspended goroutine. Permission Mode ModeAskUser
+// Extension plan (May 2026) Slice 4 §4 + §17.4.
+//
+// When unset, scope=="forever" falls through to GrantSession semantics
+// (in-memory only) — the pre-Slice-4 behaviour that ships if a
+// deployment opts out of the file-write path. Combined with
+// WithPermissionGrantForeverEnabled(false) this is the no-code-change
+// rollback path the plan §4 Slice 4 risk register cites.
+//
+// Expected:
+//   - w is a non-nil *pathguard.Writer constructed with the operator's
+//     permissions.yaml path AND an optional matcher reloader.
+//
+// Returns:
+//   - A ServerOption that installs the writer.
+func WithPermissionWriter(w *pathguard.Writer) ServerOption {
+	return func(s *Server) { s.permissionWriter = w }
+}
+
+// WithPermissionGrantForeverEnabled mirrors
+// features.permission_grant_forever_enabled from config.yaml onto the
+// API server. When true (default in production via DefaultConfig),
+// scope=="forever" routes through the YAML writer; when false, the
+// scope falls through to GrantSession semantics so the operator's
+// intent is honoured for the session but no file is written.
+//
+// The flag exists as a no-code-change rollback path. If a permissions.
+// yaml write proves to corrupt files in production, operators flip
+// this flag false and the Forever button (still visible in the UI)
+// degrades gracefully to session-scoped persistence.
+//
+// Returns:
+//   - A ServerOption that installs the flag value verbatim.
+func WithPermissionGrantForeverEnabled(enabled bool) ServerOption {
+	return func(s *Server) { s.permissionGrantForeverEnabled = enabled }
 }
 
 // WithSessions sets the session store for session API routes.
@@ -2782,11 +2844,11 @@ type permissionGrantResponse struct {
 // Scope vocabulary (plan §2):
 //   - "once"    — resume only this call; no persistence.
 //   - "session" — resume + remember resource for the session.
-//   - "forever" — Slice 3 falls through to ScopeSession semantics
-//                 with the registry's GrantForever value; Slice 4
-//                 wires the permissions.yaml writer. See §6 — the
-//                 wire shape is stable across slices so the FE
-//                 ships today without a v-next break.
+//   - "forever" — append the (tool, resource) pair to permissions.yaml
+//                 via the atomic-flock writer, then resume. Falls back
+//                 to GrantSession semantics when the writer is unwired
+//                 OR features.permission_grant_forever_enabled is
+//                 false (the no-code-change rollback path).
 //   - "deny"    — resume with the original IsError tool_result.
 //
 // Expected:
@@ -2852,6 +2914,37 @@ func (s *Server) handlePermissionGrant(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		http.Error(w, "invalid scope", http.StatusBadRequest)
 		return
+	}
+
+	// Slice 4 lift point: scope=="forever" persists to permissions.
+	// yaml via the writer BEFORE Resolve so the suspended goroutine
+	// sees the updated matcher on resume. The writer is invoked only
+	// when:
+	//   - The feature flag is on (default true in production).
+	//   - A writer has been wired via WithPermissionWriter.
+	//   - The registry has a pending entry for the request_id (we
+	//     need its ToolName + Resource to compute the glob; the
+	//     payload only carries request_id + scope).
+	// On writer failure we return 500 and do NOT call Resolve — the
+	// suspended goroutine times out per the existing path and the
+	// operator can retry. Memory: feedback_atomicity_awareness_uneven.
+	if scope == permissionrequest.ScopeForever && s.permissionGrantForeverEnabled && s.permissionWriter != nil {
+		pending, ok := s.permissionRegistry.Lookup(req.RequestID)
+		if !ok {
+			http.Error(w, "permission request not found", http.StatusNotFound)
+			return
+		}
+		// Resource for path tools is the path the tool tried to
+		// touch; for bash it's the resolved target the scanner
+		// extracted (recorded on Register at the prompter site).
+		// The writer is purely additive — passing the resource
+		// verbatim as the glob mirrors the operator's grant intent
+		// at exact-path granularity. A future UI surface can widen
+		// the glob via a "broaden to directory" affordance.
+		if err := s.permissionWriter.AppendAllow(pending.ToolName, pending.Resource); err != nil {
+			http.Error(w, "permissions writer failed", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	if err := s.permissionRegistry.Resolve(req.RequestID, permissionrequest.PermissionGrant{
