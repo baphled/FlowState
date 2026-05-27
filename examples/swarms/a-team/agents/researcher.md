@@ -16,7 +16,11 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Deep information gathering across multiple angles. Explicitly seeks
     contradictory evidence and conflicting sources — not just confirming

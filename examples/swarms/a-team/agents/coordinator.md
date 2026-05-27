@@ -16,8 +16,12 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - dynamic-routing
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Reads the incoming task, decides optimal routing using the dynamic-routing
     skill, writes a routing plan to the coordination store, then delegates to

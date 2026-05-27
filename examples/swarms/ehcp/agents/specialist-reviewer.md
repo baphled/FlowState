@@ -14,8 +14,12 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - multi-agency-coordination
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Synthesises multi-agency specialist input for an EHCP Annual Review, flags missing reports, and recommends escalation paths for absent submissions"
 context_management:
   max_recursion_depth: 2

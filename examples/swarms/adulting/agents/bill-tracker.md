@@ -18,7 +18,9 @@ capabilities:
     - discipline
     - memory-keeper
     - knowledge-base
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Reads the prioritised task list from the coordination store and extracts bill-related items with amounts, due dates, and overdue status"
 context_management:
   max_recursion_depth: 2

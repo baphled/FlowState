@@ -13,7 +13,11 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Reads both the strategy and the critique, then produces polished final
     output. Explicitly reconciles or rebuts each objection raised by the

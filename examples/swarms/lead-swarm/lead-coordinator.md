@@ -22,10 +22,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - skill-discovery
     - parallel-execution
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Analyzes goals, selects optimal agent/sub-swarm compositions, coordinates parallel execution, and synthesizes cohesive results"
 context_management:
   max_recursion_depth: 2

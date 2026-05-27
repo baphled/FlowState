@@ -13,7 +13,11 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Reads research findings and connects them to concrete, actionable
     recommendations. States assumptions explicitly and flags risks. Produces

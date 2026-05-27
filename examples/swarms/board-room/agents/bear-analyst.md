@@ -15,10 +15,14 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - critical-thinking
     - adversarial-review
     - pitch-evaluation
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Constructs the strongest possible case against investment, identifying at least 3 distinct risk categories and performing adversarial peer review"
 context_management:
   max_recursion_depth: 2

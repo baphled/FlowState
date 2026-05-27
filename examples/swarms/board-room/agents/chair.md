@@ -16,8 +16,12 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - dissent-protocol
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Facilitates the 3-round Board Room debate protocol, anonymises positions for peer review, and synthesises the final investment memo"
 context_management:
   max_recursion_depth: 2

@@ -18,9 +18,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - annual-review-protocol
     - statutory-language
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Orchestrates the full EHCP Annual Review workflow by sequentially delegating to five specialist agents and producing a legally compliant outcome letter"
 context_management:
   max_recursion_depth: 2

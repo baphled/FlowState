@@ -22,7 +22,9 @@ capabilities:
     - admin-triage
     - memory-keeper
     - knowledge-base
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Triages a raw life-admin task dump into a prioritised, deadline-annotated task list, then delegates to bill-tracker and deadline-scanner. Delegates to letter-drafter only when the user explicitly requests correspondence"
 context_management:
   max_recursion_depth: 2

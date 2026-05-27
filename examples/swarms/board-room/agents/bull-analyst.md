@@ -15,9 +15,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - investment-thesis
     - pitch-evaluation
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Constructs the strongest possible case for investment in a pitch, producing a structured position with thesis, signals, valuation rationale, and conviction score"
 context_management:
   max_recursion_depth: 2

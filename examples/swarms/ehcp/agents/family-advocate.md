@@ -14,8 +14,12 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - statutory-language
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Represents the family and child's voice in the Annual Review, actively pushing back on insufficient or watered-down provisions and flagging gaps between school and family experience"
 context_management:
   max_recursion_depth: 2

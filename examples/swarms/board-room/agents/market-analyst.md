@@ -14,8 +14,12 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - pitch-evaluation
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Evaluates total addressable market, competitive landscape, market timing, and distribution risk for a startup pitch"
 context_management:
   max_recursion_depth: 2

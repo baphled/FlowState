@@ -14,9 +14,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - critical-thinking
     - challenger-protocol
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Adversarial reviewer of the strategist's output. Challenges assumptions,
     identifies blind spots, and tests recommendations against failure modes.

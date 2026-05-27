@@ -15,9 +15,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - statutory-language
     - smart-outcomes
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Validates the EHCP draft against the SEND Code of Practice, challenging non-SMART outcomes, aspirational Section F provisions, and statutory timeline compliance failures"
 context_management:
   max_recursion_depth: 2

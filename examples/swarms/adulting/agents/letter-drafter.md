@@ -14,8 +14,12 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - deadline-urgency
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Drafts formal correspondence to HMRC, councils, utilities, and financial institutions based on bills and deadline data, calibrating tone by deadline proximity"
 context_management:
   max_recursion_depth: 2

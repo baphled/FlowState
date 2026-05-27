@@ -18,7 +18,9 @@ capabilities:
     - discipline
     - memory-keeper
     - knowledge-base
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Maps all commitments from the prioritised task list to a timeline and flags items on the critical path"
 context_management:
   max_recursion_depth: 2

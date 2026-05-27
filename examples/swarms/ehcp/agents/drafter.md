@@ -15,9 +15,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
+    - memory-keeper
+    - knowledge-base
     - statutory-language
     - smart-outcomes
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: "Produces a complete statutory EHCP draft (all sections A–K) and the Annual Review outcome letter, synthesising school view, family view, and specialist input"
 context_management:
   max_recursion_depth: 2
