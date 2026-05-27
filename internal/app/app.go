@@ -851,6 +851,15 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	// test that constructed the engine in isolation) collapse to the
 	// legacy/unknown branch. See sessionManagerHolder.lookup.
 	sessionMgrHolder.set(sessionMgr)
+	// Wire the SessionLookup the engine's CompactNow uses to resolve
+	// the targeted session out of the session manager. Pre-fix
+	// CompactNow ignored sessionID and read from the engine's global
+	// store + e.Manifest() — wrong for any /compact call against a
+	// session that's not the most-recently-streamed one (which is
+	// every /compact call after a server restart, where no Stream has
+	// fired yet and the store is empty). See the engine docstring on
+	// SessionLookup for the resolution chain.
+	eng.SetSessionLookup(newSessionLookupAdapter(sessionMgr))
 	sessRecorder := wireSessionRecorder(params.cfg, sessionMgr, sessionsDirFromCfg(params.cfg))
 	apiServer := api.NewServer(
 		streamer,
@@ -2580,6 +2589,68 @@ func modelListerFromRegistry(reg *provider.Registry) api.ModelLister {
 		}
 		return allModels, nil
 	}
+}
+
+// newSessionLookupAdapter builds an engine.SessionLookup backed by the
+// session Manager. The adapter projects session.Message → provider.Message
+// the same way session.Manager.SendMessage does for the SeedHistory path
+// (manager.go:1382-1399) so the manual-compact transcript matches the
+// wire payload the next Stream call would send: ThinkingBlocks and
+// StopReason round-trip, tool_error rows canonicalise to Role:"tool" +
+// IsError:true, and the chronological order is preserved.
+//
+// CurrentAgentID overrides AgentID per handleSessionMessage's fallback
+// at server.go:1313-1321 so a mid-session agent switch lands on the
+// agent the user actually selected, not the session's initial agent.
+func newSessionLookupAdapter(sessionMgr *session.Manager) engine.SessionLookup {
+	if sessionMgr == nil {
+		return nil
+	}
+	return sessionLookupAdapter{mgr: sessionMgr}
+}
+
+// sessionLookupAdapter satisfies engine.SessionLookup over a *session.Manager.
+type sessionLookupAdapter struct {
+	mgr *session.Manager
+}
+
+// SnapshotForCompaction resolves the session by id and projects its
+// persisted messages into the provider.Message shape engine.CompactNow
+// expects. Returns ok=false when the manager does not know the id (the
+// engine treats that as a clean ("", false) — no panic on a stale
+// slash-command URL).
+func (a sessionLookupAdapter) SnapshotForCompaction(sessionID string) ([]provider.Message, string, string, string, bool) {
+	if a.mgr == nil || sessionID == "" {
+		return nil, "", "", "", false
+	}
+	snap, err := a.mgr.SnapshotSession(sessionID)
+	if err != nil {
+		return nil, "", "", "", false
+	}
+	agentID := snap.AgentID
+	if snap.CurrentAgentID != "" {
+		agentID = snap.CurrentAgentID
+	}
+	if len(snap.Messages) == 0 {
+		return nil, agentID, snap.CurrentProviderID, snap.CurrentModelID, true
+	}
+	providerMsgs := make([]provider.Message, 0, len(snap.Messages))
+	for _, msg := range snap.Messages {
+		role := msg.Role
+		isError := false
+		if role == "tool_error" {
+			role = "tool"
+			isError = true
+		}
+		providerMsgs = append(providerMsgs, provider.Message{
+			Role:           role,
+			Content:        msg.Content,
+			ThinkingBlocks: msg.ThinkingBlocks,
+			StopReason:     msg.StopReason,
+			IsError:        isError,
+		})
+	}
+	return providerMsgs, agentID, snap.CurrentProviderID, snap.CurrentModelID, true
 }
 
 // ListModels returns all available models from registered providers.

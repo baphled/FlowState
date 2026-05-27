@@ -136,6 +136,16 @@ type Engine struct {
 	// across turns.
 	seededSessions map[string]struct{}
 
+	// sessionLookup is the optional callback CompactNow uses to resolve
+	// the targeted session's persisted messages, agent id, and current
+	// provider/model so a manual /compact slash command operates against
+	// the session the user clicked on — not whatever ambient state
+	// e.store + e.manifest happen to hold from the most recent Stream
+	// call. Nil preserves the pre-May-2026 behaviour where CompactNow
+	// reads from e.store and e.Manifest() (used by older tests that
+	// drive the store directly).
+	sessionLookup SessionLookup
+
 	// todoStrictMode mirrors config.FeaturesConfig.TodoStrictMode (D9
 	// in the Agent Runtime Quality plan, May 2026). When true, the
 	// executeToolCall dispatch path rejects non-todowrite tool calls
@@ -638,6 +648,50 @@ type Config struct {
 	// default to the zero CapConfig (uncapped — chip renders without
 	// a denominator and stays green per OD-9).
 	QuotaCaps map[string]quota.CapConfig
+
+	// SessionLookup is the optional resolver CompactNow uses to fetch
+	// the targeted session's persisted messages and its current
+	// agent/provider/model identifiers. Without this hook, CompactNow
+	// silently falls back to compacting whatever happens to live in
+	// e.store with the engine's current Manifest() — wrong for any
+	// post-server-restart force-compact, and the bug behind the
+	// "/compact has never fired" report (May 2026). Nil preserves the
+	// legacy "store + engine-manifest" path so the store-driven engine
+	// unit tests stay green; production wires this to the session
+	// Manager via app.go.
+	SessionLookup SessionLookup
+}
+
+// SessionLookup is the engine-facing surface CompactNow consults to
+// resolve the targeted session out of the session manager without
+// pulling the manager type into the engine package. Returning the
+// agent / provider / model identifiers alongside the messages lets
+// CompactNow pick the right manifest (per the session's actual agent,
+// not whatever the engine's most-recent SetManifest call landed) and
+// the right token budget (per the session's current model, not the
+// engine's most-recent provider/model pair).
+//
+// Expected:
+//   - sessionID identifies a live session known to the manager.
+//
+// Returns:
+//   - messages is the projected provider.Message slice in chronological
+//     order (caller is responsible for any role canonicalisation the
+//     wire layer applies — typically already done by the projection
+//     helper).
+//   - agentID is the session's effective agent (CurrentAgentID wins
+//     over AgentID when set, mirroring handleSessionMessage's
+//     fallback at server.go:1318-1321).
+//   - providerID and modelID are the session's current provider/model
+//     pair; either may be empty when the session has not yet been
+//     bound (a freshly-minted session with no Stream call carries
+//     empty fields). Callers fall back to engine-level defaults in
+//     that case.
+//   - ok is true when the session was found; false when the manager
+//     does not know the id (CompactNow returns ("", false) on miss
+//     without panicking).
+type SessionLookup interface {
+	SnapshotForCompaction(sessionID string) (messages []provider.Message, agentID, providerID, modelID string, ok bool)
 }
 
 // New creates a new Engine from the given configuration.
@@ -821,6 +875,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
 		sessionRehydrated:         make(map[string]struct{}),
 		seededSessions:            make(map[string]struct{}),
+		sessionLookup:             cfg.SessionLookup,
 		todoStrictMode:            cfg.TodoStrictMode,
 		todoNonTodowriteToolCalls: make(map[string]int),
 		knownSkillsFunc:           cfg.KnownSkillsFunc,
@@ -2810,6 +2865,27 @@ func (e *Engine) ToolSchemas() []provider.Tool {
 //   - Same as buildToolSchemasCtx.
 func (e *Engine) ToolSchemasCtx(ctx context.Context) []provider.Tool {
 	return e.buildToolSchemasCtx(ctx)
+}
+
+// SetSessionLookup installs (or replaces) the resolver CompactNow uses
+// to fetch a session's persisted messages plus its agent / provider /
+// model identifiers. Production wires this from app.go after the
+// session Manager is constructed; passing nil reverts to the legacy
+// "compact whatever sits in e.store under e.Manifest()" path.
+//
+// Expected:
+//   - lookup may be nil (reverts to legacy behaviour).
+//
+// Side effects:
+//   - Stores the lookup under the engine's write lock so a concurrent
+//     CompactNow caller sees a consistent value.
+func (e *Engine) SetSessionLookup(lookup SessionLookup) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.sessionLookup = lookup
+	e.mu.Unlock()
 }
 
 // SeedHistory pre-populates the context store with historical messages for
@@ -5459,6 +5535,147 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 	return summaryText
 }
 
+// maybeAutoCompactExplicit is the explicit-messages variant of
+// maybeAutoCompact, introduced for CompactNow's session-resolution
+// path. When explicitMessages is nil it delegates verbatim to
+// maybeAutoCompact (the store-driven legacy path). When non-nil it
+// uses explicitMessages as the authoritative transcript instead of
+// e.store.GetRecent — bypassing the global store entirely so a
+// /compact slash command against session A operates on A's own
+// messages even if the store currently holds session B's tail
+// (the bug that masked /compact from ever firing in production
+// against post-restart sessions — see CompactNow's docstring).
+//
+// The force-fire path is the only consumer right now (forceTrigger
+// is always "manual" when CompactNow drives this); the
+// fullWindowTokens scope, ratio compare, and Stage-1 prune short-
+// circuit are NOT exercised because manual /compact opts out of
+// those by construction. Keeping the same surface as maybeAutoCompact
+// future-proofs adding a ratio-driven per-session caller later
+// without re-introducing the global-store coupling.
+//
+// Expected:
+//   - explicitMessages is the session's full transcript in
+//     chronological order; nil means "fall back to store reads".
+//   - manifest carries ContextManagement.SlidingWindowSize used to
+//     slice the recent tail (matches autoCompactionCandidates).
+//   - forceTrigger is non-empty (CompactNow always sets "manual").
+//
+// Returns:
+//   - Same shape as maybeAutoCompact: the summary text on a successful
+//     fire, "" otherwise.
+//
+// Side effects:
+//   - Same as maybeAutoCompact: one summariser LLM call on a fire,
+//     one ContextCompactedEvent publish, lastCompactionSummary +
+//     sessionCompactionMemo update.
+func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string, manifest *agent.Manifest, tokenBudget int, forceTrigger string, explicitMessages []provider.Message) string {
+	if explicitMessages == nil {
+		return e.maybeAutoCompact(ctx, sessionID, manifest, tokenBudget, forceTrigger)
+	}
+
+	forceFire := forceTrigger != ""
+	_, ok := e.autoCompactionThreshold(manifest, tokenBudget)
+	if !ok {
+		// Feature disabled or preconditions unmet — mirror
+		// maybeAutoCompact's bookkeeping so the manual path is
+		// observationally indistinguishable from a no-fire on the
+		// store path (operator opt-out via AutoCompaction.Enabled is
+		// sticky regardless of which driver invoked us).
+		e.buildStateMu.Lock()
+		e.lastCompactionSummary = nil
+		e.buildStateMu.Unlock()
+		return ""
+	}
+
+	if !forceFire {
+		// The explicit-message path is currently only reached via the
+		// manual /compact force-trigger. Defending the branch keeps a
+		// future ratio-driven caller from silently no-op'ing when the
+		// ratio compare would need a full-window count we don't
+		// compute here.
+		return ""
+	}
+
+	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
+	if slidingWindowSize <= 0 {
+		slidingWindowSize = 10
+	}
+	recent := explicitMessages
+	if len(recent) > slidingWindowSize {
+		recent = recent[len(recent)-slidingWindowSize:]
+	}
+	if len(recent) == 0 {
+		// Defensive — CompactNow already guards on empty input but
+		// keep the floor so a future caller passing an empty slice
+		// can't crash through the prune helper below.
+		return ""
+	}
+	var recentTokens int
+	for i := range recent {
+		recentTokens += e.tokenCounter.Count(recent[i].Content)
+	}
+
+	// Stage-1 prune (mirrors maybeAutoCompact's path verbatim — see
+	// that function's docstring for the prune contract). The force-
+	// fire path bypasses the prune-only short-circuit because manual
+	// callers explicitly want a summary regardless of what pruning
+	// saved.
+	prunedRecent, prunedToolOutputs, prunedTokensSaved := pruneOldToolOutputs(recent, e.tokenCounter)
+	recent = prunedRecent
+	recentTokens -= prunedTokensSaved
+	if recentTokens < 0 {
+		recentTokens = 0
+	}
+
+	// H2 memoisation — same per-session keying as maybeAutoCompact.
+	currentHash := coldRangeHash(recent)
+	if reused, hit := e.reuseMemoisedSummary(sessionID, currentHash, recentTokens); hit {
+		return reused
+	}
+
+	start := time.Now()
+	summary, err := e.autoCompactor.Compact(ctx, recent)
+	if err != nil {
+		slog.Warn("engine manual compaction failed; returning no-fire to caller",
+			"error", err,
+			"sessionID", sessionID,
+			"recentTokens", recentTokens,
+			"tokenBudget", tokenBudget,
+		)
+		return ""
+	}
+	latency := time.Since(start)
+
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		slog.Warn("engine manual compaction produced unmarshallable summary",
+			"error", err,
+			"sessionID", sessionID,
+		)
+		return ""
+	}
+
+	summaryCopy := summary
+	e.buildStateMu.Lock()
+	e.lastCompactionSummary = &summaryCopy
+	e.sessionCompactionMemo[sessionID] = sessionCompactionMemoEntry{
+		hash:    currentHash,
+		summary: &summaryCopy,
+	}
+	// H1 — a fresh compaction produces a new summary with its own
+	// FilesToRestore. Clear the consumed flag so buildContextWindow
+	// knows to rehydrate against this new summary on the next turn.
+	delete(e.sessionRehydrated, sessionID)
+	e.buildStateMu.Unlock()
+
+	summaryText := "[auto-compacted summary]: " + string(summaryJSON)
+	e.publishContextCompactedEvent(sessionID, manifest.ID, recentTokens, summaryText, latency,
+		ratioOrForceTrigger(forceTrigger),
+		prunedToolOutputs, true)
+	return summaryText
+}
+
 // ratioOrForceTrigger maps the maybeAutoCompact-internal forceTrigger
 // string to the closed-vocabulary discriminant stamped on the
 // ContextCompactedEvent. Empty force-trigger means the ratio tier
@@ -6598,15 +6815,89 @@ func (e *Engine) CompactNow(ctx context.Context, sessionID string) (string, bool
 		return "", false
 	}
 
+	// Defaults: engine-level manifest + engine-level model context limit.
+	// These are the legacy "compact whatever the engine currently looks
+	// like" knobs — preserved so existing engine unit tests (which seed
+	// the store directly and never wire SessionLookup) keep working.
 	manifest := e.Manifest()
 	tokenBudget := e.ModelContextLimit()
+
+	// When a SessionLookup is wired (production path) we MUST resolve
+	// the targeted session out of the session manager before deciding
+	// what to compact. Pre-fix this method ignored sessionID entirely:
+	// `e.Manifest()` returned whatever agent the engine's last
+	// SetManifest call landed (could be a sibling session's agent), and
+	// `e.store.GetRecent` returned the global store's tail — empty for a
+	// freshly-resumed session, or polluted with another session's
+	// messages. Result: /compact returned {fired: false} against
+	// sessions where the user could see plenty of content. The
+	// resolution chain matches handleSessionMessage at server.go:1313-
+	// 1321 (CurrentAgentID overrides AgentID).
+	e.mu.RLock()
+	lookup := e.sessionLookup
+	e.mu.RUnlock()
+
+	var explicitMessages []provider.Message
+	if lookup != nil {
+		messages, agentID, providerID, modelID, ok := lookup.SnapshotForCompaction(sessionID)
+		if !ok {
+			// Session not found — refuse cleanly. Returning ("", false)
+			// keeps the api handler's "nothing to compact" branch
+			// untouched and avoids panicking on a stale slash-command
+			// URL.
+			return "", false
+		}
+		if len(messages) == 0 {
+			// Empty session — no transcript to compact against. The
+			// pre-fix path silently fell through to the global store
+			// (which might still hold a different session's tail);
+			// returning ("", false) here is the correct "nothing to
+			// compact" signal.
+			return "", false
+		}
+		explicitMessages = messages
+
+		// Resolve the manifest the session is actually running under.
+		// agentID is empty on legacy sessions persisted before the
+		// agent-stamping fields existed; in that case we fall back to
+		// the engine's current manifest (which is what the pre-fix
+		// code did unconditionally — preserved as the floor).
+		if agentID != "" && e.agentRegistry != nil {
+			if resolved, found := e.agentRegistry.Get(agentID); found && resolved != nil {
+				manifest = *resolved
+			}
+		}
+
+		// Resolve the per-session token budget. The engine's
+		// ModelContextLimit reads e.LastModel(), which tracks the most-
+		// recent Stream invocation across all sessions — wrong for a
+		// /compact call against a session whose provider/model pair
+		// differs from the engine's last-streamed pair. Use the
+		// session's current provider/model when both are stamped;
+		// otherwise the engine-level fallback above stays in force.
+		if providerID != "" && modelID != "" {
+			if perSessionLimit := e.ResolveContextLength(providerID, modelID); perSessionLimit > 0 {
+				tokenBudget = perSessionLimit
+			}
+		}
+
+		// Seed the engine's process-wide store with the session's
+		// history. This is a defensive mirror — the explicit-messages
+		// path below does NOT read from e.store, but other engine
+		// surfaces (LastCompactionSummary, sessionRehydrated bookkeeping)
+		// still index by sessionID and a future caller that switches
+		// back to the store-driven path will benefit. Idempotent per
+		// sessionID via the seededSessions tracker.
+		e.SeedHistory(sessionID, messages)
+	}
+
 	if tokenBudget <= 0 {
 		// No budget signal — refuse rather than feeding the summariser
 		// against garbage. Matches the MaybeCompactForModel guard.
 		return "", false
 	}
 
-	summary := e.maybeAutoCompact(ctx, sessionID, &manifest, tokenBudget, "manual")
+	summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifest, tokenBudget, "manual", explicitMessages)
 	return summary, summary != ""
 }
 
