@@ -14,13 +14,19 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Evaluates unit economics, runway, burn rate, valuation assumptions,
     cap-table dilution, and path to profitability for a Board Room pitch.
     Flags any financial figure that is not directly supported by stated
     pitch evidence — labels every figure as stated, inferred, assumed,
-    or unavailable.
+    or unavailable. Queries memory MCP and vault-rag for prior financial
+    models, captured benchmarks, and existing valuation notes on the
+    company or sector before drafting from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

@@ -37,13 +37,16 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - assumption-tracker
     - scope-management
     - estimation
     - chain-id-resolution
-  mcp_servers: []
-  capability_description: "Generates structured, executable plans from coordinated evidence and requirements with detailed implementation steps"
+  mcp_servers:
+    - memory
+    - vault-rag
+  capability_description: "Generates structured, executable plans from coordinated evidence and requirements with detailed implementation steps. Queries memory MCP and vault-rag for prior plans, ADRs, and canonical patterns before drafting."
 context_management:
   max_recursion_depth: 2
   summary_tier: deep

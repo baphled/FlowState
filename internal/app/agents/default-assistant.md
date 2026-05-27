@@ -22,10 +22,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - skill-discovery
-  mcp_servers: []
-  capability_description: "General-purpose assistant for research, writing, analysis, debugging, planning, and code review. The default chat agent when no specialist is needed."
+  mcp_servers:
+    - memory
+    - vault-rag
+  capability_description: "General-purpose assistant for research, writing, analysis, debugging, planning, and code review. The default chat agent when no specialist is needed. Searches memory MCP and vault-rag for canonical templates and prior entries before drafting from training data."
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

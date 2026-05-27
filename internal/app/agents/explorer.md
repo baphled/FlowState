@@ -25,13 +25,16 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - research
     - critical-thinking
     - investigation
     - chain-id-resolution
-  mcp_servers: []
-  capability_description: "Explores codebase to find patterns, structures, conventions, and understand existing code organisation"
+  mcp_servers:
+    - memory
+    - vault-rag
+  capability_description: "Explores codebase to find patterns, structures, conventions, and understand existing code organisation. Queries memory MCP and vault-rag for prior investigations before re-running searches."
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

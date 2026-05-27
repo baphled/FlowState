@@ -16,12 +16,18 @@ capabilities:
     - pre-action
     - discipline
     - critical-thinking
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Constructs the strongest possible case AGAINST investment in a Board
     Room pitch. Identifies at least 3 distinct risk categories, classifies
     each as DEALBREAKER / MATERIAL RISK / MANAGEABLE, and performs
-    adversarial peer review on other analysts' positions.
+    adversarial peer review on other analysts' positions. Queries memory
+    MCP and vault-rag for prior bear cases, captured risks, and existing
+    failure-mode notes on the asset before drafting from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

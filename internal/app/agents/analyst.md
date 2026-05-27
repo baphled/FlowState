@@ -24,13 +24,16 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - critical-thinking
     - epistemic-rigor
     - systems-thinker
     - chain-id-resolution
-  mcp_servers: []
-  capability_description: "Synthesises research findings into structured evidence dossiers with critical analysis and system-level thinking"
+  mcp_servers:
+    - memory
+    - vault-rag
+  capability_description: "Synthesises research findings into structured evidence dossiers with critical analysis and system-level thinking. Queries memory MCP and vault-rag for canonical templates and prior entries before drawing on training data."
 context_management:
   max_recursion_depth: 2
   summary_tier: deep

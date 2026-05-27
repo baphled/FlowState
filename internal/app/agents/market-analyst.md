@@ -14,12 +14,19 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Evaluates total addressable market, competitive landscape, market
     timing, and distribution risk for a Board Room pitch. Produces a
     structured JSON position grounded in stated pitch evidence rather
     than fabricated competitor names or unstated TAM methodology.
+    Queries memory MCP and vault-rag for prior market sizing, captured
+    competitor notes, and existing TAM/SAM data on the sector before
+    drafting from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

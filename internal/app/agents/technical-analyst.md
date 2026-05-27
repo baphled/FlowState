@@ -14,12 +14,19 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Evaluates product feasibility, technical risk, scalability, build-vs-buy
     decisions, and team technical capability for a Board Room pitch. Assesses
     whether the stated technical approach is plausible for the team size and
     timeline; never invents architecture detail when the pitch is silent.
+    Queries memory MCP and vault-rag for prior technical due-diligence,
+    captured architecture notes, and existing scalability data on the
+    company or comparable systems before drafting from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

@@ -16,12 +16,18 @@ capabilities:
     - pre-action
     - discipline
     - critical-thinking
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Adversarial reviewer of the strategist's output. Challenges assumptions,
     identifies blind spots, and tests recommendations against failure modes.
     Must produce at least one substantive objection — a clean pass signals
-    the critic did not engage.
+    the critic did not engage. Queries memory MCP and vault-rag for prior
+    counterarguments, captured failure modes, and existing risk notes
+    before drafting critique from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

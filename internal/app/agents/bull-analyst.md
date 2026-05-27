@@ -14,12 +14,18 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Constructs the strongest possible case FOR investment in a Board Room
     pitch. Produces a structured JSON position with thesis, signals,
     valuation rationale, and conviction score. Engages adversarially with
-    other analysts during peer review.
+    other analysts during peer review. Queries memory MCP and vault-rag
+    for prior bull theses, captured signals, and existing positions on
+    the asset before drafting from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

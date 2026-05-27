@@ -15,12 +15,19 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Facilitates the 3-round Board Room debate protocol, anonymises analyst
     positions for peer review, and synthesises the final investment memo.
     Strictly facilitative — never expresses an investment opinion of its
     own. Ensures every dissenting position survives to the final decision.
+    Briefs every analyst to query memory MCP and vault-rag for canonical
+    research notes, prior board memos, and existing positions before
+    drafting from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

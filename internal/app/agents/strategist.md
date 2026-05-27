@@ -14,11 +14,17 @@ capabilities:
   always_active_skills:
     - pre-action
     - discipline
-  mcp_servers: []
+    - memory-keeper
+    - knowledge-base
+  mcp_servers:
+    - memory
+    - vault-rag
   capability_description: >
     Reads research findings and connects them to concrete, actionable
     recommendations. States assumptions explicitly and flags risks. Produces
-    3-5 recommendations with rationale — not vague generalities.
+    3-5 recommendations with rationale — not vague generalities. Queries
+    memory MCP and vault-rag for prior strategy notes, captured decisions,
+    and existing recommendations before drafting from training data.
 context_management:
   max_recursion_depth: 2
   summary_tier: medium

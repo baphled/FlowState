@@ -25,12 +25,15 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - skill-discovery
     - parallel-execution
     - scope-management
-  mcp_servers: []
-  capability_description: "Orchestrates complex multi-step tasks by delegating to specialist agents including explorer, librarian, analyst, plan-writer, and plan-reviewer"
+  mcp_servers:
+    - memory
+    - vault-rag
+  capability_description: "Orchestrates complex multi-step tasks by delegating to specialist agents including explorer, librarian, analyst, plan-writer, and plan-reviewer. Queries memory MCP and vault-rag for prior plans, ADRs, and canonical patterns before instructing sub-agents."
 context_management:
   max_recursion_depth: 3
   summary_tier: deep

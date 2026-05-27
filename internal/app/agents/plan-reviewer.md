@@ -24,12 +24,15 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - critical-thinking
     - epistemic-rigor
     - chain-id-resolution
-  mcp_servers: []
-  capability_description: "Reviews and validates generated plans for feasibility, completeness, risk assessment, and quality gate before execution"
+  mcp_servers:
+    - memory
+    - vault-rag
+  capability_description: "Reviews and validates generated plans for feasibility, completeness, risk assessment, and quality gate before execution. Queries memory MCP and vault-rag for prior reviews, captured failure modes, and existing ADRs before assessing."
 context_management:
   max_recursion_depth: 2
   summary_tier: deep

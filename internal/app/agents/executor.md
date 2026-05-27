@@ -27,10 +27,13 @@ capabilities:
   always_active_skills:
     - pre-action
     - memory-keeper
+    - knowledge-base
     - discipline
     - task-tracker
     - parallel-execution
-  mcp_servers: []
+  mcp_servers:
+    - memory
+    - vault-rag
 context_management:
   max_recursion_depth: 2
   summary_tier: deep
