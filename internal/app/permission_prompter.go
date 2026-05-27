@@ -49,6 +49,21 @@ type permissionPrompter struct {
 	timeout  time.Duration
 }
 
+// Registry returns the shared permissionrequest.Registry the prompter
+// publishes into on each suspension. Exposed so the API server's
+// permission-grant handler can resolve requests through the same
+// instance the prompter waits on. Permission Mode ModeAskUser
+// Extension plan (May 2026), Slice 3.
+//
+// Side effects:
+//   - None — returns the field directly.
+func (p *permissionPrompter) Registry() *permissionrequest.Registry {
+	if p == nil {
+		return nil
+	}
+	return p.registry
+}
+
 // newPermissionPrompter constructs a permissionPrompter wired to the
 // shared registry, bus, and recorder. nil registry / bus is a wiring
 // bug; recorder may be nil (the prompter falls back to a noop counter

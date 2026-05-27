@@ -429,6 +429,55 @@ export interface TurnState {
    * the correlation_id is the idempotency key the FE handler dedups on.
    */
   critical_error?: TurnStateCriticalError | null;
+  /**
+   * permission_requests surfaces the in-flight + recently-resolved
+   * ModeAskUser permission requests for this Turn (Permission Mode
+   * ModeAskUser Extension plan, May 2026, Slice 3, §17.1).
+   * Populated by subscribeTurnPermissionRequired /
+   * subscribeTurnPermissionResolved bus subscribers in
+   * internal/api/server.go.
+   *
+   * Two-phase wire lifecycle:
+   *   - status === 'pending' — engine goroutine suspended; FE renders
+   *     PermissionPrompt anchored to the owning tool_call bubble.
+   *   - status === 'granted' | 'denied' | 'timeout' — disposition
+   *     resolved. Both tabs observe via the long-poll diff (R5 cross-
+   *     tab guard, plan §11 R5 + §17.1). The chatStore's diff removes
+   *     resolved entries from pendingPermissionRequests.
+   *
+   * Optional: pre-Slice-3 servers and Turn states with no permission
+   * events omit the field entirely. The FE's diff treats absent ===
+   * unchanged.
+   */
+  permission_requests?: TurnStatePermissionRequest[];
+}
+
+/**
+ * TurnStatePermissionRequest mirrors the Go `internal/turn.TurnPermissionRequest`
+ * JSON shape — the wire surface for an in-flight or recently-resolved
+ * ModeAskUser permission request on a Turn. Permission Mode ModeAskUser
+ * Extension plan (May 2026), Slice 3, §3 + §17.1.
+ *
+ * Fields:
+ *   - request_id — the registry key the FE's grantPermission action
+ *     POSTs back to /permission-grant.
+ *   - tool_name / resource / agent_name / denial_reason — visual rows
+ *     in the PermissionPrompt component (plan §3).
+ *   - mode — the active permission mode at suspension time (today
+ *     always "ask"; future modes that surface prompts can vary it).
+ *   - status — closed vocabulary: pending / granted / denied / timeout.
+ *   - scope — populated on granted/denied (the operator's chosen scope
+ *     or "deny"); empty on pending and timeout.
+ */
+export interface TurnStatePermissionRequest {
+  request_id: string;
+  tool_name: string;
+  agent_name?: string;
+  resource?: string;
+  denial_reason?: string;
+  mode?: string;
+  status: "pending" | "granted" | "denied" | "timeout";
+  scope?: string;
 }
 
 /**
@@ -808,6 +857,58 @@ export async function updateSessionPermissionMode(
     throw new Error(await parseError(res));
   }
   return (await res.json()) as { id: string; permission_mode: string };
+}
+
+/**
+ * Permission Mode ModeAskUser Extension plan (May 2026), Slice 3.
+ *
+ * grantPermission POSTs the operator's choice on the inline
+ * PermissionPrompt to the backend's resolver endpoint. The endpoint
+ * is bearer-by-session-id auth (per project_flowstate_api_bearer_by_session_id);
+ * the closed scope vocabulary is exact-case-match (once / session /
+ * forever / deny).
+ *
+ * Wire round-trip:
+ *   - 200 OK + { request_id, scope } → resolved; the long-poll diff
+ *     will deliver the status flip to all open tabs (R5 cross-tab
+ *     propagation per plan §11 R5 + §17.1).
+ *   - 400 → invalid scope or missing request_id (drift in FE payload).
+ *   - 404 → request_id unknown (stale tab clicked after grant landed
+ *     elsewhere) OR session unknown.
+ *   - 401 → uniform invalid-bearer; the auth middleware emits this
+ *     without fingerprinting mode (memory:
+ *     project_flowstate_auth_track_mode_fingerprint).
+ *   - 501 → registry not configured on this server.
+ *
+ * Throws on any non-2xx so the caller can rewind the optimistic
+ * "Granting…" state and keep the prompt visible for retry.
+ *
+ * Per memory feedback_response_ok_mock_gotcha — vitest fetch mocks
+ * MUST use real Response objects (or include `ok` getter explicitly)
+ * so the `if (!res.ok)` branch resolves correctly.
+ */
+export type PermissionGrantScope = "once" | "session" | "forever" | "deny";
+
+export async function grantPermission(
+  sessionId: string,
+  requestId: string,
+  scope: PermissionGrantScope,
+): Promise<{ request_id: string; scope: string }> {
+  const res = await fetch(
+    joinBaseURL(
+      `/v1/sessions/${encodeURIComponent(sessionId)}/permission-grant`,
+    ),
+    {
+      method: "POST",
+      headers: withCsrfHeader({ "Content-Type": "application/json" }),
+      credentials: CREDENTIALS_INCLUDE,
+      body: JSON.stringify({ request_id: requestId, scope }),
+    },
+  );
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+  return (await res.json()) as { request_id: string; scope: string };
 }
 
 export async function fetchModels(): Promise<Model[]> {

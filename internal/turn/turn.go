@@ -416,7 +416,91 @@ type Turn struct {
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
 	CriticalError *TurnCriticalError `json:"critical_error,omitempty"`
+	// PermissionRequests mirrors the in-flight + recently-resolved
+	// permission requests for this Turn (Permission Mode ModeAskUser
+	// Extension plan, May 2026, Slice 3, §17.1 long-poll redirect).
+	// Populated by UpsertPermissionRequest when the engine /
+	// pathguard publishes EventPermissionRequired, and by
+	// MarkPermissionRequestResolved when the operator-grant HTTP
+	// handler publishes EventPermissionGranted / EventPermissionDenied /
+	// EventPermissionTimeout (subscribed in
+	// internal/api/server.go:subscribeTurnPermission*).
+	//
+	// Two-phase lifecycle per entry:
+	//   - Status == StatusPermissionPending: the engine goroutine is
+	//     suspended; the chat UI renders the inline PermissionPrompt.
+	//   - Status == StatusPermissionGranted / Denied / Timeout: the
+	//     resolution is broadcast onto the long-poll wire so both tabs
+	//     (R5 cross-tab guard) observe the disposition. The FE's poll
+	//     diff removes the entry from pendingPermissionRequests on
+	//     non-pending status — the bookkeeping is intentionally kept
+	//     here for a short post-resolve window so a tab that woke from
+	//     a long-poll mid-resolution still sees the final state rather
+	//     than a silently-vanished prompt.
+	//
+	// Empty (nil) until the first permission_required fires on this
+	// Turn. Frozen at the final set once the Turn reaches a terminal
+	// state.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Permission Mode ModeAskUser Extension (May 2026).md §17.1.
+	PermissionRequests []TurnPermissionRequest `json:"permission_requests,omitempty"`
 }
+
+// TurnPermissionRequest is the wire shape of a single in-flight or
+// recently-resolved permission request surfaced on the Turn's long-poll
+// payload. Mirrors the field names and JSON tags the Vue chatStore
+// reads via pollTurnUntilTerminal's poll-diff.
+//
+// RequestID is the registry key the operator's HTTP grant handler
+// calls Resolve(...) on; ToolName + Resource + AgentName + DenialReason
+// + Mode are the inline prompt's visual fields (plan §3).
+//
+// Status is one of TurnPermissionStatusPending / Granted / Denied /
+// Timeout — the FE diff removes from its pendingPermissionRequests map
+// on any non-pending status; a separate transient surface
+// (`recentlyResolved`) keeps a few milliseconds of history so a tab
+// returning from background still observes the disposition.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Permission Mode ModeAskUser Extension (May 2026).md §3 + §17.1.
+type TurnPermissionRequest struct {
+	RequestID    string `json:"request_id"`
+	ToolName     string `json:"tool_name"`
+	AgentName    string `json:"agent_name,omitempty"`
+	Resource     string `json:"resource,omitempty"`
+	DenialReason string `json:"denial_reason,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Status       string `json:"status"`
+	// Scope is the operator's chosen grant scope on a resolved entry
+	// (once / session / forever / deny). Empty while Status == pending
+	// and on a Timeout resolution (the timer fires with no operator
+	// input — the field carries no scope to surface).
+	Scope string `json:"scope,omitempty"`
+}
+
+// Permission request status values surfaced on TurnPermissionRequest.Status.
+// The vocabulary is closed and matches the four lifecycle states the
+// engine + HTTP grant handler drive between.
+const (
+	// TurnPermissionStatusPending indicates the engine goroutine is
+	// suspended awaiting an operator grant. The FE renders the inline
+	// PermissionPrompt; the entry remains in
+	// chatStore.pendingPermissionRequests until status flips.
+	TurnPermissionStatusPending = "pending"
+	// TurnPermissionStatusGranted indicates the operator selected
+	// Allow Once / This Session / Forever. The Scope field carries
+	// which.
+	TurnPermissionStatusGranted = "granted"
+	// TurnPermissionStatusDenied indicates the operator selected
+	// Deny. The suspended tool call resumes with IsError.
+	TurnPermissionStatusDenied = "denied"
+	// TurnPermissionStatusTimeout indicates the 5-minute suspension
+	// timer fired with no operator response. The suspended tool call
+	// resumes with IsError; the FE may render the entry distinctly
+	// from a manual deny.
+	TurnPermissionStatusTimeout = "timeout"
+)
 
 // ErrTurnConflict fires when Start is called on a session that
 // already has a Turn in StatusRunning. Phase 2's HTTP handler maps
@@ -1527,6 +1611,104 @@ func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 	return false
 }
 
+// permissionRequestsDiffer reports whether the live PermissionRequests
+// slice differs from the caller's baseline. Comparison considers
+// length, position, and per-entry field equality — length growth
+// (new pending request) AND per-entry Status flips (pending →
+// granted/denied/timeout) BOTH count as differences so a single grant
+// in one tab wakes the long-poll wait in every other tab (R5
+// cross-tab guard, plan §11 R5 + §17.1).
+//
+// UpsertPermissionRequest preserves slice order on replace-in-place
+// (the matching entry is mutated in place rather than appended), so a
+// baseline captured at moment T against a live snapshot at T+1 reads
+// the same indices for the same request_ids. Used by WaitForChange's
+// predicate.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Permission Mode ModeAskUser Extension (May 2026).md §11 R5 + §17.1.
+func permissionRequestsDiffer(live, baseline []TurnPermissionRequest) bool {
+	if len(live) != len(baseline) {
+		return true
+	}
+	for i := range live {
+		if live[i] != baseline[i] {
+			return true
+		}
+	}
+	return false
+}
+
+// UpsertPermissionRequest writes a TurnPermissionRequest onto a Running
+// Turn's PermissionRequests slice. If an entry with the same RequestID
+// already exists the entry is replaced in place (preserving slice
+// order so the FE's positional diff against a baseline behaves
+// deterministically); otherwise the entry is appended. Permission Mode
+// ModeAskUser Extension plan (May 2026), Slice 3, §17.1.
+//
+// The replace-in-place semantics underwrite the cross-tab R5 guard:
+// the bus subscriber resolves an in-flight pending entry to its
+// terminal Status (granted / denied / timeout) by calling Upsert with
+// the same RequestID — both tabs' long-poll waits wake on the
+// broadcast and observe the status flip, and the FE's diff removes
+// the entry from `pendingPermissionRequests` on the non-pending value.
+//
+// No-op semantics:
+//   - empty turnID — silent return.
+//   - unknown turnID — silent return (tolerates a late event-bus tap
+//     after the Turn already terminated).
+//   - non-Running turnID — silent return (the registry must absorb
+//     races between Complete and a trailing prompt-resolution event,
+//     same shape as AppendCompactionEvent / SetCriticalError post-
+//     terminal taps).
+//   - empty req.RequestID — silent return (defensive — a producer-
+//     side bug must not poison the registry with a "" key that the
+//     resolver could not address).
+//
+// Broadcast gate: fires when the entry's value DIFFERS from any
+// existing entry with the same RequestID (or when the entry is new).
+// Identical-payload double-Upsert is a no-broadcast so a noisy
+// subscriber doesn't spin the long-poll cadence.
+//
+// Concurrency: acquires r.mu via Lock. The slice mutation lives under
+// the same lock peer methods use so readers (Get / WaitForChange)
+// never observe a torn slice.
+//
+// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+//   Permission Mode ModeAskUser Extension (May 2026).md §17.1.
+func (r *Registry) UpsertPermissionRequest(turnID string, req TurnPermissionRequest) {
+	if turnID == "" || req.RequestID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	t, ok := r.byID[turnID]
+	if !ok {
+		return
+	}
+	if t.Status != StatusRunning {
+		return
+	}
+
+	for i := range t.PermissionRequests {
+		if t.PermissionRequests[i].RequestID == req.RequestID {
+			if t.PermissionRequests[i] == req {
+				// Identical payload — no-op, no broadcast (memory:
+				// feedback_published_unsubscribed_events_dead_surface
+				// — every wake must be a real change so consumers do
+				// not pay the cost of a stale predicate re-check).
+				return
+			}
+			t.PermissionRequests[i] = req
+			r.broadcastChangeLocked()
+			return
+		}
+	}
+	t.PermissionRequests = append(t.PermissionRequests, req)
+	r.broadcastChangeLocked()
+}
+
 // WaitForChange is the Phase-4-Commit-1b long-poll primitive. Returns
 // when ANY of the following becomes true:
 //   - len(turn.MessagesAdded) > sinceMsgCount
@@ -1540,6 +1722,10 @@ func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 //   - len(turn.CompactionEvents) > lastCompactionEventsLen (Phase-5 §1c-γ)
 //   - len(turn.GateFailures) > lastGateFailuresLen (Phase-5 §1c-γ)
 //   - turn.CriticalError differs from lastCriticalError by value (Phase-5 §1c-γ)
+//   - turn.PermissionRequests differs from lastPermissionRequests by
+//     length OR any per-entry value (Permission Mode ModeAskUser
+//     Extension plan §17.1 — the long-poll diff is the cross-tab
+//     R5 signal)
 //   - turn.Status != StatusRunning (terminal-state reached)
 //   - timeout elapses (returns the current snapshot with changed=false)
 //   - ctx is cancelled (returns the zero snapshot with changed=false)
@@ -1587,6 +1773,10 @@ func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 //     Wake when the registry transitioned nil→non-nil OR the fields
 //     moved past the baseline (Phase-5 §1c-γ). Mirrors the
 //     contextUsageDiffers semantics for ContextUsage.
+//   - lastPermissionRequests — caller's last-observed PermissionRequests
+//     slice. Wake on length growth OR any per-entry field change
+//     (Status flip on grant / deny / timeout is the cross-tab R5
+//     signal — Permission Mode ModeAskUser Extension plan §17.1).
 //   - timeout — max wait duration. A zero or negative timeout means
 //     "evaluate the predicate once and return immediately".
 //
@@ -1614,6 +1804,7 @@ func (r *Registry) WaitForChange(
 	lastCompactionEventsLen int,
 	lastGateFailuresLen int,
 	lastCriticalError *TurnCriticalError,
+	lastPermissionRequests []TurnPermissionRequest,
 	timeout time.Duration,
 ) (Turn, bool) {
 	// Wall-clock deadline (NOT r.clock()) — the test fakes r.clock to
@@ -1641,6 +1832,7 @@ func (r *Registry) WaitForChange(
 			len(t.CompactionEvents) > lastCompactionEventsLen ||
 			len(t.GateFailures) > lastGateFailuresLen ||
 			criticalErrorDiffers(t.CriticalError, lastCriticalError) ||
+			permissionRequestsDiffer(t.PermissionRequests, lastPermissionRequests) ||
 			t.Status != StatusRunning {
 			snap := r.snapshotLocked(t)
 			r.mu.Unlock()
@@ -1734,6 +1926,14 @@ func (r *Registry) snapshotLocked(t *Turn) Turn {
 	if t.CriticalError != nil {
 		ce := *t.CriticalError
 		out.CriticalError = &ce
+	}
+	// Permission Mode ModeAskUser Extension plan (May 2026) §17.1 —
+	// deep-copy PermissionRequests so callers cannot race the next
+	// UpsertPermissionRequest. TurnPermissionRequest is a flat value
+	// type (no nested pointer fields), so a shallow slice copy is
+	// sufficient — each element is copied by value.
+	if len(t.PermissionRequests) > 0 {
+		out.PermissionRequests = append([]TurnPermissionRequest(nil), t.PermissionRequests...)
 	}
 	return out
 }

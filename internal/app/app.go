@@ -927,6 +927,14 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		// and POST /api/v1/sessions/{id}/compress endpoints route
 		// through this surface.
 		api.WithCompactionController(eng),
+		// Permission Mode ModeAskUser Extension plan (May 2026), Slice 3.
+		// The api server's POST /api/v1/sessions/{id}/permission-grant
+		// resolves suspended permission requests through the shared
+		// registry the engine + pathguard prompter writes into. Nil-safe:
+		// when createEngine doesn't install a prompter (NewForTest path,
+		// pre-Slice-2 fixtures) Registry() returns nil and the grant
+		// endpoint surfaces 501.
+		api.WithPermissionRegistry(askUserPrompter.Registry()),
 	)
 	return &runtimeComponents{
 		engine:               eng,

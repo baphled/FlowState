@@ -10,12 +10,15 @@ import {
   fetchSessions,
   fetchSwarms,
   fetchTurn,
+  grantPermission as apiGrantPermission,
   sendSessionMessage,
   truncateSessionMessages,
   updateSessionAgent,
   updateSessionModel,
   updateSessionPermissionMode,
+  type PermissionGrantScope,
   type TurnState,
+  type TurnStatePermissionRequest,
 } from '@/api'
 import { recordStreamEvent } from '@/lib/streamLog'
 import { exhaustivenessGuard, parseSSEPayload, type SSEEvent } from '@/lib/sseEvent'
@@ -446,6 +449,34 @@ export const useChatStore = defineStore('chat', {
     // (restoreStateFromBackend, loadSessionMessages, newSession) so the
     // chip never bleeds the previous session's value across the gap.
     permissionMode: DEFAULT_PERMISSION_MODE as PermissionMode,
+    // Permission Mode ModeAskUser Extension plan (May 2026), Slice 3,
+    // §17.1 — the per-turn long-poll diff (NOT a re-introduced SSE
+    // bridge) drives this map. Keyed by request_id; values mirror the
+    // server's TurnStatePermissionRequest wire shape so the
+    // PermissionPrompt component can render directly from a map entry.
+    //
+    // Cross-tab guard (plan §11 R5): tab A's grant POST resolves the
+    // backend registry; the resulting status flip is broadcast on the
+    // turn registry's changeCh; every tab parked in long-poll wakes
+    // and the diff (computed against `lastPollPermissionRequestKeys`
+    // in pollTurnUntilTerminal) updates this map. Tab B's prompt
+    // unmounts within long-poll cadence.
+    //
+    // Plain object record (not Map) for Pinia reactivity — Vue's
+    // reactivity proxy tracks property add/delete on plain records
+    // but Map mutations require explicit `state.foo = new Map(...)`
+    // dance that's invasive to write through every code path. The
+    // record fits the visible-prompt count (single-digit at v1) so
+    // the iteration cost is irrelevant.
+    pendingPermissionRequests: {} as Record<string, TurnStatePermissionRequest>,
+    // Companion set of request_ids currently in the optimistic
+    // "Granting…" state — the FE wrote the POST but the long-poll
+    // diff has not yet observed the terminal status. Cleared either
+    // by the diff (success) OR by the POST's failure branch (which
+    // also re-enables the buttons). Plain Set works here because we
+    // only ever read it via .has() in the component; Pinia handles
+    // the reactivity through the action-write boundary.
+    grantingPermissionRequests: new Set<string>(),
     // chainSessions — Bug Hunt (May 2026) sibling-confusion fix for the
     // in-thread delegation card.
     //
@@ -1516,6 +1547,53 @@ export const useChatStore = defineStore('chat', {
             ? error.message
             : 'Failed to update permission mode'
       }
+    },
+
+    /**
+     * Permission Mode ModeAskUser Extension plan (May 2026), Slice 3 —
+     * the operator's click on a PermissionPrompt button.
+     *
+     * Marks the request as in-flight ("Granting…" state surfaces in
+     * the prompt component), POSTs the grant to the backend's resolver
+     * endpoint, and clears the optimistic flag on either success OR
+     * failure. The actual removal from `pendingPermissionRequests`
+     * happens in pollTurnUntilTerminal when the long-poll diff
+     * observes the status flip — this matches §17.1's rule that the
+     * long-poll IS the cross-tab signal (NOT a separate broadcast).
+     *
+     * Failure surfacing: re-throws so the prompt component can show a
+     * retry affordance. The pending entry is left intact (the backend
+     * registry still holds it; the user can click again).
+     *
+     * Auth: relies on the existing session-bearer middleware that
+     * wraps registerProtected (memory:
+     * project_flowstate_api_bearer_by_session_id).
+     */
+    async grantPermission(requestId: string, scope: PermissionGrantScope): Promise<void> {
+      const sessionId = this.currentSessionId
+      if (!sessionId) {
+        return
+      }
+      this.grantingPermissionRequests.add(requestId)
+      try {
+        await apiGrantPermission(sessionId, requestId, scope)
+      } catch (error) {
+        // Clear the optimistic flag so the prompt's buttons re-enable
+        // for retry. Leave the pending entry intact — the backend
+        // registry's Resolve was either rejected (404 / 400) or never
+        // landed (network), so the suspended engine goroutine is
+        // still waiting. The user can click again or wait for the
+        // 5-minute timeout.
+        this.grantingPermissionRequests.delete(requestId)
+        throw error
+      }
+      // On success the chatStore does NOT immediately remove from
+      // pendingPermissionRequests — the long-poll diff carries the
+      // canonical "resolved" status from the backend's
+      // subscribeTurnPermissionResolved subscriber. This is the
+      // cross-tab guarantee: tab B's diff observes the same status
+      // flip and unmounts its prompt within long-poll cadence. The
+      // Granting… flag flips off when the diff applies.
     },
 
     /**
@@ -2682,6 +2760,69 @@ export const useChatStore = defineStore('chat', {
               correlationId: cid,
             }
             this.lastCriticalErrorCorrelationId = cid
+          }
+        }
+
+        // Permission Mode ModeAskUser Extension plan (May 2026), Slice 3,
+        // §17.1 — diff permission_requests against the prior poll's
+        // pending entries. Three flows merge through this one diff:
+        //
+        //   1. New pending request (engine just published
+        //      permission_required) → insert into pendingPermissionRequests.
+        //      The PermissionPrompt component renders inline beneath the
+        //      owning tool_call bubble.
+        //
+        //   2. Status flip pending → granted/denied/timeout (the operator
+        //      clicked, OR another tab clicked — same wire, cross-tab R5
+        //      guard) → remove from pendingPermissionRequests + clear any
+        //      Granting… optimistic flag.
+        //
+        //   3. Request already resolved before this tab observed pending
+        //      (a tab returning from background mid-resolution) → still
+        //      treated as a remove since we never inserted, but defensively
+        //      clear the Granting flag just in case.
+        //
+        // The wire shape includes BOTH pending and resolved entries —
+        // the FE walks the live slice and reconciles against its map.
+        // Entries the slice no longer contains (post-Turn-Complete the
+        // backend may freeze them in the slice; the FE handles either
+        // path) are also removed.
+        const incomingPerms = state.permission_requests
+        if (Array.isArray(incomingPerms)) {
+          const seenIds = new Set<string>()
+          for (const entry of incomingPerms) {
+            if (!entry?.request_id) continue
+            seenIds.add(entry.request_id)
+            if (entry.status === 'pending') {
+              // Insert or refresh pending entry. The FE component reads
+              // tool_name / resource / agent_name / denial_reason
+              // directly from this shape.
+              this.pendingPermissionRequests[entry.request_id] = entry
+            } else {
+              // Terminal status — remove from pending + clear Granting flag.
+              // Doing both here gives us the cross-tab guarantee: tab B
+              // observes the same status flip via its own long-poll diff
+              // and the prompt component unmounts.
+              if (this.pendingPermissionRequests[entry.request_id]) {
+                delete this.pendingPermissionRequests[entry.request_id]
+              }
+              if (this.grantingPermissionRequests.has(entry.request_id)) {
+                this.grantingPermissionRequests.delete(entry.request_id)
+              }
+            }
+          }
+          // Defensive cleanup: any pending entry whose request_id is no
+          // longer in the server's slice (could happen if the backend
+          // garbage-collects resolved entries on a future cleanup pass)
+          // is removed. v1 backend retains resolved entries through the
+          // Turn lifecycle, so this branch is a forward-compat hedge.
+          for (const knownId of Object.keys(this.pendingPermissionRequests)) {
+            if (!seenIds.has(knownId)) {
+              delete this.pendingPermissionRequests[knownId]
+              if (this.grantingPermissionRequests.has(knownId)) {
+                this.grantingPermissionRequests.delete(knownId)
+              }
+            }
           }
         }
 

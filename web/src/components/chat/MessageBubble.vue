@@ -4,6 +4,7 @@ import type { Message } from "@/types";
 import { useChatStore } from "@/stores/chatStore";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import ThinkingPanel from "./ThinkingPanel.vue";
+import PermissionPrompt from "./PermissionPrompt.vue";
 import CopyButton from "@/components/tools/CopyButton.vue";
 import ToolErrorCard from "@/components/tools/ToolErrorCard.vue";
 import GenericTool from "@/components/tools/GenericTool.vue";
@@ -522,6 +523,38 @@ const showAgentChip = computed<boolean>(
   () => isToolInvocation.value && typeof props.agentLabel === "string" && props.agentLabel.length > 0,
 );
 
+// Permission Mode ModeAskUser Extension plan (May 2026), Slice 3 — the
+// inline PermissionPrompt anchors to the suspended tool_call bubble.
+// Match by tool_name (the bubble's owning tool's name vs the
+// permission request's tool_name) — the engine publishes the
+// permission_required event with exactly the tool_name the gate
+// rejected. Concurrent prompts on different tools (plan §5) anchor
+// independently because each tool_call bubble matches its own
+// pending entry.
+//
+// First-match wins on the same-tool-name concurrency edge (R2): two
+// in-flight prompts for "read" with different resources both surface,
+// the older one first by insertion order of the pendingPermissionRequests
+// record. v1 acceptable — the prompts render in stack order; once one
+// resolves the next becomes the lookup hit.
+const pendingPermissionForBubble = computed(() => {
+  if (!isToolInvocation.value) return null;
+  const targetTool = props.message.toolName;
+  if (!targetTool) return null;
+  // Defensive: card-chrome / fixture tests mount this component with a
+  // stub chatStore that omits the Slice 3 fields. `Object.values` on an
+  // undefined value throws — guarding here keeps existing specs that
+  // pre-date this surface from regressing.
+  const pending = chatStore.pendingPermissionRequests;
+  if (!pending) return null;
+  for (const entry of Object.values(pending)) {
+    if (entry?.tool_name === targetTool && entry.status === "pending") {
+      return entry;
+    }
+  }
+  return null;
+});
+
 async function handleRevert(): Promise<void> {
   await chatStore.revertToMessage(props.message.id);
 }
@@ -631,6 +664,20 @@ async function handleRegenerate(): Promise<void> {
         :status="toolStatus"
         :tool-input="props.message.toolInput"
         data-testid="tool-renderer"
+      />
+      <!--
+        Permission Mode ModeAskUser Extension plan (May 2026), Slice 3.
+        Inline PermissionPrompt anchored beneath the suspended
+        tool_call's render. Visible only when a pending permission
+        request exists for this bubble's tool — see
+        pendingPermissionForBubble for the match rule. Granted /
+        denied / timeout transitions remove the entry from
+        chatStore.pendingPermissionRequests via pollTurnUntilTerminal's
+        diff so the prompt unmounts cleanly across both tabs (R5).
+      -->
+      <PermissionPrompt
+        v-if="pendingPermissionForBubble"
+        :request="pendingPermissionForBubble"
       />
     </div>
 

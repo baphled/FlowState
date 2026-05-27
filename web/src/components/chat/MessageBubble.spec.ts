@@ -105,6 +105,14 @@ describe("MessageBubble", () => {
       // so the chainId disambiguates same-agent siblings. The agent-id
       // resolver is still mounted as the fallback path.
       loadSessionForDelegation: vi.fn(),
+      // Permission Mode ModeAskUser Extension (May 2026) Slice 3 — the
+      // pendingPermissionForBubble computed reads this map to gate the
+      // inline PermissionPrompt render. Default empty so the existing
+      // specs that don't seed a pending request keep their pre-Slice-3
+      // appearance.
+      pendingPermissionRequests: {},
+      grantingPermissionRequests: new Set<string>(),
+      grantPermission: vi.fn(),
     };
     vi.mocked(useChatStore).mockReturnValue(mockChatStore);
   });
@@ -2010,6 +2018,130 @@ describe("MessageBubble", () => {
       expect(
         wrapper.find('[data-testid="message-regenerate-btn"]').exists(),
       ).toBe(false);
+    });
+  });
+
+  // Permission Mode ModeAskUser Extension plan (May 2026), Slice 3.
+  //
+  // MessageBubble renders the inline PermissionPrompt beneath the
+  // suspended tool_call's chrome. The render gate is
+  // pendingPermissionForBubble — a computed that matches the bubble's
+  // tool name against an entry in chatStore.pendingPermissionRequests
+  // with status='pending'. Closed lifecycle: a status flip to
+  // granted/denied/timeout removes the entry from the store map, so
+  // the prompt unmounts (the v-if turns false on the next reactive
+  // tick).
+  describe("inline PermissionPrompt (Slice 3, §3 + §17.1)", () => {
+    it("renders PermissionPrompt under a tool_call bubble when a pending request matches the tool name", async () => {
+      mockChatStore.pendingPermissionRequests = {
+        "req-1": {
+          request_id: "req-1",
+          tool_name: "read",
+          agent_name: "coordinator",
+          resource: "/home/baphled/secret.txt",
+          denial_reason: "access denied",
+          mode: "ask",
+          status: "pending",
+        },
+      };
+
+      const wrapper = mountWithStubs(
+        makeMessage({
+          id: "tool-1",
+          role: "tool_call",
+          toolName: "read",
+          content: "",
+        }),
+      );
+      await flushPromises();
+
+      // The PermissionPrompt mounts inside the tool-invocation chrome
+      // — same wrapper the tool renderer sits in. The data-testid is
+      // the load-bearing probe (matches PermissionPrompt.spec.ts).
+      expect(wrapper.find('[data-testid="permission-prompt"]').exists()).toBe(
+        true,
+      );
+      expect(
+        wrapper
+          .get('[data-testid="permission-prompt"]')
+          .attributes("data-request-id"),
+      ).toBe("req-1");
+    });
+
+    it("does NOT render PermissionPrompt when no pending request matches the bubble's tool", async () => {
+      mockChatStore.pendingPermissionRequests = {
+        "req-other": {
+          request_id: "req-other",
+          tool_name: "bash",
+          status: "pending",
+        },
+      };
+
+      const wrapper = mountWithStubs(
+        makeMessage({
+          id: "tool-2",
+          role: "tool_call",
+          toolName: "read",
+          content: "",
+        }),
+      );
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="permission-prompt"]').exists()).toBe(
+        false,
+      );
+    });
+
+    it("does NOT render PermissionPrompt on non-tool-invocation rows", async () => {
+      // A pending entry exists but the bubble is a plain assistant —
+      // the inline prompt is anchored to the tool_call chrome, not
+      // a stand-alone bubble row.
+      mockChatStore.pendingPermissionRequests = {
+        "req-stray": {
+          request_id: "req-stray",
+          tool_name: "read",
+          status: "pending",
+        },
+      };
+
+      const wrapper = mountWithStubs(
+        makeMessage({ role: "assistant", content: "regular message" }),
+      );
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="permission-prompt"]').exists()).toBe(
+        false,
+      );
+    });
+
+    it("does NOT render PermissionPrompt when the matching entry has a terminal status", async () => {
+      // A resolved entry the store retains (e.g. mid-cleanup) MUST NOT
+      // render the prompt — the gate is status === 'pending'. This
+      // pins the cross-tab unmount behaviour: tab B's poll diff
+      // observes the granted status from tab A's click, and even if
+      // the cleanup hasn't run yet the prompt does not render.
+      mockChatStore.pendingPermissionRequests = {
+        "req-resolved": {
+          request_id: "req-resolved",
+          tool_name: "read",
+          status: "granted",
+          scope: "session",
+        },
+      };
+
+      const wrapper = mountWithStubs(
+        makeMessage({
+          id: "tool-3",
+          role: "tool_call",
+          toolName: "read",
+          content: "",
+        }),
+      );
+      await flushPromises();
+
+      expect(wrapper.find('[data-testid="permission-prompt"]').exists()).toBe(
+        false,
+      );
     });
   });
 });

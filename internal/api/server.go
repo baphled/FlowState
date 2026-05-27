@@ -18,6 +18,7 @@ import (
 	"github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/orchestrator"
+	"github.com/baphled/flowstate/internal/permissionrequest"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
@@ -95,6 +96,18 @@ type Server struct {
 	// older test surfaces that skip those options fall back to the
 	// pre-Dispatcher orchestrator path.
 	dispatcher DispatcherService
+
+	// permissionRegistry holds the in-flight ModeAskUser permission
+	// requests. POST /api/v1/sessions/{id}/permission-grant calls
+	// Resolve(...) on this registry to deliver the operator's grant
+	// to the suspended pathguard / engine goroutine. Permission Mode
+	// ModeAskUser Extension plan (May 2026), Slice 3, §17.1 — the
+	// per-turn long-poll surface (see subscribeTurnPermission*) is
+	// the cross-tab signal; this field is the resolve seam.
+	//
+	// Nil makes POST /permission-grant return 501 so the SPA can
+	// distinguish "feature not wired" from "no in-flight request".
+	permissionRegistry *permissionrequest.Registry
 }
 
 // DispatcherService is the narrow surface the Dispatcher Service
@@ -183,6 +196,28 @@ func WithSessionManager(mgr *session.Manager) ServerOption {
 //   - None.
 func WithDispatcher(d DispatcherService) ServerOption {
 	return func(s *Server) { s.dispatcher = d }
+}
+
+// WithPermissionRegistry installs the in-process registry of suspended
+// permission requests so POST /api/v1/sessions/{id}/permission-grant
+// can resolve them with the operator's chosen scope. Permission Mode
+// ModeAskUser Extension plan (May 2026), Slice 3.
+//
+// When unset, the grant endpoint returns 501 — the wire surface
+// distinguishes "feature not built" (501) from "request_id unknown"
+// (404).
+//
+// Expected:
+//   - reg is a non-nil *permissionrequest.Registry.
+//
+// Returns:
+//   - A ServerOption that installs the registry.
+//
+// Side effects:
+//   - None until handlePermissionGrant or subscribeTurnPermission*
+//     read the field.
+func WithPermissionRegistry(reg *permissionrequest.Registry) ServerOption {
+	return func(s *Server) { s.permissionRegistry = reg }
 }
 
 // WithSessions sets the session store for session API routes.
@@ -522,6 +557,8 @@ func NewServer(
 	s.subscribeTurnHeartbeat()
 	s.subscribeTurnContextCompacted()
 	s.subscribeTurnGateFailed()
+	s.subscribeTurnPermissionRequired()
+	s.subscribeTurnPermissionResolved()
 	s.setupRoutes()
 	return s
 }
@@ -649,6 +686,140 @@ func (s *Server) subscribeTurnGateFailed() {
 			CoordStoreKeys: coordKeys,
 		})
 	})
+}
+
+// subscribeTurnPermissionRequired wires the polling-side
+// permission_required subscriber. Permission Mode ModeAskUser Extension
+// plan (May 2026), Slice 3, §17.1.
+//
+// On each EventPermissionRequired the closure resolves the active turn
+// for the event's session_id via the Turn registry then calls
+// UpsertPermissionRequest with Status=pending. The long-poll
+// WaitForChange wakes; the FE's poll-diff inserts the request into
+// pendingPermissionRequests and renders the inline PermissionPrompt.
+//
+// Phase-4-Commit-2 retired the per-session SSE bridge; this subscriber
+// is the production wire-up for §11 R5 cross-tab grant propagation
+// (the original SSE-broadcast plan in §3 became infeasible — see
+// §17.1).
+//
+// No-op when either the eventBus or the dispatcher's Turn registry is
+// unwired (e.g. test fixtures that skip WithEventBus / WithDispatcher).
+func (s *Server) subscribeTurnPermissionRequired() {
+	if s.eventBus == nil || s.dispatcher == nil {
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		return
+	}
+	s.eventBus.Subscribe(events.EventPermissionRequired, func(msg any) {
+		pe, ok := msg.(*events.PermissionRequiredEvent)
+		if !ok {
+			return
+		}
+		turnID, ok := registry.FindActiveBySession(pe.Data.SessionID)
+		if !ok {
+			return
+		}
+		registry.UpsertPermissionRequest(turnID, turn.TurnPermissionRequest{
+			RequestID:    pe.Data.RequestID,
+			ToolName:     pe.Data.ToolName,
+			AgentName:    pe.Data.AgentName,
+			Resource:     pe.Data.Resource,
+			DenialReason: pe.Data.DenialReason,
+			Mode:         pe.Data.Mode,
+			Status:       turn.TurnPermissionStatusPending,
+		})
+	})
+}
+
+// subscribeTurnPermissionResolved wires the polling-side subscriber
+// for the three terminal events of a permission-request lifecycle —
+// EventPermissionGranted / EventPermissionDenied / EventPermissionTimeout.
+//
+// On each event the closure looks up the in-flight pending entry on
+// the Turn for the event's session_id and Upserts it with the
+// terminal Status + (on Granted only) Scope. Both tabs' long-poll
+// waits wake on the broadcast — tab A's grant click propagates to
+// tab B's pendingPermissionRequests map via the turn-state diff, per
+// plan §11 R5 + §17.1.
+//
+// Three Subscribe calls instead of one shared handler because each
+// event carries its own status semantics — the closure body is short
+// enough that the duplication is preferable to a per-call type
+// switch. The single shared handler precedent at
+// app.go:subscribePermissionGaugeHook is for the gauge decrement
+// (uniform "one suspended request resolved" — no per-event branching);
+// here Status carries the disposition.
+//
+// No-op when either the eventBus or the dispatcher's Turn registry is
+// unwired.
+func (s *Server) subscribeTurnPermissionResolved() {
+	if s.eventBus == nil || s.dispatcher == nil {
+		return
+	}
+	registry := s.dispatcher.TurnRegistry()
+	if registry == nil {
+		return
+	}
+	resolve := func(status string) func(msg any) {
+		return func(msg any) {
+			data, ok := extractResolutionData(msg)
+			if !ok {
+				return
+			}
+			turnID, ok := registry.FindActiveBySession(data.SessionID)
+			if !ok {
+				return
+			}
+			req := turn.TurnPermissionRequest{
+				RequestID:    data.RequestID,
+				ToolName:     data.ToolName,
+				AgentName:    data.AgentName,
+				Resource:     data.Resource,
+				DenialReason: "",
+				Mode:         data.Mode,
+				Status:       status,
+				Scope:        data.Scope,
+			}
+			// Preserve the pending entry's DenialReason if present —
+			// the resolution event payload does not carry it. The
+			// Upsert's match-by-RequestID path replaces in place; if
+			// the FE never saw the pending entry (mid-load races),
+			// we still write the resolution so a tab returning from
+			// background observes the disposition.
+			if t, err := registry.Get(turnID); err == nil {
+				for _, pending := range t.PermissionRequests {
+					if pending.RequestID == data.RequestID {
+						req.DenialReason = pending.DenialReason
+						break
+					}
+				}
+			}
+			registry.UpsertPermissionRequest(turnID, req)
+		}
+	}
+	s.eventBus.Subscribe(events.EventPermissionGranted, resolve(turn.TurnPermissionStatusGranted))
+	s.eventBus.Subscribe(events.EventPermissionDenied, resolve(turn.TurnPermissionStatusDenied))
+	s.eventBus.Subscribe(events.EventPermissionTimeout, resolve(turn.TurnPermissionStatusTimeout))
+}
+
+// extractResolutionData reads the shared PermissionResolutionEventData
+// payload from a bus message regardless of which of the three terminal
+// event constructors produced it. Returns (data, false) when msg is
+// neither shape — the subscriber drops silently rather than panic.
+func extractResolutionData(msg any) (events.PermissionResolutionEventData, bool) {
+	switch ev := msg.(type) {
+	case *events.PermissionGrantedEvent:
+		return ev.Data, true
+	case *events.PermissionDeniedEvent:
+		return ev.Data, true
+	case *events.PermissionTimeoutEvent:
+		return ev.Data, true
+	default:
+		return events.PermissionResolutionEventData{}, false
+	}
 }
 
 // streamingAdapter bridges the API's local Streamer interface to
@@ -791,6 +962,16 @@ func (s *Server) setupRoutes() {
 	// and model adjacent routes use PATCH. The closed vocabulary
 	// keeps validation centralised in session.Manager.UpdatePermissionMode.
 	s.registerProtected("POST /api/v1/sessions/{id}/permission-mode", s.handleUpdateSessionPermissionMode)
+	// Permission Mode ModeAskUser Extension plan (May 2026), Slice 3.
+	// The grant endpoint round-trips the operator's selection back to
+	// the suspended pathguard / engine goroutine via permissionrequest.
+	// Registry.Resolve. registerProtected gates the route with the
+	// session bearer middleware (memory:
+	// project_flowstate_api_bearer_by_session_id) and returns a uniform
+	// 401 on bad auth — the handler MUST NOT distinguish mode shape
+	// via field names (memory:
+	// project_flowstate_auth_track_mode_fingerprint).
+	s.registerProtected("POST /api/v1/sessions/{id}/permission-grant", s.handlePermissionGrant)
 	s.registerProtected("GET /api/v1/tasks", s.handleListTasks)
 	s.registerProtected("GET /api/v1/tasks/{id}", s.handleGetTask)
 	s.registerProtected("DELETE /api/v1/tasks/{id}", s.handleCancelTask)
@@ -1477,6 +1658,19 @@ type turnResponse struct {
 	CompactionEvents []turn.CompactionEvent  `json:"compaction_events,omitempty"`
 	GateFailures     []turn.GateFailure      `json:"gate_failures,omitempty"`
 	CriticalError    *turn.TurnCriticalError `json:"critical_error,omitempty"`
+	// PermissionRequests surfaces the in-flight + recently-resolved
+	// ModeAskUser permission requests on the Turn (Permission Mode
+	// ModeAskUser Extension plan §17.1). The long-poll diff drives the
+	// FE's pendingPermissionRequests map AND the cross-tab R5 grant
+	// propagation — both tabs observe the status flip via this field.
+	//
+	// `omitempty` — pre-Slice-3 servers and Turn states with no
+	// permission events omit the field entirely so the FE poll-diff
+	// treats absent === unchanged.
+	//
+	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
+	//   Permission Mode ModeAskUser Extension (May 2026).md §17.1.
+	PermissionRequests []turn.TurnPermissionRequest `json:"permission_requests,omitempty"`
 }
 
 // handleGetTurn returns the current state of a Turn by its UUID.
@@ -1586,6 +1780,7 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			len(baseline.CompactionEvents),
 			len(baseline.GateFailures),
 			baseline.CriticalError,
+			baseline.PermissionRequests,
 			longPollTimeout,
 		)
 		// ctx-cancel path returns the zero snapshot — t.ID == "" iff
@@ -1600,23 +1795,24 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			msgs = []session.Message{}
 		}
 		writeJSON(w, turnResponse{
-			TurnID:           t.ID,
-			SessionID:        t.SessionID,
-			Status:           string(t.Status),
-			StartedAt:        t.StartedAt,
-			CompletedAt:      t.CompletedAt,
-			Model:            t.Model,
-			Error:            t.Error,
-			Messages:         msgs,
-			Phase:            t.Phase,
-			TokenCount:       t.TokenCount,
-			CurrentProvider:  t.CurrentProvider,
-			CurrentModel:     t.CurrentModel,
-			ContextUsage:     t.ContextUsage,
-			ProviderQuotas:   t.ProviderQuotas,
-			CompactionEvents: t.CompactionEvents,
-			GateFailures:     t.GateFailures,
-			CriticalError:    t.CriticalError,
+			TurnID:             t.ID,
+			SessionID:          t.SessionID,
+			Status:             string(t.Status),
+			StartedAt:          t.StartedAt,
+			CompletedAt:        t.CompletedAt,
+			Model:              t.Model,
+			Error:              t.Error,
+			Messages:           msgs,
+			Phase:              t.Phase,
+			TokenCount:         t.TokenCount,
+			CurrentProvider:    t.CurrentProvider,
+			CurrentModel:       t.CurrentModel,
+			ContextUsage:       t.ContextUsage,
+			ProviderQuotas:     t.ProviderQuotas,
+			CompactionEvents:   t.CompactionEvents,
+			GateFailures:       t.GateFailures,
+			CriticalError:      t.CriticalError,
+			PermissionRequests: t.PermissionRequests,
 		})
 		return
 	}
@@ -1635,23 +1831,24 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		msgs = []session.Message{}
 	}
 	writeJSON(w, turnResponse{
-		TurnID:           t.ID,
-		SessionID:        t.SessionID,
-		Status:           string(t.Status),
-		StartedAt:        t.StartedAt,
-		CompletedAt:      t.CompletedAt,
-		Model:            t.Model,
-		Error:            t.Error,
-		Messages:         msgs,
-		Phase:            t.Phase,
-		TokenCount:       t.TokenCount,
-		CurrentProvider:  t.CurrentProvider,
-		CurrentModel:     t.CurrentModel,
-		ContextUsage:     t.ContextUsage,
-		ProviderQuotas:   t.ProviderQuotas,
-		CompactionEvents: t.CompactionEvents,
-		GateFailures:     t.GateFailures,
-		CriticalError:    t.CriticalError,
+		TurnID:             t.ID,
+		SessionID:          t.SessionID,
+		Status:             string(t.Status),
+		StartedAt:          t.StartedAt,
+		CompletedAt:        t.CompletedAt,
+		Model:              t.Model,
+		Error:              t.Error,
+		Messages:           msgs,
+		Phase:              t.Phase,
+		TokenCount:         t.TokenCount,
+		CurrentProvider:    t.CurrentProvider,
+		CurrentModel:       t.CurrentModel,
+		ContextUsage:       t.ContextUsage,
+		ProviderQuotas:     t.ProviderQuotas,
+		CompactionEvents:   t.CompactionEvents,
+		GateFailures:       t.GateFailures,
+		CriticalError:      t.CriticalError,
+		PermissionRequests: t.PermissionRequests,
 	})
 }
 
@@ -2549,6 +2746,172 @@ func (s *Server) handleUpdateSessionPermissionMode(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, permissionModeResponse{ID: id, PermissionMode: req.Mode})
+}
+
+// permissionGrantRequest is the JSON body shape for
+// POST /api/v1/sessions/{id}/permission-grant. snake_case mirrors the
+// other session-scoped POST endpoints. The scope vocabulary is closed
+// to the four values plan §2 enumerates — once / session / forever /
+// deny. Permission Mode ModeAskUser Extension plan (May 2026) Slice 3.
+type permissionGrantRequest struct {
+	RequestID string `json:"request_id"`
+	Scope     string `json:"scope"`
+}
+
+// permissionGrantResponse is the wire shape returned on a successful
+// grant. The two-field minimum mirrors permissionModeResponse — the
+// FE's chatStore only needs (request_id, scope) to confirm the write
+// landed; the resolution propagates via the long-poll diff per §17.1.
+type permissionGrantResponse struct {
+	RequestID string `json:"request_id"`
+	Scope     string `json:"scope"`
+}
+
+// handlePermissionGrant resolves a suspended ModeAskUser permission
+// request with the operator's chosen scope, publishes the matching
+// terminal bus event so the gauge + Turn-registry subscribers
+// update, and acknowledges to the FE. Permission Mode ModeAskUser
+// Extension plan (May 2026), Slice 3.
+//
+// Auth: bearer-by-session_id via registerProtected (memory:
+// project_flowstate_api_bearer_by_session_id). Failed auth surfaces
+// as the uniform 401 the middleware emits — this handler MUST NOT
+// fingerprint mode shape via field names (memory:
+// project_flowstate_auth_track_mode_fingerprint).
+//
+// Scope vocabulary (plan §2):
+//   - "once"    — resume only this call; no persistence.
+//   - "session" — resume + remember resource for the session.
+//   - "forever" — Slice 3 falls through to ScopeSession semantics
+//                 with the registry's GrantForever value; Slice 4
+//                 wires the permissions.yaml writer. See §6 — the
+//                 wire shape is stable across slices so the FE
+//                 ships today without a v-next break.
+//   - "deny"    — resume with the original IsError tool_result.
+//
+// Expected:
+//   - Request path parameter "id" is the session id.
+//   - Request body JSON of the form {"request_id":"...","scope":"..."}.
+//
+// Returns:
+//   - 200 OK with {request_id, scope} on success.
+//   - 400 Bad Request on invalid scope, malformed body, or missing fields.
+//   - 404 Not Found when request_id is unknown to the registry.
+//   - 501 Not Implemented when the registry is unwired.
+//
+// Side effects:
+//   - Calls permissionrequest.Registry.Resolve which sends the grant
+//     onto the suspended goroutine's buffered channel and removes the
+//     pending entry.
+//   - Publishes EventPermissionGranted (allow scopes) or
+//     EventPermissionDenied (deny). The gauge subscriber decrements
+//     permission_pending; the turn-registry subscriber upserts the
+//     resolved entry so the long-poll diff carries the disposition to
+//     both tabs.
+func (s *Server) handlePermissionGrant(w http.ResponseWriter, r *http.Request) {
+	if s.permissionRegistry == nil {
+		http.Error(w, "permission registry not configured", http.StatusNotImplemented)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "session id is required", http.StatusBadRequest)
+		return
+	}
+	// Session-existence gate — return 404 distinctly from the
+	// request_id-unknown 404 so the FE can distinguish "session
+	// gone" from "request gone". The session manager is the source
+	// of truth for the live session set.
+	if s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(id); err != nil {
+			if errors.Is(err, session.ErrSessionNotFound) {
+				http.Error(w, "session not found", http.StatusNotFound)
+				return
+			}
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	var req permissionGrantRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.RequestID == "" {
+		http.Error(w, "request_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Closed scope vocabulary — exact-case match. Variants (ONCE /
+	// Allow / "once " with whitespace) are rejected with 400 so a
+	// drift in the FE's payload shape surfaces at PR time rather
+	// than silently coercing to a different scope.
+	scope, ok := parseGrantScope(req.Scope)
+	if !ok {
+		http.Error(w, "invalid scope", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.permissionRegistry.Resolve(req.RequestID, permissionrequest.PermissionGrant{
+		RequestID: req.RequestID,
+		Scope:     scope,
+	}); err != nil {
+		if errors.Is(err, permissionrequest.ErrPermissionRequestNotFound) {
+			http.Error(w, "permission request not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Publish the matching resolution event so the gauge subscriber
+	// decrements + the long-poll subscriber upserts the resolved Turn
+	// entry. We do this AFTER Resolve so a producer-side panic in the
+	// registry path (highly unlikely but defensive) doesn't leave the
+	// observability surface in a stale "still pending" state.
+	if s.eventBus != nil {
+		data := events.PermissionResolutionEventData{
+			RequestID: req.RequestID,
+			SessionID: id,
+			Scope:     string(scope),
+		}
+		if scope == permissionrequest.ScopeDeny {
+			s.eventBus.Publish(events.EventPermissionDenied, events.NewPermissionDeniedEvent(data))
+		} else {
+			s.eventBus.Publish(events.EventPermissionGranted, events.NewPermissionGrantedEvent(data))
+		}
+	}
+
+	writeJSON(w, permissionGrantResponse{RequestID: req.RequestID, Scope: string(scope)})
+}
+
+// parseGrantScope validates a string against the closed grant-scope
+// vocabulary and returns the matching permissionrequest.Scope. Exact-
+// case match — any case variant or unknown value returns (zero, false)
+// so the handler surfaces a 400. Permission Mode ModeAskUser Extension
+// plan (May 2026), Slice 3.
+//
+// Slice 4 will lift ScopeForever onto the permissions.yaml writer
+// path; today this function maps "forever" onto ScopeForever as-is so
+// the wire shape is stable. The prompter's pathguardScope projection
+// (app/permission_prompter.go) is the seam that translates Forever to
+// its effect — Slice 3 leaves it at Session-equivalent in-memory
+// semantics per plan §4 Slice 3 file changes addendum.
+func parseGrantScope(raw string) (permissionrequest.Scope, bool) {
+	switch raw {
+	case string(permissionrequest.ScopeOnce):
+		return permissionrequest.ScopeOnce, true
+	case string(permissionrequest.ScopeSession):
+		return permissionrequest.ScopeSession, true
+	case string(permissionrequest.ScopeForever):
+		return permissionrequest.ScopeForever, true
+	case string(permissionrequest.ScopeDeny):
+		return permissionrequest.ScopeDeny, true
+	default:
+		return "", false
+	}
 }
 
 // compressionConfigResponse is the wire shape for the GET / PATCH

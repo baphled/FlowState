@@ -30,6 +30,7 @@ import {
   fetchSessions,
   fetchSwarms,
   fetchTurn,
+  grantPermission,
   sendSessionMessage,
   subscribeSessionStream,
   truncateSessionMessages,
@@ -148,6 +149,16 @@ vi.mock('../api', () => ({
   // update + the localStorage write.
   updateSessionPermissionMode: vi.fn((sessionId: string, mode: string) =>
     Promise.resolve({ id: sessionId, permission_mode: mode }),
+  ),
+  // Permission Mode ModeAskUser Extension plan (May 2026) Slice 3 —
+  // the PermissionPrompt's network seam. Default mock resolves with
+  // the matching {request_id, scope} tuple. Per-test overrides can
+  // `mockRejectedValueOnce` to exercise the failure-rewind path that
+  // clears the optimistic Granting… flag while leaving the pending
+  // entry intact for retry.
+  grantPermission: vi.fn(
+    (_sessionId: string, requestId: string, scope: string) =>
+      Promise.resolve({ request_id: requestId, scope }),
   ),
   fetchModels: vi.fn(() => Promise.resolve([
     { id: 'claude-opus', name: 'Claude Opus', providerId: 'anthropic' },
@@ -2846,6 +2857,216 @@ describe('chatStore - permissionMode (Slice 3)', () => {
     await store.loadSessionMessages('session-1')
 
     expect(store.permissionMode).toBe('accept_edits')
+  })
+})
+
+// Permission Mode ModeAskUser Extension plan (May 2026), Slice 3.
+//
+// pollTurnUntilTerminal's permission_requests diff is the wire surface
+// that drives chatStore.pendingPermissionRequests. The diff handles
+// three flows:
+//   1. New pending entry → insert into pendingPermissionRequests.
+//   2. Status flip to terminal → remove + clear Granting flag (this
+//      is the cross-tab R5 signal — same handler fires for an own-tab
+//      grant resolution and another tab's grant).
+//   3. Already-resolved on first observation → no-op (insert skipped).
+//
+// `grantPermission` is the action the PermissionPrompt's button click
+// routes through; it POSTs to the backend grant endpoint, marks the
+// optimistic Granting state, and clears it on POST failure.
+describe('chatStore - permissionRequests (ModeAskUser Slice 3)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('pollTurnUntilTerminal inserts a new pending entry into pendingPermissionRequests', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-p'
+    store.messages = []
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-p',
+      session_id: 'session-p',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      permission_requests: [
+        {
+          request_id: 'req-1',
+          tool_name: 'read',
+          agent_name: 'coordinator',
+          resource: '/home/baphled/secret.txt',
+          denial_reason: "access denied by 'read' permissions",
+          mode: 'ask',
+          status: 'pending',
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-p', 'turn-p')
+
+    expect(store.pendingPermissionRequests['req-1']).toBeDefined()
+    expect(store.pendingPermissionRequests['req-1'].tool_name).toBe('read')
+    expect(store.pendingPermissionRequests['req-1'].status).toBe('pending')
+  })
+
+  it('pollTurnUntilTerminal removes a resolved entry on status flip (cross-tab R5 guard)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-r5'
+    store.messages = []
+    // Tab B baseline — already saw the pending entry from a prior poll.
+    store.pendingPermissionRequests = {
+      'req-r5': {
+        request_id: 'req-r5',
+        tool_name: 'read',
+        agent_name: 'coordinator',
+        resource: '/home/baphled/secret.txt',
+        denial_reason: 'access denied',
+        mode: 'ask',
+        status: 'pending',
+      },
+    }
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    // Tab A grants — tab B's next poll observes the terminal status.
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-r5',
+      session_id: 'session-r5',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      permission_requests: [
+        {
+          request_id: 'req-r5',
+          tool_name: 'read',
+          agent_name: 'coordinator',
+          resource: '/home/baphled/secret.txt',
+          denial_reason: 'access denied',
+          mode: 'ask',
+          status: 'granted',
+          scope: 'session',
+        },
+      ],
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-r5', 'turn-r5')
+
+    expect(store.pendingPermissionRequests['req-r5']).toBeUndefined()
+  })
+
+  it('grantPermission POSTs the correct payload and holds the optimistic flag until the long-poll diff observes resolution', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-g'
+    // Seed pending entry so the prompt has a target.
+    store.pendingPermissionRequests = {
+      'req-g': {
+        request_id: 'req-g',
+        tool_name: 'read',
+        status: 'pending',
+      },
+    }
+
+    await store.grantPermission('req-g', 'once')
+
+    expect(vi.mocked(grantPermission)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(grantPermission)).toHaveBeenCalledWith('session-g', 'req-g', 'once')
+    // Plan §3: "button states show Granting… until the SSE stream
+    // emits the resumed tool call's result". Slice 3 §17.1 routes that
+    // resolution through the long-poll diff instead — so the
+    // optimistic flag MUST persist past the POST success and only
+    // clear when pollTurnUntilTerminal observes the terminal status.
+    // This guarantees a single source of truth: tab A and tab B both
+    // unmount the prompt at the same moment (the diff arrives) rather
+    // than tab A racing ahead on its local POST resolution.
+    expect(store.grantingPermissionRequests.has('req-g')).toBe(true)
+    expect(store.pendingPermissionRequests['req-g']).toBeDefined()
+  })
+
+  it('grantPermission clears the optimistic flag and re-throws on POST failure', async () => {
+    const store = useChatStore()
+    store.currentSessionId = 'session-fail'
+    store.pendingPermissionRequests = {
+      'req-fail': {
+        request_id: 'req-fail',
+        tool_name: 'read',
+        status: 'pending',
+      },
+    }
+    vi.mocked(grantPermission).mockRejectedValueOnce(new Error('network blip'))
+
+    await expect(store.grantPermission('req-fail', 'once')).rejects.toThrow(/network blip/)
+    expect(store.grantingPermissionRequests.has('req-fail')).toBe(false)
+    // Pending entry survives the failure so a retry can land cleanly.
+    expect(store.pendingPermissionRequests['req-fail']).toBeDefined()
+  })
+
+  it('pollTurnUntilTerminal preserves the pending entry across polls (no double insert)', async () => {
+    const store = useChatStore()
+    store.agentId = 'agent-1'
+    store.currentSessionId = 'session-noop'
+    store.messages = []
+
+    const samePerms = [
+      {
+        request_id: 'req-noop',
+        tool_name: 'read',
+        agent_name: 'coordinator',
+        resource: '/home/baphled/secret.txt',
+        denial_reason: 'access denied',
+        mode: 'ask',
+        status: 'pending' as const,
+      },
+    ]
+
+    const ft = vi.mocked(fetchTurn)
+    ft.mockReset()
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-noop',
+      session_id: 'session-noop',
+      status: 'running' as const,
+      started_at: '',
+      completed_at: null,
+      model: { provider: '', model: '' },
+      error: '',
+      messages: [],
+      permission_requests: samePerms,
+    } as never)
+    ft.mockResolvedValueOnce({
+      turn_id: 'turn-noop',
+      session_id: 'session-noop',
+      status: 'completed',
+      started_at: '',
+      completed_at: '',
+      model: { provider: 'anthropic', model: 'claude-opus-4-7' },
+      error: '',
+      messages: [],
+      permission_requests: samePerms,
+    } as never)
+
+    await store.pollTurnUntilTerminal('session-noop', 'turn-noop')
+
+    // The pending entry remains after a non-changing repeat. The
+    // diff is idempotent — successive identical polls do not toggle
+    // the map.
+    expect(store.pendingPermissionRequests['req-noop']).toBeDefined()
+    expect(store.pendingPermissionRequests['req-noop'].status).toBe('pending')
   })
 })
 

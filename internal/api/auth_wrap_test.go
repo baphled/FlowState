@@ -127,6 +127,27 @@ var _ = Describe("PR3 C7 — route wrapping via registerProtected/Public/Login",
 			}
 		})
 
+		It("POST /api/v1/sessions/{id}/permission-grant returns uniform 401 on no cookie (ModeAskUser Slice 3)", func() {
+			// Permission Mode ModeAskUser Extension plan (May 2026) Slice 3
+			// + §15.1 reviewer condition: handler must NOT fingerprint
+			// mode shape (memory: project_flowstate_auth_track_mode_fingerprint).
+			// The protected-route wiring at registerProtected("POST .../
+			// permission-grant", ...) gates with the same auth chain every
+			// other session-scoped POST uses — the 401 wire shape is
+			// uniform "unauthenticated", never 400-with-field-name.
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/sessions/abc/permission-grant",
+				strings.NewReader(`{"request_id":"r","scope":"once"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusUnauthorized),
+				"permission-grant POST should return 401 unauthenticated when flag is on")
+			Expect(rec.Body.String()).To(ContainSubstring("unauthenticated"))
+		})
+
 		It("public endpoints stay reachable without a cookie", func() {
 			// Plan §"Endpoint Inventory" Public list — read-only, no PII.
 			publicGets := []string{

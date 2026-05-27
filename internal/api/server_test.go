@@ -30,6 +30,7 @@ import (
 	"github.com/baphled/flowstate/internal/discovery"
 	"github.com/baphled/flowstate/internal/dispatch"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/permissionrequest"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
@@ -2128,6 +2129,194 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-mode JSON contract", fun
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/nonexistent/permission-mode", strings.NewReader(body))
 		srv.Handler().ServeHTTP(recorder, req)
 		Expect(recorder.Code).To(Equal(http.StatusNotFound))
+	})
+})
+
+// Permission Mode ModeAskUser Extension plan (May 2026), Slice 3.
+// The grant endpoint resolves a suspended permission request through
+// permissionrequest.Registry; the FE's PermissionPrompt buttons POST
+// here. Auth via session bearer (registerProtected wires the chain).
+//
+// Wire shape: {request_id, scope} → 200 {request_id, scope} on success.
+// The closed scope vocabulary is exact-case-match (once / session /
+// forever / deny) — variants 400.
+var _ = Describe("POST /api/v1/sessions/{id}/permission-grant JSON contract", func() {
+	var (
+		recorder *httptest.ResponseRecorder
+		streamer *mockStreamer
+		mgr      *session.Manager
+		reg      *permissionrequest.Registry
+		srv      *api.Server
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		mgr = session.NewManager(streamer)
+		reg = permissionrequest.NewRegistry()
+		agentRegistry := agent.NewRegistry()
+		disc := discovery.NewAgentDiscovery(nil)
+		srv = api.NewServer(
+			streamer,
+			agentRegistry,
+			disc,
+			nil,
+			api.WithSessionManager(mgr),
+			api.WithPermissionRegistry(reg),
+		)
+	})
+
+	seedPending := func(sessionID, requestID string) {
+		Expect(reg.Register(permissionrequest.PermissionRequest{
+			RequestID: requestID,
+			ToolName:  "read",
+			AgentName: "coordinator",
+			Resource:  "/home/baphled/secret.txt",
+			SessionID: sessionID,
+			Mode:      "ask",
+		})).To(Succeed())
+	}
+
+	It("resolves the request and returns {request_id, scope} on the once scope", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+		seedPending(sess.ID, "req-happy")
+
+		// Drive a Wait in a goroutine so the buffered grant channel
+		// has a receiver — verifies the handler delivers the operator's
+		// scope to the suspended pathguard / engine seam end-to-end.
+		grantC := make(chan permissionrequest.PermissionGrant, 1)
+		go func() {
+			defer GinkgoRecover()
+			g, werr := reg.Wait(context.Background(), "req-happy")
+			Expect(werr).NotTo(HaveOccurred())
+			grantC <- g
+		}()
+		time.Sleep(20 * time.Millisecond)
+
+		body := `{"request_id":"req-happy","scope":"once"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusOK))
+
+		var out map[string]interface{}
+		Expect(json.Unmarshal(recorder.Body.Bytes(), &out)).To(Succeed())
+		Expect(out).To(HaveKeyWithValue("request_id", "req-happy"))
+		Expect(out).To(HaveKeyWithValue("scope", "once"))
+
+		var g permissionrequest.PermissionGrant
+		Eventually(grantC, "1s").Should(Receive(&g))
+		Expect(g.Scope).To(Equal(permissionrequest.ScopeOnce))
+		Expect(g.RequestID).To(Equal("req-happy"),
+			"Resolve must stamp the request_id on the grant so downstream logging / metrics correlate")
+	})
+
+	It("accepts each canonical scope value", func() {
+		// The vocabulary is closed: once / session / forever / deny.
+		// A regression that allows once but rejects forever would
+		// silently break a PermissionPrompt button.
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		for _, scope := range []string{"once", "session", "forever", "deny"} {
+			rid := "req-" + scope
+			seedPending(sess.ID, rid)
+			go func(rid string) {
+				defer GinkgoRecover()
+				_, _ = reg.Wait(context.Background(), rid)
+			}(rid)
+			time.Sleep(10 * time.Millisecond)
+
+			rec := httptest.NewRecorder()
+			body := `{"request_id":"` + rid + `","scope":"` + scope + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusOK), scope)
+		}
+	})
+
+	It("returns 400 for an invalid scope (closed vocabulary)", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+		seedPending(sess.ID, "req-invalid-scope")
+
+		// Case variants and unknown values must all 400 — the
+		// vocabulary is exact-case-match. Pre-fix a typo at the FE
+		// would silently coerce; the closed vocab catches drift at
+		// PR time.
+		for _, raw := range []string{"ONCE", "Once", "allow", "permanent", "", "deny ", " once"} {
+			rec := httptest.NewRecorder()
+			body := `{"request_id":"req-invalid-scope","scope":"` + raw + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusBadRequest), raw)
+		}
+
+		// In-memory registry state must NOT have changed on the
+		// failed writes — the pending entry is still resolvable.
+		Expect(reg.PendingCount()).To(Equal(1),
+			"rejected payloads must leave the registry's pending entry intact for a retry")
+	})
+
+	It("returns 400 for a missing request_id", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"scope":"once"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("returns 400 for a malformed JSON body", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(`{"request_id":`))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+	})
+
+	It("returns 404 when the request_id is unknown to the registry", func() {
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"request_id":"never-registered","scope":"once"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("returns 404 when the session does not exist", func() {
+		// Pre-flight session-existence gate fires before the registry
+		// lookup so a request_id squatted from a deleted session still
+		// surfaces "session not found" rather than the registry's
+		// "request not found".
+		body := `{"request_id":"req-orphan","scope":"once"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/nonexistent/permission-grant", strings.NewReader(body))
+		srv.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("returns 501 when the permission registry is not configured", func() {
+		// Drop the WithPermissionRegistry option so the handler hits
+		// the "not configured" branch. Distinguishes a feature-not-
+		// built deployment from a transient request-not-found.
+		mgr2 := session.NewManager(streamer)
+		srvNoReg := api.NewServer(
+			streamer,
+			agent.NewRegistry(),
+			discovery.NewAgentDiscovery(nil),
+			nil,
+			api.WithSessionManager(mgr2),
+		)
+		sess, err := mgr2.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		body := `{"request_id":"any","scope":"once"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+		srvNoReg.Handler().ServeHTTP(recorder, req)
+		Expect(recorder.Code).To(Equal(http.StatusNotImplemented))
 	})
 })
 
