@@ -385,6 +385,135 @@ var _ = Describe("EventBus Integration", func() {
 		})
 	})
 
+	// Tool-args validation telemetry — Recommendation E from the May 2026
+	// codebase-explorer investigation of the glm-4.6 `librarian` mis-call
+	// (validator at internal/engine/tool_validation.go correctly bounced the
+	// call, system worked as designed). The bus event lets us dashboard the
+	// rate of these recoveries and decide on provider-side mitigation later.
+	//
+	// Regression guard: silent-strip behaviour (the bug 235d321 fixed in
+	// April 2026, canonical reference vault note "MCP Manifest Gating
+	// Regression and Tool Arg Strip") MUST NOT return — validation failure
+	// still produces a tool_result with IsError=true so the post-c2828b2d
+	// /api/chat tool_error wire surfaces it as a tool_error bubble.
+	Describe("argument validation failures", func() {
+		var (
+			validatingTool *schemaValidatingTool
+			seqProvider    *streamSequenceProvider
+			toolManifest   agent.Manifest
+		)
+
+		BeforeEach(func() {
+			validatingTool = &schemaValidatingTool{
+				name:        "delegate_like",
+				description: "tool with a constrained schema (delegate proxy fixture)",
+				schema: tool.Schema{
+					Type: "object",
+					Properties: map[string]tool.Property{
+						"subagent_type": {Type: "string", Description: "specialised sub-agent"},
+						"message":       {Type: "string", Description: "instruction"},
+					},
+					Required: []string{"subagent_type", "message"},
+				},
+				execResult: tool.Result{Output: "should not be reached on validation failure"},
+			}
+			seqProvider = &streamSequenceProvider{
+				name: "glm-mimic",
+				sequences: [][]provider.StreamChunk{
+					// First turn: provider emits the malformed call shape
+					// the bug captured — agent name `librarian` as a
+					// top-level arg key instead of `subagent_type`.
+					{{EventType: "tool_call", ToolCall: &provider.ToolCall{
+						ID:        "call_validation_fail",
+						Name:      "delegate_like",
+						Arguments: map[string]interface{}{"librarian": "go research"},
+					}}},
+					{{Content: "Recovered.", Done: true}},
+				},
+			}
+			toolManifest = agent.Manifest{
+				ID:                "test-agent",
+				Name:              "Test Agent",
+				Instructions:      agent.Instructions{SystemPrompt: "You are a helpful assistant."},
+				ContextManagement: agent.DefaultContextManagement(),
+				Capabilities:      agent.Capabilities{Tools: []string{"delegate_like"}},
+			}
+		})
+
+		It("publishes tool.args.validation_failed with provider, model, tool, and error-class fields", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: seqProvider,
+				Manifest:     toolManifest,
+				Tools:        []tool.Tool{validatingTool},
+			})
+			var mu sync.Mutex
+			var failedEvents []*events.ToolArgsValidationFailedEvent
+			eng.EventBus().Subscribe(events.EventToolArgsValidationFailed, func(event any) {
+				if ev, ok := event.(*events.ToolArgsValidationFailedEvent); ok {
+					mu.Lock()
+					failedEvents = append(failedEvents, ev)
+					mu.Unlock()
+				}
+			})
+			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+			for range chunks { //nolint:revive // drain channel
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			Expect(failedEvents).To(HaveLen(1),
+				"validation failure must publish exactly one tool.args.validation_failed event")
+			data := failedEvents[0].Data
+			Expect(data.ToolName).To(Equal("delegate_like"))
+			Expect(data.ProviderName).To(Equal("glm-mimic"),
+				"the provider field carries the last-used provider name so dashboards can attribute the failure")
+			Expect(data.ValidationErrorClass).To(Equal("unknown_keys"),
+				"the structured class lets dashboards group by failure mode without re-parsing error strings")
+			Expect(data.UnknownKeys).To(ContainElement("librarian"),
+				"the structured field lets dashboards drill into the specific unknown key without "+
+					"re-parsing the error message")
+			Expect(data.ExpectedKeys).To(ConsistOf("message", "subagent_type"),
+				"the schema-aware hint lands in the event so consumers can show the expected shape "+
+					"alongside the failure")
+		})
+
+		It("does not silently strip unknown keys — tool.Execute is never called and the regression cannot return", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: seqProvider,
+				Manifest:     toolManifest,
+				Tools:        []tool.Tool{validatingTool},
+			})
+			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+			for range chunks { //nolint:revive // drain channel
+			}
+			Expect(validatingTool.execCalled).To(BeFalse(),
+				"silent-strip behaviour (the April 2026 regression 235d321 fixed) would have "+
+					"called Execute with an empty args map — validation must short-circuit before Execute")
+		})
+
+		It("emits a tool_result chunk with IsError=true so the /api/chat tool_error wire surfaces the denial", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: seqProvider,
+				Manifest:     toolManifest,
+				Tools:        []tool.Tool{validatingTool},
+			})
+			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
+			Expect(err).NotTo(HaveOccurred())
+			var sawErrorToolResult bool
+			for c := range chunks {
+				if c.EventType == "tool_result" && c.ToolResult != nil && c.ToolResult.IsError {
+					sawErrorToolResult = true
+				}
+			}
+			Expect(sawErrorToolResult).To(BeTrue(),
+				"the validation-denial chunk must carry IsError=true so streaming.deliverToolResult "+
+					"routes it through WriteToolError to the /api/chat tool_error SSE wire "+
+					"(c2828b2d, May 2026) — without this the chat UI renders the denial as a "+
+					"completed success bubble")
+		})
+	})
+
 	Describe("provider error events", func() {
 		It("publishes provider.error when provider stream fails", func() {
 			chatProvider.streamErr = errors.New("provider unavailable")

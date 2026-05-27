@@ -494,6 +494,26 @@ var Catalog = []EventCatalogEntry{
 		Delivery:    "fire-and-forget",
 	},
 	{
+		Topic:       EventToolArgsValidationFailed,
+		Constant:    "EventToolArgsValidationFailed",
+		EventType:   "tool.args.validation_failed",
+		Struct:      "ToolArgsValidationFailedEvent",
+		Publishers:  []string{"engine.go (executeToolCall)"},
+		Subscribers: []string{"eventlogger"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Recommendation E from the May 2026 codebase-explorer investigation of " +
+			"the glm-4.6 `librarian` mis-call (validator at " +
+			"internal/engine/tool_validation.go correctly bounced the call). " +
+			"Published when ValidateToolArgs returns a *ValidationError; payload carries " +
+			"provider, model, tool name, and the structured ValidationErrorClass label " +
+			"(unknown_keys / missing_required / xml_bleed_detected). Subscribed by " +
+			"eventlogger so the failure lands in events.jsonl for dashboarding without " +
+			"requiring an SSE bridge — TUI / web surfaces continue to consume the " +
+			"existing IsError=true tool_result chunk for in-UI rendering.",
+	},
+	{
 		Topic:       EventRecallEmbeddingStored,
 		Constant:    "EventRecallEmbeddingStored",
 		EventType:   "recall.embedding.stored",

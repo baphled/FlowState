@@ -54,6 +54,29 @@ func (t *resultOnlyErrorTool) Execute(_ context.Context, _ tool.Input) (tool.Res
 }
 func (t *resultOnlyErrorTool) Schema() tool.Schema { return tool.Schema{} }
 
+// schemaValidatingTool exposes a non-empty Schema so the engine's argument
+// validator (engine.ValidateToolArgs) runs against tool calls. Used by the
+// tool-args validation telemetry specs in eventbus_test.go and any other
+// fixture that needs the validator path to fire.
+type schemaValidatingTool struct {
+	name        string
+	description string
+	schema      tool.Schema
+	execResult  tool.Result
+	execErr     error
+	execCalled  bool
+	lastInput   tool.Input
+}
+
+func (t *schemaValidatingTool) Name() string        { return t.name }
+func (t *schemaValidatingTool) Description() string { return t.description }
+func (t *schemaValidatingTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	t.execCalled = true
+	t.lastInput = input
+	return t.execResult, t.execErr
+}
+func (t *schemaValidatingTool) Schema() tool.Schema { return t.schema }
+
 type streamSequenceProvider struct {
 	name      string
 	sequences [][]provider.StreamChunk

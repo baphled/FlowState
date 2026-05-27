@@ -4742,8 +4742,17 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		validated, valErr := ValidateToolArgs(t.Schema(), input.Arguments)
 		if valErr != nil {
 			slog.Warn("tool argument validation failed", "tool", toolCall.Name, "error", valErr)
-			result := tool.Result{Output: valErr.Error(), Error: valErr}
+			// IsError must be set explicitly so the streaming.deliverToolResult
+			// branch (internal/streaming/runner.go:271-286) routes the chunk
+			// through WriteToolError to the /api/chat tool_error SSE wire
+			// (c2828b2d, May 2026). Without this the chat UI renders the
+			// validator's denial as a completed success bubble. The downstream
+			// `Error != nil` derivation in toolResult-to-chunk packaging at
+			// engine.go:3968 (`isError := er.toolResult.Error != nil || er.toolResult.IsError`)
+			// would also work; setting IsError here is defensive and obvious.
+			result := tool.Result{Output: valErr.Error(), Error: valErr, IsError: true}
 			e.publishToolAfterEvent(sessionID, toolCall.Name, toolCall.Arguments, result.Output, valErr, toolCall.ID, internalToolCallID)
+			e.publishToolArgsValidationFailedEvent(ctx, sessionID, toolCall.Name, valErr, toolCall.ID, internalToolCallID)
 			return result, nil
 		}
 		input.Arguments = validated
@@ -7943,6 +7952,49 @@ func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args 
 //
 // Side effects:
 //   - Publishes a tool execution completion event on the engine bus.
+// publishToolArgsValidationFailedEvent publishes a tool-args validation
+// failure event to the engine bus. Recommendation E from the May 2026
+// codebase-explorer investigation of the glm-4.6 `librarian` mis-call —
+// dashboards subscribe to count + attribute these failures by
+// provider/model/tool/error-class.
+//
+// Expected:
+//   - ctx is the in-flight stream context; activeAgentID(ctx) resolves the
+//     bound manifest's AgentID so concurrent streams' events stay correctly
+//     attributed.
+//   - toolName identifies the tool whose args failed validation.
+//   - valErr is the *ValidationError ValidateToolArgs returned; falls back
+//     to an empty error class when the err shape is not the typed one
+//     (defensive — never produces an event without a class).
+//   - toolCallID and internalToolCallID propagate from the matching
+//     publishToolBeforeEvent / publishToolAfterEvent calls.
+//
+// Side effects:
+//   - Publishes a tool.args.validation_failed event on the engine bus.
+func (e *Engine) publishToolArgsValidationFailedEvent(ctx context.Context, sessionID string, toolName string, valErr error, toolCallID string, internalToolCallID string) {
+	if e.bus == nil {
+		return
+	}
+	data := events.ToolArgsValidationFailedEventData{
+		SessionID:          sessionID,
+		AgentID:            e.activeAgentID(ctx),
+		ProviderName:       e.LastProvider(),
+		ModelName:          e.LastModel(),
+		ToolName:           toolName,
+		Error:              valErr,
+		ToolCallID:         toolCallID,
+		InternalToolCallID: internalToolCallID,
+	}
+	var vErr *ValidationError
+	if errors.As(valErr, &vErr) {
+		data.ValidationErrorClass = string(vErr.Class)
+		data.UnknownKeys = vErr.UnknownKeys
+		data.MissingKeys = vErr.MissingKeys
+		data.ExpectedKeys = vErr.ExpectedKeys
+	}
+	e.bus.Publish(events.EventToolArgsValidationFailed, events.NewToolArgsValidationFailedEvent(data))
+}
+
 func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args map[string]interface{}, result string, execErr error, toolCallID string, internalToolCallID string) {
 	e.bus.Publish(events.EventToolExecuteAfter, events.NewToolEvent(events.ToolEventData{
 		SessionID:          sessionID,

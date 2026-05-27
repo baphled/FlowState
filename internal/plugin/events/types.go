@@ -22,6 +22,7 @@
 //   - tool.execute.after
 //   - tool.execute.error
 //   - tool.execute.result
+//   - tool.args.validation_failed
 //   - provider.error
 //   - provider.request
 //   - provider.request.retry
@@ -119,4 +120,17 @@ const (
 	// heartbeat rather than silently dropped — the ADR's anti-pattern
 	// callout names that explicitly.
 	EventStreamingHeartbeat = "streaming.heartbeat"
+	// EventToolArgsValidationFailed is published by the engine's
+	// executeToolCall site (internal/engine/engine.go) when
+	// ValidateToolArgs rejects a tool call's arguments. Recommendation E
+	// from the May 2026 codebase-explorer investigation of the glm-4.6
+	// `librarian` mis-call — the validator already bounced the call
+	// correctly; this event lets dashboards measure the rate, attribute
+	// it to a provider/model, and decide on provider-side mitigation
+	// later. Payload (ToolArgsValidationFailedEventData) carries the
+	// provider, model, tool name, and the structured
+	// ValidationErrorClass label (unknown_keys / missing_required /
+	// xml_bleed_detected) so dashboards group by failure mode without
+	// re-parsing error strings.
+	EventToolArgsValidationFailed = "tool.args.validation_failed"
 )

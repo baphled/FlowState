@@ -64,6 +64,16 @@ var subscribedEventTypes = []string{
 	events.EventLearningRecorded,
 	events.EventRecallEmbeddingStored,
 	events.EventRecallSummarized,
+	// Tool-args validation failures (May 2026). Low-frequency
+	// (one event per validator rejection — bug 235d321 cured the
+	// silent-strip path so this fires only on genuine schema /
+	// XML-bleed failures, not on every tool call) with
+	// dashboard-grade diagnostic value: provider/model/tool/error-class
+	// per failure. Recommendation E from the codebase-explorer
+	// investigation of the glm-4.6 `librarian` mis-call. Real
+	// subscriber here closes the catalog Subscribers claim so the
+	// new event is not "published but unsubscribed" dead surface.
+	events.EventToolArgsValidationFailed,
 }
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.

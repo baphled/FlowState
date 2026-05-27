@@ -1631,4 +1631,109 @@ var (
 	_ Event = (*GatePassedEvent)(nil)
 	_ Event = (*GateFailedEvent)(nil)
 	_ Event = (*StreamingHeartbeatEvent)(nil)
+	_ Event = (*ToolArgsValidationFailedEvent)(nil)
 )
+
+// ToolArgsValidationFailedEventData holds data for tool-args validation
+// failure events. Published by the engine's executeToolCall site when
+// internal/engine/ValidateToolArgs rejects a tool call's arguments.
+//
+// Recommendation E from the May 2026 codebase-explorer investigation of
+// the glm-4.6 `librarian` mis-call — the validator already produces an
+// IsError=true tool_result that the model self-corrects against. This
+// event lets observability dashboards count + attribute the failures so
+// we can spot provider/model patterns (e.g. glm-4.6 sustains this) and
+// decide on provider-side mitigation later.
+//
+// ToolCallID and InternalToolCallID propagate from the engine's
+// publishToolBeforeEvent seam so dashboards can correlate the validation
+// failure with the surrounding tool.execute.before / tool.execute.error
+// pair on the same call.
+type ToolArgsValidationFailedEventData struct {
+	SessionID            string
+	AgentID              string
+	ProviderName         string
+	ModelName            string
+	ToolName             string
+	ValidationErrorClass string
+	UnknownKeys          []string
+	MissingKeys          []string
+	ExpectedKeys         []string
+	Error                error
+	ToolCallID           string
+	InternalToolCallID   string
+}
+
+// MarshalJSON serialises ToolArgsValidationFailedEventData while preserving
+// error messages. Field shapes mirror the other tool.execute.* events for
+// consistency in the JSONL recordings the eventlogger writes.
+//
+// Expected:
+//   - The receiver carries validation-failure metadata ready for serialisation.
+//
+// Returns:
+//   - JSON bytes for the event payload.
+//   - An error if serialisation fails.
+//
+// Side effects: none.
+func (d ToolArgsValidationFailedEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		SessionID            string   `json:"session_id,omitempty"`
+		AgentID              string   `json:"agent_id,omitempty"`
+		ProviderName         string   `json:"provider_name,omitempty"`
+		ModelName            string   `json:"model_name,omitempty"`
+		ToolName             string   `json:"tool_name"`
+		ValidationErrorClass string   `json:"validation_error_class"`
+		UnknownKeys          []string `json:"unknown_keys,omitempty"`
+		MissingKeys          []string `json:"missing_keys,omitempty"`
+		ExpectedKeys         []string `json:"expected_keys,omitempty"`
+		Error                string   `json:"error,omitempty"`
+		ToolCallID           string   `json:"tool_call_id,omitempty"`
+		InternalToolCallID   string   `json:"internal_tool_call_id,omitempty"`
+	}
+	data := payload{
+		SessionID:            d.SessionID,
+		AgentID:              d.AgentID,
+		ProviderName:         d.ProviderName,
+		ModelName:            d.ModelName,
+		ToolName:             d.ToolName,
+		ValidationErrorClass: d.ValidationErrorClass,
+		UnknownKeys:          d.UnknownKeys,
+		MissingKeys:          d.MissingKeys,
+		ExpectedKeys:         d.ExpectedKeys,
+		ToolCallID:           d.ToolCallID,
+		InternalToolCallID:   d.InternalToolCallID,
+	}
+	if d.Error != nil {
+		data.Error = d.Error.Error()
+	}
+	return json.Marshal(data)
+}
+
+// ToolArgsValidationFailedEvent represents a tool-args validation failure
+// event.
+type ToolArgsValidationFailedEvent struct {
+	BaseEvent
+	Data ToolArgsValidationFailedEventData
+}
+
+// NewToolArgsValidationFailedEvent creates a new ToolArgsValidationFailedEvent.
+//
+// Expected:
+//   - data contains the validation-failure metadata to include in the event.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A ToolArgsValidationFailedEvent configured with the supplied data.
+//
+// Side effects: uses the current time when no timestamp override is supplied.
+func NewToolArgsValidationFailedEvent(data ToolArgsValidationFailedEventData, ts ...time.Time) *ToolArgsValidationFailedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ToolArgsValidationFailedEvent{
+		BaseEvent: BaseEvent{eventType: EventToolArgsValidationFailed, timestamp: t},
+		Data:      data,
+	}
+}
