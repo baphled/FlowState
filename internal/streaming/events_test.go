@@ -21,10 +21,13 @@ func (s *spyDelegationConsumer) WriteDelegation(event streaming.DelegationEvent)
 }
 
 type spyEventConsumer struct {
-	events []streaming.Event
-	chunks []string
-	errs   []error
-	done   bool
+	events      []streaming.Event
+	chunks      []string
+	errs        []error
+	done        bool
+	toolCalls   []string
+	toolResults []string
+	toolErrors  []string
 }
 
 func (s *spyEventConsumer) WriteEvent(e streaming.Event) error {
@@ -53,6 +56,18 @@ func (s *spyEventConsumer) WriteProgress(event streaming.ProgressEvent) error {
 func (s *spyEventConsumer) WriteNotification(event streaming.CompletionNotificationEvent) error {
 	s.events = append(s.events, event)
 	return nil
+}
+
+func (s *spyEventConsumer) WriteToolCall(name string) {
+	s.toolCalls = append(s.toolCalls, name)
+}
+
+func (s *spyEventConsumer) WriteToolResult(content string) {
+	s.toolResults = append(s.toolResults, content)
+}
+
+func (s *spyEventConsumer) WriteToolError(content string) {
+	s.toolErrors = append(s.toolErrors, content)
 }
 
 var _ = Describe("Events", func() {
@@ -511,6 +526,46 @@ var _ = Describe("VerbosityFilter", func() {
 		It("passes Done through unconditionally", func() {
 			filter.Done()
 			Expect(spy.done).To(BeTrue())
+		})
+
+		// SSE wire-loss latent surface (May 2026): VerbosityFilter wraps
+		// the /api/chat SSEConsumer and the CLI WriterConsumer. The
+		// streaming runner type-asserts the consumer to ToolCallConsumer /
+		// ToolResultConsumer / ToolErrorConsumer to decide whether to
+		// forward tool-call, tool-result, and tool-error events. Pre-fix
+		// the filter did NOT implement any of those optional interfaces,
+		// so the inner consumer was UNREACHABLE for tool events — every
+		// tool call and tool result was silently swallowed on the chat
+		// wire because chunk.Content is empty for tool_call / tool_result
+		// chunks (the content lives on chunk.ToolCall / chunk.ToolResult).
+		//
+		// The fix bug-fixes both the reported wire-loss (IsError dropped)
+		// AND this latent wire-loss (tool events never reaching the SSE
+		// writer). Without these passthrough specs the filter could
+		// regress back to "doesn't know about tools" and the catalog of
+		// failures would still surface as broken bubbles.
+		It("passes WriteToolCall through to the inner consumer", func() {
+			filter.WriteToolCall("bash")
+			Expect(spy.toolCalls).To(Equal([]string{"bash"}),
+				"VerbosityFilter MUST forward tool calls so the wrapped SSEConsumer "+
+					"can emit the tool_call wire event; otherwise the chat UI never sees "+
+					"the running tool indicator")
+		})
+
+		It("passes WriteToolResult through to the inner consumer", func() {
+			filter.WriteToolResult("output text")
+			Expect(spy.toolResults).To(Equal([]string{"output text"}),
+				"VerbosityFilter MUST forward tool results so the wrapped SSEConsumer "+
+					"can emit the tool_result wire event; otherwise the chat UI never sees "+
+					"the completed tool bubble")
+		})
+
+		It("passes WriteToolError through to the inner consumer", func() {
+			filter.WriteToolError("Error: bash: command not allowed in plan mode")
+			Expect(spy.toolErrors).To(Equal([]string{"Error: bash: command not allowed in plan mode"}),
+				"VerbosityFilter MUST forward tool errors so the wrapped SSEConsumer "+
+					"can emit the tool_error wire event; otherwise live tool failures render "+
+					"as success bubbles on the chat wire")
 		})
 	})
 })

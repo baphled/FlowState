@@ -24,6 +24,33 @@ type ToolResultConsumer interface {
 	WriteToolResult(content string)
 }
 
+// ToolErrorConsumer is an optional sibling interface for consumers that distinguish
+// failed tool executions from successful ones. The streaming runner routes
+// chunks whose provider.ToolResultInfo.IsError is true through this channel
+// when the consumer implements it, falling back to WriteToolResult so legacy
+// consumers (without an error channel) continue to see the content unchanged.
+//
+// The /api/chat SSE consumer (internal/api/sse_consumer.go) writes a typed
+// `tool_error` event distinct from `tool_result`; the frontend's
+// handleToolErrorEvent (web/src/stores/chatStore.ts) flips the matching
+// running tool_result row to status='error' in-stream, so live tool failures
+// (rejected calls, real tool errors) surface as a dedicated error bubble
+// rather than as a normal tool_result.
+//
+// Wire-loss bug (May 2026): pre-fix, deliverToolResult dropped IsError on
+// the ephemeral /api/chat path because there was no second channel —
+// IsError set the persisted role on the session-scoped turn-poll path
+// (via accumulator.go) but the SSE wire on /api/chat was IsError-blind.
+// Adding this interface gives the wire side a discriminator.
+type ToolErrorConsumer interface {
+	// WriteToolError notifies the consumer that a tool execution failed.
+	// content is the error text as the engine stamped it on the chunk
+	// (typically prefixed with "Error: " when the tool used the
+	// Result{Error:err} shape, or the rich Output text when the tool
+	// populated it for human-readable failure messages).
+	WriteToolError(content string)
+}
+
 // DelegationConsumer is an optional interface that StreamConsumer implementations
 // may satisfy to receive delegation status updates.
 type DelegationConsumer interface {

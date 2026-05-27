@@ -232,17 +232,51 @@ func deliverTypedEvent(c StreamConsumer, event Event) {
 	}
 }
 
-// deliverToolResult delivers the tool result to the consumer.
+// deliverToolResult delivers the tool result to the consumer. When the
+// engine has stamped IsError=true on the chunk (denied call, real tool
+// failure, gate rejection) the failure routes through WriteToolError on
+// consumers that implement ToolErrorConsumer; legacy consumers that only
+// implement ToolResultConsumer keep seeing the failure content on
+// WriteToolResult so the wire still carries the message.
+//
+// Why two channels: the /api/chat ephemeral SSE wire shape pre-fix only
+// exposed "tool_result" — the frontend rendered live tool failures as a
+// normal completed bubble because the SSEConsumer dropped IsError. Adding
+// a distinct WriteToolError lets the SSE writer emit a typed `tool_error`
+// event the frontend's handleToolErrorEvent (web/src/stores/chatStore.ts)
+// can flip the matching running tool_result row to status='error' in
+// stream. The session-scoped turn-poll path already surfaced errors via
+// the accumulator's persisted role="tool_error" row; this brings the
+// live wire to parity.
+//
+// Mutual exclusion: when WriteToolError fires WriteToolResult MUST NOT
+// also fire — emitting both would write tool_result (status=completed)
+// then tool_error (status=error) and the frontend would render the
+// success bubble before the error flip arrived, defeating the typed
+// channel entirely.
 //
 // Expected:
 //   - c is a non-nil StreamConsumer.
 //   - result may be nil.
 //
 // Side effects:
-//   - If result is not nil and c implements ToolResultConsumer, calls c.WriteToolResult.
+//   - If result is nil, no-op.
+//   - If result.IsError is true and c implements ToolErrorConsumer, calls
+//     c.WriteToolError and returns (no WriteToolResult fan-out).
+//   - If result.IsError is true and c does NOT implement ToolErrorConsumer
+//     but does implement ToolResultConsumer, calls c.WriteToolResult so
+//     legacy consumers retain failure visibility.
+//   - If result.IsError is false and c implements ToolResultConsumer,
+//     calls c.WriteToolResult.
 func deliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
 	if result == nil {
 		return
+	}
+	if result.IsError {
+		if tec, ok := c.(ToolErrorConsumer); ok {
+			tec.WriteToolError(result.Content)
+			return
+		}
 	}
 	trc, ok := c.(ToolResultConsumer)
 	if !ok {

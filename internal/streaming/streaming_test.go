@@ -35,11 +35,13 @@ type mockConsumer struct {
 	chunks       []string
 	toolCalls    []string
 	toolResults  []string
+	toolErrors   []string
 	errors       []error
 	doneCount    int
 	writeErr     error
 	enableTool   bool
 	enableResult bool
+	enableError  bool
 }
 
 func (m *mockConsumer) WriteChunk(content string) error {
@@ -65,6 +67,41 @@ func (m *mockConsumer) WriteToolResult(content string) {
 	if m.enableResult {
 		m.toolResults = append(m.toolResults, content)
 	}
+}
+
+func (m *mockConsumer) WriteToolError(content string) {
+	if m.enableError {
+		m.toolErrors = append(m.toolErrors, content)
+	}
+}
+
+// resultOnlyMockConsumer satisfies StreamConsumer + ToolResultConsumer but
+// deliberately does NOT implement ToolErrorConsumer. Used to pin the
+// backward-compat fallback in deliverToolResult: legacy consumers (CLI
+// writers, older test fixtures) MUST still see IsError chunks via
+// WriteToolResult, just without the dedicated error channel.
+type resultOnlyMockConsumer struct {
+	chunks      []string
+	toolResults []string
+	errors      []error
+	doneCount   int
+}
+
+func (m *resultOnlyMockConsumer) WriteChunk(content string) error {
+	m.chunks = append(m.chunks, content)
+	return nil
+}
+
+func (m *resultOnlyMockConsumer) WriteError(err error) {
+	m.errors = append(m.errors, err)
+}
+
+func (m *resultOnlyMockConsumer) Done() {
+	m.doneCount++
+}
+
+func (m *resultOnlyMockConsumer) WriteToolResult(content string) {
+	m.toolResults = append(m.toolResults, content)
 }
 
 type mockRegistry struct {
@@ -389,6 +426,91 @@ var _ = Describe("Streaming", func() {
 				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(consumer.toolResults).To(Equal([]string{"output"}))
+			})
+		})
+
+		// SSE wire-loss bug (May 2026): the engine stamps IsError=true on
+		// the tool_result chunk when a tool denial / Result{Error} reaches
+		// the streamer (see internal/engine/engine.go:3967-3994), but the
+		// pre-fix deliverToolResult forwarded every chunk via
+		// WriteToolResult regardless. The ephemeral /api/chat SSE wire
+		// only exposed "tool_result" — frontend rendered a normal success
+		// bubble for live failures. The session-scoped turn-poll path
+		// already surfaced errors via the accumulator's persisted
+		// role="tool_error" row, but the live wire was IsError-blind.
+		//
+		// Contract: deliverToolResult MUST branch on IsError. When true
+		// and the consumer implements ToolErrorConsumer, the failure
+		// routes through WriteToolError instead of WriteToolResult. The
+		// downstream /api/chat SSE writer emits {type:"tool_error",
+		// content:...} which the frontend's handleToolErrorEvent
+		// (web/src/stores/chatStore.ts) flips the most recent running
+		// tool_result row to status='error' on.
+		Context("when a chunk carries a tool result with IsError=true", func() {
+			BeforeEach(func() {
+				consumer.enableResult = true
+				consumer.enableError = true
+				streamer.chunks = []provider.StreamChunk{
+					{
+						EventType: "tool_result",
+						ToolResult: &provider.ToolResultInfo{
+							Content: "Error: bash: command not allowed in plan mode",
+							IsError: true,
+						},
+					},
+					{Content: "final", Done: true},
+				}
+			})
+
+			It("calls WriteToolError on ToolErrorConsumer implementations", func() {
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.toolErrors).To(Equal([]string{"Error: bash: command not allowed in plan mode"}),
+					"IsError chunks MUST route to WriteToolError so the SSE consumer can emit "+
+						"a distinct tool_error wire event the frontend's handleToolErrorEvent handler picks up")
+			})
+
+			It("does NOT also call WriteToolResult for the same chunk (no double-emit)", func() {
+				err := streaming.Run(ctx, streamer, consumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(consumer.toolResults).To(BeEmpty(),
+					"IsError chunks MUST NOT also fire WriteToolResult — the wire would carry both "+
+						"tool_result (status=completed) AND tool_error (status=error), and the frontend "+
+						"would render the success bubble before the error flip arrived")
+			})
+		})
+
+		// Backward-compatibility: consumers that DO NOT implement
+		// ToolErrorConsumer (e.g. legacy CLI fixtures still using only the
+		// pre-fix interface) must still receive the error content via
+		// WriteToolResult so they continue to surface tool failures —
+		// just without the distinct status discriminator the new wire
+		// carries. The fallback preserves the pre-fix observable for
+		// callers that never adopted the new interface.
+		Context("when a chunk carries IsError=true but the consumer is only a ToolResultConsumer", func() {
+			var resultOnlyConsumer *resultOnlyMockConsumer
+
+			BeforeEach(func() {
+				resultOnlyConsumer = &resultOnlyMockConsumer{}
+				streamer.chunks = []provider.StreamChunk{
+					{
+						EventType: "tool_result",
+						ToolResult: &provider.ToolResultInfo{
+							Content: "Error: read failed",
+							IsError: true,
+						},
+					},
+					{Content: "final", Done: true},
+				}
+			})
+
+			It("falls back to WriteToolResult so the content still reaches the wire", func() {
+				err := streaming.Run(ctx, streamer, resultOnlyConsumer, "test-agent", "test message")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resultOnlyConsumer.toolResults).To(Equal([]string{"Error: read failed"}),
+					"consumers that have not adopted ToolErrorConsumer MUST keep seeing the error "+
+						"content on WriteToolResult — the new channel is an optional discriminator, "+
+						"not a replacement that strips error visibility from legacy consumers")
 			})
 		})
 	})

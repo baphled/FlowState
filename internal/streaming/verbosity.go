@@ -72,6 +72,67 @@ func (f *VerbosityFilter) Done() {
 	f.consumer.Done()
 }
 
+// WriteToolCall forwards a tool invocation to the wrapped consumer when
+// the inner consumer implements ToolCallConsumer. Pre-fix the filter did
+// NOT implement this optional interface; the streaming runner's type
+// assertion on the filter failed, so tool calls never reached the wrapped
+// /api/chat SSEConsumer or CLI WriterConsumer and chunk.Content is empty
+// on tool_call chunks (the name lives on chunk.ToolCall.Name) — every
+// running tool indicator was silently dropped from the chat wire.
+//
+// Pass-through is unconditional (no verbosity gating). Tool calls are
+// Standard-level information; the SSE / CLI consumers are responsible for
+// their own gating where applicable.
+//
+// Expected:
+//   - name is the tool's identifier, optionally prefixed with "skill:".
+//
+// Side effects:
+//   - If the wrapped consumer implements ToolCallConsumer, forwards the
+//     call. Otherwise no-op.
+func (f *VerbosityFilter) WriteToolCall(name string) {
+	if tcc, ok := f.consumer.(ToolCallConsumer); ok {
+		tcc.WriteToolCall(name)
+	}
+}
+
+// WriteToolResult forwards a successful tool result to the wrapped
+// consumer when the inner consumer implements ToolResultConsumer. Mirrors
+// WriteToolCall's wire-loss rationale: pre-fix the chat wire dropped
+// every tool_result because the filter did not relay them.
+//
+// Expected:
+//   - content is the tool's output text.
+//
+// Side effects:
+//   - If the wrapped consumer implements ToolResultConsumer, forwards the
+//     result. Otherwise no-op.
+func (f *VerbosityFilter) WriteToolResult(content string) {
+	if trc, ok := f.consumer.(ToolResultConsumer); ok {
+		trc.WriteToolResult(content)
+	}
+}
+
+// WriteToolError forwards a failed tool execution to the wrapped consumer
+// when the inner consumer implements ToolErrorConsumer. The /api/chat
+// SSEConsumer emits a distinct `tool_error` wire event the frontend's
+// handleToolErrorEvent flips the matching running tool_result row to
+// status='error' on. Without this passthrough the typed channel never
+// reaches the wire.
+//
+// Expected:
+//   - content is the error text (typically prefixed with "Error: " for
+//     the Result{Error:err} tool failure shape).
+//
+// Side effects:
+//   - If the wrapped consumer implements ToolErrorConsumer, forwards the
+//     error. Otherwise no-op.
+func (f *VerbosityFilter) WriteToolError(content string) {
+	if tec, ok := f.consumer.(ToolErrorConsumer); ok {
+		tec.WriteToolError(content)
+	}
+}
+
 // WriteEvent filters the event by verbosity level before passing to the wrapped consumer.
 // Events below the configured level are silently dropped. If the wrapped consumer does not
 // implement EventConsumer, the event is silently discarded after passing the level check.

@@ -113,6 +113,32 @@ func (c *SSEConsumer) WriteToolResult(content string) {
 	writeSSEToolResult(c.w, c.flusher, content)
 }
 
+// WriteToolError writes a JSON-encoded tool execution failure as a
+// server-sent event with type "tool_error" (distinct from "tool_result").
+// The streaming runner's deliverToolResult routes chunks whose
+// provider.ToolResultInfo.IsError is true through this channel; the
+// frontend's handleToolErrorEvent (web/src/stores/chatStore.ts) flips the
+// matching running tool_result row to status='error' in-stream so live
+// tool failures render as a dedicated error bubble instead of a normal
+// completed tool_result.
+//
+// Wire shape: {"type":"tool_error","content":"..."} — matches the
+// frontend parser at web/src/lib/sseEvent.ts:642. Empty content is
+// tolerated so the wire never throws on a malformed payload.
+//
+// Expected:
+//   - content is the error text the engine stamped on the chunk
+//     (typically prefixed with "Error: " for the Result{Error:err} tool
+//     failure shape, or rich human-readable text where the tool
+//     populated Result.Output for a recovery hint).
+//
+// Side effects:
+//   - Writes SSE data line with JSON-encoded tool_error to the response.
+//   - Flushes the response buffer.
+func (c *SSEConsumer) WriteToolError(content string) {
+	writeSSEToolError(c.w, c.flusher, content)
+}
+
 // WriteHarnessRetry writes a JSON-encoded harness retry event as a server-sent event.
 //
 // Expected:

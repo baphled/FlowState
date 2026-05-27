@@ -48,6 +48,22 @@ type sseToolResult struct {
 	Content string `json:"content"`
 }
 
+// sseToolError represents a tool execution failure event in a server-sent
+// event stream. The discriminant `tool_error` (distinct from `tool_result`)
+// lets the frontend's handleToolErrorEvent (web/src/stores/chatStore.ts)
+// flip the matching running tool_result row to status='error' in-stream;
+// the legacy tool_result event hard-sets status='completed' which would
+// otherwise hide live failures behind the post-stream history reconcile.
+//
+// Wire shape matches sseToolResult — content only — because the engine
+// has already stamped the error text on chunk.ToolResult.Content (rich
+// human-readable output where the tool populated it, or the "Error: ..."
+// shorthand where it didn't, see engine.go:3967-3994).
+type sseToolError struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
 // sseHarnessRetry represents a harness retry event in a server-sent event stream.
 type sseHarnessRetry struct {
 	Type    string `json:"type"`
@@ -110,6 +126,21 @@ func writeSSESkillLoad(w http.ResponseWriter, flusher http.Flusher, name string)
 // writeSSEToolResult marshals a tool result as a JSON event and writes it as a server-sent event.
 func writeSSEToolResult(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseToolResult{Type: "tool_result", Content: content}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	writeSSE(w, flusher, string(jsonData))
+}
+
+// writeSSEToolError marshals a tool execution failure as a JSON event and
+// writes it as a server-sent event with type "tool_error". The frontend's
+// parseSSEPayload (web/src/lib/sseEvent.ts:642) classifies the event by
+// the type discriminant; the chatStore handler (chatStore.ts:3450) routes
+// it through handleToolErrorEvent which flips the matching running
+// tool_result row to status='error'.
+func writeSSEToolError(w http.ResponseWriter, flusher http.Flusher, content string) {
+	data := sseToolError{Type: "tool_error", Content: content}
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return
