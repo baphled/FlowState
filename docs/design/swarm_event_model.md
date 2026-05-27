@@ -4,8 +4,8 @@
 
 `SwarmEvent` is the canonical structure for the multi-agent chat activity
 timeline. It provides a minimal, UI-focused projection of the richer streaming
-pipeline events for rendering in the Bubble Tea TUI. The model lives at
-`internal/streaming/swarm_event.go`.
+pipeline events for rendering in the Carbonyl-hosted Vue SPA. The model lives
+at `internal/streaming/swarm_event.go`.
 
 ## Schema
 

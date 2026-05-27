@@ -10,14 +10,13 @@ import (
     "context"
     "fmt"
     "strings"
-    
+
     // 2. External packages (alphabetical)
-    tea "github.com/charmbracelet/bubbletea"
-    "github.com/charmbracelet/lipgloss"
-    
+    "github.com/spf13/cobra"
+
     // 3. Internal packages (alphabetical)
+    "github.com/baphled/flowstate/internal/carbonyl"
     "github.com/baphled/flowstate/internal/provider"
-    "github.com/baphled/flowstate/internal/tui/intents"
 )
 ```
 

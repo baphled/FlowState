@@ -43,9 +43,10 @@ point when reporting "the key does nothing".
 ### `Ctrl+E`
 
 - **Readline** (which most shells use by default) binds `Ctrl+E` to
-  "move to end of line". Inside FlowState the chat composer is Bubble Tea, not
-  readline, so the chat capture of `Ctrl+E` is clean — but shell-integrated
-  popovers (fzf overlays, some shell widgets) may still intercept.
+  "move to end of line". Inside FlowState the chat composer runs inside the
+  Carbonyl-rendered Vue SPA, not readline, so the chat capture of `Ctrl+E` is
+  clean — but shell-integrated popovers (fzf overlays, some shell widgets)
+  may still intercept.
 - **Emacs** and **Emacs-mode shells** bind `Ctrl+E` to "end of line"; same
   caveat as readline.
 - **IDE terminals**: VS Code sometimes binds `Ctrl+E` to "go to file" when

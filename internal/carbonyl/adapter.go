@@ -15,8 +15,9 @@ type AppAdapter struct {
 }
 
 // SetAgentManifest resolves the agent manifest from the registry and
-// sets it on the engine. This mirrors the setup that tui.Run performs
-// before launching the Bubble Tea program.
+// sets it on the engine. The chat command calls this before invoking
+// carbonyl.Run so the engine is fully wired by the time the renderer
+// boots.
 func (a *AppAdapter) SetAgentManifest(agentID string) {
 	if agentID == "" || a.App.Registry == nil {
 		return

@@ -32,8 +32,8 @@ type RunOptions struct {
 }
 
 // Run starts an ephemeral API server serving the Vue SPA and launches
-// Carbonyl to render it in the terminal. It is a drop-in replacement
-// for tui.Run with the same signature.
+// Carbonyl to render it in the terminal. It is the single entry point
+// for the interactive chat experience.
 //
 // Expected:
 //   - application is a non-nil AppInterface with a configured API server.

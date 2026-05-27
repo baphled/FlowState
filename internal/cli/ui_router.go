@@ -3,7 +3,6 @@ package cli
 import (
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/carbonyl"
-	"github.com/baphled/flowstate/internal/tui"
 )
 
 // routeUIInteraction selects the correct rendering backend for an
@@ -20,13 +19,9 @@ import (
 //   - An error if the selected backend fails.
 //
 // Side effects:
-//   - Launches the selected UI backend (Carbonyl, browser, URL printer,
-//     or legacy Bubble Tea TUI).
+//   - Launches the selected Carbonyl backend (terminal renderer, system
+//     browser, or URL printer).
 func routeUIInteraction(application *app.App, opts *CarbonylOptions, agentID, sessionID string) error {
-	if opts.LegacyTUI {
-		return tui.Run(application, agentID, sessionID)
-	}
-
 	adapter := &carbonyl.AppAdapter{App: application}
 
 	if opts.Web {

@@ -21,9 +21,6 @@ func TestDefaultCarbonylOptions(t *testing.T) {
 	if opts.NoCarbonyl {
 		t.Error("NoCarbonyl should be false by default")
 	}
-	if opts.LegacyTUI {
-		t.Error("LegacyTUI should be false by default")
-	}
 }
 
 func TestAddCarbonylFlags(t *testing.T) {
@@ -47,7 +44,6 @@ func TestCarbonylFlagsParsing(t *testing.T) {
 		wantFPS    int
 		wantZoom   int
 		wantNoCarb bool
-		wantLegacy bool
 	}{
 		{
 			name:    "defaults",
@@ -69,12 +65,6 @@ func TestCarbonylFlagsParsing(t *testing.T) {
 			name:       "no-carbonyl",
 			args:       []string{"--no-carbonyl"},
 			wantNoCarb: true,
-			wantFPS:    15, wantZoom: 100,
-		},
-		{
-			name:       "legacy-tui",
-			args:       []string{"--legacy-tui"},
-			wantLegacy: true,
 			wantFPS:    15, wantZoom: 100,
 		},
 	}
@@ -101,9 +91,6 @@ func TestCarbonylFlagsParsing(t *testing.T) {
 			}
 			if opts.NoCarbonyl != tt.wantNoCarb {
 				t.Errorf("NoCarbonyl = %v, want %v", opts.NoCarbonyl, tt.wantNoCarb)
-			}
-			if opts.LegacyTUI != tt.wantLegacy {
-				t.Errorf("LegacyTUI = %v, want %v", opts.LegacyTUI, tt.wantLegacy)
 			}
 		})
 	}

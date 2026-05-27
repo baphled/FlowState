@@ -1,6 +1,6 @@
 # FlowState AI Agent Instructions
 
-> **Reference document** for AI coding agents working on FlowState — a Go TUI application built with the Bubble Tea framework. Read this before writing any code, making any commits, or asking for clarification. All rules here are non-negotiable unless an explicit exception is stated.
+> **Reference document** for AI coding agents working on FlowState — a Go backend that serves a Vue SPA rendered inside Carbonyl (terminal-mode Chromium). Read this before writing any code, making any commits, or asking for clarification. All rules here are non-negotiable unless an explicit exception is stated.
 
 ## Git Worktree Setup
 
@@ -261,12 +261,12 @@ import (
     // 1. Standard library
     "context"
     "fmt"
-    
+
     // 2. External (alphabetical)
-    tea "github.com/charmbracelet/bubbletea"
-    
+    "github.com/spf13/cobra"
+
     // 3. Internal (alphabetical)
-    "github.com/baphled/flowstate/internal/tui/intents"
+    "github.com/baphled/flowstate/internal/carbonyl"
 )
 ```
 
