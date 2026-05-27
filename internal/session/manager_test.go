@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -242,6 +243,25 @@ var _ = Describe("Manager", func() {
 			Expect(decoded.PermissionMode).To(Equal("yolo"))
 		})
 
+		It("round-trips the ModeAskUser mode through JSON encoding", func() {
+			// Permission Mode ModeAskUser Extension plan (May 2026) §4
+			// Slice 1: the 5th mode "ask" must survive a marshal/unmarshal
+			// cycle so a session sidecar persisted under Ask reloads with
+			// the same value on the next process start.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			sess.PermissionMode = permissionmode.ModeAskUser
+
+			encoded, err := json.Marshal(sess)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(encoded)).To(ContainSubstring(`"permission_mode":"ask"`),
+				"the JSON wire value for ModeAskUser is %q", "ask")
+
+			var decoded session.Session
+			Expect(json.Unmarshal(encoded, &decoded)).To(Succeed())
+			Expect(decoded.PermissionMode).To(Equal("ask"))
+		})
+
 		It("omits the field when empty (omitempty preserves legacy sidecar shape)", func() {
 			// Use a zero-value Session so the default-set constructors
 			// don't pre-populate PermissionMode. The on-disk sidecar
@@ -294,13 +314,62 @@ var _ = Describe("Manager", func() {
 		})
 
 		It("updates the in-memory PermissionMode for each canonical value", func() {
+			// Permission Mode ModeAskUser Extension plan (May 2026) §4 Slice 1
+			// adds the 5th mode "ask" — the closed vocabulary now spans five
+			// values. The iteration pins every member so a regression that
+			// silently drops one is caught by the row that fails.
 			sess, err := mgr.CreateSession("agent-x")
 			Expect(err).NotTo(HaveOccurred())
-			for _, mode := range []string{"plan", "default", "accept_edits", "yolo"} {
+			for _, mode := range []string{"plan", "default", "accept_edits", "yolo", "ask"} {
 				Expect(mgr.UpdatePermissionMode(sess.ID, mode)).To(Succeed(), mode)
 				loaded, err := mgr.GetSession(sess.ID)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(loaded.PermissionMode).To(Equal(mode))
+			}
+		})
+
+		// Permission Mode ModeAskUser Extension plan (May 2026) §4 Slice 1.
+		// The 5th mode ("ask") is a purely additive enum extension — the
+		// constant exists in the permissionmode package and the manager's
+		// switch admits it. Slices 2-5 layer behaviour on top; this slice
+		// only pins the vocabulary surface.
+		It("admits permissionmode.ModeAskUser via the typed constant", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(permissionmode.ModeAskUser).To(Equal("ask"),
+				"the wire string for the 5th mode is %q; the chip popover and the API contract both depend on it",
+				"ask")
+			Expect(mgr.UpdatePermissionMode(sess.ID, permissionmode.ModeAskUser)).To(Succeed(),
+				"the closed vocabulary must include ModeAskUser; UpdatePermissionMode is the canonical gatekeeper")
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.PermissionMode).To(Equal("ask"))
+		})
+
+		It("rejects case variants of the ask mode (closed vocabulary is case-sensitive)", func() {
+			// "ASK" / "Ask" must be rejected so a stale client mis-casing
+			// the value can't silently land an unrecognised string on the
+			// session. The case-sensitivity contract is shared with the
+			// other four modes.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			for _, variant := range []string{"ASK", "Ask"} {
+				err := mgr.UpdatePermissionMode(sess.ID, variant)
+				Expect(err).To(MatchError(session.ErrInvalidPermissionMode), variant)
+			}
+		})
+
+		It("rejects close lexical variants of the ask mode (asks/asked are not the vocabulary)", func() {
+			// Guard against a typo-tolerant matcher creeping into the
+			// validator. The validator MUST exact-match; a plural or
+			// past-tense variant is rejected with the same 400 surface
+			// as any other invalid mode.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			for _, variant := range []string{"asks", "asked", "ask-user"} {
+				err := mgr.UpdatePermissionMode(sess.ID, variant)
+				Expect(err).To(MatchError(session.ErrInvalidPermissionMode), variant)
 			}
 		})
 

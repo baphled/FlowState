@@ -122,6 +122,12 @@ type Session struct {
 	//   - "plan"          read-only; engine filters write tools out
 	//   - "default"       permissions.yaml + legacy denied-roots both apply
 	//   - "accept_edits"  auto-accept Write/Edit/MultiEdit prompts
+	//   - "ask"           interactive — pathguard denial publishes a
+	//                     permission_required event and suspends the
+	//                     tool call until the operator grants or denies.
+	//                     Added by Slice 1 of the Permission Mode
+	//                     ModeAskUser Extension plan (May 2026); the
+	//                     interactive plumbing lands in Slices 2-5.
 	//   - "yolo"          full pathguard bypass (trusted sandboxes only)
 	//
 	// Empty string is canonicalised to "default" by every reader
@@ -1592,11 +1598,13 @@ var ErrInvalidPermissionMode = errors.New("invalid permission mode")
 //
 // Expected:
 //   - sessionID identifies an existing session.
-//   - mode is one of the four canonical permissionmode constants
-//     (ModePlan / ModeDefault / ModeAcceptEdits / ModeYolo). Other
-//     values, including the empty string, are rejected so the
-//     persisted value can never be a non-vocabulary string the
-//     pathguard short-circuit doesn't recognise.
+//   - mode is one of the five canonical permissionmode constants
+//     (ModePlan / ModeDefault / ModeAcceptEdits / ModeAskUser /
+//     ModeYolo). Other values, including the empty string, are
+//     rejected so the persisted value can never be a non-vocabulary
+//     string the pathguard short-circuit doesn't recognise.
+//     ModeAskUser ("ask") joined the vocabulary in Slice 1 of the
+//     Permission Mode ModeAskUser Extension plan (May 2026).
 //
 // Returns:
 //   - nil when the mode is updated successfully.
@@ -1614,8 +1622,12 @@ func (m *Manager) UpdatePermissionMode(sessionID, mode string) error {
 	case permissionmode.ModePlan,
 		permissionmode.ModeDefault,
 		permissionmode.ModeAcceptEdits,
+		permissionmode.ModeAskUser,
 		permissionmode.ModeYolo:
-		// valid — fall through.
+		// valid — fall through. ModeAskUser ("ask") admitted by Slice 1
+		// of the Permission Mode ModeAskUser Extension plan (May 2026);
+		// see internal/permissionmode/mode.go:ModeAskUser for the
+		// behavioural contract.
 	default:
 		return ErrInvalidPermissionMode
 	}

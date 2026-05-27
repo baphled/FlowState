@@ -2048,7 +2048,11 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-mode JSON contract", fun
 		sess, err := mgr.CreateSession("agent-a")
 		Expect(err).NotTo(HaveOccurred())
 
-		for _, mode := range []string{"plan", "default", "accept_edits", "yolo"} {
+		// Permission Mode ModeAskUser Extension plan (May 2026) §4 Slice 1
+		// adds "ask" to the closed vocabulary; the iteration must cover
+		// it so the API handler's delegation through
+		// session.Manager.UpdatePermissionMode is pinned end-to-end.
+		for _, mode := range []string{"plan", "default", "accept_edits", "yolo", "ask"} {
 			rec := httptest.NewRecorder()
 			body := `{"mode":"` + mode + `"}`
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-mode", strings.NewReader(body))
@@ -2059,6 +2063,29 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-mode JSON contract", fun
 			Expect(err).NotTo(HaveOccurred())
 			Expect(updated.PermissionMode).To(Equal(mode))
 		}
+	})
+
+	It("returns 400 for case variants and close lexical variants of ask", func() {
+		// Permission Mode ModeAskUser Extension plan (May 2026) §4 Slice 1:
+		// the closed vocabulary is case-sensitive and exact-match. Variants
+		// of the newly-added "ask" mode (ASK / asks / ask-user) are rejected
+		// with the same 400 surface that protects the other four modes.
+		sess, err := mgr.CreateSession("agent-a")
+		Expect(err).NotTo(HaveOccurred())
+
+		for _, variant := range []string{"ASK", "Ask", "asks", "ask-user"} {
+			rec := httptest.NewRecorder()
+			body := `{"mode":"` + variant + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-mode", strings.NewReader(body))
+			srv.Handler().ServeHTTP(rec, req)
+			Expect(rec.Code).To(Equal(http.StatusBadRequest), variant)
+		}
+
+		// In-memory state must NOT have flipped on any of the failed writes.
+		updated, err := mgr.GetSession(sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(updated.PermissionMode).To(Equal("default"),
+			"rejected payloads must leave the persisted mode untouched at its default")
 	})
 
 	It("returns 400 for an unknown mode", func() {

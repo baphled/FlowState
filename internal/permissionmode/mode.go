@@ -2,7 +2,7 @@
 // across the engine → tool dispatch boundary via context.
 //
 // Permission modes are the user-facing safety dial on a FlowState
-// session. The valid set is fixed at four values:
+// session. The valid set is fixed at five values:
 //
 //   - ModePlan         — read-only; the engine filters write tools out
 //                        of the schema list and the assistant cannot
@@ -12,6 +12,15 @@
 //                        legacy denied-roots check both apply.
 //   - ModeAcceptEdits  — Write/Edit/MultiEdit prompts auto-accept;
 //                        pathguard still enforces deny rules.
+//   - ModeAskUser      — interactive: pathguard denial publishes a
+//                        permission_required event and suspends the
+//                        tool call until the operator grants or denies.
+//                        Slice 1 of the Permission Mode ModeAskUser
+//                        Extension plan (May 2026) ships only the
+//                        enum extension — the interactive plumbing
+//                        lands in Slices 2-5. Until then ModeAskUser
+//                        behaves identically to ModeDefault at the
+//                        pathguard + engine seams.
 //   - ModeYolo         — full bypass: every pathguard *ForTool check
 //                        short-circuits to PASS. Reserved for trusted
 //                        sandboxes (e.g. ephemeral worktree agents).
@@ -45,6 +54,21 @@ const (
 	// Write/Edit/MultiEdit family. Pathguard deny rules still fire;
 	// the auto-accept lives in the prompt layer, not here.
 	ModeAcceptEdits Mode = "accept_edits"
+	// ModeAskUser is the interactive mode. Pathguard denial under
+	// ModeAskUser is expected (Slices 2-5 of the Permission Mode
+	// ModeAskUser Extension plan, May 2026) to publish a
+	// permission_required event and suspend the goroutine until
+	// the operator grants or denies via the inline UI prompt. Slice
+	// 1 ships only the enum extension — the closed vocabulary now
+	// admits "ask" through session.Manager.UpdatePermissionMode (the
+	// canonical gatekeeper at internal/session/manager.go:1612-1625
+	// UpdatePermissionMode), but every consumer that reads the mode
+	// today (pathguard.go:CheckForTool / CheckCommandForTool, engine.go
+	// effectiveAllowedToolsForCtxLocked) ignores any value that is
+	// not ModeYolo or ModePlan and falls through to the safe Default
+	// path. Slice 1 acceptance bullet 4 explicitly pins that no
+	// behaviour change ships in this slice.
+	ModeAskUser Mode = "ask"
 	// ModeYolo is the full-bypass mode. Pathguard's *ForTool
 	// methods short-circuit to PASS at the top of the function
 	// body before any permissions-matcher or denied-roots check
