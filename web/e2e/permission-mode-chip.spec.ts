@@ -209,7 +209,11 @@ test.describe("Permission mode chip — live UI", () => {
     ).toContainText("Default");
     await expect(chip).toHaveAttribute("data-mode", "default");
 
-    // Click → popover opens with the four canonical modes.
+    // Click → popover opens with the five canonical modes. The fifth
+    // ("Ask") row is the ModeAskUser Extension (May 2026) §3 surface
+    // — interactive permission grants per call. The plan §2 tooltip
+    // body is rendered directly in the option description so the
+    // operator reads the semantics at the moment of choice.
     await chip.click();
     const popover = page.locator(
       '[data-testid="permission-mode-chip-popover"]',
@@ -225,8 +229,21 @@ test.describe("Permission mode chip — live UI", () => {
       page.locator('[data-testid="permission-mode-option-accept_edits"]'),
     ).toBeVisible();
     await expect(
+      page.locator('[data-testid="permission-mode-option-ask"]'),
+    ).toBeVisible();
+    await expect(
       page.locator('[data-testid="permission-mode-option-yolo"]'),
     ).toBeVisible();
+
+    // ModeAskUser Extension (May 2026) §2 — pin the plan tooltip copy
+    // on the Ask row so a future restyle can't quietly weaken the
+    // operator-facing semantics. The full sentence is rendered in
+    // the option-description span, not a hover-only `title`.
+    await expect(
+      page.locator('[data-testid="permission-mode-option-ask"]'),
+    ).toContainText(
+      "Pathguard prompts on denial. Operator grants per call. Per-resource grants persist to permissions.yaml.",
+    );
 
     // Loud disclosure (plan §5) — exact copy pinned. The element is
     // present in the DOM (not buried behind a hover-only `title`)
@@ -318,5 +335,101 @@ test.describe("Permission mode chip — live UI", () => {
       window.localStorage.getItem("flowstate.permissionMode.session-1"),
     );
     expect(stored).toBe("yolo");
+  });
+
+  test("selecting Ask persists across reload (ModeAskUser Extension Slice 1)", async ({
+    page,
+  }) => {
+    // ModeAskUser Extension (May 2026) §4 Slice 1 acceptance:
+    // "Selecting Ask in the chip persists across reload" — proves the
+    // Permission Modes Slice 3 backend persistence path is reused
+    // unchanged for the fifth mode. The first navigation seeds
+    // `permissionMode` via the chip click; the second navigation
+    // (page.reload) sees the same session-list mock return "ask" as
+    // the persisted value, and the chip must restore to Ask.
+    const recordedPosts: { sessionId: string; body: string }[] = [];
+    let sessionMode: string | undefined;
+    await bootstrapMocks(page, { recordedPermissionModePosts: recordedPosts });
+
+    // After the first POST, the session-list mock starts reporting
+    // "ask" so the reload hydrates from backend (canonical
+    // precedence: backend > localStorage > default).
+    await page.route("**/api/v1/sessions", async (route) => {
+      const summary: Record<string, unknown> = {
+        id: "session-1",
+        agentId: "agent-1",
+        currentAgentId: "agent-1",
+        currentProviderId: "anthropic",
+        currentModelId: "claude-sonnet-4-6",
+        title: "Test",
+        createdAt: "2026-05-26T00:00:00Z",
+        updatedAt: "2026-05-26T00:00:01Z",
+        messageCount: 2,
+      };
+      if (sessionMode !== undefined) {
+        summary["permissionMode"] = sessionMode;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([summary]),
+      });
+    });
+    await page.route(
+      "**/api/v1/sessions/*/permission-mode",
+      async (route, request) => {
+        if (request.method() !== "POST") {
+          await route.fulfill({ status: 405 });
+          return;
+        }
+        const body = request.postData() ?? "";
+        const match = request.url().match(/\/sessions\/([^/]+)\/permission-mode/);
+        const sessionId = match ? decodeURIComponent(match[1]) : "";
+        recordedPosts.push({ sessionId, body });
+        try {
+          sessionMode = (JSON.parse(body) as { mode?: string }).mode;
+        } catch {
+          // ignore — the assertion below will catch malformed bodies
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ id: sessionId, permission_mode: sessionMode }),
+        });
+      },
+    );
+
+    await page.goto("/chat");
+    await expect(page.getByTestId("message-input")).toBeVisible();
+
+    const chip = page.locator('[data-testid="permission-mode-chip"]');
+    await expect(chip).toBeVisible();
+    await chip.click();
+
+    const postPromise = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        /\/api\/v1\/sessions\/[^/]+\/permission-mode$/.test(req.url()),
+    );
+    await page.locator('[data-testid="permission-mode-option-ask"]').click();
+    const post = await postPromise;
+    expect(post.postDataJSON()).toEqual({ mode: "ask" });
+
+    // Chip pivots to the Ask palette immediately.
+    await expect(chip).toHaveAttribute("data-mode", "ask");
+    await expect(chip).toHaveAttribute("data-severity", "ask");
+    await expect(
+      page.locator('[data-testid="permission-mode-chip-label"]'),
+    ).toContainText("Ask");
+
+    // Reload — backend now reports `permissionMode: "ask"`. Chip
+    // restores to Ask without any further operator action,
+    // exercising the predecessor Slice 3 hydration path unchanged.
+    await page.reload();
+    await expect(page.getByTestId("message-input")).toBeVisible();
+    await expect(chip).toHaveAttribute("data-mode", "ask");
+    await expect(
+      page.locator('[data-testid="permission-mode-chip-label"]'),
+    ).toContainText("Ask");
   });
 });

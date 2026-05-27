@@ -2602,6 +2602,35 @@ describe('chatStore - permissionMode (Slice 2)', () => {
     expect(store.permissionMode).toBe('accept_edits')
   })
 
+  it('setPermissionMode accepts "ask" and persists it (ModeAskUser Extension)', async () => {
+    // ModeAskUser Extension (May 2026) Slice 1 — the fifth permission
+    // mode "ask" is a recognised value alongside plan/default/accept_edits/
+    // yolo. The closed-vocabulary guard at PERMISSION_MODES must include
+    // "ask" so the chip's selection round-trips through setPermissionMode
+    // rather than being silently rejected as "not a recognised mode".
+    const store = useChatStore()
+    store.currentSessionId = 'session-1'
+
+    await store.setPermissionMode('ask')
+
+    expect(store.permissionMode).toBe('ask')
+    expect(window.localStorage.getItem('flowstate.permissionMode.session-1')).toBe('ask')
+  })
+
+  it('hydratePermissionMode adopts a persisted "ask" value across reload (ModeAskUser Extension)', () => {
+    // Reload-rehydration path — the per-session localStorage key
+    // accepts "ask" alongside the four predecessor modes. Without
+    // this, a session that selected Ask before reload would silently
+    // fall back to Default on the next boot, breaking the §4 plan §1
+    // acceptance "Selecting Ask in the chip persists across reload".
+    window.localStorage.setItem('flowstate.permissionMode.session-1', 'ask')
+    const store = useChatStore()
+
+    store.hydratePermissionMode('session-1')
+
+    expect(store.permissionMode).toBe('ask')
+  })
+
   it('hydratePermissionMode falls back to "default" when the persisted value is unrecognised', () => {
     // Invalid persisted values (corruption, manual edit, schema drift)
     // must not leak through to the chip — fall back to the safe default.

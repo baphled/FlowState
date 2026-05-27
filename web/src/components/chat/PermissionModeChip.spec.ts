@@ -109,7 +109,7 @@ describe("PermissionModeChip", () => {
     ).toBe("danger");
   });
 
-  it("opens the popover with the four canonical modes when clicked", async () => {
+  it("opens the popover with the five canonical modes when clicked", async () => {
     const store = useChatStore();
     store.currentSessionId = "session-1";
 
@@ -127,7 +127,9 @@ describe("PermissionModeChip", () => {
     const popover = wrapper.find('[data-testid="permission-mode-chip-popover"]');
     expect(popover.exists()).toBe(true);
 
-    // All four canonical modes present, each as its own option button.
+    // All five canonical modes present, each as its own option button.
+    // The fifth row ("Ask") is the ModeAskUser Extension (May 2026)
+    // plan §3 surface — interactive permission grants per call.
     expect(wrapper.find('[data-testid="permission-mode-option-plan"]').exists())
       .toBe(true);
     expect(wrapper.find('[data-testid="permission-mode-option-default"]').exists())
@@ -135,8 +137,51 @@ describe("PermissionModeChip", () => {
     expect(
       wrapper.find('[data-testid="permission-mode-option-accept_edits"]').exists(),
     ).toBe(true);
+    expect(wrapper.find('[data-testid="permission-mode-option-ask"]').exists())
+      .toBe(true);
     expect(wrapper.find('[data-testid="permission-mode-option-yolo"]').exists())
       .toBe(true);
+  });
+
+  it("renders the Ask row with purple tint and the §2 tooltip body", async () => {
+    // ModeAskUser Extension (May 2026) §3 — the fifth row carries a
+    // distinct purple severity tint (not amber Accept-Edits, not red
+    // YOLO) to signal "interactive, not relaxed". The description
+    // copy is pinned to the plan §2 tooltip text so a future restyle
+    // can't quietly weaken the operator-facing semantics. The
+    // severity class is asserted via the existing
+    // `permission-mode-chip__option--<severity>` convention so the
+    // test stays decoupled from specific RGB values (the colour
+    // variable lives in CSS and can move with theming).
+    const store = useChatStore();
+    store.currentSessionId = "session-1";
+
+    const wrapper = mount(PermissionModeChip);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="permission-mode-chip"]').trigger("click");
+    await flushPromises();
+
+    const askOption = wrapper.get(
+      '[data-testid="permission-mode-option-ask"]',
+    );
+
+    // Label pinned to the plan §3 "Ask" copy.
+    expect(askOption.text()).toContain("Ask");
+
+    // Purple tint via the `ask` severity class — distinct from
+    // `warning` (Accept-Edits, amber) and `danger` (YOLO, red).
+    expect(askOption.classes()).toContain(
+      "permission-mode-chip__option--ask",
+    );
+
+    // Plan §2 tooltip body — pinned literal copy. The disclosure
+    // sits under the option description so the operator reads it at
+    // the moment of choice rather than via hover-only state, matching
+    // the loud-disclosure idiom established by the Default row.
+    expect(askOption.text()).toContain(
+      "Pathguard prompts on denial. Operator grants per call. Per-resource grants persist to permissions.yaml.",
+    );
   });
 
   it("selecting a mode calls store.setPermissionMode and closes the popover", async () => {
@@ -191,6 +236,31 @@ describe("PermissionModeChip", () => {
     expect(disclosure.text()).toBe(
       "Default mode does not prompt per tool call. Review the session timeline for what ran.",
     );
+  });
+
+  it("renders the chip with the Ask palette when the store mode is 'ask'", async () => {
+    // Pins the chip's resting-state palette for the fifth mode — the
+    // ModeAskUser Extension (May 2026) §3 contract says the chip
+    // itself (not just the popover row) must signal "interactive"
+    // when the operator has selected Ask. data-severity is the
+    // theme-agnostic probe surface; the CSS variable can move under
+    // theming without breaking this assertion.
+    const store = useChatStore();
+    store.currentSessionId = "session-1";
+    store.permissionMode = "ask";
+
+    const wrapper = mount(PermissionModeChip);
+    await flushPromises();
+
+    expect(
+      wrapper.get('[data-testid="permission-mode-chip-label"]').text(),
+    ).toBe("Ask");
+    expect(
+      wrapper.get('[data-testid="permission-mode-chip"]').attributes("data-mode"),
+    ).toBe("ask");
+    expect(
+      wrapper.get('[data-testid="permission-mode-chip"]').attributes("data-severity"),
+    ).toBe("ask");
   });
 
   it("ticks the active mode option in the popover so the operator sees current selection", async () => {

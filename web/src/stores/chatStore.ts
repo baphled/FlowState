@@ -40,13 +40,22 @@ const permissionModeStorageKeyPrefix = 'flowstate.permissionMode.'
  * (backend, Slice 1, commit 26f9d864). Underscored `accept_edits` keeps
  * the wire shape identical between the localStorage value and the
  * backend's `PermissionMode` field so Slice 3 can POST the same string.
+ *
+ * `ask` (ModeAskUser Extension, May 2026 — Slice 1) is the fifth mode:
+ * a pathguard-interactive surface where denials publish a
+ * `permission_required` event and the suspended tool call resumes once
+ * the operator grants per-call / per-session / per-resource access. The
+ * frontend wire value is `'ask'` (kebab-style singular, matching the
+ * Go enum identifier). v1 chip surface only — engine pause-and-wait
+ * lands in Slice 2.
  */
-export type PermissionMode = 'plan' | 'default' | 'accept_edits' | 'yolo'
+export type PermissionMode = 'plan' | 'default' | 'accept_edits' | 'ask' | 'yolo'
 
 export const PERMISSION_MODES: readonly PermissionMode[] = [
   'plan',
   'default',
   'accept_edits',
+  'ask',
   'yolo',
 ] as const
 

@@ -22,10 +22,14 @@ import {
  *     resting state is a compact pill; the popover is an on-demand
  *     surface.
  *
- * Risk-tint palette (plan §3):
+ * Risk-tint palette (plan §3, extended by ModeAskUser Extension §3):
  *   - Plan         → grey   (read-only, lowest risk)
  *   - Default      → blue   (neutral baseline)
  *   - Accept Edits → amber  (file mutations bypass pathguard)
+ *   - Ask          → purple (interactive — operator grants per call,
+ *                            distinct from amber relaxed + red bypassed
+ *                            so the operator reads "intervenes, not
+ *                            loosens")
  *   - YOLO         → red    (all path checks bypassed)
  *
  * Loud disclosure (plan §5):
@@ -49,15 +53,18 @@ interface ModeMeta {
   label: string;
   icon: string;
   description: string;
-  severity: "neutral" | "info" | "warning" | "danger";
+  severity: "neutral" | "info" | "warning" | "ask" | "danger";
 }
 
 /**
  * Per-mode metadata. Order is intentional: Plan / Default / Accept Edits
- * / YOLO ascends in permissiveness so the popover reads top-to-bottom
- * as "least → most risky" — the operator's mental model of "I am
- * choosing how much trust I'm extending this session" runs in that
- * direction.
+ * / Ask / YOLO. The first four ascend in permissiveness (Plan least,
+ * Accept Edits more, YOLO most). Ask is interactive rather than
+ * passively-permissive — it sits between Accept Edits and YOLO in the
+ * popover order because an operator who already trusts Accept Edits is
+ * the natural next reader for "I want to be asked before each
+ * unscoped action"; YOLO remains the loudest row at the bottom. The
+ * order mirrors the §2 ModeAskUser Extension table.
  */
 const MODES: readonly ModeMeta[] = [
   {
@@ -80,6 +87,19 @@ const MODES: readonly ModeMeta[] = [
     icon: "E",
     description: "Pathguard relaxed for file edits. Bash still enforced.",
     severity: "warning",
+  },
+  {
+    id: "ask",
+    label: "Ask",
+    icon: "A",
+    // ModeAskUser Extension (May 2026) §2 tooltip body — pinned
+    // literal copy. The chip's option-description is the §3 surface
+    // the operator reads at the moment of choice; the full sentence
+    // sits inline (not hover-only) so screen readers + visual
+    // scanning both pick up the per-resource persistence semantics.
+    description:
+      "Pathguard prompts on denial. Operator grants per call. Per-resource grants persist to permissions.yaml.",
+    severity: "ask",
   },
   {
     id: "yolo",
@@ -307,6 +327,19 @@ const ALL_MODES = PERMISSION_MODES;
   color: var(--warning, #f5a623);
 }
 
+/*
+ * Ask palette — purple. ModeAskUser Extension (May 2026) §3 spec:
+ * distinct from amber Accept-Edits + red YOLO so the operator reads
+ * "interactive, not relaxed". The fallback hex (#a855f7, Tailwind
+ * purple-500 family) is overridable by the `--ask` theme variable so
+ * a future palette pass can re-skin without touching this component.
+ */
+.permission-mode-chip--ask {
+  border-color: color-mix(in srgb, var(--ask, #a855f7) 50%, transparent);
+  background: color-mix(in srgb, var(--ask, #a855f7) 14%, transparent);
+  color: var(--ask, #a855f7);
+}
+
 .permission-mode-chip--danger {
   border-color: color-mix(in srgb, var(--error, #dc2626) 55%, transparent);
   background: color-mix(in srgb, var(--error, #dc2626) 16%, transparent);
@@ -372,6 +405,16 @@ const ALL_MODES = PERMISSION_MODES;
 
 .permission-mode-chip__option--warning .permission-mode-chip__option-icon {
   background: var(--warning, #f5a623);
+  color: var(--surface, #1a1a1a);
+}
+
+/*
+ * Ask row icon — purple chip on the popover row, matching the chip
+ * palette above so the resting chip and the popover option read as
+ * the same colour-coded affordance.
+ */
+.permission-mode-chip__option--ask .permission-mode-chip__option-icon {
+  background: var(--ask, #a855f7);
   color: var(--surface, #1a1a1a);
 }
 
