@@ -6769,6 +6769,15 @@ func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvide
 	}
 
 	manifest := e.Manifest()
+
+	// Mirror CompactNow's session-model fallback so a model-switch
+	// trigger lands on the destination model rather than an
+	// unresolved abstract descriptor when category routing for the
+	// summariser tier has no concrete mapping. See WithSessionModel
+	// for the May 2026 /compact regression this closes; the
+	// model-switch path inherits the same surface area.
+	ctx = WithSessionModel(ctx, newProvider, newModel)
+
 	return e.maybeAutoCompact(ctx, sessionID, &manifest, newLimit, "model_switch")
 }
 
@@ -6838,6 +6847,7 @@ func (e *Engine) CompactNow(ctx context.Context, sessionID string) (string, bool
 	e.mu.RUnlock()
 
 	var explicitMessages []provider.Message
+	var sessionProviderID, sessionModelID string
 	if lookup != nil {
 		messages, agentID, providerID, modelID, ok := lookup.SnapshotForCompaction(sessionID)
 		if !ok {
@@ -6881,6 +6891,17 @@ func (e *Engine) CompactNow(ctx context.Context, sessionID string) (string, bool
 			}
 		}
 
+		// Capture the session's provider+model so the summariser route
+		// can fall back to it when category routing yields an
+		// unresolved abstract descriptor (e.g. "fast" without a
+		// ModelLister wired). Pre-fix this gap caused /compact to fail
+		// with `Unknown Model` against z.ai because ProviderSummariser
+		// sent the literal "fast" descriptor to the provider — May
+		// 2026 force-fire regression. ProviderSummariser.resolveRoute
+		// reads the hint via sessionModelFromContext.
+		sessionProviderID = providerID
+		sessionModelID = modelID
+
 		// Seed the engine's process-wide store with the session's
 		// history. This is a defensive mirror — the explicit-messages
 		// path below does NOT read from e.store, but other engine
@@ -6896,6 +6917,14 @@ func (e *Engine) CompactNow(ctx context.Context, sessionID string) (string, bool
 		// against garbage. Matches the MaybeCompactForModel guard.
 		return "", false
 	}
+
+	// Attach the session's (provider, model) so ProviderSummariser
+	// can fall through to it when category routing yields an
+	// unresolved abstract descriptor. WithSessionModel is a no-op
+	// when sessionModelID is empty (legacy sessions persisted before
+	// the agent-stamping fields existed), preserving the pre-fix
+	// behaviour for the bootstrap callers.
+	ctx = WithSessionModel(ctx, sessionProviderID, sessionModelID)
 
 	summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifest, tokenBudget, "manual", explicitMessages)
 	return summary, summary != ""

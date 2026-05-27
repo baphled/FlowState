@@ -219,3 +219,190 @@ var _ = Describe("Engine.CompactNow (manual /compress trigger)", func() {
 		_ = lastEvent
 	})
 })
+
+// May 2026 — /compact returned {fired: false} on z.ai-backed sessions
+// because the production summariser route resolved to an abstract
+// descriptor ("fast") that no model lister could expand, and the
+// provider rejected the literal "fast" string with
+//
+//	provider zai error [unknown/1211 HTTP 400]: Unknown Model
+//
+// The fix threads the session's (provider, model) through ctx so
+// ProviderSummariser.resolveRoute can fall back to it whenever the
+// category-routed model is empty OR an unresolved abstract descriptor.
+// Pre-fix: the chat provider saw Model="fast". Post-fix: it sees the
+// session's actual model ("glm-4.6"), which the provider accepts.
+var _ = Describe("CompactNow session-model fallback (May 2026 'Unknown Model' regression)", func() {
+	It("invokes the summariser with the session's current model when category routing yields an abstract descriptor", func() {
+		// Category routing yields "fast" — the production default for
+		// the "quick" tier (DefaultCategoryRouting). Without a
+		// ModelLister wired the resolver leaves this as the abstract
+		// descriptor. Pre-fix ProviderSummariser shipped it to the
+		// provider verbatim.
+		categoryResolver := engine.NewCategoryResolver(map[string]engine.CategoryConfig{
+			"quick": {Model: "fast"},
+		})
+		summariserResolver := engine.NewSummariserResolver(categoryResolver)
+
+		// Stub chat provider records the model the summariser routed
+		// to. The response is a valid CompactionSummary so the
+		// AutoCompactor parse step succeeds and we reach the
+		// publish path.
+		chat := &stubChatProvider{response: buildSummaryJSON()}
+
+		// Manifest must carry an empty fallbackModel so the static
+		// fallback tier cannot mask the bug. The session's modelID
+		// is the only valid signal — if the fix isn't wired, the
+		// summariser sends "fast" and we catch it via the
+		// stubChatProvider's received.Model field.
+		sessionAgent := agent.Manifest{
+			ID:           "session-agent",
+			Name:         "Session Agent",
+			Instructions: agent.Instructions{SystemPrompt: "sys"},
+			ContextManagement: func() agent.ContextManagement {
+				cm := agent.DefaultContextManagement()
+				cm.CompactionThreshold = 0.05
+				cm.SlidingWindowSize = 4
+				return cm
+			}(),
+		}
+
+		adapter := engine.NewProviderSummariser(chat, summariserResolver, "").
+			WithManifest(&sessionAgent)
+
+		lookup := &stubSessionLookup{
+			entries: map[string]stubLookupEntry{
+				"sess-glm46": {
+					messages:   buildSessionMessages(10),
+					agentID:    "session-agent",
+					providerID: "zai",
+					modelID:    "glm-4.6",
+					found:      true,
+				},
+			},
+		}
+		eng, _ := newCompactNowEngineWithLookup(adapter, lookup, sessionAgent)
+
+		summary, fired := eng.CompactNow(context.Background(), "sess-glm46")
+
+		Expect(fired).To(BeTrue(),
+			"CompactNow must fire — pre-fix the chat provider rejected "+
+				"the unresolved 'fast' descriptor and the summariser "+
+				"returned an error, propagating as fired=false")
+		Expect(summary).NotTo(BeEmpty())
+		Expect(chat.received.Model).To(Equal("glm-4.6"),
+			"ProviderSummariser.resolveRoute must fall back to the session's "+
+				"current model when category routing yields an unresolved "+
+				"abstract descriptor — pre-fix it shipped 'fast' verbatim, "+
+				"which z.ai rejects as 'Unknown Model'")
+		Expect(chat.received.Model).NotTo(Equal("fast"),
+			"the abstract descriptor must NOT reach the provider — this is "+
+				"the load-bearing regression pin for the May 2026 /compact bug")
+		Expect(chat.received.Provider).To(Equal("zai"),
+			"the session's provider hint flows alongside the model so the "+
+				"chat provider routes the summariser call against the same "+
+				"backend the chat itself uses")
+	})
+
+	It("prefers the category-routed concrete model over the session hint when routing is fully resolved", func() {
+		// Belt-and-braces guard: when the resolver yields a CONCRETE
+		// model (non-abstract, non-empty), Tier 1 must win. The
+		// session hint is a fallback, not an override — a deployment
+		// that has wired explicit per-tier summariser models must
+		// continue to use them.
+		categoryResolver := engine.NewCategoryResolver(map[string]engine.CategoryConfig{
+			"quick": {Model: "summariser-tier-model", Provider: "tier-provider"},
+		})
+		summariserResolver := engine.NewSummariserResolver(categoryResolver)
+
+		chat := &stubChatProvider{response: buildSummaryJSON()}
+		sessionAgent := agent.Manifest{
+			ID:           "session-agent",
+			Name:         "Session Agent",
+			Instructions: agent.Instructions{SystemPrompt: "sys"},
+			ContextManagement: func() agent.ContextManagement {
+				cm := agent.DefaultContextManagement()
+				cm.CompactionThreshold = 0.05
+				cm.SlidingWindowSize = 4
+				return cm
+			}(),
+		}
+
+		adapter := engine.NewProviderSummariser(chat, summariserResolver, "").
+			WithManifest(&sessionAgent)
+
+		lookup := &stubSessionLookup{
+			entries: map[string]stubLookupEntry{
+				"sess-with-concrete-tier": {
+					messages:   buildSessionMessages(10),
+					agentID:    "session-agent",
+					providerID: "zai",
+					modelID:    "glm-4.6",
+					found:      true,
+				},
+			},
+		}
+		eng, _ := newCompactNowEngineWithLookup(adapter, lookup, sessionAgent)
+
+		_, fired := eng.CompactNow(context.Background(), "sess-with-concrete-tier")
+
+		Expect(fired).To(BeTrue())
+		Expect(chat.received.Model).To(Equal("summariser-tier-model"),
+			"a fully resolved category route must win over the session "+
+				"hint — deployments wiring an explicit cheap summariser model "+
+				"depend on this precedence")
+		Expect(chat.received.Provider).To(Equal("tier-provider"),
+			"the category-routed provider must accompany its model so the "+
+				"chat router lands the call on the configured backend")
+	})
+
+	It("falls back to the session model when the resolver returns an unknown tier", func() {
+		// An unknown summary tier makes CategoryResolver.Resolve
+		// return errUnknownCategory. Pre-fix ProviderSummariser
+		// degraded to fallbackModel only — empty fallbackModel meant
+		// an empty Model field shipped to the provider. The fix
+		// promotes the session hint above the static fallback so
+		// deployments with no Ollama config still route correctly.
+		categoryResolver := engine.NewCategoryResolver(map[string]engine.CategoryConfig{})
+		summariserResolver := engine.NewSummariserResolver(categoryResolver)
+
+		chat := &stubChatProvider{response: buildSummaryJSON()}
+		sessionAgent := agent.Manifest{
+			ID:           "session-agent",
+			Name:         "Session Agent",
+			Instructions: agent.Instructions{SystemPrompt: "sys"},
+			ContextManagement: func() agent.ContextManagement {
+				cm := agent.DefaultContextManagement()
+				cm.CompactionThreshold = 0.05
+				cm.SlidingWindowSize = 4
+				cm.SummaryTier = "definitely-not-a-real-tier"
+				return cm
+			}(),
+		}
+
+		adapter := engine.NewProviderSummariser(chat, summariserResolver, "").
+			WithManifest(&sessionAgent)
+
+		lookup := &stubSessionLookup{
+			entries: map[string]stubLookupEntry{
+				"sess-unknown-tier": {
+					messages:   buildSessionMessages(10),
+					agentID:    "session-agent",
+					providerID: "zai",
+					modelID:    "glm-4.6",
+					found:      true,
+				},
+			},
+		}
+		eng, _ := newCompactNowEngineWithLookup(adapter, lookup, sessionAgent)
+
+		_, fired := eng.CompactNow(context.Background(), "sess-unknown-tier")
+
+		Expect(fired).To(BeTrue())
+		Expect(chat.received.Model).To(Equal("glm-4.6"),
+			"a resolver miss must fall through to the session model — "+
+				"an empty static fallback would otherwise ship an empty "+
+				"Model field which most providers reject")
+	})
+})
+
