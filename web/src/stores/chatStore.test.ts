@@ -5719,10 +5719,17 @@ describe("chatStore - loadSessionForDelegation (chainId-aware sibling disambigua
 
   it("falls back to loadSessionByAgentId's most-recent-child resolver when chainId is unknown", async () => {
     // No swarm event seen for this chain yet (e.g. hard reload before
-    // the live stream reconnected). The legacy resolver kicks in so
-    // the click still goes somewhere reasonable — preserving the
-    // pre-fix behaviour for the chainId-missing case.
-    vi.mocked(fetchSessions).mockResolvedValueOnce([
+    // the live stream reconnected). The resolver refreshes sessions
+    // ONCE; if the refresh still doesn't surface a chainSessions
+    // entry for this chainId, it falls through to the agent-id
+    // heuristic so the click still goes somewhere reasonable.
+    //
+    // The refresh-and-retry mock pattern: two identical payloads
+    // (the chainId never materialises on either fetch). Without the
+    // second `mockResolvedValueOnce` the refresh would consume the
+    // default fetchSessions mock and the test would observe a
+    // different sessions[] state.
+    const sessions = [
       {
         id: 'parent',
         agentId: 'planner',
@@ -5758,7 +5765,10 @@ describe("chatStore - loadSessionForDelegation (chainId-aware sibling disambigua
         depth: 1,
         isStreaming: false,
       },
-    ])
+    ]
+    vi.mocked(fetchSessions)
+      .mockResolvedValueOnce(sessions)
+      .mockResolvedValueOnce(sessions)
     vi.mocked(fetchSessionMessages).mockResolvedValue([])
 
     const store = useChatStore()
@@ -5772,7 +5782,8 @@ describe("chatStore - loadSessionForDelegation (chainId-aware sibling disambigua
     })
 
     expect(loaded).toBe(true)
-    // Legacy most-recent-wins behaviour — preserved as the fallback.
+    // Legacy most-recent-wins behaviour — preserved as the fallback
+    // after refresh-and-retry exhausts.
     expect(store.currentSessionId).toBe('child-new')
   })
 
@@ -5997,6 +6008,538 @@ describe("chatStore - loadSessionForDelegation (chainId-aware sibling disambigua
 
     expect(store.chainSessions['chain-live']).toBe('session-live')
     expect(store.chainSessions['chain-persisted']).toBe('persisted-child')
+  })
+
+  // Cold-reload + chainId-miss refresh-and-retry.
+  //
+  // Pre-fix path: the live-click on a SwarmEvent fires
+  // loadSessionForDelegation({ chainId }) before loadSessions has caught
+  // up with the just-persisted child. chainSessions[chainId] is empty,
+  // the resolver falls through to the agent-id heuristic, and the
+  // most-recent-wins logic re-opens the sibling-confusion bug for the
+  // exact window the chainSessions map is supposed to protect. The fix
+  // refreshes sessions ONCE on a chainId miss and retries the map
+  // before falling through. With the loadSessions chainId backfill
+  // (chatStore.ts:1587-1591) the retry finds the freshly-persisted
+  // pair and the click lands on the correct sibling.
+  it('refreshes sessions and retries the chainSessions map before falling through when chainId is unknown', async () => {
+    // First fetch: only the parent + the stale sibling exist. Second
+    // fetch (post-refresh): the just-persisted child for the queried
+    // chainId is present.
+    vi.mocked(fetchSessions)
+      .mockResolvedValueOnce([
+        {
+          id: 'parent',
+          agentId: 'planner',
+          title: 'Parent',
+          createdAt: '2026-05-01T09:00:00Z',
+          updatedAt: '2026-05-01T09:00:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 0,
+          isStreaming: false,
+        },
+        {
+          id: 'stale-sibling',
+          agentId: 'executor',
+          parentId: 'parent',
+          chainId: 'chain-old',
+          title: 'Older run',
+          createdAt: '2026-05-01T09:01:00Z',
+          updatedAt: '2026-05-01T09:01:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 1,
+          isStreaming: false,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'parent',
+          agentId: 'planner',
+          title: 'Parent',
+          createdAt: '2026-05-01T09:00:00Z',
+          updatedAt: '2026-05-01T09:00:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 0,
+          isStreaming: false,
+        },
+        {
+          id: 'stale-sibling',
+          agentId: 'executor',
+          parentId: 'parent',
+          chainId: 'chain-old',
+          title: 'Older run',
+          createdAt: '2026-05-01T09:01:00Z',
+          updatedAt: '2026-05-01T09:01:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 1,
+          isStreaming: false,
+        },
+        {
+          id: 'fresh-child',
+          agentId: 'executor',
+          parentId: 'parent',
+          chainId: 'chain-fresh',
+          title: 'Fresh run',
+          createdAt: '2026-05-01T09:05:00Z',
+          updatedAt: '2026-05-01T09:05:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 1,
+          isStreaming: false,
+        },
+      ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    // Pre-condition: chain-fresh is NOT yet in the map (it landed on the
+    // backend after the initial loadSessions but before this click).
+    expect(store.chainSessions['chain-fresh']).toBeUndefined()
+
+    const loaded = await store.loadSessionForDelegation({
+      chainId: 'chain-fresh',
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(true)
+    // The fix routes through the post-refresh chainSessions map, NOT
+    // through the most-recent-wins agent-id fallback (which would have
+    // landed on fresh-child too in this case but for the wrong reason —
+    // the assertion below disambiguates: the agent-id path runs
+    // sessions[].sort, the chainId path is an O(1) map lookup. We pin
+    // both the chainSessions entry being populated AND the landing
+    // session id.)
+    expect(store.currentSessionId).toBe('fresh-child')
+    expect(store.chainSessions['chain-fresh']).toBe('fresh-child')
+    // Two fetchSessions calls: the initial loadSessions + the refresh
+    // fired by loadSessionForDelegation on chainId miss.
+    expect(vi.mocked(fetchSessions).mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  // Refresh-and-retry must NOT loop indefinitely. If the second fetch
+  // still doesn't surface a chainSessions entry for the queried
+  // chainId, fall through to the agent-id heuristic exactly once.
+  it('refreshes exactly once before falling through to the agent-id resolver', async () => {
+    vi.mocked(fetchSessions)
+      .mockResolvedValueOnce([
+        {
+          id: 'parent',
+          agentId: 'planner',
+          title: 'Parent',
+          createdAt: '2026-05-01T09:00:00Z',
+          updatedAt: '2026-05-01T09:00:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 0,
+          isStreaming: false,
+        },
+        {
+          id: 'child-for-fallback',
+          agentId: 'executor',
+          parentId: 'parent',
+          title: 'Sibling without chainId',
+          createdAt: '2026-05-01T09:01:00Z',
+          updatedAt: '2026-05-01T09:01:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 1,
+          isStreaming: false,
+        },
+      ])
+      .mockResolvedValueOnce([
+        // Refresh returns the same payload — the chainId stays unknown.
+        {
+          id: 'parent',
+          agentId: 'planner',
+          title: 'Parent',
+          createdAt: '2026-05-01T09:00:00Z',
+          updatedAt: '2026-05-01T09:00:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 0,
+          isStreaming: false,
+        },
+        {
+          id: 'child-for-fallback',
+          agentId: 'executor',
+          parentId: 'parent',
+          title: 'Sibling without chainId',
+          createdAt: '2026-05-01T09:01:00Z',
+          updatedAt: '2026-05-01T09:01:00Z',
+          messageCount: 0,
+          status: 'active',
+          depth: 1,
+          isStreaming: false,
+        },
+      ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    const initialFetchCount = vi.mocked(fetchSessions).mock.calls.length
+    const loaded = await store.loadSessionForDelegation({
+      chainId: 'still-unknown',
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(true)
+    // Exactly ONE additional fetchSessions call from the refresh-and-retry
+    // path (the click should not poll repeatedly).
+    expect(vi.mocked(fetchSessions).mock.calls.length).toBe(initialFetchCount + 1)
+    // Agent-id fallback landed on the only candidate.
+    expect(store.currentSessionId).toBe('child-for-fallback')
+  })
+
+  // childSessionId hint path — DelegationPanel reads
+  // metadata.child_session_id off the live SwarmEvent and (pre-fix)
+  // calls loadSessionMessages directly with NO validation against
+  // sessions[]. A stale or spoofed child_session_id silently landed the
+  // user on whatever the backend served for that id (or 404'd
+  // mid-render). The fix routes through loadSessionForDelegation with a
+  // validated hint: if the id is present in sessions[] it wins; if not,
+  // we fall through to chainId / agent-id resolvers instead of trusting
+  // an unverified id.
+  it('routes via the validated childSessionId hint when present in sessions[]', async () => {
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'child-hinted',
+        agentId: 'executor',
+        parentId: 'parent',
+        chainId: 'chain-hinted',
+        title: 'Hinted child',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    const loaded = await store.loadSessionForDelegation({
+      childSessionId: 'child-hinted',
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(true)
+    expect(store.currentSessionId).toBe('child-hinted')
+  })
+
+  it('ignores an unvalidated childSessionId hint and falls through to chainId / agent-id resolvers', async () => {
+    // DelegationPanel's SwarmEvent may carry a stale child_session_id
+    // (e.g. backend race where the event arrives before the session is
+    // listed, or a malformed payload). Trusting it directly opens a
+    // wrong-session bug; the resolver must validate against sessions[]
+    // and ignore unknowns rather than calling loadSessionMessages on a
+    // session id we have no record of.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'real-child',
+        agentId: 'executor',
+        parentId: 'parent',
+        chainId: 'chain-real',
+        title: 'Real child',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+    store.recordChainSession('chain-real', 'real-child')
+
+    const loaded = await store.loadSessionForDelegation({
+      chainId: 'chain-real',
+      childSessionId: 'ghost-child-not-in-list',
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(true)
+    // chainId routing wins; the ghost hint was discarded.
+    expect(store.currentSessionId).toBe('real-child')
+  })
+
+  it('resolves when only a childSessionId hint is provided (DelegationPanel without chainId fallback)', async () => {
+    // DelegationPanel calls with chainId === event.id always, but for
+    // robustness the resolver must still land correctly when only a
+    // validated childSessionId is given.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'parent',
+        agentId: 'planner',
+        title: 'Parent',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'child-hint-only',
+        agentId: 'executor',
+        parentId: 'parent',
+        title: 'Hint-only child',
+        createdAt: '2026-05-01T09:01:00Z',
+        updatedAt: '2026-05-01T09:01:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 1,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'parent'
+
+    const loaded = await store.loadSessionForDelegation({
+      childSessionId: 'child-hint-only',
+    })
+
+    expect(loaded).toBe(true)
+    expect(store.currentSessionId).toBe('child-hint-only')
+  })
+})
+
+// Click-click race amplifier (May 2026 bug-hunt round 7).
+//
+// Pre-fix: loadSessionMessages sets currentSessionId then awaits
+// setAgent. setAgent kicks off updateSessionAgent(currentSessionId,
+// agentId) — currentSessionId is read synchronously at the call site,
+// so the PATCH targets the right session, BUT the post-await
+// applyContextUsageFromSession(updated) writes to the *currently*
+// active session's chip. A second click that lands between the PATCH
+// firing and resolving causes the first PATCH's context_usage to be
+// applied to the second session's view — the "view is associated with
+// the wrong session" symptom.
+//
+// The fix: setAgent accepts an explicit sessionId option threaded by
+// loadSessionMessages, uses it for the PATCH, and skips
+// applyContextUsageFromSession when this.currentSessionId !== sessionId
+// (the resolution is stale — discard the result rather than smear it
+// onto the new active view).
+describe('chatStore - setAgent race (rapid session switches must not bleed context_usage across views)', () => {
+  beforeEach(() => {
+    installLocalStorageStub()
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+  })
+
+  it('does not apply a slow PATCH response to a session the user has already navigated away from', async () => {
+    // Two sessions, two agents. The user clicks session-slow, the
+    // network is slow; while waiting they click session-fast. When
+    // the slow PATCH finally resolves it must NOT smear its
+    // context_usage onto session-fast's view.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-slow',
+        agentId: 'agent-1',
+        currentAgentId: 'agent-slow',
+        title: 'Slow',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'session-fast',
+        agentId: 'agent-1',
+        currentAgentId: 'agent-fast',
+        title: 'Fast',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    let resolveSlowPatch: (value: unknown) => void = () => {}
+    const slowPatchPromise = new Promise((resolve) => {
+      resolveSlowPatch = resolve
+    })
+
+    vi.mocked(updateSessionAgent).mockImplementationOnce(async () => {
+      // First click — the slow one. Hold the promise open so the
+      // second click can land while we're still awaiting.
+      await slowPatchPromise
+      return {
+        id: 'session-slow',
+        agentId: 'agent-slow',
+        messages: [],
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        createdAt: '',
+        updatedAt: '',
+        // The slow session's context_usage — if this leaks onto the
+        // fast view it's the bug.
+        contextUsage: {
+          input_tokens: 9999,
+          output_reserve: 0,
+          limit: 200000,
+          percentage: 0.05,
+        },
+      } as never
+    })
+    vi.mocked(updateSessionAgent).mockImplementationOnce(async () => {
+      // Second click — fast. Lands immediately.
+      return {
+        id: 'session-fast',
+        agentId: 'agent-fast',
+        messages: [],
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+        createdAt: '',
+        updatedAt: '',
+        contextUsage: {
+          input_tokens: 100,
+          output_reserve: 0,
+          limit: 200000,
+          percentage: 0.001,
+        },
+      } as never
+    })
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.agentId = 'agent-1'
+
+    // Click 1 — slow.
+    const click1 = store.loadSessionMessages('session-slow')
+    // Click 2 — fast — fires while click 1 is still mid-PATCH.
+    const click2 = store.loadSessionMessages('session-fast')
+
+    // Click 2 should land first (its PATCH resolves first).
+    await click2
+
+    // The view should be on session-fast with the fast context_usage.
+    expect(store.currentSessionId).toBe('session-fast')
+    // currentContextUsage is camelCase in the store (`inputTokens`); the
+    // wire shape on the PATCH response is snake_case (`input_tokens`).
+    // applyContextUsageFromSession maps the wire fields onto the store
+    // shape. Assert against the store shape.
+    const beforeSlowResolve = store.currentContextUsage?.inputTokens
+    expect(beforeSlowResolve).toBe(100)
+
+    // Now resolve the slow PATCH that was held open.
+    resolveSlowPatch(undefined)
+    await click1
+
+    // After the slow PATCH resolves, the view MUST still be on
+    // session-fast, and the chip MUST still reflect fast's tokens —
+    // the slow result must not bleed across the boundary.
+    expect(store.currentSessionId).toBe('session-fast')
+    expect(store.currentContextUsage?.inputTokens).toBe(beforeSlowResolve)
+    // Specifically NOT 9999 (the slow session's tokens).
+    expect(store.currentContextUsage?.inputTokens).not.toBe(9999)
+  })
+
+  it('threads the resolved targetSessionId into updateSessionAgent so the PATCH always targets the click\'s intended session', async () => {
+    // Even if a concurrent navigation mutates currentSessionId between
+    // the loadSessionMessages call and the inner setAgent's PATCH,
+    // the PATCH must target the session the click resolved to. This
+    // is a guard against future refactors that re-introduce the
+    // "read this.currentSessionId at setAgent call-time" pattern.
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-target',
+        agentId: 'agent-1',
+        currentAgentId: 'agent-target',
+        title: 'Target',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      {
+        id: 'session-decoy',
+        agentId: 'agent-1',
+        currentAgentId: 'agent-decoy',
+        title: 'Decoy',
+        createdAt: '',
+        updatedAt: '',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.agentId = 'agent-1'
+
+    // Issue both calls without awaiting. The race the brief calls out:
+    // both currentSessionId writes land before either PATCH resolves.
+    const c1 = store.loadSessionMessages('session-target')
+    const c2 = store.loadSessionMessages('session-decoy')
+    await Promise.all([c1, c2])
+
+    const calls = vi.mocked(updateSessionAgent).mock.calls
+    // Every PATCH must be (session-X, agent-X) — never crossed.
+    for (const [sessionId, agentId] of calls) {
+      if (sessionId === 'session-target') {
+        expect(agentId).toBe('agent-target')
+      } else if (sessionId === 'session-decoy') {
+        expect(agentId).toBe('agent-decoy')
+      } else {
+        throw new Error(`unexpected PATCH target: ${sessionId}`)
+      }
+    }
   })
 })
 

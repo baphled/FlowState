@@ -1380,22 +1380,48 @@ export const useChatStore = defineStore('chat', {
       this.swarms = swarms
     },
 
-    async setAgent(agentId: string): Promise<void> {
+    async setAgent(agentId: string, opts?: { sessionId?: string }): Promise<void> {
       const previousAgentId = this.agentId
       this.agentId = agentId
       persistAgentId(agentId)
 
-      if (!agentId || !this.currentSessionId || agentId === previousAgentId) {
+      // Click-click race fix (May 2026 bug-hunt round 7) — snapshot
+      // the target session at call-time. Pre-fix this read
+      // `this.currentSessionId` synchronously at the updateSessionAgent
+      // arg-evaluation step, which was correct for PATCH targeting
+      // (JavaScript evaluates the property before the await yields)
+      // BUT the post-await applyContextUsageFromSession ran against
+      // `this.currentSessionId` at resolve-time — which a racing
+      // second click had already mutated. Threading the explicit
+      // sessionId closes that gap: we know which session this PATCH
+      // was issued for and can gate the chip update on it.
+      //
+      // The optional shape preserves the existing call sites that
+      // (legitimately) treat setAgent as "update the active
+      // session's agent" — chatStore.ts:1885 (loadSessionMessages)
+      // threads the resolved sessionId explicitly; user-driven calls
+      // from the agent picker still fall back to currentSessionId.
+      const targetSessionId = opts?.sessionId ?? this.currentSessionId
+
+      if (!agentId || !targetSessionId || agentId === previousAgentId) {
         return
       }
 
       try {
-        const updated = await updateSessionAgent(this.currentSessionId, agentId)
+        const updated = await updateSessionAgent(targetSessionId, agentId)
         // Phase 3 — TUI-cadence parity. The PATCH response carries
         // the engine's fresh context_usage shape so the chip ticks
         // up to reflect the new agent's preferred model / context
         // limit without waiting for the next pre-send.
-        this.applyContextUsageFromSession(updated)
+        //
+        // Click-click race fix — only apply the context_usage to the
+        // active chip when the target session is still the active
+        // one. A slow PATCH for session A resolving after the user
+        // has navigated to session B must NOT smear A's tokens onto
+        // B's chip. The figure still lands in contextUsageBySession
+        // via the capturedSessionId path so returning to A re-hydrates
+        // its chip correctly.
+        this.applyContextUsageFromSession(updated, targetSessionId)
       } catch (error) {
         this.error = error instanceof Error ? error.message : 'Failed to update session agent'
       }
@@ -1527,17 +1553,27 @@ export const useChatStore = defineStore('chat', {
      * No-op when the field is missing — degraded engines (no token
      * counter, no resolvable limit) suppress the field server-side.
      */
-    applyContextUsageFromSession(session: { contextUsage?: Session['contextUsage'] }): void {
+    applyContextUsageFromSession(
+      session: { contextUsage?: Session['contextUsage'] },
+      capturedSessionId?: string,
+    ): void {
       const cu = session.contextUsage
       if (!cu) {
         return
       }
+      // capturedSessionId — the session this PATCH was issued for at
+      // call-time. handleContextUsageEvent uses it to decide whether
+      // the figure may update the ACTIVE chip slot (current session
+      // matches) or only the per-session map (cross-session figure
+      // for a backgrounded session). Closes the click-click race
+      // where a slow PATCH for session A resolving after navigation
+      // to B used to overwrite B's chip with A's figure.
       this.handleContextUsageEvent({
         inputTokens: cu.input_tokens,
         outputReserve: cu.output_reserve,
         limit: cu.limit,
         percentage: cu.percentage,
-      })
+      }, capturedSessionId)
     },
 
     async loadModels(): Promise<void> {
@@ -1882,7 +1918,14 @@ export const useChatStore = defineStore('chat', {
         persistSessionId(sessionId)
 
         if (sessionAgentId && sessionAgentId !== this.agentId) {
-          await this.setAgent(sessionAgentId)
+          // Click-click race fix (May 2026 bug-hunt round 7) — thread
+          // the snapshot session id explicitly into setAgent so its
+          // post-await applyContextUsageFromSession knows which
+          // session the PATCH was issued for. A second loadSessionMessages
+          // call landing between this assignment and the PATCH
+          // resolving used to bleed the first PATCH's context_usage
+          // onto the second session's chip. Explicit > magic capture.
+          await this.setAgent(sessionAgentId, { sessionId })
         }
 
         if (session) {
@@ -2747,34 +2790,90 @@ export const useChatStore = defineStore('chat', {
       this.chainSessions[chainId] = childSessionId
     },
 
-    // loadSessionForDelegation is the seam the in-thread MessageBubble
-    // delegation card click hangs on. It resolves the click in two
-    // steps:
+    // loadSessionForDelegation is the seam EVERY delegated-session
+    // click surface routes through — the in-thread MessageBubble
+    // delegation card, the persistent ChildSessionsPanel rows, AND
+    // the live swarm-bus DelegationPanel cards. Sharing one resolver
+    // closes the bug class where each surface re-implemented routing
+    // and bypassed the chainId disambiguation (prior six fixes —
+    // 4607120b/b1d485eb/93bf40ed/a488b858/40ad53d2/21f0681e — each
+    // protected only the MessageBubble path; the other two surfaces
+    // kept calling loadSessionMessages with raw ids and silently
+    // re-opened the bug for users who navigated via the panels).
     //
-    //   1. If chainId is set AND we have observed a SwarmEvent for that
-    //      chain, jump directly to the recorded child session. This is
-    //      the load-bearing path: chain ids are unique per delegation,
-    //      so this disambiguates sibling delegations to the same agent
-    //      (the sibling-confusion bug class).
-    //   2. Otherwise fall back to loadSessionByAgentId(agentId), which
-    //      uses the "most-recent child of the active parent" heuristic.
-    //      This preserves correctness for the legacy cases — message
-    //      without a chainId, or a reload before the live swarm event
-    //      stream has reconnected.
+    // Resolution order:
+    //   1. If chainId is set AND we have observed it (live SwarmEvent
+    //      OR cold-reload backfill via loadSessions), jump directly
+    //      to the recorded child session. chain ids are unique per
+    //      delegation so this disambiguates sibling delegations to
+    //      the same agent (the sibling-confusion bug class).
+    //   2. If chainId is set but unknown to the map, refresh sessions
+    //      ONCE and retry the map. The refresh path closes the race
+    //      where the click fires before the just-persisted child
+    //      session has been listed (cold-reload window, live click
+    //      before the swarm-event-driven recordChainSession has
+    //      reached the chunk processor). Bounded to one refresh so a
+    //      genuinely-unknown chainId can't induce a polling loop.
+    //   3. If childSessionId is set AND it appears in sessions[],
+    //      use it directly. This is the DelegationPanel/
+    //      ChildSessionsPanel hint path — they read the id off a
+    //      SwarmEvent or SessionSummary, and we validate it against
+    //      our local list before trusting it. An unvalidated hint is
+    //      discarded (a stale or spoofed id should not silently
+    //      navigate us to a session we have no record of).
+    //   4. Fall back to loadSessionByAgentId(agentId), which uses
+    //      the "most-recent child of the active parent" heuristic.
+    //      Preserves correctness for legacy persisted messages
+    //      without a chainId AND closes the swarm-bridge re-entry
+    //      case (parent is itself the delegated agent).
     //
-    // Returns true when a session was loaded, false when neither path
-    // resolved a candidate.
+    // Returns true when a session was loaded, false when no resolver
+    // produced a candidate.
     async loadSessionForDelegation(opts: {
       chainId?: string
-      agentId: string
+      agentId?: string
+      childSessionId?: string
     }): Promise<boolean> {
-      const { chainId, agentId } = opts
+      const { chainId, agentId, childSessionId } = opts
+      // Step 1 — chainId map lookup (hot path).
       if (chainId) {
         const recorded = this.chainSessions[chainId]
         if (recorded) {
           await this.loadSessionMessages(recorded)
           return true
         }
+        // Step 2 — chainId miss → single refresh + retry. The
+        // loadSessions() backfill rebuilds chainSessions from the
+        // persisted session list (chatStore.ts:1587-1591). If the
+        // backend has the child listed by now the retry lands it.
+        // We swallow refresh failures: if the backend is unreachable
+        // we still want the local resolvers to attempt a fallback
+        // rather than hard-failing the click.
+        try {
+          await this.loadSessions()
+        } catch {
+          // Best-effort refresh; fall through to local-only resolvers.
+        }
+        const recordedAfterRefresh = this.chainSessions[chainId]
+        if (recordedAfterRefresh) {
+          await this.loadSessionMessages(recordedAfterRefresh)
+          return true
+        }
+      }
+      // Step 3 — validated childSessionId hint.
+      if (childSessionId) {
+        const hinted = this.sessions.find((s) => s.id === childSessionId)
+        if (hinted) {
+          await this.loadSessionMessages(hinted.id)
+          return true
+        }
+      }
+      // Step 4 — agent-id fallback. Requires agentId; without it (a
+      // DelegationPanel event whose metadata has neither a known
+      // chainId nor a present childSessionId AND no target_agent —
+      // a degenerate payload) we return false rather than guess.
+      if (!agentId) {
+        return false
       }
       return this.loadSessionByAgentId(agentId)
     },

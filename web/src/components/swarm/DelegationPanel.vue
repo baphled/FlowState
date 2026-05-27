@@ -65,12 +65,44 @@ function isClickable(event: SwarmEvent): boolean {
   return childSessionIdFor(event) !== null;
 }
 
+// targetAgentFor extracts the delegated agent's id from the
+// SwarmEvent. Mirrors the same metadata keys delegationSummary
+// surfaces — both consumers should agree on the field precedence.
+function targetAgentFor(event: SwarmEvent): string | undefined {
+  const meta = event.metadata ?? {};
+  const candidates = [meta.target_agent, meta.to, meta.to_agent];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length > 0) {
+      return c;
+    }
+  }
+  // Fall back to the canonical event agent_id — the engine stamps
+  // this on every delegation event and it's the target agent on
+  // delegation events specifically.
+  return event.agent_id || undefined;
+}
+
+// Sibling-confusion fix (May 2026 bug-hunt round 7) — route the
+// click through chatStore.loadSessionForDelegation rather than
+// calling loadSessionMessages with a raw metadata.child_session_id.
+// The SwarmEvent's `id` IS the chainId on the wire (swarmStore.ts
+// recordChainSession(event.id, childSessionId) is the canonical
+// pair), so chainId routing wins when the map already holds the
+// entry. The childSessionId hint is validated against
+// chatStore.sessions before being trusted — a stale or spoofed
+// metadata.child_session_id used to silently navigate to a session
+// we had no local record of. The agent-id fallback closes the rare
+// case where neither chainId nor childSessionId resolves.
 async function selectDelegationSession(event: SwarmEvent): Promise<void> {
-  const sessionId = childSessionIdFor(event);
-  if (!sessionId) {
+  const childSessionId = childSessionIdFor(event);
+  if (!childSessionId) {
     return;
   }
-  await chatStore.loadSessionMessages(sessionId);
+  await chatStore.loadSessionForDelegation({
+    chainId: event.id,
+    childSessionId,
+    agentId: targetAgentFor(event),
+  });
 }
 </script>
 

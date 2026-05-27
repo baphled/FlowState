@@ -60,8 +60,27 @@ function isStreaming(child: SessionSummary): boolean {
   return !!child.activeTurnId
 }
 
+// Sibling-confusion fix (May 2026 bug-hunt round 7) — route the
+// click through chatStore.loadSessionForDelegation rather than
+// calling loadSessionMessages directly. This is the same seam every
+// delegated-session click surface uses (MessageBubble in-thread
+// cards, DelegationPanel swarm-bus cards) so chainId routing,
+// validated id hints, and the cold-reload backfill all apply
+// uniformly. The pre-fix direct path bypassed the resolver — the
+// six prior bug-fix commits (4607120b et al.) protected only the
+// in-thread surface, so this panel kept re-opening the bug for
+// users who navigated via the persistent child list.
+//
+// The hint chain: chainId (when known on the persisted Session)
+// disambiguates same-agent siblings; childSessionId is the local
+// id we already trust because it lives in chatStore.sessions; the
+// agent-id fallback completes the chain for legacy data.
 async function selectChild(child: SessionSummary): Promise<void> {
-  await chatStore.loadSessionMessages(child.id)
+  await chatStore.loadSessionForDelegation({
+    chainId: child.chainId,
+    childSessionId: child.id,
+    agentId: child.currentAgentId ?? child.agentId,
+  })
 }
 </script>
 

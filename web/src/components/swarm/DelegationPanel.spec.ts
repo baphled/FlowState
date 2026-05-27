@@ -31,11 +31,26 @@ describe("DelegationPanel", () => {
     vi.restoreAllMocks();
   });
 
-  it("navigates to the child session when a delegation card with child_session_id is clicked", async () => {
+  // Sibling-confusion fix (May 2026 bug-hunt round 7) — the click
+  // routes through chatStore.loadSessionForDelegation so the same
+  // resolver gates all three delegated-session click surfaces. The
+  // SwarmEvent's `id` IS the chainId on the wire (engine sets them
+  // equal — see swarmStore.ts:106-109 recordChainSession(event.id,
+  // childSessionId)), so chainId routing always wins when known. The
+  // pre-fix path called loadSessionMessages with the raw
+  // metadata.child_session_id — no validation against sessions[], no
+  // disambiguation when chainSessions held a different value, no
+  // refresh-and-retry on miss. The new path closes all three holes.
+  it("routes through loadSessionForDelegation with chainId + childSessionId + target_agent when a delegation card is clicked", async () => {
     const swarmStore = useSwarmStore();
     swarmStore.events = [makeDelegationEvent()] as SwarmEvent[];
 
     const chatStore = useChatStore();
+    const delegationSpy = vi
+      .spyOn(chatStore, "loadSessionForDelegation")
+      .mockResolvedValue(true);
+    // The direct path MUST NOT be the entry point anymore — the brief
+    // pin: every delegated-session click goes through the resolver.
     const loadSpy = vi
       .spyOn(chatStore, "loadSessionMessages")
       .mockResolvedValue();
@@ -49,7 +64,12 @@ describe("DelegationPanel", () => {
     await card.trigger("click");
     await flushPromises();
 
-    expect(loadSpy).toHaveBeenCalledWith("session-child-42");
+    expect(delegationSpy).toHaveBeenCalledWith({
+      chainId: "evt-delegation-1",
+      childSessionId: "session-child-42",
+      agentId: "researcher",
+    });
+    expect(loadSpy).not.toHaveBeenCalled();
   });
 
   it("renders cards with child_session_id as keyboard-activatable buttons so the click target is reachable", async () => {
@@ -81,6 +101,9 @@ describe("DelegationPanel", () => {
     const loadSpy = vi
       .spyOn(chatStore, "loadSessionMessages")
       .mockResolvedValue();
+    const delegationSpy = vi
+      .spyOn(chatStore, "loadSessionForDelegation")
+      .mockResolvedValue(true);
 
     const wrapper = mount(DelegationPanel);
     await flushPromises();
@@ -92,6 +115,7 @@ describe("DelegationPanel", () => {
     await flushPromises();
 
     expect(loadSpy).not.toHaveBeenCalled();
+    expect(delegationSpy).not.toHaveBeenCalled();
   });
 
   // load_skills surfacing (May 2026): when an agent delegates with

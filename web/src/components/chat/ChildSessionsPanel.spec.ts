@@ -92,13 +92,31 @@ describe('ChildSessionsPanel', () => {
     expect(wrapper.find('[data-testid="child-session-row-unrelated"]').exists()).toBe(false)
   })
 
-  it('navigates to the child session via chatStore.loadSessionMessages when a row is clicked', async () => {
+  // Sibling-confusion fix (May 2026 bug-hunt round 7) — clicking a child
+  // row now routes through chatStore.loadSessionForDelegation. The
+  // resolver disambiguates by chainId when known (live SwarmEvent /
+  // cold-reload backfill), uses the validated childSessionId hint
+  // otherwise, and falls back to the agent-id heuristic. Pre-fix this
+  // path called loadSessionMessages directly, bypassing the resolver
+  // entirely — both other delegated-session click surfaces share the
+  // same seam now (MessageBubble in-thread cards, DelegationPanel swarm
+  // bus events) so the fix surface for the bug class is unified.
+  it('navigates to the child session via chatStore.loadSessionForDelegation when a row is clicked', async () => {
     const chatStore = useChatStore()
     chatStore.sessions = [
       makeSession({ id: 'parent-1' }),
-      makeSession({ id: 'child-1', parentId: 'parent-1' }),
+      makeSession({
+        id: 'child-1',
+        parentId: 'parent-1',
+        chainId: 'chain-1',
+        agentId: 'executor',
+      }),
     ]
     chatStore.currentSessionId = 'parent-1'
+    const delegationSpy = vi
+      .spyOn(chatStore, 'loadSessionForDelegation')
+      .mockResolvedValue(true)
+    // The unguarded path MUST NOT be the click entry point anymore.
     const loadSpy = vi.spyOn(chatStore, 'loadSessionMessages').mockResolvedValue()
 
     const wrapper = mount(ChildSessionsPanel)
@@ -109,7 +127,80 @@ describe('ChildSessionsPanel', () => {
     await row.trigger('click')
     await flushPromises()
 
-    expect(loadSpy).toHaveBeenCalledWith('child-1')
+    expect(delegationSpy).toHaveBeenCalledWith({
+      chainId: 'chain-1',
+      childSessionId: 'child-1',
+      agentId: 'executor',
+    })
+    expect(loadSpy).not.toHaveBeenCalled()
+  })
+
+  // SessionSummary may omit chainId (root re-entry or pre-chainId data).
+  // The resolver still routes correctly via the validated childSessionId
+  // hint; we pin that the panel calls the resolver shape that exercises
+  // that path.
+  it('passes only the childSessionId + agentId when the child has no chainId', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      makeSession({ id: 'parent-1' }),
+      makeSession({
+        id: 'child-no-chain',
+        parentId: 'parent-1',
+        agentId: 'executor',
+      }),
+    ]
+    chatStore.currentSessionId = 'parent-1'
+    const delegationSpy = vi
+      .spyOn(chatStore, 'loadSessionForDelegation')
+      .mockResolvedValue(true)
+
+    const wrapper = mount(ChildSessionsPanel)
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="child-session-row-child-no-chain"]')
+    await row.trigger('click')
+    await flushPromises()
+
+    expect(delegationSpy).toHaveBeenCalledWith({
+      chainId: undefined,
+      childSessionId: 'child-no-chain',
+      agentId: 'executor',
+    })
+  })
+
+  // currentAgentId wins over agentId — sessions whose agent was
+  // re-routed mid-flight carry the live agent on currentAgentId. The
+  // resolver's agent-id fallback consults the same precedence, so the
+  // panel must pass the same one.
+  it('prefers currentAgentId over agentId when both are set', async () => {
+    const chatStore = useChatStore()
+    chatStore.sessions = [
+      makeSession({ id: 'parent-1' }),
+      makeSession({
+        id: 'child-rerouted',
+        parentId: 'parent-1',
+        agentId: 'initial-agent',
+        currentAgentId: 'live-agent',
+        chainId: 'chain-rerouted',
+      }),
+    ]
+    chatStore.currentSessionId = 'parent-1'
+    const delegationSpy = vi
+      .spyOn(chatStore, 'loadSessionForDelegation')
+      .mockResolvedValue(true)
+
+    const wrapper = mount(ChildSessionsPanel)
+    await flushPromises()
+
+    const row = wrapper.find('[data-testid="child-session-row-child-rerouted"]')
+    await row.trigger('click')
+    await flushPromises()
+
+    expect(delegationSpy).toHaveBeenCalledWith({
+      chainId: 'chain-rerouted',
+      childSessionId: 'child-rerouted',
+      agentId: 'live-agent',
+    })
   })
 
   it('re-derives when chatStore.currentSessionId changes', async () => {
