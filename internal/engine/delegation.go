@@ -2486,11 +2486,27 @@ func (d *DelegateTool) executeSync(
 	}
 
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
-	// The parent session's provider/model selection must not propagate into
-	// the child engine — the delegate uses its own configured failover
-	// preferences. Masking with "" disables the override check in engine.go.
-	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, "")
-	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, "")
+	// Cascade contract for child sessions: UI > manifest > global.
+	//
+	// The parent session's override (UI tier) must NOT propagate into the
+	// child — typing in the parent's model picker should not silently
+	// rewire every delegate. Resolve the child's own manifest tier here
+	// instead: look up target.agentID in the agent registry and stamp the
+	// first PreferredModels entry as the child's override. When the
+	// child has no manifest preference (or the registry is unwired in a
+	// legacy test surface), fall through with empty overrides so the
+	// engine uses its configured failover preferences (global tier).
+	//
+	// Without this, every delegate child ran on the engine's
+	// LastProvider/LastModel — the global default — even when the child
+	// agent declared a different preferred_models in its manifest. This
+	// reproduced as planner sessions correctly running on
+	// anthropic/claude-sonnet-4-7 but delegated librarian/explorer
+	// children silently dropping to zai/glm-4.6, which then emitted
+	// malformed delegate tool args.
+	delegateProv, delegateModel := d.resolveChildModelOverride(target)
+	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, delegateProv)
+	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, delegateModel)
 	// Inject the child Turn ctx triad — mirrors dispatcher.go:639-643 at
 	// the parent-session layer. The accumulator's turnAwareAppender
 	// reads the recorder closure off ctx and fans every persisted
@@ -3242,12 +3258,16 @@ func (d *DelegateTool) bootstrapMemberSession(
 	d.persistChildBrief(childID, target.agentID, target.message)
 	closeStore := d.attachSessionStore(target.engine, childID)
 	dispatchCtx := context.WithValue(ctx, session.IDKey{}, childID)
-	// The coordinator session's provider/model selection must not
-	// propagate into the member engine — the member uses its own
-	// configured failover preferences. Masking with "" disables the
-	// override check in engine.go. Mirrors executeSync line ~2261-2262.
-	dispatchCtx = context.WithValue(dispatchCtx, session.ProviderOverrideKey{}, "")
-	dispatchCtx = context.WithValue(dispatchCtx, session.ModelOverrideKey{}, "")
+	// Cascade contract for swarm-member sessions: UI > manifest > global.
+	// Same rationale as executeSync — see the resolveChildModelOverride
+	// docstring. The coordinator's override (UI tier) does NOT propagate;
+	// the child member's own manifest tier wins; fall through to global
+	// when the member has no preferred_models. Without this, swarm
+	// members silently ran on the engine's global default regardless of
+	// what their manifests declared.
+	memberProv, memberModel := d.resolveChildModelOverride(target)
+	dispatchCtx = context.WithValue(dispatchCtx, session.ProviderOverrideKey{}, memberProv)
+	dispatchCtx = context.WithValue(dispatchCtx, session.ModelOverrideKey{}, memberModel)
 
 	// Plans/Child Session Turn Registry Plumbing (May 2026) §Item 2d —
 	// mint a per-member child Turn keyed on the spawned childID
@@ -3773,10 +3793,14 @@ func (d *DelegateTool) executeAsync(
 	// carries the populated ChildSessionID (== taskID for the async path).
 	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, taskID, "", target.loadSkills))
 
+	bgProv, bgModel := d.resolveChildModelOverride(target)
 	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
-		delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, "")
-		delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, "")
+		// Same cascade contract as the synchronous delegate path — child
+		// manifest's PreferredModels[0] wins; empty falls through to the
+		// engine's global default. See resolveChildModelOverride.
+		delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, bgProv)
+		delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, bgModel)
 		result, err := d.executeBackgroundTask(delegateCtx, target, baseInfo, parentSessionID, outChan, hasOutput)
 		if err != nil {
 			return "", err
@@ -4068,6 +4092,57 @@ func resolveTargetProviderModel(target delegationTarget) (string, string) {
 		}
 	}
 	return providerName, modelName
+}
+
+// resolveChildModelOverride resolves the (provider, model) override pair
+// that a fresh delegate / swarm-member session should carry. Implements
+// the manifest tier of the cascade UI > manifest > global for child
+// sessions — the UI tier is intentionally NOT inherited from the parent
+// (the parent's ProviderOverrideKey / ModelOverrideKey are not consulted
+// here; the call sites override them with this helper's result so the
+// parent's choice cannot leak into the child).
+//
+// Resolution order:
+//  1. target.resolvedProvider / resolvedModel — set by category routing
+//     when the parent's delegate call carried a category argument. This
+//     is an explicit per-call selection and outranks the manifest.
+//  2. The target agent's manifest PreferredModels[0] — the agent's
+//     declared default pairing.
+//  3. Empty strings — falls through to the engine's global default
+//     (LastProvider / LastModel, which the failover manager populates).
+//
+// Empty returns are explicit "no override" and map to the engine.go
+// override gate at engine.go:3005-3009 short-circuiting back to the
+// pre-existing request.Provider/Model.
+//
+// Expected:
+//   - target.agentID is non-empty when the caller wants manifest tier
+//     to apply; an empty agentID short-circuits to empty returns.
+//   - d.registry may be nil (legacy test surfaces wired without an
+//     agent registry); the helper tolerates this and returns empty.
+//
+// Returns:
+//   - The (provider, model) pair to stamp on the child ctx, or empty
+//     strings to fall through to the engine's global default.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) resolveChildModelOverride(target delegationTarget) (string, string) {
+	// Tier 1: category routing already resolved an explicit pair.
+	if target.resolvedProvider != "" || target.resolvedModel != "" {
+		return target.resolvedProvider, target.resolvedModel
+	}
+	// Tier 2: target manifest's PreferredModels[0]. Registry-less
+	// surfaces and unknown agent IDs both fall through to tier 3.
+	if d.registry == nil || target.agentID == "" {
+		return "", ""
+	}
+	manifest, ok := d.registry.Get(target.agentID)
+	if !ok || manifest == nil || len(manifest.PreferredModels) == 0 {
+		return "", ""
+	}
+	first := manifest.PreferredModels[0]
+	return first.Provider, first.Model
 }
 
 // closeSessionIfManaged closes the named session via the session manager when one is configured.

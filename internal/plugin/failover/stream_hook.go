@@ -408,25 +408,42 @@ func prependModelActiveChunk(
 }
 
 // promotePinned returns candidates with the caller-pinned provider/model
-// moved to the head of the list. If pinnedProvider is empty or no candidate
-// matches, the input slice is returned unchanged. When pinnedModel is
-// empty, matching is by provider name only; otherwise both provider and
-// model must match. The matched entry is kept in its ModelPreference form
-// so downstream logic (health-marking, last-set) sees the exact pairing.
+// moved to the head of the list. If pinnedProvider is empty the input
+// slice is returned unchanged.
+//
+// Matching semantics:
+//   - empty pinnedModel: match by provider name only. If a matching
+//     candidate is found, promote it; otherwise return the input
+//     unchanged (caller is specifying "any model from this provider"
+//     and the candidates list is authoritative on which models exist).
+//   - non-empty pinnedModel: match by (provider, model) exactly. If a
+//     matching candidate is found, promote it. If NO candidate matches,
+//     INSERT the pinned pair at the head — this is the cascade-honour
+//     branch: the caller has explicitly stamped a pair via the engine's
+//     ctx override (Agent Provider Cascade, May 2026), and the
+//     failover pool must respect the caller's intent rather than
+//     silently overwriting req.Provider/Model from its base
+//     preferences. The remaining candidates stay in place as the
+//     fallback pool for the case where the pinned pair fails health-
+//     check during attempt.
+//
+// The matched entry is kept in its ModelPreference form so downstream
+// logic (health-marking, last-set) sees the exact pairing.
 //
 // Expected:
 //   - candidates is a non-empty slice (callers ensure this).
 //   - pinnedProvider may be empty (no-op).
 //
 // Returns:
-//   - A slice with the matched candidate first, followed by the remaining
-//     candidates in their original relative order; or the input slice
-//     unchanged if no match.
+//   - A slice with the matched (or inserted) pinned pair first,
+//     followed by the remaining candidates in their original relative
+//     order; or the input slice unchanged when no promotion or
+//     insertion applies.
 //
 // Side effects:
-//   - None (returns a new slice when promotion happens; returns the input
-//     slice directly when no promotion is needed, so callers must not
-//     mutate it in place regardless).
+//   - None (returns a new slice when promotion or insertion happens;
+//     returns the input slice directly when no change is needed, so
+//     callers must not mutate it in place regardless).
 func promotePinned(candidates []provider.ModelPreference, pinnedProvider, pinnedModel string) []provider.ModelPreference {
 	if pinnedProvider == "" {
 		return candidates
@@ -442,7 +459,24 @@ func promotePinned(candidates []provider.ModelPreference, pinnedProvider, pinned
 		idx = i
 		break
 	}
-	if idx <= 0 {
+	if idx == -1 {
+		// No exact match. When the caller pinned both provider AND
+		// model the cascade-honour branch inserts the pair at the
+		// head; the failover pool follows as the fallback. Provider-
+		// only pins fall through to the input slice unchanged — the
+		// caller did not specify a model so the pool's existing entry
+		// for that provider (if any) was sufficient and we must not
+		// synthesise a fake (provider, "") row.
+		if pinnedModel == "" {
+			return candidates
+		}
+		head := provider.ModelPreference{Provider: pinnedProvider, Model: pinnedModel}
+		reordered := make([]provider.ModelPreference, 0, len(candidates)+1)
+		reordered = append(reordered, head)
+		reordered = append(reordered, candidates...)
+		return reordered
+	}
+	if idx == 0 {
 		return candidates
 	}
 	reordered := make([]provider.ModelPreference, 0, len(candidates))

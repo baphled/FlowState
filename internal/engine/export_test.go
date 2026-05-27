@@ -334,3 +334,19 @@ func ContainsAgentForTest(allowlist []string, agentID string) bool {
 	return containsAgent(allowlist, agentID)
 }
 
+// ResolveChildModelOverrideForTest exposes resolveChildModelOverride so
+// the manifest-cascade unit specs (Agent Provider Cascade, May 2026)
+// can drive the helper directly without standing up a full
+// delegationTarget + engine + registry triad. Test-only export —
+// production call sites at delegation.go:executeSync,
+// bootstrapMemberSession, and the background-task launcher remain
+// inside the engine package and pass the resolved override via ctx
+// keys, matching engine.go:3005-3009's read site.
+func (d *DelegateTool) ResolveChildModelOverrideForTest(agentID, categoryProvider, categoryModel string) (string, string) {
+	return d.resolveChildModelOverride(delegationTarget{
+		agentID:          agentID,
+		resolvedProvider: categoryProvider,
+		resolvedModel:    categoryModel,
+	})
+}
+

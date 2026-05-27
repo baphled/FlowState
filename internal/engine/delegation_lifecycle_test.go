@@ -902,6 +902,255 @@ var _ = Describe("DelegateTool parent model/provider override isolation", func()
 	})
 })
 
+var _ = Describe("ResolveChildModelOverride (helper unit)", func() {
+	It("returns the manifest's first preferred pair when the registry has the agent", func() {
+		manifest := agent.Manifest{
+			ID:   "librarian",
+			Name: "Librarian",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-7"},
+			},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg)
+		prov, model := tool.ResolveChildModelOverrideForTest("librarian", "", "")
+		Expect(prov).To(Equal("anthropic"))
+		Expect(model).To(Equal("claude-sonnet-4-7"))
+	})
+
+	It("returns empty when no manifest preference is declared", func() {
+		manifest := agent.Manifest{ID: "x", Name: "x"}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg)
+		prov, model := tool.ResolveChildModelOverrideForTest("x", "", "")
+		Expect(prov).To(BeEmpty())
+		Expect(model).To(BeEmpty())
+	})
+
+	It("category-routed values outrank manifest", func() {
+		manifest := agent.Manifest{
+			ID:              "x",
+			Name:            "x",
+			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4-7"}},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg)
+		prov, model := tool.ResolveChildModelOverrideForTest("x", "openai", "gpt-5")
+		Expect(prov).To(Equal("openai"))
+		Expect(model).To(Equal("gpt-5"))
+	})
+})
+
+var _ = Describe("DelegateTool applies child manifest's preferred_models override", func() {
+	// Cascade contract — UI > manifest > global. Fresh sessions spawned by
+	// a delegate call must honour the TARGET agent's manifest's
+	// preferred_models[0] as the provider/model override, NOT silently
+	// fall through to the engine's global default.
+	//
+	// Root cause this guards: delegation.go masked the parent's
+	// ProviderOverrideKey / ModelOverrideKey with "" to prevent the
+	// parent's selection from leaking into the child, but never resolved
+	// the child agent's own manifest preference. The result was that
+	// every delegation child ran on whatever the engine's LastProvider /
+	// LastModel happened to be — the global default in practice.
+	//
+	// Real-world reproduction: planner manifest declares
+	// preferred_models: [{provider: anthropic, model: claude-sonnet-4-7}].
+	// Planner ran on its preference (seeded by handleCreateSession), but
+	// when it delegated to a librarian / explorer the child ran on
+	// zai/glm-4.6, which then emitted malformed delegate args.
+	//
+	// The override flows through engine.go:3005-3009 — ProviderOverrideKey
+	// and ModelOverrideKey stamp req.Provider / req.Model unconditionally
+	// when non-empty.
+
+	It("stamps the child engine's request with the target manifest's first preferred provider+model", func() {
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		// Failover base preferences deliberately differ from the
+		// manifest's preferred_models so the spec proves the manifest
+		// wins, not the failover preference.
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		childManifest := agent.Manifest{
+			ID:                "librarian",
+			Name:              "Librarian",
+			Instructions:      agent.Instructions{SystemPrompt: "You are a librarian."},
+			ContextManagement: agent.DefaultContextManagement(),
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-7"},
+				{Provider: "zai", Model: "glm-4.6"},
+			},
+			ModelPolicy: agent.ModelPolicyPermissive,
+		}
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest:        childManifest,
+		})
+
+		agentRegistry := agent.NewRegistry()
+		agentRegistry.Register(&childManifest)
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"librarian": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+
+		_, err := delegateTool.Execute(context.Background(), tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "librarian",
+				"message":       "research repository patterns",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil(),
+			"child provider must have been invoked")
+		Expect(childProvider.capturedRequest.Provider).To(Equal("anthropic"),
+			"child engine must run under the target manifest's first preferred provider")
+		Expect(childProvider.capturedRequest.Model).To(Equal("claude-sonnet-4-7"),
+			"child engine must run under the target manifest's first preferred model")
+	})
+
+	It("does not propagate the parent's override even when the child manifest declares preferred_models", func() {
+		// Cascade contract: the child's manifest preference replaces the
+		// parent's override; it does not get layered on top of it. A
+		// parent that selected (github, copilot-gpt-4o) must not leak
+		// those values into the child engine just because the child has
+		// a different manifest preference declared.
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		childManifest := agent.Manifest{
+			ID:                "explorer",
+			Name:              "Explorer",
+			Instructions:      agent.Instructions{SystemPrompt: "You explore."},
+			ContextManagement: agent.DefaultContextManagement(),
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-opus-4-7"},
+			},
+			ModelPolicy: agent.ModelPolicyPermissive,
+		}
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest:        childManifest,
+		})
+
+		agentRegistry := agent.NewRegistry()
+		agentRegistry.Register(&childManifest)
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"explorer": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+
+		parentCtx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "github")
+		parentCtx = context.WithValue(parentCtx, session.ModelOverrideKey{}, "copilot-gpt-4o")
+
+		_, err := delegateTool.Execute(parentCtx, tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "explorer",
+				"message":       "find patterns",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil())
+		Expect(childProvider.capturedRequest.Provider).To(Equal("anthropic"),
+			"child engine must run under its own manifest's preference, not the parent's override")
+		Expect(childProvider.capturedRequest.Model).To(Equal("claude-opus-4-7"),
+			"child engine must use the child manifest's preferred model, not the parent's override")
+	})
+
+	It("falls through to the failover/global preference when the child manifest declares no preferred_models", func() {
+		// Back-compat: agents that have not declared preferred_models
+		// must continue to honour the failover manager's base
+		// preferences. Without a manifest preference the override stays
+		// empty and engine.go falls through to LastProvider/LastModel
+		// (which the failover manager populates from its base prefs).
+		childProvider := &mockProvider{
+			name: "anthropic",
+			streamChunks: []provider.StreamChunk{
+				{Content: "delegate response", Done: true},
+			},
+		}
+		health := failover.NewHealthManager()
+		registry := provider.NewRegistry()
+		registry.Register(childProvider)
+		manager := failover.NewManager(registry, health, 5*time.Minute)
+		manager.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		})
+
+		childManifest := agent.Manifest{
+			ID:                "qa-agent",
+			Name:              "QA",
+			Instructions:      agent.Instructions{SystemPrompt: "You QA."},
+			ContextManagement: agent.DefaultContextManagement(),
+			// PreferredModels intentionally empty — must fall through.
+		}
+
+		targetEngine := engine.New(engine.Config{
+			ChatProvider:    childProvider,
+			FailoverManager: manager,
+			Manifest:        childManifest,
+		})
+
+		agentRegistry := agent.NewRegistry()
+		agentRegistry.Register(&childManifest)
+
+		delegateTool := engine.NewDelegateTool(
+			map[string]*engine.Engine{"qa-agent": targetEngine},
+			agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+
+		_, err := delegateTool.Execute(context.Background(), tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "qa-agent",
+				"message":       "run QA",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(childProvider.capturedRequest).NotTo(BeNil())
+		// No manifest preference → override stays empty → engine uses
+		// the failover manager's base preference (claude-sonnet-4-6).
+		Expect(childProvider.capturedRequest.Model).To(Equal("claude-sonnet-4-6"),
+			"child engine must fall through to the failover preference when no manifest preference is declared")
+	})
+})
+
 // delegationCapture is a thread-safe sink for delegation lifecycle events
 // published onto an `*eventbus.EventBus`. It subscribes at construction so
 // every event published after `newDelegationCapture` returns lands in the
