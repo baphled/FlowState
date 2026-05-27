@@ -31,6 +31,7 @@ import (
 	"github.com/baphled/flowstate/internal/learning"
 	mcpclient "github.com/baphled/flowstate/internal/mcp"
 	"github.com/baphled/flowstate/internal/orchestrator"
+	"github.com/baphled/flowstate/internal/permissionrequest"
 	pluginpkg "github.com/baphled/flowstate/internal/plugin"
 	_ "github.com/baphled/flowstate/internal/plugin/builtin/all" // builtin/all is blank-imported so builtin plugin factories register via init.
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
@@ -175,6 +176,15 @@ type App struct {
 	// app.New's case) or polluting a test's isolated agentsDir (in
 	// NewForTest's case).
 	bootstrapDeferred bool
+	// permissionPrompter is the shared ModeAskUser prompter wired by
+	// createEngine. Retained on the App so delegate engines spawned
+	// via createDelegateEngine receive the same prompter — keeps the
+	// pathguard + root engine + delegate engine seams all consulting
+	// the same permissionrequest.Registry. Nil when no prompter is
+	// wired (e.g. tests built via NewForTest that bypass the
+	// production createEngine path). Permission Mode ModeAskUser
+	// Extension plan (May 2026) Slice 2.
+	permissionPrompter *permissionPrompter
 }
 
 // BootstrapDeferred reports whether the App was constructed with
@@ -600,6 +610,7 @@ func buildApp(params appBuildParams) *App {
 		vaultHandler:         params.vaultHandler,
 		gateRunner:           buildSwarmGateRunner(),
 		quotaCacheController: runtime.quotaCacheController,
+		permissionPrompter:   runtime.permissionPrompter,
 	}
 
 	planDir := cfg.ResolvedPlanLocation()
@@ -757,6 +768,13 @@ type engineParams struct {
 	quotaTracker       *quota.Tracker
 	quotaAccountHashes map[string]string
 	quotaCaps          map[string]quota.CapConfig
+	// guard is the pathguard.Guard threaded out of buildToolPipeline
+	// so createEngine can wire the PermissionPrompter into it after
+	// the bus + registry are constructed (Permission Mode ModeAskUser
+	// Extension plan, May 2026 Slice 2). Without retaining the guard
+	// on params, the prompter would have to be wired at guard
+	// construction time — but the bus isn't built until createEngine.
+	guard *pathguard.Guard
 }
 
 // compressionComponents bundles the wiring required to activate the
@@ -835,7 +853,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	// diagnostic surfaces as a legacy-or-unknown INFO line rather
 	// than panicking on a nil dereference.
 	sessionMgrHolder := &sessionManagerHolder{}
-	eng, setEnsureTools := createEngine(buildEngineParams(engineAssemblyParams{
+	eng, setEnsureTools, askUserPrompter := createEngine(buildEngineParams(engineAssemblyParams{
 		setup:                  params,
 		traced:                 traced,
 		tools:                  tp,
@@ -926,6 +944,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		mcpServerTools:       tp.mcpServerTools,
 		mcpTools:             tp.mcpTools,
 		quotaCacheController: quotaW.cacheController,
+		permissionPrompter:   askUserPrompter,
 	}, nil
 }
 
@@ -1011,6 +1030,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		swarmRegistry:           in.swarmRegistry,
 		recallEmbeddingModel:    in.recallEmbeddingModel,
 		sessionEmbeddingLookup:  in.sessionEmbeddingLookup,
+		guard:                   in.tools.guard,
 	}
 }
 
@@ -1140,6 +1160,13 @@ type toolPipelineResult struct {
 	// declares mcp_servers: [vault-rag] would have the gate authorise
 	// vault-rag tools but find none registered to call.
 	mcpTools []tool.Tool
+	// guard is the pathguard.Guard threaded through every file-touching
+	// tool's constructor. Retained on the pipeline result so the App
+	// can call SetPermissionPrompter on it after the registry / bus
+	// are wired (Permission Mode ModeAskUser Extension plan, May 2026
+	// Slice 2). Without this, the prompter would have to be wired at
+	// guard-construction time — and the bus isn't built until later.
+	guard *pathguard.Guard
 }
 
 // buildToolPipeline creates the MCP manager, todo store, and tool registry
@@ -1193,6 +1220,7 @@ func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 		permissionHandler: permHandler,
 		mcpServerTools:    serverToolNames,
 		mcpTools:          mcpTools,
+		guard:             guard,
 	}
 }
 
@@ -1252,6 +1280,11 @@ type runtimeComponents struct {
 	// into an MCP server must see those tools, not silently receive zero
 	// because the parent's index never reached the child engine.
 	mcpServerTools map[string][]string
+	// permissionPrompter is the shared ModeAskUser prompter wired by
+	// createEngine. Forwarded onto the App so createDelegateEngine can
+	// inject the same prompter into every delegate engine. Permission
+	// Mode ModeAskUser Extension plan (May 2026) Slice 2.
+	permissionPrompter *permissionPrompter
 	// mcpTools holds the proxy tool implementations for each connected
 	// MCP server. Forwarded so buildToolsForManifestWithStore can append
 	// them to the delegate engine's tool slice; the engine's
@@ -1336,10 +1369,30 @@ func (h *sessionManagerHolder) lookup(sessionID string) (string, bool) {
 //
 // Side effects:
 //   - Creates engine and connects MCP servers.
-func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest))) {
+func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest)), *permissionPrompter) {
 	var eng *engine.Engine
 	var ensureToolsFn func(agent.Manifest)
 	appEventBus := eventbus.NewEventBus()
+
+	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+	// Construct the shared permission-request registry + prompter
+	// here so both the pathguard guard and the engine runtime gate
+	// drive through the same registry. Subscribe the
+	// permission_pending gauge subscriber on the bus before any
+	// engine-side publish can fire, so a Slice-3 grant-handler
+	// dispatch from a fresh boot lands cleanly.
+	permissionRegistry := permissionrequest.NewRegistry()
+	permissionPrompter := newPermissionPrompter(
+		permissionRegistry,
+		appEventBus,
+		params.compression.recorder,
+		0, // zero means "use defaultPermissionTimeout (5min)"
+	)
+	subscribePermissionGaugeHook(appEventBus, params.compression.recorder)
+	if params.guard != nil {
+		params.guard.SetPermissionPrompter(permissionPrompter)
+	}
+
 	hookChain := buildCreateEngineHookChain(params, &eng, &ensureToolsFn, appEventBus)
 	skillDir := params.skillDir
 	appLevelSkillNames := params.appLevelSkillNames
@@ -1401,11 +1454,12 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		CompactionStoreDir:        params.compactionStoreDir,
 		SwarmRegistry:             params.swarmRegistry,
 		KnownSkillsFunc:           knownSkillsFunc,
+		PermissionPrompter:        permissionPrompter,
 	})
 	setEnsureTools := func(fn func(agent.Manifest)) {
 		ensureToolsFn = fn
 	}
-	return eng, setEnsureTools
+	return eng, setEnsureTools, permissionPrompter
 }
 
 // buildCreateEngineHookChain constructs the hook chain used when the engine is created.
@@ -2030,6 +2084,17 @@ func (a *App) createDelegateEngine(
 
 	delegateCompression := a.buildDelegateCompression(manifest)
 
+	// Slice 2 wiring: avoid stamping a typed-nil interface on the
+	// engine.Config field. Go interface semantics treat a nil
+	// *permissionPrompter as a non-nil interface value, which would
+	// trip the engine's `e.permissionPrompter != nil` check at the
+	// runtime gate and panic on the subsequent method call. Only
+	// stamp the field when the App actually has a wired prompter.
+	var delegatePrompter engine.EnginePermissionPrompter
+	if a.permissionPrompter != nil {
+		delegatePrompter = a.permissionPrompter
+	}
+
 	eng := engine.New(engine.Config{
 		ChatProvider:              a.defaultProvider,
 		Registry:                  a.providerRegistry,
@@ -2055,6 +2120,7 @@ func (a *App) createDelegateEngine(
 		CompactionConfig:          a.delegateCompactionConfig(),
 		CompactionStoreDir:        a.delegateCompactionStoreDir(),
 		KnownSkillsFunc:           delegateKnownSkillsFunc,
+		PermissionPrompter:        delegatePrompter,
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {

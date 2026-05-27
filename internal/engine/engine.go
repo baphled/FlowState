@@ -146,6 +146,14 @@ type Engine struct {
 	// drive the store directly).
 	sessionLookup SessionLookup
 
+	// permissionPrompter, when non-nil, is consulted by the runtime
+	// allowlist gate (executeToolCall, engine.go:4690-4724) when a
+	// matched tool is out of the agent's effective set AND the session
+	// is in ModeAskUser. Nil disables the ask-user escalation and the
+	// gate preserves pre-Slice-2 binary deny semantics.
+	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+	permissionPrompter EnginePermissionPrompter
+
 	// todoStrictMode mirrors config.FeaturesConfig.TodoStrictMode (D9
 	// in the Agent Runtime Quality plan, May 2026). When true, the
 	// executeToolCall dispatch path rejects non-todowrite tool calls
@@ -660,6 +668,26 @@ type Config struct {
 	// unit tests stay green; production wires this to the session
 	// Manager via app.go.
 	SessionLookup SessionLookup
+
+	// PermissionPrompter, when non-nil, is consulted by the runtime
+	// allowlist gate at executeToolCall when:
+	//   1. the tool name IS registered (matched-tool branch); AND
+	//   2. the tool is NOT in the agent's effective set; AND
+	//   3. the session's permission mode is ModeAskUser.
+	// On all three conditions, the gate publishes EventPermissionRequired
+	// via the prompter and blocks until the operator grants / denies /
+	// times out. GrantOnce / Session / Forever resume the call; GrantDeny
+	// surfaces the existing "not available to agent" IsError tool_result.
+	//
+	// Floor preserved (memory: project_flowstate_agent_tools_fail_closed):
+	// the prompter is consulted ONLY inside the matched-tool branch, so
+	// an unregistered tool name (typo, removed tool) continues to flow
+	// through the skill-redirect / generic tool-not-found path with no
+	// prompt fired. Nil disables the ask-user escalation — the gate
+	// preserves pre-Slice-2 binary deny semantics across all modes.
+	//
+	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+	PermissionPrompter EnginePermissionPrompter
 }
 
 // SessionLookup is the engine-facing surface CompactNow consults to
@@ -876,6 +904,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionRehydrated:         make(map[string]struct{}),
 		seededSessions:            make(map[string]struct{}),
 		sessionLookup:             cfg.SessionLookup,
+		permissionPrompter:        cfg.PermissionPrompter,
 		todoStrictMode:            cfg.TodoStrictMode,
 		todoNonTodowriteToolCalls: make(map[string]int),
 		knownSkillsFunc:           cfg.KnownSkillsFunc,
@@ -4711,6 +4740,44 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 				"Error: '%s' not available to agent '%s'. Available tools: [%s]. Delegate to a specialist whose toolset includes '%s' if the work requires it.",
 				toolCall.Name, agentID, strings.Join(names, ", "), toolCall.Name,
 			)
+
+			// Permission Mode ModeAskUser Extension plan (May 2026)
+			// Slice 2. Under ModeAskUser AND with a prompter wired,
+			// escalate to the operator instead of returning IsError.
+			// Floor (memory: project_flowstate_agent_tools_fail_closed):
+			// this branch is INSIDE the matched-tool loop, so a tool
+			// name not registered in e.tools never reaches this code
+			// — that case continues to flow through the skill-redirect
+			// / generic tool-not-found path unchanged. Only registered
+			// tools out of the agent's effective set escalate.
+			mode := permissionmode.FromContext(ctx)
+			if mode == permissionmode.ModeAskUser && e.permissionPrompter != nil {
+				grant := e.permissionPrompter.RequestToolPermission(ctx, EnginePermissionRequest{
+					ToolName:     toolCall.Name,
+					AgentName:    agentID,
+					Resource:     toolCall.Name,
+					DenialReason: msg,
+					SessionID:    sessionIDFromContext(ctx),
+					Mode:         mode,
+				})
+				if grant.Allowed {
+					slog.Info("tool call permitted by ModeAskUser grant",
+						"tool", toolCall.Name,
+						"agent", agentID,
+						"scope", grant.Scope,
+					)
+					// Fall through to the regular dispatch path below —
+					// the matched tool's Execute runs and the call
+					// proceeds. Loop variable `t` is the matched tool;
+					// breaking out of the rejection branch lets the
+					// surrounding code run.
+					goto dispatchPermitted
+				}
+				// Grant denied (or timed out) — surface the existing
+				// "not available to agent" IsError tool_result so the
+				// model sees the same shape it would have without
+				// ModeAskUser.
+			}
 			slog.Warn("tool call rejected by runtime gate",
 				"tool", toolCall.Name,
 				"agent", agentID,
@@ -4722,6 +4789,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 				Error:   fmt.Errorf("%w: %s", tool.ErrToolNotFound, toolCall.Name),
 			}, nil
 		}
+	dispatchPermitted:
 		slog.Info("engine tool call", "tool", toolCall.Name)
 		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Engine wiring".
 		// Resolve the FlowState-internal correlation id from the engine's

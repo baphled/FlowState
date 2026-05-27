@@ -119,6 +119,7 @@ var NamespaceRules = struct {
 		"context.",
 		"delegation.",
 		"gate.",
+		"permission.",
 		"plugin.",
 		"prompt.",
 		"provider.",
@@ -606,5 +607,77 @@ var Catalog = []EventCatalogEntry{
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
+	},
+	// Permission Mode ModeAskUser Extension (May 2026) Slice 2.
+	// Four lifecycle events: required (suspension start) +
+	// granted / denied / timeout (resolution). Honest catalog claim:
+	// eventlogger subscribes to all four (low-frequency, audit-grade
+	// signal worth the JSONL line). Slice 3 will add a long-poll
+	// bridge subscriber for SSE delivery to the chat UI; app.go's
+	// observability hook subscribes to the resolution trio so the
+	// permission_pending gauge decrements on grant / deny / timeout.
+	// Memory: feedback_eventlogger_catalog_subscriber_is_dead_comment —
+	// every Subscribers list here must match a real bus.Subscribe.
+	{
+		Topic:       EventPermissionRequired,
+		Constant:    "EventPermissionRequired",
+		EventType:   "permission.required",
+		Struct:      "PermissionRequiredEvent",
+		Publishers:  []string{"internal/app/app.go (permissionPrompter)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published by the PermissionPrompter implementation when " +
+			"pathguard or the engine runtime-allowlist gate would otherwise " +
+			"return access denied AND the session is in ModeAskUser. The " +
+			"suspended tool-dispatch goroutine blocks on " +
+			"permissionrequest.Registry until the operator answers or the " +
+			"5-minute timeout fires. Slice 3 (May 2026) will add an SSE " +
+			"bridge subscriber so the chat UI renders the inline prompt.",
+	},
+	{
+		Topic:       EventPermissionGranted,
+		Constant:    "EventPermissionGranted",
+		EventType:   "permission.granted",
+		Struct:      "PermissionGrantedEvent",
+		Publishers:  []string{"internal/api/server.go (handlePermissionGrant — Slice 3)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the operator clicks Allow Once / Allow This " +
+			"Session / Allow Forever on the inline prompt (Slice 3). The " +
+			"permission_pending gauge subscriber decrements on receipt; the " +
+			"eventlogger subscriber writes the resolution line to events.jsonl.",
+	},
+	{
+		Topic:       EventPermissionDenied,
+		Constant:    "EventPermissionDenied",
+		EventType:   "permission.denied",
+		Struct:      "PermissionDeniedEvent",
+		Publishers:  []string{"internal/api/server.go (handlePermissionGrant — Slice 3)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the operator clicks Deny on the inline " +
+			"prompt. The suspended tool call resumes with the original " +
+			"access-denied IsError tool_result.",
+	},
+	{
+		Topic:       EventPermissionTimeout,
+		Constant:    "EventPermissionTimeout",
+		EventType:   "permission.timeout",
+		Struct:      "PermissionTimeoutEvent",
+		Publishers:  []string{"internal/app/app.go (permissionPrompter timeout)"},
+		Subscribers: []string{"eventlogger", "app.go (permission_pending gauge)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the 5-minute suspension timer fires before " +
+			"the operator responds. The PermissionPrompter resumes the " +
+			"suspended tool call with the access-denied path; the UI may " +
+			"render the timeout state distinctly from a manual Deny.",
 	},
 }

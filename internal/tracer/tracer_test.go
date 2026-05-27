@@ -373,4 +373,7 @@ func (s *spyRecorder) RecordCompressionOverheadTokens(agentID string, overheadTo
 	s.overheadCalls = append(s.overheadCalls, tokensSavedCall{agentID: agentID, tokensSaved: overheadTokens})
 }
 
+func (s *spyRecorder) IncPermissionPending() {}
+func (s *spyRecorder) DecPermissionPending() {}
+
 var _ tracer.Recorder = (*spyRecorder)(nil)

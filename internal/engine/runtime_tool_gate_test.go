@@ -9,6 +9,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -229,6 +230,209 @@ var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 				"the skill redirect preserves the ErrToolNotFound sentinel — the same sentinel the Option A registry filter and runtime gate now share")
 		})
 
+		// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+		//
+		// Under ModeAskUser, the matched-tool-but-not-in-effective-set
+		// path escalates to the EnginePermissionPrompter instead of
+		// returning IsError immediately. GrantAllowed=true resumes the
+		// dispatch; Allowed=false surfaces the existing rejection shape.
+		//
+		// Floor preserved (memory:
+		// project_flowstate_agent_tools_fail_closed): the prompter is
+		// consulted ONLY inside the matched-tool branch. A tool name
+		// NOT registered in e.tools never reaches the prompter — that
+		// case keeps flowing through the skill-redirect / generic
+		// tool-not-found path (regression spec A.1.5b below).
+		When("the session is in ModeAskUser AND a prompter is wired (A.1.5)", func() {
+			It("consults the prompter on the out-of-set rejection and resumes when granted", func() {
+				manifest := agent.Manifest{
+					ID:   "coordinator",
+					Name: "Coordinator",
+				}
+				fakeBash := &executableMockTool{
+					name:        "bash",
+					description: "fake bash",
+					execResult:  tool.Result{Output: "bash output post-grant"},
+				}
+				prompter := &spyEnginePrompter{grant: engine.EnginePermissionGrant{
+					Allowed: true,
+					Scope:   "session",
+				}}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				cfg := engine.Config{
+					Manifest:           manifest,
+					AgentRegistry:      agent.NewRegistry(),
+					Registry:           providerReg,
+					ChatProvider:       &mockProvider{name: "spy"},
+					PermissionPrompter: prompter,
+				}
+				eng := engine.New(cfg)
+				eng.AddTool(fakeBash)
+
+				ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeAskUser)
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-askuser-grant", &provider.ToolCall{
+					ID:        "call-bash",
+					Name:      "bash",
+					Arguments: map[string]any{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prompter.calls).To(Equal(1),
+					"the prompter MUST be consulted exactly once when the matched tool is out of the effective set under ModeAskUser")
+				Expect(prompter.lastReq.ToolName).To(Equal("bash"))
+				Expect(prompter.lastReq.AgentName).To(Equal("coordinator"))
+				Expect(prompter.lastReq.Mode).To(Equal(permissionmode.ModeAskUser))
+				Expect(prompter.lastReq.DenialReason).To(ContainSubstring("not available to agent"),
+					"the prompter receives the original IsError message body as the denial reason — Vue surfaces it in the inline prompt")
+				Expect(result.IsError).To(BeFalse(),
+					"a granted prompt MUST resume dispatch — the matched tool's Execute runs and the call's success result reaches the caller")
+				Expect(result.Output).To(Equal("bash output post-grant"),
+					"the dispatch path runs the matched tool body after the grant; the result is the tool's normal output, not the rejection envelope")
+				Expect(fakeBash.execCalled).To(BeTrue(),
+					"the load-bearing assertion: a granted prompt MUST proceed to Execute. Without this, the gate would silently NO-OP the call and leave the model waiting for a tool_result that never arrives")
+			})
+
+			It("preserves the existing IsError rejection when the prompter denies", func() {
+				manifest := agent.Manifest{
+					ID:   "coordinator",
+					Name: "Coordinator",
+				}
+				fakeBash := &executableMockTool{
+					name:        "bash",
+					description: "fake bash",
+					execResult:  tool.Result{Output: "should never run"},
+				}
+				prompter := &spyEnginePrompter{grant: engine.EnginePermissionGrant{
+					Allowed: false,
+				}}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				cfg := engine.Config{
+					Manifest:           manifest,
+					AgentRegistry:      agent.NewRegistry(),
+					Registry:           providerReg,
+					ChatProvider:       &mockProvider{name: "spy"},
+					PermissionPrompter: prompter,
+				}
+				eng := engine.New(cfg)
+				eng.AddTool(fakeBash)
+
+				ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeAskUser)
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-askuser-deny", &provider.ToolCall{
+					ID:        "call-bash",
+					Name:      "bash",
+					Arguments: map[string]any{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prompter.calls).To(Equal(1))
+				Expect(result.IsError).To(BeTrue(),
+					"GrantDeny MUST surface the existing IsError tool_result so the model sees the same shape it would have without ModeAskUser")
+				Expect(result.Output).To(ContainSubstring("'bash' not available to agent 'coordinator'"),
+					"the canonical 'not available to agent' substring MUST be preserved verbatim on the deny path")
+				Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue())
+				Expect(fakeBash.execCalled).To(BeFalse(),
+					"the gate fires BEFORE Execute on the deny path — the side-effecting tool body must never run for a denied call")
+			})
+		})
+
+		// Regression guards from the plan's §4 Slice 2 acceptance list.
+		When("the prompter is wired but the mode is NOT ModeAskUser (A.1.5a — Default unchanged)", func() {
+			It("does NOT consult the prompter — Default mode preserves the binary deny", func() {
+				manifest := agent.Manifest{
+					ID:   "coordinator",
+					Name: "Coordinator",
+				}
+				fakeBash := &executableMockTool{
+					name:        "bash",
+					description: "fake bash",
+					execResult:  tool.Result{Output: "should never run"},
+				}
+				prompter := &spyEnginePrompter{grant: engine.EnginePermissionGrant{
+					Allowed: true, // would grant if consulted — but the gate must not consult under Default
+				}}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				cfg := engine.Config{
+					Manifest:           manifest,
+					AgentRegistry:      agent.NewRegistry(),
+					Registry:           providerReg,
+					ChatProvider:       &mockProvider{name: "spy"},
+					PermissionPrompter: prompter,
+				}
+				eng := engine.New(cfg)
+				eng.AddTool(fakeBash)
+
+				// No mode stamp ⇒ FromContext returns ModeDefault.
+				result, err := eng.ExecuteToolCallForTest(context.Background(), "sess-default", &provider.ToolCall{
+					ID:        "call-bash",
+					Name:      "bash",
+					Arguments: map[string]any{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prompter.calls).To(Equal(0),
+					"Default mode MUST NOT consult the prompter — the closed mode vocabulary requires explicit opt-in via ModeAskUser. A silent fall-through would let an injected prompter widen Default mode behaviour without operator consent")
+				Expect(result.IsError).To(BeTrue(),
+					"Default mode regression — the existing 'not available to agent' rejection MUST fire unchanged")
+				Expect(result.Output).To(ContainSubstring("not available to agent"))
+				Expect(fakeBash.execCalled).To(BeFalse())
+			})
+		})
+
+		// Floor — the unregistered-tool case must NOT escalate to the
+		// prompter. This pins the structural guard from
+		// project_flowstate_agent_tools_fail_closed: the prompter sits
+		// inside the matched-tool branch, so a name that doesn't match
+		// any e.tools entry stays on the skill-redirect / generic
+		// tool-not-found path. ModeAskUser does NOT widen the
+		// dispatchable surface beyond what's registered.
+		When("the tool name is NOT registered in e.tools even under ModeAskUser (A.1.5b — floor preserved)", func() {
+			It("does NOT consult the prompter and surfaces the existing tool-not-found path", func() {
+				manifest := agent.Manifest{
+					ID:   "coordinator",
+					Name: "Coordinator",
+				}
+				prompter := &spyEnginePrompter{grant: engine.EnginePermissionGrant{
+					Allowed: true,
+				}}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				cfg := engine.Config{
+					Manifest:           manifest,
+					AgentRegistry:      agent.NewRegistry(),
+					Registry:           providerReg,
+					ChatProvider:       &mockProvider{name: "spy"},
+					PermissionPrompter: prompter,
+				}
+				eng := engine.New(cfg)
+				// Deliberately register NO tool by the name we'll call.
+				eng.AddTool(&gateHaltFakeTool{name: "delegate", err: nil})
+
+				ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeAskUser)
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-floor", &provider.ToolCall{
+					ID:        "call-nonexistent",
+					Name:      "nonexistent_tool",
+					Arguments: map[string]any{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prompter.calls).To(Equal(0),
+					"the floor — ModeAskUser must NOT escalate unregistered tool names. The prompter lives inside the matched-tool branch (engine.go:4659-4724); a typo or removed-tool name never reaches it. Allowing the prompter to grant an unregistered tool would let operators 'invent' tools the engine cannot dispatch")
+				Expect(result.IsError).To(BeTrue())
+				// The unregistered-tool path returns the generic tool-not-found
+				// rejection, not the "not available to agent" wording — that
+				// distinction is the canonical signal the floor is intact.
+				Expect(result.Output).NotTo(ContainSubstring("not available to agent"),
+					"unregistered tool names follow the generic tool-not-found path; the 'not available to agent' rejection is specifically the matched-tool-out-of-set surface")
+			})
+		})
+
 		It("fires the NEW gate (not the skill redirect) when the skill name COLLIDES with a registered tool that is NOT in the effective set", func() {
 			// Collision edge case from the brief: if `task-tracker`
 			// is BOTH a skill name AND a registered tool name AND
@@ -261,3 +465,19 @@ var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 		})
 	})
 })
+
+// spyEnginePrompter is the test seam for the EnginePermissionPrompter
+// contract. Returns a fixed grant on every RequestToolPermission call
+// and records the call count + last seen request for assertions.
+// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+type spyEnginePrompter struct {
+	grant   engine.EnginePermissionGrant
+	calls   int
+	lastReq engine.EnginePermissionRequest
+}
+
+func (s *spyEnginePrompter) RequestToolPermission(_ context.Context, req engine.EnginePermissionRequest) engine.EnginePermissionGrant {
+	s.calls++
+	s.lastReq = req
+	return s.grant
+}

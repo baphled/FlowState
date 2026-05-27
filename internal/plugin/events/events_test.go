@@ -919,4 +919,92 @@ var _ = Describe("Events", func() {
 				"zero TokenCount is the legitimate pre-first-UsageDelta value")
 		})
 	})
+
+	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+	// The four permission lifecycle events ship a stable payload shape
+	// so eventlogger / observability / Slice-3 SSE bridge consumers
+	// can rely on the same JSON keys across the lifecycle.
+	Describe("PermissionRequiredEvent", func() {
+		It("implements Event interface and populates the documented payload fields", func() {
+			data := events.PermissionRequiredEventData{
+				RequestID:    "perm-req-1",
+				ToolName:     "read",
+				AgentName:    "coordinator",
+				Resource:     "/vault/secret.md",
+				DenialReason: "access denied: /vault/secret.md is blocked",
+				Provider:     "anthropic",
+				Model:        "claude-sonnet-4-7",
+				SessionID:    "sess-ask-1",
+				ChainID:      "chain-A",
+				Mode:         "ask",
+			}
+			evt := events.NewPermissionRequiredEvent(data)
+			Expect(evt.EventType()).To(Equal(events.EventPermissionRequired))
+			Expect(evt.Data.RequestID).To(Equal("perm-req-1"))
+			Expect(evt.Data.ToolName).To(Equal("read"))
+			Expect(evt.Data.AgentName).To(Equal("coordinator"))
+			Expect(evt.Data.Resource).To(Equal("/vault/secret.md"))
+			Expect(evt.Data.DenialReason).To(ContainSubstring("access denied"))
+			Expect(evt.Data.Provider).To(Equal("anthropic"))
+			Expect(evt.Data.Model).To(Equal("claude-sonnet-4-7"))
+			Expect(evt.Data.SessionID).To(Equal("sess-ask-1"))
+			Expect(evt.Data.ChainID).To(Equal("chain-A"))
+			Expect(evt.Data.Mode).To(Equal("ask"))
+		})
+
+		It("MarshalJSON emits stable snake_case keys consumers depend on", func() {
+			data := events.PermissionRequiredEventData{
+				RequestID: "perm-req-1",
+				ToolName:  "read",
+				SessionID: "sess-ask-1",
+				Mode:      "ask",
+			}
+			raw, err := data.MarshalJSON()
+			Expect(err).NotTo(HaveOccurred())
+			// Anchor the keys explicitly — wire-shape contracts the
+			// Slice-3 SSE bridge and the eventlogger JSONL stream
+			// will read.
+			Expect(string(raw)).To(ContainSubstring(`"request_id":"perm-req-1"`))
+			Expect(string(raw)).To(ContainSubstring(`"tool_name":"read"`))
+			Expect(string(raw)).To(ContainSubstring(`"session_id":"sess-ask-1"`))
+			Expect(string(raw)).To(ContainSubstring(`"mode":"ask"`))
+		})
+	})
+
+	Describe("PermissionGrantedEvent / PermissionDeniedEvent / PermissionTimeoutEvent", func() {
+		It("share the resolution payload shape and stamp distinct event types", func() {
+			data := events.PermissionResolutionEventData{
+				RequestID: "perm-req-1",
+				SessionID: "sess-ask-1",
+				ToolName:  "read",
+				AgentName: "coordinator",
+				Resource:  "/vault/secret.md",
+				Scope:     "session",
+				Mode:      "ask",
+			}
+			granted := events.NewPermissionGrantedEvent(data)
+			denied := events.NewPermissionDeniedEvent(data)
+			timeout := events.NewPermissionTimeoutEvent(data)
+
+			Expect(granted.EventType()).To(Equal(events.EventPermissionGranted))
+			Expect(denied.EventType()).To(Equal(events.EventPermissionDenied))
+			Expect(timeout.EventType()).To(Equal(events.EventPermissionTimeout))
+
+			Expect(granted.Data.RequestID).To(Equal("perm-req-1"))
+			Expect(denied.Data.RequestID).To(Equal("perm-req-1"))
+			Expect(timeout.Data.RequestID).To(Equal("perm-req-1"))
+		})
+
+		It("MarshalJSON emits request_id + scope keys for downstream pairing", func() {
+			data := events.PermissionResolutionEventData{
+				RequestID: "perm-req-1",
+				SessionID: "sess-ask-1",
+				Scope:     "session",
+			}
+			raw, err := data.MarshalJSON()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(raw)).To(ContainSubstring(`"request_id":"perm-req-1"`))
+			Expect(string(raw)).To(ContainSubstring(`"scope":"session"`))
+		})
+	})
 })

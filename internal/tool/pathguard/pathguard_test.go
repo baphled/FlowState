@@ -10,6 +10,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/permissionmode"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
@@ -554,6 +555,211 @@ var _ = Describe("Pathguard — Plan-Mode Output Directory overlay (Slice 1)", f
 		})
 	})
 })
+
+// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+//
+// These specs pin the PermissionPrompter integration on Guard.
+// CheckForTool and CheckCommandForTool under ModeAskUser escalate a
+// denial to the prompter and apply the returned grant:
+//
+//   - GrantOnce → return nil, no persistence
+//   - GrantSession → return nil + remember (tool, resource) for the
+//     session so the second call skips the prompter
+//   - GrantForever → return nil + remember (Slice 4 will wire the
+//     permissions.yaml writer; Slice 2 treats Forever as Session)
+//   - GrantDeny → return the original access-denied error
+//
+// Floor preserved: prompter == nil OR mode != ModeAskUser falls back
+// to today's binary deny semantics (memory:
+// project_flowstate_agent_tools_fail_closed).
+var _ = Describe("Pathguard — ModeAskUser PermissionPrompter (Slice 2)", func() {
+	var (
+		denied   string
+		askUser  = func() context.Context {
+			ctx := context.Background()
+			ctx = permissionmode.WithMode(ctx, permissionmode.ModeAskUser)
+			return ctx
+		}
+	)
+
+	BeforeEach(func() {
+		denied = "/tmp/pathguard-askuser-vault"
+	})
+
+	Describe("CheckForTool under ModeAskUser", func() {
+		It("returns nil when the prompter grants Once (the call proceeds)", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantOnce}}
+			g.SetPermissionPrompter(prompter)
+
+			err := g.CheckForTool(askUser(), "write", filepath.Join(denied, "foo.md"))
+
+			Expect(err).NotTo(HaveOccurred(),
+				"GrantOnce MUST resume the suspended call — the operator clicked Allow Once on the inline prompt")
+			Expect(prompter.calls).To(Equal(1),
+				"the prompter MUST be consulted exactly once on the denial path under ModeAskUser")
+			Expect(prompter.lastReq.ToolName).To(Equal("write"))
+			Expect(prompter.lastReq.Resource).To(ContainSubstring("foo.md"))
+			Expect(prompter.lastReq.Mode).To(Equal(permissionmode.ModeAskUser),
+				"the PermissionRequest payload MUST stamp the active mode so the prompter (app.go) can include it in the bus event")
+			Expect(prompter.lastReq.DenialReason).NotTo(BeEmpty(),
+				"the prompter receives the original denial reason so the UI can render the why")
+		})
+
+		It("returns the access-denied error when the prompter denies", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantDeny}}
+			g.SetPermissionPrompter(prompter)
+
+			err := g.CheckForTool(askUser(), "write", filepath.Join(denied, "foo.md"))
+
+			Expect(err).To(HaveOccurred(),
+				"GrantDeny MUST surface the original access-denied error — the model sees the IsError tool_result")
+			Expect(err.Error()).To(ContainSubstring("access denied"))
+		})
+
+		It("returns nil AND remembers the resource on GrantSession — second call skips the prompter", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantSession}}
+			g.SetPermissionPrompter(prompter)
+
+			ctx := context.WithValue(askUser(), session.IDKey{}, "sess-allow-once")
+			path := filepath.Join(denied, "foo.md")
+
+			err1 := g.CheckForTool(ctx, "write", path)
+			err2 := g.CheckForTool(ctx, "write", path)
+
+			Expect(err1).NotTo(HaveOccurred(),
+				"GrantSession MUST permit the first call")
+			Expect(err2).NotTo(HaveOccurred(),
+				"GrantSession MUST permit the second call to the same (tool, resource) pair under the same session")
+			Expect(prompter.calls).To(Equal(1),
+				"the prompter MUST be consulted ONCE — the second call hits the per-session in-memory allow set, not the prompter; this is the load-bearing 'session grant persists for the session lifetime' contract")
+		})
+
+		It("falls back to binary deny when prompter is nil under ModeAskUser (regression guard for app.go wiring omission)", func() {
+			// Plan §4 Slice 2 risk note: 'The PermissionPrompter field on
+			// Guard is nilable; existing constructors that don't inject
+			// one behave identically to today.' This spec pins that
+			// invariant — a half-wired ModeAskUser (mode dial flipped
+			// but prompter not injected) MUST NOT silently grant.
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			// SetPermissionPrompter intentionally NOT called.
+
+			err := g.CheckForTool(askUser(), "write", filepath.Join(denied, "foo.md"))
+
+			Expect(err).To(HaveOccurred(),
+				"a Guard without a prompter MUST preserve the pre-Slice-2 binary deny — fail closed, never fall through to permit")
+		})
+
+		It("does NOT consult the prompter under ModeDefault (regression guard — Default unchanged)", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantOnce}}
+			g.SetPermissionPrompter(prompter)
+
+			ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeDefault)
+			err := g.CheckForTool(ctx, "write", filepath.Join(denied, "foo.md"))
+
+			Expect(err).To(HaveOccurred(),
+				"Default mode MUST preserve the binary deny — the prompter is opt-in via ModeAskUser, plan §2 acceptance bullet 2")
+			Expect(prompter.calls).To(Equal(0),
+				"Default mode MUST NOT consult the prompter — silent fall-through to GrantOnce would defeat the closed mode vocabulary")
+		})
+
+		It("does NOT escalate when there is no denial under ModeAskUser (allow paths bypass the prompter)", func() {
+			matcher := stubMatcher{decision: "allow", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantDeny}}
+			g.SetPermissionPrompter(prompter)
+
+			err := g.CheckForTool(askUser(), "write", filepath.Join(denied, "foo.md"))
+
+			Expect(err).NotTo(HaveOccurred(),
+				"matcher allow MUST short-circuit BEFORE the prompter — the call is permitted by the operator's existing config, no prompt needed")
+			Expect(prompter.calls).To(Equal(0))
+		})
+	})
+
+	Describe("CheckCommandForTool under ModeAskUser", func() {
+		It("escalates a denied bash command and applies GrantOnce", func() {
+			g := pathguard.New([]string{denied})
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantOnce}}
+			g.SetPermissionPrompter(prompter)
+
+			cmd := "cat " + filepath.Join(denied, "secrets.md")
+			err := g.CheckCommandForTool(askUser(), "bash", cmd)
+
+			Expect(err).NotTo(HaveOccurred(),
+				"GrantOnce MUST resume the bash dispatch — the operator approved the specific resource")
+			Expect(prompter.calls).To(Equal(1))
+			Expect(prompter.lastReq.ToolName).To(Equal("bash"))
+		})
+
+		It("returns the original error when the prompter denies a bash command", func() {
+			g := pathguard.New([]string{denied})
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantDeny}}
+			g.SetPermissionPrompter(prompter)
+
+			cmd := "cat " + filepath.Join(denied, "secrets.md")
+			err := g.CheckCommandForTool(askUser(), "bash", cmd)
+
+			Expect(err).To(HaveOccurred(),
+				"GrantDeny on a bash command MUST surface the existing 'command references protected path' error")
+		})
+
+		It("falls back to binary deny when prompter is nil under ModeAskUser (regression)", func() {
+			g := pathguard.New([]string{denied})
+			// No prompter wired.
+			cmd := "cat " + filepath.Join(denied, "secrets.md")
+			err := g.CheckCommandForTool(askUser(), "bash", cmd)
+
+			Expect(err).To(HaveOccurred(),
+				"missing prompter under ModeAskUser MUST preserve the pre-Slice-2 binary deny on bash command escalation")
+		})
+	})
+
+	Describe("ClearSessionAllow", func() {
+		It("drops the per-session allow set so a subsequent call re-prompts", func() {
+			matcher := stubMatcher{decision: "deny", matched: true}
+			g := pathguard.NewWithPermissions([]string{denied}, matcher)
+			prompter := &spyPrompter{grant: pathguard.PermissionGrant{Scope: pathguard.GrantSession}}
+			g.SetPermissionPrompter(prompter)
+
+			ctx := context.WithValue(askUser(), session.IDKey{}, "sess-clear-test")
+			path := filepath.Join(denied, "foo.md")
+			Expect(g.CheckForTool(ctx, "write", path)).NotTo(HaveOccurred())
+			g.ClearSessionAllow("sess-clear-test")
+
+			// Second call after clear MUST consult the prompter again —
+			// the session lifecycle ended (e.g. session.ended fired) so
+			// the previous grant is no longer valid.
+			err := g.CheckForTool(ctx, "write", path)
+			Expect(err).NotTo(HaveOccurred(), "prompter still grants — but the cleared-allow path forces a fresh consultation")
+			Expect(prompter.calls).To(Equal(2),
+				"ClearSessionAllow MUST drop the in-memory allow set so a fresh call re-prompts; without this, session lifecycle leaks become silent")
+		})
+	})
+})
+
+// spyPrompter is the test seam for the PermissionPrompter contract.
+// Returns a fixed grant on every RequestPermission call and records
+// the call count + last seen request for assertions.
+type spyPrompter struct {
+	grant   pathguard.PermissionGrant
+	calls   int
+	lastReq pathguard.PermissionRequest
+}
+
+func (s *spyPrompter) RequestPermission(_ context.Context, req pathguard.PermissionRequest) pathguard.PermissionGrant {
+	s.calls++
+	s.lastReq = req
+	return s.grant
+}
 
 // stubMatcher returns a fixed verdict for every (tool, path) tuple.
 type stubMatcher struct {

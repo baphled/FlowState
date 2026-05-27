@@ -74,6 +74,17 @@ var subscribedEventTypes = []string{
 	// subscriber here closes the catalog Subscribers claim so the
 	// new event is not "published but unsubscribed" dead surface.
 	events.EventToolArgsValidationFailed,
+	// Permission Mode ModeAskUser Extension (May 2026) Slice 2.
+	// All four lifecycle events land in events.jsonl so audits can
+	// reconstruct suspended-call traces post-hoc. Low-frequency
+	// (interactive — at most one event per operator click) so the
+	// JSONL volume cost is trivial. Catalog claims eventlogger
+	// subscribes here; this is the matching wire-up (memory:
+	// feedback_eventlogger_catalog_subscriber_is_dead_comment).
+	events.EventPermissionRequired,
+	events.EventPermissionGranted,
+	events.EventPermissionDenied,
+	events.EventPermissionTimeout,
 }
 
 // defaultMaxRotated defines the maximum number of rotated files to keep.

@@ -1632,6 +1632,10 @@ var (
 	_ Event = (*GateFailedEvent)(nil)
 	_ Event = (*StreamingHeartbeatEvent)(nil)
 	_ Event = (*ToolArgsValidationFailedEvent)(nil)
+	_ Event = (*PermissionRequiredEvent)(nil)
+	_ Event = (*PermissionGrantedEvent)(nil)
+	_ Event = (*PermissionDeniedEvent)(nil)
+	_ Event = (*PermissionTimeoutEvent)(nil)
 )
 
 // ToolArgsValidationFailedEventData holds data for tool-args validation
@@ -1734,6 +1738,187 @@ func NewToolArgsValidationFailedEvent(data ToolArgsValidationFailedEventData, ts
 	}
 	return &ToolArgsValidationFailedEvent{
 		BaseEvent: BaseEvent{eventType: EventToolArgsValidationFailed, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionRequiredEventData holds the metadata published when the
+// engine or pathguard suspends a tool call awaiting an operator grant
+// under ModeAskUser. Permission Mode ModeAskUser Extension plan (May
+// 2026) Slice 2.
+//
+// RequestID is the registry key the operator HTTP handler will call
+// Resolve(...) on (Slice 3). ToolName + Resource describe the call;
+// AgentName + DenialReason explain the why; Provider + Model + SessionID
+// + ChainID + Mode pin the context for dashboards and forensic logs.
+type PermissionRequiredEventData struct {
+	RequestID    string
+	ToolName     string
+	AgentName    string
+	Resource     string
+	DenialReason string
+	Provider     string
+	Model        string
+	SessionID    string
+	ChainID      string
+	Mode         string
+}
+
+// MarshalJSON serialises PermissionRequiredEventData for the
+// eventlogger JSONL stream. Field shapes mirror the other tool /
+// provider event payloads for consistency in recordings.
+func (d PermissionRequiredEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		RequestID    string `json:"request_id"`
+		ToolName     string `json:"tool_name"`
+		AgentName    string `json:"agent_name,omitempty"`
+		Resource     string `json:"resource,omitempty"`
+		DenialReason string `json:"denial_reason,omitempty"`
+		Provider     string `json:"provider,omitempty"`
+		Model        string `json:"model,omitempty"`
+		SessionID    string `json:"session_id,omitempty"`
+		ChainID      string `json:"chain_id,omitempty"`
+		Mode         string `json:"mode,omitempty"`
+	}
+	return json.Marshal(payload{
+		RequestID:    d.RequestID,
+		ToolName:     d.ToolName,
+		AgentName:    d.AgentName,
+		Resource:     d.Resource,
+		DenialReason: d.DenialReason,
+		Provider:     d.Provider,
+		Model:        d.Model,
+		SessionID:    d.SessionID,
+		ChainID:      d.ChainID,
+		Mode:         d.Mode,
+	})
+}
+
+// PermissionRequiredEvent is the bus event published when pathguard /
+// engine suspends a tool call awaiting an operator grant.
+type PermissionRequiredEvent struct {
+	BaseEvent
+	Data PermissionRequiredEventData
+}
+
+// NewPermissionRequiredEvent constructs a PermissionRequiredEvent
+// stamped with the canonical event-type constant. Optional timestamp
+// argument follows the same shape as the sibling event constructors.
+func NewPermissionRequiredEvent(data PermissionRequiredEventData, ts ...time.Time) *PermissionRequiredEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionRequiredEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionRequired, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionResolutionEventData is the shared payload for the three
+// terminal events of a permission-request lifecycle: granted, denied,
+// and timeout. RequestID and SessionID are the load-bearing fields the
+// observability gauge subscriber reads (it decrements
+// permission_pending on every resolution regardless of cause).
+//
+// Scope is populated on Granted / Denied (the operator's chosen scope
+// or the constant "deny"); empty on Timeout. The string-typed scope
+// field deliberately mirrors permissionrequest.Scope ("once" /
+// "session" / "forever" / "deny") without importing the registry
+// package — the events package stays zero-dep on the registry.
+type PermissionResolutionEventData struct {
+	RequestID string
+	SessionID string
+	ToolName  string
+	AgentName string
+	Resource  string
+	Scope     string
+	Mode      string
+}
+
+// MarshalJSON serialises PermissionResolutionEventData for the JSONL
+// recording stream. Field shapes mirror PermissionRequiredEventData
+// so dashboards can pair the request and the resolution.
+func (d PermissionResolutionEventData) MarshalJSON() ([]byte, error) {
+	type payload struct {
+		RequestID string `json:"request_id"`
+		SessionID string `json:"session_id,omitempty"`
+		ToolName  string `json:"tool_name,omitempty"`
+		AgentName string `json:"agent_name,omitempty"`
+		Resource  string `json:"resource,omitempty"`
+		Scope     string `json:"scope,omitempty"`
+		Mode      string `json:"mode,omitempty"`
+	}
+	return json.Marshal(payload{
+		RequestID: d.RequestID,
+		SessionID: d.SessionID,
+		ToolName:  d.ToolName,
+		AgentName: d.AgentName,
+		Resource:  d.Resource,
+		Scope:     d.Scope,
+		Mode:      d.Mode,
+	})
+}
+
+// PermissionGrantedEvent is published when an operator clicks one of
+// the three "allow" scopes (once / session / forever) on the inline
+// prompt. Slice 3 wires the HTTP handler that emits this; Slice 2
+// declares the wire shape so the observability subscriber can subscribe
+// today.
+type PermissionGrantedEvent struct {
+	BaseEvent
+	Data PermissionResolutionEventData
+}
+
+// NewPermissionGrantedEvent constructs a PermissionGrantedEvent.
+func NewPermissionGrantedEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionGrantedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionGrantedEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionGranted, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionDeniedEvent is published when an operator clicks Deny on
+// the inline prompt. The suspended tool call resumes with the original
+// access-denied error path (IsError=true tool_result).
+type PermissionDeniedEvent struct {
+	BaseEvent
+	Data PermissionResolutionEventData
+}
+
+// NewPermissionDeniedEvent constructs a PermissionDeniedEvent.
+func NewPermissionDeniedEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionDeniedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionDeniedEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionDenied, timestamp: t},
+		Data:      data,
+	}
+}
+
+// PermissionTimeoutEvent is published when the 5-minute suspension
+// timer fires before the operator responds. The suspended tool call
+// resumes with the access-denied error path; the UI may render the
+// timeout state distinctly from a manual Deny (Slice 3).
+type PermissionTimeoutEvent struct {
+	BaseEvent
+	Data PermissionResolutionEventData
+}
+
+// NewPermissionTimeoutEvent constructs a PermissionTimeoutEvent.
+func NewPermissionTimeoutEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionTimeoutEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &PermissionTimeoutEvent{
+		BaseEvent: BaseEvent{eventType: EventPermissionTimeout, timestamp: t},
 		Data:      data,
 	}
 }

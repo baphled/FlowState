@@ -52,6 +52,27 @@ type Recorder interface {
 	// with abs(delta) as the argument. delta == 0 is the break-even
 	// case and fires neither counter.
 	RecordCompressionOverheadTokens(agentID string, overheadTokens int)
+
+	// IncPermissionPending bumps the gauge of suspended permission
+	// requests by one. Permission Mode ModeAskUser Extension plan
+	// (May 2026) Slice 2, R4 (§11). Call sites:
+	//   - app.go's PermissionPrompter implementation on Register.
+	//
+	// Operators can graph + alert on
+	// flowstate_permission_pending > 50 for >5 min as a "stuck
+	// suspended request" signal (the 5-minute auto-Deny path should
+	// otherwise drain accumulated requests).
+	IncPermissionPending()
+	// DecPermissionPending decrements the suspended-request gauge by
+	// one. Call sites:
+	//   - the events.EventPermissionGranted / Denied / Timeout bus
+	//     subscriber in app.go.
+	//
+	// Decrement must NEVER drive the gauge below zero — the
+	// prometheus Gauge type does not panic on negative values but
+	// negative readings would lie to dashboards. Implementations
+	// should clamp at zero defensively.
+	DecPermissionPending()
 }
 
 // NoopRecorder is a Recorder that discards all metrics. Useful for testing.
@@ -133,3 +154,11 @@ func (n *NoopRecorder) RecordCompressionTokensSaved(_ string, _ int) {}
 // Side effects:
 //   - None.
 func (n *NoopRecorder) RecordCompressionOverheadTokens(_ string, _ int) {}
+
+// IncPermissionPending discards the permission-pending increment.
+// Side effects: none.
+func (n *NoopRecorder) IncPermissionPending() {}
+
+// DecPermissionPending discards the permission-pending decrement.
+// Side effects: none.
+func (n *NoopRecorder) DecPermissionPending() {}

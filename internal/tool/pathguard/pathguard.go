@@ -12,8 +12,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/baphled/flowstate/internal/permissionmode"
+	"github.com/baphled/flowstate/internal/session"
 )
 
 // PermissionsMatcher is the minimal interface pathguard needs from a
@@ -33,6 +35,79 @@ type PermissionsMatcher interface {
 	Match(tool, path string) (decision string, matched bool)
 }
 
+// PermissionRequest carries the metadata pathguard hands to the
+// prompter when it would otherwise return an access-denied error AND
+// the session is in ModeAskUser. The prompter (app.go's
+// implementation) publishes EventPermissionRequired and blocks on
+// permissionrequest.Registry.Wait until the operator answers or the
+// 5-minute timeout fires. Permission Mode ModeAskUser Extension plan
+// (May 2026) Slice 2.
+//
+// SessionID is sourced from session.IDKey on the tool-invocation ctx
+// when available; empty when not (e.g. test harnesses without a
+// session stamp). The prompter SHOULD NOT block when SessionID is
+// empty — that's a wiring bug.
+type PermissionRequest struct {
+	ToolName     string
+	Resource     string
+	AgentName    string
+	DenialReason string
+	SessionID    string
+	Mode         string
+}
+
+// GrantScope is the pathguard-local mirror of permissionrequest.Scope.
+// Kept as a local enum so pathguard stays zero-dep on the registry
+// package — the prompter (defined elsewhere) does the registry talk;
+// pathguard just consumes the returned scope.
+type GrantScope string
+
+const (
+	// GrantOnce permits the suspended call only. No persistence.
+	GrantOnce GrantScope = "once"
+	// GrantSession appends the resource to the per-session in-memory
+	// allow set. Second call to the same (tool, resource) returns
+	// nil without re-consulting the prompter.
+	GrantSession GrantScope = "session"
+	// GrantForever appends to permissions.yaml via the writer landed
+	// in Slice 4. Slice 2 treats Forever identically to Session
+	// (in-memory only) so the wire shape is stable while Slice 4
+	// lands.
+	GrantForever GrantScope = "forever"
+	// GrantDeny resumes the call with the existing access-denied
+	// error path.
+	GrantDeny GrantScope = "deny"
+)
+
+// PermissionGrant is the prompter's return shape. Scope drives the
+// pathguard effect; Err is the access-denied error to surface when
+// Scope == GrantDeny (lets the prompter customise the message; an
+// empty Err on GrantDeny falls back to the original denial reason).
+type PermissionGrant struct {
+	Scope GrantScope
+	Err   error
+}
+
+// PermissionPrompter is the seam pathguard uses to escalate a denial
+// to the operator under ModeAskUser. The implementation in app.go
+// publishes EventPermissionRequired and blocks on the
+// permissionrequest.Registry until the operator answers.
+//
+// Contract:
+//
+//   - ctx is the tool-invocation ctx. Implementations MUST detach it
+//     from the parent (context.WithoutCancel) before passing it to
+//     the registry's Wait so a tab-close does not cancel the suspension
+//     before the operator can grant. Memory:
+//     project_flowstate_streamer_request_lifetime_coupling.
+//
+//   - The returned grant determines the pathguard effect. Implementations
+//     MUST return GrantDeny on timeout, NOT a synthetic error — the
+//     caller is the layer that surfaces the denial to the model.
+type PermissionPrompter interface {
+	RequestPermission(ctx context.Context, req PermissionRequest) PermissionGrant
+}
+
 // Guard checks filesystem paths against a deny list, optionally
 // consulting a per-tool PermissionsMatcher first.
 //
@@ -49,6 +124,18 @@ type Guard struct {
 	denied        []string
 	perms         PermissionsMatcher
 	planOutputDir string
+	// prompter, when non-nil, is consulted on a denial path when ctx
+	// carries ModeAskUser. nil collapses to the binary deny semantics.
+	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+	prompter PermissionPrompter
+	// sessionAllowMu guards sessionAllow.
+	sessionAllowMu sync.Mutex
+	// sessionAllow tracks per-session GrantSession decisions —
+	// sessionID → (tool|resource) → bool. A subsequent call with the
+	// same (tool, resource) under the same session returns nil
+	// without re-consulting the prompter. In-memory only; clears
+	// when the engine evicts the session.
+	sessionAllow map[string]map[string]bool
 }
 
 // planScopedTools is the set of file-mutating tools that pathguard's
@@ -109,6 +196,73 @@ func NewWithPermissionsAndPlanOutputDir(denied []string, perms PermissionsMatche
 		}
 	}
 	return g
+}
+
+// SetPermissionPrompter wires a PermissionPrompter onto an existing
+// Guard. nil unwires the prompter — the Guard reverts to binary deny
+// semantics. Permission Mode ModeAskUser Extension plan (May 2026)
+// Slice 2.
+//
+// The setter shape (rather than a fresh constructor) avoids a
+// combinatorial explosion of New variants: the existing constructors
+// already handle the matcher / plan-output-dir / denied-roots cross
+// product. The prompter is orthogonal and is wired by app.go after
+// the Guard is constructed.
+func (g *Guard) SetPermissionPrompter(p PermissionPrompter) {
+	g.prompter = p
+}
+
+// rememberSessionAllow records that the supplied (tool, resource)
+// pair has been granted GrantSession scope for sessionID. The
+// per-session map is allocated lazily so the cold path stays
+// allocation-free.
+func (g *Guard) rememberSessionAllow(sessionID, tool, resource string) {
+	if sessionID == "" {
+		return
+	}
+	g.sessionAllowMu.Lock()
+	defer g.sessionAllowMu.Unlock()
+	if g.sessionAllow == nil {
+		g.sessionAllow = make(map[string]map[string]bool)
+	}
+	bySession, ok := g.sessionAllow[sessionID]
+	if !ok {
+		bySession = make(map[string]bool)
+		g.sessionAllow[sessionID] = bySession
+	}
+	bySession[sessionAllowKey(tool, resource)] = true
+}
+
+// isSessionAllowed reports whether (tool, resource) has been granted
+// GrantSession scope for sessionID. False when sessionID is empty
+// (no session ⇒ no per-session memory).
+func (g *Guard) isSessionAllowed(sessionID, tool, resource string) bool {
+	if sessionID == "" {
+		return false
+	}
+	g.sessionAllowMu.Lock()
+	defer g.sessionAllowMu.Unlock()
+	bySession, ok := g.sessionAllow[sessionID]
+	if !ok {
+		return false
+	}
+	return bySession[sessionAllowKey(tool, resource)]
+}
+
+// ClearSessionAllow drops the per-session in-memory allow set for
+// sessionID. Called by the session-ended event subscriber so the
+// pathguard does not retain grants beyond the session lifetime.
+func (g *Guard) ClearSessionAllow(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	g.sessionAllowMu.Lock()
+	defer g.sessionAllowMu.Unlock()
+	delete(g.sessionAllow, sessionID)
+}
+
+func sessionAllowKey(tool, resource string) string {
+	return tool + "\x00" + resource
 }
 
 func normaliseDenied(denied []string) []string {
@@ -410,6 +564,41 @@ func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
 		}
 	}
 
+	// Permission Mode ModeAskUser Extension plan (May 2026) Slice 2.
+	// Under ModeAskUser, a per-session allow set short-circuits the
+	// matcher / denied-roots checks for resources the operator has
+	// already granted Session scope on. The check happens before the
+	// matcher consultation so a GrantSession holds against any matcher
+	// deny rule the operator has explicitly overridden for this
+	// session. Outside ModeAskUser the allow set is ignored — the
+	// short-circuit is opt-in via the mode dial.
+	if mode == permissionmode.ModeAskUser {
+		sessionID := pathguardSessionID(ctx)
+		if g.isSessionAllowed(sessionID, tool, path) {
+			return nil
+		}
+	}
+
+	denial := g.computeDenial(tool, path)
+	if denial == nil {
+		return nil
+	}
+
+	// Ask-user escalation: prompter consulted ONLY when the mode is
+	// ModeAskUser AND a prompter is wired. Outside this branch the
+	// denial flows through to the caller untouched — binary semantics
+	// preserved for Default / AcceptEdits / Plan.
+	if mode != permissionmode.ModeAskUser || g.prompter == nil {
+		return denial
+	}
+	return g.escalateForTool(ctx, tool, path, denial)
+}
+
+// computeDenial evaluates the matcher / denied-roots pipeline and
+// returns the access-denied error (or nil for permitted). Extracted
+// from CheckForTool so the ask-user escalation site can decide
+// independently of the underlying decision flow.
+func (g *Guard) computeDenial(tool, path string) error {
 	if g.perms != nil && tool != "" {
 		abs, err := filepath.Abs(path)
 		if err == nil {
@@ -424,6 +613,51 @@ func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
 		}
 	}
 	return g.Check(path)
+}
+
+// escalateForTool publishes a permission request to the prompter,
+// applies the returned grant, and returns the resulting pathguard
+// effect. GrantOnce / Session / Forever all return nil (the call
+// proceeds); GrantSession also memos the (tool, resource) pair so a
+// follow-up call within the session bypasses the prompter. GrantDeny
+// returns the original denial (or the prompter-supplied error if
+// non-nil).
+func (g *Guard) escalateForTool(ctx context.Context, tool, path string, denial error) error {
+	sessionID := pathguardSessionID(ctx)
+	agentName := pathguardAgentName(ctx)
+	req := PermissionRequest{
+		ToolName:     tool,
+		Resource:     path,
+		AgentName:    agentName,
+		DenialReason: denial.Error(),
+		SessionID:    sessionID,
+		Mode:         permissionmode.ModeAskUser,
+	}
+	grant := g.prompter.RequestPermission(ctx, req)
+	switch grant.Scope {
+	case GrantOnce:
+		return nil
+	case GrantSession:
+		g.rememberSessionAllow(sessionID, tool, path)
+		return nil
+	case GrantForever:
+		// Slice 4 wires the permissions.yaml writer; for now treat
+		// Forever identically to Session so the wire shape is stable
+		// and the operator's intent is honoured for the rest of the
+		// session.
+		g.rememberSessionAllow(sessionID, tool, path)
+		return nil
+	case GrantDeny:
+		if grant.Err != nil {
+			return grant.Err
+		}
+		return denial
+	default:
+		// Unknown scope — fail closed to the original denial. The
+		// prompter is in-tree; this branch is defensive against
+		// future enum additions that forget to update this switch.
+		return denial
+	}
 }
 
 // checkPlanModeScoped applies the Plan-mode overlay for a single
@@ -513,12 +747,40 @@ func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) e
 		}
 	}
 
+	denial, deniedResource := g.computeCommandDenial(tool, command, mode)
+	if denial == nil {
+		return nil
+	}
+
+	if mode != permissionmode.ModeAskUser || g.prompter == nil {
+		return denial
+	}
+	return g.escalateForTool(ctx, tool, deniedResource, denial)
+}
+
+// computeCommandDenial evaluates the tokenised command against the
+// matcher + denied-roots and returns the first denial encountered
+// together with the resource string that triggered it. Returns (nil,
+// "") when every path-shaped token passes.
+//
+// Extracted from CheckCommandForTool so the ask-user escalation site
+// can decide independently of the underlying decision flow. Under
+// ModeAskUser the per-session allow set short-circuits the matcher
+// per token; outside ModeAskUser the allow set is ignored.
+func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.Mode) (error, string) {
 	if g.perms == nil || tool == "" {
-		return g.CheckCommand(command)
+		if err := g.CheckCommand(command); err != nil {
+			return err, command
+		}
+		return nil, ""
 	}
 
 	home, _ := os.UserHomeDir()
 	cwd, _ := os.Getwd()
+	_ = mode // session-allow consultation handled by the caller via
+	// the rememberSessionAllow / isSessionAllowed surface — keep
+	// computeCommandDenial mode-agnostic so the escalation site is
+	// the single source of truth for the ask-user branch.
 
 	for _, tok := range tokenize(command) {
 		if !looksLikePath(tok) {
@@ -535,7 +797,7 @@ func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) e
 		if decision, matched := g.perms.Match(tool, abs); matched {
 			switch decision {
 			case "deny":
-				return fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config", abs, tool)
+				return fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config", abs, tool), abs
 			case "allow":
 				continue // exempt from legacy check
 			}
@@ -551,11 +813,34 @@ func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) e
 				continue
 			}
 			if strings.HasPrefix(abs, d+string(filepath.Separator)) || abs == d {
-				return fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d)
+				return fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d), abs
 			}
 		}
 	}
-	return nil
+	return nil, ""
+}
+
+// pathguardSessionID extracts the active session ID from the tool-
+// invocation ctx using the canonical session.IDKey{}. Empty when no
+// session is stamped (test harnesses, legacy call sites).
+func pathguardSessionID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	v, _ := ctx.Value(session.IDKey{}).(string)
+	return v
+}
+
+// pathguardAgentName extracts the per-turn agent override (set by the
+// engine's delegation / @-mention paths) from ctx. Empty when no
+// override is present, which is the dominant case for sessions
+// driven by their persistent agent_id. Best-effort: the prompter
+// uses the value for diagnostic stamping only.
+func pathguardAgentName(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return session.StreamAgentOverrideFromContext(ctx)
 }
 
 // checkPlanModeCommand applies the Plan-mode overlay to a tokenised

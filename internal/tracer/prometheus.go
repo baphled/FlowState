@@ -18,6 +18,13 @@ type prometheusRecorder struct {
 	contextWindowTokens  *prometheus.GaugeVec
 	compressionTokensSav *prometheus.CounterVec
 	compressionOverhead  *prometheus.CounterVec
+	// permissionPending tracks in-flight permission requests suspended
+	// awaiting an operator grant under ModeAskUser. Plan §11 R4
+	// (Permission Mode ModeAskUser Extension, May 2026). No labels —
+	// the gauge is daemon-wide; per-session breakdowns are out of
+	// scope for v1 and would inflate cardinality without a clear
+	// operations story.
+	permissionPending prometheus.Gauge
 }
 
 // NewPrometheusRecorder returns a Recorder backed by Prometheus metrics registered with reg.
@@ -84,6 +91,22 @@ func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
 				"== 0) increment neither this counter nor " +
 				"flowstate_compression_tokens_saved_total.",
 		}, []string{"agent_id"}),
+		// Permission Mode ModeAskUser Extension plan (May 2026) §11 R4.
+		// The gauge is the production-visible "stuck suspended request"
+		// signal. Operators page on `permission_pending > 50` for >5 min
+		// (the auto-Deny timeout is 5 min by default; sustained
+		// accumulation past that threshold means the prompter or the
+		// HTTP handler is broken).
+		permissionPending: promauto.With(reg).NewGauge(prometheus.GaugeOpts{
+			Name: "flowstate_permission_pending",
+			Help: "Current count of permission requests suspended awaiting " +
+				"an operator grant under ModeAskUser. Incremented by the " +
+				"PermissionPrompter when it Registers a request; decremented " +
+				"on EventPermissionGranted, EventPermissionDenied, or " +
+				"EventPermissionTimeout. A sustained non-zero reading past " +
+				"the 5-minute auto-deny timeout suggests the prompter or " +
+				"the operator-grant HTTP handler is broken.",
+		}),
 	}
 }
 
@@ -179,4 +202,25 @@ func (p *prometheusRecorder) RecordCompressionOverheadTokens(agentID string, ove
 		return
 	}
 	p.compressionOverhead.WithLabelValues(agentID).Add(float64(overheadTokens))
+}
+
+// IncPermissionPending bumps the permission_pending gauge by one.
+// Permission Mode ModeAskUser Extension plan (May 2026) §11 R4.
+//
+// Side effects:
+//   - Increments the flowstate_permission_pending gauge.
+func (p *prometheusRecorder) IncPermissionPending() {
+	p.permissionPending.Inc()
+}
+
+// DecPermissionPending decrements the permission_pending gauge by
+// one. The Prometheus Gauge type does not panic on negative values
+// but a negative reading would lie to dashboards — call sites MUST
+// pair every Inc with exactly one Dec. The Slice 2 wiring guarantees
+// the pairing: Inc on Register; Dec on grant / deny / timeout.
+//
+// Side effects:
+//   - Decrements the flowstate_permission_pending gauge.
+func (p *prometheusRecorder) DecPermissionPending() {
+	p.permissionPending.Dec()
 }

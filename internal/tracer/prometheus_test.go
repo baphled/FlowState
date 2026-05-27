@@ -199,7 +199,60 @@ var _ = Describe("PrometheusRecorder", func() {
 			Expect(family.GetHelp()).To(ContainSubstring("negative"))
 		})
 	})
+
+	// Permission Mode ModeAskUser Extension plan (May 2026) §11 R4.
+	// The permission_pending gauge is the production-visible signal
+	// for "stuck suspended requests" — the slice 2 wiring pairs
+	// Inc on PermissionPrompter.Register with Dec on every grant /
+	// deny / timeout subscriber call.
+	Describe("Permission pending gauge", func() {
+		It("tracks Inc/Dec correctly and clamps to zero at rest", func() {
+			rec.IncPermissionPending()
+			rec.IncPermissionPending()
+			rec.IncPermissionPending()
+			val := gaugeNoLabels(reg, "flowstate_permission_pending")
+			Expect(val).To(Equal(3.0),
+				"three Inc calls MUST land as a gauge reading of 3 — the gauge is the operator's at-a-glance signal of in-flight prompts")
+
+			rec.DecPermissionPending()
+			val = gaugeNoLabels(reg, "flowstate_permission_pending")
+			Expect(val).To(Equal(2.0))
+
+			rec.DecPermissionPending()
+			rec.DecPermissionPending()
+			val = gaugeNoLabels(reg, "flowstate_permission_pending")
+			Expect(val).To(Equal(0.0),
+				"after equal Inc/Dec pairs the gauge MUST return to zero — paired wiring is the load-bearing invariant the subscriber/grant handler maintains")
+		})
+
+		It("documents the diagnostic intent in the Help text", func() {
+			rec.IncPermissionPending()
+			rec.DecPermissionPending()
+			family := gatherMetricFamily(reg, "flowstate_permission_pending")
+			Expect(family.GetHelp()).To(ContainSubstring("ModeAskUser"),
+				"the Help text MUST tell operators the gauge is tied to ModeAskUser so dashboards can correlate spikes with mode-dial activity")
+			Expect(family.GetHelp()).To(ContainSubstring("5-minute"),
+				"the Help text MUST mention the 5-minute auto-deny timeout so on-call engineers know when sustained accumulation is genuinely anomalous")
+		})
+	})
 })
+
+// gaugeNoLabels returns the value of an unlabelled gauge metric.
+// Distinct from counterValue because the permission_pending gauge is
+// daemon-wide (no label cardinality).
+func gaugeNoLabels(reg *prometheus.Registry, name string) float64 {
+	family := gatherMetricFamily(reg, name)
+	metrics := family.GetMetric()
+	if len(metrics) == 0 {
+		Fail(fmt.Sprintf("no metric samples for %q", name))
+		return 0
+	}
+	if g := metrics[0].GetGauge(); g != nil {
+		return g.GetValue()
+	}
+	Fail(fmt.Sprintf("metric %q is not a gauge", name))
+	return 0
+}
 
 func gatherMetricFamily(reg *prometheus.Registry, name string) *dto.MetricFamily {
 	families, err := reg.Gather()

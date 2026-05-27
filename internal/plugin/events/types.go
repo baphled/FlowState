@@ -133,4 +133,24 @@ const (
 	// xml_bleed_detected) so dashboards group by failure mode without
 	// re-parsing error strings.
 	EventToolArgsValidationFailed = "tool.args.validation_failed"
+	// Permission Mode ModeAskUser Extension (May 2026) Slice 2.
+	//
+	// EventPermissionRequired fires when pathguard or the engine
+	// runtime-allowlist gate would otherwise return an access-denied
+	// error AND the session is in ModeAskUser AND a PermissionPrompter
+	// is wired. The suspended tool-dispatch goroutine then blocks on
+	// the permissionrequest.Registry until the operator answers via
+	// the inline UI prompt (Slice 3) or the 5-minute timeout fires.
+	//
+	// EventPermissionGranted / EventPermissionDenied / EventPermissionTimeout
+	// announce the resolution outcome so the SSE bridge (Slice 3), the
+	// permission_pending gauge subscriber, and the eventlogger all see
+	// the lifecycle close. The bus event lifecycle is intentionally
+	// independent of the pathguard / engine effect path — the effect
+	// is applied via the registry's grant channel; the events are pure
+	// observability.
+	EventPermissionRequired = "permission.required"
+	EventPermissionGranted  = "permission.granted"
+	EventPermissionDenied   = "permission.denied"
+	EventPermissionTimeout  = "permission.timeout"
 )
