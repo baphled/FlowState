@@ -260,6 +260,24 @@ type Manager struct {
 	// CancelInflight looks up the cancel and fires it; the turn's goroutine
 	// deregisters on exit.
 	inflight map[string]context.CancelFunc
+
+	// mcpGrantsMu guards mcpGrants.
+	mcpGrantsMu sync.RWMutex
+	// mcpGrants holds in-memory per-session MCP server grants accumulated
+	// via ModeAskUser "Allow this session" prompts. Permission Mode
+	// ModeAskUser Extension plan (May 2026) Slice 5.
+	//
+	// Distinct from Session.PermissionMode + permissions.yaml: this map
+	// is intentionally NOT persisted to the session sidecar. The plan
+	// §4 Slice 5 explicitly contracts the "session" scope as in-memory-
+	// only — operators get a per-session grant that evaporates on
+	// daemon restart, distinct from the "forever" scope which writes to
+	// permissions.yaml.
+	//
+	// Stored as a set-like map[string]struct{} so re-grants are
+	// idempotent at lookup time. Reads via SessionMCPGrants take an
+	// RLock; writes via AppendSessionMCPGrant take the write lock.
+	mcpGrants map[string]map[string]struct{}
 }
 
 // NewManager creates a new session manager with the given streamer.
@@ -277,7 +295,61 @@ func NewManager(streamer streaming.Streamer) *Manager {
 		streamer:      streamer,
 		notifications: make(map[string][]streaming.CompletionNotificationEvent),
 		inflight:      make(map[string]context.CancelFunc),
+		mcpGrants:     make(map[string]map[string]struct{}),
 	}
+}
+
+// AppendSessionMCPGrant records an in-memory MCP server grant for the
+// supplied session. The grant persists for the lifetime of the running
+// daemon and is NOT written to the session sidecar — Permission Mode
+// ModeAskUser Extension plan (May 2026) Slice 5 contracts the
+// "session" scope as in-memory-only.
+//
+// Returns nil on success (including on a re-grant — the operation is
+// idempotent). Returns ErrSessionNotFound when sessionID is unknown to
+// the manager so the API handler can surface a 404 distinctly from a
+// successful no-op.
+//
+// Side effects:
+//   - Appends mcpServer to mcpGrants[sessionID] under the write lock.
+func (m *Manager) AppendSessionMCPGrant(sessionID, mcpServer string) error {
+	m.mu.RLock()
+	_, ok := m.sessions[sessionID]
+	m.mu.RUnlock()
+	if !ok {
+		return ErrSessionNotFound
+	}
+
+	m.mcpGrantsMu.Lock()
+	defer m.mcpGrantsMu.Unlock()
+	servers, ok := m.mcpGrants[sessionID]
+	if !ok {
+		servers = make(map[string]struct{})
+		m.mcpGrants[sessionID] = servers
+	}
+	servers[mcpServer] = struct{}{}
+	return nil
+}
+
+// SessionMCPGrants returns a snapshot of the MCP servers granted to
+// sessionID via the ModeAskUser "Allow this session" path. Order is
+// not stable (set semantics); callers that need a stable order must
+// sort the returned slice. Returns an empty slice when no grants
+// exist for the session — never returns nil.
+//
+// Concurrency: read-only — takes mcpGrantsMu under RLock.
+func (m *Manager) SessionMCPGrants(sessionID string) []string {
+	m.mcpGrantsMu.RLock()
+	defer m.mcpGrantsMu.RUnlock()
+	servers, ok := m.mcpGrants[sessionID]
+	if !ok {
+		return []string{}
+	}
+	out := make([]string, 0, len(servers))
+	for s := range servers {
+		out = append(out, s)
+	}
+	return out
 }
 
 // MarkEndedFromEvent flips the matching session's status to

@@ -1756,6 +1756,13 @@ type PermissionRequiredEventData struct {
 	ToolName     string
 	AgentName    string
 	Resource     string
+	// ResourceKind disambiguates the Resource field — "path" for
+	// filesystem-tool denials (Slice 2 + pathguard), "mcp_server" for
+	// MCP-server-tool denials (Slice 5). Empty string is treated as
+	// "path" by readers for backward compatibility with payloads
+	// emitted before Slice 5. Permission Mode ModeAskUser Extension
+	// plan (May 2026).
+	ResourceKind string
 	DenialReason string
 	Provider     string
 	Model        string
@@ -1773,6 +1780,7 @@ func (d PermissionRequiredEventData) MarshalJSON() ([]byte, error) {
 		ToolName     string `json:"tool_name"`
 		AgentName    string `json:"agent_name,omitempty"`
 		Resource     string `json:"resource,omitempty"`
+		ResourceKind string `json:"resource_kind,omitempty"`
 		DenialReason string `json:"denial_reason,omitempty"`
 		Provider     string `json:"provider,omitempty"`
 		Model        string `json:"model,omitempty"`
@@ -1785,6 +1793,7 @@ func (d PermissionRequiredEventData) MarshalJSON() ([]byte, error) {
 		ToolName:     d.ToolName,
 		AgentName:    d.AgentName,
 		Resource:     d.Resource,
+		ResourceKind: d.ResourceKind,
 		DenialReason: d.DenialReason,
 		Provider:     d.Provider,
 		Model:        d.Model,

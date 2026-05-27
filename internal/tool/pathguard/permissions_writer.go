@@ -21,6 +21,19 @@
 // Memory: feedback_atomicity_awareness_uneven. Auth (OAuth refresh,
 // configs) is the cited counter-example that DOESN'T do this today;
 // permissions.yaml IS the security surface that ships v1, so it does.
+//
+// Schema v2 introduction site (Slice 5 of the plan, May 2026):
+//   - AppendMCPGrant adds the agents.<agent>.mcp_servers_grant section
+//     and stamps version: 2 on save.
+//   - AppendAllow continues to round-trip the version field verbatim;
+//     a v1 file remains v1 unless an AppendMCPGrant call promotes it.
+//     This keeps the writer monotonic — older code paths never
+//     downgrade the stamped version.
+//   - v1 daemons in the wild tolerate v2 files via the existing
+//     "version > supportedPermissionsVersion → nil + slog.Warn" path
+//     in internal/config/permissions.go LoadPermissions. The forward-
+//     compat shim is the existing behaviour, not new code.
+//     Memory: feedback_schema_migration_safety.
 
 package pathguard
 
@@ -48,14 +61,27 @@ import (
 // guard is the "round-trip through the matcher" spec: the matcher
 // (config.Permissions) consumes the file the writer produces.
 type permissionsYAMLSchema struct {
-	Version       int                            `yaml:"version,omitempty"`
-	PlanOutputDir string                         `yaml:"plan_output_dir,omitempty"`
-	Tools         map[string]permissionsToolRule `yaml:"tools,omitempty"`
+	Version       int                              `yaml:"version,omitempty"`
+	PlanOutputDir string                           `yaml:"plan_output_dir,omitempty"`
+	Tools         map[string]permissionsToolRule   `yaml:"tools,omitempty"`
+	// Agents holds per-agent grants persisted by Slice 5's AppendMCPGrant
+	// path. v1 callers (AppendAllow) never populate this map; the
+	// writer round-trips it verbatim so a v2 file with both tool and
+	// agent grants survives a subsequent AppendAllow without losing the
+	// agents section.
+	Agents map[string]permissionsAgentRule `yaml:"agents,omitempty"`
 }
 
 type permissionsToolRule struct {
 	Allow []string `yaml:"allow,omitempty"`
 	Deny  []string `yaml:"deny,omitempty"`
+}
+
+// permissionsAgentRule mirrors config.AgentPermissions for the writer's
+// internal schema. Kept in the pathguard package to preserve the
+// dependency direction (config → no pathguard imports today).
+type permissionsAgentRule struct {
+	MCPServersGrant []string `yaml:"mcp_servers_grant,omitempty"`
 }
 
 // PermissionsReloader is the optional seam pathguard's Writer uses to
@@ -164,6 +190,105 @@ func (w *Writer) AppendAllow(tool, glob string) error {
 		return errors.New("permissions writer: path is unconfigured")
 	}
 
+	return w.runLockedMutation(func(current *permissionsYAMLSchema) (mutated bool, err error) {
+		// Idempotency check — if the glob is already present, no
+		// write. This is the cheap path; the operator may click
+		// "forever" twice on the same prompt without producing
+		// duplicate lines.
+		if rule, ok := current.Tools[tool]; ok {
+			for _, existing := range rule.Allow {
+				if existing == glob {
+					return false, nil
+				}
+			}
+		}
+
+		if current.Tools == nil {
+			current.Tools = make(map[string]permissionsToolRule)
+		}
+		rule := current.Tools[tool]
+		rule.Allow = append(rule.Allow, glob)
+		current.Tools[tool] = rule
+		// AppendAllow does NOT promote the schema version — a v1 file
+		// stays v1 unless AppendMCPGrant runs. This keeps the upgrade
+		// monotonic and gives operators a clear inversion point:
+		// "version: 2" appearing in the file means someone clicked
+		// Forever on an MCP grant, not a tool-path grant.
+		return true, nil
+	})
+}
+
+// AppendMCPGrant appends mcpServer to the mcp_servers_grant slice for
+// agent in the YAML at w.path. Behaviour mirrors AppendAllow:
+//
+//   - Acquires the same exclusive flock so concurrent AppendAllow and
+//     AppendMCPGrant calls serialise — a single permissions.yaml only
+//     ever sees one mutation in flight at a time, regardless of which
+//     surface initiated it.
+//   - Idempotent — repeated (agent, mcpServer) appends are no-ops.
+//   - Atomic — temp + fsync + rename + parent fsync. On any failure
+//     the original file is untouched.
+//   - Schema-promoting — sets version: 2 on save. This is the first
+//     and only writer entry point that bumps the file version,
+//     mirroring the plan §11 R3 commit to "v2 introduction site at
+//     the MCP grant write".
+//
+// AppendMCPGrant is the Slice 5 lift point; the API handler invokes
+// it BEFORE calling Resolve on the suspended goroutine so the in-
+// memory matcher reflects the new grant on resume.
+//
+// Returns:
+//   - nil on successful append (file written + optional reload fired).
+//   - nil on idempotency hit (grant already present; no write, no reload).
+//   - A wrapped error on lock timeout, read failure, validation
+//     failure, write failure, or rename failure. The original file is
+//     left untouched on every error path.
+func (w *Writer) AppendMCPGrant(agent, mcpServer string) error {
+	if agent == "" {
+		return errors.New("permissions writer: agent is required")
+	}
+	if mcpServer == "" {
+		return errors.New("permissions writer: mcp_server is required")
+	}
+	if w.path == "" {
+		return errors.New("permissions writer: path is unconfigured")
+	}
+
+	return w.runLockedMutation(func(current *permissionsYAMLSchema) (mutated bool, err error) {
+		if rule, ok := current.Agents[agent]; ok {
+			for _, existing := range rule.MCPServersGrant {
+				if existing == mcpServer {
+					return false, nil
+				}
+			}
+		}
+
+		if current.Agents == nil {
+			current.Agents = make(map[string]permissionsAgentRule)
+		}
+		rule := current.Agents[agent]
+		rule.MCPServersGrant = append(rule.MCPServersGrant, mcpServer)
+		current.Agents[agent] = rule
+		// AppendMCPGrant is the v2 introduction site (plan §11 R3).
+		// Any file written by this path carries version: 2 so v1
+		// daemons see the higher-version signal and fall back via the
+		// existing LoadPermissions guard.
+		current.Version = 2
+		return true, nil
+	})
+}
+
+// runLockedMutation is the shared body of AppendAllow and
+// AppendMCPGrant. The mutate callback receives the parsed schema and
+// returns (mutated, err):
+//   - mutated=false, err=nil  → idempotent no-op. No write, no reload.
+//   - mutated=true,  err=nil  → write + reload.
+//   - any err                 → surface it, no write, no reload.
+//
+// The mutex / flock / atomic-write / reload sequence lives here so
+// every future writer entry point inherits the same guarantees by
+// construction. Memory: feedback_atomicity_awareness_uneven.
+func (w *Writer) runLockedMutation(mutate func(*permissionsYAMLSchema) (bool, error)) error {
 	// Acquire the cross-process exclusive lock. The lock file IS the
 	// permissions.yaml path itself — flock on the path is the same
 	// inode the writer is about to mutate, so a concurrent daemon +
@@ -197,24 +322,13 @@ func (w *Writer) AppendAllow(tool, glob string) error {
 		return err
 	}
 
-	// Idempotency check — if the glob is already present, no write.
-	// This is the cheap path; the operator may click "forever" twice
-	// on the same prompt without producing duplicate lines.
-	if rule, ok := current.Tools[tool]; ok {
-		for _, existing := range rule.Allow {
-			if existing == glob {
-				return nil
-			}
-		}
+	mutated, mutErr := mutate(current)
+	if mutErr != nil {
+		return mutErr
 	}
-
-	// Append in-place. Initialise nested maps / slices as needed.
-	if current.Tools == nil {
-		current.Tools = make(map[string]permissionsToolRule)
+	if !mutated {
+		return nil
 	}
-	rule := current.Tools[tool]
-	rule.Allow = append(rule.Allow, glob)
-	current.Tools[tool] = rule
 
 	// Validate by round-tripping: marshal, then unmarshal into a
 	// fresh schema. If either step fails the original file is

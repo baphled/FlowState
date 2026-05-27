@@ -2544,6 +2544,307 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — scope=forever 
 	})
 })
 
+// Permission Mode ModeAskUser Extension plan (May 2026), Slice 5.
+//
+// The grant handler routes MCP-server-resource grants through a
+// distinct path from path-tool-resource grants:
+//   - scope=forever + ResourceKind=mcp_server + flag ON  → AppendMCPGrant
+//   - scope=forever + ResourceKind=mcp_server + flag OFF → 400 "MCP grant disabled by config"
+//   - scope=session + ResourceKind=mcp_server           → in-memory session-manager grant
+//   - scope=once   + ResourceKind=mcp_server            → no persistence, prompter signal only
+//
+// The flag (features.permission_grant_mcp_enabled, mirrored onto the
+// API server via WithPermissionGrantMCPEnabled) defaults FALSE per
+// plan §6 until ops confirms the v2 schema bump reads cleanly under
+// older daemons in the wild. The "Forever" button still renders for
+// MCP prompts; the operator falls back to Once / Session / Deny when
+// the flag is off.
+var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — MCP server resource (Slice 5)", func() {
+	var (
+		recorder  *httptest.ResponseRecorder
+		streamer  *mockStreamer
+		mgr       *session.Manager
+		reg       *permissionrequest.Registry
+		permsPath string
+	)
+
+	BeforeEach(func() {
+		recorder = httptest.NewRecorder()
+		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		mgr = session.NewManager(streamer)
+		reg = permissionrequest.NewRegistry()
+
+		dir := GinkgoT().TempDir()
+		permsPath = filepath.Join(dir, "permissions.yaml")
+	})
+
+	// seedMCPPending registers a pending PermissionRequest with
+	// ResourceKind="mcp_server" — Slice 5's distinguishing signal.
+	// The Resource is the MCP server name, not a path; AgentName is
+	// the per-turn agent that hit the gate.
+	seedMCPPending := func(sessionID, requestID, agentName, mcpServer string) {
+		Expect(reg.Register(permissionrequest.PermissionRequest{
+			RequestID:    requestID,
+			ToolName:     "mcp_" + mcpServer + "_query",
+			AgentName:    agentName,
+			Resource:     mcpServer,
+			ResourceKind: permissionrequest.ResourceKindMCPServer,
+			SessionID:    sessionID,
+			Mode:         "ask",
+		})).To(Succeed())
+	}
+
+	makeServer := func(writer *pathguard.Writer, mcpEnabled bool) *api.Server {
+		opts := []api.ServerOption{
+			api.WithSessionManager(mgr),
+			api.WithPermissionRegistry(reg),
+			api.WithPermissionGrantForeverEnabled(true),
+			api.WithPermissionGrantMCPEnabled(mcpEnabled),
+		}
+		if writer != nil {
+			opts = append(opts, api.WithPermissionWriter(writer))
+		}
+		return api.NewServer(streamer, agent.NewRegistry(), discovery.NewAgentDiscovery(nil), nil, opts...)
+	}
+
+	driveWait := func(requestID string) chan permissionrequest.PermissionGrant {
+		grantC := make(chan permissionrequest.PermissionGrant, 1)
+		go func() {
+			defer GinkgoRecover()
+			g, werr := reg.Wait(context.Background(), requestID)
+			if werr == nil {
+				grantC <- g
+			}
+		}()
+		time.Sleep(20 * time.Millisecond)
+		return grantC
+	}
+
+	Describe("scope=forever + MCP server resource + flag ON (acceptance §4 Slice 5)", func() {
+		It("calls AppendMCPGrant with (AgentName, Resource) and resolves the grant", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			seedMCPPending(sess.ID, "req-mcp-forever", "coordinator", "vault-rag")
+
+			Expect(os.WriteFile(permsPath, []byte("version: 1\n"), 0o644)).To(Succeed())
+			writer := pathguard.NewWriter(permsPath, nil)
+
+			srv := makeServer(writer, true)
+			grantC := driveWait("req-mcp-forever")
+
+			body := `{"request_id":"req-mcp-forever","scope":"forever"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK),
+				"forever MCP grant with the flag enabled must return 200")
+
+			// The file must contain the new MCP grant AND version: 2.
+			// The v2 schema bump is the writer's responsibility — the
+			// handler doesn't need to know about the version field
+			// (Slice 5 acceptance: schema-version bump documented +
+			// back-compat shim verified).
+			raw, rerr := os.ReadFile(permsPath)
+			Expect(rerr).NotTo(HaveOccurred())
+			var parsed struct {
+				Version int `yaml:"version"`
+				Agents  map[string]struct {
+					MCPServersGrant []string `yaml:"mcp_servers_grant"`
+				} `yaml:"agents"`
+			}
+			Expect(yaml.Unmarshal(raw, &parsed)).To(Succeed())
+			Expect(parsed.Version).To(Equal(2),
+				"the writer promotes the file to version: 2 on MCP grant — the v2 introduction site")
+			Expect(parsed.Agents["coordinator"].MCPServersGrant).To(ContainElement("vault-rag"),
+				"the writer must append the registered Resource (the MCP server name) under agents.<AgentName>.mcp_servers_grant")
+
+			// Resolve still fires — the suspended goroutine resumes.
+			var g permissionrequest.PermissionGrant
+			Eventually(grantC, "1s").Should(Receive(&g))
+			Expect(g.Scope).To(Equal(permissionrequest.ScopeForever))
+		})
+	})
+
+	Describe("scope=forever + MCP server resource + flag OFF (no-code-change rollback)", func() {
+		It("returns 400 'MCP grant disabled by config', does NOT write file, does NOT Resolve", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			seedMCPPending(sess.ID, "req-mcp-disabled", "coordinator", "vault-rag")
+
+			// Seed a v1 file; the handler must leave it alone.
+			seedBody := []byte("version: 1\n")
+			Expect(os.WriteFile(permsPath, seedBody, 0o644)).To(Succeed())
+			writer := pathguard.NewWriter(permsPath, nil)
+
+			srv := makeServer(writer, false) // flag OFF
+			grantC := driveWait("req-mcp-disabled")
+
+			body := `{"request_id":"req-mcp-disabled","scope":"forever"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest),
+				"flag-off MCP forever grant MUST return 400 — not 200, not 500. The 400 distinguishes 'config knob' from 'server error' so the FE can surface 'MCP forever is gated by config' to the operator")
+			Expect(recorder.Body.String()).To(ContainSubstring("MCP grant disabled by config"))
+
+			// File must be byte-identical — no write attempted.
+			after, _ := os.ReadFile(permsPath)
+			Expect(after).To(Equal(seedBody),
+				"flag-off path must NOT touch the file — atomicity preserved")
+
+			// Resolve must NOT fire — the suspended goroutine times
+			// out per the existing path; the operator can pick Once
+			// / Session / Deny instead.
+			Consistently(grantC, "100ms").ShouldNot(Receive(),
+				"Resolve must NOT be called when the MCP flag denies the grant")
+			Expect(reg.PendingCount()).To(Equal(1),
+				"the pending entry must remain so the operator can retry with a different scope")
+		})
+
+		It("returns 400 even when no permissions writer is wired (flag is the primary gate)", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			seedMCPPending(sess.ID, "req-mcp-noflag-nowriter", "coordinator", "vault-rag")
+
+			// No writer + flag off → still 400 from the flag, not
+			// 501 from the writer. The flag is the primary gate.
+			srv := makeServer(nil, false)
+			grantC := driveWait("req-mcp-noflag-nowriter")
+
+			body := `{"request_id":"req-mcp-noflag-nowriter","scope":"forever"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusBadRequest))
+			Consistently(grantC, "100ms").ShouldNot(Receive())
+		})
+	})
+
+	Describe("scope=session + MCP server resource (in-memory only)", func() {
+		It("records the grant on the session manager's in-memory map and resolves", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			seedMCPPending(sess.ID, "req-mcp-session", "coordinator", "mem0")
+
+			// Seed an empty file. The handler must NOT touch it for
+			// the session scope — that's the in-memory-only contract
+			// from plan §4 Slice 5.
+			seedBody := []byte("version: 1\n")
+			Expect(os.WriteFile(permsPath, seedBody, 0o644)).To(Succeed())
+			writer := pathguard.NewWriter(permsPath, nil)
+
+			srv := makeServer(writer, true)
+			grantC := driveWait("req-mcp-session")
+
+			body := `{"request_id":"req-mcp-session","scope":"session"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			// File must be byte-identical — session scope never
+			// writes to permissions.yaml.
+			after, _ := os.ReadFile(permsPath)
+			Expect(after).To(Equal(seedBody),
+				"session-scope MCP grant must NOT touch permissions.yaml — in-memory only")
+
+			// The session manager must record the grant so the
+			// downstream engine can consult it on the next call.
+			grants := mgr.SessionMCPGrants(sess.ID)
+			Expect(grants).To(ContainElement("mem0"),
+				"session-scope MCP grant MUST land in the session manager's in-memory map for the rest of the session")
+
+			// Resolve fires.
+			var g permissionrequest.PermissionGrant
+			Eventually(grantC, "1s").Should(Receive(&g))
+			Expect(g.Scope).To(Equal(permissionrequest.ScopeSession))
+		})
+
+		It("accumulates distinct MCP servers across multiple session-scope grants", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.WriteFile(permsPath, []byte("version: 1\n"), 0o644)).To(Succeed())
+			writer := pathguard.NewWriter(permsPath, nil)
+			srv := makeServer(writer, true)
+
+			for _, server := range []string{"vault-rag", "mem0", "playwright"} {
+				rid := "req-mcp-session-" + server
+				seedMCPPending(sess.ID, rid, "coordinator", server)
+				go func(rid string) {
+					defer GinkgoRecover()
+					_, _ = reg.Wait(context.Background(), rid)
+				}(rid)
+				time.Sleep(10 * time.Millisecond)
+
+				rec := httptest.NewRecorder()
+				body := `{"request_id":"` + rid + `","scope":"session"}`
+				req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+				srv.Handler().ServeHTTP(rec, req)
+				Expect(rec.Code).To(Equal(http.StatusOK), "session scope for %s must succeed", server)
+			}
+
+			grants := mgr.SessionMCPGrants(sess.ID)
+			Expect(grants).To(ConsistOf("vault-rag", "mem0", "playwright"),
+				"all three session-scope MCP grants must accumulate on the same session's in-memory map — cross-call check per plan §4 Slice 5")
+		})
+	})
+
+	Describe("scope=once + MCP server resource (no persistence at any layer)", func() {
+		It("resolves without touching permissions.yaml or the session manager", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			seedMCPPending(sess.ID, "req-mcp-once", "coordinator", "vault-rag")
+
+			seedBody := []byte("version: 1\n")
+			Expect(os.WriteFile(permsPath, seedBody, 0o644)).To(Succeed())
+			writer := pathguard.NewWriter(permsPath, nil)
+
+			srv := makeServer(writer, true)
+			grantC := driveWait("req-mcp-once")
+
+			body := `{"request_id":"req-mcp-once","scope":"once"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			after, _ := os.ReadFile(permsPath)
+			Expect(after).To(Equal(seedBody),
+				"once-scope MCP grant must NOT touch permissions.yaml")
+			Expect(mgr.SessionMCPGrants(sess.ID)).To(BeEmpty(),
+				"once-scope MCP grant must NOT extend the session manager's in-memory map — the grant is single-call")
+
+			var g permissionrequest.PermissionGrant
+			Eventually(grantC, "1s").Should(Receive(&g))
+			Expect(g.Scope).To(Equal(permissionrequest.ScopeOnce))
+		})
+	})
+
+	Describe("scope=deny + MCP server resource (no persistence, existing IsError path)", func() {
+		It("resolves with deny and does not invoke the writer or session manager", func() {
+			sess, err := mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+			seedMCPPending(sess.ID, "req-mcp-deny", "coordinator", "vault-rag")
+
+			seedBody := []byte("version: 1\n")
+			Expect(os.WriteFile(permsPath, seedBody, 0o644)).To(Succeed())
+			writer := pathguard.NewWriter(permsPath, nil)
+
+			srv := makeServer(writer, true)
+			grantC := driveWait("req-mcp-deny")
+
+			body := `{"request_id":"req-mcp-deny","scope":"deny"}`
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/permission-grant", strings.NewReader(body))
+			srv.Handler().ServeHTTP(recorder, req)
+			Expect(recorder.Code).To(Equal(http.StatusOK))
+
+			after, _ := os.ReadFile(permsPath)
+			Expect(after).To(Equal(seedBody))
+			Expect(mgr.SessionMCPGrants(sess.ID)).To(BeEmpty())
+
+			var g permissionrequest.PermissionGrant
+			Eventually(grantC, "1s").Should(Receive(&g))
+			Expect(g.Scope).To(Equal(permissionrequest.ScopeDeny))
+		})
+	})
+})
+
 var _ = Describe("GET /api/v1/models", func() {
 	It("returns providers grouped from the injected ModelLister, sorted alphabetically by provider", func() {
 		lister := func() ([]provider.Model, error) {

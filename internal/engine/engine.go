@@ -20,6 +20,7 @@ import (
 	"github.com/baphled/flowstate/internal/context/factstore"
 	"github.com/baphled/flowstate/internal/hook"
 	"github.com/baphled/flowstate/internal/permissionmode"
+	"github.com/baphled/flowstate/internal/permissionrequest"
 	"github.com/baphled/flowstate/internal/plugin"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/events"
@@ -2579,6 +2580,29 @@ func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]st
 	return allowed
 }
 
+// mcpServerForTool returns the MCP server name that exposes toolName,
+// or "" when no server in mcpServerTools owns it (the tool is a
+// regular non-MCP tool, or the server isn't wired). The lookup is the
+// inverse of BuildAllowedToolSet's expansion at engine.go:2558-2562 —
+// where BuildAllowedToolSet projects (serverName → tools) into the
+// flat allowed map, this projects (toolName → serverName) for the
+// Slice 5 prompter routing. O(N+M) over (servers, tools) is acceptable
+// because mcpServerTools is small (single-digit servers, low-double
+// digits tools each) and the call site fires only on a denied tool
+// dispatch under ModeAskUser.
+//
+// Permission Mode ModeAskUser Extension plan (May 2026) Slice 5.
+func mcpServerForTool(mcpServerTools map[string][]string, toolName string) string {
+	for serverName, names := range mcpServerTools {
+		for _, name := range names {
+			if name == toolName {
+				return serverName
+			}
+		}
+	}
+	return ""
+}
+
 // effectiveAllowedToolsForCtx returns the allowed-tool set for the
 // manifest bound to ctx via WithBoundManifest, falling back to the
 // engine's active manifest when no binding is present. It is the
@@ -4752,10 +4776,28 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			// tools out of the agent's effective set escalate.
 			mode := permissionmode.FromContext(ctx)
 			if mode == permissionmode.ModeAskUser && e.permissionPrompter != nil {
+				// Permission Mode ModeAskUser Extension plan (May 2026)
+				// Slice 5. When the rejected tool name belongs to an
+				// MCP server the agent did NOT declare in its manifest,
+				// route the prompt through ResourceKind="mcp_server" so
+				// the API handler can dispatch the per-(agent, server)
+				// grant path (AppendMCPGrant) instead of the per-(tool,
+				// path) one (AppendAllow). The lookup uses the engine's
+				// own mcpServerTools map — the canonical source of
+				// truth populated at app boot from each MCP server's
+				// tools/list response (matching BuildAllowedToolSet's
+				// expansion).
+				resource := toolCall.Name
+				resourceKind := permissionrequest.ResourceKindPath
+				if serverName := mcpServerForTool(e.mcpServerTools, toolCall.Name); serverName != "" {
+					resource = serverName
+					resourceKind = permissionrequest.ResourceKindMCPServer
+				}
 				grant := e.permissionPrompter.RequestToolPermission(ctx, EnginePermissionRequest{
 					ToolName:     toolCall.Name,
 					AgentName:    agentID,
-					Resource:     toolCall.Name,
+					Resource:     resource,
+					ResourceKind: resourceKind,
 					DenialReason: msg,
 					SessionID:    sessionIDFromContext(ctx),
 					Mode:         mode,
@@ -4765,6 +4807,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 						"tool", toolCall.Name,
 						"agent", agentID,
 						"scope", grant.Scope,
+						"resource_kind", resourceKind,
 					)
 					// Fall through to the regular dispatch path below —
 					// the matched tool's Execute runs and the call

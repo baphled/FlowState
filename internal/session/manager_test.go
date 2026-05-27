@@ -3244,6 +3244,71 @@ var _ = Describe("Manager", func() {
 			})
 		})
 	})
+
+	// Permission Mode ModeAskUser Extension plan (May 2026), Slice 5.
+	//
+	// AppendSessionMCPGrant + SessionMCPGrants are the in-memory seam
+	// the API grant handler uses for scope=="session" + ResourceKind
+	// =="mcp_server" — the operator authorises an MCP server for the
+	// rest of the session without writing to permissions.yaml. Per
+	// plan §4 Slice 5 the grant is in-memory only; the session sidecar
+	// MUST NOT carry it (operator restart re-prompts).
+	Describe("Session-scoped MCP grants (Slice 5)", func() {
+		var (
+			mgr  *session.Manager
+			sess *session.Session
+		)
+
+		BeforeEach(func() {
+			mgr = session.NewManager(newMockStreamer())
+			var err error
+			sess, err = mgr.CreateSession("agent-a")
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("appends a grant and SessionMCPGrants reflects it", func() {
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "vault-rag")).To(Succeed())
+			Expect(mgr.SessionMCPGrants(sess.ID)).To(ConsistOf("vault-rag"))
+		})
+
+		It("accumulates distinct MCP servers under the same session", func() {
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "vault-rag")).To(Succeed())
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "mem0")).To(Succeed())
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "playwright")).To(Succeed())
+			Expect(mgr.SessionMCPGrants(sess.ID)).To(ConsistOf("vault-rag", "mem0", "playwright"))
+		})
+
+		It("is idempotent on a repeated (session, server) pair", func() {
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "vault-rag")).To(Succeed())
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "vault-rag")).To(Succeed())
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "vault-rag")).To(Succeed())
+			Expect(mgr.SessionMCPGrants(sess.ID)).To(Equal([]string{"vault-rag"}),
+				"set-semantics — a repeated grant must not produce a duplicate")
+		})
+
+		It("returns ErrSessionNotFound on an unknown session id", func() {
+			err := mgr.AppendSessionMCPGrant("nonexistent-session", "vault-rag")
+			Expect(err).To(MatchError(session.ErrSessionNotFound))
+		})
+
+		It("returns an empty slice (not nil) when no grants exist", func() {
+			grants := mgr.SessionMCPGrants(sess.ID)
+			Expect(grants).NotTo(BeNil(),
+				"SessionMCPGrants must return an empty slice, never nil — callers may json-marshal it without a special-case")
+			Expect(grants).To(BeEmpty())
+		})
+
+		It("isolates grants between sessions", func() {
+			other, err := mgr.CreateSession("agent-b")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.AppendSessionMCPGrant(sess.ID, "vault-rag")).To(Succeed())
+			Expect(mgr.AppendSessionMCPGrant(other.ID, "mem0")).To(Succeed())
+
+			Expect(mgr.SessionMCPGrants(sess.ID)).To(ConsistOf("vault-rag"))
+			Expect(mgr.SessionMCPGrants(other.ID)).To(ConsistOf("mem0"))
+		})
+	})
 })
 
 // Manager <-> AttachmentStore integration. Plan §6 task-02 AC: the

@@ -943,6 +943,12 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		// fall-back) — the no-code-change rollback path per plan §4.
 		api.WithPermissionWriter(buildPermissionsWriter(params.cfg)),
 		api.WithPermissionGrantForeverEnabled(params.cfg.Features.PermissionGrantForeverEnabled),
+		// Permission Mode ModeAskUser Extension plan (May 2026), Slice 5.
+		// Default-off until ops confirms v2 schema reads cleanly under
+		// older daemons in the wild. With the flag off, MCP "Forever"
+		// grants return 400; in-memory Once and Session scopes are
+		// unaffected. Memory: feedback_schema_migration_safety.
+		api.WithPermissionGrantMCPEnabled(params.cfg.Features.PermissionGrantMCPEnabled),
 	)
 	return &runtimeComponents{
 		engine:               eng,

@@ -60,11 +60,25 @@ const (
 // EventPermissionRequired and re-read by the operator-grant resolver.
 // RequestID is unique across the running daemon — collisions return
 // ErrPermissionRequestExists at Register time.
+//
+// ResourceKind disambiguates the Resource field's semantics:
+//   - ResourceKindPath ("path") — Resource is a filesystem path.
+//     Default for path-tool denials (read/write/edit/bash). The grant
+//     "forever" path writes to tools.<toolName>.allow[].
+//   - ResourceKindMCPServer ("mcp_server") — Resource is an MCP server
+//     name (e.g. "vault-rag"). Slice 5 of the Permission Mode
+//     ModeAskUser Extension plan (May 2026). The grant "forever" path
+//     writes to agents.<agentName>.mcp_servers_grant[] via
+//     AppendMCPGrant; the grant "session" path extends the session's
+//     in-memory MCP allowlist. Empty string defaults to
+//     ResourceKindPath for backward compatibility with Slice 2/3
+//     callers that never populated the field.
 type PermissionRequest struct {
 	RequestID    string
 	ToolName     string
 	AgentName    string
 	Resource     string
+	ResourceKind string
 	DenialReason string
 	Provider     string
 	Model        string
@@ -73,6 +87,16 @@ type PermissionRequest struct {
 	Mode         string
 	CreatedAt    time.Time
 }
+
+// ResourceKindPath identifies a path-tool denial — Resource is a
+// filesystem path. The default value for PermissionRequest.ResourceKind
+// when callers leave the field empty.
+const ResourceKindPath = "path"
+
+// ResourceKindMCPServer identifies an MCP-server-tool denial — Resource
+// is the MCP server name, not a path. Slice 5 of the Permission Mode
+// ModeAskUser Extension plan (May 2026).
+const ResourceKindMCPServer = "mcp_server"
 
 // PermissionGrant is the operator's resolution of a suspended request.
 // The Scope field is the single source of truth — Wait callers branch

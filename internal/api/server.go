@@ -131,6 +131,15 @@ type Server struct {
 	// via the WithPermissionGrantForeverEnabled option — the v1-ship
 	// path is "writer wired and on".
 	permissionGrantForeverEnabled bool
+
+	// permissionGrantMCPEnabled mirrors
+	// features.permission_grant_mcp_enabled from config.yaml. Permission
+	// Mode ModeAskUser Extension plan (May 2026) Slice 5 §6. Default
+	// FALSE — the v2 schema bump ships behind a flag until ops confirms
+	// operator file-edits parse cleanly under v2. With the flag off, a
+	// scope=="forever" grant for ResourceKind="mcp_server" returns 400;
+	// in-memory Once and Session scopes are unaffected.
+	permissionGrantMCPEnabled bool
 }
 
 // DispatcherService is the narrow surface the Dispatcher Service
@@ -280,6 +289,29 @@ func WithPermissionWriter(w *pathguard.Writer) ServerOption {
 //   - A ServerOption that installs the flag value verbatim.
 func WithPermissionGrantForeverEnabled(enabled bool) ServerOption {
 	return func(s *Server) { s.permissionGrantForeverEnabled = enabled }
+}
+
+// WithPermissionGrantMCPEnabled mirrors
+// features.permission_grant_mcp_enabled from config.yaml onto the API
+// server. Permission Mode ModeAskUser Extension plan (May 2026) Slice
+// 5 §6. When true, a scope=="forever" grant whose ResourceKind is
+// "mcp_server" calls pathguard.Writer.AppendMCPGrant before resolving
+// the suspended goroutine. When false, the same shape returns 400
+// "MCP grant disabled by config" and Resolve does NOT fire — the
+// suspended goroutine times out per the existing path.
+//
+// In-memory Once and Session scopes are unaffected by this flag —
+// they go through the session-manager MCP grant map (no file write).
+//
+// Default FALSE via DefaultConfig: the v2 schema bump is verified
+// safe by the round-trip spec in permissions_writer_test.go but the
+// plan §6 keeps the surface flag-gated until ops confirms wild
+// operator files parse cleanly under v2.
+//
+// Returns:
+//   - A ServerOption that installs the flag value verbatim.
+func WithPermissionGrantMCPEnabled(enabled bool) ServerOption {
+	return func(s *Server) { s.permissionGrantMCPEnabled = enabled }
 }
 
 // WithSessions sets the session store for session API routes.
@@ -2916,34 +2948,83 @@ func (s *Server) handlePermissionGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Slice 4 lift point: scope=="forever" persists to permissions.
-	// yaml via the writer BEFORE Resolve so the suspended goroutine
-	// sees the updated matcher on resume. The writer is invoked only
-	// when:
-	//   - The feature flag is on (default true in production).
-	//   - A writer has been wired via WithPermissionWriter.
-	//   - The registry has a pending entry for the request_id (we
-	//     need its ToolName + Resource to compute the glob; the
-	//     payload only carries request_id + scope).
-	// On writer failure we return 500 and do NOT call Resolve — the
-	// suspended goroutine times out per the existing path and the
-	// operator can retry. Memory: feedback_atomicity_awareness_uneven.
-	if scope == permissionrequest.ScopeForever && s.permissionGrantForeverEnabled && s.permissionWriter != nil {
+	// Slice 4 + Slice 5 lift point. The handler routes through the
+	// registered PermissionRequest to discover the ResourceKind, then
+	// dispatches the matching grant effect BEFORE Resolve fires so the
+	// suspended goroutine sees the updated matcher / in-memory grant
+	// state on resume. Memory: feedback_atomicity_awareness_uneven.
+	//
+	// Slice 5 (May 2026) adds the MCP-server branch: when ResourceKind
+	// is "mcp_server", the Forever scope routes to AppendMCPGrant
+	// (per-agent grant) instead of AppendAllow (per-tool path glob).
+	// The Session scope writes to the session-manager's in-memory MCP
+	// grants map. Once and Deny carry no persistence — the prompter's
+	// grant signal is enough.
+	if scope == permissionrequest.ScopeForever || scope == permissionrequest.ScopeSession {
 		pending, ok := s.permissionRegistry.Lookup(req.RequestID)
 		if !ok {
 			http.Error(w, "permission request not found", http.StatusNotFound)
 			return
 		}
-		// Resource for path tools is the path the tool tried to
-		// touch; for bash it's the resolved target the scanner
-		// extracted (recorded on Register at the prompter site).
-		// The writer is purely additive — passing the resource
-		// verbatim as the glob mirrors the operator's grant intent
-		// at exact-path granularity. A future UI surface can widen
-		// the glob via a "broaden to directory" affordance.
-		if err := s.permissionWriter.AppendAllow(pending.ToolName, pending.Resource); err != nil {
-			http.Error(w, "permissions writer failed", http.StatusInternalServerError)
-			return
+
+		// Treat empty ResourceKind as "path" for Slice 2/3 callers
+		// that never populated the field (Slice 4 already shipped
+		// without ResourceKind; the wire shape stays additive).
+		kind := pending.ResourceKind
+		if kind == "" {
+			kind = permissionrequest.ResourceKindPath
+		}
+
+		switch kind {
+		case permissionrequest.ResourceKindMCPServer:
+			if scope == permissionrequest.ScopeForever {
+				// Flag-gated: Slice 5 ships behind
+				// features.permission_grant_mcp_enabled (default
+				// false) until ops confirms v2 schema reads
+				// cleanly. With the flag off, return 400 and do
+				// NOT call Resolve — the suspended goroutine
+				// times out per the existing path.
+				if !s.permissionGrantMCPEnabled {
+					http.Error(w, "MCP grant disabled by config", http.StatusBadRequest)
+					return
+				}
+				if s.permissionWriter == nil {
+					http.Error(w, "permissions writer not configured", http.StatusNotImplemented)
+					return
+				}
+				if err := s.permissionWriter.AppendMCPGrant(pending.AgentName, pending.Resource); err != nil {
+					http.Error(w, "permissions writer failed", http.StatusInternalServerError)
+					return
+				}
+			} else { // ScopeSession
+				if s.sessionManager != nil {
+					if err := s.sessionManager.AppendSessionMCPGrant(id, pending.Resource); err != nil {
+						http.Error(w, "failed to record session grant", http.StatusInternalServerError)
+						return
+					}
+				}
+			}
+
+		case permissionrequest.ResourceKindPath:
+			if scope == permissionrequest.ScopeForever && s.permissionGrantForeverEnabled && s.permissionWriter != nil {
+				// Resource for path tools is the path the tool
+				// tried to touch; for bash it's the resolved
+				// target the scanner extracted (recorded on
+				// Register at the prompter site). The writer is
+				// purely additive — passing the resource verbatim
+				// as the glob mirrors the operator's grant intent
+				// at exact-path granularity. A future UI surface
+				// can widen the glob via a "broaden to directory"
+				// affordance.
+				if err := s.permissionWriter.AppendAllow(pending.ToolName, pending.Resource); err != nil {
+					http.Error(w, "permissions writer failed", http.StatusInternalServerError)
+					return
+				}
+			}
+			// ScopeSession for path tools is not currently wired
+			// into a session-scoped in-memory state — pathguard's
+			// existing in-process grant set is the seam for that,
+			// per Slice 2 §4. Slice 5 does not extend it.
 		}
 	}
 

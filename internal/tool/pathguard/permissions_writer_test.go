@@ -391,6 +391,43 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 				"goroutine B's append must persist")
 		})
 
+		It("AppendMCPGrant serialises with AppendAllow under the same flock", func() {
+			// Cross-method contention proof: AppendAllow and
+			// AppendMCPGrant share the same lock path (the
+			// permissions.yaml inode), so concurrent calls from the
+			// two methods must serialise — no lost agent grant, no
+			// lost tool glob. Permission Mode ModeAskUser Extension
+			// plan (May 2026) Slice 5.
+			writerX := pathguard.NewWriter(permsPath, nil)
+
+			var wg sync.WaitGroup
+			var errAllow, errMCP error
+			wg.Add(2)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				errAllow = writerX.AppendAllow("read", "/cross/contention/**")
+			}()
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				errMCP = writerX.AppendMCPGrant("coordinator", "vault-rag")
+			}()
+			wg.Wait()
+
+			Expect(errAllow).NotTo(HaveOccurred())
+			Expect(errMCP).NotTo(HaveOccurred())
+
+			// Both mutations must be observable in the final file.
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Tools["read"].Allow).To(ContainElement("/cross/contention/**"),
+				"AppendAllow's glob must survive when racing AppendMCPGrant under flock")
+			Expect(loaded.Agents).To(HaveKey("coordinator"))
+			Expect(loaded.Agents["coordinator"].MCPServersGrant).To(ContainElement("vault-rag"),
+				"AppendMCPGrant's server name must survive when racing AppendAllow under flock")
+		})
+
 		It("second appender blocks until the first releases (serialisation proof)", func() {
 			// Two Writer instances sharing the same path file. We
 			// drive a long-running first append via a slow reloader
@@ -449,6 +486,205 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			// some appends would be lost to read-modify-write races.
 			Expect(loaded.Tools["read"].Allow).To(HaveLen(1+expectedAppends),
 				"every concurrent append must persist; a lost append indicates a flock failure")
+		})
+	})
+
+	// Permission Mode ModeAskUser Extension plan (May 2026), Slice 5.
+	// AppendMCPGrant is the per-(agent, mcp_server) sibling of
+	// AppendAllow, writing to the v2-introduced agents.<agent>.
+	// mcp_servers_grant section. The writer is the v2 schema
+	// introduction site (plan §11 R3) and stamps version: 2 on save.
+	Describe("AppendMCPGrant (Slice 5 — per-agent MCP server grants)", func() {
+		BeforeEach(func() {
+			seedPermissionsFile(permsPath, map[string]map[string][]string{
+				"read": {"allow": {"/seed/**"}},
+			})
+			writer = pathguard.NewWriter(permsPath, nil)
+		})
+
+		It("appends agents.<agent>.mcp_servers_grant and stamps version: 2", func() {
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil(),
+				"AppendMCPGrant promotes to version: 2; LoadPermissions must continue to parse the file under the bumped supportedPermissionsVersion constant")
+			Expect(loaded.Version).To(Equal(2),
+				"AppendMCPGrant is the v2 schema introduction site per plan §11 R3")
+			Expect(loaded.Agents).To(HaveKey("coordinator"))
+			Expect(loaded.Agents["coordinator"].MCPServersGrant).To(Equal([]string{"vault-rag"}))
+
+			// AppendMCPGrant must NOT touch the existing tools section
+			// — the writer is purely additive across both dimensions.
+			Expect(loaded.Tools["read"].Allow).To(Equal([]string{"/seed/**"}),
+				"AppendMCPGrant must preserve the existing tools section verbatim")
+		})
+
+		It("creates the agents section when no prior agent grants exist", func() {
+			// Fresh file with NO agents section.
+			Expect(writer.AppendMCPGrant("explorer", "mem0")).To(Succeed())
+
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Agents).To(HaveLen(1))
+			Expect(loaded.Agents["explorer"].MCPServersGrant).To(Equal([]string{"mem0"}))
+		})
+
+		It("is idempotent on repeated (agent, server) pairs", func() {
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			before, _ := os.ReadFile(permsPath)
+			beforeMtime := mustStat(permsPath).ModTime()
+			time.Sleep(20 * time.Millisecond)
+
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+
+			after, _ := os.ReadFile(permsPath)
+			Expect(after).To(Equal(before),
+				"idempotent AppendMCPGrant must not change the file bytes")
+			Expect(mustStat(permsPath).ModTime()).To(Equal(beforeMtime),
+				"idempotent AppendMCPGrant must not touch mtime")
+
+			// Reload and confirm only one entry.
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Agents["coordinator"].MCPServersGrant).To(Equal([]string{"vault-rag"}),
+				"the agent's grant list must contain exactly one entry after repeated identical appends")
+		})
+
+		It("accumulates distinct MCP servers under the same agent without duplication", func() {
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant("coordinator", "mem0")).To(Succeed())
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Agents["coordinator"].MCPServersGrant).To(Equal([]string{"vault-rag", "mem0"}),
+				"distinct server names must accumulate in append order; identical re-grants must not duplicate")
+		})
+
+		It("preserves grants across daemon restart (round-trip through LoadPermissions)", func() {
+			// Slice 5 acceptance: "Forever grant for MCP appends
+			// agents.<agent>.mcp_servers_grant and survives daemon
+			// restart." The restart is modelled by constructing a
+			// FRESH Writer + matcher against the same file — the
+			// daemon-restart equivalent in-process.
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant("explorer", "mem0")).To(Succeed())
+
+			// "Restart" — construct a new matcher from the same path.
+			reloaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reloaded.Version).To(Equal(2))
+			Expect(reloaded.Agents).To(HaveLen(2))
+			Expect(reloaded.Agents["coordinator"].MCPServersGrant).To(Equal([]string{"vault-rag"}))
+			Expect(reloaded.Agents["explorer"].MCPServersGrant).To(Equal([]string{"mem0"}))
+		})
+
+		It("errors on empty agent or empty mcp_server", func() {
+			Expect(writer.AppendMCPGrant("", "vault-rag")).To(HaveOccurred())
+			Expect(writer.AppendMCPGrant("coordinator", "")).To(HaveOccurred())
+		})
+
+		It("leaves the file untouched on a validation failure path (atomicity)", func() {
+			// Make the directory unwritable so CreateTemp fails. The
+			// writer must surface the error and leave the file
+			// byte-identical — including NO promotion to version: 2,
+			// because nothing was written.
+			Expect(os.Chmod(dir, 0o555)).To(Succeed())
+			DeferCleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+			originalBytes, _ := os.ReadFile(permsPath)
+			err := writer.AppendMCPGrant("coordinator", "vault-rag")
+			Expect(err).To(HaveOccurred(),
+				"a write failure on AppendMCPGrant must surface as an error")
+
+			currentBytes, readErr := os.ReadFile(permsPath)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(currentBytes).To(Equal(originalBytes),
+				"the original file must be byte-identical after a failed AppendMCPGrant — no torn write, no half-promoted version field")
+		})
+	})
+
+	// Permission Mode ModeAskUser Extension plan (May 2026), Slice 5,
+	// §12 R3 / §14 schema_migration_safety acceptance.
+	//
+	// Round-trip both directions:
+	//   - A v2 file (written by AppendMCPGrant) is loaded by the
+	//     LoadPermissions reader without panic. The reader treats v2
+	//     as supported because supportedPermissionsVersion was bumped
+	//     in this slice.
+	//   - A pre-Slice-5 v1 file (no version field, or version: 1) is
+	//     loaded under the bumped reader as v1 — the new reader is
+	//     backward compatible.
+	//   - A FORWARD-compat probe: a hand-crafted version: 3 file is
+	//     loaded by the v2 reader (this build) and returns nil +
+	//     slog.Warn via the existing "version too high → no
+	//     permissions" path. This is the same shim a v1 daemon in the
+	//     wild uses when it encounters a v2 file written by this
+	//     build — the round-trip safety is proven by exercising the
+	//     identical code path on a v3 input. Memory:
+	//     feedback_schema_migration_safety.
+	Describe("schema v1 ↔ v2 round-trip (Slice 5 §12 R3 / §14)", func() {
+		It("v2 file round-trips through the v2 LoadPermissions reader without panic", func() {
+			writer := pathguard.NewWriter(permsPath, nil)
+			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred(),
+				"the v2 reader must parse files written by the v2 writer without error — the foundational round-trip")
+			Expect(loaded).NotTo(BeNil(),
+				"v2 files must NOT fall through the 'version too high' silent-nil path on the bumped supportedPermissionsVersion")
+			Expect(loaded.Version).To(Equal(2))
+			Expect(loaded.Agents["coordinator"].MCPServersGrant).To(Equal([]string{"vault-rag"}))
+		})
+
+		It("pre-Slice-5 v1 file (no version field) still loads under the v2 reader as v1", func() {
+			// Hand-write a pre-Slice-5 permissions.yaml — no version
+			// field, just a tools section. This is the on-disk shape
+			// a daemon upgraded from Slice 4 will encounter on first
+			// boot post-upgrade.
+			legacyYAML := "tools:\n  read:\n    allow:\n      - \"/legacy/**\"\n"
+			Expect(os.WriteFile(permsPath, []byte(legacyYAML), 0o644)).To(Succeed())
+
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred(),
+				"missing-version field is the canonical 'unversioned' signal and MUST NOT panic the v2 reader")
+			Expect(loaded).NotTo(BeNil(),
+				"legacy v1 files MUST continue to load through the v2 reader — no silent downgrade")
+			Expect(loaded.Version).To(Equal(0),
+				"unmarshalling a missing version field yields the int zero value; the reader treats this as v1 by precedent")
+			Expect(loaded.Tools["read"].Allow).To(Equal([]string{"/legacy/**"}))
+		})
+
+		It("v1 file (explicit version: 1) loads under the v2 reader unchanged", func() {
+			explicitV1 := "version: 1\ntools:\n  read:\n    allow:\n      - \"/explicit/**\"\n"
+			Expect(os.WriteFile(permsPath, []byte(explicitV1), 0o644)).To(Succeed())
+
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.Version).To(Equal(1),
+				"an explicit v1 file stays v1 — the v2 reader is monotonic, not migrating")
+			Expect(loaded.Tools["read"].Allow).To(Equal([]string{"/explicit/**"}))
+		})
+
+		It("a v3 file (hypothetical future version) returns nil + slog.Warn (forward-compat shim)", func() {
+			// This is the load-bearing round-trip safety assertion:
+			// the EXISTING forward-compat path in LoadPermissions
+			// ("version > supportedPermissionsVersion → nil + warn")
+			// is what protects v1 daemons in the wild from this
+			// build's v2 writer output. We exercise the same code
+			// path with v3 to prove the shim is intact under the v2
+			// reader. Memory: feedback_schema_migration_safety.
+			futureYAML := "version: 3\ntools:\n  read:\n    allow:\n      - \"/future/**\"\n"
+			Expect(os.WriteFile(permsPath, []byte(futureYAML), 0o644)).To(Succeed())
+
+			loaded, err := config.LoadPermissions(permsPath)
+			Expect(err).NotTo(HaveOccurred(),
+				"a higher-than-supported version must NOT error — the daemon falls back to legacy guard silently with a warning")
+			Expect(loaded).To(BeNil(),
+				"the forward-compat shim returns (nil, nil); callers fall through to the legacy VaultPath path")
 		})
 	})
 })

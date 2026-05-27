@@ -433,6 +433,202 @@ var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 			})
 		})
 
+		// Permission Mode ModeAskUser Extension plan (May 2026) Slice 5.
+		//
+		// When the rejected tool name belongs to an MCP server the agent
+		// did NOT declare in its manifest, the prompter receives a
+		// request whose Resource is the MCP server NAME (e.g.
+		// "vault-rag") and ResourceKind is "mcp_server" — distinct
+		// from the path-tool shape (Resource=toolName,
+		// ResourceKind="path"). The API handler downstream branches on
+		// ResourceKind to dispatch the per-(agent, server) grant
+		// effect (AppendMCPGrant) vs the per-(tool, path) one
+		// (AppendAllow).
+		//
+		// Floor (memory: project_flowstate_agent_tools_fail_closed)
+		// preserved: an MCP tool name that isn't even registered in
+		// the engine's mcpServerTools map (typo, not-wired server)
+		// stays on the path-shape default — the prompter is consulted
+		// but with the generic tool-name resource. The session manager
+		// + permissions writer would then see a path-shape grant; the
+		// prompter call itself proves the floor isn't widened by the
+		// MCP routing.
+		When("the rejected tool belongs to an MCP server the agent didn't declare (A.1.5c — Slice 5 MCP routing)", func() {
+			It("populates the prompter request with Resource=server-name and ResourceKind=mcp_server under ModeAskUser", func() {
+				manifest := agent.Manifest{
+					ID:   "coordinator",
+					Name: "Coordinator",
+					// Manifest does NOT declare the vault-rag MCP
+					// server — the gate triggers on the missing tool
+					// in the effective set, and Slice 5 routes the
+					// prompt through the MCP-server resource shape.
+				}
+				fakeMCPTool := &executableMockTool{
+					name:        "mcp_vault-rag_query_vault",
+					description: "fake MCP tool",
+					execResult:  tool.Result{Output: "mcp output post-grant"},
+				}
+				prompter := &spyEnginePrompter{grant: engine.EnginePermissionGrant{
+					Allowed: true,
+					Scope:   "session",
+				}}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				cfg := engine.Config{
+					Manifest:           manifest,
+					AgentRegistry:      agent.NewRegistry(),
+					Registry:           providerReg,
+					ChatProvider:       &mockProvider{name: "spy"},
+					PermissionPrompter: prompter,
+					// MCPServerTools wires the engine's lookup map so
+					// the gate can recognise mcp_vault-rag_query_vault
+					// as belonging to the vault-rag server. Mirrors
+					// the BuildAllowedToolSet expansion side at
+					// engine.go:2558-2562.
+					MCPServerTools: map[string][]string{
+						"vault-rag": {"mcp_vault-rag_query_vault", "mcp_vault-rag_list_vaults"},
+					},
+				}
+				eng := engine.New(cfg)
+				eng.AddTool(fakeMCPTool)
+
+				ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeAskUser)
+				result, err := eng.ExecuteToolCallForTest(ctx, "sess-mcp-grant", &provider.ToolCall{
+					ID:        "call-mcp",
+					Name:      "mcp_vault-rag_query_vault",
+					Arguments: map[string]any{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prompter.calls).To(Equal(1),
+					"the prompter MUST fire exactly once on an MCP gate denial under ModeAskUser — Slice 5 closure")
+				Expect(prompter.lastReq.ToolName).To(Equal("mcp_vault-rag_query_vault"),
+					"ToolName carries the original call name verbatim regardless of MCP routing")
+				Expect(prompter.lastReq.Resource).To(Equal("vault-rag"),
+					"Resource MUST be the MCP server name — NOT the tool name — when the engine recognises the call as MCP-owned. The API handler branches on this to call AppendMCPGrant(agent, mcpServer)")
+				Expect(prompter.lastReq.ResourceKind).To(Equal("mcp_server"),
+					"ResourceKind MUST be 'mcp_server' so the API handler can distinguish the persistence path from the path-tool default")
+				Expect(prompter.lastReq.AgentName).To(Equal("coordinator"))
+				Expect(prompter.lastReq.Mode).To(Equal(permissionmode.ModeAskUser))
+				Expect(result.IsError).To(BeFalse(),
+					"a granted MCP prompt MUST resume dispatch — the matched MCP tool's Execute runs")
+				Expect(result.Output).To(Equal("mcp output post-grant"))
+				Expect(fakeMCPTool.execCalled).To(BeTrue(),
+					"the load-bearing assertion: a granted MCP prompt must proceed to Execute, mirroring the path-tool grant path")
+			})
+
+			It("does NOT consult the prompter under Default mode — regression guard for MCP routing", func() {
+				// Same exact setup as the Ask-mode spec above, but no
+				// ModeAskUser stamp on the context. The gate MUST
+				// surface the existing IsError tool_result and the
+				// prompter MUST stay quiet — even though Slice 5
+				// added the MCP routing branch, the routing only
+				// applies INSIDE the ModeAskUser conditional.
+				manifest := agent.Manifest{
+					ID:   "coordinator",
+					Name: "Coordinator",
+				}
+				fakeMCPTool := &executableMockTool{
+					name:        "mcp_vault-rag_query_vault",
+					description: "fake MCP tool",
+					execResult:  tool.Result{Output: "should never run"},
+				}
+				prompter := &spyEnginePrompter{grant: engine.EnginePermissionGrant{
+					Allowed: true, // would grant if consulted — but it must not be
+				}}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				cfg := engine.Config{
+					Manifest:           manifest,
+					AgentRegistry:      agent.NewRegistry(),
+					Registry:           providerReg,
+					ChatProvider:       &mockProvider{name: "spy"},
+					PermissionPrompter: prompter,
+					MCPServerTools: map[string][]string{
+						"vault-rag": {"mcp_vault-rag_query_vault"},
+					},
+				}
+				eng := engine.New(cfg)
+				eng.AddTool(fakeMCPTool)
+
+				// No mode stamp ⇒ FromContext returns ModeDefault.
+				result, err := eng.ExecuteToolCallForTest(context.Background(), "sess-mcp-default", &provider.ToolCall{
+					ID:        "call-mcp-default",
+					Name:      "mcp_vault-rag_query_vault",
+					Arguments: map[string]any{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prompter.calls).To(Equal(0),
+					"Default mode MUST NOT consult the prompter for MCP-tool denials — Slice 5's MCP routing lives INSIDE the ModeAskUser conditional, never widens Default")
+				Expect(result.IsError).To(BeTrue(),
+					"Default mode regression — the existing 'not available to agent' IsError MUST fire unchanged for MCP-tool denials")
+				Expect(result.Output).To(ContainSubstring("not available to agent"))
+				Expect(fakeMCPTool.execCalled).To(BeFalse())
+			})
+
+			It("falls back to ResourceKind=path when the tool name isn't recognised as an MCP tool (floor)", func() {
+				// An MCP-naming-convention typo (mcp_vault-rag_QUERY
+				// vs mcp_vault-rag_query_vault) leaves the lookup
+				// returning empty — the gate then treats the call as
+				// a normal path-tool denial with Resource=ToolName.
+				// This pins the floor: Slice 5's MCP routing is
+				// surgical — it only fires when the lookup matches,
+				// it never invents an MCP server from a guess.
+				manifest := agent.Manifest{
+					ID:   "coordinator",
+					Name: "Coordinator",
+				}
+				// Register the typo tool so the matched-tool branch
+				// fires (otherwise we'd hit the skill-redirect path,
+				// not the prompter path — the matched-tool branch is
+				// where the prompter consultation lives).
+				typoTool := &executableMockTool{
+					name:        "mcp_vault-rag_QUERY", // typo / unregistered MCP shape
+					description: "typo tool",
+					execResult:  tool.Result{Output: "should not run unless prompter grants"},
+				}
+				prompter := &spyEnginePrompter{grant: engine.EnginePermissionGrant{
+					Allowed: true,
+					Scope:   "once",
+				}}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(&mockProvider{name: "spy"})
+				cfg := engine.Config{
+					Manifest:           manifest,
+					AgentRegistry:      agent.NewRegistry(),
+					Registry:           providerReg,
+					ChatProvider:       &mockProvider{name: "spy"},
+					PermissionPrompter: prompter,
+					MCPServerTools: map[string][]string{
+						// The vault-rag server's CANONICAL tool name
+						// — the typoTool name does NOT appear here.
+						"vault-rag": {"mcp_vault-rag_query_vault"},
+					},
+				}
+				eng := engine.New(cfg)
+				eng.AddTool(typoTool)
+
+				ctx := permissionmode.WithMode(context.Background(), permissionmode.ModeAskUser)
+				_, err := eng.ExecuteToolCallForTest(ctx, "sess-mcp-typo", &provider.ToolCall{
+					ID:        "call-mcp-typo",
+					Name:      "mcp_vault-rag_QUERY",
+					Arguments: map[string]any{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prompter.calls).To(Equal(1),
+					"the prompter fires for the matched-tool-but-out-of-set denial regardless of MCP recognition — the floor is the path-tool default")
+				Expect(prompter.lastReq.ResourceKind).To(Equal("path"),
+					"a tool name that doesn't resolve to an MCP server name in mcpServerTools must fall back to the path-tool default — Slice 5's routing is surgical, not greedy")
+				Expect(prompter.lastReq.Resource).To(Equal("mcp_vault-rag_QUERY"),
+					"the floor uses ToolName as Resource — exactly the Slice 2 path-tool wire shape")
+			})
+		})
+
 		It("fires the NEW gate (not the skill redirect) when the skill name COLLIDES with a registered tool that is NOT in the effective set", func() {
 			// Collision edge case from the brief: if `task-tracker`
 			// is BOTH a skill name AND a registered tool name AND

@@ -675,6 +675,25 @@ type FeaturesConfig struct {
 	// slices) but no file is written; the operator's intent is
 	// honoured for the rest of the session via in-memory state.
 	PermissionGrantForeverEnabled bool `json:"permission_grant_forever_enabled" yaml:"permission_grant_forever_enabled"`
+
+	// PermissionGrantMCPEnabled controls whether the ModeAskUser
+	// "Forever" grant scope persists MCP server grants to
+	// permissions.yaml under agents.<agent>.mcp_servers_grant. Slice 5
+	// of the Permission Mode ModeAskUser Extension plan (May 2026).
+	//
+	// Default FALSE via DefaultConfig — Slice 5's schema bump to
+	// version: 2 is verified safe by the round-trip spec in
+	// permissions_writer_test.go but the plan §6 ships the surface
+	// behind a flag until ops confirms operator file-edits in the
+	// wild parse cleanly under v2. The "Forever" button still renders
+	// for MCP prompts; with the flag off the handler returns a 400
+	// "MCP grant disabled by config" and the operator can still pick
+	// Once / Session / Deny without a file write.
+	//
+	// Rollback path: flip this flag false. The in-memory Once and
+	// Session scopes continue to honour MCP grants for the lifetime of
+	// the session — only the YAML persistence is gated.
+	PermissionGrantMCPEnabled bool `json:"permission_grant_mcp_enabled" yaml:"permission_grant_mcp_enabled"`
 }
 
 // AuthConfig holds the FlowState API Auth Track (May 2026) config layer.
@@ -1242,6 +1261,14 @@ func DefaultConfig() *AppConfig {
 			// false path preserves the in-memory-only semantics of
 			// Slices 1-3.
 			PermissionGrantForeverEnabled: true,
+			// PermissionGrantMCPEnabled defaults FALSE — Slice 5 of
+			// the same plan (May 2026 §6) ships the v2 schema bump
+			// + AppendMCPGrant writer behind a flag. The round-trip
+			// safety spec confirms the migration is reversible, but
+			// the plan keeps the surface flag-gated until ops
+			// confirms wild operator files parse cleanly. Operators
+			// opt in via config.yaml.
+			PermissionGrantMCPEnabled: false,
 		},
 	}
 }

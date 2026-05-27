@@ -98,6 +98,7 @@ func (p *permissionPrompter) RequestPermission(ctx context.Context, req pathguar
 		ToolName:     req.ToolName,
 		AgentName:    req.AgentName,
 		Resource:     req.Resource,
+		ResourceKind: permissionrequest.ResourceKindPath,
 		DenialReason: req.DenialReason,
 		SessionID:    req.SessionID,
 		Mode:         req.Mode,
@@ -110,15 +111,26 @@ func (p *permissionPrompter) RequestPermission(ctx context.Context, req pathguar
 }
 
 // RequestToolPermission implements engine.EnginePermissionPrompter.
-// Drives the runtime-allowlist-gate seam — Resource is the rejected
-// tool name; AgentName is the engine-resolved agent ID.
+// Drives the runtime-allowlist-gate seam. Resource is either the
+// rejected tool name (ResourceKind="" / "path") or the MCP server name
+// (ResourceKind="mcp_server") per Slice 5 of the Permission Mode
+// ModeAskUser Extension plan (May 2026). The engine gate populates the
+// kind based on its mcpServerTools map lookup before calling here.
 func (p *permissionPrompter) RequestToolPermission(ctx context.Context, req engine.EnginePermissionRequest) engine.EnginePermissionGrant {
 	requestID := uuid.NewString()
+	kind := req.ResourceKind
+	if kind == "" {
+		// Default for Slice 2/3 callers that never populated the field
+		// — preserves the existing payload shape on the SSE / long-poll
+		// wire surfaces.
+		kind = permissionrequest.ResourceKindPath
+	}
 	storedReq := permissionrequest.PermissionRequest{
 		RequestID:    requestID,
 		ToolName:     req.ToolName,
 		AgentName:    req.AgentName,
 		Resource:     req.Resource,
+		ResourceKind: kind,
 		DenialReason: req.DenialReason,
 		SessionID:    req.SessionID,
 		Mode:         req.Mode,
@@ -190,6 +202,7 @@ func (p *permissionPrompter) publishRequired(req permissionrequest.PermissionReq
 		ToolName:     req.ToolName,
 		AgentName:    req.AgentName,
 		Resource:     req.Resource,
+		ResourceKind: req.ResourceKind,
 		DenialReason: req.DenialReason,
 		SessionID:    req.SessionID,
 		ChainID:      req.ChainID,

@@ -38,10 +38,25 @@ type EnginePermissionPrompter interface {
 // "tool not available to agent" semantics; pathguard uses "path
 // denied" semantics. Both produce EventPermissionRequired on the bus
 // via the prompter's implementation.
+//
+// ResourceKind disambiguates the Resource field's semantics:
+//   - "" (empty) / "path" — Resource is the rejected tool name (Slice 2
+//     non-MCP runtime gate). The grant "forever" path is not yet wired
+//     at the engine seam; the prompter today returns Allowed=true for
+//     all non-Deny grants and the engine resumes dispatch in-process.
+//   - "mcp_server" — Resource is the MCP server name. Slice 5 of the
+//     Permission Mode ModeAskUser Extension plan (May 2026). The grant
+//     "forever" path writes to agents.<agentName>.mcp_servers_grant[]
+//     via the API handler before Resolve fires.
+//
+// The kind constants live in the permissionrequest package
+// (ResourceKindPath / ResourceKindMCPServer) to keep them adjacent to
+// the registry payload they propagate into.
 type EnginePermissionRequest struct {
 	ToolName     string
 	AgentName    string
 	Resource     string
+	ResourceKind string
 	DenialReason string
 	SessionID    string
 	Mode         string
