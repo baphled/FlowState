@@ -3,6 +3,8 @@ package app_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -691,6 +693,89 @@ When to use: Testing purposes
 				Expect(err).NotTo(HaveOccurred())
 				Expect(application.Engine).NotTo(BeNil())
 				Expect(application.Engine.HasTool("delegate")).To(BeFalse())
+			})
+
+			// May 2026 — task-cancel-501 regression. `DELETE /api/v1/tasks/{id}`
+			// and its siblings (GET /api/v1/tasks, GET /api/v1/tasks/{id},
+			// DELETE /api/v1/tasks) used to return 501 "background manager
+			// not configured" whenever the daemon booted with a chat-only
+			// default agent (can_delegate=false). Cause: the
+			// BackgroundTaskManager was lazily allocated inside
+			// wireDelegateToolIfEnabled, so a non-delegating default left
+			// it nil and the four /tasks handlers tripped their nil-guard.
+			//
+			// The fix wires the manager unconditionally at buildApp time —
+			// it is a zero-config in-memory struct with no external
+			// dependency, so there is no reason to gate it on the manifest.
+			// This spec pins the post-fix invariant at the integration
+			// seam: a non-delegating default still surfaces the task
+			// endpoints, so an operator can cancel background work the
+			// CLI/TUI may launch via a later manifest swap.
+			It("wires the background manager so DELETE /api/v1/tasks/{id} does not return 501", func() {
+				os.Setenv("OPENAI_API_KEY", "test-key-no-delegate-bg")
+				DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
+
+				agentsDir := filepath.Join(tempDir, "agents")
+				skillsDir := filepath.Join(tempDir, "skills")
+				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
+				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
+
+				nonDelegatingAgent := `{
+					"id": "worker-no-delegate-bg",
+					"name": "Worker Agent",
+					"delegation": {
+						"can_delegate": false
+					}
+				}`
+				Expect(os.WriteFile(
+					filepath.Join(agentsDir, "worker-no-delegate-bg.json"),
+					[]byte(nonDelegatingAgent), 0o600,
+				)).To(Succeed())
+
+				cfg := config.DefaultConfig()
+				cfg.Providers.Default = "openai"
+				cfg.DataDir = tempDir
+				cfg.AgentDir = agentsDir
+				cfg.SkillDir = skillsDir
+				cfg.DefaultAgent = "worker-no-delegate-bg"
+
+				application, err := app.New(cfg)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(application).NotTo(BeNil())
+				Expect(application.BackgroundManager()).NotTo(BeNil(),
+					"non-delegating default must still get a BackgroundTaskManager "+
+						"so /api/v1/tasks endpoints stop returning 501")
+
+				// Drive the four task endpoints through the real handler
+				// chain. The pre-fix behaviour was StatusNotImplemented
+				// (501) on every one; the post-fix behaviour is the
+				// route-specific code (404 / 200 / 204 / 400) because
+				// the handler reaches the BackgroundTaskManager call
+				// rather than tripping the nil-guard.
+				handler := application.API.Handler()
+
+				cases := []struct {
+					method      string
+					path        string
+					forbidCodes []int
+				}{
+					{"GET", "/api/v1/tasks", []int{http.StatusNotImplemented}},
+					{"GET", "/api/v1/tasks/missing-id", []int{http.StatusNotImplemented}},
+					{"DELETE", "/api/v1/tasks/missing-id", []int{http.StatusNotImplemented}},
+					{"DELETE", "/api/v1/tasks?all=true", []int{http.StatusNotImplemented}},
+				}
+				for _, tc := range cases {
+					req := httptest.NewRequest(tc.method, tc.path, http.NoBody)
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+					for _, forbidden := range tc.forbidCodes {
+						Expect(rec.Code).NotTo(Equal(forbidden),
+							"%s %s must not return %d after the daemon "+
+								"boots with a non-delegating default; got body %q",
+							tc.method, tc.path, forbidden, rec.Body.String())
+					}
+				}
 			})
 		})
 

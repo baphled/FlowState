@@ -500,6 +500,11 @@ func configureApplicationAfterBuild(
 			app.wireSuggestDelegateToolIfDisabled(eng, m)
 		})
 	}
+	// buildApp now allocates app.backgroundManager unconditionally so
+	// this is a refresh in case configureApplicationAfterBuild is
+	// reached through a path that constructed the App without buildApp
+	// (test helpers, NewForTest). Keeping the guard avoids panicking on
+	// those paths while making the production path explicit.
 	if app.backgroundManager != nil && app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
@@ -605,6 +610,23 @@ func buildApp(params appBuildParams) *App {
 		app.Store = planStore
 	}
 
+	// May 2026 — task-cancel-501 regression fix. Allocate the
+	// BackgroundTaskManager unconditionally before any manifest-driven
+	// wiring runs. The manager is a zero-config in-memory struct with no
+	// external dependency, so there is no reason to gate it on
+	// CanDelegate; doing so left a non-delegating default with a nil
+	// manager and the four `/api/v1/tasks` handlers returning 501
+	// "background manager not configured". Allocating here ensures the
+	// API server (wired below) always gets a live manager. The
+	// allocation is idempotent — wireDelegateToolIfEnabled's lazy
+	// `if a.backgroundManager == nil` branch becomes a no-op on this
+	// path but is retained as a safety net for unit-test paths that
+	// hand-build an App without going through buildApp.
+	if app.backgroundManager == nil {
+		app.backgroundManager = engine.NewBackgroundTaskManager()
+		app.backgroundManager.WithSessionManager(app.sessionManager)
+	}
+
 	app.setAgentOverridesFromConfig(cfg, runtime.engine)
 	app.restorePersistedSessions()
 	defaultForRuntime := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
@@ -616,7 +638,7 @@ func buildApp(params appBuildParams) *App {
 			app.wireSuggestDelegateToolIfDisabled(runtime.engine, m)
 		})
 	}
-	if app.backgroundManager != nil && app.API != nil {
+	if app.API != nil {
 		app.API.SetBackgroundManager(app.backgroundManager)
 	}
 
