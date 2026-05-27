@@ -2265,6 +2265,112 @@ var _ = Describe("resolveAgentID category decoupling", func() {
 				Expect(err).NotTo(HaveOccurred(),
 					"no swarm context → static allowlist still gates the standalone path; Senior-Engineer is admitted as before")
 			})
+
+			// Per-turn ctx-scoped swarm context (May 2026).
+			//
+			// Bug repro: a solo planner session
+			// (session 39de3ab5-6173-4baf-9e20-7514a326bd3c) ran
+			// delegate(plan-writer) successfully twice, then on the
+			// third call the gate rejected with
+			// `not in swarm "meta-swarm" members: [a-team dev-swarm
+			// planning-loop board-room]`. The session was solo
+			// (swarm_id: null, chain_id: null); plan-writer IS in
+			// planner.delegation_allowlist AND in planning-loop's
+			// Members[]; meta-swarm context was never installed by
+			// the planner's dispatch. The leak came from the SHARED
+			// dispatchEngine.swarmContext field being mutated mid-turn
+			// (cross-session race, or a stale value never cleared).
+			//
+			// Fix: the dispatcher attaches the turn's swarm scope via
+			// swarm.WithScope(ctx, scope) at the dispatch boundary. The
+			// gate reads scope from ctx FIRST (immune to engine-state
+			// mutation), falling back to engine state only when no
+			// scope was attached (legacy test callers + bare-engine
+			// paths). When ctx says "scope is nil" the gate treats the
+			// turn as standalone — engine state is NOT consulted.
+			//
+			// Spec assertion: the engine's swarmContext is set to a
+			// MALICIOUS roster (meta-swarm without plan-writer) AFTER
+			// the dispatcher attaches the correct per-turn scope
+			// (planning-loop with plan-writer). The gate MUST read the
+			// ctx scope and admit plan-writer.
+			It("(d) ctx-scoped swarm context shadows engine state — immune to mid-turn engine mutation", func() {
+				delegateTool, leadEng := makeSwarmLead(
+					"plan-writer",
+					[]string{"plan-writer"},
+					[]string{"plan-writer", "explorer", "librarian", "analyst", "plan-reviewer"},
+				)
+
+				// Dispatcher-side: attach the turn's swarm scope to ctx
+				// BEFORE the engine sees any malicious mutation. This
+				// is what dispatcher.go does at the DispatchSessioned
+				// entry post-fix.
+				turnScope := swarm.Context{
+					SwarmID:     "planning-loop",
+					LeadAgent:   "lead",
+					Members:     []string{"plan-writer", "explorer", "librarian", "analyst", "plan-reviewer"},
+					ChainPrefix: "planning",
+				}
+				turnCtx := swarm.WithScope(context.Background(), &turnScope)
+
+				// Simulate mid-turn cross-session pollution: another
+				// goroutine flips the SHARED engine's swarmContext to
+				// meta-swarm (which does NOT contain plan-writer).
+				// Pre-fix: the gate reads engine state and rejects.
+				// Post-fix: the gate reads ctx-scope and admits.
+				leadEng.SetSwarmContext(&swarm.Context{
+					SwarmID:     "meta-swarm",
+					LeadAgent:   "coordinator",
+					Members:     []string{"a-team", "dev-swarm", "planning-loop", "board-room"},
+					ChainPrefix: "meta",
+				})
+
+				_, err := delegateTool.Execute(turnCtx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "plan-writer",
+						"message":       "draft the plan",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred(),
+					"the per-turn ctx scope (planning-loop) MUST shadow the engine's mutated swarmContext (meta-swarm); plan-writer is in planning-loop.Members and MUST be admitted")
+			})
+
+			It("(e) ctx-scoped no-swarm shadows engine state — explicit standalone gate ignores stale engine swarm", func() {
+				// Static allowlist permits Senior-Engineer; engine
+				// state has a malicious swarm context (meta-swarm)
+				// without Senior-Engineer. The dispatcher attached an
+				// explicit "no swarm" scope (nil *Context wrapped via
+				// WithScope). The gate MUST honour the ctx-scoped
+				// no-swarm and fall through to the static allowlist,
+				// NOT the stale engine state.
+				delegateTool, leadEng := makeSwarmLead("Senior-Engineer", []string{"Senior-Engineer"}, nil)
+
+				// Pre-condition: makeSwarmLead leaves engine state
+				// nil (members=nil branch). Plant a malicious stale
+				// value to simulate cross-session pollution.
+				leadEng.SetSwarmContext(&swarm.Context{
+					SwarmID:     "meta-swarm",
+					LeadAgent:   "coordinator",
+					Members:     []string{"a-team", "dev-swarm"},
+					ChainPrefix: "meta",
+				})
+
+				// Dispatcher attaches "no swarm for this turn".
+				turnCtx := swarm.WithScope(context.Background(), nil)
+
+				_, err := delegateTool.Execute(turnCtx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "Senior-Engineer",
+						"message":       "standalone, ignore engine state",
+					},
+				})
+
+				Expect(err).NotTo(HaveOccurred(),
+					"ctx-scope explicitly marks the turn as standalone (nil swarm); the gate MUST fall through to the static allowlist and admit Senior-Engineer, NOT consult the engine's stale meta-swarm context")
+			})
 		})
 	})
 })

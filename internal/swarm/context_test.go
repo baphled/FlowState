@@ -117,6 +117,65 @@ var _ = Describe("swarm.Context", func() {
 		})
 	})
 
+	Describe("WithScope / ScopeFromContext", func() {
+		// Per-turn scope marker distinct from WithContext. The dispatcher
+		// attaches the scope at every turn boundary — including no-swarm
+		// turns (nil *Context) — so the delegate gate can read the
+		// dispatch-time decision off ctx instead of the shared engine
+		// state. This is the load-bearing primitive for the cross-session
+		// swarm-context-leak fix (planner session
+		// 39de3ab5-6173-4baf-9e20-7514a326bd3c).
+		It("round-trips a non-nil swarm context as scoped=true", func() {
+			parent := context.Background()
+			swarmCtx := swarm.Context{
+				SwarmID:   "planning-loop",
+				LeadAgent: "planner",
+				Members:   []string{"plan-writer"},
+			}
+
+			derived := swarm.WithScope(parent, &swarmCtx)
+
+			got, scoped := swarm.ScopeFromContext(derived)
+			Expect(scoped).To(BeTrue(), "WithScope marks the ctx as scoped")
+			Expect(got).NotTo(BeNil())
+			Expect(got.SwarmID).To(Equal("planning-loop"))
+			Expect(got.Members).To(Equal([]string{"plan-writer"}))
+		})
+
+		It("round-trips a nil pointer as scoped=true with no swarm", func() {
+			// Dispatcher attaches WithScope(ctx, nil) on no-swarm turns
+			// so the gate can distinguish "this turn is standalone" from
+			// "no dispatcher wired this ctx" (engine-state fallback).
+			derived := swarm.WithScope(context.Background(), nil)
+
+			got, scoped := swarm.ScopeFromContext(derived)
+			Expect(scoped).To(BeTrue(),
+				"WithScope(ctx, nil) still marks the ctx as scoped — the dispatcher made an explicit no-swarm decision")
+			Expect(got).To(BeNil(),
+				"the scoped value is nil so the gate skips the swarm-members branch and falls through to the static allowlist")
+		})
+
+		It("returns (nil, false) when no scope has been attached", func() {
+			// Legacy callers / bare-engine test surfaces don't attach a
+			// scope. ScopeFromContext signals scoped=false so the gate
+			// can fall back to the engine-state lookup (preserves
+			// pre-fix behaviour for tests that haven't migrated).
+			got, scoped := swarm.ScopeFromContext(context.Background())
+
+			Expect(scoped).To(BeFalse(),
+				"no WithScope call → not scoped; gate falls back to engine state")
+			Expect(got).To(BeNil())
+		})
+
+		It("tolerates a nil context.Context", func() {
+			//lint:ignore SA1012 intentionally passing nil to pin defensive nil-handling.
+			got, scoped := swarm.ScopeFromContext(nil)
+
+			Expect(scoped).To(BeFalse())
+			Expect(got).To(BeNil())
+		})
+	})
+
 	Describe("Resolve", func() {
 		var swarmReg *swarm.Registry
 

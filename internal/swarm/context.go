@@ -205,6 +205,77 @@ func FromContext(ctx context.Context) (*Context, bool) {
 	return v, true
 }
 
+// scopeKey is the unexported ctx-value key for the per-turn swarm
+// scope marker. Distinct from contextKey because WithScope can attach
+// a nil *Context to mean "this turn is explicitly standalone" — the
+// delegate gate uses the marker to short-circuit the engine-state
+// fallback that would otherwise leak cross-session swarm context.
+//
+// See planner session 39de3ab5-6173-4baf-9e20-7514a326bd3c: the
+// shared dispatchEngine.swarmContext field was mutated mid-turn
+// (between successive delegate calls) by a concurrent session, and
+// the planner's gate read the polluted value because it consulted
+// engine state directly. Threading the dispatch-time scope through
+// ctx makes the gate's view of the swarm-roster immune to any
+// concurrent engine-state writes that land after the turn begins.
+type scopeKey struct{}
+
+// scopeMarker wraps the per-turn scope so a nil *Context is
+// distinguishable from "no scope attached" — Go's untyped nil
+// interface assertions cannot make that distinction directly.
+type scopeMarker struct {
+	swarmCtx *Context
+}
+
+// WithScope attaches the dispatch-time swarm scope to ctx. Unlike
+// WithContext, sc may be nil — that explicitly marks the turn as
+// standalone (no swarm). ScopeFromContext later returns the same
+// (*Context, scoped=true) pair regardless of whether sc was non-nil,
+// so the delegate gate can read the dispatcher's decision off ctx
+// directly without consulting shared engine state.
+//
+// Expected:
+//   - parent is non-nil. context.Background() is acceptable.
+//   - sc may be nil (explicit standalone marker) or non-nil.
+//
+// Returns:
+//   - A derived context.Context carrying the scope marker.
+//
+// Side effects:
+//   - None.
+func WithScope(parent context.Context, sc *Context) context.Context {
+	return context.WithValue(parent, scopeKey{}, scopeMarker{swarmCtx: sc})
+}
+
+// ScopeFromContext extracts the per-turn scope attached by WithScope.
+// The scoped flag distinguishes "dispatcher attached scope" from "no
+// scope attached" — the latter is the legacy contract (tests + bare-
+// engine paths that haven't migrated) and tells callers to fall back
+// to engine-state lookup. When scoped is true, the returned *Context
+// is authoritative: nil means "this turn is standalone" and the gate
+// MUST NOT consult engine state.
+//
+// Expected:
+//   - ctx may be nil; returns (nil, false) in that case.
+//
+// Returns:
+//   - (sc, true) when WithScope attached a scope to this ctx; sc may
+//     be nil (explicit standalone marker).
+//   - (nil, false) when no scope is attached (legacy fallback path).
+//
+// Side effects:
+//   - None.
+func ScopeFromContext(ctx context.Context) (*Context, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	marker, ok := ctx.Value(scopeKey{}).(scopeMarker)
+	if !ok {
+		return nil, false
+	}
+	return marker.swarmCtx, true
+}
+
 // Kind labels the resolver's verdict for a `@<id>` lookup. The
 // resolver does not return the manifest pointer because callers in
 // the chat intent path want only the routing decision; the runner

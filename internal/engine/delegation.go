@@ -2642,7 +2642,7 @@ func (d *DelegateTool) executeSync(
 //   - Mutates the historical breaker on the no-swarm path only.
 //   - Caches a Runner per active swarm id on first use.
 func (d *DelegateTool) runStreamThroughRunner(delegateCtx context.Context, target delegationTarget, result *delegationResult, childTurnID string) error {
-	swarmCtx, hasSwarm := d.activeSwarmContext()
+	swarmCtx, hasSwarm := d.activeSwarmContextForCtx(delegateCtx)
 	if !hasSwarm {
 		return d.runStreamWithLegacyBreaker(delegateCtx, target, result)
 	}
@@ -2811,7 +2811,7 @@ func (d *DelegateTool) tryDispatchSwarmTarget(ctx context.Context, input tool.In
 	if d.swarmRegistry == nil {
 		return tool.Result{}, false, nil
 	}
-	swarmCtx, ok := d.activeSwarmContext()
+	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
 	if !ok || swarmCtx == nil {
 		return tool.Result{}, false, nil
 	}
@@ -3516,7 +3516,7 @@ func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID s
 	if d.gateRunner == nil {
 		return nil
 	}
-	swarmCtx, ok := d.activeSwarmContext()
+	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
 	if !ok {
 		return nil
 	}
@@ -3569,7 +3569,7 @@ func (d *DelegateTool) dispatchPreSwarmGatesOnce(ctx context.Context) error {
 	if d.gateRunner == nil {
 		return nil
 	}
-	swarmCtx, ok := d.activeSwarmContext()
+	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
 	if !ok {
 		return nil
 	}
@@ -3611,7 +3611,7 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 	if d.gateRunner == nil {
 		return nil
 	}
-	swarmCtx, ok := d.activeSwarmContext()
+	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
 	if !ok {
 		return nil
 	}
@@ -3708,6 +3708,13 @@ func (d *DelegateTool) unmarkPreSwarmFiring(swarmID string) {
 // dispatcher reads it from there so post-member gates see the same
 // gate slice the runner authored.
 //
+// DEPRECATED: prefer activeSwarmContextForCtx — the ctx-aware variant
+// consults swarm.ScopeFromContext first, which is immune to cross-
+// session mutation of the shared dispatchEngine.swarmContext field
+// (planner session 39de3ab5-6173-4baf-9e20-7514a326bd3c leak). This
+// no-ctx variant remains for callsites that haven't yet threaded ctx
+// through and for legacy test surfaces.
+//
 // Expected:
 //   - d.sourceAgentID names the lead engine in d.engines.
 //
@@ -3750,6 +3757,53 @@ func (d *DelegateTool) activeSwarmContext() (*swarm.Context, bool) {
 		return nil, false
 	}
 	return swarmCtx, true
+}
+
+// activeSwarmContextForCtx returns the per-turn swarm context. The
+// dispatch boundary (dispatcher / orchestrator / swarm.DispatchSwarm)
+// attaches the turn's scope via swarm.WithScope; this lookup reads
+// that scope back so the gate's view of the active swarm is immune
+// to any mid-turn writes to the SHARED dispatchEngine.swarmContext
+// field. Pre-fix, the cross-session race on the shared engine
+// surfaced as `agent not in delegation allowlist: "plan-writer" not
+// in swarm "meta-swarm" members` in a SOLO planner session whose
+// dispatcher had correctly installed planning-loop (session
+// 39de3ab5-6173-4baf-9e20-7514a326bd3c).
+//
+// Resolution order:
+//
+//  1. swarm.ScopeFromContext(ctx) — when the dispatcher attached a
+//     scope (scoped=true), that decision is authoritative. A nil
+//     *Context inside the scope means "this turn is standalone";
+//     callers MUST NOT fall back to engine state in that case
+//     because the dispatcher explicitly chose no-swarm.
+//  2. Engine-state fallback — legacy callers / tests that haven't
+//     migrated ctx wiring continue to work via the
+//     activeSwarmContext() path. This branch is the one the
+//     pre-existing tests exercise.
+//
+// Expected:
+//   - ctx may be nil; treated as "no scope attached" → engine-state
+//     fallback.
+//
+// Returns:
+//   - The active swarm context and true when one is in flight.
+//   - (nil, false) when the turn is standalone OR no swarm is set.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) activeSwarmContextForCtx(ctx context.Context) (*swarm.Context, bool) {
+	if sc, scoped := swarm.ScopeFromContext(ctx); scoped {
+		// Dispatcher attached a per-turn scope. Honour it verbatim —
+		// nil sc means standalone (do not fall through to engine
+		// state, which may be polluted by a cross-session write).
+		if sc == nil {
+			return nil, false
+		}
+		return sc, true
+	}
+	// No scope attached → legacy engine-state fallback.
+	return d.activeSwarmContext()
 }
 
 // executeAsync runs delegation asynchronously, returning immediately with a task ID.
@@ -3963,12 +4017,12 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 			// Known target — admit. Skip Members[] and allowlist
 			// checks entirely.
 		} else {
-			swarmCtx, _ := d.activeSwarmContext()
+			swarmCtx, _ := d.activeSwarmContextForCtx(ctx)
 			return delegationTarget{}, fmt.Errorf("%w: %s",
 				errAgentNotInAllowlist,
 				d.formatPermissiveRejection(swarmCtx, targetAgentID))
 		}
-	} else if swarmCtx, ok := d.activeSwarmContext(); ok {
+	} else if swarmCtx, ok := d.activeSwarmContextForCtx(ctx); ok {
 		if !containsAgent(swarmCtx.Members, targetAgentID) {
 			return delegationTarget{}, fmt.Errorf("%w: %s",
 				errAgentNotInAllowlist,
@@ -3994,7 +4048,7 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		chainID = params.handoff.ChainID
 		chainIDFromCaller = true
 	default:
-		if swarmCtx, ok := d.activeSwarmContext(); ok && swarmCtx.ChainPrefix != "" {
+		if swarmCtx, ok := d.activeSwarmContextForCtx(ctx); ok && swarmCtx.ChainPrefix != "" {
 			chainID = swarmCtx.ChainPrefix
 			chainIDFromCaller = true
 		} else {

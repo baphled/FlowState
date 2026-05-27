@@ -287,6 +287,14 @@ func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provid
 		o.dispatchEngine.SetSwarmContext(swarmCtx)
 		o.dispatchEngine.SetSkipAgentFiles(true)
 	}
+	// Attach the per-turn swarm scope to ctx so the delegate gate
+	// reads the dispatch-time decision off ctx instead of the shared
+	// engine state. swarmCtx may be nil (plain-agent dispatch) — the
+	// gate treats nil as "this turn is standalone". See
+	// internal/swarm/context.go::WithScope and the cross-session leak
+	// the dispatcher counterpart guards against (planner session
+	// 39de3ab5-6173-4baf-9e20-7514a326bd3c).
+	ctx = swarm.WithScope(ctx, swarmCtx)
 
 	src, err := o.streamer.Stream(ctx, leadID, req.Message)
 	if err != nil {

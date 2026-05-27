@@ -113,6 +113,15 @@ func DispatchSwarm(
 		}
 		eng.SetSwarmContext(swarmCtx)
 	}
+	// Attach the per-turn swarm scope to ctx so the delegate gate
+	// reads it from ctx instead of the shared engine state. Callers
+	// that already attached WithScope at the dispatcher boundary
+	// will just shadow with the same value (no-op semantically); the
+	// belt-and-braces install here closes the gap for any future
+	// caller that drives DispatchSwarm directly without going
+	// through Dispatcher / Orchestrator. swarmCtx may be nil for the
+	// plain-agent fast path; the gate treats nil as "standalone".
+	ctx = WithScope(ctx, swarmCtx)
 
 	streamErr := streaming.Run(ctx, streamer, consumer, leadID, message)
 

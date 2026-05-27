@@ -332,6 +332,12 @@ func (d *Dispatcher) DispatchEphemeral(
 	// fix without needing to re-apply context.WithoutCancel at the
 	// handler edge.
 	streamCtx := context.WithoutCancel(ctx)
+	// Attach the per-turn swarm scope (may be nil for plain-agent
+	// dispatches) so the delegate gate reads the dispatch-time
+	// decision off ctx instead of the shared engine state. See the
+	// DispatchSessioned counterpart for the cross-session leak this
+	// guards against.
+	streamCtx = swarm.WithScope(streamCtx, swarmCtx)
 
 	done := make(chan error, 1)
 	go func() {
@@ -395,6 +401,11 @@ func (d *Dispatcher) RunEphemeralSync(
 	if err != nil {
 		return err
 	}
+
+	// Attach the per-turn swarm scope so the delegate gate reads it
+	// from ctx rather than the shared engine state. Same rationale as
+	// DispatchSessioned / DispatchEphemeral.
+	ctx = swarm.WithScope(ctx, swarmCtx)
 
 	return d.runEphemeralStream(ctx, leadID, swarmCtx, req, consumer)
 }
@@ -696,6 +707,19 @@ func (d *Dispatcher) DispatchSessioned(
 			streamCtx = session.WithStreamAgentOverride(streamCtx, leadOverride)
 		}
 	}
+	// Attach the per-turn swarm scope to streamCtx for EVERY turn,
+	// not just swarmActive turns. The delegate gate consults the
+	// ctx-scoped value via swarm.ScopeFromContext as the authoritative
+	// source — this is immune to mid-turn writes to the SHARED
+	// dispatchEngine.swarmContext field (cross-session race). On
+	// no-swarm turns (swarmActive=false) the attached scope is nil,
+	// which the gate interprets as "this turn is standalone, ignore
+	// engine state". Pre-fix, planner session
+	// 39de3ab5-6173-4baf-9e20-7514a326bd3c hit the leak: a concurrent
+	// session's meta-swarm context bled onto the engine mid-turn and
+	// the planner's gate rejected plan-writer despite the dispatcher
+	// having correctly installed planning-loop at turn start.
+	streamCtx = swarm.WithScope(streamCtx, swarmCtx)
 
 	chunks, err := d.sessionManager.SendMessageWithAttachments(
 		streamCtx, req.SessionID, req.Content, req.AttachmentIDs,
