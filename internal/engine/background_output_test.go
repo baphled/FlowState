@@ -169,6 +169,71 @@ var _ = Describe("BackgroundOutputTool", func() {
 			})
 		})
 
+		// Regression pin for the "polling timeout despite task complete"
+		// misdiagnosis (May 2026). A planner-driver session reported that
+		// `background_output(block=true)` was timing out even though the
+		// coordination store contained the child sub-agent's output keys.
+		// The reported pattern was: child writes to coordination_store
+		// via the `coordination_store` tool mid-stream, then the planner
+		// reads coord-store and assumes the task itself has finished.
+		// Live verification on `feature/vue-ui-rebase` HEAD (post-76fb7531)
+		// confirmed the polling loop is correct — when the BackgroundTask
+		// itself reaches a terminal status BEFORE the deadline, the poll
+		// returns the terminal status immediately. The "timeout" the
+		// morning session saw fired against tasks whose sub-agent stream
+		// was genuinely still running (coord-store write != task done).
+		//
+		// This spec pins the polling-loop happy path at the seam: when
+		// the task is ALREADY terminal at the moment block=true is
+		// invoked, the call returns immediately (well inside the
+		// configured timeout) with the completed status. A regression
+		// that broke this would surface here as a deadline-driven
+		// timeout error.
+		Context("when block=true and task is already terminal", func() {
+			It("returns the completed result immediately without timing out", func() {
+				task := manager.Launch(ctx, "task-already-done", "agent-instant", "instant task", func(ctx context.Context) (string, error) {
+					return "instant result", nil
+				})
+
+				// Wait for the goroutine in executeTask to flip the
+				// status. 250ms is generous on any practical scheduler
+				// — the fn returns immediately and the status update
+				// runs under the manager's lock right after.
+				Eventually(func() string {
+					t, _ := manager.Get(task.ID)
+					return t.Status.Load()
+				}, 1*time.Second, 10*time.Millisecond).Should(Equal("completed"))
+
+				input := tool.Input{
+					Name: "background_output",
+					Arguments: map[string]interface{}{
+						"task_id": task.ID,
+						"block":   true,
+						"timeout": 60000, // 60s — would dwarf the actual return time if poll was broken
+					},
+				}
+
+				start := time.Now()
+				result, err := botTool.Execute(ctx, input)
+				elapsed := time.Since(start)
+
+				Expect(err).NotTo(HaveOccurred())
+				// 250ms generous upper bound — the poll loop's first
+				// iteration should hit the terminal-status branch and
+				// return without any time.Sleep. Anything close to the
+				// 60s timeout would indicate the poll loop is not
+				// reading the live task state.
+				Expect(elapsed).To(BeNumerically("<", 250*time.Millisecond),
+					"block=true on an already-terminal task must return immediately, not poll to deadline")
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["status"]).To(Equal("completed"))
+				Expect(output["result"]).To(Equal("instant result"))
+			})
+		})
+
 		Context("when block=true and timeout is exceeded", func() {
 			It("returns timeout error", func() {
 				task := manager.Launch(ctx, "task-4", "agent-4", "test task", func(ctx context.Context) (string, error) {
