@@ -3,6 +3,8 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -347,4 +349,75 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(runner.calls).To(HaveLen(1))
 		Expect(runner.calls[0].Name).To(Equal("post-swarm-aggregate"))
 	})
+
+	It("deterministically publishes the plan to the vault BEFORE the post-swarm gate fires", func() {
+		// Regression guard for the "no plan in Obsidian" bug: the plan
+		// sits only in the coord-store. FlushSwarmLifecycle must write a
+		// real vault file AND the plan_publication record so the
+		// downstream honesty gate can verify it — without an LLM emitting
+		// a write tool call (Defect 2's synthesis-hang).
+		outputDir := GinkgoT().TempDir()
+		store := coordination.NewMemoryStore()
+		Expect(store.Set("readyz-chain/plan",
+			[]byte(`{"markdown":"# Readyz Plan\n\nbody","title":"Readyz Plan"}`))).To(Succeed())
+		Expect(store.Set("readyz-chain/review", validVerdictPayload())).To(Succeed())
+
+		// A runner that records, AT GATE-DISPATCH TIME, whether the
+		// publish already happened: the publication record must exist
+		// before the post-swarm gate runs.
+		probe := &publishProbeRunner{store: store, key: "readyz-chain/plan_publication"}
+		gates := []swarm.GateSpec{
+			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
+		}
+		engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+		delegateTool := newDelegateToolWithRunner(engines, store, probe).
+			WithPlanOutputDir(outputDir)
+
+		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
+
+		Expect(probe.sawPublication).To(BeTrue(),
+			"the publication record must exist BEFORE the post-swarm gate runs")
+
+		vaultPath := filepath.Join(outputDir, "readyz-plan.md")
+		Expect(vaultPath).To(BeAnExistingFile(),
+			"the plan must be written to a real file in the vault")
+		body, readErr := os.ReadFile(vaultPath)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(body)).To(ContainSubstring("# Readyz Plan"))
+	})
+
+	It("is a no-op when no plan_output_dir is wired (historical behaviour preserved)", func() {
+		store := coordination.NewMemoryStore()
+		Expect(store.Set("some-chain/plan", []byte("# A Plan\n\nbody"))).To(Succeed())
+
+		runner := &recordingRunner{}
+		gates := []swarm.GateSpec{
+			{Name: "post-swarm-aggregate", Kind: "builtin:result-schema", When: swarm.LifecyclePostSwarm},
+		}
+		engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+		delegateTool := newDelegateToolWithRunner(engines, store, runner) // no WithPlanOutputDir
+
+		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
+
+		exists, err := store.Exists("some-chain/plan_publication")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse(),
+			"with no output dir the publisher writes nothing and fabricates no record")
+		Expect(runner.calls).To(HaveLen(1), "the post-swarm gate still fires")
+	})
 })
+
+// publishProbeRunner is a GateRunner that records, at dispatch time,
+// whether the deterministic publisher has already written the publication
+// record — proving the publish runs BEFORE the post-swarm gate.
+type publishProbeRunner struct {
+	store          coordination.Store
+	key            string
+	sawPublication bool
+}
+
+func (p *publishProbeRunner) Run(_ context.Context, _ swarm.GateSpec, _ swarm.GateArgs) error {
+	exists, _ := p.store.Exists(p.key)
+	p.sawPublication = exists
+	return nil
+}

@@ -87,17 +87,26 @@ harness:
       when: post-member
       target: plan-reviewer
       output_key: "{chainID}/review"
-    # Honesty gate (Defect 4): fires ONCE at swarm end. Gates loop
-    # completion on VERIFIED artifact existence rather than a self-
-    # reported record. The `{chainID}/plan` coord-store key MUST be
-    # non-empty AND, when a `{chainID}/plan_publication` record claims a
-    # vault_path, the file MUST actually exist at that path under the
-    # resolved plan_output_dir. Catches the fabricated-publication bug
-    # where the coordinator marked the loop COMPLETE on a record claiming
-    # a vault path the file never reached. Post-swarm dispatch does not
-    # thread the lead's free-form chainID, so the runner resolves the plan
-    # key by suffix-scan (parity with the result-schema bootstrap path).
-    # See internal/swarm/gate_artifact_published.go.
+    # Honesty gate (Defect 4 + "no plan in Obsidian"): fires ONCE at swarm
+    # end. Before this gate runs, the engine's FlushSwarmLifecycle calls a
+    # DETERMINISTIC publisher (swarm.PublishPlanToVault) that writes the
+    # `{chainID}/plan` body to a real file under plan_output_dir and
+    # records the true path in `{chainID}/plan_publication` — no LLM in
+    # the persistence path, so Defect 2's synthesis-hang cannot stop the
+    # plan reaching Obsidian. This gate then UNCONDITIONALLY requires:
+    #   (1) the `{chainID}/plan` coord-store key is non-empty,
+    #   (2) a `{chainID}/plan_publication` record EXISTS (a missing record
+    #       means the plan never reached the vault — fail), and
+    #   (3) the claimed vault_path is under plan_output_dir AND the file
+    #       actually exists at that path.
+    # The publication record used to be OPTIONAL — an approved plan sitting
+    # only in the coord-store passed the gate while nothing wrote it to the
+    # vault. That was the user's bug; it is now a gate failure. Post-swarm
+    # dispatch does not thread the lead's free-form chainID, so both the
+    # publisher and the runner resolve the plan key by suffix-scan (parity
+    # with the result-schema bootstrap path), keeping the keys consistent.
+    # See internal/swarm/gate_artifact_published.go and
+    # internal/swarm/publish.go.
     - name: post-swarm-plan-published
       kind: builtin:artifact-published
       when: post

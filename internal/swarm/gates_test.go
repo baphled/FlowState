@@ -532,11 +532,15 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				"a vault_path outside plan_output_dir must fail the honesty gate")
 		})
 
-		It("passes on the plan key alone when no publication record claims a vault path", func() {
-			// A coordinator that wrote the plan to the coord-store but made
-			// no vault claim is honest about the loop's state — the gate
-			// gates on the artifact it CAN verify (the plan key) and does
-			// not invent a file requirement the run never asserted.
+		It("FAILS on the plan key alone when no publication record exists (the 'no plan in Obsidian' bug)", func() {
+			// HEADLINE REGRESSION GUARD. This reproduces the user's bug: an
+			// approved plan sitting only in the coord-store with NO
+			// publication record used to PASS the gate — the loop was
+			// declared complete while nothing ever wrote the plan to the
+			// vault. The publication record is now REQUIRED: the
+			// deterministic post-swarm publisher writes it only after a real
+			// file lands, so its absence means the plan never reached
+			// Obsidian and the gate must fail.
 			store := newGateStore(map[string][]byte{
 				"plan-auth/plan": []byte("# Plan body present, no vault claim"),
 			})
@@ -544,9 +548,14 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			args.ChainID = "plan-auth"
 
 			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(nil))
-			Expect(runner.Run(context.Background(), gate, args)).To(Succeed())
+			err := runner.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)did not publish|no plan_publication record`),
+				"a plan with no publication record must fail — it never reached the vault")
 			Expect(statted).To(BeEmpty(),
-				"with no claimed vault_path the gate must not stat any file")
+				"with no publication record the gate fails before stat'ing any file")
 		})
 
 		// Post-swarm dispatch (runSwarmGates) leaves GateArgs.ChainID
@@ -581,6 +590,28 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				var gateErr *swarm.GateError
 				Expect(errors.As(err, &gateErr)).To(BeTrue())
 				Expect(gateErr.Reason).To(MatchRegexp(`(?i)no plan artifact`))
+			})
+
+			It("FAILS via suffix-scan when a plan key exists but no publication record was written", func() {
+				// The post-swarm dispatch path that the user actually hit:
+				// the loop produced a plan (suffix-scannable) but the
+				// deterministic publisher did not record a publication —
+				// nothing reached the vault. The gate must fail rather than
+				// declaring the loop complete on the plan key alone.
+				store := newGateStore(map[string][]byte{
+					"some-chain/plan": []byte("# Plan body via suffix-scan, never published"),
+				})
+				args := planningLoopArgs(store)
+				args.ChainID = ""
+
+				runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(nil))
+				err := runner.Run(context.Background(), gate, args)
+
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue())
+				Expect(gateErr.Reason).To(MatchRegexp(`(?i)did not publish|no plan_publication record`))
+				Expect(statted).To(BeEmpty(),
+					"with no publication record the gate fails before stat'ing any file")
 			})
 		})
 	})

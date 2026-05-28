@@ -55,16 +55,23 @@ type planPublication struct {
 //  1. The coord-store "<chainID>/<plan-suffix>" key (gate.OutputKey
 //     template) MUST be non-empty — the plan body must actually exist in
 //     the coordination store.
-//  2. When a "<chainID>/plan_publication" record claims a vault_path, the
-//     file MUST actually exist at that path AND the path MUST be under
-//     the resolved plan_output_dir. A claim with no real file — or a file
-//     written outside the output dir — FAILS the gate.
+//  2. A "<chainID>/plan_publication" record MUST exist. Its absence means
+//     the loop never reached the vault — the deterministic post-swarm
+//     publisher (swarm.PublishPlanToVault) writes this record only after
+//     a real file lands, so a missing record IS the headline user bug:
+//     "no plan in Obsidian". An absent record FAILS the gate.
+//  3. The claimed vault_path MUST be under the resolved plan_output_dir
+//     AND the file MUST actually exist at that path. A claim with no real
+//     file — or a file written outside the output dir — FAILS the gate.
 //
-// Rationale (Defect 4): the coordinator marked a planning loop COMPLETE
-// on the strength of a fabricated plan_publication record while the plan
-// never reached the vault. Prompt instructions do not reliably fire
-// (Defect 2), so completion is gated deterministically in code. A file
-// stat cannot be talked past.
+// Rationale (Defect 4 + the "no plan in Obsidian" bug): an approved plan
+// sitting only in the coord-store used to PASS this gate because the
+// publication record was OPTIONAL. That let the loop be declared complete
+// while nothing ever wrote the plan to the vault. The deterministic
+// publisher now writes the plan + record before this gate fires, so the
+// gate makes both UNCONDITIONALLY required. Prompt instructions do not
+// reliably fire (Defect 2), so the publish AND the verification are both
+// code-level. A file stat cannot be talked past.
 type artifactPublishedRunner struct {
 	// outputDir is the resolved plan_output_dir. A claimed vault_path
 	// must be under this directory to count as an honest publication.
@@ -102,9 +109,11 @@ func NewArtifactPublishedRunner(outputDir string, stat statFunc) GateRunner {
 //   - args.CoordStore is non-nil; args.ChainID is the lead-allocated id.
 //
 // Returns:
-//   - nil when the plan key is non-empty AND any claimed vault file
-//     exists under the output dir.
-//   - A *GateError naming the specific honesty failure otherwise.
+//   - nil when the plan key is non-empty AND a publication record exists
+//     AND the claimed vault file exists under the output dir.
+//   - A *GateError naming the specific honesty failure otherwise. A
+//     MISSING publication record now fails the gate (it used to pass) —
+//     this is the "no plan in Obsidian" regression guard.
 //
 // Side effects:
 //   - Reads up to two coord-store keys; stats at most one file. No writes.
@@ -122,12 +131,18 @@ func (r artifactPublishedRunner) Run(_ context.Context, gate GateSpec, args Gate
 			fmt.Sprintf("plan artifact at %q is empty — the loop cannot be complete without a plan", planKey), nil)
 	}
 
-	// The plan body exists. Now check any self-reported publication claim
-	// against reality.
-	if claim, ok := r.publicationClaim(args); ok && claim.VaultPath != "" {
-		return r.verifyVaultClaim(gate, args, claim.VaultPath)
+	// The plan body exists. A publication record is now REQUIRED: the
+	// deterministic post-swarm publisher writes it only after a real
+	// vault file lands, so its absence means the plan never reached the
+	// vault — the headline "no plan in Obsidian" bug. An approved plan
+	// sitting only in the coord-store is NOT a complete loop.
+	claim, ok := r.publicationClaim(args)
+	if !ok || claim.VaultPath == "" {
+		return newGateFailure(gate, args,
+			"loop did not publish the plan to the vault — no plan_publication record "+
+				"(an approved plan in the coordination store is not a published plan)", nil)
 	}
-	return nil
+	return r.verifyVaultClaim(gate, args, claim.VaultPath)
 }
 
 // resolvePlanBody returns the coord-store key holding the plan and its

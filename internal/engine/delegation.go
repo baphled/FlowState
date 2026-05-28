@@ -144,6 +144,15 @@ type DelegateTool struct {
 	// a swarm.MultiRunner pre-registered with builtin:result-schema.
 	gateRunner swarm.GateRunner
 
+	// planOutputDir is the resolved plan_output_dir (perms.PlanOutputDir).
+	// FlushSwarmLifecycle hands it to swarm.PublishPlanToVault so the
+	// post-swarm phase writes the planning loop's approved plan to a real
+	// file in the vault BEFORE the post-swarm honesty gate verifies it.
+	// Empty disables the deterministic publish (the gate's plan-key check
+	// still applies). This removes the LLM from the persistence path so
+	// the synthesis-hang cannot stop the plan from reaching Obsidian.
+	planOutputDir string
+
 	// ownerEngine is the engine this DelegateTool is installed on —
 	// the LEAD's engine in a swarm dispatch. activeSwarmContext reads
 	// the swarm context from here directly because the lead is by
@@ -692,6 +701,27 @@ func (d *DelegateTool) WithToolCapability(allow, deny []string) *DelegateTool {
 //   - Replaces the previously installed gate runner.
 func (d *DelegateTool) WithGateRunner(runner swarm.GateRunner) *DelegateTool {
 	d.gateRunner = runner
+	return d
+}
+
+// WithPlanOutputDir installs the resolved plan_output_dir the post-swarm
+// deterministic publisher writes the planning loop's plan to. Production
+// wiring (App.configureDelegateTool) passes the same directory the
+// artifact-published honesty gate bounds its containment check by, so the
+// published file always lands inside the dir the gate verifies.
+//
+// Expected:
+//   - dir may be empty to disable the deterministic publish (the gate's
+//     plan-key check still applies; the loop then keeps the historical
+//     no-vault-write behaviour).
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously stored plan output dir.
+func (d *DelegateTool) WithPlanOutputDir(dir string) *DelegateTool {
+	d.planOutputDir = dir
 	return d
 }
 
@@ -3633,7 +3663,48 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 		return nil
 	}
 	defer d.unmarkPreSwarmFiring(swarmCtx.SwarmID)
+
+	// Deterministically publish the planning loop's approved plan to the
+	// vault BEFORE the post-swarm honesty gate fires. This removes the LLM
+	// from the persistence path: the only prior publish path was an agent
+	// emitting a write tool call, which hits the synthesis-hang (Defect 2)
+	// and never fires, leaving the user with "no plan in Obsidian". A
+	// code-level write cannot be talked past by a stalled model. The
+	// publisher is a no-op when there is no plan to publish or no output
+	// dir is configured; a write failure is surfaced so the post-swarm
+	// gate then fails rather than silently passing on a half-published
+	// loop. See swarm.PublishPlanToVault.
+	if err := d.publishPlanForSwarm(); err != nil {
+		return err
+	}
+
 	return d.runSwarmGates(ctx, swarmCtx, swarm.LifecyclePostSwarm)
+}
+
+// publishPlanForSwarm writes the planning loop's approved plan from the
+// coordination store to the vault via the deterministic publisher. It is
+// a no-op when no coordination store or plan_output_dir is wired (the
+// historical pre-publish behaviour for callers that have not opted in),
+// or when there is simply no plan to publish.
+//
+// Returns:
+//   - nil when the publish succeeds or there is nothing to publish.
+//   - The publisher's error when a write or record attempt fails — NOT
+//     swallowed, so FlushSwarmLifecycle propagates it and the post-swarm
+//     honesty gate (which would otherwise verify the publication) is not
+//     reached on a corrupt half-write.
+//
+// Side effects:
+//   - On a successful publish: one vault file written and one coord-store
+//     "<chainID>/plan_publication" key set.
+func (d *DelegateTool) publishPlanForSwarm() error {
+	if d.coordinationStore == nil || d.planOutputDir == "" {
+		return nil
+	}
+	if _, err := swarm.PublishPlanToVault(d.coordinationStore, d.planOutputDir); err != nil {
+		return err
+	}
+	return nil
 }
 
 // runSwarmGates dispatches every swarm-level gate on swarmCtx whose

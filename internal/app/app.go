@@ -123,6 +123,13 @@ type App struct {
 	// post-member result-schema gates never fired against malformed
 	// member output.
 	gateRunner swarm.GateRunner
+	// planOutputDir is the resolved plan_output_dir (perms.PlanOutputDir).
+	// Threaded onto every wired DelegateTool via configureDelegateTool so
+	// the post-swarm deterministic publisher (swarm.PublishPlanToVault)
+	// writes the planning loop's approved plan to the SAME directory the
+	// artifact-published honesty gate bounds its containment check by.
+	// Resolved once at boot alongside gateRunner.
+	planOutputDir string
 	// compression is the shared compression wiring for both the root
 	// engine and every delegate engine. Retained on App so
 	// createDelegateEngine can reuse the same CompressionConfig, metrics,
@@ -576,6 +583,11 @@ func buildApp(params appBuildParams) *App {
 	providerRegistry := params.providerRegistry
 	ollamaProvider := params.ollamaProvider
 	pluginRuntime := params.pluginRuntime
+	// Resolve plan_output_dir once: it bounds the artifact-published
+	// honesty gate's containment check AND is the target the post-swarm
+	// deterministic publisher writes the planning loop's plan to. Both
+	// must agree on the same directory, so they share one resolution.
+	planOutputDir := resolvePlanOutputDir()
 	app := &App{
 		Config:        cfg,
 		Registry:      agentRegistry,
@@ -608,7 +620,8 @@ func buildApp(params appBuildParams) *App {
 		mcpTools:             runtime.mcpTools,
 		memoryClient:         params.memoryClient,
 		vaultHandler:         params.vaultHandler,
-		gateRunner:           buildSwarmGateRunner(resolvePlanOutputDir()),
+		gateRunner:           buildSwarmGateRunner(planOutputDir),
+		planOutputDir:        planOutputDir,
 		quotaCacheController: runtime.quotaCacheController,
 		permissionPrompter:   runtime.permissionPrompter,
 	}
@@ -1848,6 +1861,13 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 		dt.WithGateRunner(a.gateRunner)
 	}
 
+	// Thread the resolved plan_output_dir so FlushSwarmLifecycle's
+	// deterministic publisher writes the planning loop's approved plan to
+	// the SAME directory the artifact-published gate verifies against,
+	// BEFORE that gate fires. Empty is tolerated — the publish is then a
+	// no-op and the loop keeps the historical no-vault-write behaviour.
+	dt.WithPlanOutputDir(a.planOutputDir)
+
 	// Pin the engine this DelegateTool is installed on so
 	// activeSwarmContext can read the swarm context from the right
 	// place during a swarm dispatch. Without this the gate dispatch
@@ -1918,12 +1938,15 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 //     directory.
 //   - "builtin:artifact-published": the planning-loop honesty gate. Gates
 //     loop completion on VERIFIED artifact existence — the coord-store
-//     "<chainID>/plan" key must be non-empty AND any self-reported vault
-//     publication must point at a file that actually exists under the
-//     resolved plan_output_dir. Catches the fabricated-publication bug
-//     where a coordinator marked the loop complete on a record claiming a
-//     vault path the file never reached (Defect 4). Stats the filesystem
-//     at dispatch time via os.Stat.
+//     "<chainID>/plan" key must be non-empty, a "<chainID>/plan_publication"
+//     record must EXIST, and its claimed vault_path must point at a file
+//     that actually exists under the resolved plan_output_dir. The
+//     deterministic publisher (swarm.PublishPlanToVault, run from
+//     FlushSwarmLifecycle BEFORE this gate) writes that file + record, so
+//     a missing record means the plan never reached the vault — the
+//     "no plan in Obsidian" bug, now a gate failure. Catches both the
+//     fabricated-publication bug (Defect 4) and the never-published bug.
+//     Stats the filesystem at dispatch time via os.Stat.
 //
 // planOutputDir is the resolved plan-mode write target (perms.PlanOutputDir);
 // it bounds the honesty gate's file-containment check. Empty disables the
