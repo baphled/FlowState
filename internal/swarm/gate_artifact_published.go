@@ -131,6 +131,22 @@ func (r artifactPublishedRunner) Run(_ context.Context, gate GateSpec, args Gate
 			fmt.Sprintf("plan artifact at %q is empty — the loop cannot be complete without a plan", planKey), nil)
 	}
 
+	// The plan key holds SOMETHING — but is it a coherent plan DOCUMENT or
+	// garbage? The incident: the canonical "<chainID>/plan" key held a JSON
+	// agent-spec blob, not a markdown plan, and the loop shipped 200 lines of
+	// rendered garbage to the vault. Validate the SHAPE deterministically: a
+	// JSON spec object, a heading-less prose dump, or a trivial stub is NOT a
+	// publishable plan. This fails the honesty gate with the actionable
+	// reason so the loop honest-fails instead of declaring completion on a
+	// non-plan artifact. This mirrors the publisher's refusal (defence in
+	// depth): even if some other writer landed a file outside the publisher,
+	// a non-plan canonical key fails completion here.
+	planBody := resolveValidationBody(body)
+	if ok, reason := isPlanDocument(planBody); !ok {
+		return newGateFailure(gate, args,
+			fmt.Sprintf("plan artifact at %q is not a publishable plan: %s", planKey, reason), nil)
+	}
+
 	// The plan body exists. A publication record is now REQUIRED: the
 	// deterministic post-swarm publisher writes it only after a real
 	// vault file lands, so its absence means the plan never reached the

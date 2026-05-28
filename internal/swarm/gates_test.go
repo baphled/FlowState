@@ -465,7 +465,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 		It("FAILS when a publication record claims a vault path but the file does not exist (the fabrication)", func() {
 			vaultPath := outputDir + "/Ghost-Plan.md"
 			store := newGateStore(map[string][]byte{
-				"plan-auth/plan": []byte("# Plan body present in coord-store"),
+				"plan-auth/plan": []byte("# Plan\n\nbody present in coord-store"),
 				"plan-auth/plan_publication": []byte(
 					`{"vault_path":"` + vaultPath + `","published_at":"2026-05-28T10:00:00Z"}`),
 			})
@@ -511,10 +511,56 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			Expect(errors.As(err, &gateErr)).To(BeTrue())
 		})
 
+		It("FAILS when the plan key holds a JSON spec blob, not a plan document (THE INCIDENT)", func() {
+			// HEADLINE REGRESSION GUARD (honesty-gate side). The live
+			// incident: the canonical "<chainID>/plan" key held a JSON
+			// agent-spec object, not a markdown plan. The honesty gate used to
+			// pass on any non-empty plan key, so the loop declared completion
+			// on garbage. The gate now validates the plan SHAPE: a JSON spec
+			// blob is NOT a publishable plan, and the gate must fail with an
+			// actionable reason so the loop honest-fails.
+			jsonSpec := `{"purpose":"A companion.","responsibilities":["listen"],"boundaries":{"must_not":["diagnose"]}}`
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan": []byte(jsonSpec),
+				"plan-auth/plan_publication": []byte(
+					`{"vault_path":"` + outputDir + `/Spec.md","published_at":"2026-05-28T10:00:00Z"}`),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(map[string]bool{outputDir + "/Spec.md": true}))
+			err := runner.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)not a publishable plan|json spec`),
+				"the gate must name the JSON-spec shape so the loop honest-fails with a clear reason")
+			Expect(statted).To(BeEmpty(),
+				"a non-plan canonical key fails before stat'ing any claimed file")
+		})
+
+		It("PASSES a {markdown:...}-enveloped plan (the legitimate plan-writer shape)", func() {
+			// The publisher unwraps the envelope to its markdown body before
+			// writing; the gate validates the SAME unwrapped body so a real
+			// enveloped plan is not falsely refused as "a JSON object".
+			vaultPath := outputDir + "/Enveloped-Plan.md"
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan": []byte(`{"markdown":"# Enveloped Plan\n\nReal plan content here.","title":"Enveloped Plan"}`),
+				"plan-auth/plan_publication": []byte(
+					`{"vault_path":"` + vaultPath + `","published_at":"2026-05-28T10:00:00Z"}`),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(map[string]bool{vaultPath: true}))
+			Expect(runner.Run(context.Background(), gate, args)).To(Succeed(),
+				"an enveloped markdown plan passes plan-document validation")
+		})
+
 		It("FAILS when the claimed vault path escapes the resolved output dir (path-traversal honesty)", func() {
 			escapePath := "/tmp/elsewhere/Plan.md"
 			store := newGateStore(map[string][]byte{
-				"plan-auth/plan": []byte("# Plan body"),
+				"plan-auth/plan": []byte("# Plan\n\nbody"),
 				"plan-auth/plan_publication": []byte(
 					`{"vault_path":"` + escapePath + `","published_at":"2026-05-28T10:00:00Z"}`),
 			})
@@ -542,7 +588,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			// file lands, so its absence means the plan never reached
 			// Obsidian and the gate must fail.
 			store := newGateStore(map[string][]byte{
-				"plan-auth/plan": []byte("# Plan body present, no vault claim"),
+				"plan-auth/plan": []byte("# Plan\n\nbody present, no vault claim"),
 			})
 			args := planningLoopArgs(store)
 			args.ChainID = "plan-auth"
@@ -567,7 +613,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			It("resolves the plan key by suffix-scan and verifies the claimed vault file", func() {
 				vaultPath := outputDir + "/Suffix-Scan-Plan.md"
 				store := newGateStore(map[string][]byte{
-					"some-chain/plan": []byte("# Plan body via suffix-scan"),
+					"some-chain/plan": []byte("# Plan\n\nbody via suffix-scan"),
 					"some-chain/plan_publication": []byte(
 						`{"vault_path":"` + vaultPath + `"}`),
 				})
@@ -599,7 +645,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				// nothing reached the vault. The gate must fail rather than
 				// declaring the loop complete on the plan key alone.
 				store := newGateStore(map[string][]byte{
-					"some-chain/plan": []byte("# Plan body via suffix-scan, never published"),
+					"some-chain/plan": []byte("# Plan\n\nbody via suffix-scan, never published"),
 				})
 				args := planningLoopArgs(store)
 				args.ChainID = ""

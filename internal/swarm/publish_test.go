@@ -12,17 +12,6 @@ import (
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
-// jsonQuote produces a valid JSON string literal (with surrounding quotes)
-// for s, so specs can embed prose containing apostrophes/commas into a JSON
-// plan body without hand-escaping.
-func jsonQuote(s string) string {
-	encoded, err := json.Marshal(s)
-	if err != nil {
-		panic(err)
-	}
-	return string(encoded)
-}
-
 // readPublication decodes the "<chainID>/plan_publication" record the
 // publisher writes so specs can assert the recorded path matches the file
 // actually written.
@@ -91,10 +80,13 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 		})
 	})
 
-	Context("when neither title nor H1 is available", func() {
+	Context("when neither title nor H1 is available (but the body is a valid plan)", func() {
 		It("falls back to the chainID for the filename", func() {
+			// The body has heading structure + content (so it passes
+			// plan-document validation) but no top-level "# H1" to derive a
+			// title from, so the filename falls back to the chainID.
 			store := newGateStore(map[string][]byte{
-				"chain-fallback-123/plan": []byte("Just a body with no heading at all."),
+				"chain-fallback-123/plan": []byte("## Section\n\nA plan body with sub-headings but no top-level H1 title."),
 			})
 
 			path, err := swarm.PublishPlanToVault(store, outputDir, "")
@@ -300,133 +292,97 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 		})
 	})
 
-	Context("structured-JSON plan body (Bug 2: JSON published raw)", func() {
-		It("renders a structured-JSON plan to readable markdown, not raw JSON", func() {
-			// REGRESSION (Bug 2): the live mental-health-companion plan body
-			// is a structured JSON object (NOT the {markdown:...} envelope and
-			// NOT markdown). Publishing it raw dumps JSON into the vault.
-			jsonBody := `{` +
+	Context("a JSON-spec blob at the canonical plan key (THE INCIDENT — garbage to vault)", func() {
+		It("REFUSES to publish a JSON agent-spec object and writes NO file", func() {
+			// HEADLINE REGRESSION GUARD. The live incident: the canonical
+			// "<chainID>/plan" key held a JSON agent-spec object
+			// ({"purpose":..,"responsibilities":[..],"boundaries":{..}}), NOT a
+			// markdown plan. The old publisher rendered ANY JSON object to
+			// headings+bullets and wrote 200 lines of unusable garbage to the
+			// user's vault. A JSON spec blob is NOT a plan document: the
+			// publisher must REFUSE (return an error, write no file) so the
+			// loop honest-fails rather than shipping garbage.
+			jsonSpec := `{` +
 				`"purpose":"A supportive mental-health companion.",` +
 				`"responsibilities":["Listen actively","Offer coping strategies","Signpost to professionals"],` +
 				`"boundaries":{"must_not":["Diagnose conditions","Replace a clinician"]}` +
 				`}`
 			store := newGateStore(map[string][]byte{
-				"mhc-2026-05-27/plan":   []byte(jsonBody),
+				"mhc-2026-05-27/plan":   []byte(jsonSpec),
 				"mhc-2026-05-27/review": []byte(`{"verdict":"approve"}`),
 			})
 
 			path, err := swarm.PublishPlanToVault(store, outputDir, "mhc-2026-05-27")
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred(), "a JSON spec blob must NOT be published")
+			Expect(err.Error()).To(MatchRegexp(`(?i)not a plan|json spec|refusing`),
+				"the error must say WHY it refused so the loop honest-fails with a reason")
+			Expect(path).To(BeEmpty(), "no path returned when the artifact is not a plan")
 
-			body, readErr := os.ReadFile(path)
+			entries, readErr := os.ReadDir(outputDir)
 			Expect(readErr).NotTo(HaveOccurred())
-			rendered := string(body)
+			Expect(entries).To(BeEmpty(), "NO file written — the JSON spec never reaches the vault")
 
-			// No raw JSON punctuation leaking into the vault.
-			Expect(rendered).NotTo(ContainSubstring(`"purpose"`),
-				"the file must hold rendered markdown, not raw JSON keys")
-			Expect(rendered).NotTo(ContainSubstring(`"must_not"`))
-
-			// Top-level keys become title-cased headings.
-			Expect(rendered).To(ContainSubstring("## Purpose"))
-			Expect(rendered).To(ContainSubstring("A supportive mental-health companion."))
-			Expect(rendered).To(ContainSubstring("## Responsibilities"))
-			// Array of strings → bullet list.
-			Expect(rendered).To(ContainSubstring("- Listen actively"))
-			Expect(rendered).To(ContainSubstring("- Offer coping strategies"))
-			// Nested object → subheading + its fields.
-			Expect(rendered).To(ContainSubstring("## Boundaries"))
-			Expect(rendered).To(ContainSubstring("### Must Not"))
-			Expect(rendered).To(ContainSubstring("- Diagnose conditions"))
+			_, recorded := readPublication(store, "mhc-2026-05-27")
+			Expect(recorded).To(BeFalse(), "no fabricated publication record for a refused plan")
 		})
 
-		It("renders deterministically (top-level key order is stable across runs)", func() {
-			jsonBody := `{"alpha":"first","beta":"second","gamma":"third"}`
+		It("REFUSES a trivial JSON object too (still a spec blob, not a plan)", func() {
 			store := newGateStore(map[string][]byte{
-				"det-chain/plan": []byte(jsonBody),
+				"tiny-json/plan": []byte(`{"name":"Companion Charter","purpose":"Be kind."}`),
 			})
-			first, err := swarm.PublishPlanToVault(store, outputDir, "det-chain")
-			Expect(err).NotTo(HaveOccurred())
-			body1, _ := os.ReadFile(first)
-
-			second, err := swarm.PublishPlanToVault(store, outputDir, "det-chain")
-			Expect(err).NotTo(HaveOccurred())
-			body2, _ := os.ReadFile(second)
-
-			Expect(string(body2)).To(Equal(string(body1)), "rendering is byte-stable")
+			path, err := swarm.PublishPlanToVault(store, outputDir, "tiny-json")
+			Expect(err).To(HaveOccurred())
+			Expect(path).To(BeEmpty())
+			entries, _ := os.ReadDir(outputDir)
+			Expect(entries).To(BeEmpty(), "no JSON blob, however small, reaches the vault")
 		})
+	})
 
-		It("derives the title from the JSON title/name/purpose for the slug", func() {
-			jsonBody := `{"name":"Companion Charter","purpose":"Be kind."}`
+	Context("plan-document shape preserved for legitimate plans", func() {
+		It("still handles the {markdown:...} envelope (the live plan-writer shape)", func() {
 			store := newGateStore(map[string][]byte{
-				"name-chain/plan": []byte(jsonBody),
-			})
-			path, err := swarm.PublishPlanToVault(store, outputDir, "name-chain")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(path).To(Equal(filepath.Join(outputDir, "companion-charter.md")),
-				"the JSON name field seeds the filename slug")
-		})
-
-		It("caps the filename when the only title source is a long run-on purpose", func() {
-			// REGRESSION (slug-length): the live mental-health plan's only
-			// title source is a single run-on "purpose" sentence. Without a
-			// length cap the slug became a 200+ char filename (the whole
-			// sentence slugified). The published filename must be short and
-			// readable, not the entire purpose.
-			longPurpose := "A conversational mental health companion agent that serves as the " +
-				"user's daily entry point for managing AuDHD-specific mental health, " +
-				"medical cannabis tracking, biochemistry monitoring, and N-1 experimentation."
-			jsonBody := `{"purpose":` + jsonQuote(longPurpose) + `}`
-			store := newGateStore(map[string][]byte{
-				"mhc-long/plan": []byte(jsonBody),
-			})
-
-			path, err := swarm.PublishPlanToVault(store, outputDir, "mhc-long")
-			Expect(err).NotTo(HaveOccurred())
-
-			name := filepath.Base(path)
-			Expect(name).To(HaveSuffix(".md"))
-			slug := name[:len(name)-len(".md")]
-			Expect(len(slug)).To(BeNumerically("<=", 60),
-				"the slug is length-capped, not the whole run-on purpose")
-			Expect(slug).NotTo(HaveSuffix("-"), "no trailing hyphen on a capped slug")
-			Expect(slug).NotTo(HavePrefix("-"), "no leading hyphen")
-			Expect(slug).To(HavePrefix("a-conversational-mental-health"),
-				"the lead fragment of the purpose is still readable")
-		})
-
-		It("still handles the {markdown:...} envelope (existing behaviour preserved)", func() {
-			store := newGateStore(map[string][]byte{
-				"env-chain/plan": []byte(`{"markdown":"# Envelope Plan\n\nMd body.","title":"Envelope Plan"}`),
+				"env-chain/plan": []byte(`{"markdown":"# Envelope Plan\n\nMd body with enough length to be real.","title":"Envelope Plan"}`),
 			})
 			path, err := swarm.PublishPlanToVault(store, outputDir, "env-chain")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(Equal(filepath.Join(outputDir, "envelope-plan.md")))
 			body, _ := os.ReadFile(path)
-			Expect(string(body)).To(Equal("# Envelope Plan\n\nMd body."))
+			Expect(string(body)).To(Equal("# Envelope Plan\n\nMd body with enough length to be real."))
+		})
+
+		It("REFUSES an envelope whose inner markdown is not a coherent plan", func() {
+			// An envelope is only valid if its INNER body is a real plan. An
+			// envelope wrapping a heading-less stub is still garbage and must
+			// be refused — validation runs on the unwrapped body.
+			store := newGateStore(map[string][]byte{
+				"empty-env/plan": []byte(`{"markdown":"tbd","title":"Stub"}`),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "empty-env")
+			Expect(err).To(HaveOccurred(),
+				"an envelope wrapping a heading-less stub is not a publishable plan")
+			Expect(path).To(BeEmpty())
 		})
 
 		It("still handles a raw-markdown body (existing behaviour preserved)", func() {
 			store := newGateStore(map[string][]byte{
-				"raw-chain/plan": []byte("# Raw Plan\n\nPlain markdown."),
+				"raw-chain/plan": []byte("# Raw Plan\n\nPlain markdown body with real content."),
 			})
 			path, err := swarm.PublishPlanToVault(store, outputDir, "raw-chain")
 			Expect(err).NotTo(HaveOccurred())
 			body, _ := os.ReadFile(path)
-			Expect(string(body)).To(Equal("# Raw Plan\n\nPlain markdown."))
+			Expect(string(body)).To(Equal("# Raw Plan\n\nPlain markdown body with real content."))
 		})
 
-		It("prefers a <chainID>/plan-markdown key over the structured-JSON plan body", func() {
-			jsonBody := `{"purpose":"JSON form","responsibilities":["a","b"]}`
+		It("prefers a <chainID>/plan-markdown key over the raw plan body", func() {
 			store := newGateStore(map[string][]byte{
-				"pmd-chain/plan":          []byte(jsonBody),
-				"pmd-chain/plan-markdown": []byte("# Curated Markdown\n\nThis curated body wins."),
+				"pmd-chain/plan":          []byte(`{"purpose":"JSON form","responsibilities":["a","b"]}`),
+				"pmd-chain/plan-markdown": []byte("# Curated Markdown\n\nThis curated body wins, and it is long enough."),
 			})
 			path, err := swarm.PublishPlanToVault(store, outputDir, "pmd-chain")
 			Expect(err).NotTo(HaveOccurred())
 			body, _ := os.ReadFile(path)
-			Expect(string(body)).To(Equal("# Curated Markdown\n\nThis curated body wins."),
-				"plan-markdown takes precedence over the structured-JSON render")
+			Expect(string(body)).To(Equal("# Curated Markdown\n\nThis curated body wins, and it is long enough."),
+				"a curated plan-markdown body is published, the JSON form is ignored")
 			Expect(string(body)).NotTo(ContainSubstring("JSON form"))
 		})
 	})

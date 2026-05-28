@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -21,9 +20,9 @@ const planSuffix = "plan"
 
 // planMarkdownSuffix is the OPTIONAL coord-store sub-key a curated,
 // pre-rendered markdown body may be written under ("<chainID>/plan-markdown").
-// When present it takes precedence over the structured-JSON render of the
-// "<chainID>/plan" key — a plan-writer that already produced clean markdown
-// should have it published verbatim rather than re-derived from JSON.
+// When present it takes precedence over the "<chainID>/plan" key — a
+// plan-writer that already produced clean markdown should have it published
+// verbatim rather than re-derived from the plan key.
 const planMarkdownSuffix = "plan-markdown"
 
 // reviewSuffix is the coord-store sub-key the plan-reviewer writes its
@@ -86,17 +85,21 @@ type reviewEnvelope struct {
 //     verdict MUST be "approve" to publish; a non-approve verdict is a
 //     no-op (no file, no record). An absent/malformed review does NOT
 //     block publication — the plan-reviewer post-member gate already ran.
-//   - Body resolution (Bug 2 fix — JSON published raw), in precedence
-//     order (see resolvePlanBody / parsePlan):
+//   - Body resolution, in precedence order (see resolvePlanBody / parsePlan):
 //   - an existing "<chainID>/plan-markdown" key (curated markdown), else
 //   - the {"markdown": ...} envelope's Markdown, else
-//   - a structured-JSON object rendered to readable markdown (headings +
-//     paragraphs + bullet lists), else
-//   - the raw value treated as the markdown body (existing behaviour).
-//   - Derives a deterministic, idempotent filename: the envelope/JSON
-//     title, else the body's first "# H1" heading, else the chainID;
-//     slugified to a safe filename. The same plan always writes the same
-//     file (overwrite-safe).
+//   - the raw value treated as the markdown body.
+//   - Plan-document validation (the incident guard): the resolved body MUST
+//     be a coherent markdown plan. A raw JSON agent-spec blob, a heading-less
+//     prose dump, or a bare-heading stub is NOT a plan and is REFUSED — the
+//     publish returns an error and writes NO file, so the loop honest-fails
+//     rather than shipping garbage to the vault (see isPlanDocument). The old
+//     publisher rendered ANY JSON object to markdown and wrote it; that
+//     over-broad salvage is exactly how a JSON agent-spec at "<chainID>/plan"
+//     became 200 lines of unusable markdown in the user's vault.
+//   - Derives a deterministic, idempotent filename: the envelope title, else
+//     the body's first "# H1" heading, else the chainID; slugified to a safe
+//     filename. The same plan always writes the same file (overwrite-safe).
 //   - Writes atomically (temp in the same dir + fsync + rename + parent
 //     dir fsync), mirroring the pathguard permissions-writer convention
 //     (memory: feedback_atomicity_awareness_uneven). No flock is needed
@@ -155,6 +158,19 @@ func PublishPlanToVault(store coordination.Store, outputDir, chainID string) (st
 	title, body := resolvePlanBody(store, resolvedChain, planRaw)
 	if strings.TrimSpace(body) == "" {
 		return "", nil
+	}
+
+	// Plan-document validation (the incident guard): the resolved body must
+	// be a coherent markdown plan, NOT a raw JSON agent-spec blob, empty, or
+	// a trivial stub. The old publisher rendered ANY JSON object to markdown
+	// and wrote it — a JSON agent spec at "<chainID>/plan" became 200 lines
+	// of unusable markdown in the user's vault. Refusing to publish a
+	// non-plan artifact (returning an error, never a file) means the loop
+	// honest-fails: publishPlanForSwarm propagates this so the post-swarm
+	// honesty gate is not reached on a corrupt body, and NO garbage lands in
+	// the vault. The gate independently re-validates (defence in depth).
+	if ok, reason := isPlanDocument(body); !ok {
+		return "", fmt.Errorf("publish plan: refusing to publish chain %q: %s", resolvedChain, reason)
 	}
 
 	slug := slugifyPlanName(title, body, resolvedChain)
@@ -254,13 +270,15 @@ func reviewApproves(store coordination.Store, chainID string) (approved bool, ok
 }
 
 // resolvePlanBody returns the title and markdown body to publish for
-// resolvedChain, applying the precedence order (Bug 2 fix):
+// resolvedChain, applying the precedence order:
 //
 //  1. "<chainID>/plan-markdown" — a curated, pre-rendered markdown body
-//     takes precedence over re-deriving from the plan key.
-//  2. otherwise the planRaw value is parsed by parsePlan, which handles
-//     the {"markdown": ...} envelope, a structured-JSON object (rendered
-//     to readable markdown), and a raw-markdown body in turn.
+//     takes precedence over the plan key.
+//  2. otherwise the planRaw value is parsed by parsePlan, which unwraps the
+//     {"markdown": ...} envelope and otherwise returns the raw value
+//     verbatim. The caller (PublishPlanToVault) then validates the body as
+//     a plan document before writing — a bare JSON object surfaced verbatim
+//     here is REFUSED there, not rendered.
 //
 // store is consulted only for the optional plan-markdown key; planRaw is
 // the already-read "<chainID>/plan" value so the hot path makes at most
@@ -276,8 +294,7 @@ func resolvePlanBody(store coordination.Store, resolvedChain string, planRaw []b
 
 // planMarkdownOverride returns the "<chainID>/plan-markdown" body when the
 // key exists and is non-empty. A missing key or read error is treated as
-// "no override" (ok=false) so the structured-JSON / envelope / raw path
-// applies.
+// "no override" (ok=false) so the envelope / raw plan-key path applies.
 func planMarkdownOverride(store coordination.Store, chainID string) (string, bool) {
 	key := chainID + "/" + planMarkdownSuffix
 	exists, err := store.Exists(key)
@@ -299,194 +316,24 @@ func planMarkdownOverride(store coordination.Store, chainID string) (string, boo
 //
 //  1. the {"markdown": ...} envelope — Markdown is the body, Title the
 //     title (the live planning-loop plan-writer shape);
-//  2. a structured-JSON object (a JSON object that is NOT the markdown
-//     envelope) — rendered to readable markdown by renderStructuredPlan,
-//     with the title derived from a title/name/purpose field (Bug 2 fix:
-//     such bodies used to be dumped raw into the vault);
-//  3. otherwise the raw value is the body and the title is left empty
-//     (slugifyPlanName then derives one from the H1 or chainID).
+//  2. otherwise the raw value is the body verbatim and the title is left
+//     empty (slugifyPlanName then derives one from the H1 or chainID).
+//
+// A bare structured-JSON object (NOT the markdown envelope) is DELIBERATELY
+// returned verbatim as the body, NOT rendered to markdown. The earlier "Bug
+// 2 fix" rendered any JSON object to headings+bullets; that over-broad
+// salvage is exactly how a JSON agent-spec blob at "<chainID>/plan" became
+// 200 lines of garbage in the vault (the incident). isPlanDocument then
+// rejects the verbatim JSON object as a non-plan artifact, so the publish
+// refuses it and the loop honest-fails. The publisher's job is to write a
+// COHERENT plan or refuse — not to dress up a spec blob as one.
 func parsePlan(raw []byte) (title, body string) {
 	var env planEnvelope
 	if err := json.Unmarshal(raw, &env); err == nil && strings.TrimSpace(env.Markdown) != "" {
 		return env.Title, env.Markdown
 	}
 
-	// Try a generic JSON object. encoding/json into a map succeeds only
-	// for a JSON object (`{...}`); arrays, numbers, strings, and raw
-	// markdown all fail the unmarshal and fall through to the raw path.
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err == nil && len(obj) > 0 {
-		return structuredPlanTitle(obj), renderStructuredPlan(obj)
-	}
-
 	return "", string(raw)
-}
-
-// structuredPlanTitle derives a human title from a structured-JSON plan
-// object for the filename slug: an explicit "title", else "name", else a
-// short lead fragment of "purpose". Empty when none is present
-// (slugifyPlanName then falls back to the H1 or chainID).
-//
-// The "purpose" field is the WORST title source — a plan's purpose is often
-// a single run-on sentence (the live mental-health plan's purpose is one
-// ~200-char clause with no early full stop). Taking the whole sentence as a
-// title produced a 200+ char filename before the slug cap was added; even
-// with the cap, a lead FRAGMENT (first clause up to a comma/em-dash) reads
-// far better than a hard-truncated mid-sentence slug. slugifyPlanName still
-// length-caps whatever this returns, so the fragment is an upper-quality
-// hint, not the sole guard.
-func structuredPlanTitle(obj map[string]json.RawMessage) string {
-	if t := jsonStringField(obj, "title"); t != "" {
-		return t
-	}
-	if n := jsonStringField(obj, "name"); n != "" {
-		return n
-	}
-	if p := jsonStringField(obj, "purpose"); p != "" {
-		return firstPurposeFragment(p)
-	}
-	return ""
-}
-
-// jsonStringField returns obj[key] when it decodes as a non-empty string;
-// "" otherwise (missing key or non-string value).
-func jsonStringField(obj map[string]json.RawMessage, key string) string {
-	raw, ok := obj[key]
-	if !ok {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(s)
-}
-
-// firstPurposeFragment returns a short lead fragment of a "purpose" string
-// to seed the filename title. It stops at the FIRST clause boundary — a
-// comma or an em/en-dash (', ', '—', '–') — or a sentence terminator
-// ('.', '!', '?'), whichever comes first; the whole (trimmed) string when
-// none is present. The clause boundary is checked before the sentence
-// terminator because a run-on purpose typically has commas long before its
-// only full stop, so the comma yields the readable lead clause while the
-// full stop would return the entire run-on sentence.
-//
-// This is a quality hint only: slugifyPlanName still length-caps the slug,
-// so even a fragment with no early delimiter cannot produce an over-long
-// filename.
-func firstPurposeFragment(s string) string {
-	for i, r := range s {
-		switch r {
-		case ',', '—', '–', '.', '!', '?':
-			return strings.TrimSpace(s[:i])
-		}
-	}
-	return strings.TrimSpace(s)
-}
-
-// renderStructuredPlan deterministically renders a structured-JSON plan
-// object to readable markdown (Bug 2 fix). The transform:
-//   - top-level keys become "## Heading" (title-cased, underscores and
-//     hyphens → spaces), emitted in stable lexicographic key order so the
-//     output is byte-identical across runs (Go map iteration is random);
-//   - string values become paragraphs;
-//   - arrays of scalars become "- bullet" lists;
-//   - nested objects become "### Subheading" + their own rendered fields;
-//   - other shapes (numbers, bools, nested arrays) fall back to a compact
-//     JSON literal so no data is silently dropped.
-func renderStructuredPlan(obj map[string]json.RawMessage) string {
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var b strings.Builder
-	for _, k := range keys {
-		b.WriteString("## ")
-		b.WriteString(titleCaseKey(k))
-		b.WriteString("\n\n")
-		b.WriteString(renderJSONValue(obj[k], 3))
-		b.WriteString("\n")
-	}
-	return strings.TrimRight(b.String(), "\n") + "\n"
-}
-
-// renderJSONValue renders a single JSON value to markdown. headingLevel is
-// the level (e.g. 3 for "###") used for nested-object subheadings so a
-// "## Boundaries" object renders its fields as "### Must Not".
-func renderJSONValue(raw json.RawMessage, headingLevel int) string {
-	// String → paragraph.
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return strings.TrimSpace(s) + "\n"
-	}
-
-	// Array → bullet list of scalars (objects/arrays inside fall back to
-	// a compact literal per element so nothing is dropped).
-	var arr []json.RawMessage
-	if err := json.Unmarshal(raw, &arr); err == nil {
-		var b strings.Builder
-		for _, item := range arr {
-			b.WriteString("- ")
-			b.WriteString(scalarOrCompact(item))
-			b.WriteString("\n")
-		}
-		return b.String()
-	}
-
-	// Object → subheading per field.
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err == nil {
-		keys := make([]string, 0, len(obj))
-		for k := range obj {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		hashes := strings.Repeat("#", headingLevel)
-		var b strings.Builder
-		for _, k := range keys {
-			b.WriteString(hashes)
-			b.WriteString(" ")
-			b.WriteString(titleCaseKey(k))
-			b.WriteString("\n\n")
-			b.WriteString(renderJSONValue(obj[k], headingLevel+1))
-			b.WriteString("\n")
-		}
-		return strings.TrimRight(b.String(), "\n") + "\n"
-	}
-
-	// Number / bool / null → compact literal.
-	return scalarOrCompact(raw) + "\n"
-}
-
-// scalarOrCompact renders a JSON value as a plain string when it is a
-// string scalar, else as its compact JSON literal (numbers, bools, nested
-// shapes). Keeps bullet/array elements readable without dropping data.
-func scalarOrCompact(raw json.RawMessage) string {
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return strings.TrimSpace(s)
-	}
-	compact := strings.TrimSpace(string(raw))
-	return compact
-}
-
-// titleCaseKey converts a JSON object key to a display heading:
-// underscores and hyphens become spaces and each word is capitalised
-// ("must_not" → "Must Not", "responsibilities" → "Responsibilities").
-func titleCaseKey(key string) string {
-	replaced := strings.NewReplacer("_", " ", "-", " ").Replace(key)
-	fields := strings.Fields(replaced)
-	for i, f := range fields {
-		runes := []rune(f)
-		if len(runes) == 0 {
-			continue
-		}
-		runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
-		fields[i] = string(runes)
-	}
-	return strings.Join(fields, " ")
 }
 
 // slugMaxLen is the hard character cap for a plan filename slug (excluding
