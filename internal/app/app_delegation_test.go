@@ -16,6 +16,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -700,6 +701,134 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			Expect(deepEng).NotTo(BeNil())
 			Expect(deepEng.LastModel()).NotTo(Equal("haiku-large"))
 			Expect(deepEng.LastModel()).To(Equal("capable-small"))
+		})
+	})
+
+	// Regression: swarm/delegate members must run on their manifest's
+	// preferred_models, not the global default the lead happens to be on.
+	//
+	// Issue #27 — commit 04adb404 set anthropic-first preferred_models on
+	// the planning-loop member manifests so they stop synthesis-hanging on
+	// the global default (zai/glm-5). createDelegateEngine (app.go:2122-2146)
+	// correctly seeds the child failover manager's BASE preferences from the
+	// manifest. But buildDelegateMaps then runs applyModelPreference
+	// (app.go:1607 → 1642-1660), which — for a member with no resolvable
+	// complexity model — calls SetModelPreference(lead.provider, lead.model).
+	// That delegates to failoverManager.SetOverride (engine.go:1841), which
+	// PREPENDS the lead's global-default pair ahead of the manifest base
+	// (manager.go:189 + effectivePreferences:331-339). The effective list
+	// becomes [zai/glm-5(override), anthropic, zai/glm-4.6, zai/glm-5] — so
+	// an anthropic failure lands on glm-5, never the manifest's glm-4.6 tail.
+	//
+	// These specs pin: a member declaring preferred_models keeps the manifest
+	// ordering as the effective failover preferences; the lead's global
+	// default does NOT preempt the manifest's anthropic head.
+	Describe("manifest preferred_models survive delegate model preference", func() {
+		buildPluginApp := func(models []provider.Model) (*App, *provider.Registry) {
+			p := &modelsProvider{name: "zai", models: models}
+			reg := provider.NewRegistry()
+			reg.Register(p)
+			healthMgr := failover.NewHealthManager()
+			parentMgr := failover.NewManager(reg, healthMgr, 0)
+			// Lead/global default — the member must NOT inherit this as a
+			// prepended override when it declares its own preferred_models.
+			parentMgr.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5"},
+			})
+			app := &App{
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  p,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"*"},
+					ToolIncapableModels: []string{},
+				},
+				plugins: &pluginRuntime{
+					healthManager:   healthMgr,
+					failoverManager: parentMgr,
+				},
+			}
+			return app, reg
+		}
+
+		wireMember := func(memberID string, prefs []agent.ModelPreference) *engine.Engine {
+			app, reg := buildPluginApp([]provider.Model{
+				{ID: "glm-5", Provider: "zai", ContextLength: 200000},
+			})
+			leadManifest := agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			memberManifest := agent.Manifest{
+				ID:              memberID,
+				Name:            memberID,
+				PreferredModels: prefs,
+			}
+			app.Registry.Register(&leadManifest)
+			app.Registry.Register(&memberManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: leadManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			// Lead is on the global default — the very pair that must NOT
+			// clobber the member's manifest preferences.
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, leadManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()[memberID]
+			Expect(memberEng).NotTo(BeNil())
+			return memberEng
+		}
+
+		It("keeps the manifest's anthropic head as the first effective failover preference", func() {
+			memberEng := wireMember("plan-writer", []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(prefs).NotTo(BeEmpty(),
+				"member with preferred_models must have effective failover preferences")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4"}),
+				"the manifest's anthropic head must lead — the lead's global default "+
+					"(zai/glm-5) must NOT be prepended as a SetOverride")
+		})
+
+		It("falls back to the manifest's glm-4.6 tail, never the global glm-5, after the anthropic head", func() {
+			memberEng := wireMember("explorer", []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4"},
+				{Provider: "zai", Model: "glm-4.6"},
+			})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(len(prefs)).To(BeNumerically(">=", 2),
+				"member must keep its declared fallback tail")
+			Expect(prefs[1]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-4.6"}),
+				"after the anthropic head fails, failover must reach the manifest's "+
+					"glm-4.6 tail before any inherited global default")
+			// glm-5 may still appear LAST as the deduplicated parent fallback,
+			// but it must never sit ahead of the manifest's own pairs.
+			anthropicIdx, glm46Idx, glm5Idx := -1, -1, -1
+			for i, p := range prefs {
+				switch {
+				case p.Provider == "anthropic" && p.Model == "claude-sonnet-4":
+					anthropicIdx = i
+				case p.Provider == "zai" && p.Model == "glm-4.6":
+					glm46Idx = i
+				case p.Provider == "zai" && p.Model == "glm-5":
+					glm5Idx = i
+				}
+			}
+			Expect(anthropicIdx).To(Equal(0), "anthropic head must be first")
+			if glm5Idx != -1 {
+				Expect(glm5Idx).To(BeNumerically(">", glm46Idx),
+					"the global default may only appear as a trailing fallback, "+
+						"never ahead of the manifest's glm-4.6")
+			}
 		})
 	})
 

@@ -1639,6 +1639,25 @@ func (a *App) buildComplexityResolver() *engine.CategoryResolver {
 // Falls back to inheriting the lead's model when complexity is unset or
 // resolution produces an abstract descriptor (e.g. no model lister
 // available).
+//
+// Issue #27 — a manifest that declares preferred_models must run on those,
+// not the lead's global default. createDelegateEngine (see the
+// childFailoverMgr.SetBasePreferences call) already seeds the child failover
+// manager's BASE preferences from manifest.PreferredModels in declaration
+// order (anthropic head, then the agent's own fallback tail). The lead's
+// global-default fallback below routes through SetModelPreference →
+// failoverManager.SetOverride (engine.go:SetModelPreference), which PREPENDS
+// the global-default pair AHEAD of that manifest base — so an anthropic
+// failure landed on the global default (e.g. zai/glm-5) instead of the
+// manifest's own tail (e.g. zai/glm-4.6). Members kept synthesis-hanging on
+// the global default despite commit 04adb404 setting their preferred_models.
+//
+// The guard: when the manifest declares preferred_models AND complexity did
+// not resolve to an explicit per-agent model, leave the manifest-seeded base
+// preferences intact rather than overriding them with the lead's model. The
+// explicit-complexity path is still honoured (a deliberate per-agent routing
+// decision); only the global-default fallback is suppressed. We never silently
+// ignore declared preferences — the deferral is logged.
 func (a *App) applyModelPreference(
 	resolver *engine.CategoryResolver,
 	eng *engine.Engine,
@@ -1656,7 +1675,34 @@ func (a *App) applyModelPreference(
 			return
 		}
 	}
+	if len(manifest.PreferredModels) > 0 {
+		// Manifest preferences are authoritative — they are already the
+		// child failover manager's base preferences. Prepending the lead's
+		// default here would jump it ahead of the manifest's own fallback
+		// tail. Defer to the manifest; log so the choice is auditable.
+		log.Printf(
+			"delegate %q: keeping manifest preferred_models (%s) over lead default (%s/%s)",
+			manifest.ID,
+			formatPreferredModels(manifest.PreferredModels),
+			src.LastProvider(), src.LastModel(),
+		)
+		return
+	}
 	eng.SetModelPreference(src.LastProvider(), src.LastModel())
+}
+
+// formatPreferredModels renders a manifest's preferred_models as a compact
+// "provider/model, provider/model" string for the applyModelPreference
+// audit log. Empty input yields "<none>".
+func formatPreferredModels(prefs []agent.ModelPreference) string {
+	if len(prefs) == 0 {
+		return "<none>"
+	}
+	parts := make([]string, 0, len(prefs))
+	for _, p := range prefs {
+		parts = append(parts, p.Provider+"/"+p.Model)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // wireDelegateToolIfEnabled adds a DelegateTool to the engine when the
