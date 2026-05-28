@@ -81,11 +81,18 @@ type streamSequenceProvider struct {
 	name      string
 	sequences [][]provider.StreamChunk
 	callIndex int
+	// capturedRequests records the ChatRequest seen on every Stream call,
+	// in call order. Turn 1 is index 0; tool-loop continuations follow.
+	// The override-per-continuation regression guard inspects index >= 1
+	// to assert the per-stream provider/model override survives the tool
+	// loop rather than reverting to the engine default.
+	capturedRequests []provider.ChatRequest
 }
 
 func (p *streamSequenceProvider) Name() string { return p.name }
 
-func (p *streamSequenceProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+func (p *streamSequenceProvider) Stream(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	p.capturedRequests = append(p.capturedRequests, req)
 	if p.callIndex >= len(p.sequences) {
 		ch := make(chan provider.StreamChunk, 16)
 		close(ch)
@@ -716,8 +723,8 @@ var _ = Describe("Engine Tool Call Loop", func() {
 						{
 							EventType: "tool_call",
 							ToolCall: &provider.ToolCall{
-								ID:        "call_resonly",
-								Name:      "read",
+								ID:   "call_resonly",
+								Name: "read",
 								Arguments: map[string]interface{}{
 									"path": "/some/directory",
 								},
@@ -1109,6 +1116,82 @@ var _ = Describe("Engine Tool Call Loop", func() {
 				Expect(toolCallChunks).To(HaveLen(1))
 				Expect(toolCallChunks[0].ToolCall.Name).To(Equal("test_tool"))
 				Expect(toolCallChunks[0].ToolCall.ID).To(Equal("call_forward"))
+			})
+		})
+
+		// Regression guard — Runtime member-model revert in the tool loop.
+		// A delegated swarm member carries a per-stream provider/model
+		// override on its dispatch ctx (session.ProviderOverrideKey /
+		// ModelOverrideKey), resolved from the member manifest's
+		// preferred_models by DelegateTool.resolveChildModelOverride. The
+		// engine's Stream() seam applies that override when it builds the
+		// FIRST turn's request — but every tool-result continuation request
+		// is built inside retryStreamForToolResult, which historically
+		// defaulted to e.LastProvider/LastModel (the engine's GLOBAL
+		// default) and never re-read the ctx override. Since members are
+		// dominated by tool-loop turns (bash/file scans), the member ran
+		// turn 1 on its preferred model (anthropic) and then silently
+		// reverted to the global default (e.g. zai/glm) for every working
+		// turn — the symptom that survived commits 04adb404 (manifests) and
+		// 7a82fba7 (preference prepend), both of which only fixed turn 1.
+		// This asserts the override survives across the tool loop at the
+		// provider boundary, which is the closest test surface to the live
+		// runtime path (engine.go retryStreamForToolResult).
+		Context("when a per-stream provider/model override is set during a tool loop", func() {
+			BeforeEach(func() {
+				chatProvider.sequences = [][]provider.StreamChunk{
+					// Turn 1: model emits a tool_call, driving the engine
+					// into retryStreamForToolResult for the continuation.
+					{
+						{
+							EventType: "tool_call",
+							ToolCall: &provider.ToolCall{
+								ID:        "call_override",
+								Name:      "test_tool",
+								Arguments: map[string]interface{}{"arg1": "value1"},
+							},
+						},
+					},
+					// Turn 2 (continuation): model returns the final answer.
+					{
+						{Content: "Tool result processed.", Done: true},
+					},
+				}
+			})
+
+			It("re-applies the override on the tool-loop continuation request, not just turn 1", func() {
+				eng := engine.New(engine.Config{
+					ChatProvider: chatProvider,
+					Manifest:     manifest,
+					Tools:        []tool.Tool{testTool},
+				})
+
+				ctx := context.WithValue(context.Background(), session.ProviderOverrideKey{}, "anthropic")
+				ctx = context.WithValue(ctx, session.ModelOverrideKey{}, "claude-sonnet-4-20250514")
+
+				chunks, err := eng.Stream(ctx, "test-agent", "Please use the tool")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks { //nolint:revive // drain the stream to completion
+				}
+
+				// Two provider calls: turn 1 (initial) + turn 2 (continuation).
+				Expect(chatProvider.callIndex).To(Equal(2),
+					"expected an initial turn plus one tool-loop continuation")
+				Expect(chatProvider.capturedRequests).To(HaveLen(2))
+
+				// Turn 1 honoured the override — the prior fixes already
+				// covered this; pinned here so a regression on either turn
+				// is unambiguous.
+				Expect(chatProvider.capturedRequests[0].Provider).To(Equal("anthropic"))
+				Expect(chatProvider.capturedRequests[0].Model).To(Equal("claude-sonnet-4-20250514"))
+
+				// Turn 2 — the continuation — MUST still carry the override.
+				// Pre-fix this reverted to the engine's global default and
+				// the member silently ran the rest of its turns on glm.
+				Expect(chatProvider.capturedRequests[1].Provider).To(Equal("anthropic"),
+					"tool-loop continuation must keep the member's manifest provider, not revert to the engine default")
+				Expect(chatProvider.capturedRequests[1].Model).To(Equal("claude-sonnet-4-20250514"),
+					"tool-loop continuation must keep the member's manifest model, not revert to the engine default")
 			})
 		})
 	})

@@ -4183,6 +4183,27 @@ func (e *Engine) retryStreamForToolResult(
 		// SetManifest swap.
 		Tools: e.buildToolSchemasCtx(ctx),
 	}
+	// Re-apply the per-stream provider/model override on every tool-loop
+	// continuation. Stream() stamps the override (Stream's gate at the
+	// req construction site) so the FIRST turn of a delegated member runs
+	// on its manifest's preferred_models (e.g. anthropic) — but the
+	// continuation request built here defaults to e.LastProvider/LastModel
+	// (the child engine's GLOBAL default, e.g. zai/glm-4.5). Without this
+	// gate a swarm member ran turn 1 on anthropic and then every
+	// tool-result continuation turn silently reverted to the global
+	// default. Members are dominated by tool-loop turns (bash/file scans),
+	// so the manifest's declared tier was effectively never honoured at
+	// runtime — the symptom that survived commits 04adb404 (manifests) and
+	// 7a82fba7 (preference prepend), both of which only fixed turn 1. The
+	// override keys are carried on ctx (streamCtx) from Stream's seam;
+	// empty values fall through to the engine default exactly as the
+	// Stream-site gate does.
+	if provOverride := session.ProviderOverrideFromContext(ctx); provOverride != "" {
+		toolReq.Provider = provOverride
+	}
+	if modelOverride := session.ModelOverrideFromContext(ctx); modelOverride != "" {
+		toolReq.Model = modelOverride
+	}
 	chunks, streamErr := e.streamFromProvider(ctx, &toolReq)
 	e.publishProviderRequestEventCtx(ctx, sessionID, toolReq)
 	if streamErr != nil {
@@ -8063,6 +8084,7 @@ func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args 
 //
 // Side effects:
 //   - Publishes a tool execution completion event on the engine bus.
+//
 // publishToolArgsValidationFailedEvent publishes a tool-args validation
 // failure event to the engine bus. Recommendation E from the May 2026
 // codebase-explorer investigation of the glm-4.6 `librarian` mis-call —
