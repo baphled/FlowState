@@ -15,6 +15,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/swarm"
 )
 
 // resolveCriticModel decides which chat model the LLM critic runs against.
@@ -288,27 +289,71 @@ func newCriticEnabler(registry *agent.Registry, globalDefault bool) func(string)
 
 // coordWaveValidator is the harness.WaveValidator implementation backed
 // by FlowState's coordination_store. It resolves expected keys against
-// the active chain id (extracted from ctx via session.IDKey) and falls
-// back to a suffix-glob scan of the store when no chain id is available.
+// the active chain id and falls back to a suffix-glob scan of the store
+// when the resolved chain id yields no key.
 //
-// Two-tier lookup:
+// chainID resolution (see resolveChainID) deliberately mirrors the
+// source #28 established for the swarm publisher + post-swarm gate
+// (delegation.go FlushSwarmLifecycle): the engine-assigned per-run
+// chainID is authoritative when in a swarm run, NOT the per-delegate
+// session.IDKey — the engine rebinds session.IDKey to the delegate
+// session id on every delegation (delegation.go:2541), so reading it
+// here inside a plan-writer delegate would look for evidence under
+// "delegate-plan-writer-<ts>/..." while explorer/librarian wrote it
+// under the run's swarm chainID. That namespace miss produced
+// `harness exhausted retries with wave still incomplete maxRetries=8`
+// and skipped the plan-reviewer stage (live run 2026-05-28T20:05).
 //
-//  1. If ctx carries session.IDKey, treat that as the chain prefix.
-//     For each expected key in the wave, substitute "{chainID}" and
-//     check store.Get on the resolved key.
+// Two-tier lookup per expected templated key:
 //
-//  2. If no chain id is in ctx, strip the "{chainID}/" template prefix
-//     from each expected key and walk store.List(""), looking for
+//  1. Substitute "{chainID}" with the resolved chain id and check
+//     store.Get on the exact key.
+//
+//  2. Suffix-scan backstop — when the exact key is absent (the resolved
+//     chain id is empty OR a near-miss namespace), strip the
+//     "{chainID}/" template prefix and walk store.List(""), looking for
 //     ANY key that ends with /<suffix>. Reports missing as
 //     "<suffix> (any chain)" so the planner can react.
 //
-// The fallback covers the bootstrap case where the planner hasn't
-// yet allocated a chain id (or runs outside a session). It can over-
-// approve when multiple stale chains exist, but that's a tolerable
-// MVP behaviour — the planner's prompt discipline catches the
-// remaining cases.
+// The backstop covers the bootstrap case (planner hasn't yet allocated
+// a chain id) AND the near-miss case (a stale or lead-renamed namespace)
+// — both would otherwise hard-fail and churn the retry loop. It can
+// over-approve when multiple stale chains exist, but that's a tolerable
+// MVP behaviour — the planner's prompt discipline catches the remaining
+// cases.
 type coordWaveValidator struct {
 	store coordination.Store
+}
+
+// resolveChainID picks the chain id the wave validator resolves expected
+// keys against. The order mirrors the swarm publisher + post-swarm gate
+// (#28, delegation.go FlushSwarmLifecycle) so the wave fan-in barrier,
+// the deterministic publisher, and the honesty gate all target the same
+// namespace within a run:
+//
+//  1. Swarm engine-assigned chainID — when the dispatcher attached a
+//     swarm scope (swarm.ScopeFromContext) AND the engine stamped a
+//     per-run id at swarm start (ChainIDAssigned, set by
+//     AssignRunChainID), swarmCtx.ChainPrefix is the authoritative
+//     namespace. This is the load-bearing fix: it is immune to the
+//     per-delegate session.IDKey rebind at delegation.go:2541.
+//  2. session.IDKey — the legacy/standalone path. A non-swarm harness
+//     run (no scope attached, or an explicit nil standalone scope)
+//     keeps resolving the session id, preserving backwards compat for
+//     validate-harness fixtures and any bare-engine caller.
+//
+// A swarm scope WITHOUT a stamped per-run id (ChainIDAssigned=false —
+// e.g. a legacy seeded static chain_prefix) deliberately does NOT short-
+// circuit to ChainPrefix: it falls through to session.IDKey, then the
+// suffix-scan backstop, exactly as the publisher's fallback does, so
+// seeded-chain runs are unaffected.
+func (v *coordWaveValidator) resolveChainID(ctx context.Context) string {
+	if sc, scoped := swarm.ScopeFromContext(ctx); scoped && sc != nil &&
+		sc.ChainIDAssigned && sc.ChainPrefix != "" {
+		return sc.ChainPrefix
+	}
+	chainID, _ := ctx.Value(session.IDKey{}).(string)
+	return chainID
 }
 
 // MissingForChain implements harness.WaveValidator. See
@@ -319,25 +364,34 @@ func (v *coordWaveValidator) MissingForChain(
 	if v == nil || v.store == nil {
 		return nil, nil
 	}
-	chainID, _ := ctx.Value(session.IDKey{}).(string)
+	chainID := v.resolveChainID(ctx)
 
 	var missing []string
 	for _, key := range wave.ExpectedKeys {
 		if strings.Contains(key, "{chainID}") {
+			// Tier 1: try the exact resolved key when we have a chain id.
 			if chainID != "" {
 				resolved := strings.ReplaceAll(key, "{chainID}", chainID)
-				if _, err := v.store.Get(resolved); err != nil {
-					missing = append(missing, resolved)
+				if _, err := v.store.Get(resolved); err == nil {
+					continue
 				}
-				continue
 			}
+			// Tier 2: suffix-scan backstop. Applies when there is no
+			// chain id (bootstrap) OR the resolved chain id yielded no
+			// exact key (near-miss namespace) — relaxing the prior
+			// "non-empty chainID skips the scan" rule so a near-miss
+			// doesn't hard-fail and churn the 8-retry loop.
 			suffix := strings.TrimPrefix(key, "{chainID}/")
 			found, err := v.suffixPresent(suffix)
 			if err != nil {
 				return nil, err
 			}
 			if !found {
-				missing = append(missing, suffix+" (any chain)")
+				if chainID != "" {
+					missing = append(missing, strings.ReplaceAll(key, "{chainID}", chainID))
+				} else {
+					missing = append(missing, suffix+" (any chain)")
+				}
 			}
 			continue
 		}

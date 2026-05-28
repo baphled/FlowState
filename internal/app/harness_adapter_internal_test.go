@@ -1,10 +1,16 @@
 package app
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/plan/harness"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/swarm"
 )
 
 // The critic-enabler predicate decides per-agent whether the LLM critic
@@ -151,5 +157,145 @@ var _ = Describe("resolveCriticModel precedence", func() {
 
 	It("returns empty when neither override nor fallback are set", func() {
 		Expect(resolveCriticModel("", "")).To(BeEmpty())
+	})
+})
+
+// coordWaveValidator.MissingForChain must resolve expected keys against
+// the SWARM's engine-assigned chainID (swarmCtx.ChainPrefix, stamped by
+// AssignRunChainID at swarm start — #28) when running inside a swarm
+// turn, NOT the per-delegate session.IDKey. The engine rebinds
+// session.IDKey to the delegate session id on every delegation
+// (delegation.go:2541), so a validator that reads session.IDKey inside a
+// plan-writer delegate looks under "delegate-plan-writer-<ts>/..." while
+// explorer/librarian wrote evidence under the run's swarm chainID. That
+// namespace mismatch produced `harness exhausted retries with wave still
+// incomplete maxRetries=8` and skipped the plan-reviewer stage entirely
+// (live run 2026-05-28T20:05). The validator must mirror the same source
+// gates + publish use (swarm.ScopeFromContext → ChainPrefix).
+var _ = Describe("coordWaveValidator chainID resolution", func() {
+	var (
+		store *coordination.MemoryStore
+		v     *coordWaveValidator
+		wave  harness.WaveStage
+	)
+
+	BeforeEach(func() {
+		store = coordination.NewMemoryStore()
+		v = &coordWaveValidator{store: store}
+		wave = harness.WaveStage{
+			Name: "evidence",
+			ExpectedKeys: []string{
+				"{chainID}/codebase-findings",
+				"{chainID}/external-refs",
+			},
+		}
+	})
+
+	Context("inside a delegate sub-session of a swarm run", func() {
+		It("resolves the swarm engine-assigned chainID, not the rebound delegate session id", func() {
+			const swarmChain = "planning-loop-abc123"
+			// Evidence written by explorer/librarian under the run's
+			// engine-assigned swarm chainID.
+			Expect(store.Set(swarmChain+"/codebase-findings", []byte("{}"))).To(Succeed())
+			Expect(store.Set(swarmChain+"/external-refs", []byte("{}"))).To(Succeed())
+
+			// The engine has rebound session.IDKey to the delegate
+			// session id (delegation.go:2541). The dispatcher attached
+			// the swarm scope (swarm.WithScope) with the engine-assigned
+			// chainID on ChainPrefix.
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "delegate-plan-writer-1748462700")
+			ctx = swarm.WithScope(ctx, &swarm.Context{
+				SwarmID:         "planning-loop",
+				ChainPrefix:     swarmChain,
+				ChainIDAssigned: true,
+			})
+
+			missing, err := v.MissingForChain(ctx, "plan-writer", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).To(BeEmpty(),
+				"validator must resolve the swarm chainID (ChainPrefix), not the per-delegate session.IDKey")
+		})
+
+		It("reports the swarm-namespaced key as missing when the evidence is genuinely absent", func() {
+			const swarmChain = "planning-loop-abc123"
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "delegate-plan-writer-1748462700")
+			ctx = swarm.WithScope(ctx, &swarm.Context{
+				SwarmID:         "planning-loop",
+				ChainPrefix:     swarmChain,
+				ChainIDAssigned: true,
+			})
+
+			missing, err := v.MissingForChain(ctx, "plan-writer", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).To(ConsistOf(
+				swarmChain+"/codebase-findings",
+				swarmChain+"/external-refs",
+			), "missing keys must be reported under the swarm chainID namespace")
+		})
+	})
+
+	Context("non-swarm / standalone harness use (backwards compat)", func() {
+		It("falls back to session.IDKey when no swarm scope is attached", func() {
+			const sessionChain = "standalone-session-42"
+			Expect(store.Set(sessionChain+"/codebase-findings", []byte("{}"))).To(Succeed())
+			Expect(store.Set(sessionChain+"/external-refs", []byte("{}"))).To(Succeed())
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, sessionChain)
+
+			missing, err := v.MissingForChain(ctx, "planner", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).To(BeEmpty(),
+				"standalone harness use must keep resolving session.IDKey")
+		})
+
+		It("honours an explicit standalone scope marker (nil swarm context) by falling back to session.IDKey", func() {
+			const sessionChain = "standalone-session-99"
+			Expect(store.Set(sessionChain+"/codebase-findings", []byte("{}"))).To(Succeed())
+			Expect(store.Set(sessionChain+"/external-refs", []byte("{}"))).To(Succeed())
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, sessionChain)
+			// Dispatcher marked this turn explicitly standalone.
+			ctx = swarm.WithScope(ctx, nil)
+
+			missing, err := v.MissingForChain(ctx, "planner", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).To(BeEmpty(),
+				"a nil swarm scope means standalone — resolve session.IDKey, not a swarm chain")
+		})
+	})
+
+	Context("suffix-scan backstop", func() {
+		It("fires when the resolved swarm chainID has no exact key but evidence exists under another chain", func() {
+			// Evidence landed under a near-miss chain (e.g. a stale or
+			// lead-renamed namespace). The exact swarm chainID has no
+			// key, so a hard-fail would churn the 8-retry loop. The
+			// suffix-scan backstop must rescue the near-miss.
+			Expect(store.Set("some-other-chain/codebase-findings", []byte("{}"))).To(Succeed())
+			Expect(store.Set("some-other-chain/external-refs", []byte("{}"))).To(Succeed())
+
+			ctx := swarm.WithScope(context.Background(), &swarm.Context{
+				SwarmID:         "planning-loop",
+				ChainPrefix:     "planning-loop-noexactkey",
+				ChainIDAssigned: true,
+			})
+
+			missing, err := v.MissingForChain(ctx, "plan-writer", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).To(BeEmpty(),
+				"suffix-scan backstop must apply when the resolved chainID yields no exact key, preventing 8-retry hard-fail churn")
+		})
+
+		It("still reports missing when neither the exact key nor any suffix match exists", func() {
+			ctx := swarm.WithScope(context.Background(), &swarm.Context{
+				SwarmID:         "planning-loop",
+				ChainPrefix:     "planning-loop-empty",
+				ChainIDAssigned: true,
+			})
+
+			missing, err := v.MissingForChain(ctx, "plan-writer", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).NotTo(BeEmpty(),
+				"genuinely-absent evidence must still report missing after the suffix-scan backstop")
+		})
 	})
 })
