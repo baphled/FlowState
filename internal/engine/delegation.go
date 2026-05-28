@@ -3687,12 +3687,27 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 	}
 	defer d.unmarkPreSwarmFiring(swarmCtx.SwarmID)
 
-	// Resolve the chainID the lead allocated for this run (captured at
-	// member-dispatch time, Bug 1). Empty when the lead never supplied a
-	// caller chainID — the publisher and gate then fall back to the
-	// suffix-scan. Threading the SAME chain to both the publisher and the
-	// post-swarm gate keeps them targeting the run's plan, not a stale one.
+	// Resolve the chainID for this run. Precedence:
+	//   1. A caller-supplied chainID captured at member-dispatch time
+	//      (Bug 1) — honoured first so existing CLI/test paths that pass
+	//      an explicit chainID keep targeting their chosen chain.
+	//   2. The engine-assigned chainID on swarmCtx.ChainPrefix — but ONLY
+	//      when the engine actually stamped a per-run id at swarm start
+	//      (ChainIDAssigned, set by the dispatcher's AssignRunChainID per
+	//      ADR - Engine-Owned Workflow Mechanics, forward decision). This
+	//      is the default when the LLM never supplied a chainID, so the
+	//      publisher and post-swarm gate target the run's engine-owned
+	//      namespace.
+	//   3. Otherwise empty — the publisher keeps its suffix-scan fallback
+	//      so legacy seeded-chain runs (a static ChainPrefix with the plan
+	//      under an unrelated key) are unaffected. Reading ChainPrefix
+	//      unconditionally would shadow that scan and break those runs.
+	// Threading the SAME chain to both the publisher and the post-swarm
+	// gate keeps them targeting the run's plan, not a stale one.
 	chainID := d.swarmChainIDForID(swarmCtx.SwarmID)
+	if chainID == "" && swarmCtx.ChainIDAssigned {
+		chainID = swarmCtx.ChainPrefix
+	}
 
 	// Deterministically publish the planning loop's approved plan to the
 	// vault BEFORE the post-swarm honesty gate fires. This removes the LLM

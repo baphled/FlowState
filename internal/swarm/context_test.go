@@ -61,6 +61,74 @@ var _ = Describe("swarm.Context", func() {
 		})
 	})
 
+	Describe("AssignRunChainID", func() {
+		// The engine assigns a per-run chainID at swarm start so the LLM can
+		// no longer invent a free-form one (ADR - Engine-Owned Workflow
+		// Mechanics, forward decision). When the manifest leaves chain_prefix
+		// blank, NewContext defaults ChainPrefix to the swarm id — that is
+		// the manifest-default the assignment replaces with a per-run
+		// namespace. An explicitly pinned chain_prefix is honoured untouched
+		// (backwards compat).
+		It("derives a per-run namespace under the swarm id when the prefix is the manifest default", func() {
+			m := &swarm.Manifest{ID: "planning-loop", Lead: "planner"}
+			ctx := swarm.NewContext("planning-loop", m)
+			Expect(ctx.ChainPrefix).To(Equal("planning-loop"),
+				"precondition: manifest default prefix is the swarm id")
+
+			ctx.AssignRunChainID("session-abc")
+
+			Expect(ctx.ChainPrefix).NotTo(Equal("planning-loop"),
+				"the per-run chainID replaces the static swarm-id default")
+			Expect(ctx.ChainPrefix).To(HavePrefix("planning-loop-"),
+				"the per-run namespace stays anchored under the swarm id")
+		})
+
+		It("is deterministic for the same run id", func() {
+			a := swarm.NewContext("planning-loop", &swarm.Manifest{ID: "planning-loop", Lead: "planner"})
+			b := swarm.NewContext("planning-loop", &swarm.Manifest{ID: "planning-loop", Lead: "planner"})
+
+			a.AssignRunChainID("session-abc")
+			b.AssignRunChainID("session-abc")
+
+			Expect(a.ChainPrefix).To(Equal(b.ChainPrefix),
+				"the same run id must yield the same engine-assigned chainID")
+		})
+
+		It("produces distinct namespaces for distinct runs of the same swarm", func() {
+			a := swarm.NewContext("planning-loop", &swarm.Manifest{ID: "planning-loop", Lead: "planner"})
+			b := swarm.NewContext("planning-loop", &swarm.Manifest{ID: "planning-loop", Lead: "planner"})
+
+			a.AssignRunChainID("session-one")
+			b.AssignRunChainID("session-two")
+
+			Expect(a.ChainPrefix).NotTo(Equal(b.ChainPrefix),
+				"two runs of the same swarm must not collide on coord-store keys")
+		})
+
+		It("honours an explicit manifest chain_prefix (backwards compat)", func() {
+			m := &swarm.Manifest{
+				ID:      "tech-team",
+				Lead:    "tech-lead",
+				Context: swarm.ContextConfig{ChainPrefix: "tech"},
+			}
+			ctx := swarm.NewContext("tech-team", m)
+
+			ctx.AssignRunChainID("session-abc")
+
+			Expect(ctx.ChainPrefix).To(Equal("tech"),
+				"an explicitly pinned chain_prefix is the caller's choice and must not be overwritten")
+		})
+
+		It("is a no-op for an empty run id", func() {
+			ctx := swarm.NewContext("planning-loop", &swarm.Manifest{ID: "planning-loop", Lead: "planner"})
+
+			ctx.AssignRunChainID("")
+
+			Expect(ctx.ChainPrefix).To(Equal("planning-loop"),
+				"with no run id to derive from, the static default stands")
+		})
+	})
+
 	Describe("AllowlistMembers", func() {
 		It("returns a defensive copy that callers can mutate", func() {
 			ctx := swarm.Context{Members: []string{"a", "b"}}

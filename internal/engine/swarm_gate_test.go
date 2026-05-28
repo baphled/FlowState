@@ -79,6 +79,21 @@ func swarmContextWithGates(gates []swarm.GateSpec) *swarm.Context {
 	}
 }
 
+// defaultPrefixSwarmContextWithGates mirrors swarmContextWithGates but
+// leaves ChainPrefix at the manifest default (equal to SwarmID) — the
+// state NewContext produces when a manifest does not pin chain_prefix.
+// AssignRunChainID only stamps a per-run namespace over the default, so
+// specs exercising engine-assignment must start from this shape.
+func defaultPrefixSwarmContextWithGates(gates []swarm.GateSpec) *swarm.Context {
+	return &swarm.Context{
+		SwarmID:     "planning-loop",
+		LeadAgent:   "planner",
+		Members:     []string{"plan-reviewer"},
+		ChainPrefix: "planning-loop",
+		Gates:       gates,
+	}
+}
+
 func reviewerEnginesWithContext(swarmCtx *swarm.Context) (map[string]*engine.Engine, *engine.Engine) {
 	leadEng := engine.New(engine.Config{
 		ChatProvider: leadProvider(),
@@ -437,6 +452,106 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		// The post-swarm gate received the threaded chainID.
 		Expect(argsProbe.lastChainID).To(Equal("mhc-target"),
 			"the post-swarm gate's GateArgs.ChainID is the lead-allocated chain")
+	})
+
+	It("publishes and gates the ENGINE-ASSIGNED chain when no caller chainID is supplied (ADR forward decision)", func() {
+		// The engine assigns the run's chainID at swarm start
+		// (AssignRunChainID stamps swarmCtx.ChainPrefix) so the LLM cannot
+		// invent an off-chain namespace. With NO caller chainID in the
+		// delegate message, FlushSwarmLifecycle must resolve the
+		// engine-assigned chain — publish THAT chain's plan and thread it
+		// into the post-swarm gate — rather than falling back to a
+		// member-invented prefix or a stale suffix-scan hit.
+		outputDir := GinkgoT().TempDir()
+		store := coordination.NewMemoryStore()
+
+		swarmCtx := defaultPrefixSwarmContextWithGates([]swarm.GateSpec{
+			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
+		})
+		// Engine assigns the per-run chain at start; the LLM never sees a
+		// chance to pick one.
+		swarmCtx.AssignRunChainID("session-engine-owned")
+		assignedChain := swarmCtx.ChainPrefix
+		Expect(assignedChain).NotTo(Equal("planning-loop"),
+			"precondition: the engine assigned a per-run chain, not the static swarm id")
+		Expect(assignedChain).To(HavePrefix("planning-loop-"),
+			"precondition: the engine-assigned chain is anchored under the swarm id")
+
+		// A member invented an off-chain prefix — it must NOT be published.
+		Expect(store.Set("member-invented-prefix/plan",
+			[]byte("# Off-Chain Drift\n\nThe member invented this; do not publish."))).To(Succeed())
+		// The real deliverable landed under the engine-assigned chain.
+		Expect(store.Set(assignedChain+"/plan",
+			[]byte(`{"markdown":"# Engine Owned Plan\n\nThe wanted plan.","title":"Engine Owned Plan"}`))).To(Succeed())
+
+		argsProbe := &chainArgProbeRunner{}
+		engines, _ := reviewerEnginesWithContext(swarmCtx)
+		delegateTool := newDelegateToolWithRunner(engines, store, argsProbe).
+			WithPlanOutputDir(outputDir)
+
+		// No member dispatch supplies a chainID; the lifecycle must still
+		// resolve the engine-assigned chain.
+		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
+
+		wantedPath := filepath.Join(outputDir, "engine-owned-plan.md")
+		Expect(wantedPath).To(BeAnExistingFile(),
+			"the engine-assigned chain's plan reaches the vault")
+		entries, _ := os.ReadDir(outputDir)
+		Expect(entries).To(HaveLen(1), "only the engine-assigned chain is published")
+
+		recorded, ok := readPublicationRecord(store, assignedChain)
+		Expect(ok).To(BeTrue(), "publication recorded under the ENGINE-ASSIGNED chain")
+		Expect(recorded).To(Equal(wantedPath))
+
+		Expect(argsProbe.lastChainID).To(Equal(assignedChain),
+			"the post-swarm gate's GateArgs.ChainID is the engine-assigned chain")
+	})
+
+	It("still honours a caller-supplied chainID over the engine-assigned default (backwards compat)", func() {
+		// Backwards-compat guard: when a caller (existing CLI/test paths,
+		// validate-harness fixtures) supplies an explicit chainID, it wins
+		// over the engine-assigned default. This keeps the seeded-chain
+		// contract the Bug 1 test pins.
+		outputDir := GinkgoT().TempDir()
+		store := coordination.NewMemoryStore()
+
+		swarmCtx := defaultPrefixSwarmContextWithGates([]swarm.GateSpec{
+			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
+		})
+		swarmCtx.AssignRunChainID("session-engine-owned")
+		assignedChain := swarmCtx.ChainPrefix
+
+		// The engine-assigned chain has a plan, but the caller explicitly
+		// chose a different chain — the caller's choice must win.
+		Expect(store.Set(assignedChain+"/plan",
+			[]byte(`{"markdown":"# Engine Chain\n\nshould lose","title":"Engine Chain"}`))).To(Succeed())
+		Expect(store.Set("caller-chosen/plan",
+			[]byte(`{"markdown":"# Caller Chosen Plan\n\nthe wanted plan","title":"Caller Chosen Plan"}`))).To(Succeed())
+		Expect(store.Set("caller-chosen/review", validVerdictPayload())).To(Succeed())
+
+		argsProbe := &chainArgProbeRunner{}
+		engines, _ := reviewerEnginesWithContext(swarmCtx)
+		delegateTool := newDelegateToolWithRunner(engines, store, argsProbe).
+			WithPlanOutputDir(outputDir)
+
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "plan-reviewer",
+				"message":       "review the plan",
+				"chainID":       "caller-chosen",
+			},
+		}
+		_, err := delegateTool.Execute(context.Background(), input)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
+
+		wantedPath := filepath.Join(outputDir, "caller-chosen-plan.md")
+		Expect(wantedPath).To(BeAnExistingFile(),
+			"the caller-supplied chain's plan is published, not the engine-assigned one")
+		Expect(argsProbe.lastChainID).To(Equal("caller-chosen"),
+			"the caller-supplied chainID wins over the engine-assigned default")
 	})
 
 	It("is a no-op when no plan_output_dir is wired (historical behaviour preserved)", func() {

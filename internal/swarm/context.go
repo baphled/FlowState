@@ -8,7 +8,11 @@
 // no harder than constructing an interface fake.
 package swarm
 
-import "context"
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+)
 
 // Context is the swarm-runtime envelope the runner constructs when an
 // `@<swarm-id>` invocation lands. It travels into the lead engine via
@@ -51,6 +55,17 @@ type Context struct {
 	Gates       []GateSpec
 	ChainPrefix string
 	Depth       int
+
+	// ChainIDAssigned records that the engine stamped a per-run chainID
+	// onto ChainPrefix at swarm start (AssignRunChainID), as opposed to
+	// ChainPrefix carrying a static manifest prefix or the swarm-id
+	// default. The post-swarm lifecycle uses this to decide whether
+	// ChainPrefix is an authoritative per-run namespace it should publish
+	// and gate against — when it is merely static, the publisher keeps its
+	// suffix-scan fallback so legacy seeded-chain runs (no per-run id) are
+	// unaffected. See ADR - Engine-Owned Workflow Mechanics (forward
+	// decision).
+	ChainIDAssigned bool
 }
 
 // NewContext constructs a Context from a resolved Manifest plus the
@@ -86,6 +101,62 @@ func NewContext(id string, m *Manifest) Context {
 		ChainPrefix: prefix,
 		Depth:       1,
 	}
+}
+
+// AssignRunChainID stamps a per-run coordination-store namespace onto
+// the Context so the engine — not the LLM — owns the chainID. The
+// planning loop's prior failure mode was the lead/coordinator picking a
+// free-form chainID in prose while members invented unrelated prefixes
+// (`mental-health-swarm-design/*` ≠ the run's chain), so gates resolved
+// one namespace while the deliverable scattered under another. Assigning
+// the chainID at run start closes that drift class at the source rather
+// than catching its downstream effects (see ADR - Engine-Owned Workflow
+// Mechanics, forward decision).
+//
+// The assignment is deterministic for a given runID (a short, stable
+// hash suffix anchored under the swarm id), so the same run resolves the
+// same namespace on every read while two concurrent runs of the same
+// swarm never collide on coord-store keys.
+//
+// BACKWARDS COMPAT: the per-run id is only assigned when ChainPrefix is
+// still the manifest default — i.e. equal to SwarmID, which is what
+// NewContext sets when the manifest leaves chain_prefix blank. An
+// operator who pinned an explicit chain_prefix in the manifest made a
+// deliberate namespacing choice; that prefix is honoured untouched. An
+// empty runID is a no-op so callers without a stable run identifier keep
+// the static default.
+//
+// Expected:
+//   - runID is a stable per-run identifier (e.g. the session id);
+//     empty is a no-op.
+//
+// Side effects:
+//   - Mutates the receiver's ChainPrefix in place. Call BEFORE the
+//     Context is shared with concurrent member closures (the dispatcher
+//     assigns at run start, before SetSwarmContext / fan-out), so the
+//     immutability contract for the in-flight Context still holds.
+func (c *Context) AssignRunChainID(runID string) {
+	if c == nil || runID == "" {
+		return
+	}
+	// Only the manifest default (ChainPrefix == SwarmID) is replaced; an
+	// explicit chain_prefix is the operator's choice. An empty SwarmID
+	// (zero-value Context) has nothing to anchor under, so leave it.
+	if c.SwarmID == "" || c.ChainPrefix != c.SwarmID {
+		return
+	}
+	c.ChainPrefix = c.SwarmID + "-" + runChainIDSuffix(runID)
+	c.ChainIDAssigned = true
+}
+
+// runChainIDSuffix derives a short, filesystem- and key-safe suffix from
+// runID via a truncated SHA-256 so the per-run namespace is deterministic
+// for a given run yet distinct across runs. Truncation to 12 hex chars
+// (48 bits) keeps keys readable while leaving collision probability
+// negligible for the per-swarm-run population.
+func runChainIDSuffix(runID string) string {
+	sum := sha256.Sum256([]byte(runID))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // SubSwarmPath returns the slash-delimited path used by the runner to

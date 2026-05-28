@@ -695,6 +695,23 @@ func (d *Dispatcher) DispatchSessioned(
 	}
 
 	if swarmActive {
+		// Engine-owned chainID assignment (ADR - Engine-Owned Workflow
+		// Mechanics, forward decision): the engine assigns the run's
+		// coordination-store namespace at swarm start so the LLM can no
+		// longer invent a free-form chainID (the root of the namespace-
+		// drift bug class — members inventing `mental-health-swarm-design/*`
+		// while the run's chain was `mental-health-companion-2026-05-27`).
+		// AssignRunChainID stamps a per-run namespace onto swarmCtx.ChainPrefix
+		// when the manifest left chain_prefix at its default; an explicitly
+		// pinned chain_prefix is honoured untouched. Done BEFORE
+		// SetSwarmContext so the lead's system-prompt namespace block, the
+		// member-target chain resolution, and the post-swarm publish/gate
+		// all read the same engine-assigned value. swarmCtx is a freshly
+		// constructed *Context (ResolveTarget / AutoDispatchSwarmFor return
+		// a new value), so mutating it here is safe before it is shared with
+		// concurrent member closures.
+		swarmCtx.AssignRunChainID(req.SessionID)
+
 		// Install BEFORE SendMessageWithAttachments so the engine sees
 		// the swarm context when it starts streaming the turn. The
 		// per-turn lead override (mention path only) threads through
@@ -1107,7 +1124,7 @@ func (d *Dispatcher) canDispatchSwarm() bool {
 //
 // Side effects:
 //   - Starts one goroutine that ranges over src and runs flush + restore
-//     + gate-release after the range exits.
+//   - gate-release after the range exits.
 func (d *Dispatcher) wrapWithSwarmLifecycle(
 	ctx context.Context,
 	src <-chan provider.StreamChunk,
