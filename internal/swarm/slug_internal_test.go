@@ -5,61 +5,153 @@ import (
 	"testing"
 )
 
-// These are package-internal tests for the filename-slug helpers
-// (slugifyPlanName) and the plan-document validator (isPlanDocument). They
+// These are package-internal tests for the readable-filename helper
+// (planFileName) and the plan-document validator (isPlanDocument). They
 // assert directly against the unexported functions — the behavioural
 // regression is also pinned through the public PublishPlanToVault and
 // artifact-published gate paths in publish_test.go / gates_test.go.
 
-func TestSlugifyPlanNameShortTitlePassesThroughUnchanged(t *testing.T) {
-	// A short, already-sane title must be slugified verbatim — the cap
-	// must not mangle titles that are already under the limit.
+// containsUnsafe reports whether name contains any filesystem-unsafe or
+// control character — the property planFileName must always strip.
+func containsUnsafe(name string) bool {
+	for _, r := range name {
+		if strings.ContainsRune(unsafeFileNameChars, r) || r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPlanFileNamePreservesCaseAndSpaces(t *testing.T) {
+	// THE FIX (memory: vault convention is readable Title Case with spaces):
+	// a plan title must publish with its case + spaces intact, NOT as a
+	// kebab-slug. The headline regression: the off-chain plan.
+	title := "Off-Chain Write Rejection for Swarm Coordination Layer"
+
+	got := planFileName(title, "", "off-chain-chain")
+
+	if got != title {
+		t.Fatalf("planFileName(%q) = %q, want the title verbatim", title, got)
+	}
+	if !strings.Contains(got, " ") {
+		t.Fatalf("readable filename must contain spaces, got %q", got)
+	}
+	if got == strings.ToLower(got) {
+		t.Fatalf("readable filename must preserve case (not all-lowercase), got %q", got)
+	}
+	if !strings.Contains(got, "-") {
+		t.Fatalf("an internal hyphen must be preserved, got %q", got)
+	}
+	if containsUnsafe(got) {
+		t.Fatalf("filename must not contain unsafe characters, got %q", got)
+	}
+}
+
+func TestPlanFileNamePreservesVaultConventionGlyphs(t *testing.T) {
+	// Parentheses and the "—" em-dash are valid in filenames and match the
+	// user's vault naming; they must survive unchanged.
+	cases := []string{
+		"Permission Mode ModeAskUser Extension (May 2026)",
+		"Mental Health Companion Swarm — Plan",
+	}
+	for _, title := range cases {
+		got := planFileName(title, "", "fallback-chain")
+		if got != title {
+			t.Errorf("planFileName(%q) = %q, want the title verbatim", title, got)
+		}
+		if containsUnsafe(got) {
+			t.Errorf("filename must not contain unsafe characters, got %q", got)
+		}
+	}
+}
+
+func TestPlanFileNameStripsUnsafeChars(t *testing.T) {
+	// Path separators and reserved characters are removed (replaced by a
+	// space then collapsed), and the result is safe + readable. "/readyz"
+	// loses the slash but keeps the readable words around it.
 	cases := map[string]string{
-		"Add /readyz Readiness Endpoint": "add-readyz-readiness-endpoint",
-		"Auth Hardening Plan":            "auth-hardening-plan",
-		"Companion Charter":              "companion-charter",
+		"Add /readyz Readiness Endpoint": "Add readyz Readiness Endpoint",
+		"Auth: Hardening Plan":           "Auth Hardening Plan",
+		`Plan "Quoted" <Draft> | v2`:     "Plan Quoted Draft v2",
+		`a/b\c:d*e?f"g<h>i|j`:            "a b c d e f g h i j",
 	}
 	for title, want := range cases {
-		got := slugifyPlanName(title, "", "fallback-chain")
+		got := planFileName(title, "", "fallback-chain")
 		if got != want {
-			t.Errorf("slugifyPlanName(%q) = %q, want %q", title, got, want)
+			t.Errorf("planFileName(%q) = %q, want %q", title, got, want)
 		}
-		if len(got) > slugMaxLen {
-			t.Errorf("short title %q produced an over-cap slug %q", title, got)
+		if containsUnsafe(got) {
+			t.Errorf("planFileName(%q) left unsafe chars: %q", title, got)
 		}
 	}
 }
 
-func TestSlugifyPlanNameCapsLongTitle(t *testing.T) {
-	// A long title (e.g. one accidentally derived from a run-on heading) is
-	// capped to a short, readable slug — no leading/trailing hyphen, never
-	// over slugMaxLen, and not the whole sentence.
-	longTitle := "A conversational mental health companion agent that serves as the " +
-		"users daily entry point for managing AuDHD specific mental health"
+func TestPlanFileNameCapsLongTitleOnWordBoundary(t *testing.T) {
+	// A long title is capped at fileNameMaxLen on a WORD boundary — no
+	// partial trailing word, no trailing punctuation/space, and the readable
+	// lead words are kept.
+	longTitle := "A Conversational Mental Health Companion Agent That Serves As The " +
+		"Users Daily Entry Point For Managing AuDHD Specific Mental Health"
 
-	slug := slugifyPlanName(longTitle, "", "mhc-long")
+	got := planFileName(longTitle, "", "mhc-long")
 
-	if len(slug) > slugMaxLen {
-		t.Fatalf("slug length %d exceeds cap %d: %q", len(slug), slugMaxLen, slug)
+	if len([]rune(got)) > fileNameMaxLen {
+		t.Fatalf("filename length %d exceeds cap %d: %q", len([]rune(got)), fileNameMaxLen, got)
 	}
-	if strings.HasPrefix(slug, "-") || strings.HasSuffix(slug, "-") {
-		t.Fatalf("slug has a leading/trailing hyphen: %q", slug)
+	if strings.HasSuffix(got, " ") || strings.HasSuffix(got, "-") || strings.HasSuffix(got, ".") {
+		t.Fatalf("filename has trailing punctuation/space: %q", got)
 	}
-	if !strings.HasPrefix(slug, "a-conversational-mental-health") {
-		t.Fatalf("slug should keep the readable lead words, got %q", slug)
+	if !strings.HasPrefix(got, "A Conversational Mental Health") {
+		t.Fatalf("filename should keep the readable lead words, got %q", got)
+	}
+	// The cap must land on a word boundary: every kept word must be a whole
+	// word from the source title.
+	sourceWords := map[string]bool{}
+	for _, w := range strings.Fields(longTitle) {
+		sourceWords[w] = true
+	}
+	for _, w := range strings.Fields(got) {
+		if !sourceWords[w] {
+			t.Fatalf("filename word %q is not a whole word from the title — cap cut mid-word: %q", w, got)
+		}
 	}
 }
 
-func TestSlugifyPlanNameIsIdempotent(t *testing.T) {
-	// The same inputs must always produce the same capped slug so
-	// re-publishing overwrites the same file rather than littering.
-	longTitle := "A conversational mental health companion agent that serves as the " +
-		"users daily entry point for managing AuDHD specific mental health"
+func TestPlanFileNameFallsBackToReadableChainID(t *testing.T) {
+	// No usable title (and no H1): the filename is a READABLE form of the
+	// chainID (hyphens → spaces, title-cased), NOT a raw kebab slug.
+	got := planFileName("", "", "off-chain-write-rejection")
 
-	first := slugifyPlanName(longTitle, "", "mhc-long")
-	second := slugifyPlanName(longTitle, "", "mhc-long")
-	if first != second {
-		t.Fatalf("slug not idempotent: first %q != second %q", first, second)
+	want := "Off Chain Write Rejection"
+	if got != want {
+		t.Fatalf("planFileName fallback = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "-") {
+		t.Fatalf("fallback must not be a raw kebab slug, got %q", got)
+	}
+	if got == strings.ToLower(got) {
+		t.Fatalf("fallback must be title-cased, got %q", got)
+	}
+}
+
+func TestPlanFileNameIsIdempotent(t *testing.T) {
+	// The same inputs must always produce the same filename so re-publishing
+	// overwrites the same file rather than littering.
+	cases := []struct{ title, body, chain string }{
+		{"Off-Chain Write Rejection for Swarm Coordination Layer", "", "off-chain"},
+		{"", "", "off-chain-write-rejection"},
+		{
+			"A Conversational Mental Health Companion Agent That Serves As The " +
+				"Users Daily Entry Point For Managing AuDHD Specific Mental Health",
+			"", "mhc-long",
+		},
+	}
+	for _, c := range cases {
+		first := planFileName(c.title, c.body, c.chain)
+		second := planFileName(c.title, c.body, c.chain)
+		if first != second {
+			t.Fatalf("planFileName not idempotent for %+v: first %q != second %q", c, first, second)
+		}
 	}
 }
 

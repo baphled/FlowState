@@ -98,8 +98,12 @@ type reviewEnvelope struct {
 //     over-broad salvage is exactly how a JSON agent-spec at "<chainID>/plan"
 //     became 200 lines of unusable markdown in the user's vault.
 //   - Derives a deterministic, idempotent filename: the envelope title, else
-//     the body's first "# H1" heading, else the chainID; slugified to a safe
-//     filename. The same plan always writes the same file (overwrite-safe).
+//     the body's first "# H1" heading, else the chainID; rendered as a
+//     READABLE, filesystem-safe name that PRESERVES the title's case, spaces,
+//     hyphens, parentheses and em-dash (matching the user's Obsidian vault
+//     convention) — only filesystem-unsafe characters are stripped/replaced
+//     (see planFileName). The same plan always writes the same file
+//     (overwrite-safe), and the atomic temp+rename write handles the spaces.
 //   - Writes atomically (temp in the same dir + fsync + rename + parent
 //     dir fsync), mirroring the pathguard permissions-writer convention
 //     (memory: feedback_atomicity_awareness_uneven). No flock is needed
@@ -173,8 +177,8 @@ func PublishPlanToVault(store coordination.Store, outputDir, chainID string) (st
 		return "", fmt.Errorf("publish plan: refusing to publish chain %q: %s", resolvedChain, reason)
 	}
 
-	slug := slugifyPlanName(title, body, resolvedChain)
-	vaultPath := filepath.Join(outputDir, slug+".md")
+	name := planFileName(title, body, resolvedChain)
+	vaultPath := filepath.Join(outputDir, name+".md")
 
 	if err := atomicWriteFile(vaultPath, []byte(body)); err != nil {
 		return "", fmt.Errorf("publish plan: writing vault file %q: %w", vaultPath, err)
@@ -336,76 +340,153 @@ func parsePlan(raw []byte) (title, body string) {
 	return "", string(raw)
 }
 
-// slugMaxLen is the hard character cap for a plan filename slug (excluding
-// the ".md" extension). A title that slugs longer than this is trimmed at a
-// hyphen boundary so no partial word survives. 60 keeps the filename
-// comfortably under typical path limits while staying readable.
-const slugMaxLen = 60
+// fileNameMaxLen is the hard character cap for a plan filename (excluding
+// the ".md" extension). A name longer than this is trimmed at a WORD
+// boundary so no partial word survives. 80 keeps the filename comfortably
+// under typical path limits (255 bytes) while leaving room for long, readable
+// Title Case names that match the vault convention.
+const fileNameMaxLen = 80
 
-// slugWordCap is the soft cap on the number of hyphen-delimited words kept
-// in a slug. Most readable plan filenames are a handful of words; capping
-// the word count first yields a cleaner slug than a raw character truncation
-// (which can chop mid-phrase). The slugMaxLen character cap is then applied
-// as a backstop for the rare case of a few very long words.
-const slugWordCap = 8
-
-// slugifyPlanName derives a deterministic, filesystem-safe slug for the
-// plan file. Preference order: explicit title, the body's first "# H1"
-// heading, then the chainID. The result is lowercased, spaces and unsafe
-// characters collapse to single hyphens, and path separators are
-// stripped — the same plan always yields the same slug (idempotent
-// overwrite).
+// unsafeFileNameChars are the characters that are illegal or hazardous in a
+// filename across Windows/macOS/Linux. Each is REMOVED rather than replaced
+// in place: a path separator ("/" or "\") would punch a hole in the output
+// directory, and ":" / "*" / "?" / quotes / angle brackets / pipe are
+// reserved on at least one common filesystem. Collapsing the gap they leave
+// to a single space (see normaliseFileName) keeps the name clean.
 //
-// The slug is then length-capped (capSlug): without a cap a title derived
-// from a long run-on "purpose" sentence produced a 200+ char filename. The
-// cap keeps the first slugWordCap words and at most slugMaxLen characters,
-// trimming any partial trailing word and trailing hyphens — the cap is the
-// load-bearing guard regardless of how the title was derived.
-func slugifyPlanName(title, body, chainID string) string {
-	name := strings.TrimSpace(title)
+// NOT in this set, deliberately: spaces, hyphens, parentheses and the "—"
+// em-dash — all valid in filenames and load-bearing for the user's Obsidian
+// vault convention (e.g. "Mental Health Companion — Plan.md").
+const unsafeFileNameChars = `/\:*?"<>|`
+
+// planFileName derives a deterministic, filesystem-safe, READABLE filename
+// for the plan file (without the ".md" extension). Preference order for the
+// source text: explicit title, the body's first "# H1" heading, then a
+// readable form of the chainID.
+//
+// Unlike the previous kebab-slug, the title's CASE, internal spaces, hyphens,
+// parentheses and "—" em-dash are PRESERVED so the published file matches the
+// user's Obsidian vault naming (Title Case with spaces). Only filesystem-
+// unsafe characters and control characters are stripped, repeated whitespace
+// is collapsed, a leading "." (a dotfile) is dropped, and the name is capped
+// at fileNameMaxLen on a word boundary with no trailing punctuation or space.
+//
+// The transform is deterministic and idempotent: the same plan always yields
+// the same filename, so re-publishing overwrites the same file rather than
+// littering the vault. When no usable title is available the chainID is
+// rendered readably (hyphens → spaces, title-cased) rather than as a raw slug.
+func planFileName(title, body, chainID string) string {
+	source := strings.TrimSpace(title)
+	if source == "" {
+		source = firstH1(body)
+	}
+
+	name := normaliseFileName(source)
 	if name == "" {
-		name = firstH1(body)
+		// No usable title: fall back to a READABLE form of the chainID
+		// (e.g. "off-chain-plan" → "Off Chain Plan") rather than a raw slug.
+		name = normaliseFileName(readableChainID(chainID))
 	}
 	if name == "" {
-		name = chainID
+		name = "Plan"
 	}
-	slug := capSlug(slugify(name))
-	if slug == "" {
-		slug = capSlug(slugify(chainID))
-	}
-	if slug == "" {
-		slug = "plan"
-	}
-	return slug
+	return name
 }
 
-// capSlug trims an already-slugified string to a sane filename length:
-// keeps at most slugWordCap hyphen-delimited words, then at most slugMaxLen
-// characters (dropping a partial trailing word at the last hyphen boundary
-// rather than mid-word), and strips any trailing hyphens. Idempotent: a
-// slug already within the caps is returned unchanged.
-func capSlug(slug string) string {
-	if slug == "" {
-		return ""
-	}
-
-	// Soft cap: keep the first slugWordCap words.
-	words := strings.Split(slug, "-")
-	if len(words) > slugWordCap {
-		words = words[:slugWordCap]
-	}
-	capped := strings.Join(words, "-")
-
-	// Hard cap: trim to slugMaxLen, preferring a hyphen boundary so no
-	// partial word survives.
-	if len(capped) > slugMaxLen {
-		capped = capped[:slugMaxLen]
-		if idx := strings.LastIndex(capped, "-"); idx > 0 {
-			capped = capped[:idx]
+// normaliseFileName renders s as a clean, filesystem-safe filename while
+// preserving its case, spaces, hyphens, parentheses and the "—" em-dash.
+// It strips filesystem-unsafe and control characters, collapses every run of
+// whitespace to a single space, drops a leading "." (so the result is never a
+// dotfile), caps the length at fileNameMaxLen on a word boundary, and trims
+// trailing punctuation and whitespace so the name never ends mid-word or with
+// a stray separator. Returns "" when nothing safe remains.
+func normaliseFileName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case strings.ContainsRune(unsafeFileNameChars, r):
+			// Unsafe char (path separators, reserved chars): drop it and
+			// leave a space so the surrounding words stay separated; the
+			// whitespace collapse below tidies any resulting run.
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f:
+			// Control characters (incl. NUL, tab, newline): drop, leaving a
+			// space for the same separation reason.
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
 		}
 	}
 
-	return strings.Trim(capped, "-")
+	name := collapseWhitespace(b.String())
+	// A leading "." would make the file hidden; strip it (and re-tidy).
+	name = collapseWhitespace(strings.TrimLeft(name, "."))
+	name = capFileName(name)
+	return name
+}
+
+// collapseWhitespace replaces every run of whitespace with a single space and
+// trims leading/trailing whitespace, so "Foo   Bar " becomes "Foo Bar".
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// capFileName trims name to at most fileNameMaxLen runes, preferring the last
+// space boundary so no partial word survives, then strips any trailing
+// punctuation or whitespace. Idempotent: a name already within the cap is
+// returned unchanged (modulo trailing-punctuation tidy).
+func capFileName(name string) string {
+	runes := []rune(name)
+	if len(runes) > fileNameMaxLen {
+		runes = runes[:fileNameMaxLen]
+		// Prefer a word boundary so the name never ends mid-word.
+		if idx := lastSpace(runes); idx > 0 {
+			runes = runes[:idx]
+		}
+		name = string(runes)
+	}
+	// No trailing space or sentence punctuation on the filename.
+	return strings.TrimRight(name, " \t.,;:!-—")
+}
+
+// lastSpace returns the index of the last ASCII space in runes, or -1 when
+// none is present.
+func lastSpace(runes []rune) int {
+	for i := len(runes) - 1; i >= 0; i-- {
+		if runes[i] == ' ' {
+			return i
+		}
+	}
+	return -1
+}
+
+// readableChainID renders a chainID as a human-readable phrase: hyphens and
+// underscores become spaces and each word is title-cased, so
+// "off-chain-plan" → "Off Chain Plan". This is the no-title fallback — a
+// readable name rather than a raw slug. A chainID that is already prose (e.g.
+// "Mental Health Companion") survives unchanged.
+func readableChainID(chainID string) string {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return ""
+	}
+	replaced := strings.NewReplacer("-", " ", "_", " ").Replace(chainID)
+	words := strings.Fields(replaced)
+	for i, w := range words {
+		words[i] = titleWord(w)
+	}
+	return strings.Join(words, " ")
+}
+
+// titleWord upper-cases the first rune of w and leaves the remainder as-is, so
+// an already-capitalised or acronymic word ("API") is not flattened.
+func titleWord(w string) string {
+	if w == "" {
+		return ""
+	}
+	runes := []rune(w)
+	runes[0] = []rune(strings.ToUpper(string(runes[0])))[0]
+	return string(runes)
 }
 
 // firstH1 returns the text of the first ATX "# " heading in body, or ""
@@ -420,28 +501,6 @@ func firstH1(body string) string {
 		}
 	}
 	return ""
-}
-
-// slugify lowercases s and collapses every run of non-alphanumeric
-// characters to a single hyphen, trimming leading/trailing hyphens. The
-// transform is deterministic so re-publishing the same plan overwrites
-// the same file rather than littering the vault.
-func slugify(s string) string {
-	var b strings.Builder
-	prevHyphen := false
-	for _, r := range strings.ToLower(s) {
-		switch {
-		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
-			b.WriteRune(r)
-			prevHyphen = false
-		default:
-			if !prevHyphen && b.Len() > 0 {
-				b.WriteRune('-')
-				prevHyphen = true
-			}
-		}
-	}
-	return strings.Trim(b.String(), "-")
 }
 
 // recordPublication writes the honest "<chainID>/plan_publication" record

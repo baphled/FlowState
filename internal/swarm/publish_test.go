@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -38,7 +39,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 	})
 
 	Context("with an approved JSON-envelope plan (the live planning-loop shape)", func() {
-		It("writes the markdown body to a title-slugged file and records the real path", func() {
+		It("writes the markdown body to a readable title-named file and records the real path", func() {
 			envelope := `{"markdown":"# Add /readyz Readiness Endpoint\n\nBody text.","id":"readyz-2026-05-28","title":"Add /readyz Readiness Endpoint"}`
 			store := newGateStore(map[string][]byte{
 				"readyz-2026-05-28/plan":   []byte(envelope),
@@ -48,8 +49,10 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 
-			expected := filepath.Join(outputDir, "add-readyz-readiness-endpoint.md")
-			Expect(path).To(Equal(expected), "filename is the slugified envelope title")
+			// Readable name: the unsafe "/" is stripped, but case + spaces
+			// are preserved (vault convention), not kebab-slugged.
+			expected := filepath.Join(outputDir, "Add readyz Readiness Endpoint.md")
+			Expect(path).To(Equal(expected), "filename is the readable envelope title")
 
 			body, readErr := os.ReadFile(path)
 			Expect(readErr).NotTo(HaveOccurred())
@@ -64,15 +67,51 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 		})
 	})
 
+	Context("the headline off-chain plan (readable vault-convention filename)", func() {
+		It("publishes with case + spaces preserved and round-trips the spaced path", func() {
+			// THE FIX: the off-chain plan must land as a readable Title Case
+			// filename with spaces (matching the user's Obsidian vault),
+			// NOT a kebab-slug. The atomic temp+rename write must handle
+			// the spaces, and the recorded path must match the file written.
+			title := "Off-Chain Write Rejection for Swarm Coordination Layer"
+			envelope := `{"markdown":"# ` + title + `\n\nBody text long enough to be a real plan.","id":"off-chain-2026-05-28","title":"` + title + `"}`
+			store := newGateStore(map[string][]byte{
+				"off-chain-2026-05-28/plan":   []byte(envelope),
+				"off-chain-2026-05-28/review": []byte(`{"verdict":"approve"}`),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "off-chain-2026-05-28")
+			Expect(err).NotTo(HaveOccurred())
+
+			expected := filepath.Join(outputDir, "Off-Chain Write Rejection for Swarm Coordination Layer.md")
+			Expect(path).To(Equal(expected), "readable Title Case filename, not a kebab-slug")
+
+			base := filepath.Base(path)
+			Expect(base).To(ContainSubstring(" "), "the filename preserves spaces")
+			Expect(base).NotTo(Equal(strings.ToLower(base)), "the filename preserves case")
+
+			// The spaced path round-trips through the atomic write...
+			Expect(path).To(BeAnExistingFile())
+			body, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("# " + title))
+
+			// ...and the recorded publication points at the real spaced path.
+			recorded, ok := readPublication(store, "off-chain-2026-05-28")
+			Expect(ok).To(BeTrue())
+			Expect(recorded).To(Equal(path))
+		})
+	})
+
 	Context("with a raw-markdown plan (no JSON envelope)", func() {
-		It("treats the raw value as the body and slugs from the first H1", func() {
+		It("treats the raw value as the body and names from the first H1", func() {
 			store := newGateStore(map[string][]byte{
 				"auth-hardening/plan": []byte("# Auth Hardening Plan\n\nDetails here."),
 			})
 
 			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(path).To(Equal(filepath.Join(outputDir, "auth-hardening-plan.md")))
+			Expect(path).To(Equal(filepath.Join(outputDir, "Auth Hardening Plan.md")))
 
 			body, readErr := os.ReadFile(path)
 			Expect(readErr).NotTo(HaveOccurred())
@@ -81,17 +120,18 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 	})
 
 	Context("when neither title nor H1 is available (but the body is a valid plan)", func() {
-		It("falls back to the chainID for the filename", func() {
+		It("falls back to a readable form of the chainID for the filename", func() {
 			// The body has heading structure + content (so it passes
 			// plan-document validation) but no top-level "# H1" to derive a
-			// title from, so the filename falls back to the chainID.
+			// title from, so the filename falls back to a READABLE rendering
+			// of the chainID (hyphens → spaces, title-cased), not a raw slug.
 			store := newGateStore(map[string][]byte{
 				"chain-fallback-123/plan": []byte("## Section\n\nA plan body with sub-headings but no top-level H1 title."),
 			})
 
 			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(path).To(Equal(filepath.Join(outputDir, "chain-fallback-123.md")))
+			Expect(path).To(Equal(filepath.Join(outputDir, "Chain Fallback 123.md")))
 		})
 	})
 
@@ -236,7 +276,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			path, err := swarm.PublishPlanToVault(store, outputDir, "mental-health-companion")
 			Expect(err).NotTo(HaveOccurred())
 
-			expected := filepath.Join(outputDir, "mental-health-companion.md")
+			expected := filepath.Join(outputDir, "Mental Health Companion.md")
 			Expect(path).To(Equal(expected), "the named chain's plan is published, not a stale one")
 
 			body, readErr := os.ReadFile(path)
@@ -265,7 +305,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			})
 			path, err := swarm.PublishPlanToVault(store, outputDir, "approved-target")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(path).To(Equal(filepath.Join(outputDir, "approved-target.md")))
+			Expect(path).To(Equal(filepath.Join(outputDir, "Approved Target.md")))
 		})
 
 		It("is a no-op when the NAMED chain's review explicitly rejects", func() {
@@ -345,7 +385,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			})
 			path, err := swarm.PublishPlanToVault(store, outputDir, "env-chain")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(path).To(Equal(filepath.Join(outputDir, "envelope-plan.md")))
+			Expect(path).To(Equal(filepath.Join(outputDir, "Envelope Plan.md")))
 			body, _ := os.ReadFile(path)
 			Expect(string(body)).To(Equal("# Envelope Plan\n\nMd body with enough length to be real."))
 		})
