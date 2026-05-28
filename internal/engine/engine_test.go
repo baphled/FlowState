@@ -74,6 +74,22 @@ func (m *mockProvider) Models() ([]provider.Model, error) {
 	return m.models, m.modelsErr
 }
 
+// LastRequestContainsSubstring reports whether any message content in the
+// most-recent captured Stream request contains sub. Used by post-member
+// gate retry specs to assert the gate directive was threaded into the
+// re-delegated member's prompt.
+func (m *mockProvider) LastRequestContainsSubstring(sub string) bool {
+	if m.capturedRequest == nil {
+		return false
+	}
+	for _, msg := range m.capturedRequest.Messages {
+		if strings.Contains(msg.Content, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // hangingStreamProvider emits a fixed prelude of chunks, then leaves the
 // chunk channel open forever (no close, no further sends) so the engine's
 // processStreamChunks loop parks on receive. Models the production failure

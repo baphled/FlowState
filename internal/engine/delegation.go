@@ -2588,36 +2588,130 @@ func (d *DelegateTool) executeSync(
 		defer cancelMemberTimeout()
 	}
 
+	// Post-member gate retry loop. A post-member result-schema gate that
+	// fails because the member narrated-but-did-not-write (the synthesis-
+	// hang signature) is NO LONGER terminal on the first miss. Instead we
+	// re-dispatch the SAME member on the SAME chain — appending the gate's
+	// directive (which already carries "perform the coordination_store
+	// write, do not narrate it") to the member's prompt — up to
+	// PostMemberGateMaxAttempts times. This unifies the member-gate path
+	// with the wave-fan-in harness, which already re-prompts with a
+	// directive (internal/plan/harness/waves.go buildWaveFeedback,
+	// internal/app/harness_adapter.go waveRetryFloor). Only after the
+	// budget is exhausted does the GateError become terminal — the
+	// honest-fail outcome is preserved, just deferred past the retries.
+	//
+	// A stream-dispatch error (Stream init / collect failure) is NOT a
+	// gate miss and is NEVER retried here: it returns terminally inside
+	// the loop, matching the pre-fix dispatch-failure semantics.
+	// completeChildTurn marks the child Turn Completed and flips
+	// turnOwnedByWrap. A cleanly-drained stream always Completes the Turn —
+	// even when the post-member gate subsequently rejects the output —
+	// because the stream itself succeeded; a gate rejection is NOT a stream
+	// failure. The turnOwnedByWrap=true flip is the load-bearing B5/S4.2
+	// defence that short-circuits failChildTurnIfOwned so turnRegistry.Fail
+	// is NEVER invoked on a Turn whose stream drained cleanly.
+	completeChildTurn := func(providerName, modelName string) {
+		if d.turnRegistry != nil && childTurnID != "" {
+			_ = d.turnRegistry.Complete(childTurnID, turn.ModelInfo{
+				Provider: providerName,
+				Model:    modelName,
+			})
+			turnOwnedByWrap = true
+		}
+	}
+
+	// Post-member gate retry loop. A post-member result-schema gate that
+	// fails because the member narrated-but-did-not-write (the synthesis-
+	// hang signature) is NO LONGER terminal on the first miss. Instead we
+	// re-dispatch the SAME member on the SAME chain — appending the gate's
+	// directive (which already carries "perform the coordination_store
+	// write, do not narrate it") to the member's prompt — up to
+	// PostMemberGateMaxAttempts times. This unifies the member-gate path
+	// with the wave-fan-in harness, which already re-prompts with a
+	// directive (internal/plan/harness/waves.go buildWaveFeedback,
+	// internal/app/harness_adapter.go waveRetryFloor). Only after the
+	// budget is exhausted does the GateError become terminal — the
+	// honest-fail outcome is preserved, just deferred past the retries.
+	//
+	// A stream-dispatch error (Stream init / collect failure) is NOT a
+	// gate miss and is NEVER retried here: it returns terminally inside
+	// the loop, matching the pre-fix dispatch-failure semantics.
 	var result delegationResult
-	dispatchErr := d.runStreamThroughRunner(delegateCtx, target, &result, childTurnID)
-	if dispatchErr != nil {
-		completedAt := time.Now().UTC()
+	var modelName, providerName string
+	var completedAt time.Time
+	for attempt := 1; ; attempt++ {
+		if attempt > 1 && d.turnRegistry != nil && childTurnID != "" {
+			// Re-dispatch attempt: clear the prior attempt's partial
+			// messages so the next stream does not pile on stale rows.
+			// ErrTurnTerminal (a concurrent timeout completed the Turn)
+			// falls through — the re-dispatch still runs and the final
+			// completeChildTurn / failChildTurnIfOwned guards short-circuit.
+			_ = d.turnRegistry.ResetForRetry(childTurnID)
+		}
+		result = delegationResult{}
+		dispatchErr := d.runStreamThroughRunner(delegateCtx, target, &result, childTurnID)
+		if dispatchErr != nil {
+			completedAt = time.Now().UTC()
+			baseInfo.ToolCalls = result.toolCalls
+			baseInfo.LastTool = result.lastTool
+			baseInfo.CompletedAt = &completedAt
+			d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+			d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error(), target.loadSkills))
+			// Fail the child Turn BEFORE closeSessionIfManaged so the
+			// byActiveSession entry clears before the session itself is
+			// torn down — mirrors dispatcher.go:929-936 terminal-then-
+			// cleanup ordering at the parent-session layer. The guard
+			// (turnOwnedByWrap, registry nil, childTurnID empty) is the
+			// single source of correctness; ErrTurnTerminal silent-swallow
+			// inside Fail is the backstop.
+			failChildTurnIfOwned(dispatchErr)
+			// Bug fix (May 2026 — Session Seal Persistence Hole): the success
+			// branch below seals the child session via closeSessionIfManaged
+			// (line ~2016), but the dispatch-failure path returned without
+			// sealing. The child stayed "active" both in memory and (with
+			// sessionsDir wired) on disk, cluttering the UI and risking
+			// replay collisions on reload. Mirror the success-branch seal.
+			d.closeSessionIfManaged(delegateSessionID)
+			return tool.Result{}, dispatchErr
+		}
+
+		modelName = target.engine.LastModel()
+		providerName = target.engine.LastProvider()
+		gateErr := d.dispatchPostMemberGates(ctx, target.agentID, baseInfo.ChainID)
+		if gateErr == nil {
+			break
+		}
+		// The member produced no usable output. Re-delegate while budget
+		// remains; only fail loudly once exhausted. Append the directive
+		// so the retry tells the member to PERFORM the write, not narrate
+		// it. The Turn stays Running (no completeChildTurn yet) and is
+		// reset at the top of the next iteration.
+		if attempt < PostMemberGateMaxAttempts {
+			target.message = appendGateDirective(target.message, gateErr)
+			continue
+		}
+		// Budget exhausted — the GateError is now terminal. Honest-fail
+		// preserved: the run dies loudly with the stage + reason, just
+		// after the bounded retries. The stream drained cleanly on this
+		// last attempt, so the Turn is Completed (NOT Failed) and the
+		// turnOwnedByWrap guard keeps turnRegistry.Fail call-count at 0 —
+		// the gate rejection is not a stream failure (B5/S4.2 contract).
+		completedAt = time.Now().UTC()
 		baseInfo.ToolCalls = result.toolCalls
 		baseInfo.LastTool = result.lastTool
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, dispatchErr.Error(), target.loadSkills))
-		// Fail the child Turn BEFORE closeSessionIfManaged so the
-		// byActiveSession entry clears before the session itself is
-		// torn down — mirrors dispatcher.go:929-936 terminal-then-
-		// cleanup ordering at the parent-session layer. The guard
-		// (turnOwnedByWrap, registry nil, childTurnID empty) is the
-		// single source of correctness; ErrTurnTerminal silent-swallow
-		// inside Fail is the backstop.
-		failChildTurnIfOwned(dispatchErr)
-		// Bug fix (May 2026 — Session Seal Persistence Hole): the success
-		// branch below seals the child session via closeSessionIfManaged
-		// (line ~2016), but the dispatch-failure path returned without
-		// sealing. The child stayed "active" both in memory and (with
-		// sessionsDir wired) on disk, cluttering the UI and risking
-		// replay collisions on reload. Mirror the success-branch seal.
+		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error(), target.loadSkills))
+		completeChildTurn(providerName, modelName)
+		failChildTurnIfOwned(gateErr)
 		d.closeSessionIfManaged(delegateSessionID)
-		return tool.Result{}, dispatchErr
+		return tool.Result{}, gateErr
 	}
 
-	completedAt := time.Now().UTC()
-	modelName := target.engine.LastModel()
-	providerName := target.engine.LastProvider()
+	// Accepted attempt: the post-member gate passed. Emit the terminal
+	// success events and seal the child Turn / session exactly once.
+	completedAt = time.Now().UTC()
 	baseInfo.ModelName = modelName
 	baseInfo.ProviderName = providerName
 	baseInfo.ToolCalls = result.toolCalls
@@ -2627,32 +2721,9 @@ func (d *DelegateTool) executeSync(
 	d.publishDelegationEvent("completed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, "", target.loadSkills))
 	// Complete the child Turn BEFORE closeSessionIfManaged so the
 	// byActiveSession entry clears in the terminal-then-cleanup order
-	// (matches dispatcher.go:933-936). turnOwnedByWrap flip is the
-	// load-bearing guard for the post-member-gate failure path below.
-	if d.turnRegistry != nil && childTurnID != "" {
-		_ = d.turnRegistry.Complete(childTurnID, turn.ModelInfo{
-			Provider: providerName,
-			Model:    modelName,
-		})
-		turnOwnedByWrap = true
-	}
+	// (matches dispatcher.go:933-936).
+	completeChildTurn(providerName, modelName)
 	d.closeSessionIfManaged(delegateSessionID)
-
-	if gateErr := d.dispatchPostMemberGates(ctx, target.agentID, baseInfo.ChainID); gateErr != nil {
-		baseInfo.CompletedAt = &completedAt
-		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error(), target.loadSkills))
-		// B5 resolution: failChildTurnIfOwned reads turnOwnedByWrap
-		// FIRST and short-circuits when true. The happy-path Complete
-		// above set turnOwnedByWrap=true, so this call NEVER invokes
-		// turnRegistry.Fail on a terminal Turn under correct
-		// discipline. The Fail-side ErrTurnTerminal silent-swallow at
-		// turn.go:796-797 is a backstop only, NOT load-bearing. §S4.2
-		// spec asserts turnRegistry.Fail call-count remains 0 across
-		// this suffix.
-		failChildTurnIfOwned(gateErr)
-		return tool.Result{}, gateErr
-	}
 
 	return tool.Result{
 		Output: formatDelegationOutput(result.response),
@@ -2663,6 +2734,46 @@ func (d *DelegateTool) executeSync(
 			"provider":  providerName,
 		},
 	}, nil
+}
+
+// PostMemberGateMaxAttempts bounds how many times a member is dispatched
+// when its post-member gate keeps failing for missing output. The first
+// attempt plus up to (PostMemberGateMaxAttempts-1) re-delegations. Kept
+// small relative to the wave-fan-in harness's retry floor of 8 because a
+// single member with a clear re-write directive should self-correct fast;
+// a larger budget only delays an honest fail when the member genuinely
+// cannot write. Deterministic + bounded — there is no unbounded loop.
+const PostMemberGateMaxAttempts = 3
+
+// appendGateDirective appends the gate failure's directive to a member's
+// prompt for re-delegation. The result-schema runner's "no member output
+// found" reason already carries the actionable text ("perform the
+// coordination_store write, do not narrate it" — see
+// internal/swarm/gate_result_schema.go noOutputDirective), so the lead /
+// member receives an explicit instruction to PERFORM the write rather
+// than re-narrate it. A nil error or empty reason leaves the message
+// unchanged.
+//
+// Expected:
+//   - message is the member's current prompt (target.message).
+//   - gateErr is the *swarm.GateError the post-member gate returned.
+//
+// Returns:
+//   - The message with the directive appended on a fresh paragraph, or
+//     message unchanged when there is nothing actionable to append.
+//
+// Side effects:
+//   - None.
+func appendGateDirective(message string, gateErr error) string {
+	var ge *swarm.GateError
+	if !errors.As(gateErr, &ge) || ge.Reason == "" {
+		return message
+	}
+	directive := "Your previous attempt did not write its output to the coordination_store. " + ge.Reason
+	if message == "" {
+		return directive
+	}
+	return message + "\n\n" + directive
 }
 
 // runStreamThroughRunner dispatches the target's Stream + collect

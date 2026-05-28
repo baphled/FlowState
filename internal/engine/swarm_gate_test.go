@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -130,6 +131,76 @@ func newDelegateToolWithRunner(engines map[string]*engine.Engine, store coordina
 		store,
 	)
 	return tool.WithGateRunner(runner)
+}
+
+// reviewerEnginesWithProvider mirrors reviewerEnginesWithContext but
+// returns the reviewer's mockProvider handle so a spec can inspect the
+// request the member's stream captured — used to assert the gate
+// directive is appended to a re-delegated member's prompt.
+func reviewerEnginesWithProvider(swarmCtx *swarm.Context) (map[string]*engine.Engine, *mockProvider) {
+	reviewerProv := reviewerProvider()
+	leadEng := engine.New(engine.Config{
+		ChatProvider: leadProvider(),
+		Manifest: agent.Manifest{
+			ID:                "planner",
+			Name:              "Planner",
+			Instructions:      agent.Instructions{SystemPrompt: "lead"},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+		SwarmContext: swarmCtx,
+	})
+	reviewerEng := engine.New(engine.Config{
+		ChatProvider: reviewerProv,
+		Manifest: agent.Manifest{
+			ID:                "plan-reviewer",
+			Name:              "Plan Reviewer",
+			Instructions:      agent.Instructions{SystemPrompt: "review"},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+	engines := map[string]*engine.Engine{
+		"planner":       leadEng,
+		"plan-reviewer": reviewerEng,
+	}
+	return engines, reviewerProv
+}
+
+// flakyMemberGateRunner fails the first failFor post-member gate
+// dispatches with the no-output GateError shape, then passes. It records
+// the dispatch count so a spec can assert the exact number of member
+// re-dispatches the retry loop attempted. failFor = math.MaxInt models a
+// member that never writes (always fails).
+type flakyMemberGateRunner struct {
+	failFor    int
+	calls      int
+	gateName   string
+	reason     string
+	memberID   string
+	swarmID    string
+	lifecycles []string
+}
+
+func (r *flakyMemberGateRunner) Run(_ context.Context, gate swarm.GateSpec, args swarm.GateArgs) error {
+	r.calls++
+	r.lifecycles = append(r.lifecycles, gate.When)
+	if r.calls <= r.failFor {
+		reason := r.reason
+		if reason == "" {
+			reason = "no member output found at [planning/plan-reviewer/output]: " +
+				"the member did not write its output — it likely narrated the write but emitted no tool call. " +
+				"Re-delegate this member with an explicit instruction to perform the coordination_store write " +
+				"(do not narrate it), naming the concrete chainID and target key."
+		}
+		return &swarm.GateError{
+			GateName: gate.Name,
+			GateKind: gate.Kind,
+			When:     gate.When,
+			SwarmID:  args.SwarmID,
+			MemberID: args.MemberID,
+			Reason:   reason,
+		}
+	}
+	return nil
 }
 
 func validVerdictPayload() []byte {
@@ -572,6 +643,94 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(exists).To(BeFalse(),
 			"with no output dir the publisher writes nothing and fabricates no record")
 		Expect(runner.calls).To(HaveLen(1), "the post-swarm gate still fires")
+	})
+
+	Context("post-member gate retry (single-miss is not terminal)", func() {
+		postMemberGate := func() []swarm.GateSpec {
+			return []swarm.GateSpec{
+				{
+					Name:   "post-member-plan-reviewer-output",
+					Kind:   "builtin:result-schema",
+					When:   swarm.LifecyclePostMember,
+					Target: "plan-reviewer",
+				},
+			}
+		}
+
+		It("re-delegates the member when the post-member gate fails on attempt 1 but passes on attempt 2", func() {
+			// Regression guard: a member that narrates-without-writing on the
+			// first attempt must NOT kill the run. The loop re-dispatches and
+			// the gate passes on the retry, so Execute returns the result.
+			store := coordination.NewMemoryStore()
+			runner := &flakyMemberGateRunner{failFor: 1}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(postMemberGate()))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			result, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+
+			Expect(err).NotTo(HaveOccurred(),
+				"a single post-member gate miss must be retried, not terminal")
+			Expect(result.Output).To(ContainSubstring("review complete"))
+			Expect(runner.calls).To(Equal(2),
+				"the member is re-dispatched exactly once after the first miss")
+		})
+
+		It("fails terminally with the GateError after exhausting the retry budget", func() {
+			// Honest-fail preserved: a member that never writes across every
+			// attempt still surfaces the GateError — only AFTER the bounded
+			// retries are exhausted.
+			store := coordination.NewMemoryStore()
+			runner := &flakyMemberGateRunner{failFor: math.MaxInt}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(postMemberGate()))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue(),
+				"after exhausting retries the GateError becomes terminal")
+			Expect(gateErr.MemberID).To(Equal("plan-reviewer"))
+			Expect(runner.calls).To(Equal(engine.PostMemberGateMaxAttempts),
+				"the member is re-dispatched up to the bounded attempt cap then fails loudly")
+		})
+
+		It("appends the gate directive to the re-delegated member's prompt", func() {
+			// The directive that breaks the synthesis-hang loop ("perform the
+			// coordination_store write, do not narrate it") must reach the
+			// member on retry — passively re-running the same prompt would
+			// just reproduce the miss.
+			store := coordination.NewMemoryStore()
+			directive := "perform the coordination_store write (do not narrate it)"
+			runner := &flakyMemberGateRunner{
+				failFor: 1,
+				reason:  "no member output found at [planning/plan-reviewer/output]: " + directive,
+			}
+			engines, reviewerProv := reviewerEnginesWithProvider(swarmContextWithGates(postMemberGate()))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(reviewerProv.LastRequestContainsSubstring(directive)).To(BeTrue(),
+				"the re-delegated member's prompt carries the gate's re-write directive")
+		})
+
+		It("does not retry when the post-member gate passes on the first attempt", func() {
+			// Happy-path guard: a member that writes on attempt 1 dispatches
+			// exactly once — the retry wrapper must not change clean-pass
+			// behaviour.
+			store := coordination.NewMemoryStore()
+			runner := &flakyMemberGateRunner{failFor: 0}
+			engines, _ := reviewerEnginesWithContext(swarmContextWithGates(postMemberGate()))
+			delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+			result, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("review complete"))
+			Expect(runner.calls).To(Equal(1),
+				"a clean first-attempt pass is dispatched exactly once — no retry")
+		})
 	})
 })
 
