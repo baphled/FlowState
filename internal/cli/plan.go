@@ -69,6 +69,16 @@ func newPlanPublishCmd(getApp func() *app.App) *cobra.Command {
 			"plan without re-running the planning loop.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Reaching RunE means flag/arg parsing already succeeded, so any
+			// error returned below is a RUNTIME failure (e.g. the chain's
+			// artifact is not a plan document). Silence the usage dump for
+			// those — cobra's Usage/flags block is noise for a runtime
+			// refusal. Setting SilenceUsage HERE rather than on the command
+			// struct keeps it scoped to RunE: genuine flag/arg-parse errors
+			// are reported BEFORE RunE runs, so a bad or missing flag still
+			// shows its helpful usage hint. SilenceErrors stays false so the
+			// error itself is still printed exactly once.
+			cmd.SilenceUsage = true
 			return runPlanPublish(cmd, getApp(), chainID, outputDir)
 		},
 	}

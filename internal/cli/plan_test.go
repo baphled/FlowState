@@ -326,22 +326,49 @@ var _ = Describe("Plan Command", func() {
 			Expect(publishOut.String()).To(ContainSubstring(expected))
 		})
 
-		It("renders a structured-JSON plan body to markdown, not raw JSON", func() {
+		It("refuses a structured-JSON spec blob and prints ONLY the error, no usage block", func() {
+			// A JSON spec blob at "<chain>/plan" is NOT a plan document; the
+			// publisher refuses it (commit 939a23fa). The refusal is a RUNTIME
+			// error, so the output must be the error line ALONE — cobra's
+			// Usage/flags dump is noise for a runtime failure and must not
+			// appear. SilenceUsage on the publish command enforces this.
 			Expect(coordStore.Set("json-chain/plan",
 				[]byte(`{"purpose":"Be supportive.","responsibilities":["Listen","Signpost"]}`))).To(Succeed())
 
 			publishOut.Reset()
 			err := publishCmd("plan", "publish", "--chain", "json-chain")
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred(), "a JSON spec blob must NOT be published")
 
+			out := publishOut.String()
+			Expect(out).To(ContainSubstring("not a plan document"),
+				"the runtime refusal reason is still printed")
+			Expect(out).NotTo(ContainSubstring("Usage:"),
+				"a runtime refusal must not dump cobra's usage block")
+			Expect(out).NotTo(ContainSubstring("Global Flags:"),
+				"a runtime refusal must not dump the global-flags block")
+			Expect(out).NotTo(ContainSubstring("--output-dir"),
+				"a runtime refusal must not dump the command flags")
+
+			// No garbage reaches the vault on a refused publish.
 			entries, _ := os.ReadDir(vaultDir)
-			Expect(entries).To(HaveLen(1))
-			body, readErr := os.ReadFile(filepath.Join(vaultDir, entries[0].Name()))
-			Expect(readErr).NotTo(HaveOccurred())
-			rendered := string(body)
-			Expect(rendered).To(ContainSubstring("## Purpose"))
-			Expect(rendered).To(ContainSubstring("- Listen"))
-			Expect(rendered).NotTo(ContainSubstring(`"purpose"`))
+			Expect(entries).To(BeEmpty())
+		})
+
+		It("still shows usage on a flag/arg-parse error (missing --chain)", func() {
+			// SilenceUsage must be scoped to RUNTIME refusals only. A genuine
+			// arg-parse error (here: the required --chain omitted) is reported
+			// BEFORE RunE runs, so its helpful usage hint must survive. This is
+			// the counterpart to the runtime-refusal test above: clean errors
+			// for runtime failures, helpful hints for misuse.
+			publishOut.Reset()
+			err := publishCmd("plan", "publish")
+			Expect(err).To(HaveOccurred(), "the required --chain flag is missing")
+
+			out := publishOut.String()
+			Expect(out).To(ContainSubstring(`required flag(s) "chain" not set`),
+				"the arg-parse error is reported")
+			Expect(out).To(ContainSubstring("Usage:"),
+				"a flag/arg-parse error keeps cobra's usage hint")
 		})
 
 		It("prints a clear no-op message for an unknown chain", func() {
@@ -366,12 +393,6 @@ var _ = Describe("Plan Command", func() {
 
 			entries, _ := os.ReadDir(vaultDir)
 			Expect(entries).To(BeEmpty())
-		})
-
-		It("errors when --chain is omitted", func() {
-			publishOut.Reset()
-			err := publishCmd("plan", "publish")
-			Expect(err).To(HaveOccurred())
 		})
 
 		It("reports a no-op when no output dir is resolvable", func() {
