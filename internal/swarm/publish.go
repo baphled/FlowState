@@ -323,9 +323,18 @@ func parsePlan(raw []byte) (title, body string) {
 }
 
 // structuredPlanTitle derives a human title from a structured-JSON plan
-// object for the filename slug: an explicit "title", else "name", else the
-// first sentence of "purpose". Empty when none is present (slugifyPlanName
-// then falls back to the H1 or chainID).
+// object for the filename slug: an explicit "title", else "name", else a
+// short lead fragment of "purpose". Empty when none is present
+// (slugifyPlanName then falls back to the H1 or chainID).
+//
+// The "purpose" field is the WORST title source — a plan's purpose is often
+// a single run-on sentence (the live mental-health plan's purpose is one
+// ~200-char clause with no early full stop). Taking the whole sentence as a
+// title produced a 200+ char filename before the slug cap was added; even
+// with the cap, a lead FRAGMENT (first clause up to a comma/em-dash) reads
+// far better than a hard-truncated mid-sentence slug. slugifyPlanName still
+// length-caps whatever this returns, so the fragment is an upper-quality
+// hint, not the sole guard.
 func structuredPlanTitle(obj map[string]json.RawMessage) string {
 	if t := jsonStringField(obj, "title"); t != "" {
 		return t
@@ -334,7 +343,7 @@ func structuredPlanTitle(obj map[string]json.RawMessage) string {
 		return n
 	}
 	if p := jsonStringField(obj, "purpose"); p != "" {
-		return firstSentence(p)
+		return firstPurposeFragment(p)
 	}
 	return ""
 }
@@ -353,12 +362,22 @@ func jsonStringField(obj map[string]json.RawMessage, key string) string {
 	return strings.TrimSpace(s)
 }
 
-// firstSentence returns the text up to and including the first sentence
-// terminator ('.', '!', '?'), trimmed; the whole string when none is
-// present. Used to keep a "purpose"-derived title to a single sentence.
-func firstSentence(s string) string {
+// firstPurposeFragment returns a short lead fragment of a "purpose" string
+// to seed the filename title. It stops at the FIRST clause boundary — a
+// comma or an em/en-dash (', ', '—', '–') — or a sentence terminator
+// ('.', '!', '?'), whichever comes first; the whole (trimmed) string when
+// none is present. The clause boundary is checked before the sentence
+// terminator because a run-on purpose typically has commas long before its
+// only full stop, so the comma yields the readable lead clause while the
+// full stop would return the entire run-on sentence.
+//
+// This is a quality hint only: slugifyPlanName still length-caps the slug,
+// so even a fragment with no early delimiter cannot produce an over-long
+// filename.
+func firstPurposeFragment(s string) string {
 	for i, r := range s {
-		if r == '.' || r == '!' || r == '?' {
+		switch r {
+		case ',', '—', '–', '.', '!', '?':
 			return strings.TrimSpace(s[:i])
 		}
 	}
@@ -470,12 +489,31 @@ func titleCaseKey(key string) string {
 	return strings.Join(fields, " ")
 }
 
+// slugMaxLen is the hard character cap for a plan filename slug (excluding
+// the ".md" extension). A title that slugs longer than this is trimmed at a
+// hyphen boundary so no partial word survives. 60 keeps the filename
+// comfortably under typical path limits while staying readable.
+const slugMaxLen = 60
+
+// slugWordCap is the soft cap on the number of hyphen-delimited words kept
+// in a slug. Most readable plan filenames are a handful of words; capping
+// the word count first yields a cleaner slug than a raw character truncation
+// (which can chop mid-phrase). The slugMaxLen character cap is then applied
+// as a backstop for the rare case of a few very long words.
+const slugWordCap = 8
+
 // slugifyPlanName derives a deterministic, filesystem-safe slug for the
 // plan file. Preference order: explicit title, the body's first "# H1"
 // heading, then the chainID. The result is lowercased, spaces and unsafe
 // characters collapse to single hyphens, and path separators are
 // stripped — the same plan always yields the same slug (idempotent
 // overwrite).
+//
+// The slug is then length-capped (capSlug): without a cap a title derived
+// from a long run-on "purpose" sentence produced a 200+ char filename. The
+// cap keeps the first slugWordCap words and at most slugMaxLen characters,
+// trimming any partial trailing word and trailing hyphens — the cap is the
+// load-bearing guard regardless of how the title was derived.
 func slugifyPlanName(title, body, chainID string) string {
 	name := strings.TrimSpace(title)
 	if name == "" {
@@ -484,14 +522,43 @@ func slugifyPlanName(title, body, chainID string) string {
 	if name == "" {
 		name = chainID
 	}
-	slug := slugify(name)
+	slug := capSlug(slugify(name))
 	if slug == "" {
-		slug = slugify(chainID)
+		slug = capSlug(slugify(chainID))
 	}
 	if slug == "" {
 		slug = "plan"
 	}
 	return slug
+}
+
+// capSlug trims an already-slugified string to a sane filename length:
+// keeps at most slugWordCap hyphen-delimited words, then at most slugMaxLen
+// characters (dropping a partial trailing word at the last hyphen boundary
+// rather than mid-word), and strips any trailing hyphens. Idempotent: a
+// slug already within the caps is returned unchanged.
+func capSlug(slug string) string {
+	if slug == "" {
+		return ""
+	}
+
+	// Soft cap: keep the first slugWordCap words.
+	words := strings.Split(slug, "-")
+	if len(words) > slugWordCap {
+		words = words[:slugWordCap]
+	}
+	capped := strings.Join(words, "-")
+
+	// Hard cap: trim to slugMaxLen, preferring a hyphen boundary so no
+	// partial word survives.
+	if len(capped) > slugMaxLen {
+		capped = capped[:slugMaxLen]
+		if idx := strings.LastIndex(capped, "-"); idx > 0 {
+			capped = capped[:idx]
+		}
+	}
+
+	return strings.Trim(capped, "-")
 }
 
 // firstH1 returns the text of the first ATX "# " heading in body, or ""

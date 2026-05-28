@@ -12,6 +12,17 @@ import (
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
+// jsonQuote produces a valid JSON string literal (with surrounding quotes)
+// for s, so specs can embed prose containing apostrophes/commas into a JSON
+// plan body without hand-escaping.
+func jsonQuote(s string) string {
+	encoded, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
 // readPublication decodes the "<chainID>/plan_publication" record the
 // publisher writes so specs can assert the recorded path matches the file
 // actually written.
@@ -354,6 +365,34 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(Equal(filepath.Join(outputDir, "companion-charter.md")),
 				"the JSON name field seeds the filename slug")
+		})
+
+		It("caps the filename when the only title source is a long run-on purpose", func() {
+			// REGRESSION (slug-length): the live mental-health plan's only
+			// title source is a single run-on "purpose" sentence. Without a
+			// length cap the slug became a 200+ char filename (the whole
+			// sentence slugified). The published filename must be short and
+			// readable, not the entire purpose.
+			longPurpose := "A conversational mental health companion agent that serves as the " +
+				"user's daily entry point for managing AuDHD-specific mental health, " +
+				"medical cannabis tracking, biochemistry monitoring, and N-1 experimentation."
+			jsonBody := `{"purpose":` + jsonQuote(longPurpose) + `}`
+			store := newGateStore(map[string][]byte{
+				"mhc-long/plan": []byte(jsonBody),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "mhc-long")
+			Expect(err).NotTo(HaveOccurred())
+
+			name := filepath.Base(path)
+			Expect(name).To(HaveSuffix(".md"))
+			slug := name[:len(name)-len(".md")]
+			Expect(len(slug)).To(BeNumerically("<=", 60),
+				"the slug is length-capped, not the whole run-on purpose")
+			Expect(slug).NotTo(HaveSuffix("-"), "no trailing hyphen on a capped slug")
+			Expect(slug).NotTo(HavePrefix("-"), "no leading hyphen")
+			Expect(slug).To(HavePrefix("a-conversational-mental-health"),
+				"the lead fragment of the purpose is still readable")
 		})
 
 		It("still handles the {markdown:...} envelope (existing behaviour preserved)", func() {
