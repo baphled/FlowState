@@ -4753,6 +4753,11 @@ type TestConfig struct {
 	DataDir     string
 	SwarmsDir   string
 	MCPClient   mcpclient.Client
+	// PlanOutputDir seeds App.planOutputDir for tests that exercise the
+	// deterministic plan publisher / `plan publish` CLI without a real
+	// permissions.yaml on disk. Empty leaves the publisher disabled (the
+	// production default when no permissions file configures one).
+	PlanOutputDir string
 }
 
 // resolveEmbedder returns the best available embedding provider for discovery.
@@ -4866,7 +4871,24 @@ func NewForTest(tc TestConfig) (*App, error) {
 		API:              nil,
 		mcpClient:        tc.MCPClient,
 		providerRegistry: nil,
+		planOutputDir:    tc.PlanOutputDir,
 	}, nil
+}
+
+// PlanOutputDir returns the resolved plan_output_dir (perms.PlanOutputDir)
+// — the bounded write target the deterministic plan publisher and the
+// artifact-published honesty gate share. Empty when no permissions file
+// configures one. Exposed so the `plan publish` CLI command writes to the
+// SAME directory the swarm post-phase would, rather than re-resolving it
+// independently.
+//
+// Returns:
+//   - The resolved plan_output_dir, or "" when none is configured.
+//
+// Side effects:
+//   - None.
+func (a *App) PlanOutputDir() string {
+	return a.planOutputDir
 }
 
 // BackgroundManager returns the background task manager for delegation.

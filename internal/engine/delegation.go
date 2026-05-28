@@ -202,6 +202,19 @@ type DelegateTool struct {
 	// reset) still suppresses the duplicate.
 	prefiredSwarmIDs map[string]bool
 
+	// swarmChainIDs records the most recent lead-allocated, caller-supplied
+	// chainID per active swarm id (keyed by swarm.Context.SwarmID). The
+	// swarm.Context is immutable and SHARED across concurrent member
+	// closures, so the chainID cannot be stored on it; recording it here —
+	// captured at member-dispatch time in Execute when a swarm is active
+	// and the caller supplied a chainID — lets FlushSwarmLifecycle thread
+	// the SAME chain to both the deterministic publisher (so it targets the
+	// run's plan, not a stale "*/plan" key) and the post-swarm honesty
+	// gate's GateArgs.ChainID. Guarded by swarmLifecycleMu because the lead
+	// may fan out to multiple members concurrently. The map persists for
+	// the DelegateTool's lifetime; a swarm re-run overwrites its own key.
+	swarmChainIDs map[string]string
+
 	// eventBus is the engine's shared `*eventbus.EventBus`, installed via
 	// WithEventBus during App-level wiring. When non-nil, the executeSync
 	// and executeAsync paths publish `delegation.{started,completed,failed}`
@@ -1546,6 +1559,16 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 			target.handoff = &delegation.Handoff{}
 		}
 		target.handoff.ChainID = chainID
+
+		// Bug 1 capture: when a swarm is in flight, record the chainID the
+		// lead just used to dispatch this member so the post-swarm phase
+		// (FlushSwarmLifecycle → publishPlanForSwarm / runSwarmGates) can
+		// target the SAME chain instead of suffix-scanning an arbitrary
+		// stale "*/plan" key. Captured at dispatch time because the
+		// swarm.Context is immutable and shared across member closures.
+		if swarmCtx, ok := d.activeSwarmContextForCtx(ctx); ok && swarmCtx != nil {
+			d.recordSwarmChainID(swarmCtx.SwarmID, chainID)
+		}
 	}
 
 	injectVisitedAgents(&target, d.sourceAgentID)
@@ -3664,6 +3687,13 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 	}
 	defer d.unmarkPreSwarmFiring(swarmCtx.SwarmID)
 
+	// Resolve the chainID the lead allocated for this run (captured at
+	// member-dispatch time, Bug 1). Empty when the lead never supplied a
+	// caller chainID — the publisher and gate then fall back to the
+	// suffix-scan. Threading the SAME chain to both the publisher and the
+	// post-swarm gate keeps them targeting the run's plan, not a stale one.
+	chainID := d.swarmChainIDForID(swarmCtx.SwarmID)
+
 	// Deterministically publish the planning loop's approved plan to the
 	// vault BEFORE the post-swarm honesty gate fires. This removes the LLM
 	// from the persistence path: the only prior publish path was an agent
@@ -3674,11 +3704,11 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 	// dir is configured; a write failure is surfaced so the post-swarm
 	// gate then fails rather than silently passing on a half-published
 	// loop. See swarm.PublishPlanToVault.
-	if err := d.publishPlanForSwarm(); err != nil {
+	if err := d.publishPlanForSwarm(chainID); err != nil {
 		return err
 	}
 
-	return d.runSwarmGates(ctx, swarmCtx, swarm.LifecyclePostSwarm)
+	return d.runSwarmGatesForChain(ctx, swarmCtx, swarm.LifecyclePostSwarm, chainID)
 }
 
 // publishPlanForSwarm writes the planning loop's approved plan from the
@@ -3686,6 +3716,11 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 // a no-op when no coordination store or plan_output_dir is wired (the
 // historical pre-publish behaviour for callers that have not opted in),
 // or when there is simply no plan to publish.
+//
+// Expected:
+//   - chainID is the lead-allocated chain for this run (Bug 1). When
+//     non-empty the publisher reads "<chainID>/plan" directly; empty
+//     triggers the publisher's suffix-scan fallback.
 //
 // Returns:
 //   - nil when the publish succeeds or there is nothing to publish.
@@ -3697,11 +3732,11 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 // Side effects:
 //   - On a successful publish: one vault file written and one coord-store
 //     "<chainID>/plan_publication" key set.
-func (d *DelegateTool) publishPlanForSwarm() error {
+func (d *DelegateTool) publishPlanForSwarm(chainID string) error {
 	if d.coordinationStore == nil || d.planOutputDir == "" {
 		return nil
 	}
-	if _, err := swarm.PublishPlanToVault(d.coordinationStore, d.planOutputDir); err != nil {
+	if _, err := swarm.PublishPlanToVault(d.coordinationStore, d.planOutputDir, chainID); err != nil {
 		return err
 	}
 	return nil
@@ -3727,6 +3762,31 @@ func (d *DelegateTool) publishPlanForSwarm() error {
 //     publishes gate.evaluating before dispatch, gate.failed per
 //     halting gate, gate.passed once on a clean batch.
 func (d *DelegateTool) runSwarmGates(ctx context.Context, swarmCtx *swarm.Context, when string) error {
+	return d.runSwarmGatesForChain(ctx, swarmCtx, when, "")
+}
+
+// runSwarmGatesForChain is runSwarmGates with an explicit chainID threaded
+// onto GateArgs.ChainID (Bug 1). When chainID is non-empty a gate whose
+// output_key carries a "{chainID}" template (e.g. the artifact-published
+// honesty gate's "{chainID}/plan") resolves against the SAME chain the
+// deterministic publisher just wrote, rather than suffix-scanning an
+// arbitrary stale "*/plan" key. Empty chainID preserves the historical
+// suffix-scan fallback for the pre-swarm caller and for runs where the
+// lead never supplied a chain.
+//
+// Expected:
+//   - swarmCtx is the active swarm context.
+//   - when is "pre" or "post".
+//   - chainID is the lead-allocated chain, or "" for the suffix-scan
+//     fallback.
+//
+// Returns:
+//   - nil when no gates match or every gate passes.
+//   - The first *swarm.GateError otherwise.
+//
+// Side effects:
+//   - Calls each matching gate's runner; publishes gate bus events.
+func (d *DelegateTool) runSwarmGatesForChain(ctx context.Context, swarmCtx *swarm.Context, when, chainID string) error {
 	matches := swarm.SwarmGatesFor(swarmCtx.Gates, when)
 	if len(matches) == 0 {
 		return nil
@@ -3734,6 +3794,7 @@ func (d *DelegateTool) runSwarmGates(ctx context.Context, swarmCtx *swarm.Contex
 	args := swarm.GateArgs{
 		SwarmID:     swarmCtx.SwarmID,
 		ChainPrefix: swarmCtx.ChainPrefix,
+		ChainID:     chainID,
 		CoordStore:  d.coordinationStore,
 	}
 	d.publishGateEvaluating(ctx, swarmCtx, when, "", len(matches))
@@ -3788,6 +3849,53 @@ func (d *DelegateTool) unmarkPreSwarmFiring(swarmID string) {
 	d.swarmLifecycleMu.Lock()
 	defer d.swarmLifecycleMu.Unlock()
 	delete(d.prefiredSwarmIDs, swarmID)
+}
+
+// recordSwarmChainID captures the lead-allocated chainID for swarmID so
+// the post-swarm phase can thread the SAME chain to the deterministic
+// publisher and the honesty gate (Bug 1 — wrong-chain targeting). The
+// swarm.Context is immutable and shared across concurrent member
+// closures, so the chainID is recorded here on the DelegateTool keyed by
+// swarm id rather than mutating the context. A blank chainID is ignored
+// so an auto-generated fallback never overwrites a real lead-supplied one
+// (Execute only records when the caller actually supplied a chainID).
+//
+// Expected:
+//   - swarmID is the active swarm's id.
+//   - chainID is the caller-supplied chain; blank is a no-op.
+//
+// Side effects:
+//   - Mutates swarmChainIDs under swarmLifecycleMu (lazy-init).
+func (d *DelegateTool) recordSwarmChainID(swarmID, chainID string) {
+	if swarmID == "" || strings.TrimSpace(chainID) == "" {
+		return
+	}
+	d.swarmLifecycleMu.Lock()
+	defer d.swarmLifecycleMu.Unlock()
+	if d.swarmChainIDs == nil {
+		d.swarmChainIDs = make(map[string]string)
+	}
+	d.swarmChainIDs[swarmID] = chainID
+}
+
+// swarmChainIDForID returns the most recent lead-allocated chainID
+// recorded for swarmID, or "" when none was captured (the publisher then
+// falls back to the suffix-scan). Read under swarmLifecycleMu so a
+// concurrent member dispatch's recordSwarmChainID write is observed
+// safely.
+//
+// Expected:
+//   - swarmID is the active swarm's id.
+//
+// Returns:
+//   - The captured chainID, or "" when none is recorded.
+//
+// Side effects:
+//   - None (read-only under the lifecycle mutex).
+func (d *DelegateTool) swarmChainIDForID(swarmID string) string {
+	d.swarmLifecycleMu.Lock()
+	defer d.swarmLifecycleMu.Unlock()
+	return d.swarmChainIDs[swarmID]
 }
 
 // activeSwarmContext returns the swarm.Context installed on the lead

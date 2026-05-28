@@ -45,7 +45,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				"readyz-2026-05-28/review": []byte(`{"verdict":"approve","confidence":0.9}`),
 			})
 
-			path, err := swarm.PublishPlanToVault(store, outputDir)
+			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 
 			expected := filepath.Join(outputDir, "add-readyz-readiness-endpoint.md")
@@ -70,7 +70,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				"auth-hardening/plan": []byte("# Auth Hardening Plan\n\nDetails here."),
 			})
 
-			path, err := swarm.PublishPlanToVault(store, outputDir)
+			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(Equal(filepath.Join(outputDir, "auth-hardening-plan.md")))
 
@@ -86,7 +86,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				"chain-fallback-123/plan": []byte("Just a body with no heading at all."),
 			})
 
-			path, err := swarm.PublishPlanToVault(store, outputDir)
+			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(Equal(filepath.Join(outputDir, "chain-fallback-123.md")))
 		})
@@ -98,13 +98,13 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				"repeat-chain/plan": []byte("# Repeatable Plan\n\nv1 body."),
 			})
 
-			first, err := swarm.PublishPlanToVault(store, outputDir)
+			first, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 
 			// Same title → same slug → same file. Update the body and
 			// re-publish; the file must be overwritten, not duplicated.
 			Expect(store.Set("repeat-chain/plan", []byte("# Repeatable Plan\n\nv2 body."))).To(Succeed())
-			second, err := swarm.PublishPlanToVault(store, outputDir)
+			second, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(second).To(Equal(first), "the same plan title yields the same filename")
 
@@ -121,7 +121,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			store := newGateStore(map[string][]byte{
 				"clean-chain/plan": []byte("# Clean Write\n\nbody"),
 			})
-			_, err := swarm.PublishPlanToVault(store, outputDir)
+			_, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 
 			entries, readErr := os.ReadDir(outputDir)
@@ -135,7 +135,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 	Context("honest no-ops (no fabricated record)", func() {
 		It("does nothing when the plan key is missing", func() {
 			store := newGateStore(map[string][]byte{})
-			path, err := swarm.PublishPlanToVault(store, outputDir)
+			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(BeEmpty())
 
@@ -149,7 +149,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			store := newGateStore(map[string][]byte{
 				"empty-chain/plan": []byte("   "),
 			})
-			path, err := swarm.PublishPlanToVault(store, outputDir)
+			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(BeEmpty())
 
@@ -161,7 +161,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			store := newGateStore(map[string][]byte{
 				"some-chain/plan": []byte("# A Plan\n\nbody"),
 			})
-			path, err := swarm.PublishPlanToVault(store, "")
+			path, err := swarm.PublishPlanToVault(store, "", "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(BeEmpty())
 			_, ok := readPublication(store, "some-chain")
@@ -173,7 +173,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				"rejected-chain/plan":   []byte("# Rejected Plan\n\nbody"),
 				"rejected-chain/review": []byte(`{"verdict":"reject","confidence":0.8}`),
 			})
-			path, err := swarm.PublishPlanToVault(store, outputDir)
+			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).To(BeEmpty(), "a rejected plan must not reach the vault")
 
@@ -187,7 +187,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			store := newGateStore(map[string][]byte{
 				"no-review-chain/plan": []byte("# No Review Recorded\n\nbody"),
 			})
-			path, err := swarm.PublishPlanToVault(store, outputDir)
+			path, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(path).NotTo(BeEmpty(), "an absent review does not block publication")
 		})
@@ -206,7 +206,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			store := newGateStore(map[string][]byte{
 				"fail-chain/plan": []byte("# Will Fail\n\nbody"),
 			})
-			path, err := swarm.PublishPlanToVault(store, unwritable)
+			path, err := swarm.PublishPlanToVault(store, unwritable, "")
 			Expect(err).To(HaveOccurred(), "a write failure must be surfaced, not swallowed")
 			Expect(path).To(BeEmpty())
 
@@ -215,7 +215,213 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 		})
 	})
 
+	Context("targeted chainID resolution (Bug 1: wrong-chain targeting)", func() {
+		It("publishes the NAMED chain, not an alphabetically-earlier one, in a multi-chain store", func() {
+			// REGRESSION (Bug 1): the live coord-store carries many "*/plan"
+			// keys across historical chains. A suffix-scan returns an
+			// arbitrary (Go-map-iteration-order) stale chain, NOT the run's
+			// plan. With an explicit chainID the publisher must read
+			// "<chainID>/plan" directly and ignore every other chain.
+			store := newGateStore(map[string][]byte{
+				"3b1b4d8e-stale-chain/plan":      []byte("# Stale Plan\n\nDo not publish me."),
+				"aaaa-earlier-chain/plan":        []byte("# Earlier Plan\n\nAlso wrong."),
+				"mental-health-companion/plan":   []byte("# Mental Health Companion\n\nThe one the user wants."),
+				"mental-health-companion/review": []byte(`{"verdict":"approve","confidence":0.95}`),
+				"zzzz-later-chain/plan":          []byte("# Later Plan\n\nStill wrong."),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "mental-health-companion")
+			Expect(err).NotTo(HaveOccurred())
+
+			expected := filepath.Join(outputDir, "mental-health-companion.md")
+			Expect(path).To(Equal(expected), "the named chain's plan is published, not a stale one")
+
+			body, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("The one the user wants."))
+			Expect(string(body)).NotTo(ContainSubstring("Do not publish me."))
+			Expect(string(body)).NotTo(ContainSubstring("Also wrong."))
+
+			recorded, ok := readPublication(store, "mental-health-companion")
+			Expect(ok).To(BeTrue(), "the record is written under the NAMED chain")
+			Expect(recorded).To(Equal(path))
+
+			// The stale chains must NOT receive a publication record.
+			_, staleOK := readPublication(store, "3b1b4d8e-stale-chain")
+			Expect(staleOK).To(BeFalse(), "no record fabricated against a stale chain")
+		})
+
+		It("honours the named chain's review approve-gate, not another chain's", func() {
+			// The named chain is approved; a different chain is rejected.
+			// Targeting must read the NAMED chain's review.
+			store := newGateStore(map[string][]byte{
+				"rejected-other/plan":    []byte("# Rejected Other\n\nbody"),
+				"rejected-other/review":  []byte(`{"verdict":"reject"}`),
+				"approved-target/plan":   []byte("# Approved Target\n\nbody"),
+				"approved-target/review": []byte(`{"verdict":"approve"}`),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "approved-target")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(path).To(Equal(filepath.Join(outputDir, "approved-target.md")))
+		})
+
+		It("is a no-op when the NAMED chain's review explicitly rejects", func() {
+			store := newGateStore(map[string][]byte{
+				"approved-other/plan":    []byte("# Approved Other\n\nbody"),
+				"approved-other/review":  []byte(`{"verdict":"approve"}`),
+				"rejected-target/plan":   []byte("# Rejected Target\n\nbody"),
+				"rejected-target/review": []byte(`{"verdict":"reject"}`),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "rejected-target")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(path).To(BeEmpty(), "a rejected named chain is not published")
+		})
+
+		It("is a no-op when the NAMED chain has no plan key (does not fall back to suffix-scan)", func() {
+			store := newGateStore(map[string][]byte{
+				"some-other-chain/plan": []byte("# Other\n\nbody"),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "absent-chain")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(path).To(BeEmpty(), "a missing named-chain plan must NOT publish a different chain")
+			entries, _ := os.ReadDir(outputDir)
+			Expect(entries).To(BeEmpty())
+		})
+	})
+
+	Context("structured-JSON plan body (Bug 2: JSON published raw)", func() {
+		It("renders a structured-JSON plan to readable markdown, not raw JSON", func() {
+			// REGRESSION (Bug 2): the live mental-health-companion plan body
+			// is a structured JSON object (NOT the {markdown:...} envelope and
+			// NOT markdown). Publishing it raw dumps JSON into the vault.
+			jsonBody := `{` +
+				`"purpose":"A supportive mental-health companion.",` +
+				`"responsibilities":["Listen actively","Offer coping strategies","Signpost to professionals"],` +
+				`"boundaries":{"must_not":["Diagnose conditions","Replace a clinician"]}` +
+				`}`
+			store := newGateStore(map[string][]byte{
+				"mhc-2026-05-27/plan":   []byte(jsonBody),
+				"mhc-2026-05-27/review": []byte(`{"verdict":"approve"}`),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "mhc-2026-05-27")
+			Expect(err).NotTo(HaveOccurred())
+
+			body, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			rendered := string(body)
+
+			// No raw JSON punctuation leaking into the vault.
+			Expect(rendered).NotTo(ContainSubstring(`"purpose"`),
+				"the file must hold rendered markdown, not raw JSON keys")
+			Expect(rendered).NotTo(ContainSubstring(`"must_not"`))
+
+			// Top-level keys become title-cased headings.
+			Expect(rendered).To(ContainSubstring("## Purpose"))
+			Expect(rendered).To(ContainSubstring("A supportive mental-health companion."))
+			Expect(rendered).To(ContainSubstring("## Responsibilities"))
+			// Array of strings → bullet list.
+			Expect(rendered).To(ContainSubstring("- Listen actively"))
+			Expect(rendered).To(ContainSubstring("- Offer coping strategies"))
+			// Nested object → subheading + its fields.
+			Expect(rendered).To(ContainSubstring("## Boundaries"))
+			Expect(rendered).To(ContainSubstring("### Must Not"))
+			Expect(rendered).To(ContainSubstring("- Diagnose conditions"))
+		})
+
+		It("renders deterministically (top-level key order is stable across runs)", func() {
+			jsonBody := `{"alpha":"first","beta":"second","gamma":"third"}`
+			store := newGateStore(map[string][]byte{
+				"det-chain/plan": []byte(jsonBody),
+			})
+			first, err := swarm.PublishPlanToVault(store, outputDir, "det-chain")
+			Expect(err).NotTo(HaveOccurred())
+			body1, _ := os.ReadFile(first)
+
+			second, err := swarm.PublishPlanToVault(store, outputDir, "det-chain")
+			Expect(err).NotTo(HaveOccurred())
+			body2, _ := os.ReadFile(second)
+
+			Expect(string(body2)).To(Equal(string(body1)), "rendering is byte-stable")
+		})
+
+		It("derives the title from the JSON title/name/purpose for the slug", func() {
+			jsonBody := `{"name":"Companion Charter","purpose":"Be kind."}`
+			store := newGateStore(map[string][]byte{
+				"name-chain/plan": []byte(jsonBody),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "name-chain")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(path).To(Equal(filepath.Join(outputDir, "companion-charter.md")),
+				"the JSON name field seeds the filename slug")
+		})
+
+		It("still handles the {markdown:...} envelope (existing behaviour preserved)", func() {
+			store := newGateStore(map[string][]byte{
+				"env-chain/plan": []byte(`{"markdown":"# Envelope Plan\n\nMd body.","title":"Envelope Plan"}`),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "env-chain")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(path).To(Equal(filepath.Join(outputDir, "envelope-plan.md")))
+			body, _ := os.ReadFile(path)
+			Expect(string(body)).To(Equal("# Envelope Plan\n\nMd body."))
+		})
+
+		It("still handles a raw-markdown body (existing behaviour preserved)", func() {
+			store := newGateStore(map[string][]byte{
+				"raw-chain/plan": []byte("# Raw Plan\n\nPlain markdown."),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "raw-chain")
+			Expect(err).NotTo(HaveOccurred())
+			body, _ := os.ReadFile(path)
+			Expect(string(body)).To(Equal("# Raw Plan\n\nPlain markdown."))
+		})
+
+		It("prefers a <chainID>/plan-markdown key over the structured-JSON plan body", func() {
+			jsonBody := `{"purpose":"JSON form","responsibilities":["a","b"]}`
+			store := newGateStore(map[string][]byte{
+				"pmd-chain/plan":          []byte(jsonBody),
+				"pmd-chain/plan-markdown": []byte("# Curated Markdown\n\nThis curated body wins."),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "pmd-chain")
+			Expect(err).NotTo(HaveOccurred())
+			body, _ := os.ReadFile(path)
+			Expect(string(body)).To(Equal("# Curated Markdown\n\nThis curated body wins."),
+				"plan-markdown takes precedence over the structured-JSON render")
+			Expect(string(body)).NotTo(ContainSubstring("JSON form"))
+		})
+	})
+
 	Context("integration with the artifact-published honesty gate", func() {
+		It("verifies the threaded chain's publication when a chainID is supplied", func() {
+			// Gate alignment (Bug 1): when a chainID is threaded, both the
+			// publisher and the gate target the SAME chain. A multi-chain
+			// store must not let the gate verify a stale chain.
+			store := newGateStore(map[string][]byte{
+				"stale-gate-chain/plan":  []byte("# Stale\n\nbody"),
+				"target-gate-chain/plan": []byte(`{"markdown":"# Target Gate Plan\n\nbody","title":"Target Gate Plan"}`),
+			})
+
+			publishedPath, err := swarm.PublishPlanToVault(store, outputDir, "target-gate-chain")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(publishedPath).To(BeAnExistingFile())
+
+			gate := swarm.GateSpec{
+				Name:      "post-swarm-plan-published",
+				Kind:      "builtin:artifact-published",
+				When:      "post",
+				OutputKey: "{chainID}/plan",
+			}
+			args := swarm.GateArgs{
+				SwarmID:    "planning-loop",
+				ChainID:    "target-gate-chain",
+				CoordStore: store,
+			}
+			runner := swarm.NewArtifactPublishedRunner(outputDir, nil)
+			Expect(runner.Run(nil, gate, args)).To(Succeed(),
+				"the gate verifies the threaded chain's real publication")
+		})
+
 		It("publishes a real file the gate then verifies and passes", func() {
 			// End-to-end: publish writes the plan + record, then the gate
 			// (run with empty ChainID as the post-swarm dispatch does)
@@ -224,7 +430,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				"e2e-chain/plan": []byte(`{"markdown":"# E2E Plan\n\nbody","title":"E2E Plan"}`),
 			})
 
-			publishedPath, err := swarm.PublishPlanToVault(store, outputDir)
+			publishedPath, err := swarm.PublishPlanToVault(store, outputDir, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(publishedPath).To(BeAnExistingFile())
 

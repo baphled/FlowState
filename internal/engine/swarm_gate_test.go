@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -386,6 +387,58 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(string(body)).To(ContainSubstring("# Readyz Plan"))
 	})
 
+	It("threads the lead-allocated chainID so the NAMED chain is published, not a stale one (Bug 1)", func() {
+		// Multi-chain coord-store: a member is dispatched with an explicit
+		// caller chainID. FlushSwarmLifecycle must publish THAT chain's
+		// plan (captured at dispatch time) — not an arbitrary stale
+		// "*/plan" key — and thread the same chainID into the post-swarm
+		// gate's GateArgs.ChainID.
+		outputDir := GinkgoT().TempDir()
+		store := coordination.NewMemoryStore()
+		Expect(store.Set("stale-chain/plan", []byte("# Stale Plan\n\nDo not publish."))).To(Succeed())
+		Expect(store.Set("mhc-target/plan",
+			[]byte(`{"markdown":"# Mental Health Companion\n\nThe wanted plan.","title":"Mental Health Companion"}`))).To(Succeed())
+		Expect(store.Set("mhc-target/review", validVerdictPayload())).To(Succeed())
+
+		argsProbe := &chainArgProbeRunner{}
+		gates := []swarm.GateSpec{
+			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
+		}
+		engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+		delegateTool := newDelegateToolWithRunner(engines, store, argsProbe).
+			WithPlanOutputDir(outputDir)
+
+		// Dispatch a member with an explicit caller chainID — this is what
+		// the lead does when it free-forms the per-run chain.
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "plan-reviewer",
+				"message":       "review the plan",
+				"chainID":       "mhc-target",
+			},
+		}
+		_, err := delegateTool.Execute(context.Background(), input)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
+
+		// The NAMED chain's plan was published, NOT the stale one.
+		wantedPath := filepath.Join(outputDir, "mental-health-companion.md")
+		Expect(wantedPath).To(BeAnExistingFile(),
+			"the lead-allocated chain's plan reaches the vault")
+		entries, _ := os.ReadDir(outputDir)
+		Expect(entries).To(HaveLen(1), "only the named chain is published")
+
+		recorded, ok := readPublicationRecord(store, "mhc-target")
+		Expect(ok).To(BeTrue(), "publication recorded under the NAMED chain")
+		Expect(recorded).To(Equal(wantedPath))
+
+		// The post-swarm gate received the threaded chainID.
+		Expect(argsProbe.lastChainID).To(Equal("mhc-target"),
+			"the post-swarm gate's GateArgs.ChainID is the lead-allocated chain")
+	})
+
 	It("is a no-op when no plan_output_dir is wired (historical behaviour preserved)", func() {
 		store := coordination.NewMemoryStore()
 		Expect(store.Set("some-chain/plan", []byte("# A Plan\n\nbody"))).To(Succeed())
@@ -420,4 +473,32 @@ func (p *publishProbeRunner) Run(_ context.Context, _ swarm.GateSpec, _ swarm.Ga
 	exists, _ := p.store.Exists(p.key)
 	p.sawPublication = exists
 	return nil
+}
+
+// chainArgProbeRunner records the GateArgs.ChainID it was dispatched with
+// so a spec can assert the lead-allocated chain is threaded into the
+// post-swarm gate (Bug 1).
+type chainArgProbeRunner struct {
+	lastChainID string
+}
+
+func (c *chainArgProbeRunner) Run(_ context.Context, _ swarm.GateSpec, args swarm.GateArgs) error {
+	c.lastChainID = args.ChainID
+	return nil
+}
+
+// readPublicationRecord decodes the "<chainID>/plan_publication" record the
+// deterministic publisher writes so a spec can assert the recorded path.
+func readPublicationRecord(store coordination.Store, chainID string) (string, bool) {
+	raw, err := store.Get(chainID + "/plan_publication")
+	if err != nil {
+		return "", false
+	}
+	var rec struct {
+		VaultPath string `json:"vault_path"`
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return "", false
+	}
+	return rec.VaultPath, true
 }

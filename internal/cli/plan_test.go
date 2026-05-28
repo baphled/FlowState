@@ -8,6 +8,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/cli"
+	"github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/plan"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -250,6 +251,143 @@ var _ = Describe("Plan Command", func() {
 			summaries, err := store.List()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(summaries).To(BeEmpty())
+		})
+	})
+
+	Context("when publishing a plan (plan publish --chain)", func() {
+		var (
+			vaultDir   string
+			coordPath  string
+			publishApp *app.App
+			publishCmd func(args ...string) error
+			publishOut *bytes.Buffer
+			coordStore coordination.Store
+		)
+
+		BeforeEach(func() {
+			publishOut = &bytes.Buffer{}
+			dataDir := GinkgoT().TempDir()
+			vaultDir = filepath.Join(GinkgoT().TempDir(), "vault")
+			coordPath = filepath.Join(dataDir, "coordination.json")
+
+			var err error
+			coordStore, err = coordination.NewFileStore(coordPath)
+			Expect(err).NotTo(HaveOccurred())
+
+			publishApp, err = app.NewForTest(app.TestConfig{
+				DataDir:       dataDir,
+				PlanOutputDir: vaultDir,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			publishCmd = func(args ...string) error {
+				root := cli.NewRootCmd(publishApp)
+				root.SetOut(publishOut)
+				root.SetErr(publishOut)
+				root.SetArgs(args)
+				return root.Execute()
+			}
+		})
+
+		It("publishes the named chain's approved plan and prints the path", func() {
+			Expect(coordStore.Set("mhc-2026-05-27/plan",
+				[]byte(`{"markdown":"# Mental Health Companion\n\nbody","title":"Mental Health Companion"}`))).To(Succeed())
+			Expect(coordStore.Set("mhc-2026-05-27/review", []byte(`{"verdict":"approve"}`))).To(Succeed())
+			// A stale chain that must NOT be published.
+			Expect(coordStore.Set("stale-chain/plan", []byte("# Stale\n\nbody"))).To(Succeed())
+
+			publishOut.Reset()
+			err := publishCmd("plan", "publish", "--chain", "mhc-2026-05-27")
+			Expect(err).NotTo(HaveOccurred())
+
+			expected := filepath.Join(vaultDir, "mental-health-companion.md")
+			Expect(publishOut.String()).To(ContainSubstring(expected))
+			Expect(expected).To(BeAnExistingFile())
+
+			body, readErr := os.ReadFile(expected)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(body)).To(ContainSubstring("# Mental Health Companion"))
+
+			entries, _ := os.ReadDir(vaultDir)
+			Expect(entries).To(HaveLen(1), "only the named chain is published, not the stale one")
+		})
+
+		It("honours an explicit --output-dir override", func() {
+			altDir := filepath.Join(GinkgoT().TempDir(), "alt-vault")
+			Expect(coordStore.Set("override-chain/plan",
+				[]byte("# Override Plan\n\nbody"))).To(Succeed())
+
+			publishOut.Reset()
+			err := publishCmd("plan", "publish", "--chain", "override-chain", "--output-dir", altDir)
+			Expect(err).NotTo(HaveOccurred())
+
+			expected := filepath.Join(altDir, "override-plan.md")
+			Expect(expected).To(BeAnExistingFile())
+			Expect(publishOut.String()).To(ContainSubstring(expected))
+		})
+
+		It("renders a structured-JSON plan body to markdown, not raw JSON", func() {
+			Expect(coordStore.Set("json-chain/plan",
+				[]byte(`{"purpose":"Be supportive.","responsibilities":["Listen","Signpost"]}`))).To(Succeed())
+
+			publishOut.Reset()
+			err := publishCmd("plan", "publish", "--chain", "json-chain")
+			Expect(err).NotTo(HaveOccurred())
+
+			entries, _ := os.ReadDir(vaultDir)
+			Expect(entries).To(HaveLen(1))
+			body, readErr := os.ReadFile(filepath.Join(vaultDir, entries[0].Name()))
+			Expect(readErr).NotTo(HaveOccurred())
+			rendered := string(body)
+			Expect(rendered).To(ContainSubstring("## Purpose"))
+			Expect(rendered).To(ContainSubstring("- Listen"))
+			Expect(rendered).NotTo(ContainSubstring(`"purpose"`))
+		})
+
+		It("prints a clear no-op message for an unknown chain", func() {
+			publishOut.Reset()
+			err := publishCmd("plan", "publish", "--chain", "does-not-exist")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(publishOut.String()).To(ContainSubstring("Nothing published"))
+			Expect(publishOut.String()).To(ContainSubstring("does-not-exist"))
+
+			entries, _ := os.ReadDir(vaultDir)
+			Expect(entries).To(BeEmpty())
+		})
+
+		It("does not publish a chain the reviewer rejected (no-op message)", func() {
+			Expect(coordStore.Set("rejected-chain/plan", []byte("# Rejected\n\nbody"))).To(Succeed())
+			Expect(coordStore.Set("rejected-chain/review", []byte(`{"verdict":"reject"}`))).To(Succeed())
+
+			publishOut.Reset()
+			err := publishCmd("plan", "publish", "--chain", "rejected-chain")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(publishOut.String()).To(ContainSubstring("Nothing published"))
+
+			entries, _ := os.ReadDir(vaultDir)
+			Expect(entries).To(BeEmpty())
+		})
+
+		It("errors when --chain is omitted", func() {
+			publishOut.Reset()
+			err := publishCmd("plan", "publish")
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("reports a no-op when no output dir is resolvable", func() {
+			noDirApp, err := app.NewForTest(app.TestConfig{
+				DataDir: GinkgoT().TempDir(),
+				// no PlanOutputDir
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			localOut := &bytes.Buffer{}
+			root := cli.NewRootCmd(noDirApp)
+			root.SetOut(localOut)
+			root.SetErr(localOut)
+			root.SetArgs([]string{"plan", "publish", "--chain", "any-chain"})
+			Expect(root.Execute()).NotTo(HaveOccurred())
+			Expect(localOut.String()).To(ContainSubstring("No plan_output_dir configured"))
 		})
 	})
 })

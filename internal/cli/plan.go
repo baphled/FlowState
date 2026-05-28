@@ -2,9 +2,11 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/baphled/flowstate/internal/plan"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/spf13/cobra"
 )
 
@@ -29,8 +31,108 @@ func NewPlanCommand(getApp func() *app.App) *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(newPlanListCmd(getApp), newPlanSelectCmd(getApp), newPlanDeleteCmd(getApp))
+	cmd.AddCommand(
+		newPlanListCmd(getApp),
+		newPlanSelectCmd(getApp),
+		newPlanDeleteCmd(getApp),
+		newPlanPublishCmd(getApp),
+	)
 	return cmd
+}
+
+// newPlanPublishCmd creates the `plan publish` subcommand: it writes an
+// already-approved plan from the coordination store to the vault for a
+// SPECIFIC chain, bypassing the suffix-scan the post-swarm flush uses.
+//
+// This lets an approved plan be published without re-running the whole
+// planning loop — the headline user need ("my approved plan never reached
+// Obsidian") — and is generally useful for re-publishing.
+//
+// Expected:
+//   - getApp is a non-nil function that returns the application instance.
+//
+// Returns:
+//   - A configured cobra.Command for publishing a named chain's plan.
+//
+// Side effects:
+//   - Registers the --chain (required) and --output-dir flags.
+func newPlanPublishCmd(getApp func() *app.App) *cobra.Command {
+	var chainID string
+	var outputDir string
+
+	cmd := &cobra.Command{
+		Use:   "publish --chain <chainID> [--output-dir <dir>]",
+		Short: "Publish an approved plan from the coordination store to the vault",
+		Long: "Publish a SPECIFIC chain's approved plan from the coordination " +
+			"store to a markdown file in the vault, bypassing the suffix-scan " +
+			"the post-swarm flush uses. Use this to land an already-approved " +
+			"plan without re-running the planning loop.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runPlanPublish(cmd, getApp(), chainID, outputDir)
+		},
+	}
+
+	cmd.Flags().StringVar(&chainID, "chain", "",
+		"the coordination chainID whose approved plan to publish (required)")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "",
+		"vault directory to write the plan to (defaults to the resolved plan_output_dir)")
+	_ = cmd.MarkFlagRequired("chain")
+
+	return cmd
+}
+
+// runPlanPublish resolves the output dir, opens the coord-store, and calls
+// the deterministic publisher for the named chain.
+//
+// Expected:
+//   - cmd is a non-nil cobra.Command.
+//   - a is a non-nil App instance.
+//   - chainID is the required, non-empty chain identifier.
+//   - outputDir is the optional --output-dir override; empty falls back to
+//     the App's resolved plan_output_dir.
+//
+// Returns:
+//   - nil on a successful publish or a clear no-op message.
+//   - An error when the coord-store cannot be opened or the publish fails.
+//
+// Side effects:
+//   - On success: one vault file written and one coord-store
+//     "<chainID>/plan_publication" key set; the path is printed.
+func runPlanPublish(cmd *cobra.Command, a *app.App, chainID, outputDir string) error {
+	chainID = strings.TrimSpace(chainID)
+	if chainID == "" {
+		return fmt.Errorf("plan publish: --chain is required")
+	}
+
+	resolvedDir := strings.TrimSpace(outputDir)
+	if resolvedDir == "" {
+		resolvedDir = a.PlanOutputDir()
+	}
+	if resolvedDir == "" {
+		_, err := fmt.Fprintln(cmd.OutOrStdout(),
+			"No plan_output_dir configured and no --output-dir given; nothing published.")
+		return err
+	}
+
+	store, err := openCoordStore(a)
+	if err != nil {
+		return fmt.Errorf("plan publish: %w", err)
+	}
+
+	vaultPath, err := swarm.PublishPlanToVault(store, resolvedDir, chainID)
+	if err != nil {
+		return fmt.Errorf("plan publish: %w", err)
+	}
+	if vaultPath == "" {
+		_, err := fmt.Fprintf(cmd.OutOrStdout(),
+			"Nothing published for chain %q: no approved plan found "+
+				"(missing plan, empty body, or a non-approve review).\n", chainID)
+		return err
+	}
+
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "Published plan to %s\n", vaultPath)
+	return err
 }
 
 // newPlanListCmd creates the plan list subcommand.
