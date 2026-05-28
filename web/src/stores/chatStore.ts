@@ -2875,25 +2875,26 @@ export const useChatStore = defineStore('chat', {
     // separate SwarmEvent stream consumed by DelegationPanel, not on the
     // per-session SSE chat stream).
     //
-    // Resolution order — load-bearing:
-    //   1. The most-recent child of the active session whose agentId
-    //      matches. This is the click's actual intent: "open the agent
-    //      this parent just delegated to". Anchoring on parentId pins
-    //      the click to the active parent's branch of the delegation
-    //      tree.
-    //   2. The most-recent session for that agent overall, falling back
-    //      to oldest-first only if no createdAt is present. Used when no
-    //      active parent exists or no child of the parent matches (e.g.
-    //      the parent is itself the delegated agent — a swarm-bridge
-    //      edge case).
+    // Resolution — load-bearing, and DELIBERATELY scoped to the active
+    // session's own delegation branch:
+    //   The most-recent child of the active session whose agentId
+    //   matches. This is the click's actual intent: "open the agent
+    //   this parent just delegated to". Anchoring on parentId pins the
+    //   click to the active parent's branch of the delegation tree.
     //
-    // Pre-fix this picked sessions[0]-of-match against an oldest-first
-    // backend list, so a long-running backend with a stale standalone
-    // session for the same agent always loaded that stale session
-    // instead of the just-delegated child. The user reported "we are no
-    // longer able to click on the delegating card and view the
-    // delegated agents session" — the click fired but landed on the
-    // wrong session, defeating the affordance.
+    // There is NO global "most-recent session for the agent across ALL
+    // sessions" fallback. A reported-3× bug was that selecting an agent
+    // within session A navigated the user to a COMPLETELY DIFFERENT
+    // session: a prior Step-2 picked the most-recent session for the
+    // agent across the whole list and loaded it, hard-jumping the user
+    // out of A into an unrelated standalone run that merely shared the
+    // agent id. When no child of the active session matches, we now
+    // return false and leave currentSessionId untouched — staying put is
+    // always correct over teleporting to an unrelated session.
+    //
+    // chainId/childSessionId-driven navigation is unaffected: those land
+    // earlier in loadSessionForDelegation (Steps 1-3) and never reach
+    // this agent-id resolver.
     async loadSessionByAgentId(agentId: string): Promise<boolean> {
       const matchesAgent = (s: SessionSummary) =>
         (s.currentAgentId ?? s.agentId) === agentId
@@ -2901,24 +2902,16 @@ export const useChatStore = defineStore('chat', {
       const sortByCreatedAtDesc = (a: SessionSummary, b: SessionSummary) =>
         b.createdAt.localeCompare(a.createdAt)
 
-      // Step 1: prefer a child of the active session.
-      let candidate: SessionSummary | undefined
-      if (this.currentSessionId) {
-        const childrenOfCurrent = this.sessions
-          .filter((s) => s.parentId === this.currentSessionId && matchesAgent(s))
-          .sort(sortByCreatedAtDesc)
-        candidate = childrenOfCurrent[0]
-      }
+      // Resolve ONLY to a child of the active session. No active session
+      // means there is no delegation branch to anchor on — refuse rather
+      // than guess at a global match. The toSorted equivalent (spread +
+      // sort) avoids mutating the pinia state array.
+      if (!this.currentSessionId) return false
 
-      // Step 2: fall back to the most-recent overall match. The
-      // toSorted equivalent (spread + sort) is used so we don't mutate
-      // the pinia state array.
-      if (!candidate) {
-        const overallMatches = this.sessions
-          .filter(matchesAgent)
-          .sort(sortByCreatedAtDesc)
-        candidate = overallMatches[0]
-      }
+      const childrenOfCurrent = this.sessions
+        .filter((s) => s.parentId === this.currentSessionId && matchesAgent(s))
+        .sort(sortByCreatedAtDesc)
+      const candidate = childrenOfCurrent[0]
 
       if (!candidate) return false
 
@@ -2971,11 +2964,14 @@ export const useChatStore = defineStore('chat', {
     //      our local list before trusting it. An unvalidated hint is
     //      discarded (a stale or spoofed id should not silently
     //      navigate us to a session we have no record of).
-    //   4. Fall back to loadSessionByAgentId(agentId), which uses
-    //      the "most-recent child of the active parent" heuristic.
-    //      Preserves correctness for legacy persisted messages
-    //      without a chainId AND closes the swarm-bridge re-entry
-    //      case (parent is itself the delegated agent).
+    //   4. Fall back to loadSessionByAgentId(agentId), which resolves
+    //      ONLY to a child of the active session. Preserves correctness
+    //      for legacy persisted messages without a chainId. If no child
+    //      of the active session matches the agent it returns false and
+    //      stays put — it deliberately does NOT jump to an unrelated
+    //      session that merely shares the agent id (the reported-3× bug
+    //      where selecting an agent in session A teleported the user to
+    //      a completely different session).
     //
     // Returns true when a session was loaded, false when no resolver
     // produced a candidate.

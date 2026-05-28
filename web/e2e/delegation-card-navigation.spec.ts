@@ -320,4 +320,137 @@ test.describe("Delegation card navigation", () => {
       "STALE STANDALONE EXECUTOR REPLY",
     );
   });
+
+  test("clicking a chainId-less delegation card does NOT jump to an unrelated standalone session for the same agent", async ({
+    page,
+  }) => {
+    // Reported 3×: selecting an agent within session A navigated the user
+    // to a COMPLETELY DIFFERENT session. The delegation card here carries
+    // ONLY a targetAgent — no chainId, no childSessionId (the SSE chain_id
+    // is optional and legacy persisted messages predate it). The click
+    // therefore falls through to the agent-id resolver.
+    //
+    // Session A (planner) has NO child for executor. The only executor
+    // session in the list is an UNRELATED standalone run (session B).
+    // Pre-fix the resolver's global Step-2 picked the most-recent overall
+    // match (session B) and hard-jumped there. The fix must keep the user
+    // in session A — when no child of the active session matches the
+    // agent, stay put rather than teleport to an unrelated session.
+    const noChainAgents = [
+      {
+        id: "planner",
+        name: "Planner",
+        description: "Plans work",
+        model: "claude-sonnet-4-6",
+      },
+      {
+        id: "executor",
+        name: "Executor",
+        description: "Runs work",
+        model: "llama3.2",
+      },
+    ];
+    const noChainSessions = [
+      // Active session A — planner. NOT the delegation target's agent, and
+      // it has no executor child.
+      {
+        id: "session-A-active",
+        agentId: "planner",
+        title: "Active Session A",
+        messageCount: 1,
+        createdAt: "2026-05-01T09:00:00Z",
+        updatedAt: "2026-05-01T09:00:00Z",
+      },
+      // Unrelated standalone executor session B — most-recent overall
+      // match but NOT a child of session A.
+      {
+        id: "session-B-unrelated",
+        agentId: "executor",
+        title: "Unrelated Standalone Executor",
+        messageCount: 1,
+        createdAt: "2026-05-01T08:00:00Z",
+        updatedAt: "2026-05-01T08:00:00Z",
+      },
+    ];
+    const noChainMessages: Record<
+      string,
+      Array<Record<string, unknown>>
+    > = {
+      "session-A-active": [
+        {
+          id: "msg-A-user",
+          role: "user",
+          content: "ACTIVE SESSION A USER MESSAGE (stay here).",
+          timestamp: "2026-05-01T09:00:00Z",
+        },
+        {
+          // Delegation card with NO chainId — the bug-triggering payload.
+          id: "msg-A-delegation",
+          role: "delegation",
+          content: "delegated to executor",
+          targetAgent: "executor",
+          status: "completed",
+          timestamp: "2026-05-01T09:00:30Z",
+        },
+      ],
+      "session-B-unrelated": [
+        {
+          id: "msg-B-1",
+          role: "assistant",
+          content: "UNRELATED SESSION B REPLY (do not jump here).",
+          timestamp: "2026-05-01T08:00:30Z",
+        },
+      ],
+    };
+
+    await page.route("**/api/agents", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(noChainAgents),
+      });
+    });
+    await page.route("**/api/v1/sessions", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(noChainSessions),
+      });
+    });
+    await page.route("**/api/v1/sessions/**/messages", async (route) => {
+      const sessionId = getSessionId(route.request().url());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(noChainMessages[sessionId] ?? []),
+      });
+    });
+
+    await page.evaluate(() => {
+      localStorage.setItem("chat.currentSessionId", "session-A-active");
+      localStorage.setItem("chat.agentId", "planner");
+    });
+    await page.goto("/chat");
+
+    const messageList = page.getByTestId("message-list");
+    // We start in session A — its content is visible up front.
+    await expect(messageList).toContainText(
+      "ACTIVE SESSION A USER MESSAGE (stay here).",
+    );
+
+    const card = page.getByTestId("delegation-agent-link").first();
+    await expect(card).toBeVisible();
+    await card.click();
+
+    // The click must NOT have jumped us to the unrelated standalone
+    // session B. We stay in A and never see B's content.
+    await expect(messageList).toContainText(
+      "ACTIVE SESSION A USER MESSAGE (stay here).",
+    );
+    await expect(messageList).not.toContainText(
+      "UNRELATED SESSION B REPLY (do not jump here).",
+    );
+    // URL stays on /chat — no navigation side-effect either.
+    await expect(page).toHaveURL(/\/chat$/);
+  });
 });

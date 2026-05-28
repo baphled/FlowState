@@ -5819,27 +5819,36 @@ describe('chatStore - loadSessionByAgentId (regression: prefer the active parent
     expect(store.currentSessionId).toBe('child-new')
   })
 
-  it('falls back to the most-recent overall match when no child of the active session matches', async () => {
-    // Edge case: parent is itself the delegated agent (a swarm-bridge
-    // re-entry), or the click happens before the child shows up in the
-    // sessions list. The fallback must still pick the most recent so the
-    // user lands on the freshest run rather than a stale one.
+  it('does NOT jump to an unrelated standalone session when no child of the active session matches', async () => {
+    // Regression guard (reported 3×): selecting an agent within session A
+    // must never navigate the user to a COMPLETELY DIFFERENT session.
+    //
+    // Pre-fix Step 2 picked "the most-recent session for that agent across
+    // ALL sessions" and loaded it, hard-jumping the user out of session A
+    // into an unrelated standalone run. The resolver must now stay put:
+    // when no child of the active session matches the agent, return false
+    // and leave currentSessionId untouched.
     vi.mocked(fetchSessions).mockResolvedValueOnce([
+      // Active session A — the parent the user is currently viewing. Its
+      // agent (planner) is not the delegation target, so it doesn't match.
       {
-        id: 'older',
-        agentId: 'executor',
-        title: 'Older',
-        createdAt: '2026-04-01T08:00:00Z',
-        updatedAt: '2026-04-01T08:00:00Z',
-        messageCount: 0,
+        id: 'session-A',
+        agentId: 'planner',
+        title: 'Active session A',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 1,
         status: 'active',
         depth: 0,
         isStreaming: false,
       },
+      // Unrelated standalone executor session — most-recent overall match,
+      // but NOT a child of session A. The pre-fix global fallback jumped
+      // here; the fix must refuse to.
       {
-        id: 'newer',
+        id: 'session-B-unrelated',
         agentId: 'executor',
-        title: 'Newer',
+        title: 'Unrelated standalone executor run',
         createdAt: '2026-05-01T08:00:00Z',
         updatedAt: '2026-05-01T08:00:00Z',
         messageCount: 0,
@@ -5852,11 +5861,14 @@ describe('chatStore - loadSessionByAgentId (regression: prefer the active parent
 
     const store = useChatStore()
     await store.loadSessions()
-    store.currentSessionId = null
+    store.currentSessionId = 'session-A'
 
-    await store.loadSessionByAgentId('executor')
+    const loaded = await store.loadSessionByAgentId('executor')
 
-    expect(store.currentSessionId).toBe('newer')
+    // No child of session A matches executor → stay put, report no-load.
+    expect(loaded).toBe(false)
+    expect(store.currentSessionId).toBe('session-A')
+    expect(store.currentSessionId).not.toBe('session-B-unrelated')
   })
 
   it('returns false and leaves state untouched when no session matches the agent', async () => {
@@ -6079,6 +6091,57 @@ describe("chatStore - loadSessionForDelegation (chainId-aware sibling disambigua
 
     expect(loaded).toBe(true)
     expect(store.currentSessionId).toBe('child-of-active')
+  })
+
+  it("stays in the active session — never jumps to an unrelated standalone session for the agent — when no chainId/childSessionId is present", async () => {
+    // Reported 3×: selecting an agent within session A navigated the user
+    // to a COMPLETELY DIFFERENT session. The delegation card carries only
+    // targetAgent (no chainId, no childSessionId) for legacy/SSE-optional
+    // payloads, so the click falls through to the agent-id resolver. With
+    // an unrelated standalone session B as the most-recent overall match,
+    // the pre-fix global Step-2 fallback hard-jumped to B. The fix keeps
+    // the user in A (no child of A matches the agent → no switch).
+    vi.mocked(fetchSessions).mockResolvedValueOnce([
+      {
+        id: 'session-A',
+        agentId: 'planner',
+        title: 'Active session A',
+        createdAt: '2026-05-01T09:00:00Z',
+        updatedAt: '2026-05-01T09:00:00Z',
+        messageCount: 1,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+      // Unrelated standalone executor session — most-recent overall match
+      // but NOT a child of session A.
+      {
+        id: 'session-B-unrelated',
+        agentId: 'executor',
+        title: 'Unrelated standalone executor run',
+        createdAt: '2026-05-01T08:00:00Z',
+        updatedAt: '2026-05-01T08:00:00Z',
+        messageCount: 0,
+        status: 'active',
+        depth: 0,
+        isStreaming: false,
+      },
+    ])
+    vi.mocked(fetchSessionMessages).mockResolvedValue([])
+
+    const store = useChatStore()
+    await store.loadSessions()
+    store.currentSessionId = 'session-A'
+
+    // No chainId, no childSessionId — exactly the in-thread card payload
+    // that triggered the bug.
+    const loaded = await store.loadSessionForDelegation({
+      agentId: 'executor',
+    })
+
+    expect(loaded).toBe(false)
+    expect(store.currentSessionId).toBe('session-A')
+    expect(store.currentSessionId).not.toBe('session-B-unrelated')
   })
 
   it("returns false when neither chainId nor agent-id resolves", async () => {
