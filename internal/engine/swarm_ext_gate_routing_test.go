@@ -126,7 +126,7 @@ var _ = Describe("SwarmExtGateRouting", func() {
 			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
 				WithGateRunner(swarm.NewMultiRunner())
 
-			gateErr := delegateTool.DispatchPostMemberGatesForTest(context.Background(), "qa-agent")
+			gateErr := delegateTool.DispatchPostMemberGatesForTest(context.Background(), "qa-agent", "")
 
 			Expect(gateErr).NotTo(HaveOccurred())
 			Expect(calls.Load()).To(Equal(int32(1)))

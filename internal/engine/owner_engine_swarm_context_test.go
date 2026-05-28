@@ -63,7 +63,7 @@ var _ = Describe("DelegateTool.WithOwnerEngine swarm-context lookup", func() {
 
 			// Without WithOwnerEngine: dispatch silently no-ops because
 			// the targets map doesn't contain "Senior-Engineer".
-			err := delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer")
+			err := delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer", "")
 			Expect(err).NotTo(HaveOccurred(),
 				"baseline: without owner engine, no gate runs, no error")
 
@@ -73,7 +73,7 @@ var _ = Describe("DelegateTool.WithOwnerEngine swarm-context lookup", func() {
 			// (because the test didn't seed one) so it fails — proving
 			// the gate actually ran.
 			delegateTool.WithOwnerEngine(leadEng)
-			err = delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer")
+			err = delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer", "")
 			// The gate would fire, but the runner is nil in this
 			// fixture so it'd no-op early. The point is that the
 			// activeSwarmContext lookup now succeeds — instrument by
@@ -84,7 +84,7 @@ var _ = Describe("DelegateTool.WithOwnerEngine swarm-context lookup", func() {
 			// should fire and the recorder should see one invocation.
 			recorder := &fakeRunner{}
 			delegateTool.WithGateRunner(recorder)
-			err = delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer")
+			err = delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer", "")
 			Expect(err).NotTo(HaveOccurred(),
 				"recorder reports pass; we only care that it WAS called")
 			Expect(recorder.calls).To(HaveLen(1),
@@ -99,7 +99,7 @@ var _ = Describe("DelegateTool.WithOwnerEngine swarm-context lookup", func() {
 			recorder := &fakeRunner{}
 			delegateTool.WithGateRunner(recorder)
 
-			err := delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer")
+			err := delegateTool.DispatchPostMemberGatesForTest(context.Background(), "explorer", "")
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(recorder.calls).To(BeEmpty(),

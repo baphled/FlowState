@@ -285,6 +285,106 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 		})
+
+		// chainID-templated output_key resolution (planning-loop autonomy
+		// fix, May 2026). The planning-loop lead allocates a free-form
+		// chainID per planning request and members write to
+		// "<chainID>/<semantic-suffix>" (e.g. "<chainID>/analysis"), NOT
+		// the static "<chain_prefix>/<target>/output" the gate used to
+		// resolve. When the gate's output_key carries a "{chainID}"
+		// template the runner substitutes args.ChainID and reads the
+		// member's real key — mirroring coordWaveValidator.MissingForChain
+		// in internal/app/harness_adapter.go:268-303.
+		Context("when the gate output_key carries a {chainID} template", func() {
+			It("passes when the member wrote to <chainID>/<suffix> (the bug scenario, was failing)", func() {
+				gate.Target = "analyst"
+				gate.OutputKey = "{chainID}/analysis"
+				gate.SchemaRef = swarm.AnalysisBundleV1Name
+				store := newGateStore(map[string][]byte{
+					"mental-health-companion-2026-05-27/analysis": []byte(
+						`{"summary":"ok","key_findings":["a"],"recommendations":["do x"],"risks":["r"]}`,
+					),
+				})
+				args := planningLoopArgs(store)
+				args.MemberID = "analyst"
+				args.ChainID = "mental-health-companion-2026-05-27"
+
+				err := runner.Run(context.Background(), gate, args)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("FAILS with no-member-output when the member genuinely wrote nothing", func() {
+				gate.Target = "analyst"
+				gate.OutputKey = "{chainID}/analysis"
+				gate.SchemaRef = swarm.AnalysisBundleV1Name
+				args := planningLoopArgs(coordination.NewMemoryStore())
+				args.MemberID = "analyst"
+				args.ChainID = "mental-health-companion-2026-05-27"
+
+				err := runner.Run(context.Background(), gate, args)
+
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue())
+				Expect(gateErr.Reason).To(ContainSubstring("no member output found"))
+				Expect(gateErr.Reason).To(ContainSubstring("mental-health-companion-2026-05-27/analysis"))
+			})
+
+			It("preserves multi-run isolation — chain A's output does not satisfy chain B's gate", func() {
+				gate.Target = "analyst"
+				gate.OutputKey = "{chainID}/analysis"
+				gate.SchemaRef = swarm.AnalysisBundleV1Name
+				store := newGateStore(map[string][]byte{
+					"chain-a/analysis": []byte(
+						`{"summary":"ok","key_findings":["a"],"recommendations":["do x"],"risks":["r"]}`,
+					),
+				})
+				args := planningLoopArgs(store)
+				args.MemberID = "analyst"
+				args.ChainID = "chain-b"
+
+				err := runner.Run(context.Background(), gate, args)
+
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue())
+				Expect(gateErr.Reason).To(ContainSubstring("no member output found"))
+				Expect(gateErr.Reason).To(ContainSubstring("chain-b/analysis"))
+				Expect(gateErr.Reason).NotTo(ContainSubstring("chain-a"))
+			})
+
+			It("resolves the plan-reviewer review key under the lead's chainID", func() {
+				gate.Target = "plan-reviewer"
+				gate.OutputKey = "{chainID}/review"
+				store := newGateStore(map[string][]byte{
+					"plan-auth-2026-04-23/review": []byte(`{"verdict":"approve","reasoning":"looks good"}`),
+				})
+				args := planningLoopArgs(store)
+				args.MemberID = "plan-reviewer"
+				args.ChainID = "plan-auth-2026-04-23"
+
+				err := runner.Run(context.Background(), gate, args)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			It("falls back to a suffix-scan when no chainID is in args (bootstrap parity with the wave validator)", func() {
+				gate.Target = "analyst"
+				gate.OutputKey = "{chainID}/analysis"
+				gate.SchemaRef = swarm.AnalysisBundleV1Name
+				store := newGateStore(map[string][]byte{
+					"some-bootstrap-chain/analysis": []byte(
+						`{"summary":"ok","key_findings":["a"],"recommendations":["do x"],"risks":["r"]}`,
+					),
+				})
+				args := planningLoopArgs(store)
+				args.MemberID = "analyst"
+				args.ChainID = ""
+
+				err := runner.Run(context.Background(), gate, args)
+
+				Expect(err).NotTo(HaveOccurred())
+			})
+		})
 	})
 
 	Describe("GateError", func() {

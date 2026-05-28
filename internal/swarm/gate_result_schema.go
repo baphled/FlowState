@@ -3,7 +3,20 @@ package swarm
 import (
 	"context"
 	"fmt"
+	"strings"
+
+	"github.com/baphled/flowstate/internal/coordination"
 )
+
+// chainIDPlaceholder is the template token a manifest's output_key uses
+// to defer chain-namespace resolution to runtime. When a gate's
+// OutputKey contains it (e.g. "{chainID}/analysis"), the result-schema
+// runner substitutes GateArgs.ChainID and reads the member's real
+// "<chainID>/<suffix>" key directly — bypassing the legacy
+// "<chainPrefix>/<target>/<output>" shape. This mirrors the
+// "{chainID}" convention the wave validator already honours
+// (internal/app/harness_adapter.go::coordWaveValidator).
+const chainIDPlaceholder = "{chainID}"
 
 // reviewerOutputKey is the canonical coord-store sub-key the
 // plan-reviewer agent writes its verdict under (see
@@ -16,12 +29,17 @@ const reviewerOutputKey = "review"
 
 // resultSchemaRunner implements GateRunner for kind:
 // "builtin:result-schema". It validates the most-recent value the
-// target member wrote to the coordination_store at
-// "<chainPrefix>/<memberID>/<output-key>" against a JSON Schema
-// looked up in the in-process registry by gate.SchemaRef. The
-// output-key resolution priority is: gate.OutputKey (explicit, set on
-// the manifest) > the legacy plan-reviewer convention >
-// DefaultMemberOutputKey ("output").
+// target member wrote to the coordination_store against a JSON Schema
+// looked up in the in-process registry by gate.SchemaRef.
+//
+// Key resolution (see candidateKeys for the full ordering):
+//   - When gate.OutputKey carries the "{chainID}" template, the key is
+//     the template with GateArgs.ChainID substituted — a full
+//     "<chainID>/<suffix>" key matching what planning-loop members
+//     actually write. An empty ChainID triggers a suffix-scan fallback.
+//   - Otherwise the legacy "<chainPrefix>/<target>/<output-key>" shape
+//     applies, with output-key priority gate.OutputKey > the legacy
+//     plan-reviewer convention > DefaultMemberOutputKey ("output").
 type resultSchemaRunner struct{}
 
 // NewResultSchemaRunner returns the production result-schema runner.
@@ -107,9 +125,16 @@ func preflightGate(gate GateSpec, args GateArgs) error {
 
 // readMemberOutput pulls the most-recent member output from the
 // coord-store, probing each candidate key in priority order. The first
-// hit wins; ErrKeyNotFound on a key advances to the next candidate so
-// older manifests (no explicit output_key, plan-reviewer convention)
-// keep working alongside the new explicit-key path.
+// hit wins; a miss on a key advances to the next candidate so older
+// manifests (no explicit output_key, plan-reviewer convention) keep
+// working alongside the new explicit-key path.
+//
+// When the gate's OutputKey carries the "{chainID}" template and no
+// concrete chainID is available (args.ChainID == ""), the resolver
+// cannot pin a single key. It then falls back to a suffix-scan over the
+// store — accepting any key ending in "/<suffix>" — exactly as
+// coordWaveValidator.MissingForChain does for the bootstrap case where
+// the lead has not yet allocated a chainID.
 //
 // Expected:
 //   - args.CoordStore is non-nil (preflightGate has already checked).
@@ -120,9 +145,9 @@ func preflightGate(gate GateSpec, args GateArgs) error {
 //   - nil and a wrapped error when no candidate key exists.
 //
 // Side effects:
-//   - Calls args.CoordStore.Get; no writes.
+//   - Calls args.CoordStore.Exists / Get / List; no writes.
 func readMemberOutput(gate GateSpec, args GateArgs) ([]byte, error) {
-	keys := candidateKeys(gate, args.ChainPrefix)
+	keys := candidateKeys(gate, args)
 	for _, key := range keys {
 		exists, err := args.CoordStore.Exists(key)
 		if err != nil {
@@ -137,7 +162,83 @@ func readMemberOutput(gate GateSpec, args GateArgs) ([]byte, error) {
 		}
 		return payload, nil
 	}
+	if suffix, ok := chainIDSuffixScan(gate, args); ok {
+		payload, found, err := suffixScanForOutput(args.CoordStore, suffix)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return payload, nil
+		}
+		return nil, fmt.Errorf("no member output found at %q (any chain)", suffix)
+	}
 	return nil, fmt.Errorf("no member output found at %v", keys)
+}
+
+// chainIDSuffixScan reports the bare key suffix to suffix-scan for when
+// the gate's OutputKey is "{chainID}"-templated but no concrete chainID
+// is available. Returns ("", false) when the gate does not warrant a
+// scan (no template, or a chainID was supplied so the templated key
+// already resolved to a concrete probe above).
+//
+// Expected:
+//   - gate is the GateSpec being dispatched.
+//   - args carries the runtime ChainID (possibly empty).
+//
+// Returns:
+//   - The suffix (e.g. "analysis") and true when a scan is warranted.
+//   - "" and false otherwise.
+//
+// Side effects:
+//   - None.
+func chainIDSuffixScan(gate GateSpec, args GateArgs) (string, bool) {
+	if args.ChainID != "" {
+		return "", false
+	}
+	if !strings.Contains(gate.OutputKey, chainIDPlaceholder) {
+		return "", false
+	}
+	suffix := strings.TrimPrefix(gate.OutputKey, chainIDPlaceholder+"/")
+	if suffix == "" || suffix == gate.OutputKey {
+		return "", false
+	}
+	return suffix, true
+}
+
+// suffixScanForOutput walks the store and returns the first value whose
+// key ends in "/<suffix>". Mirrors coordWaveValidator.suffixPresent but
+// returns the payload so the schema validation can run on it. The scan
+// can over-approve across stale chains; the planning-loop only reaches
+// this path before the lead allocates a chainID, which the prompt
+// discipline makes a transient window.
+//
+// Expected:
+//   - store is non-nil.
+//   - suffix is the bare sub-key (no leading slash).
+//
+// Returns:
+//   - The payload and true on a hit.
+//   - nil and false when no key matches.
+//   - A wrapped error if the store List fails.
+//
+// Side effects:
+//   - Calls store.List / store.Get; no writes.
+func suffixScanForOutput(store coordination.Store, suffix string) ([]byte, bool, error) {
+	keys, err := store.List("")
+	if err != nil {
+		return nil, false, fmt.Errorf("listing coord-store for suffix %q: %w", suffix, err)
+	}
+	target := "/" + suffix
+	for _, k := range keys {
+		if strings.HasSuffix(k, target) {
+			payload, getErr := store.Get(k)
+			if getErr != nil {
+				return nil, false, fmt.Errorf("reading coord-store key %q: %w", k, getErr)
+			}
+			return payload, true, nil
+		}
+	}
+	return nil, false, nil
 }
 
 // candidateKeys lists the coord-store keys the result-schema runner
@@ -145,9 +246,19 @@ func readMemberOutput(gate GateSpec, args GateArgs) ([]byte, error) {
 // The list is stable so tests can pin the lookup ordering.
 //
 // Resolution priority:
-//   - If gate.OutputKey is set, that key is the only candidate. The
-//     manifest is authoritative; we do not fall back to a convention
-//     because a wrong-key read would silently validate the wrong data.
+//   - If gate.OutputKey carries the "{chainID}" template, the candidate
+//     is the template with args.ChainID substituted — a full
+//     "<chainID>/<suffix>" key with NO injected <target> segment,
+//     because the planning-loop members write to "<chainID>/<suffix>"
+//     directly (see internal/swarm/schemas.go and
+//     internal/app/agents/*.md). When args.ChainID is empty the template
+//     cannot resolve to a concrete key, so candidateKeys returns nil and
+//     readMemberOutput falls through to the suffix-scan path.
+//   - Otherwise if gate.OutputKey is set, that key is the only
+//     candidate under the legacy "<prefix>/<target>/<output_key>" shape.
+//     The manifest is authoritative; we do not fall back to a
+//     convention because a wrong-key read would silently validate the
+//     wrong data.
 //   - Otherwise the legacy plan-reviewer convention probes
 //     "<prefix>/plan-reviewer/review" first then
 //     "<prefix>/plan-reviewer/output" so existing manifests keep
@@ -159,24 +270,31 @@ func readMemberOutput(gate GateSpec, args GateArgs) ([]byte, error) {
 //   - gate.Target is non-empty in production wiring; an empty Target
 //     yields keys with the "<chainPrefix>//<sub>" shape, which the
 //     coord-store will report as missing.
-//   - chainPrefix may be empty.
+//   - args.ChainPrefix may be empty.
 //
 // Returns:
-//   - A slice of candidate keys; never nil.
+//   - A slice of candidate keys; may be nil when a {chainID}-templated
+//     key has no concrete chainID to substitute.
 //
 // Side effects:
 //   - None.
-func candidateKeys(gate GateSpec, chainPrefix string) []string {
+func candidateKeys(gate GateSpec, args GateArgs) []string {
+	if strings.Contains(gate.OutputKey, chainIDPlaceholder) {
+		if args.ChainID == "" {
+			return nil
+		}
+		return []string{strings.ReplaceAll(gate.OutputKey, chainIDPlaceholder, args.ChainID)}
+	}
 	if gate.OutputKey != "" {
-		return []string{joinKey(chainPrefix, gate.Target, gate.OutputKey)}
+		return []string{joinKey(args.ChainPrefix, gate.Target, gate.OutputKey)}
 	}
 	if gate.Target == legacyReviewerMemberID {
 		return []string{
-			joinKey(chainPrefix, gate.Target, reviewerOutputKey),
-			joinKey(chainPrefix, gate.Target, DefaultMemberOutputKey),
+			joinKey(args.ChainPrefix, gate.Target, reviewerOutputKey),
+			joinKey(args.ChainPrefix, gate.Target, DefaultMemberOutputKey),
 		}
 	}
-	return []string{joinKey(chainPrefix, gate.Target, DefaultMemberOutputKey)}
+	return []string{joinKey(args.ChainPrefix, gate.Target, DefaultMemberOutputKey)}
 }
 
 // legacyReviewerMemberID is the member id whose convention-based

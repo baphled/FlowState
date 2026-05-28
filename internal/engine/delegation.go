@@ -2419,7 +2419,7 @@ func (d *DelegateTool) executeSync(
 		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills))
 		return tool.Result{}, gateErr
 	}
-	if gateErr := d.dispatchPreMemberGates(ctx, target.agentID); gateErr != nil {
+	if gateErr := d.dispatchPreMemberGates(ctx, target.agentID, baseInfo.ChainID); gateErr != nil {
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, "", gateErr.Error(), target.loadSkills))
 		return tool.Result{}, gateErr
@@ -2585,7 +2585,7 @@ func (d *DelegateTool) executeSync(
 	}
 	d.closeSessionIfManaged(delegateSessionID)
 
-	if gateErr := d.dispatchPostMemberGates(ctx, target.agentID); gateErr != nil {
+	if gateErr := d.dispatchPostMemberGates(ctx, target.agentID, baseInfo.ChainID); gateErr != nil {
 		baseInfo.CompletedAt = &completedAt
 		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
 		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error(), target.loadSkills))
@@ -3443,7 +3443,14 @@ func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
 		if runErr != nil {
 			return nil
 		}
-		return d.dispatchPostMemberGates(ctx, memberID)
+		// Parallel dispatch (DispatchMembers) does not thread the
+		// lead's per-member chainID into the hook, so pass "" here:
+		// the result-schema runner then suffix-scans for any
+		// "<chain>/<suffix>" key rather than pinning one chainID.
+		// Planning-loop runs sequentially (parallel: false) via
+		// executeSync, which passes the concrete chainID — this hook
+		// path only fires for genuinely-parallel swarms.
+		return d.dispatchPostMemberGates(ctx, memberID, "")
 	}
 }
 
@@ -3464,8 +3471,14 @@ func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
 // Side effects:
 //   - Calls each matching gate's runner, which may read from the
 //     coordination store.
-func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID string) error {
-	return d.dispatchMemberGates(ctx, swarm.LifecyclePostMember, memberID)
+//
+// chainID is the lead-allocated coordination chain identifier for this
+// delegation (target.chainID). It is threaded onto GateArgs.ChainID so
+// {chainID}-templated output keys in the manifest resolve against the
+// SAME namespace the member wrote to. Empty when the lead has not
+// allocated one — the result-schema runner then suffix-scans.
+func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID, chainID string) error {
+	return d.dispatchMemberGates(ctx, swarm.LifecyclePostMember, memberID, chainID)
 }
 
 // dispatchPreMemberGates fires every pre-member gate on the active
@@ -3484,8 +3497,11 @@ func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID str
 //
 // Side effects:
 //   - See dispatchMemberGates.
-func (d *DelegateTool) dispatchPreMemberGates(ctx context.Context, memberID string) error {
-	return d.dispatchMemberGates(ctx, swarm.LifecyclePreMember, memberID)
+//
+// chainID is the lead-allocated chain identifier (target.chainID),
+// threaded through for {chainID}-templated output-key resolution.
+func (d *DelegateTool) dispatchPreMemberGates(ctx context.Context, memberID, chainID string) error {
+	return d.dispatchMemberGates(ctx, swarm.LifecyclePreMember, memberID, chainID)
 }
 
 // dispatchMemberGates fires every gate on the active swarm context
@@ -3512,7 +3528,7 @@ func (d *DelegateTool) dispatchPreMemberGates(ctx context.Context, memberID stri
 //     publishes gate.evaluating before dispatch, gate.failed per
 //     halting gate, gate.passed once on a clean batch. Pass-event
 //     policy: halt-class only on gate.failed.
-func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID string) error {
+func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID, chainID string) error {
 	if d.gateRunner == nil {
 		return nil
 	}
@@ -3527,6 +3543,7 @@ func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID s
 	args := swarm.GateArgs{
 		SwarmID:     swarmCtx.SwarmID,
 		ChainPrefix: swarmCtx.ChainPrefix,
+		ChainID:     chainID,
 		MemberID:    memberID,
 		CoordStore:  d.coordinationStore,
 	}
@@ -4533,7 +4550,21 @@ func (d *DelegateTool) buildMemberSwarmPreamble(agentID, chainID string) string 
 	b.WriteString(" You are a member of the **" + swarmCtx.SwarmID + "** swarm.")
 
 	if outputKey != "" {
-		fullKey := chainPrefix + "/" + agentID + "/" + outputKey
+		// When the manifest's output_key carries the "{chainID}"
+		// template, the member writes to the resolved "<chainID>/<suffix>"
+		// key directly (no <chainPrefix>/<agentID> segment). The gate
+		// resolves the identical key, so the preamble MUST advertise the
+		// substituted form — otherwise the member would write
+		// "<chainID>/<suffix>" while the preamble told it to write
+		// "<chainPrefix>/<agentID>/{chainID}/<suffix>", reopening the
+		// divergence this fix closes. Non-templated keys keep the legacy
+		// "<chainPrefix>/<agentID>/<output_key>" shape.
+		var fullKey string
+		if strings.Contains(outputKey, "{chainID}") {
+			fullKey = strings.ReplaceAll(outputKey, "{chainID}", chainID)
+		} else {
+			fullKey = chainPrefix + "/" + agentID + "/" + outputKey
+		}
 		b.WriteString(" Write your result to coordination_store key=**" + fullKey + "**.")
 	}
 	if schemaRef != "" {

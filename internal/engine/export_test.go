@@ -216,9 +216,12 @@ func (d *DelegateTool) CheckSpawnLimitsForTest(handoff *delegation.Handoff) erro
 
 // DispatchPostMemberGatesForTest exposes dispatchPostMemberGates so
 // the ext-gate routing test can confirm the kind:ext:<name> path
-// reaches the registered ExtGateFunc.
-func (d *DelegateTool) DispatchPostMemberGatesForTest(ctx context.Context, memberID string) error {
-	return d.dispatchPostMemberGates(ctx, memberID)
+// reaches the registered ExtGateFunc. chainID is the lead-allocated
+// coordination chain identifier threaded onto GateArgs.ChainID for
+// {chainID}-templated output-key resolution; pass "" when the test
+// does not exercise chainID substitution.
+func (d *DelegateTool) DispatchPostMemberGatesForTest(ctx context.Context, memberID, chainID string) error {
+	return d.dispatchPostMemberGates(ctx, memberID, chainID)
 }
 
 // ExecuteToolCallForTest exposes executeToolCall so the gate-error

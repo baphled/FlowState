@@ -168,6 +168,19 @@ type GateArgs struct {
 	// dispatched from a real swarm run.
 	ChainPrefix string
 
+	// ChainID is the lead-allocated coordination chain identifier for
+	// this swarm run (e.g. "plan-auth-2026-04-23"), threaded from the
+	// delegate-tool target so the gate can resolve {chainID}-templated
+	// output keys against the SAME namespace members actually wrote to.
+	// Distinct from ChainPrefix (the static swarm namespace from the
+	// manifest): the planning-loop lead free-forms a per-request chainID
+	// and members write to "<chainID>/<semantic-suffix>", so a gate whose
+	// output_key carries a "{chainID}" template substitutes this value.
+	// Empty when the lead has not allocated one yet (bootstrap); the
+	// result-schema runner then falls back to a suffix-scan, mirroring
+	// coordWaveValidator.MissingForChain (internal/app/harness_adapter.go).
+	ChainID string
+
 	// MemberID is the agent id whose stream just completed. For
 	// post-member gates, this MUST equal the matching gate's Target;
 	// the swarm runner is responsible for that filter.
