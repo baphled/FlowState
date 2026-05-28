@@ -106,6 +106,38 @@ var _ = Describe("registryHasCriticEnabledAgent", func() {
 	})
 })
 
+// resolveHarnessRetries decides the harness retry budget. The wave
+// fan-in barrier needs enough budget to walk an orchestrator through
+// every stage (evidence → analysis → writing → review) when a member
+// narrates-but-doesn't-write on a turn. The config defaulting
+// (config.go) sets cfg.Harness.MaxRetries=1 on every load, so the
+// pre-fix `if cfg.MaxRetries == 0` guard NEVER fired in production —
+// the wave path silently ran with a budget of 1 and gave up on the
+// first wave-incomplete check (the synthesis-hang give-up, Defect 2).
+// The fix applies a FLOOR when waves are present so the wave path
+// always has room to re-prompt, while still honouring a larger explicit
+// operator override.
+var _ = Describe("resolveHarnessRetries (wave retry-budget floor)", func() {
+	It("raises the budget to the wave floor when waves are present and the configured value is below it", func() {
+		// The production default that broke the wave path: cfg=1.
+		Expect(resolveHarnessRetries(1, true)).To(BeNumerically(">=", waveRetryFloor),
+			"a config default of 1 must be lifted to the wave floor when waves are wired")
+	})
+
+	It("leaves the configured value untouched when no waves are present", func() {
+		Expect(resolveHarnessRetries(1, false)).To(Equal(1),
+			"without waves the legacy budget stands — no implicit bump")
+		Expect(resolveHarnessRetries(0, false)).To(Equal(0),
+			"a zero with no waves means the harness uses its own NewHarness default")
+	})
+
+	It("honours an explicit operator override that exceeds the wave floor", func() {
+		big := waveRetryFloor + 5
+		Expect(resolveHarnessRetries(big, true)).To(Equal(big),
+			"an operator who sets a larger budget keeps it — the floor never lowers a value")
+	})
+})
+
 // resolveCriticModel is a tiny precedence helper; covering it directly
 // here keeps the public-API surface narrow (no exported shim needed).
 var _ = Describe("resolveCriticModel precedence", func() {

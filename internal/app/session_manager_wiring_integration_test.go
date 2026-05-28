@@ -86,7 +86,7 @@ var _ = Describe("Session manager wiring integration", Label("integration"), fun
 		})
 
 		It("installs the app's gate runner on the delegate tool when one is configured", func() {
-			application.gateRunner = buildSwarmGateRunner()
+			application.gateRunner = buildSwarmGateRunner("")
 
 			application.wireDelegateToolIfEnabled(eng, delegatingManifest)
 

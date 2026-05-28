@@ -87,6 +87,21 @@ harness:
       when: post-member
       target: plan-reviewer
       output_key: "{chainID}/review"
+    # Honesty gate (Defect 4): fires ONCE at swarm end. Gates loop
+    # completion on VERIFIED artifact existence rather than a self-
+    # reported record. The `{chainID}/plan` coord-store key MUST be
+    # non-empty AND, when a `{chainID}/plan_publication` record claims a
+    # vault_path, the file MUST actually exist at that path under the
+    # resolved plan_output_dir. Catches the fabricated-publication bug
+    # where the coordinator marked the loop COMPLETE on a record claiming
+    # a vault path the file never reached. Post-swarm dispatch does not
+    # thread the lead's free-form chainID, so the runner resolves the plan
+    # key by suffix-scan (parity with the result-schema bootstrap path).
+    # See internal/swarm/gate_artifact_published.go.
+    - name: post-swarm-plan-published
+      kind: builtin:artifact-published
+      when: post
+      output_key: "{chainID}/plan"
 
 context:
   # Coordination_store namespace for this swarm's runs. Defaults to the

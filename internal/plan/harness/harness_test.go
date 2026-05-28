@@ -369,6 +369,119 @@ var _ = Describe("StreamEvaluate", func() {
 	})
 })
 
+// scriptedWaveValidator returns a queued MissingForChain result per call
+// so a spec can model "wave incomplete on attempt 1, complete on
+// attempt 2" — the synthesis-hang-then-recover shape.
+type scriptedWaveValidator struct {
+	results [][]string
+	calls   int
+}
+
+func (v *scriptedWaveValidator) MissingForChain(_ context.Context, _ string, _ harness.WaveStage) ([]string, error) {
+	if v.calls >= len(v.results) {
+		v.calls++
+		return nil, nil
+	}
+	r := v.results[v.calls]
+	v.calls++
+	return r, nil
+}
+
+// Synthesis-hang retry (Defect 2): a write-critical member ends its turn
+// narrating the write while emitting no tool call, leaving the wave's
+// expected key missing. With the wave fan-in barrier wired and adequate
+// retry budget, the harness must re-prompt — directively — and let the
+// loop advance once the agent actually performs the write on the next
+// attempt. Before the fix the default retry budget of 1 exhausted on the
+// first wave-incomplete check and the harness yielded to the user with
+// the plan never written (the ~17-deep retry storm bottomed out here).
+var _ = Describe("StreamEvaluate synthesis-hang re-prompt", func() {
+	var projectRoot string
+
+	BeforeEach(func() {
+		projectRoot = projectRootFromWorkingDir()
+	})
+
+	synthesisTurn := func() []provider.StreamChunk {
+		// A conversational (non-PhaseGeneration) turn with NO tool call —
+		// the narrated-but-didn't-write signature.
+		return []provider.StreamChunk{
+			{Content: "Let me now write the plan to the coordination store..."},
+			{Done: true},
+		}
+	}
+
+	Context("when attempt 1 narrates without writing but attempt 2 completes the wave", func() {
+		It("re-prompts with a directive and advances once the wave is satisfied", func() {
+			stages := []harness.WaveStage{
+				{Name: "writing", ExpectedKeys: []string{"{chainID}/plan"}},
+			}
+			validator := &scriptedWaveValidator{results: [][]string{
+				{"chain-1/plan"}, // attempt 1: wave incomplete
+				nil,              // attempt 2: wave complete
+			}}
+			h := newTestHarness(projectRoot,
+				harness.WithWaves(stages, validator),
+				harness.WithMaxRetries(3),
+			)
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{
+				synthesisTurn(),
+				synthesisTurn(),
+			}}
+
+			outCh, err := h.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			waveChunks := filterEventChunks(received, "harness_wave_incomplete")
+			Expect(waveChunks).To(HaveLen(1),
+				"the harness must re-prompt exactly once before the wave is satisfied")
+			Expect(waveChunks[0].Content).To(MatchRegexp(`(?i)do not narrate`),
+				"the re-prompt must be directive when the agent narrated without a tool call")
+			Expect(waveChunks[0].Content).To(ContainSubstring("chain-1/plan"))
+			Expect(streamer.callCount).To(Equal(2),
+				"the agent must be streamed twice: narrate, then re-prompt → complete")
+
+			doneChunks := filterDoneChunks(received)
+			Expect(doneChunks).NotTo(BeEmpty(),
+				"the loop advances and terminates cleanly once the wave is satisfied")
+		})
+	})
+
+	Context("when every attempt narrates without writing (retry exhaustion)", func() {
+		It("fails cleanly without an infinite loop and without a false complete", func() {
+			stages := []harness.WaveStage{
+				{Name: "writing", ExpectedKeys: []string{"{chainID}/plan"}},
+			}
+			// Always incomplete.
+			validator := &scriptedWaveValidator{results: [][]string{
+				{"chain-1/plan"}, {"chain-1/plan"}, {"chain-1/plan"},
+			}}
+			h := newTestHarness(projectRoot,
+				harness.WithWaves(stages, validator),
+				harness.WithMaxRetries(3),
+			)
+			streamer := &chunkMockStreamer{attempts: [][]provider.StreamChunk{
+				synthesisTurn(), synthesisTurn(), synthesisTurn(),
+			}}
+
+			outCh, err := h.StreamEvaluate(context.Background(), streamer, "planner", "Generate a plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			received := drainChunks(outCh)
+			// Re-prompts on attempts 1 and 2; attempt 3 is the budget
+			// ceiling so it yields rather than re-prompting again.
+			waveChunks := filterEventChunks(received, "harness_wave_incomplete")
+			Expect(waveChunks).To(HaveLen(2),
+				"re-prompts exactly maxRetries-1 times, then yields — no infinite loop")
+			Expect(streamer.callCount).To(Equal(3),
+				"the agent is streamed exactly maxRetries times")
+			Expect(filterEventChunks(received, "harness_complete")).To(BeEmpty(),
+				"a wave that never completes MUST NOT emit harness_complete (no false success)")
+		})
+	})
+})
+
 var _ = Describe("StreamEvaluate event matrix", func() {
 	var projectRoot string
 

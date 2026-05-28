@@ -123,3 +123,41 @@ var _ = Describe("WithWaves + checkWavesIncomplete", func() {
 			"WithWaves(stages, nil) is a deliberate no-op — preserves legacy behaviour")
 	})
 })
+
+// Synthesis-hang directive feedback: when a write-critical member ends
+// its turn narrating the write ("Let me now write the plan…") while
+// emitting ZERO tool calls, the wave gate detects the missing key but a
+// passive "stage incomplete" nudge does not convert the narration into
+// an actual tool call. The directive variant of buildWaveFeedback names
+// the missing keys AND instructs the agent to PERFORM the write now
+// rather than narrate it. Forensic basis: KB-curator c09b1bc9 idx[-1]
+// "…Let me now write the plan to the vault…" toolName=NONE (0 write
+// calls, session marked failed).
+var _ = Describe("buildWaveFeedback directive variant (narrated-but-no-tool-call)", func() {
+	stage := harness.WaveStage{
+		Name:         "writing",
+		ExpectedKeys: []string{"{chainID}/plan"},
+		Description:  "Plan writer produces the structured OMO plan from analysis.",
+	}
+
+	It("appends an actionable directive when the last turn had no tool call", func() {
+		fb := harness.BuildWaveFeedbackForTest(stage, []string{"chain-1/plan"}, nil, true)
+		Expect(fb).To(ContainSubstring("chain-1/plan"),
+			"the missing key must still be named")
+		Expect(fb).To(ContainSubstring("no tool call"),
+			"the directive must call out that the previous turn emitted no tool call")
+		Expect(fb).To(MatchRegexp(`(?i)do not narrate`),
+			"the directive must tell the agent to perform the write, not describe it")
+		Expect(fb).To(MatchRegexp(`(?i)coordination_store`),
+			"the directive must name the concrete tool to call")
+	})
+
+	It("omits the directive when the last turn DID emit a tool call", func() {
+		fb := harness.BuildWaveFeedbackForTest(stage, []string{"chain-1/plan"}, nil, false)
+		Expect(fb).To(ContainSubstring("chain-1/plan"),
+			"the missing key is still named on the passive nudge")
+		Expect(fb).NotTo(MatchRegexp(`(?i)do not narrate`),
+			"a turn that already called a tool should not be accused of narrating")
+		Expect(fb).NotTo(ContainSubstring("no tool call"))
+	})
+})

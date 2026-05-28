@@ -220,6 +220,27 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			Expect(gateErr.Reason).To(ContainSubstring("no member output found"))
 		})
 
+		// Defect 2 (synthesis hang) — swarm-gate path. When a member's
+		// post-member gate fails because the member wrote nothing (the
+		// "no member output found" case), the lead receives this reason
+		// verbatim as its delegate-tool result (delegation.go:2588-2601,
+		// fail-fast, no retry). The reason must therefore be DIRECTIVE so
+		// the lead's next turn re-delegates with an explicit "perform the
+		// write" instruction rather than narrating again. Aligns the
+		// swarm-gate path with the harness wave-fan-in directive.
+		It("makes the no-output reason directive so the lead re-delegates the write", func() {
+			err := runner.Run(context.Background(), gate, planningLoopArgs(coordination.NewMemoryStore()))
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(ContainSubstring("no member output found"),
+				"the existing diagnostic substring must be preserved")
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)did not write|wrote no output|narrat`),
+				"the reason must name the synthesis-hang failure (member produced no output)")
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)re-delegate|perform the write|do not narrate`),
+				"the reason must direct the lead to re-delegate the write, not accept the narration")
+		})
+
 		It("returns a GateError when the coord-store payload is not valid JSON", func() {
 			store := newGateStore(map[string][]byte{
 				"planning/plan-reviewer/review": []byte(`{not json`),
@@ -383,6 +404,183 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				err := runner.Run(context.Background(), gate, args)
 
 				Expect(err).NotTo(HaveOccurred())
+			})
+		})
+	})
+
+	// Defect 4 (fabricated publication) — the honesty gate. The
+	// coordinator marked the planning loop COMPLETE on the strength of a
+	// SELF-REPORTED `<chain>/plan_publication` record claiming a vault
+	// path + published_at, while the plan was never written to the vault
+	// (the honest `<chain>/persisted-plan` key said "write blocked").
+	// The artifact-published gate verifies completion deterministically:
+	// the coord-store `<chainID>/plan` key MUST be non-empty AND, when the
+	// publication record claims a vault_path, the file MUST actually exist
+	// at that path under the resolved plan_output_dir. A self-report with
+	// no real artifact FAILS the gate — no prompt instruction can lie past
+	// a file stat.
+	Describe("builtin:artifact-published runner (honesty gate)", func() {
+		const outputDir = "/home/baphled/vaults/baphled/1. Projects/FlowState"
+
+		var (
+			gate    swarm.GateSpec
+			statted []string
+		)
+
+		// fakeStat records every path stat'd and answers presence from a
+		// fixed set — no real filesystem touch.
+		newFakeStat := func(present map[string]bool) func(string) (bool, error) {
+			return func(path string) (bool, error) {
+				statted = append(statted, path)
+				return present[path], nil
+			}
+		}
+
+		BeforeEach(func() {
+			statted = nil
+			gate = swarm.GateSpec{
+				Name:      "post-swarm-plan-published",
+				Kind:      "builtin:artifact-published",
+				When:      "post",
+				OutputKey: "{chainID}/plan",
+			}
+		})
+
+		It("passes when the plan key is non-empty and the claimed vault file exists under the output dir", func() {
+			vaultPath := outputDir + "/Auth-Hardening-Plan.md"
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan": []byte("# Auth Hardening Plan\n..."),
+				"plan-auth/plan_publication": []byte(
+					`{"vault_path":"` + vaultPath + `","published_at":"2026-05-28T10:00:00Z"}`),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(map[string]bool{vaultPath: true}))
+			Expect(runner.Run(context.Background(), gate, args)).To(Succeed())
+			Expect(statted).To(ContainElement(vaultPath),
+				"the gate must actually stat the claimed vault path, not trust the record")
+		})
+
+		It("FAILS when a publication record claims a vault path but the file does not exist (the fabrication)", func() {
+			vaultPath := outputDir + "/Ghost-Plan.md"
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan": []byte("# Plan body present in coord-store"),
+				"plan-auth/plan_publication": []byte(
+					`{"vault_path":"` + vaultPath + `","published_at":"2026-05-28T10:00:00Z"}`),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(map[string]bool{ /* file absent */ }))
+			err := runner.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)claimed|publication`),
+				"the failure must call out the self-reported publication claim")
+			Expect(gateErr.Reason).To(ContainSubstring(vaultPath),
+				"the failure must name the missing file so the lead knows the claim was false")
+		})
+
+		It("FAILS when the coord-store plan key is empty (no artifact produced at all)", func() {
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan": []byte(""),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(nil))
+			err := runner.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)plan.*empty|no plan|empty plan`),
+				"an empty plan key must fail the honesty gate")
+		})
+
+		It("FAILS when the coord-store plan key is missing entirely", func() {
+			store := newGateStore(map[string][]byte{})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(nil))
+			err := runner.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+		})
+
+		It("FAILS when the claimed vault path escapes the resolved output dir (path-traversal honesty)", func() {
+			escapePath := "/tmp/elsewhere/Plan.md"
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan": []byte("# Plan body"),
+				"plan-auth/plan_publication": []byte(
+					`{"vault_path":"` + escapePath + `","published_at":"2026-05-28T10:00:00Z"}`),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			// Even if the file "exists" at the escaping path, a write
+			// outside plan_output_dir is not an honest publication.
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(map[string]bool{escapePath: true}))
+			err := runner.Run(context.Background(), gate, args)
+
+			var gateErr *swarm.GateError
+			Expect(errors.As(err, &gateErr)).To(BeTrue())
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)outside|not under|output dir`),
+				"a vault_path outside plan_output_dir must fail the honesty gate")
+		})
+
+		It("passes on the plan key alone when no publication record claims a vault path", func() {
+			// A coordinator that wrote the plan to the coord-store but made
+			// no vault claim is honest about the loop's state — the gate
+			// gates on the artifact it CAN verify (the plan key) and does
+			// not invent a file requirement the run never asserted.
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan": []byte("# Plan body present, no vault claim"),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(nil))
+			Expect(runner.Run(context.Background(), gate, args)).To(Succeed())
+			Expect(statted).To(BeEmpty(),
+				"with no claimed vault_path the gate must not stat any file")
+		})
+
+		// Post-swarm dispatch (runSwarmGates) leaves GateArgs.ChainID
+		// empty — the lead's free-form chainID is not threaded onto the
+		// swarm context. The gate must still resolve the plan via a
+		// suffix-scan, mirroring the result-schema runner's bootstrap
+		// fallback, so it works as a `when: post` swarm gate.
+		Context("when no chainID is threaded (post-swarm dispatch)", func() {
+			It("resolves the plan key by suffix-scan and verifies the claimed vault file", func() {
+				vaultPath := outputDir + "/Suffix-Scan-Plan.md"
+				store := newGateStore(map[string][]byte{
+					"some-chain/plan": []byte("# Plan body via suffix-scan"),
+					"some-chain/plan_publication": []byte(
+						`{"vault_path":"` + vaultPath + `"}`),
+				})
+				args := planningLoopArgs(store)
+				args.ChainID = "" // post-swarm: no concrete chainID
+
+				runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(map[string]bool{vaultPath: true}))
+				Expect(runner.Run(context.Background(), gate, args)).To(Succeed())
+				Expect(statted).To(ContainElement(vaultPath))
+			})
+
+			It("FAILS via suffix-scan when no plan key exists in any chain", func() {
+				store := newGateStore(map[string][]byte{})
+				args := planningLoopArgs(store)
+				args.ChainID = ""
+
+				runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(nil))
+				err := runner.Run(context.Background(), gate, args)
+
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue())
+				Expect(gateErr.Reason).To(MatchRegexp(`(?i)no plan artifact`))
 			})
 		})
 	})

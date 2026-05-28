@@ -290,7 +290,7 @@ func (h *Harness) runStreamEvaluation(
 			Content:   fmt.Sprintf(`{"attempt":%d,"maxRetries":%d}`, attempt, h.maxRetries),
 		})
 
-		planText, err := h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
+		planText, sawToolCall, err := h.streamAttempt(ctx, streamer, agentID, currentMessage, outCh)
 		if err != nil {
 			trySend(ctx, outCh, provider.StreamChunk{Error: err})
 			return
@@ -307,7 +307,12 @@ func (h *Harness) runStreamEvaluation(
 			// "planner stops three stages early" symptom — the
 			// orchestrator can't slip past the deterministic loop just
 			// by emitting a conversational synthesis turn.
-			if waveFb := h.checkWavesIncomplete(ctx, agentID); waveFb != "" {
+			//
+			// !sawToolCall is the synthesis-hang signal: the turn
+			// narrated a write ("Let me now write the plan…") but called
+			// no tool. The feedback then escalates to an explicit "emit
+			// the write tool call NOW" directive.
+			if waveFb := h.checkWavesIncomplete(ctx, agentID, !sawToolCall); waveFb != "" {
 				if attempt < h.maxRetries {
 					slog.Warn("harness wave-incomplete; re-prompting orchestrator",
 						"attempt", attempt, "maxRetries", h.maxRetries, "feedbackLen", len(waveFb))
@@ -373,10 +378,10 @@ func (h *Harness) streamAttempt(
 	agentID string,
 	message string,
 	outCh chan<- provider.StreamChunk,
-) (string, error) {
+) (string, bool, error) {
 	chunks, err := streamer.Stream(ctx, agentID, message)
 	if err != nil {
-		return "", fmt.Errorf("streaming response: %w", err)
+		return "", false, fmt.Errorf("streaming response: %w", err)
 	}
 
 	return h.forwardAndAccumulate(ctx, chunks, outCh)
@@ -391,6 +396,8 @@ func (h *Harness) streamAttempt(
 //
 // Returns:
 //   - The accumulated plan text.
+//   - Whether the stream carried at least one tool call (used by the wave
+//     fan-in barrier to detect the narrated-but-didn't-write hang).
 //   - An error if the stream contains an error chunk, exceeds 1MB, or context is cancelled.
 //
 // Side effects:
@@ -399,27 +406,48 @@ func (h *Harness) forwardAndAccumulate(
 	ctx context.Context,
 	chunks <-chan provider.StreamChunk,
 	outCh chan<- provider.StreamChunk,
-) (string, error) {
+) (string, bool, error) {
 	var builder strings.Builder
 	received := false
+	sawToolCall := false
 
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", false, ctx.Err()
 		case chunk, ok := <-chunks:
 			if !ok {
-				return closedChannelResult(builder.String(), received)
+				text, err := closedChannelResult(builder.String(), received)
+				return text, sawToolCall, err
+			}
+			if chunkHasToolCall(chunk) {
+				sawToolCall = true
 			}
 			forwarded, err := processStreamChunk(ctx, chunk, &builder, outCh)
 			if err != nil {
-				return "", err
+				return "", false, err
 			}
 			if forwarded {
 				received = true
 			}
 		}
 	}
+}
+
+// chunkHasToolCall reports whether a stream chunk represents a tool
+// invocation. A tool call surfaces either as a populated ToolCall struct
+// or as a "tool_call" / "tool_use" event/stop-reason, depending on the
+// provider. Any of these signals counts: the wave barrier only needs to
+// know that SOME tool was called this turn, not which one.
+func chunkHasToolCall(chunk provider.StreamChunk) bool {
+	if chunk.ToolCall != nil {
+		return true
+	}
+	switch chunk.EventType {
+	case "tool_call", "tool_use":
+		return true
+	}
+	return chunk.StopReason == "tool_use"
 }
 
 // closedChannelResult returns the accumulated text or an error if no content was received.

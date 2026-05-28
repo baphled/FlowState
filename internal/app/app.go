@@ -608,7 +608,7 @@ func buildApp(params appBuildParams) *App {
 		mcpTools:             runtime.mcpTools,
 		memoryClient:         params.memoryClient,
 		vaultHandler:         params.vaultHandler,
-		gateRunner:           buildSwarmGateRunner(),
+		gateRunner:           buildSwarmGateRunner(resolvePlanOutputDir()),
 		quotaCacheController: runtime.quotaCacheController,
 		permissionPrompter:   runtime.permissionPrompter,
 	}
@@ -1916,11 +1916,49 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 //   - The evidence-grounding runner reads from the filesystem at
 //     dispatch time; constructor-time only resolves the working
 //     directory.
-func buildSwarmGateRunner() swarm.GateRunner {
+//   - "builtin:artifact-published": the planning-loop honesty gate. Gates
+//     loop completion on VERIFIED artifact existence — the coord-store
+//     "<chainID>/plan" key must be non-empty AND any self-reported vault
+//     publication must point at a file that actually exists under the
+//     resolved plan_output_dir. Catches the fabricated-publication bug
+//     where a coordinator marked the loop complete on a record claiming a
+//     vault path the file never reached (Defect 4). Stats the filesystem
+//     at dispatch time via os.Stat.
+//
+// planOutputDir is the resolved plan-mode write target (perms.PlanOutputDir);
+// it bounds the honesty gate's file-containment check. Empty disables the
+// containment check (the coord-store plan-key check still applies).
+//
+// Returns:
+//   - A *swarm.MultiRunner ready for WithGateRunner.
+//
+// Side effects:
+//   - The evidence-grounding and artifact-published runners read from the
+//     filesystem at dispatch time; constructor-time only captures config.
+func buildSwarmGateRunner(planOutputDir string) swarm.GateRunner {
 	runner := swarm.NewMultiRunner()
 	runner.Register("builtin:result-schema", swarm.NewResultSchemaRunner())
 	runner.Register(swarm.EvidenceGroundingGateKind, swarm.NewEvidenceGroundingRunner(""))
+	runner.Register(swarm.ArtifactPublishedGateKind, swarm.NewArtifactPublishedRunner(planOutputDir, nil))
 	return runner
+}
+
+// resolvePlanOutputDir reads the operator's resolved plan_output_dir from
+// permissions.yaml. Returns "" when permissions are absent/unreadable or
+// the field is unset — the artifact-published honesty gate then verifies
+// only the coord-store plan key (no file-containment bound). Mirrors the
+// load path buildPathGuardFromConfig uses so the gate and the pathguard
+// agree on the same directory.
+//
+// Side effects:
+//   - Reads permissions.yaml from disk.
+func resolvePlanOutputDir() string {
+	permsPath := filepath.Join(config.Dir(), "permissions.yaml")
+	perms, err := config.LoadPermissions(permsPath)
+	if err != nil || perms == nil {
+		return ""
+	}
+	return perms.PlanOutputDir
 }
 
 // buildCategorySwapNotifier returns the SwapNotifier installed on the

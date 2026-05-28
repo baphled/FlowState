@@ -106,9 +106,17 @@ func WithWaves(stages []WaveStage, validator WaveValidator) Option {
 // scope its lookup (e.g. one chain may have multiple sub-agents writing
 // to different key spaces).
 //
+// noToolCall reports whether the orchestrator's just-completed turn
+// emitted ANY tool call. When true (the agent narrated a write — "Let me
+// now write the plan…" — but called nothing), the feedback escalates
+// from a passive "stage incomplete" nudge to an explicit directive to
+// PERFORM the write now. This converts the synthesis-hang failure mode
+// (forensic: KB-curator c09b1bc9, plan-writer e6d29e8d / 8b49d54c — final
+// turn narrates the write, toolName=NONE) into actionable feedback.
+//
 // Side effects:
 //   - May call the validator (which itself may read from a store).
-func (h *Harness) checkWavesIncomplete(ctx context.Context, agentID string) string {
+func (h *Harness) checkWavesIncomplete(ctx context.Context, agentID string, noToolCall bool) string {
 	if h.waveValidator == nil || len(h.waves) == 0 {
 		return ""
 	}
@@ -119,10 +127,10 @@ func (h *Harness) checkWavesIncomplete(ctx context.Context, agentID string) stri
 			// store hiccup never silently lets the planner yield past
 			// an incomplete fan-in. The feedback names the failure so
 			// the planner can react reasonably.
-			return buildWaveFeedback(stage, nil, err)
+			return buildWaveFeedback(stage, nil, err, noToolCall)
 		}
 		if len(missing) > 0 {
-			return buildWaveFeedback(stage, missing, nil)
+			return buildWaveFeedback(stage, missing, nil, noToolCall)
 		}
 	}
 	return ""
@@ -131,7 +139,12 @@ func (h *Harness) checkWavesIncomplete(ctx context.Context, agentID string) stri
 // buildWaveFeedback formats a re-prompt directive for the planner.
 // Shape matches the existing critic-feedback format so the planner's
 // retry-loop prompt-augmentation hook handles it uniformly.
-func buildWaveFeedback(stage WaveStage, missing []string, err error) string {
+//
+// When noToolCall is true the previous turn produced no tool call at all,
+// so the feedback names the failure explicitly and instructs the agent
+// to emit the coordination_store write tool call NOW rather than narrate
+// it — the directive that breaks the synthesis-hang loop.
+func buildWaveFeedback(stage WaveStage, missing []string, err error, noToolCall bool) string {
 	var b strings.Builder
 	b.WriteString("Wave fan-in incomplete: stage `")
 	b.WriteString(stage.Name)
@@ -157,6 +170,17 @@ func buildWaveFeedback(stage WaveStage, missing []string, err error) string {
 		b.WriteString("What this stage is for: ")
 		b.WriteString(stage.Description)
 		b.WriteString("\n\n")
+	}
+
+	if noToolCall {
+		// The previous turn narrated the write but emitted no tool call —
+		// the synthesis-hang signature. Give an unambiguous, actionable
+		// directive: perform the write, do not describe it.
+		b.WriteString("Your previous turn narrated the write but emitted no tool call. ")
+		b.WriteString("Emit the `coordination_store` `set` (or `write`) tool call NOW to populate ")
+		b.WriteString("the missing key(s) above — do not narrate the write, perform it. ")
+		b.WriteString("If a delegated member owes the write, re-delegate it explicitly with the ")
+		b.WriteString("concrete chainID and target key. ")
 	}
 
 	b.WriteString("Continue delegating until every missing key above is written. ")

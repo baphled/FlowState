@@ -71,23 +71,65 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 				"plan-writer":   swarm.PlanDocumentV1Name,
 				"plan-reviewer": swarm.ReviewVerdictV1Name,
 			}
+			// Keys are the {chainID}-templated coord-store keys the
+			// chainID-aware gate resolution shipped in e5b9d9f3 — members
+			// write to "<chainID>/<suffix>" directly, not the legacy
+			// "<prefix>/<target>/output" shape. (This expectation was
+			// left stale by e5b9d9f3, which changed the manifest keys but
+			// not this pin; corrected here under the Boy Scout Rule while
+			// extending the same block for the Defect 4 honesty gate.)
 			expectedKeys := map[string]string{
-				"explorer":      "output",
-				"librarian":     "output",
-				"analyst":       "output",
-				"plan-writer":   "output",
-				"plan-reviewer": "review",
+				"explorer":      "{chainID}/codebase-findings",
+				"librarian":     "{chainID}/external-refs",
+				"analyst":       "{chainID}/analysis",
+				"plan-writer":   "{chainID}/plan",
+				"plan-reviewer": "{chainID}/review",
 			}
 			seen := make(map[string]string, len(expected))
 			seenKeys := make(map[string]string, len(expected))
 			for _, gate := range m.Harness.Gates {
+				// Post-member result-schema gates carry the per-member
+				// structured-output contract audited here. The swarm also
+				// ships a post-swarm artifact-published honesty gate
+				// (Defect 4); skip non-post-member gates so this audit
+				// stays focused on the per-member coverage it asserts.
+				if gate.When != swarm.LifecyclePostMember {
+					continue
+				}
 				Expect(gate.Kind).To(Equal("builtin:result-schema"))
-				Expect(gate.When).To(Equal(swarm.LifecyclePostMember))
 				seen[gate.Target] = gate.SchemaRef
 				seenKeys[gate.Target] = gate.OutputKey
 			}
 			Expect(seen).To(Equal(expected))
 			Expect(seenKeys).To(Equal(expectedKeys))
+		})
+
+		It("ships a post-swarm artifact-published honesty gate verifying the plan key", func() {
+			// Defect 4 regression guard: the planning loop must carry a
+			// post-swarm gate that verifies the plan artifact actually
+			// exists before completion can be declared — closing the
+			// fabricated-publication hole where the coordinator marked the
+			// loop complete on a self-reported record alone.
+			swarmsDir, err := fs.Sub(app.EmbeddedSwarmsFS(), "swarms")
+			Expect(err).NotTo(HaveOccurred())
+			body, err := fs.ReadFile(swarmsDir, "planning-loop.yml")
+			Expect(err).NotTo(HaveOccurred())
+
+			var m swarm.Manifest
+			Expect(yaml.Unmarshal(body, &m)).To(Succeed())
+
+			var published []swarm.GateSpec
+			for _, gate := range m.Harness.Gates {
+				if gate.Kind == swarm.ArtifactPublishedGateKind {
+					published = append(published, gate)
+				}
+			}
+			Expect(published).To(HaveLen(1),
+				"planning-loop must ship exactly one artifact-published honesty gate")
+			Expect(published[0].When).To(Equal(swarm.LifecyclePostSwarm),
+				"the honesty gate fires once at swarm end")
+			Expect(published[0].OutputKey).To(Equal("{chainID}/plan"),
+				"the gate verifies the {chainID}/plan coord-store key")
 		})
 
 		It("parses solo.yml as a structurally valid swarm manifest", func() {

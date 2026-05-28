@@ -35,6 +35,47 @@ func resolveCriticModel(criticOverride, providerFallback string) string {
 	return providerFallback
 }
 
+// waveRetryFloor is the minimum harness retry budget when any agent
+// declares waves. Stage-walking an orchestrator through the deterministic
+// loop (evidence → analysis → writing → review) needs one re-prompt cycle
+// per stage in the worst case, plus headroom for a member that
+// narrates-but-doesn't-write on a turn (the synthesis-hang signature).
+// 8 leaves comfortable margin without inviting an unbounded retry storm.
+const waveRetryFloor = 8
+
+// resolveHarnessRetries decides the effective harness retry budget.
+//
+// Expected:
+//   - cfgMaxRetries is config.HarnessConfig.MaxRetries after config
+//     defaulting (config.go sets a non-zero default of 1 on every load,
+//     so callers almost never see 0 in production).
+//   - hasWaves reports whether the wave fan-in barrier is wired.
+//
+// Returns:
+//   - When waves are present, max(cfgMaxRetries, waveRetryFloor) so the
+//     wave path always has room to re-prompt the orchestrator through
+//     every stage — and an explicit larger operator override is never
+//     lowered.
+//   - When waves are absent, cfgMaxRetries unchanged (0 means "let
+//     NewHarness apply its own default"; >0 is an explicit budget).
+//
+// This replaces the pre-Defect-2 `if cfg.MaxRetries == 0` bump, which was
+// dead code: config defaulting set MaxRetries=1 before this ran, so the
+// wave path silently used a budget of 1 and gave up on the first
+// wave-incomplete check.
+//
+// Side effects:
+//   - None.
+func resolveHarnessRetries(cfgMaxRetries int, hasWaves bool) int {
+	if !hasWaves {
+		return cfgMaxRetries
+	}
+	if cfgMaxRetries < waveRetryFloor {
+		return waveRetryFloor
+	}
+	return cfgMaxRetries
+}
+
 // harnessAdapter wraps a Harness to satisfy streaming.PlanEvaluator.
 //
 // This adapter bridges the harness.Streamer and streaming.Streamer interfaces
@@ -126,8 +167,14 @@ func createHarnessStreamer(
 	}
 
 	var opts []harness.Option
-	if cfg.MaxRetries > 0 {
-		opts = append(opts, harness.WithMaxRetries(cfg.MaxRetries))
+
+	// Determine whether any registered agent declares waves up front: the
+	// wave fan-in barrier needs a retry budget large enough to walk the
+	// orchestrator through every stage, so the resolved retry count
+	// depends on wave presence (see resolveHarnessRetries).
+	hasWaves := coordStore != nil && len(collectAgentWaves(registry)) > 0
+	if retries := resolveHarnessRetries(cfg.MaxRetries, hasWaves); retries > 0 {
+		opts = append(opts, harness.WithMaxRetries(retries))
 	}
 
 	// Wire a critic instance whenever a provider is available — the
@@ -167,13 +214,12 @@ func createHarnessStreamer(
 		if stages := collectAgentWaves(registry); len(stages) > 0 {
 			validator := &coordWaveValidator{store: coordStore}
 			opts = append(opts, harness.WithWaves(stages, validator))
-			// Bump the retry budget: stage-walking the planner through
-			// (evidence → analysis → writing → review) needs 4+
-			// re-prompt cycles in the worst case. The default of 1
-			// would exhaust on the first wave-incomplete check.
-			if cfg.MaxRetries == 0 {
-				opts = append(opts, harness.WithMaxRetries(8))
-			}
+			// The retry-budget bump for the wave path is resolved up
+			// front via resolveHarnessRetries (above) so it applies even
+			// when config defaulting has already set cfg.MaxRetries to a
+			// small non-zero value — the prior `if cfg.MaxRetries == 0`
+			// bump here was dead because config.go defaults MaxRetries to
+			// 1 on every load (Defect 2: synthesis-hang give-up).
 		}
 	}
 

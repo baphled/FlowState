@@ -170,10 +170,24 @@ func readMemberOutput(gate GateSpec, args GateArgs) ([]byte, error) {
 		if found {
 			return payload, nil
 		}
-		return nil, fmt.Errorf("no member output found at %q (any chain)", suffix)
+		return nil, fmt.Errorf("no member output found at %q (any chain): %s", suffix, noOutputDirective)
 	}
-	return nil, fmt.Errorf("no member output found at %v", keys)
+	return nil, fmt.Errorf("no member output found at %v: %s", keys, noOutputDirective)
 }
+
+// noOutputDirective is appended to every "no member output found" gate
+// failure. The lead receives this reason verbatim as its delegate-tool
+// error result (the swarm runner halts fail-fast; delegation.go returns
+// the *GateError to the caller). It is the swarm-gate-path counterpart of
+// the harness wave-fan-in directive: a member that narrated a write but
+// produced no coord-store output is the synthesis-hang signature, and a
+// passive "key absent" message lets the lead narrate again. This text
+// directs the lead to RE-DELEGATE the write with an explicit
+// perform-the-write instruction. See internal/plan/harness/waves.go
+// buildWaveFeedback for the harness-side directive.
+const noOutputDirective = "the member did not write its output — it likely narrated the write but emitted no tool call. " +
+	"Re-delegate this member with an explicit instruction to perform the coordination_store write (do not narrate it), " +
+	"naming the concrete chainID and target key."
 
 // chainIDSuffixScan reports the bare key suffix to suffix-scan for when
 // the gate's OutputKey is "{chainID}"-templated but no concrete chainID
