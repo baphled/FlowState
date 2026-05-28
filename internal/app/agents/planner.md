@@ -112,9 +112,19 @@ harness:
 # at (z.ai today, something else tomorrow). See the May 2026 bug fix
 # "Agent Provider Cascade" for the cascade rule (UI > manifest > global).
 model_policy: "permissive"
+# Route this write-critical planning-loop agent to a tool-call-RELIABLE
+# Anthropic model that actually resolves. `claude-sonnet-4-20250514` is the
+# configured Anthropic provider model (config.yaml) and the provider's
+# hardcoded canonical fallback id — it is passed straight through to the
+# Anthropic API, so it resolves. The prior `claude-sonnet-4-7` is not a real
+# Anthropic id; it 404s and fails over to the global default (zai/glm), which
+# narrates "now writing…" then emits no tool call (the synthesis-hang). The
+# zai/glm-4.6 tail keeps degradation graceful when no Anthropic key is set.
 preferred_models:
   - provider: anthropic
-    model: claude-sonnet-4-7
+    model: claude-sonnet-4-20250514
+  - provider: zai
+    model: glm-4.6
 ---
 
 # FlowState Planner

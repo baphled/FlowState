@@ -50,6 +50,19 @@ orchestrator_meta:
   triggers:
     - domain: Research
       trigger: Find documentation, examples, and best practices from external sources
+# Write-critical planning-loop agent (emits {chainID}/external-refs into the
+# coordination store): route to a tool-call-RELIABLE Anthropic model that
+# actually resolves. `claude-sonnet-4-20250514` is the configured Anthropic
+# provider model and the provider's hardcoded fallback id (passed straight
+# through to the API). The non-existent `claude-sonnet-4-7` 404s and fails over
+# to zai/glm, which narrates "now writing…" then emits no tool call (the
+# synthesis-hang that stalls the loop). The zai/glm-4.6 tail degrades gracefully
+# when no Anthropic key is configured.
+preferred_models:
+  - provider: anthropic
+    model: claude-sonnet-4-20250514
+  - provider: zai
+    model: glm-4.6
 ---
 
 # Reference Librarian
