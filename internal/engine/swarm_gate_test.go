@@ -165,6 +165,62 @@ func reviewerEnginesWithProvider(swarmCtx *swarm.Context) (map[string]*engine.En
 	return engines, reviewerProv
 }
 
+// reviewerEnginesWithLeadAndProvider mirrors reviewerEnginesWithProvider
+// but also returns the lead ("planner") engine so a spec can pin its
+// resolved (provider, model) via SetModelPreference — the source the
+// corrective-retry model override copies from. Used by the corrective-
+// retry model-override specs that assert the retry routes the struggling
+// member onto the lead's proven-reachable model.
+func reviewerEnginesWithLeadAndProvider(swarmCtx *swarm.Context) (map[string]*engine.Engine, *engine.Engine, *mockProvider) {
+	reviewerProv := reviewerProvider()
+	leadEng := engine.New(engine.Config{
+		ChatProvider: leadProvider(),
+		Manifest: agent.Manifest{
+			ID:                "planner",
+			Name:              "Planner",
+			Instructions:      agent.Instructions{SystemPrompt: "lead"},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+		SwarmContext: swarmCtx,
+	})
+	reviewerEng := engine.New(engine.Config{
+		ChatProvider: reviewerProv,
+		Manifest: agent.Manifest{
+			ID:                "plan-reviewer",
+			Name:              "Plan Reviewer",
+			Instructions:      agent.Instructions{SystemPrompt: "review"},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+	engines := map[string]*engine.Engine{
+		"planner":       leadEng,
+		"plan-reviewer": reviewerEng,
+	}
+	return engines, leadEng, reviewerProv
+}
+
+// newDelegateToolWithRunnerAndOwner mirrors newDelegateToolWithRunner but
+// pins the owner (lead) engine via WithOwnerEngine so the corrective-retry
+// model override can read the lead's resolved (provider, model). Production
+// wiring (app.go) always installs the DelegateTool on the lead's engine via
+// WithOwnerEngine; the bare newDelegateToolWithRunner helper omitted it
+// because the earlier specs did not exercise the lead-engine lookup.
+func newDelegateToolWithRunnerAndOwner(
+	engines map[string]*engine.Engine,
+	store coordination.Store,
+	runner swarm.GateRunner,
+	owner *engine.Engine,
+) *engine.DelegateTool {
+	tool := engine.NewDelegateToolWithBackground(
+		engines,
+		agent.Delegation{CanDelegate: true},
+		"planner",
+		nil,
+		store,
+	)
+	return tool.WithGateRunner(runner).WithOwnerEngine(owner)
+}
+
 // flakyMemberGateRunner fails the first failFor post-member gate
 // dispatches with the no-output GateError shape, then passes. It records
 // the dispatch count so a spec can assert the exact number of member
@@ -915,6 +971,80 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 				Expect(reviewerProv.StreamCallCount()).To(Equal(1))
 				Expect(reviewerProv.ToolChoiceForAttempt(1)).To(BeEmpty(),
 					"a clean first-attempt pass dispatches once, unconstrained")
+			})
+		})
+
+		Context("model override on the corrective retry", func() {
+			It("routes the corrective retry onto the lead's resolved model", func() {
+				// Forcing the tool_choice on the retry made the marginal
+				// member (zai/glm-4.5) emit the coordination_store write —
+				// but glm-4.5 cannot reliably emit a single clean JSON object
+				// for the bundle schema (it appends a second object / trailing
+				// junk, surfacing as `invalid character ',' after top-level
+				// value`). The corrective retry must ALSO route the struggling
+				// member onto a tool-AND-structured-JSON-reliable model. The
+				// lead engine resolved to a reachable, proven model in this
+				// deployment (production: openai/gpt-5), so the retry copies
+				// the lead's resolved (provider, model) rather than hardcoding
+				// a bare string that may be unreachable here.
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{failFor: 1}
+				engines, leadEng, reviewerProv := reviewerEnginesWithLeadAndProvider(
+					swarmContextWithGates(postMemberGate()))
+				leadEng.SetModelPreference("openai", "gpt-5")
+				delegateTool := newDelegateToolWithRunnerAndOwner(engines, store, runner, leadEng)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.StreamCallCount()).To(BeNumerically(">=", 2),
+					"the member is re-dispatched after the first miss")
+				Expect(reviewerProv.ProviderForAttempt(2)).To(Equal("openai"),
+					"the corrective retry routes onto the lead's resolved provider")
+				Expect(reviewerProv.ModelForAttempt(2)).To(Equal("gpt-5"),
+					"the corrective retry routes onto the lead's resolved model")
+				Expect(reviewerProv.ToolChoiceForAttempt(2)).To(Equal("tool:coordination_store"),
+					"the corrective retry still forces the coordination_store write")
+			})
+
+			It("does NOT override the model on the first attempt", func() {
+				// The first attempt keeps the member's own manifest-resolved
+				// model so multi-step members run on the model their manifest
+				// declares. Only the corrective retry — after a miss — escalates
+				// onto the lead's reliable model.
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{failFor: 1}
+				engines, leadEng, reviewerProv := reviewerEnginesWithLeadAndProvider(
+					swarmContextWithGates(postMemberGate()))
+				leadEng.SetModelPreference("openai", "gpt-5")
+				delegateTool := newDelegateToolWithRunnerAndOwner(engines, store, runner, leadEng)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.ModelForAttempt(1)).NotTo(Equal("gpt-5"),
+					"the first attempt is not forced onto the lead's model")
+				Expect(reviewerProv.ToolChoiceForAttempt(1)).To(BeEmpty(),
+					"the first attempt stays unconstrained — neither tool nor model is forced")
+			})
+
+			It("does not override the model when the gate passes on the first attempt", func() {
+				// Clean-pass guard: a member that writes on attempt 1 is never
+				// re-routed — no retry happens, so the single dispatch keeps the
+				// member's own model and stays unconstrained.
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{failFor: 0}
+				engines, leadEng, reviewerProv := reviewerEnginesWithLeadAndProvider(
+					swarmContextWithGates(postMemberGate()))
+				leadEng.SetModelPreference("openai", "gpt-5")
+				delegateTool := newDelegateToolWithRunnerAndOwner(engines, store, runner, leadEng)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.StreamCallCount()).To(Equal(1))
+				Expect(reviewerProv.ModelForAttempt(1)).NotTo(Equal("gpt-5"),
+					"a clean first-attempt pass keeps the member's own model")
 			})
 		})
 	})

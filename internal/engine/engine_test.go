@@ -120,6 +120,30 @@ func (m *mockProvider) StreamCallCount() int {
 	return len(m.capturedRequests)
 }
 
+// ModelForAttempt returns the Model captured on the n-th Stream dispatch
+// (1-indexed). Empty when fewer than n dispatches occurred. Lets the
+// post-member gate corrective-retry specs assert the retry carries the
+// reliable model override while the first attempt keeps the member's own
+// manifest-resolved model.
+func (m *mockProvider) ModelForAttempt(n int) string {
+	if n < 1 || n > len(m.capturedRequests) {
+		return ""
+	}
+	return m.capturedRequests[n-1].Model
+}
+
+// ProviderForAttempt returns the Provider captured on the n-th Stream
+// dispatch (1-indexed). Empty when fewer than n dispatches occurred.
+// Companion to ModelForAttempt — the model override is meaningless
+// without the matching provider, so the corrective retry must stamp
+// both.
+func (m *mockProvider) ProviderForAttempt(n int) string {
+	if n < 1 || n > len(m.capturedRequests) {
+		return ""
+	}
+	return m.capturedRequests[n-1].Provider
+}
+
 // hangingStreamProvider emits a fixed prelude of chunks, then leaves the
 // chunk channel open forever (no close, no further sends) so the engine's
 // processStreamChunks loop parks on receive. Models the production failure

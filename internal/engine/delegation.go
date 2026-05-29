@@ -2661,6 +2661,31 @@ func (d *DelegateTool) executeSync(
 		// ChatRequest.ToolChoice; per-turn so the first attempt and any
 		// later attempts that didn't decide to force stay unconstrained.
 		attemptCtx := session.WithToolChoiceOverride(delegateCtx, forcedToolChoice)
+		// Pair the forced tool_choice with a reliable-model override on the
+		// SAME corrective retry. Forcing tool_choice made the marginal model
+		// (zai/glm-4.5) EMIT the coordination_store write — but glm-4.5 cannot
+		// reliably emit a single clean JSON object for a result-schema bundle
+		// (it appends a second object / trailing junk, surfacing downstream as
+		// `invalid character ',' after top-level value`). So the retry also
+		// re-routes the struggling member onto the lead's already-resolved
+		// (provider, model), which is proven reachable AND reliable in THIS
+		// deployment (the lead ran a full turn on it before delegating). This
+		// is deployment-adaptive — no hardcoded model string that might be
+		// unreachable here — and only fires on the forced-tool corrective
+		// retry, never on attempt 1 (forcedToolChoice is empty there), so
+		// multi-step members keep their own manifest-resolved model on the
+		// first pass. Empty lead values are a no-op: the child keeps the
+		// manifest-tier override resolveChildModelOverride already stamped.
+		if forcedToolChoice != "" {
+			if prov, model := d.correctiveRetryModel(); prov != "" || model != "" {
+				if prov != "" {
+					attemptCtx = context.WithValue(attemptCtx, session.ProviderOverrideKey{}, prov)
+				}
+				if model != "" {
+					attemptCtx = context.WithValue(attemptCtx, session.ModelOverrideKey{}, model)
+				}
+			}
+		}
 		result = delegationResult{}
 		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childTurnID)
 		if dispatchErr != nil {
@@ -4670,6 +4695,39 @@ func (d *DelegateTool) resolveChildModelOverride(target delegationTarget) (strin
 	}
 	first := manifest.PreferredModels[0]
 	return first.Provider, first.Model
+}
+
+// correctiveRetryModel returns the (provider, model) the post-member gate
+// corrective retry should route a struggling swarm member onto, alongside
+// the forced tool_choice. The source is the swarm LEAD's already-resolved
+// pair (d.ownerEngine.LastProvider / LastModel): by the time a member's
+// retry fires the lead has run at least one full turn (its delegate call is
+// what spawned the member), so LastProvider/LastModel name the exact pair
+// the lead's own turn succeeded on — proven reachable AND reliable in THIS
+// deployment. That makes it a deployment-adaptive target with no hardcoded
+// model string that could be unreachable here.
+//
+// Why the lead's pair and NOT the member manifest's preferred_models[1+]:
+// the member's manifest tier is already stamped on the child ctx by
+// resolveChildModelOverride (preferred_models[0]); when that tier's provider
+// is unreachable the engine's failover cascades through the GLOBAL chain
+// (config default), NOT the manifest's secondary tiers — so the member lands
+// on the global default (zai/glm-4.5) regardless of what tier-2/3 declare.
+// Honouring the manifest chain on failover is a larger failover-manager
+// change (per-agent chains) out of scope here. The lead's resolved pair is
+// the minimal, evidence-backed escalation target.
+//
+// Returns empty strings when no lead engine is wired (non-swarm delegate, or
+// a legacy test surface without WithOwnerEngine) — the caller treats empty
+// as "no override", leaving the member's manifest-tier override in place so
+// the retry still forces the tool, just without re-routing the model.
+//
+// Side effects: none.
+func (d *DelegateTool) correctiveRetryModel() (string, string) {
+	if d.ownerEngine == nil {
+		return "", ""
+	}
+	return d.ownerEngine.LastProvider(), d.ownerEngine.LastModel()
 }
 
 // closeSessionIfManaged closes the named session via the session manager when one is configured.
