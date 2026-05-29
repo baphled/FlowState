@@ -25,6 +25,29 @@ const planSuffix = "plan"
 // verbatim rather than re-derived from the plan key.
 const planMarkdownSuffix = "plan-markdown"
 
+// sectionsPrefix is the coord-store sub-key namespace the section-
+// decomposed planning SME sub-swarm writes each plan section under,
+// resolved as "<chainID>/sections/<name>" (architecture / testing /
+// security in v1). The deterministic publisher (Pass 2) fans these
+// keys in and appends each section under the OMO spine, so the
+// published plan has BOTH structure (the spine) AND depth (the
+// sections). Absent for a single-plan run with no SME sub-swarm, in
+// which case the spine publishes alone (backwards-compatible).
+const sectionsPrefix = "sections"
+
+// sectionNamesOrdered is the STABLE order the publisher renders SME
+// sections in (architecture → testing → security), independent of Go
+// map-iteration order or coord-store key ordering. A section whose key
+// is absent or whose value is not parseable section-v1 JSON is skipped;
+// the remaining sections still render in this order. Extend this slice
+// (and the SME sub-swarm's member set) to add a new section.
+var sectionNamesOrdered = []string{"architecture", "testing", "security"}
+
+// sectionsHeading is the markdown heading that introduces the appended
+// SME section block, so a reader can see where the lightweight OMO spine
+// ends and the detailed SME depth begins.
+const sectionsHeading = "## Detailed Sections"
+
 // reviewSuffix is the coord-store sub-key the plan-reviewer writes its
 // verdict under, resolved as "<chainID>/review". The publisher consults
 // it to gate publication on an approved plan when the record is present
@@ -47,6 +70,21 @@ const approveVerdict = "approve"
 type planEnvelope struct {
 	Markdown string `json:"markdown"`
 	Title    string `json:"title"`
+}
+
+// sectionEnvelope is the section-v1 JSON shape each SME section
+// specialist writes under "<chainID>/sections/<name>" (see
+// SectionV1Schema). The publisher parses it to render the section under
+// the OMO spine: Title becomes a "## " heading, Body the markdown
+// beneath it, and KeyPoints a trailing bullet list. A value that does
+// not parse as this shape — or carries no usable Title/Body — is SKIPPED
+// (not an error): a malformed section must never block publication of
+// the spine and the valid sections.
+type sectionEnvelope struct {
+	Section   string   `json:"section"`
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	KeyPoints []string `json:"key_points"`
 }
 
 // reviewEnvelope is the minimal shape the publisher reads from the
@@ -177,10 +215,19 @@ func PublishPlanToVault(store coordination.Store, outputDir, chainID string) (st
 		return "", fmt.Errorf("publish plan: refusing to publish chain %q: %s", resolvedChain, reason)
 	}
 
+	// Pass 2 — SME section fan-in: the spine (validated above) is the lightweight
+	// OMO scaffold; the section-decomposed planning sub-swarm may have written
+	// "<chainID>/sections/<name>" depth keys. Assemble the document as the spine
+	// FIRST, then each present section appended beneath. The fan-in is PURELY
+	// ADDITIVE: a run with no section keys yields assembledBody == body (the
+	// spine alone, unchanged), preserving every existing single-plan run. The
+	// filename is still derived from the spine's title/body, not the sections.
+	assembledBody := assemblePlanBody(store, resolvedChain, body)
+
 	name := planFileName(title, body, resolvedChain)
 	vaultPath := filepath.Join(outputDir, name+".md")
 
-	if err := atomicWriteFile(vaultPath, []byte(body)); err != nil {
+	if err := atomicWriteFile(vaultPath, []byte(assembledBody)); err != nil {
 		return "", fmt.Errorf("publish plan: writing vault file %q: %w", vaultPath, err)
 	}
 
@@ -338,6 +385,121 @@ func parsePlan(raw []byte) (title, body string) {
 	}
 
 	return "", string(raw)
+}
+
+// assemblePlanBody returns the final markdown to write: the OMO spine first,
+// then — when the section-decomposed planning SME sub-swarm wrote any
+// "<chainID>/sections/<name>" keys — a "## Detailed Sections" block with each
+// present section rendered beneath it in the STABLE sectionNamesOrdered order.
+//
+// The fan-in is PURELY ADDITIVE and backwards-compatible: when NO section key
+// is present (a single-plan run with no SME sub-swarm) the spine is returned
+// VERBATIM — assembledBody == spine, byte-for-byte, exactly as before Pass 2 —
+// so no sections heading and no trailing content are added. A section key that
+// is absent, empty, or not parseable section-v1 JSON is SKIPPED (never an
+// error): a malformed section must not block publication of the spine and the
+// valid sections.
+//
+// resolvedChain is the concrete chain the spine resolved under; the section
+// keys share it ("<chainID>/sections/<name>"), so the same resolution is
+// reused — no separate chain lookup.
+func assemblePlanBody(store coordination.Store, resolvedChain, spine string) string {
+	sections := collectSections(store, resolvedChain)
+	if len(sections) == 0 {
+		// Backwards-compat: no sections → the spine alone, unchanged.
+		return spine
+	}
+
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(spine, "\n"))
+	b.WriteString("\n\n")
+	b.WriteString(sectionsHeading)
+	b.WriteString("\n")
+	for _, sec := range sections {
+		b.WriteString("\n")
+		b.WriteString(renderSection(sec))
+	}
+	return b.String()
+}
+
+// collectSections reads every present "<chainID>/sections/<name>" key in the
+// stable sectionNamesOrdered order, parses each as section-v1 JSON, and returns
+// the renderable sections. A key that is absent, empty, unreadable, not
+// section-v1 JSON, or carries no usable title/body is SKIPPED — so a malformed
+// or missing section never blocks the others. The result preserves
+// sectionNamesOrdered, so the output is deterministic regardless of coord-store
+// key ordering.
+func collectSections(store coordination.Store, resolvedChain string) []sectionEnvelope {
+	var out []sectionEnvelope
+	for _, name := range sectionNamesOrdered {
+		key := resolvedChain + "/" + sectionsPrefix + "/" + name
+		exists, err := store.Exists(key)
+		if err != nil || !exists {
+			continue
+		}
+		raw, err := store.Get(key)
+		if err != nil || strings.TrimSpace(string(raw)) == "" {
+			continue
+		}
+		var sec sectionEnvelope
+		if err := json.Unmarshal(raw, &sec); err != nil {
+			// Not section-v1 JSON (malformed / a bare string / garbage):
+			// skip gracefully, do not fail the publish.
+			continue
+		}
+		if strings.TrimSpace(sec.Title) == "" && strings.TrimSpace(sec.Body) == "" {
+			// No usable content to render: nothing to contribute, skip.
+			continue
+		}
+		out = append(out, sec)
+	}
+	return out
+}
+
+// renderSection renders one section-v1 envelope as a markdown block: the
+// section Title as a "## " heading, the Body markdown beneath, and KeyPoints
+// (when any) as a trailing "- " bullet list. An empty Title falls back to the
+// canonical Section name (already title-handled by collectSections's
+// usable-content guard) so a heading is always present.
+func renderSection(sec sectionEnvelope) string {
+	var b strings.Builder
+	heading := strings.TrimSpace(sec.Title)
+	if heading == "" {
+		heading = strings.TrimSpace(sec.Section)
+	}
+	b.WriteString("## ")
+	b.WriteString(heading)
+	b.WriteString("\n")
+
+	if body := strings.TrimSpace(sec.Body); body != "" {
+		b.WriteString("\n")
+		b.WriteString(body)
+		b.WriteString("\n")
+	}
+
+	points := nonEmptyPoints(sec.KeyPoints)
+	if len(points) > 0 {
+		b.WriteString("\n")
+		for _, p := range points {
+			b.WriteString("- ")
+			b.WriteString(p)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+// nonEmptyPoints returns the key points with blank entries dropped and each
+// trimmed, so a stray empty string in key_points does not render a bare "- "
+// bullet.
+func nonEmptyPoints(points []string) []string {
+	var out []string
+	for _, p := range points {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
 
 // fileNameMaxLen is the hard character cap for a plan filename (excluding

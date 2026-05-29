@@ -427,6 +427,131 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 		})
 	})
 
+	Context("SME section fan-in (Pass 2: structure + depth)", func() {
+		// sectionJSON builds a section-v1 JSON value for a coord-store
+		// "<chainID>/sections/<name>" key, matching the schema the SME
+		// sub-swarm's post-member gate validates: {section,title,body,key_points}.
+		sectionJSON := func(section, title, body string, keyPoints ...string) []byte {
+			payload := struct {
+				Section   string   `json:"section"`
+				Title     string   `json:"title"`
+				Body      string   `json:"body"`
+				KeyPoints []string `json:"key_points"`
+			}{section, title, body, keyPoints}
+			raw, err := json.Marshal(payload)
+			Expect(err).NotTo(HaveOccurred())
+			return raw
+		}
+
+		It("fans in all 3 sections and appends them under the spine in stable order", func() {
+			// The spine is the OMO scaffold; the SME sub-swarm wrote three
+			// section-v1 keys. The publisher must assemble the spine FIRST,
+			// then each section (architecture, testing, security) beneath it.
+			store := newGateStore(map[string][]byte{
+				"deep-chain/plan": []byte(`{"markdown":"# Deep Plan\n\nThe OMO spine.","title":"Deep Plan"}`),
+				"deep-chain/sections/architecture": sectionJSON(
+					"architecture", "Architecture", "The layering and boundaries.", "Boundary A", "Boundary B"),
+				"deep-chain/sections/testing": sectionJSON(
+					"testing", "Testing Strategy", "How we verify.", "Unit first", "Then integration"),
+				"deep-chain/sections/security": sectionJSON(
+					"security", "Security Posture", "The threat model.", "AuthZ", "AuthN"),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "deep-chain")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(path).To(Equal(filepath.Join(outputDir, "Deep Plan.md")))
+
+			body, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			out := string(body)
+
+			// Spine survives intact.
+			Expect(out).To(ContainSubstring("# Deep Plan"))
+			Expect(out).To(ContainSubstring("The OMO spine."))
+
+			// Every section's title, body and key points are appended.
+			Expect(out).To(ContainSubstring("## Architecture"))
+			Expect(out).To(ContainSubstring("The layering and boundaries."))
+			Expect(out).To(ContainSubstring("Boundary A"))
+			Expect(out).To(ContainSubstring("## Testing Strategy"))
+			Expect(out).To(ContainSubstring("How we verify."))
+			Expect(out).To(ContainSubstring("## Security Posture"))
+			Expect(out).To(ContainSubstring("The threat model."))
+
+			// Stable order: spine, then architecture, then testing, then security.
+			spineIdx := strings.Index(out, "The OMO spine.")
+			archIdx := strings.Index(out, "## Architecture")
+			testIdx := strings.Index(out, "## Testing Strategy")
+			secIdx := strings.Index(out, "## Security Posture")
+			Expect(spineIdx).To(BeNumerically("<", archIdx), "spine precedes the sections")
+			Expect(archIdx).To(BeNumerically("<", testIdx), "architecture precedes testing")
+			Expect(testIdx).To(BeNumerically("<", secIdx), "testing precedes security")
+		})
+
+		It("publishes the spine ALONE when no section keys are present (backwards-compat guard)", func() {
+			// REGRESSION GUARD: an existing single-plan run (no SME sub-swarm)
+			// must publish exactly the spine, byte-for-byte, as before Pass 2.
+			// The fan-in is purely additive.
+			spine := "# Legacy Plan\n\nA plan from a run with no section keys."
+			store := newGateStore(map[string][]byte{
+				"legacy-chain/plan": []byte(spine),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "legacy-chain")
+			Expect(err).NotTo(HaveOccurred())
+
+			body, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(body)).To(Equal(spine),
+				"with no sections the published body is the spine alone, unchanged")
+			Expect(string(body)).NotTo(ContainSubstring("## Detailed Sections"),
+				"no sections block is appended when there are no section keys")
+		})
+
+		It("appends only the present section when others are absent (no error)", func() {
+			store := newGateStore(map[string][]byte{
+				"partial-chain/plan": []byte("# Partial Plan\n\nSpine body."),
+				"partial-chain/sections/testing": sectionJSON(
+					"testing", "Testing Strategy", "Only testing was produced.", "Cover the seams"),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "partial-chain")
+			Expect(err).NotTo(HaveOccurred())
+
+			body, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			out := string(body)
+			Expect(out).To(ContainSubstring("Spine body."))
+			Expect(out).To(ContainSubstring("## Testing Strategy"))
+			Expect(out).To(ContainSubstring("Only testing was produced."))
+			Expect(out).NotTo(ContainSubstring("## Architecture"),
+				"an absent section is skipped, not fabricated")
+			Expect(out).NotTo(ContainSubstring("## Security"))
+		})
+
+		It("skips a malformed section value gracefully and publishes spine + valid sections", func() {
+			store := newGateStore(map[string][]byte{
+				"mixed-chain/plan": []byte("# Mixed Plan\n\nSpine body."),
+				// Not section-v1 JSON — a bare string / garbage; must be skipped.
+				"mixed-chain/sections/architecture": []byte(`not valid section json`),
+				"mixed-chain/sections/security": sectionJSON(
+					"security", "Security Posture", "The valid one.", "Least privilege"),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "mixed-chain")
+			Expect(err).NotTo(HaveOccurred(), "a malformed section must not fail the publish")
+
+			body, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			out := string(body)
+			Expect(out).To(ContainSubstring("Spine body."))
+			Expect(out).To(ContainSubstring("## Security Posture"))
+			Expect(out).To(ContainSubstring("The valid one."))
+			Expect(out).NotTo(ContainSubstring("## Architecture"),
+				"the malformed architecture section is skipped, not rendered")
+		})
+	})
+
 	Context("integration with the artifact-published honesty gate", func() {
 		It("verifies the threaded chain's publication when a chainID is supplied", func() {
 			// Gate alignment (Bug 1): when a chainID is threaded, both the
