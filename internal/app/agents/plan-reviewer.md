@@ -64,16 +64,24 @@ orchestrator_meta:
   triggers:
     - domain: Review
       trigger: Validate plans for feasibility, completeness, risks, and quality before execution
-# Write-critical planning-loop agent: route to a tool-call-RELIABLE Anthropic
-# model that actually resolves. `claude-sonnet-4-20250514` is the configured
-# Anthropic provider model and the provider's hardcoded fallback id (passed
-# straight through to the API). The non-existent `claude-sonnet-4-7` 404s and
-# fails over to zai/glm, which narrates "now writing…" then emits no tool call
-# (the synthesis-hang that stalls the loop). The zai/glm-4.6 tail degrades
-# gracefully when no Anthropic key is configured.
+# Permissive policy so the evidence-led failover chain below can cascade
+# across providers without being rejected.
+model_policy: "permissive"
+# Evidence-led multi-provider failover chain (May 2026 model-selection
+# probe, commit 592c8c20). This is a REASONING-CRITICAL agent — the
+# independent quality gate on a generated plan — so the top tier is opus
+# rather than sonnet. anthropic FIRST (claude-opus-4-6) — best reasoning
+# when reachable, auto-recovers the moment the provider is back up.
+# openai/gpt-4o SECOND — proven reachable + reliable (0/3 synthesis-hangs)
+# when anthropic was unreachable tonight. zai/glm-4.6 TERMINAL — also
+# proven reliable (0/3 hangs) and always reachable, so the chain never
+# cascades down to ollama. Supersedes the stale 2-entry chain whose head
+# `claude-sonnet-4-20250514` is no longer in the catalogue.
 preferred_models:
   - provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-opus-4-6
+  - provider: openai
+    model: gpt-4o
   - provider: zai
     model: glm-4.6
 ---

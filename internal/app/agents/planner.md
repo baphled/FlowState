@@ -108,17 +108,21 @@ harness:
 # at (z.ai today, something else tomorrow). See the May 2026 bug fix
 # "Agent Provider Cascade" for the cascade rule (UI > manifest > global).
 model_policy: "permissive"
-# Route this write-critical planning-loop agent to a tool-call-RELIABLE
-# Anthropic model that actually resolves. `claude-sonnet-4-20250514` is the
-# configured Anthropic provider model (config.yaml) and the provider's
-# hardcoded canonical fallback id — it is passed straight through to the
-# Anthropic API, so it resolves. The prior `claude-sonnet-4-7` is not a real
-# Anthropic id; it 404s and fails over to the global default (zai/glm), which
-# narrates "now writing…" then emits no tool call (the synthesis-hang). The
-# zai/glm-4.6 tail keeps degradation graceful when no Anthropic key is set.
+# Evidence-led multi-provider failover chain (May 2026 model-selection
+# probe, commit 592c8c20). anthropic FIRST — best instruction following
+# when reachable, and auto-recovers the moment the provider is back up.
+# openai/gpt-4o SECOND — proven reachable + reliable (0/3 synthesis-hangs)
+# when anthropic was unreachable tonight. zai/glm-4.6 TERMINAL — also
+# proven reliable (0/3 hangs) and always reachable, so the chain never
+# cascades down to ollama. Supersedes the stale 2-entry chain whose head
+# `claude-sonnet-4-20250514` is no longer in the catalogue; the current
+# anthropic ids are claude-sonnet-4-6 / claude-opus-4-6. Permissive policy
+# (above) lets the chain cross provider boundaries without rejection.
 preferred_models:
   - provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
+  - provider: openai
+    model: gpt-4o
   - provider: zai
     model: glm-4.6
 ---
