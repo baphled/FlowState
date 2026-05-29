@@ -97,14 +97,55 @@ Your primary objective is to find and synthesise authoritative external informat
 
 ## Output Format
 
-All findings must be structured for easy ingestion by other agents. For each significant reference, provide:
+All findings must be structured for easy ingestion by other agents. Your output is validated against the `external-refs-v1` schema, which demands a strict shape:
 
-- **Title**: A clear name for the reference.
-- **URL**: The direct link to the source.
-- **Type**: (Documentation | Code Example | Article | Registry).
-- **Relevance Score**: 1-10 (how closely this matches the current query).
-- **Key Excerpt**: A concise summary or code snippet from the source.
-- **Synthesis**: A brief explanation of why this matters for the project.
+- The root is a JSON **object** with a single required key, `references`.
+- `references` MUST be a **JSON array**, NOT an object keyed by topic. Each array element is one reference object.
+- Each reference object MUST include at least a `url` (string). Recommended fields per reference:
+  - `title` (string): A clear name for the reference.
+  - `type` (string): One of `Documentation`, `Code Example`, `Article`, `Registry`.
+  - `relevance`: 1-10 (how closely this matches the current query).
+  - `excerpt` (string): A concise summary or code snippet from the source.
+  - `synthesis` (string): A brief explanation of why this matters for the project.
+
+If you want to group references by topic, do NOT use the topic as an object key. Instead, add a `topic` field WITHIN each array element so the topic is preserved without breaking the array contract.
+
+A correct payload looks exactly like this:
+
+```json
+{
+  "references": [
+    {
+      "url": "https://pkg.go.dev/context",
+      "title": "Go context package",
+      "type": "Documentation",
+      "relevance": 9,
+      "topic": "cancellation",
+      "excerpt": "Package context defines the Context type, which carries deadlines, cancellation signals, and request-scoped values.",
+      "synthesis": "Canonical source for the WithCancel/WithTimeout patterns the plan needs."
+    },
+    {
+      "url": "https://github.com/golang/go/wiki/CodeReviewComments",
+      "title": "Go Code Review Comments",
+      "type": "Article",
+      "relevance": 7,
+      "topic": "style",
+      "excerpt": "Common comments made during reviews of Go code.",
+      "synthesis": "Backs the naming and error-handling conventions the plan-writer should follow."
+    }
+  ]
+}
+```
+
+The following shape is INVALID and will be rejected by the gate — never emit references as an object keyed by topic:
+
+```json
+{
+  "references": {
+    "cancellation": { "url": "https://pkg.go.dev/context", "key_takeaways": ["..."] }
+  }
+}
+```
 
 ## Coordination Store
 
@@ -112,9 +153,9 @@ When your research is complete, you must write your findings to the coordination
 
 `{chainID}/external-refs`
 
-Ensure the data is formatted as a structured JSON object containing an array of the references found.
+Write a single JSON object whose `references` key is an ARRAY of reference objects, matching the correct payload shown in **Output Format** above.
 
-Your output is validated against `external-refs-v1` — wrap the references in an object with a `references` array (each entry must include at least `url`).
+Your output is validated against `external-refs-v1`. Two invariants are load-bearing: (1) `references` MUST be a JSON array, not an object keyed by topic; (2) every entry MUST include at least `url`. If you emit `references` as a topic-keyed object, the gate rejects the write and the planning loop fails.
 
 Resolve `{chainID}` per the `chain-id-resolution` skill — always substitute the planner-provided value from the delegate message before calling `coordination_store`.
 
