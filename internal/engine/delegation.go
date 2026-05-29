@@ -2666,6 +2666,16 @@ func (d *DelegateTool) executeSync(
 			// single source of correctness; ErrTurnTerminal silent-swallow
 			// inside Fail is the backstop.
 			failChildTurnIfOwned(dispatchErr)
+			// Record the actually-used (provider, model) on the child session
+			// BEFORE sealing. A stream-dispatch failure (the synthesis-hang
+			// signature) never flushes an assistant message that carries
+			// ModelName, so the appendSessionMessage promotion never fires and
+			// the sidecar would otherwise seal with null model/provider —
+			// leaving model attribution to the contended shared flowstate.log.
+			// LastProvider/LastModel report the resolved pair the request was
+			// dispatched to (post-override, post-failover) even on the failure
+			// path. See recordChildModelAttribution.
+			d.recordChildModelAttribution(delegateSessionID, target.engine.LastProvider(), target.engine.LastModel())
 			// Bug fix (May 2026 — Session Seal Persistence Hole): the success
 			// branch below seals the child session via closeSessionIfManaged
 			// (line ~2016), but the dispatch-failure path returned without
@@ -2705,6 +2715,12 @@ func (d *DelegateTool) executeSync(
 		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, gateErr.Error(), target.loadSkills))
 		completeChildTurn(providerName, modelName)
 		failChildTurnIfOwned(gateErr)
+		// Stamp the actually-used pair on the child session before sealing so
+		// a narrated-but-not-written gate failure (the synthesis-hang the gate
+		// retries guard against) still records which model ran. modelName /
+		// providerName were captured from LastModel/LastProvider after the
+		// last stream attempt above.
+		d.recordChildModelAttribution(delegateSessionID, providerName, modelName)
 		d.closeSessionIfManaged(delegateSessionID)
 		return tool.Result{}, gateErr
 	}
@@ -2723,6 +2739,11 @@ func (d *DelegateTool) executeSync(
 	// byActiveSession entry clears in the terminal-then-cleanup order
 	// (matches dispatcher.go:933-936).
 	completeChildTurn(providerName, modelName)
+	// The happy path already promotes (provider, model) onto the session via
+	// the assistant-message-append path; stamping here is idempotent and
+	// backstops the rare case where the flushed assistant message lacked a
+	// ModelName but LastModel/LastProvider know the resolved pair.
+	d.recordChildModelAttribution(delegateSessionID, providerName, modelName)
 	d.closeSessionIfManaged(delegateSessionID)
 
 	return tool.Result{
@@ -4599,6 +4620,44 @@ func (d *DelegateTool) closeSessionIfManaged(sessionID string) {
 		return
 	}
 	if err := d.sessionManager.CloseSession(sessionID); err != nil && !errors.Is(err, session.ErrSessionNotFound) {
+		_ = err
+	}
+}
+
+// recordChildModelAttribution stamps the actually-used (provider, model) pair
+// onto the child session and persists the .meta.json sidecar so attribution is
+// deterministic from the session record alone, never inferred from the
+// contended shared flowstate.log.
+//
+// The happy path already promotes the pair onto the session when an assistant
+// message flushes with a populated ModelName (manager.go appendSessionMessage).
+// But a delegate that hangs or stream-errors before flushing such a message —
+// the synthesis-hang signature — never reaches that path, so its sealed
+// .meta.json records CurrentModelID / CurrentProviderID null. This helper
+// closes that hole: it sources the pair from the engine's post-resolution
+// LastProvider() / LastModel() (which reflect the override + failover outcome,
+// i.e. what the request was actually sent to — not the configured default) and
+// writes it on every seal site, including the failure / gate-exhausted paths.
+//
+// Empty values are tolerated and skipped (no manager, no resolved pair, or a
+// legacy test surface without a session manager) so the call is a safe no-op
+// when attribution cannot be determined.
+//
+// Expected:
+//   - sessionID identifies the child session to stamp.
+//   - providerID / modelID are the actually-used pair; empty values short-circuit.
+//
+// Side effects:
+//   - Calls sessionManager.UpdateSessionModel, which persists the sidecar.
+func (d *DelegateTool) recordChildModelAttribution(sessionID, providerID, modelID string) {
+	if d.sessionManager == nil || sessionID == "" {
+		return
+	}
+	if providerID == "" && modelID == "" {
+		return
+	}
+	if err := d.sessionManager.UpdateSessionModel(sessionID, providerID, modelID); err != nil &&
+		!errors.Is(err, session.ErrSessionNotFound) {
 		_ = err
 	}
 }

@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -204,6 +205,105 @@ var _ = Describe("Delegation brief persistence in child session", Label("integra
 			Expect(userMsg).NotTo(BeNil())
 			Expect(userMsg.Content).To(Equal(brief))
 			Expect(userMsg.AgentID).To(Equal("target-agent"))
+		})
+	})
+})
+
+var _ = Describe("Delegate session model attribution", Label("integration"), func() {
+	// When a swarm member (e.g. analyst) hangs mid-synthesis we cannot tell
+	// which model it ran on. On the happy path the promotion at
+	// manager.go:1190-1194 stamps CurrentModelID / CurrentProviderID from the
+	// flushed assistant message's ModelName. But a hung / stream-errored
+	// delegate NEVER flushes an assistant message that carries ModelName, so
+	// the dispatch-failure seal at delegation.go:~2675 closes the child
+	// session with CurrentModelID / CurrentProviderID still empty — the
+	// .meta.json records null even though the engine's LastModel() /
+	// LastProvider() know the resolved pair. Attribution then falls back to
+	// the contended shared flowstate.log. Pin the behaviour: a delegate that
+	// fails before flushing an assistant message must still record the
+	// provider/model it was actually dispatched to.
+
+	newFailingEngine := func() *engine.Engine {
+		failProvider := &mockProvider{
+			name:      "test-provider",
+			streamErr: errors.New("synthesis hang: stream never produced an assistant message"),
+		}
+		eng := engine.New(engine.Config{
+			ChatProvider: failProvider,
+			Manifest:     newDelegationTestManifest("target-agent"),
+		})
+		// The resolved pair the child engine actually dispatches to.
+		// LastProvider() / LastModel() report these post-resolution even
+		// when the stream then errors before any assistant message flushes.
+		eng.SetModelPreference("zai", "glm-4.5")
+		return eng
+	}
+
+	Context("when a sync delegate fails before flushing an assistant message", func() {
+		It("records the actually-used provider and model on the sealed child session", func() {
+			targetEngine := newFailingEngine()
+
+			mgr := session.NewManager(targetEngine)
+			mgr.RegisterSession("parent-model-attrib", "coordinator")
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"target-agent": targetEngine},
+				agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+				"coordinator",
+			)
+			delegateTool.WithSessionCreator(mgr)
+			delegateTool.WithSessionManager(mgr)
+			delegateTool.WithMessageAppender(mgr)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-model-attrib")
+			_, err := delegateTool.Execute(ctx, delegationInput())
+			Expect(err).To(HaveOccurred())
+
+			children, err := mgr.ChildSessions("parent-model-attrib")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).NotTo(BeEmpty())
+
+			childSess, err := mgr.GetSession(children[0].ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(childSess.CurrentProviderID).To(Equal("zai"),
+				"sealed child session must record the provider it was actually dispatched to, not null")
+			Expect(childSess.CurrentModelID).To(Equal("glm-4.5"),
+				"sealed child session must record the model it was actually dispatched to, not null")
+		})
+
+		It("persists the actually-used provider/model to the .meta.json sidecar", func() {
+			tmpDir := GinkgoT().TempDir()
+
+			targetEngine := newFailingEngine()
+
+			mgr := session.NewManager(targetEngine)
+			mgr.SetSessionsDir(tmpDir)
+			mgr.RegisterSession("parent-model-sidecar", "coordinator")
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"target-agent": targetEngine},
+				agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+				"coordinator",
+			)
+			delegateTool.WithSessionCreator(mgr)
+			delegateTool.WithSessionManager(mgr)
+			delegateTool.WithMessageAppender(mgr)
+			delegateTool.WithSessionsDir(tmpDir)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "parent-model-sidecar")
+			_, err := delegateTool.Execute(ctx, delegationInput())
+			Expect(err).To(HaveOccurred())
+
+			children, err := mgr.ChildSessions("parent-model-sidecar")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(children).NotTo(BeEmpty())
+
+			restored, err := session.LoadSessionMetadata(tmpDir, children[0].ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(restored.CurrentProviderID).To(Equal("zai"),
+				".meta.json must reflect the actually-used provider after a failed run, not null")
+			Expect(restored.CurrentModelID).To(Equal("glm-4.5"),
+				".meta.json must reflect the actually-used model after a failed run, not null")
 		})
 	})
 })
