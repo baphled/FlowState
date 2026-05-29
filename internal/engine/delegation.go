@@ -3798,27 +3798,21 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 	}
 	defer d.unmarkPreSwarmFiring(swarmCtx.SwarmID)
 
-	// Resolve the chainID for this run. Precedence:
-	//   1. A caller-supplied chainID captured at member-dispatch time
-	//      (Bug 1) — honoured first so existing CLI/test paths that pass
-	//      an explicit chainID keep targeting their chosen chain.
-	//   2. The engine-assigned chainID on swarmCtx.ChainPrefix — but ONLY
-	//      when the engine actually stamped a per-run id at swarm start
-	//      (ChainIDAssigned, set by the dispatcher's AssignRunChainID per
-	//      ADR - Engine-Owned Workflow Mechanics, forward decision). This
-	//      is the default when the LLM never supplied a chainID, so the
-	//      publisher and post-swarm gate target the run's engine-owned
-	//      namespace.
-	//   3. Otherwise empty — the publisher keeps its suffix-scan fallback
-	//      so legacy seeded-chain runs (a static ChainPrefix with the plan
-	//      under an unrelated key) are unaffected. Reading ChainPrefix
-	//      unconditionally would shadow that scan and break those runs.
-	// Threading the SAME chain to both the publisher and the post-swarm
-	// gate keeps them targeting the run's plan, not a stale one.
-	chainID := d.swarmChainIDForID(swarmCtx.SwarmID)
-	if chainID == "" && swarmCtx.ChainIDAssigned {
-		chainID = swarmCtx.ChainPrefix
-	}
+	// Resolve the chainID for this run through the SAME authoritative
+	// resolver the member-write preamble and the wave validator use, so the
+	// publisher and post-swarm gate target the identical namespace the
+	// members wrote under (the core regression: member writes under X, the
+	// post-phase looks under Y). Precedence:
+	//   1. Engine-assigned chainID (swarmCtx.ChainIDAssigned) — authoritative,
+	//      overrides anything an LLM/member captured. This is the engine-owned
+	//      namespace per ADR - Engine-Owned Workflow Mechanics.
+	//   2. The chainID captured at member-dispatch time (already routed
+	//      through the resolver, hence already engine-owned when one was
+	//      assigned) — covers legacy seeded chains where the lead supplied
+	//      an explicit chain and no per-run id was stamped.
+	//   3. Otherwise empty — the publisher keeps its suffix-scan fallback so
+	//      legacy seeded-chain runs are unaffected.
+	chainID, _ := d.resolveSwarmChainNamespace(ctx, d.swarmChainIDForID(swarmCtx.SwarmID), false)
 
 	// Deterministically publish the planning loop's approved plan to the
 	// vault BEFORE the post-swarm honesty gate fires. This removes the LLM
@@ -3975,6 +3969,89 @@ func (d *DelegateTool) unmarkPreSwarmFiring(swarmID string) {
 	d.swarmLifecycleMu.Lock()
 	defer d.swarmLifecycleMu.Unlock()
 	delete(d.prefiredSwarmIDs, swarmID)
+}
+
+// resolveSwarmChainNamespace is the SINGLE authoritative chain-namespace
+// resolver for a swarm run. Every load-bearing site that answers "under
+// what coord-store prefix does this run's data live" routes through here so
+// the member-write preamble, the wave fan-in validator, the swarm gates,
+// and the deterministic publisher all agree on ONE value.
+//
+// The recurring planning-loop doom-loop was exactly a disagreement between
+// these sites: the planner LLM free-formed a chainID (with a slash) in its
+// delegate prose; members + the publisher followed that free-form value
+// while the wave validator resolved the engine-assigned swarm namespace —
+// so the validator looked under X while the deliverable lived under Y and
+// the loop exhausted its retries. Routing all sites through one resolver
+// closes that divergence class at the source.
+//
+// Resolution order (engine-authority first — ADR Engine-Owned Workflow
+// Mechanics, forward decision):
+//
+//  1. Engine-assigned chainID — when the dispatcher stamped a per-run id at
+//     swarm start (swarmCtx.ChainIDAssigned, set by AssignRunChainID), that
+//     value is AUTHORITATIVE and OVERRIDES any caller/LLM-supplied chainID.
+//     This stops the planner free-forming a namespace the validator never
+//     sees: inside an engine-owned swarm run the LLM cannot pick the chain.
+//  2. Caller-supplied chainID — honoured (SLUGIFIED) only when the run has
+//     no engine-assigned id (a legacy seeded static chain_prefix, a CLI
+//     run, or a validate-harness fixture). Slugifying renders a free-form
+//     value key-safe so it can never fracture "<chainID>/<suffix>" parsing.
+//  3. Static swarm ChainPrefix — a swarm in flight whose prefix was never
+//     stamped (a legacy seeded chain). This branch fires ONLY for the
+//     member-dispatch path (staticPrefixFallback=true), preserving the
+//     pre-fix member-target resolution. The post-swarm publisher passes
+//     staticPrefixFallback=false so it keeps its suffix-scan fallback for
+//     seeded-chain runs rather than targeting the static prefix verbatim.
+//  4. Empty — no engine assignment, no caller chain, and the static-prefix
+//     fallback is disabled. The caller (member dispatch) substitutes a
+//     standalone delegation id; the publisher keeps its suffix-scan.
+//
+// Returns the resolved namespace and whether it is "owned" (engine-assigned
+// or caller-supplied) — owned chains drive the member preamble and the
+// recorded-chain capture; an empty/unowned result leaves the legacy
+// suffix-scan fallback in place.
+//
+// Side effects:
+//   - None (reads the ctx-scoped swarm context).
+func (d *DelegateTool) resolveSwarmChainNamespace(ctx context.Context, callerChainID string, staticPrefixFallback bool) (chainID string, owned bool) {
+	swarmCtx, inSwarm := d.activeSwarmContextForCtx(ctx)
+	if inSwarm && swarmCtx != nil && swarmCtx.ChainIDAssigned && swarmCtx.ChainPrefix != "" {
+		// Engine owns the chainID — the LLM/caller value is ignored so
+		// every site reads the same authoritative namespace.
+		return swarm.SlugifyChainID(swarmCtx.ChainPrefix), true
+	}
+	if slug := swarm.SlugifyChainID(callerChainID); slug != "" {
+		// No engine assignment: honour the caller's choice (CLI, tests,
+		// validate-harness, legacy seeded chains) but slugify it so a
+		// free-form value can never break key parsing.
+		return slug, true
+	}
+	if staticPrefixFallback && inSwarm && swarmCtx != nil && swarmCtx.ChainPrefix != "" {
+		// Member-dispatch only: a swarm in flight with only a static prefix
+		// (no per-run stamp, no caller chain) targets that prefix — the
+		// pre-fix behaviour. The publisher disables this so it suffix-scans.
+		return swarm.SlugifyChainID(swarmCtx.ChainPrefix), true
+	}
+	return "", false
+}
+
+// resolveMemberChainID resolves the chainID for a single member dispatch
+// via the authoritative resolver, falling back to a standalone delegation
+// id when neither an engine-assigned nor a caller-supplied chain exists.
+// The member-dispatch path enables the static-prefix fallback so a swarm in
+// flight with only a static prefix still targets it (pre-fix behaviour). The
+// owned flag (chainIDFromCaller) gates the preamble injection + the
+// post-swarm chain capture exactly as before, so backwards-compatible call
+// sites that supply no chain still see no preamble.
+//
+// Side effects:
+//   - None.
+func (d *DelegateTool) resolveMemberChainID(ctx context.Context, callerChainID string) (chainID string, fromCaller bool) {
+	if resolved, owned := d.resolveSwarmChainNamespace(ctx, callerChainID, true); owned {
+		return resolved, true
+	}
+	return newDelegationChainID(), false
 }
 
 // recordSwarmChainID captures the lead-allocated chainID for swarmID so
@@ -4360,23 +4437,11 @@ func (d *DelegateTool) resolveTargetWithOptions(ctx context.Context, params dele
 		return delegationTarget{}, err
 	}
 
-	var chainID string
-	chainIDFromCaller := false
-	switch {
-	case params.chainID != "":
-		chainID = params.chainID
-		chainIDFromCaller = true
-	case params.handoff != nil && params.handoff.ChainID != "":
-		chainID = params.handoff.ChainID
-		chainIDFromCaller = true
-	default:
-		if swarmCtx, ok := d.activeSwarmContextForCtx(ctx); ok && swarmCtx.ChainPrefix != "" {
-			chainID = swarmCtx.ChainPrefix
-			chainIDFromCaller = true
-		} else {
-			chainID = newDelegationChainID()
-		}
+	callerChainID := params.chainID
+	if callerChainID == "" && params.handoff != nil {
+		callerChainID = params.handoff.ChainID
 	}
+	chainID, chainIDFromCaller := d.resolveMemberChainID(ctx, callerChainID)
 
 	targetEngine, ok := d.engines[targetAgentID]
 	if !ok {

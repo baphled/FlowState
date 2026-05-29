@@ -465,7 +465,7 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(probe.sawPublication).To(BeTrue(),
 			"the publication record must exist BEFORE the post-swarm gate runs")
 
-		vaultPath := filepath.Join(outputDir, "readyz-plan.md")
+		vaultPath := filepath.Join(outputDir, "Readyz Plan.md")
 		Expect(vaultPath).To(BeAnExistingFile(),
 			"the plan must be written to a real file in the vault")
 		body, readErr := os.ReadFile(vaultPath)
@@ -510,7 +510,7 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
 
 		// The NAMED chain's plan was published, NOT the stale one.
-		wantedPath := filepath.Join(outputDir, "mental-health-companion.md")
+		wantedPath := filepath.Join(outputDir, "Mental Health Companion.md")
 		Expect(wantedPath).To(BeAnExistingFile(),
 			"the lead-allocated chain's plan reaches the vault")
 		entries, _ := os.ReadDir(outputDir)
@@ -564,7 +564,7 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		// resolve the engine-assigned chain.
 		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
 
-		wantedPath := filepath.Join(outputDir, "engine-owned-plan.md")
+		wantedPath := filepath.Join(outputDir, "Engine Owned Plan.md")
 		Expect(wantedPath).To(BeAnExistingFile(),
 			"the engine-assigned chain's plan reaches the vault")
 		entries, _ := os.ReadDir(outputDir)
@@ -578,11 +578,15 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 			"the post-swarm gate's GateArgs.ChainID is the engine-assigned chain")
 	})
 
-	It("still honours a caller-supplied chainID over the engine-assigned default (backwards compat)", func() {
-		// Backwards-compat guard: when a caller (existing CLI/test paths,
-		// validate-harness fixtures) supplies an explicit chainID, it wins
-		// over the engine-assigned default. This keeps the seeded-chain
-		// contract the Bug 1 test pins.
+	It("OVERRIDES an LLM-supplied chainID with the engine-assigned one inside an engine-owned run (chainID-identity unification)", func() {
+		// THE CORE REGRESSION FLIP. Pre-fix, an LLM free-forming a chainID in
+		// its delegate prose WON over the engine-assigned namespace: the
+		// member wrote + the publisher targeted the LLM value while the wave
+		// validator resolved the engine value, so the loop doom-looped. The
+		// new contract (ADR Engine-Owned Workflow Mechanics): when the engine
+		// stamped a per-run chainID at swarm start, that value is
+		// AUTHORITATIVE and the LLM-supplied chainID is IGNORED. Every site —
+		// member preamble, validator, gate, publisher — converges on it.
 		outputDir := GinkgoT().TempDir()
 		store := coordination.NewMemoryStore()
 
@@ -592,13 +596,69 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		swarmCtx.AssignRunChainID("session-engine-owned")
 		assignedChain := swarmCtx.ChainPrefix
 
-		// The engine-assigned chain has a plan, but the caller explicitly
-		// chose a different chain — the caller's choice must win.
+		// The engine-assigned chain holds the real deliverable. The LLM
+		// free-formed a DIFFERENT chain in its delegate message — it must be
+		// ignored, NOT published.
 		Expect(store.Set(assignedChain+"/plan",
-			[]byte(`{"markdown":"# Engine Chain\n\nshould lose","title":"Engine Chain"}`))).To(Succeed())
-		Expect(store.Set("caller-chosen/plan",
-			[]byte(`{"markdown":"# Caller Chosen Plan\n\nthe wanted plan","title":"Caller Chosen Plan"}`))).To(Succeed())
-		Expect(store.Set("caller-chosen/review", validVerdictPayload())).To(Succeed())
+			[]byte(`{"markdown":"# Engine Owned Plan\n\nthe wanted plan","title":"Engine Owned Plan"}`))).To(Succeed())
+		Expect(store.Set(assignedChain+"/review", validVerdictPayload())).To(Succeed())
+		Expect(store.Set("llm-free-formed/plan",
+			[]byte(`{"markdown":"# LLM Free-Formed\n\nshould lose","title":"LLM Free-Formed"}`))).To(Succeed())
+
+		argsProbe := &chainArgProbeRunner{}
+		engines, _ := reviewerEnginesWithContext(swarmCtx)
+		delegateTool := newDelegateToolWithRunner(engines, store, argsProbe).
+			WithPlanOutputDir(outputDir)
+
+		// The LLM supplies its own chainID in the delegate call — the engine
+		// must override it.
+		input := tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "plan-reviewer",
+				"message":       "review the plan",
+				"chainID":       "llm-free-formed",
+			},
+		}
+		_, err := delegateTool.Execute(context.Background(), input)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
+
+		wantedPath := filepath.Join(outputDir, "Engine Owned Plan.md")
+		Expect(wantedPath).To(BeAnExistingFile(),
+			"the ENGINE-ASSIGNED chain's plan is published, not the LLM free-formed one")
+		entries, _ := os.ReadDir(outputDir)
+		Expect(entries).To(HaveLen(1),
+			"only the engine-owned chain is published; the LLM free-formed one is ignored")
+		Expect(argsProbe.lastChainID).To(Equal(assignedChain),
+			"the post-swarm gate's GateArgs.ChainID is the engine-assigned chain, NOT the LLM-supplied one")
+	})
+
+	It("slugifies an LLM/caller chainID containing a slash so it can never break key parsing (the exact doom-loop repro)", func() {
+		// The precise live-run repro: the planner free-formed
+		// "planner/sme-sectional-plans" (a chainID WITH A SLASH). Members
+		// wrote evidence under that three-segment key while the validator
+		// split on the first "/". Here there is NO engine assignment (a
+		// seeded/standalone run), so the caller value is honoured — but it
+		// MUST be slugified to a key-safe value before it becomes a namespace.
+		outputDir := GinkgoT().TempDir()
+		store := coordination.NewMemoryStore()
+
+		// Seeded (legacy) swarm: an explicit static chain_prefix means the
+		// engine does NOT stamp a per-run id (ChainIDAssigned stays false),
+		// so the caller-supplied chainID is the one honoured — after slugify.
+		swarmCtx := swarmContextWithGates([]swarm.GateSpec{
+			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
+		})
+
+		// The deliverable lives under the SLUGIFIED form of the free-form
+		// chainID — exactly where a slugifying member preamble would have
+		// written it.
+		const slugged = "planner-sme-sectional-plans"
+		Expect(store.Set(slugged+"/plan",
+			[]byte(`{"markdown":"# Sectional Plans\n\nthe wanted plan","title":"Sectional Plans"}`))).To(Succeed())
+		Expect(store.Set(slugged+"/review", validVerdictPayload())).To(Succeed())
 
 		argsProbe := &chainArgProbeRunner{}
 		engines, _ := reviewerEnginesWithContext(swarmCtx)
@@ -610,7 +670,7 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 			Arguments: map[string]interface{}{
 				"subagent_type": "plan-reviewer",
 				"message":       "review the plan",
-				"chainID":       "caller-chosen",
+				"chainID":       "planner/sme-sectional-plans",
 			},
 		}
 		_, err := delegateTool.Execute(context.Background(), input)
@@ -618,11 +678,79 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 
 		Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed())
 
-		wantedPath := filepath.Join(outputDir, "caller-chosen-plan.md")
+		Expect(argsProbe.lastChainID).To(Equal(slugged),
+			"the slash in the caller chainID must be slugified before it becomes a coord-store namespace")
+		Expect(argsProbe.lastChainID).NotTo(ContainSubstring("/"),
+			"a chainID with a slash must never reach the gate verbatim — it fractures key parsing")
+
+		wantedPath := filepath.Join(outputDir, "Sectional Plans.md")
 		Expect(wantedPath).To(BeAnExistingFile(),
-			"the caller-supplied chain's plan is published, not the engine-assigned one")
-		Expect(argsProbe.lastChainID).To(Equal("caller-chosen"),
-			"the caller-supplied chainID wins over the engine-assigned default")
+			"the slugified chain's plan is published under the key-safe namespace")
+	})
+
+	It("resolves ONE chainID across member-write, gate and publish for an engine-owned run (the core regression)", func() {
+		// THE CORE REGRESSION. A planning swarm run must resolve the SAME
+		// chainID at every load-bearing site or it doom-loops: the member
+		// writes evidence under chain X, the validator/gate/publisher look
+		// under chain Y, the wave never completes. This drives a real member
+		// dispatch through the engine-owned ctx scope and asserts the chain
+		// the member-write path captured == the chain the gate received ==
+		// the chain the publisher wrote under == the engine-assigned slug
+		// the wave validator resolves (swarm.SlugifyChainID(ChainPrefix)).
+		outputDir := GinkgoT().TempDir()
+		store := coordination.NewMemoryStore()
+
+		swarmCtx := defaultPrefixSwarmContextWithGates([]swarm.GateSpec{
+			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
+		})
+		swarmCtx.AssignRunChainID("session-core-regression")
+		engineChain := swarmCtx.ChainPrefix
+
+		// What the wave validator resolves (same normalisation, same input).
+		validatorChain := swarm.SlugifyChainID(engineChain)
+		Expect(validatorChain).To(Equal(engineChain),
+			"precondition: the engine form is already key-safe so the validator reads it unchanged")
+
+		// The deliverable lands under the engine-assigned chain (where a
+		// member following the slugged engine value would have written it).
+		Expect(store.Set(engineChain+"/plan",
+			[]byte(`{"markdown":"# Unified Plan\n\nthe wanted plan","title":"Unified Plan"}`))).To(Succeed())
+		Expect(store.Set(engineChain+"/review", validVerdictPayload())).To(Succeed())
+
+		argsProbe := &chainArgProbeRunner{}
+		engines, _ := reviewerEnginesWithContext(swarmCtx)
+		delegateTool := newDelegateToolWithRunner(engines, store, argsProbe).
+			WithPlanOutputDir(outputDir)
+
+		// Drive a real member dispatch through the engine-owned ctx scope.
+		// The LLM free-forms its own chainID — the engine overrides it, so
+		// the member-write capture lands on the engine chain.
+		dispatchCtx := swarm.WithScope(context.Background(), swarmCtx)
+		_, err := delegateTool.Execute(dispatchCtx, tool.Input{
+			Name: "delegate",
+			Arguments: map[string]interface{}{
+				"subagent_type": "plan-reviewer",
+				"message":       "review the plan",
+				"chainID":       "llm/free/formed/with/slashes",
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(delegateTool.FlushSwarmLifecycle(dispatchCtx)).To(Succeed())
+
+		// Site 1 — gate: the post-swarm gate received the engine chain.
+		Expect(argsProbe.lastChainID).To(Equal(engineChain),
+			"gate chain MUST equal the engine-assigned chain")
+		// Site 2 — publish: the plan was published under the engine chain.
+		recorded, ok := readPublicationRecord(store, engineChain)
+		Expect(ok).To(BeTrue(), "publication recorded under the engine chain")
+		Expect(recorded).To(Equal(filepath.Join(outputDir, "Unified Plan.md")))
+		entries, _ := os.ReadDir(outputDir)
+		Expect(entries).To(HaveLen(1),
+			"only the single engine-owned chain is published — no divergent namespace")
+		// Site 3 — validator: resolves the identical engine chain.
+		Expect(argsProbe.lastChainID).To(Equal(validatorChain),
+			"gate/publish chain MUST equal the wave-validator-resolved chain — they all converge on ONE value")
 	})
 
 	It("is a no-op when no plan_output_dir is wired (historical behaviour preserved)", func() {

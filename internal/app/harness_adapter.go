@@ -350,10 +350,17 @@ type coordWaveValidator struct {
 func (v *coordWaveValidator) resolveChainID(ctx context.Context) string {
 	if sc, scoped := swarm.ScopeFromContext(ctx); scoped && sc != nil &&
 		sc.ChainIDAssigned && sc.ChainPrefix != "" {
-		return sc.ChainPrefix
+		// Engine-assigned namespace is authoritative AND key-safe; slugify
+		// is a defensive no-op on the "{swarmID}-{hash}" form but keeps the
+		// validator reading the SAME normalised value the member-write
+		// preamble and the publisher resolve via swarm.SlugifyChainID.
+		return swarm.SlugifyChainID(sc.ChainPrefix)
 	}
 	chainID, _ := ctx.Value(session.IDKey{}).(string)
-	return chainID
+	// Standalone / legacy path: session.IDKey is normally a UUID (already
+	// key-safe), but slugify it so a caller threading a free-form session
+	// id can never fracture "<chainID>/<suffix>" parsing here either.
+	return swarm.SlugifyChainID(chainID)
 }
 
 // MissingForChain implements harness.WaveValidator. See

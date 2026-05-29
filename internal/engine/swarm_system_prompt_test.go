@@ -103,6 +103,50 @@ var _ = Describe("Engine swarm-lead system prompt", func() {
 			Expect(prompt).To(ContainSubstring("bug-hunt/senior-engineer"))
 		})
 
+		// Part 1 of the chainID-identity unification: when the engine has
+		// stamped a per-run chainID (ChainIDAssigned), the lead's prompt MUST
+		// surface that exact value and tell the lead to use it verbatim. The
+		// recurring doom-loop was the planner free-forming its own chainID; the
+		// fix is to give it the engine value and forbid invention. A swarm
+		// WITHOUT an assigned chainID must NOT carry the directive (it would be
+		// false — no engine value exists to reference).
+		It("surfaces the engine-assigned chainID and forbids inventing one when the engine owns it", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+			ctx.AssignRunChainID("session-prompt-test")
+			engineChain := ctx.ChainPrefix
+			Expect(engineChain).To(HavePrefix("bug-hunt-"),
+				"precondition: the engine assigned a per-run chain anchored under the swarm id")
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(prompt).To(ContainSubstring(engineChain),
+				"the lead prompt must surface the exact engine-assigned chainID so the model references it")
+			Expect(strings.ToLower(prompt)).To(ContainSubstring("engine-assigned"),
+				"the lead prompt must mark the chainID as engine-assigned")
+			Expect(strings.ToLower(prompt)).To(
+				SatisfyAny(
+					ContainSubstring("do not invent"),
+					ContainSubstring("is ignored"),
+				),
+				"the lead prompt must forbid the model inventing its own chainID for an engine-owned run",
+			)
+		})
+
+		It("does NOT emit the engine-assigned directive when no per-run chainID was stamped", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext() // static prefix, ChainIDAssigned == false
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(strings.ToLower(prompt)).NotTo(ContainSubstring("engine-assigned"),
+				"a swarm without a stamped per-run chainID must not claim an engine-assigned value exists")
+		})
+
 		// Parallel dispatch: the lead must be instructed to emit independent
 		// member delegate calls in a single assistant message so the engine's
 		// concurrent dispatch path fires. Without this instruction the model

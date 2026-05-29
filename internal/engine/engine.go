@@ -2285,6 +2285,21 @@ func (e *Engine) appendSwarmLeadSectionFor(base string, manifest agent.Manifest)
 	b.WriteString(manifest.ID)
 	b.WriteString("/...` so the swarm's members agree on where to read and write.\n")
 
+	if swarmCtx.ChainIDAssigned {
+		// Engine-owned chainID: the value is assigned by the engine at swarm
+		// start (AssignRunChainID), NOT chosen by the model. Surface it
+		// verbatim so the lead references THIS exact value in its delegate
+		// messages instead of inventing a free-form one. The recurring
+		// planning-loop doom-loop was the lead free-forming a chainID (often
+		// with a slash) that diverged from the value the wave validator,
+		// gates and publisher resolved. The engine ignores any chainID the
+		// model supplies for an engine-owned run, so the only correct value
+		// to write is this one.
+		b.WriteString("\nThe coordination chainID for this run is **engine-assigned**: `")
+		b.WriteString(chainPrefix)
+		b.WriteString("`. Use this EXACT value as the `chainID` in every `delegate` message — do NOT invent your own. The engine owns this namespace; a chainID you supply is ignored in favour of it.\n")
+	}
+
 	return b.String()
 }
 

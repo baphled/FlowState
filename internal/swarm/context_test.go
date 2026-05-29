@@ -509,4 +509,56 @@ var _ = Describe("swarm.Context", func() {
 			Expect(err.Error()).To(Equal(`no agent or swarm named "ghost"`))
 		})
 	})
+
+	// SlugifyChainID is the single key-safety boundary every chainID passes
+	// through before becoming a coordination-store namespace. The recurring
+	// planning-loop doom-loop was an LLM free-forming a chainID WITH A SLASH
+	// ("planner/sme-sectional-plans"): members wrote evidence under
+	// "planner/sme-sectional-plans/codebase-findings" (three path segments)
+	// while the validator/publisher/gate split on the first "/" and never
+	// found it. Slugifying renders any candidate key-safe so a value can
+	// NEVER fracture "<chainID>/<suffix>" parsing.
+	Describe("SlugifyChainID", func() {
+		It("slugifies the exact LLM doom-loop repro (a chainID with a slash) to a key-safe value", func() {
+			// The precise value that doom-looped a live run: a free-form
+			// chainID with a slash. After slugifying it must contain no "/"
+			// so "<chainID>/<suffix>" parsing resolves the whole chain as
+			// ONE namespace segment.
+			got := swarm.SlugifyChainID("planner/sme-sectional-plans")
+
+			Expect(got).NotTo(ContainSubstring("/"),
+				"a slugified chainID must never contain a path separator that fractures key parsing")
+			Expect(got).To(Equal("planner-sme-sectional-plans"),
+				"the slash collapses to a hyphen so the value stays one readable key segment")
+		})
+
+		It("collapses whitespace and back-slashes to a single hyphen", func() {
+			Expect(swarm.SlugifyChainID("my chain id")).To(Equal("my-chain-id"))
+			Expect(swarm.SlugifyChainID("a\\b")).To(Equal("a-b"))
+			Expect(swarm.SlugifyChainID("a   b")).To(Equal("a-b"),
+				"a run of whitespace collapses to a single separator")
+		})
+
+		It("drops other unsafe characters without leaving a separator", func() {
+			Expect(swarm.SlugifyChainID("plan@auth#2026")).To(Equal("planauth2026"))
+		})
+
+		It("leaves the engine-assigned form unchanged (no-op on a safe value)", func() {
+			// The {swarmID}-{hash} form AssignRunChainID stamps is already
+			// within the safe alphabet, so the authoritative value survives.
+			Expect(swarm.SlugifyChainID("planning-loop-ab12cd34ef56")).
+				To(Equal("planning-loop-ab12cd34ef56"))
+		})
+
+		It("trims leading/trailing separators and dots", func() {
+			Expect(swarm.SlugifyChainID("/leading/slash/")).To(Equal("leading-slash"))
+			Expect(swarm.SlugifyChainID(".hidden")).To(Equal("hidden"),
+				"a leading dot would otherwise produce a dotfile-style key segment")
+		})
+
+		It("returns empty for empty or all-unsafe input so the suffix-scan fallback still applies", func() {
+			Expect(swarm.SlugifyChainID("")).To(BeEmpty())
+			Expect(swarm.SlugifyChainID("///")).To(BeEmpty())
+		})
+	})
 })

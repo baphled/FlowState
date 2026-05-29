@@ -264,6 +264,55 @@ var _ = Describe("coordWaveValidator chainID resolution", func() {
 		})
 	})
 
+	Context("chainID-identity unification (engine-owned, slugified)", func() {
+		It("resolves the SLUGIFIED engine-assigned chain so it agrees with the member-write preamble and the publisher", func() {
+			// The member-write preamble, the publisher and the gate all route
+			// the chainID through swarm.SlugifyChainID. The validator must
+			// read the SAME normalised value or it looks under a different
+			// namespace than the members wrote (the core divergence). The
+			// "{swarmID}-{hash}" engine form is already safe, so slugify is a
+			// no-op here — but reading via slugify keeps every site in lockstep.
+			const swarmChain = "planning-loop-abc123def456"
+			Expect(store.Set(swarmChain+"/codebase-findings", []byte("{}"))).To(Succeed())
+			Expect(store.Set(swarmChain+"/external-refs", []byte("{}"))).To(Succeed())
+
+			ctx := swarm.WithScope(context.Background(), &swarm.Context{
+				SwarmID:         "planning-loop",
+				ChainPrefix:     swarmChain,
+				ChainIDAssigned: true,
+			})
+
+			missing, err := v.MissingForChain(ctx, "plan-writer", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).To(BeEmpty(),
+				"the validator resolves the slugified engine-assigned chain, matching where members wrote")
+		})
+
+		It("slugifies a session.IDKey containing a slash so a free-form id can never fracture key parsing here either", func() {
+			// Standalone/legacy path: a caller threading a free-form session id
+			// with a slash must NOT reach key construction verbatim. The
+			// validator slugifies it, matching where a slugifying writer landed.
+			// Asserted via the MISSING path with NO keys present, so the
+			// suffix-scan backstop cannot mask the slash: a non-slugifying
+			// resolve would report "planner/sme-sectional-plans/..." (the slash
+			// form) while the fix reports the slugged "planner-sme-..." form.
+			const slugged = "planner-sme-sectional-plans"
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "planner/sme-sectional-plans")
+
+			missing, err := v.MissingForChain(ctx, "planner", wave)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(missing).To(ConsistOf(
+				slugged+"/codebase-findings",
+				slugged+"/external-refs",
+			), "missing keys must be reported under the SLUGGED namespace, not the slash-bearing session id")
+			for _, m := range missing {
+				Expect(m).NotTo(HavePrefix("planner/"),
+					"a slash-bearing chainID must never reach key construction verbatim")
+			}
+		})
+	})
+
 	Context("suffix-scan backstop", func() {
 		It("fires when the resolved swarm chainID has no exact key but evidence exists under another chain", func() {
 			// Evidence landed under a near-miss chain (e.g. a stale or
