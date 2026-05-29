@@ -46,6 +46,20 @@ const PlanDocumentV1Name = "plan-document-v1"
 // can quote concerns and references without re-parsing prose.
 const CodeReviewVerdictV1Name = "code-review-verdict-v1"
 
+// SectionV1Name is the SchemaRef the section-decomposed planning
+// sub-swarm (internal/app/swarms/plan-sme-swarm.yml) uses on the
+// per-member post-member gate to validate each SME's plan-section
+// output. Every section specialist writes a distinct
+// `{chainID}/sections/<name>` coord-store key (architecture / testing
+// / security in v1) carrying a structured section wrapper; the
+// deterministic publisher (Pass 2) fans those keys in and assembles
+// them under the OMO spine. The schema is intentionally GENERAL — it
+// describes "a plan section", not a specific one — so the same name
+// gates every section member regardless of which `<name>` it owns.
+// See [[ADR - Engine-Owned Workflow Mechanics]] § "Application —
+// Section-Decomposed Planning via SME Sub-Swarm".
+const SectionV1Name = "section-v1"
+
 // ReviewVerdictV1Schema returns the Phase 1 placeholder schema for
 // review-verdict-v1.
 //
@@ -438,6 +452,58 @@ func codeReviewReferencesArray() *jsonschema.Schema {
 	}
 }
 
+// SectionV1Schema returns the Phase 1 schema for a single
+// plan-section produced by an SME section specialist in the
+// plan-sme-swarm. The shape is deliberately GENERAL so one schema
+// name gates every section regardless of which `<name>` the member
+// owns (architecture / testing / security in v1, more later) — the
+// section's identity lives in the coord-store KEY
+// (`{chainID}/sections/<name>`), not in the schema.
+//
+// Phase 1 shape:
+//
+//   - object root.
+//   - required string `section` — the canonical section name the
+//     specialist owns (e.g. "architecture"); the deterministic
+//     publisher (Pass 2) uses this to order / title the assembled
+//     output and to sanity-check that the body landed under the
+//     matching key.
+//   - required string `title` — a human-readable heading for the
+//     section as it should appear in the rendered plan.
+//   - required string `body` — the section's substance as markdown.
+//     This is the load-bearing content the publisher stitches under
+//     the OMO spine; a section with an empty body has nothing to
+//     contribute, so it is required rather than optional.
+//   - required `key_points` array of strings — a digest of the
+//     section's headline takeaways so downstream readers (and the
+//     plan-writer's lightweight spine) can cross-reference the
+//     section without re-parsing the markdown body.
+//
+// `additionalProperties` is left unset (JSON Schema's permissive
+// default) so a specialist can attach extra section-specific metadata
+// (risk tables, owners, references) without re-cutting the schema.
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func SectionV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"section": {Type: "string"},
+			"title":   {Type: "string"},
+			"body":    {Type: "string"},
+			"key_points": {
+				Type:  "array",
+				Items: &jsonschema.Schema{Type: "string"},
+			},
+		},
+		Required: []string{"section", "title", "body", "key_points"},
+	}
+}
+
 // floatPtr is a tiny helper for the *float64 fields the jsonschema-go
 // library uses for numeric bounds. Pulled out so the schema bodies
 // above stay readable.
@@ -477,6 +543,7 @@ func SeedDefaultSchemas() error {
 		{AnalysisBundleV1Name, AnalysisBundleV1Schema()},
 		{PlanDocumentV1Name, PlanDocumentV1Schema()},
 		{CodeReviewVerdictV1Name, CodeReviewVerdictV1Schema()},
+		{SectionV1Name, SectionV1Schema()},
 	}
 	for _, seed := range seeds {
 		if err := RegisterSchema(seed.name, seed.schema); err != nil {

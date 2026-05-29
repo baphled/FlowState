@@ -55,6 +55,11 @@ func planningSchemaCases() []schemaCase {
 			valid:   codeReviewFullPayload(),
 			invalid: `{"summary":"missing verdict"}`,
 		},
+		{
+			schema:  swarm.SectionV1Name,
+			valid:   `{"section":"architecture","title":"Architecture","body":"# Architecture\n...","key_points":["layered design"]}`,
+			invalid: `{"section":"architecture","title":"Architecture","key_points":["missing body"]}`,
+		},
 	}
 }
 
@@ -112,6 +117,7 @@ var _ = Describe("planning-loop schemas", func() {
 				swarm.AnalysisBundleV1Name,
 				swarm.PlanDocumentV1Name,
 				swarm.CodeReviewVerdictV1Name,
+				swarm.SectionV1Name,
 			} {
 				_, ok := swarm.LookupSchema(name)
 				Expect(ok).To(BeTrue(), "expected %q to be registered", name)

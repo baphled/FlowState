@@ -1,0 +1,97 @@
+schema_version: "1.0.0"
+id: plan-sme-swarm
+description: >
+  Section-decomposed planning SME sub-swarm. Pass 1 of the
+  section-decomposed planning architecture (see [[ADR - Engine-Owned
+  Workflow Mechanics]] § "Application — Section-Decomposed Planning
+  via SME Sub-Swarm"). The lead (`analyst`) coordinates a roster of
+  section specialists; each specialist writes ONE distinct plan
+  section to a `{chainID}/sections/<name>` coordination-store key,
+  gated against the `section-v1` JSON schema. Producing plan depth as
+  MANY SMALL, gated, retryable section-generations — not one giant
+  plan-writer turn — avoids the synthesis-hang while giving plans both
+  OMO structure (the downstream plan-writer's spine) AND technical
+  depth (these sections). The deterministic publisher (Pass 2) fans in
+  `{chainID}/sections/*` and assembles them under the spine — no large
+  LLM turn in the assembly, so no synthesis-hang. Section gates live
+  INSIDE this sub-swarm (pure config); the parent planning-loop just
+  lists this swarm as a member and needs no gate-aggregate change.
+
+# `analyst` leads the section roster. It is a registered planning-loop
+# agent (internal/app/agents/analyst.md) that already holds the
+# coordination_store tool, the chain-id-resolution always-active skill,
+# and the evidence-led multi-provider failover chain — everything a
+# coordinating lead needs to resolve the run's chainID and orchestrate
+# section writes without inventing a namespace. Tech-Lead was the other
+# candidate but lacks the coordination_store tool, so it would fail
+# closed on any section write.
+lead: analyst
+
+# NOT auto-dispatched on lead name: this swarm is composed as a MEMBER
+# of planning-loop (resolveSubSwarm → DispatchSwarmMembers), never
+# invoked standalone by `@analyst`. Mirrors board-room.yml /
+# engineering.yml, which omit auto_dispatch_on_lead for the same reason.
+
+# v1 section roster — kept small and generally useful for ANY technical
+# plan. Each member owns exactly one section and writes it to the
+# coordination_store key its post-member gate validates:
+#   - explorer        → {chainID}/sections/architecture
+#   - QA-Engineer     → {chainID}/sections/testing
+#   - Security-Engineer → {chainID}/sections/security
+# All three are registered agents holding the coordination_store tool
+# (explorer.md / QA-Engineer.md / Security-Engineer.md). The
+# skills/agents section noted in the ADR (librarian/analyst) is
+# deferred to a later pass to keep v1 minimal.
+members:
+  - explorer
+  - QA-Engineer
+  - Security-Engineer
+
+harness:
+  # Sequential — the section writes share the coordination_store and a
+  # parallel fan-out would race on the per-run chainID resolution. §T37
+  # may offer parallel: true once section writes are proven independent.
+  parallel: false
+
+  # One post-member result-schema gate per section specialist. Each
+  # gate resolves the SAME `{chainID}/sections/<name>` key the member
+  # wrote to (the gate substitutes the run's chainID at firing time —
+  # internal/swarm/gate_result_schema.go::candidateKeys) and validates
+  # the payload against the GENERAL `section-v1` schema
+  # (internal/swarm/schemas.go::SectionV1Schema). A malformed or absent
+  # section payload triggers the bounded post-member gate retry
+  # (PostMemberGateMaxAttempts) before failing the swarm honestly —
+  # mirrors planning-loop.yml's per-member gate structure.
+  #
+  # CONTRACT (Pass 2 + Pass 3 must match these EXACT keys):
+  #   {chainID}/sections/architecture
+  #   {chainID}/sections/testing
+  #   {chainID}/sections/security
+  gates:
+    - name: post-member-explorer-section-architecture
+      kind: builtin:result-schema
+      schema_ref: section-v1
+      when: post-member
+      target: explorer
+      output_key: "{chainID}/sections/architecture"
+    - name: post-member-qa-section-testing
+      kind: builtin:result-schema
+      schema_ref: section-v1
+      when: post-member
+      target: QA-Engineer
+      output_key: "{chainID}/sections/testing"
+    - name: post-member-security-section-security
+      kind: builtin:result-schema
+      schema_ref: section-v1
+      when: post-member
+      target: Security-Engineer
+      output_key: "{chainID}/sections/security"
+
+context:
+  # Share the parent planning-loop's coordination_store namespace so the
+  # section keys land on the same run chain the publisher (Pass 2) and
+  # plan-writer (Pass 3) read from. The engine-assigned chainID threads
+  # through the sub-swarm dispatch (resolveSubSwarm → DispatchSwarmMembers),
+  # so a member's `{chainID}/sections/<name>` resolves under the run's
+  # chain, not an invented prefix.
+  chain_prefix: planning

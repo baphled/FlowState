@@ -21,13 +21,24 @@ lead: planner
 # swarm/registry.go::AutoDispatchSwarmFor.
 auto_dispatch_on_lead: true
 
-# Explicit roster — agent ids only at this stage. Sub-swarm composition
-# (a member that resolves to another swarm) is supported per §4 of the
-# spec; introduce later when a sub-swarm artifact actually exists.
+# Explicit roster. `plan-sme-swarm` is a SUB-SWARM member (a member
+# that resolves to another swarm) — sub-swarm composition ships today
+# (resolveSubSwarm → DispatchSwarmMembers, internal/engine/delegation.go;
+# live spec sub_swarm_recursion_test.go). It sits BETWEEN analyst and
+# plan-writer so its section specialists each write a gated
+# `{chainID}/sections/<name>` output (architecture / testing / security)
+# AFTER the analyst's synthesis but BEFORE the plan-writer composes the
+# lightweight OMO spine. The deterministic publisher (Pass 2) fans those
+# section keys in at publish; the section gates live INSIDE
+# plan-sme-swarm, so this parent needs no gate-aggregate change. See
+# internal/app/swarms/plan-sme-swarm.yml and [[ADR - Engine-Owned
+# Workflow Mechanics]] § "Application — Section-Decomposed Planning via
+# SME Sub-Swarm".
 members:
   - explorer
   - librarian
   - analyst
+  - plan-sme-swarm
   - plan-writer
   - plan-reviewer
 
