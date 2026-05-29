@@ -43,6 +43,50 @@ func ModelOverrideFromContext(ctx context.Context) string {
 	return v
 }
 
+// PreferredModelsKey is the context key used to propagate a child
+// session's full ordered preferred_models chain (the agent manifest's
+// PreferredModels) into the failover layer.
+//
+// ProviderOverrideKey / ModelOverrideKey carry only the agent's tier-0
+// pair (preferred_models[0]) — they answer "what should this child
+// attempt first". They do NOT carry the agent's secondary tiers. When
+// the tier-0 provider is unreachable or rate-limited, the failover
+// manager would otherwise cascade straight to the GLOBAL base
+// preferences (config `default:` chain) and ignore the agent's own
+// tier-1/tier-2 fallbacks. For a deployment whose global default is a
+// model that cannot reliably emit structured tool calls (zai/glm-4.5),
+// that means a swarm member with a reliable secondary tier still lands
+// on the unreliable global default and the planning loop halts.
+//
+// PreferredModelsKey closes that gap: the failover hook reads the full
+// ordered chain and attempts every agent tier (tier-1, tier-2, …)
+// BEFORE falling back to the global base preferences. An absent or empty
+// chain is the dominant non-swarm case and preserves the prior behaviour
+// exactly (cascade straight to the global default).
+type PreferredModelsKey struct{}
+
+// WithPreferredModels returns a derived context carrying the agent's
+// full ordered preferred_models chain for the failover layer. An empty
+// chain short-circuits to the input context unchanged — the key is
+// opt-in and a no-op for agents with no preferred_models, so non-swarm
+// and chain-less agents keep the prior cascade-to-global-default
+// behaviour.
+func WithPreferredModels(ctx context.Context, chain []provider.ModelPreference) context.Context {
+	if len(chain) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, PreferredModelsKey{}, chain)
+}
+
+// PreferredModelsFromContext extracts the agent's ordered
+// preferred_models chain from the context. Returns a nil slice when no
+// key is present, which is the dominant case for non-swarm turns and
+// agents without a declared chain.
+func PreferredModelsFromContext(ctx context.Context) []provider.ModelPreference {
+	v, _ := ctx.Value(PreferredModelsKey{}).([]provider.ModelPreference)
+	return v
+}
+
 // ToolChoiceOverrideKey is the context key used to force a specific
 // tool_choice for a single Stream turn. When non-empty, the engine sets
 // it on the outbound ChatRequest.ToolChoice, overriding the provider's

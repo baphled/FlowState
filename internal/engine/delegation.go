@@ -2560,6 +2560,13 @@ func (d *DelegateTool) executeSync(
 	delegateProv, delegateModel := d.resolveChildModelOverride(target)
 	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, delegateProv)
 	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, delegateModel)
+	// Thread the child's FULL preferred_models chain so the failover
+	// layer exhausts the agent's own tiers (tier-1, tier-2, …) before
+	// cascading to the global config default. Without this, a tier-0
+	// failure drops straight to the global default and the child's
+	// reliable secondary models are never tried. No-op when the agent
+	// declares no chain.
+	delegateCtx = session.WithPreferredModels(delegateCtx, d.resolveChildModelChain(target))
 	// Inject the child Turn ctx triad — mirrors dispatcher.go:639-643 at
 	// the parent-session layer. The accumulator's turnAwareAppender
 	// reads the recorder closure off ctx and fans every persisted
@@ -3543,6 +3550,14 @@ func (d *DelegateTool) bootstrapMemberSession(
 	memberProv, memberModel := d.resolveChildModelOverride(target)
 	dispatchCtx = context.WithValue(dispatchCtx, session.ProviderOverrideKey{}, memberProv)
 	dispatchCtx = context.WithValue(dispatchCtx, session.ModelOverrideKey{}, memberModel)
+	// Thread the member's FULL preferred_models chain so failover walks
+	// the member's own tiers before the global default. This is the
+	// durable fix for the planning-loop halt: a member whose tier-0 is
+	// momentarily unreachable now lands on its reliable tier-1/tier-2
+	// instead of the global default (zai/glm-4.5), so the post-member
+	// gate's structured write succeeds. No-op when the member declares
+	// no chain.
+	dispatchCtx = session.WithPreferredModels(dispatchCtx, d.resolveChildModelChain(target))
 
 	// Plans/Child Session Turn Registry Plumbing (May 2026) §Item 2d —
 	// mint a per-member child Turn keyed on the spawned childID
@@ -4358,6 +4373,7 @@ func (d *DelegateTool) executeAsync(
 	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, taskID, "", target.loadSkills))
 
 	bgProv, bgModel := d.resolveChildModelOverride(target)
+	bgChain := d.resolveChildModelChain(target)
 	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
 		// Same cascade contract as the synchronous delegate path — child
@@ -4365,6 +4381,10 @@ func (d *DelegateTool) executeAsync(
 		// engine's global default. See resolveChildModelOverride.
 		delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, bgProv)
 		delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, bgModel)
+		// Thread the full chain so background-delegate failover walks the
+		// agent's own tiers before the global default. See
+		// resolveChildModelChain. No-op when the agent declares no chain.
+		delegateCtx = session.WithPreferredModels(delegateCtx, bgChain)
 		result, err := d.executeBackgroundTask(delegateCtx, target, baseInfo, parentSessionID, outChan, hasOutput)
 		if err != nil {
 			return "", err
@@ -4695,6 +4715,46 @@ func (d *DelegateTool) resolveChildModelOverride(target delegationTarget) (strin
 	}
 	first := manifest.PreferredModels[0]
 	return first.Provider, first.Model
+}
+
+// resolveChildModelChain returns the target agent's full ordered
+// preferred_models chain as a []provider.ModelPreference, for the
+// failover layer to attempt tier-by-tier before falling back to the
+// global config default. This is the chain companion to
+// resolveChildModelOverride (which yields only tier-0): the override
+// answers "what should the child attempt first" while the chain answers
+// "what are ALL the agent's fallbacks, in order, before the global
+// default".
+//
+// Resolution mirrors resolveChildModelOverride:
+//   - Tier 1 (category routing) takes precedence and is a single
+//     explicit pair, so the chain is just that pair — there is no
+//     declared secondary tier for a category-routed call.
+//   - Otherwise the agent manifest's PreferredModels list is returned
+//     verbatim (the engine's provider.ModelPreference mirrors the
+//     manifest's field shape).
+//   - Empty in every other case (registry-less surface, unknown agent,
+//     no preferred_models) so session.WithPreferredModels no-ops and
+//     the failover layer keeps the prior cascade-to-global-default
+//     behaviour.
+//
+// Side effects: none.
+func (d *DelegateTool) resolveChildModelChain(target delegationTarget) []provider.ModelPreference {
+	if target.resolvedProvider != "" || target.resolvedModel != "" {
+		return []provider.ModelPreference{{Provider: target.resolvedProvider, Model: target.resolvedModel}}
+	}
+	if d.registry == nil || target.agentID == "" {
+		return nil
+	}
+	manifest, ok := d.registry.Get(target.agentID)
+	if !ok || manifest == nil || len(manifest.PreferredModels) == 0 {
+		return nil
+	}
+	chain := make([]provider.ModelPreference, 0, len(manifest.PreferredModels))
+	for _, pref := range manifest.PreferredModels {
+		chain = append(chain, provider.ModelPreference{Provider: pref.Provider, Model: pref.Model})
+	}
+	return chain
 }
 
 // correctiveRetryModel returns the (provider, model) the post-member gate

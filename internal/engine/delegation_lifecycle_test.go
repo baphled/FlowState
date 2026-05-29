@@ -1151,6 +1151,65 @@ var _ = Describe("DelegateTool applies child manifest's preferred_models overrid
 	})
 })
 
+var _ = Describe("DelegateTool surfaces the child manifest's full preferred_models chain", func() {
+	// Companion to the tier-0 cascade specs above. resolveChildModelChain
+	// yields the FULL ordered preferred_models list (not just tier-0) so
+	// the three delegate dispatch sites can stamp it on ctx via
+	// session.WithPreferredModels — letting the failover layer exhaust the
+	// agent's own tier-1/tier-2 before the global default. This is the
+	// durable fix for the planning-loop halt where a member whose tier-0
+	// was momentarily unreachable cascaded straight to the unreliable
+	// global default (zai/glm-4.5) instead of its reliable secondary tier.
+
+	newDelegateTool := func(manifest *agent.Manifest) *engine.DelegateTool {
+		agentRegistry := agent.NewRegistry()
+		if manifest != nil {
+			agentRegistry.Register(manifest)
+		}
+		return engine.NewDelegateTool(
+			map[string]*engine.Engine{}, agent.Delegation{CanDelegate: true}, "orchestrator",
+		).WithRegistry(agentRegistry)
+	}
+
+	It("returns every tier in declared order", func() {
+		manifest := agent.Manifest{
+			ID:   "analyst",
+			Name: "Analyst",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-opus-4-6"},
+				{Provider: "openai", Model: "gpt-4o"},
+				{Provider: "zai", Model: "glm-4.6"},
+			},
+		}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "", "")
+		Expect(chain).To(Equal([]provider.ModelPreference{
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+			{Provider: "openai", Model: "gpt-4o"},
+			{Provider: "zai", Model: "glm-4.6"},
+		}), "the full ordered chain must be surfaced so failover can walk tier-1/tier-2 before the global default")
+	})
+
+	It("returns nil when the agent declares no preferred_models", func() {
+		manifest := agent.Manifest{ID: "qa-agent", Name: "QA"}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("qa-agent", "", "")
+		Expect(chain).To(BeEmpty(),
+			"a chain-less agent must fall through so session.WithPreferredModels no-ops and the prior cascade-to-global-default behaviour is preserved")
+	})
+
+	It("returns only the category-routed pair when category routing resolved one", func() {
+		manifest := agent.Manifest{
+			ID:   "analyst",
+			Name: "Analyst",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-opus-4-6"},
+			},
+		}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "openai", "gpt-5")
+		Expect(chain).To(Equal([]provider.ModelPreference{{Provider: "openai", Model: "gpt-5"}}),
+			"an explicit per-call category selection outranks the manifest and has no declared secondary tier")
+	})
+})
+
 // delegationCapture is a thread-safe sink for delegation lifecycle events
 // published onto an `*eventbus.EventBus`. It subscribes at construction so
 // every event published after `newDelegationCapture` returns lands in the

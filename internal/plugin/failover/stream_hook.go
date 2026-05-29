@@ -63,6 +63,24 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 			return nil, errors.New("no healthy providers available")
 		}
 
+		// Thread the agent's OWN ordered preferred_models chain ahead of
+		// the manager's base preferences (the global config `default:`
+		// chain). resolveChildModelOverride stamps only the agent's
+		// tier-0 pair on req.Provider/req.Model; without the full chain
+		// the failover loop would, on a tier-0 failure, cascade straight
+		// to the global default and skip the agent's tier-1/tier-2
+		// fallbacks. For a deployment whose global default cannot
+		// reliably emit structured tool calls, that strands a swarm
+		// member on the unreliable model and halts the planning loop.
+		//
+		// prependAgentChain inserts every healthy chain tier (in
+		// declared order) at the head of the candidate list, deduped
+		// against the base pool, so the loop exhausts the agent's own
+		// chain BEFORE the global default. An absent/empty chain is the
+		// dominant non-swarm case and leaves candidates untouched —
+		// preserving the prior cascade-to-global-default behaviour.
+		candidates = sh.prependAgentChain(ctx, candidates)
+
 		// Honour a caller-pinned provider: if the request already has
 		// Provider set (e.g. Engine.retryStreamForToolResult pinning
 		// LastProvider to keep a multi-turn session on the same
@@ -73,6 +91,12 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		// priority hint, not a single-shot. See bug-fix note:
 		// "Failover Stream Hook Ignores Caller Provider Pin
 		// (April 2026)".
+		//
+		// When an agent chain was threaded above, req.Provider/req.Model
+		// is the chain's tier-0 pair, so promotePinned simply re-affirms
+		// the head it already produced (a no-op reorder). The pin path
+		// stays load-bearing for the in-turn retry case where no chain
+		// is present.
 		candidates = promotePinned(candidates, req.Provider, req.Model)
 
 		// Honour a parent ctx that is already cancelled or past its
@@ -405,6 +429,74 @@ func prependModelActiveChunk(
 		}
 	}()
 	return out
+}
+
+// prependAgentChain threads the agent's own ordered preferred_models
+// chain (carried on ctx via session.WithPreferredModels) ahead of the
+// manager's base preferences, so the failover loop exhausts the agent's
+// declared tiers before falling back to the global config default.
+//
+// Behaviour:
+//   - No chain on ctx (the dominant non-swarm case): the base
+//     candidate list is returned unchanged, preserving the prior
+//     cascade-to-global-default semantics exactly.
+//   - Chain present: each chain tier is health-filtered (rate-limited
+//     pairs are dropped, just as Manager.healthyCandidates does for
+//     the base pool) and emitted at the head in declared order. Base
+//     candidates already named by a chain tier are not duplicated —
+//     the chain's position wins. Remaining base candidates follow as
+//     the final fallback pool (the global default lives here).
+//
+// The result is always a fresh slice when a chain is applied; the input
+// is returned directly when there is nothing to do.
+//
+// Expected:
+//   - candidates is the manager's healthy base preference list
+//     (callers ensure it is non-empty).
+//
+// Returns:
+//   - candidates unchanged when no chain is present; otherwise the
+//     health-filtered chain tiers followed by the deduped base pool.
+//
+// Side effects:
+//   - None.
+func (sh *StreamHook) prependAgentChain(ctx context.Context, candidates []provider.ModelPreference) []provider.ModelPreference {
+	chain := session.PreferredModelsFromContext(ctx)
+	if len(chain) == 0 {
+		return candidates
+	}
+	health := sh.manager.Health()
+	seen := make(map[provider.ModelPreference]struct{}, len(chain))
+	ordered := make([]provider.ModelPreference, 0, len(chain)+len(candidates))
+	for _, pref := range chain {
+		if _, dup := seen[pref]; dup {
+			continue
+		}
+		// Health-filter chain tiers on the same axis as the base pool
+		// so a rate-limited agent tier is skipped rather than retried
+		// into a guaranteed 429. A nil health manager (legacy test
+		// surface) admits every tier.
+		if health != nil && health.IsRateLimited(pref.Provider, pref.Model) {
+			seen[pref] = struct{}{}
+			continue
+		}
+		seen[pref] = struct{}{}
+		ordered = append(ordered, pref)
+	}
+	for _, c := range candidates {
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		ordered = append(ordered, c)
+	}
+	if len(ordered) == 0 {
+		// Every chain tier was rate-limited and the base pool was
+		// empty/all-deduped — fall back to the original list so the
+		// caller's "no healthy providers" gate still fires correctly.
+		return candidates
+	}
+	return ordered
 }
 
 // promotePinned returns candidates with the caller-pinned provider/model

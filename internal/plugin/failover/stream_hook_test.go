@@ -525,6 +525,152 @@ var _ = Describe("StreamHook", func() {
 			})
 		})
 
+		// Agent preferred_models chain exhaustion — Bug: failover
+		// cascades straight to the GLOBAL default and ignores the
+		// agent's own secondary tiers (May 2026).
+		//
+		// resolveChildModelOverride stamps only preferred_models[0] on
+		// the child ctx (ProviderOverrideKey/ModelOverrideKey). When
+		// that tier-0 provider is unreachable, the failover loop used
+		// to fall straight through to the manager's base preferences
+		// (the config `default:` chain — zai/glm-4.5 on the user's box),
+		// skipping the agent's tier-1/tier-2 fallbacks entirely. The
+		// effect: a swarm member whose manifest names a reliable
+		// secondary model still lands on the unreliable global default,
+		// narrates its structured write, and the planning-loop gate
+		// halts the swarm.
+		//
+		// Contract: when the ctx carries the agent's full ordered
+		// preferred_models chain (session.WithPreferredModels), the
+		// failover hook attempts every agent tier (tier-1, tier-2, …)
+		// BEFORE falling back to the global base preferences. The chain
+		// entries are inserted ahead of the base pool, in declared
+		// order, deduped against the pool. An absent/empty chain
+		// preserves the prior cascade-to-global-default behaviour.
+		Context("when the ctx carries the agent's preferred_models chain", func() {
+			var attempted []string
+			var attemptedMu sync.Mutex
+
+			recordOrder := func(next hook.HandlerFunc) hook.HandlerFunc {
+				return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					attemptedMu.Lock()
+					attempted = append(attempted, req.Provider+"/"+req.Model)
+					attemptedMu.Unlock()
+					return next(ctx, req)
+				}
+			}
+
+			BeforeEach(func() {
+				attempted = nil
+				// tier-1 provider fails with a retryable error.
+				registry.Register(&mockStreamProvider{
+					name: "providerA",
+					streamFn: syncErrorStreamFn(&provider.Error{
+						ErrorType: provider.ErrorTypeOverload,
+						Provider:  "providerA",
+						Message:   "503 overloaded",
+					}),
+				})
+				// tier-2 provider succeeds — failover should land here.
+				registry.Register(&mockStreamProvider{
+					name: "providerB",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "tier-2 reply", Done: true},
+					),
+				})
+				registry.Register(&mockStreamProvider{
+					name: "providerC",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "tier-3 reply", Done: true},
+					),
+				})
+				// The GLOBAL default chain — must NOT be reached while
+				// an agent tier is still viable.
+				registry.Register(&mockStreamProvider{
+					name: "globaldefault",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "global default reply", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "globaldefault", Model: "glm-4.5"},
+				})
+			})
+
+			It("fails over to tier-2 before falling back to the global default", func() {
+				handler := sh.Execute(recordOrder(baseHandler(registry)))
+				ctx := session.WithPreferredModels(context.Background(), []provider.ModelPreference{
+					{Provider: "providerA", Model: "model1"},
+					{Provider: "providerB", Model: "model2"},
+					{Provider: "providerC", Model: "model3"},
+				})
+				// Engine stamps the tier-0 pair on req from the same
+				// chain via ProviderOverrideKey/ModelOverrideKey.
+				req := &provider.ChatRequest{Provider: "providerA", Model: "model1"}
+				ch, err := handler(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for chunk := range ch {
+					if chunk.EventType == "" && chunk.Content != "" {
+						contents = append(contents, chunk.Content)
+					}
+				}
+				Expect(contents).To(Equal([]string{"tier-2 reply"}),
+					"failover must land on the agent's tier-2 model, not the global default")
+
+				attemptedMu.Lock()
+				defer attemptedMu.Unlock()
+				Expect(attempted).To(Equal([]string{"providerA/model1", "providerB/model2"}),
+					"failover must attempt tier-1 then tier-2; the global default must not be touched while an agent tier succeeds")
+				Expect(attempted).NotTo(ContainElement("globaldefault/glm-4.5"),
+					"the global default must come AFTER every agent tier, never ahead of tier-2/tier-3")
+				Expect(manager.LastProvider()).To(Equal("providerB"))
+				Expect(manager.LastModel()).To(Equal("model2"))
+			})
+
+			It("reaches the global default only after every agent tier is exhausted", func() {
+				// Make every agent tier fail so the loop must walk all
+				// the way through to the base preferences.
+				registry.Register(&mockStreamProvider{
+					name:     "providerB",
+					streamFn: syncErrorStreamFn(errors.New("tier-2 down")),
+				})
+				registry.Register(&mockStreamProvider{
+					name:     "providerC",
+					streamFn: syncErrorStreamFn(errors.New("tier-3 down")),
+				})
+
+				handler := sh.Execute(recordOrder(baseHandler(registry)))
+				ctx := session.WithPreferredModels(context.Background(), []provider.ModelPreference{
+					{Provider: "providerA", Model: "model1"},
+					{Provider: "providerB", Model: "model2"},
+					{Provider: "providerC", Model: "model3"},
+				})
+				req := &provider.ChatRequest{Provider: "providerA", Model: "model1"}
+				ch, err := handler(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+
+				var contents []string
+				for chunk := range ch {
+					if chunk.EventType == "" && chunk.Content != "" {
+						contents = append(contents, chunk.Content)
+					}
+				}
+				Expect(contents).To(Equal([]string{"global default reply"}),
+					"once every agent tier fails the loop must fall back to the global default")
+
+				attemptedMu.Lock()
+				defer attemptedMu.Unlock()
+				Expect(attempted).To(Equal([]string{
+					"providerA/model1",
+					"providerB/model2",
+					"providerC/model3",
+					"globaldefault/glm-4.5",
+				}), "the global default must be the LAST resort, after all three agent tiers")
+			})
+		})
+
 		// Caller-pin respect — Bug: Failover Stream Hook Ignores Caller
 		// Provider Pin (April 2026).
 		//

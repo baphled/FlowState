@@ -353,3 +353,15 @@ func (d *DelegateTool) ResolveChildModelOverrideForTest(agentID, categoryProvide
 	})
 }
 
+// ResolveChildModelChainForTest exposes resolveChildModelChain so the
+// agent-chain failover specs can assert that the FULL ordered
+// preferred_models list (not just tier-0) is surfaced for ctx
+// plumbing. Test-only export; production call sites stamp the result
+// via session.WithPreferredModels at the three delegate dispatch sites.
+func (d *DelegateTool) ResolveChildModelChainForTest(agentID, categoryProvider, categoryModel string) []provider.ModelPreference {
+	return d.resolveChildModelChain(delegationTarget{
+		agentID:          agentID,
+		resolvedProvider: categoryProvider,
+		resolvedModel:    categoryModel,
+	})
+}
