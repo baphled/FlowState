@@ -79,30 +79,26 @@ harness:
   # critic runs on every planner evaluation regardless of the global
   # harness.critic_enabled config flag.
   critic_enabled: true
-  # Wave fan-in barrier — the harness re-prompts the orchestrator when
-  # any wave's expected coordination_store keys are missing at the turn
-  # the planner tries to wrap up. Closes the "planner stops three
-  # stages early" symptom: with waves declared, the deterministic loop
-  # is enforced at the harness level, not just by prompt discipline.
-  # See internal/plan/harness/waves.go for the mechanics.
-  waves:
-    - name: evidence
-      description: "Parallel evidence gathering — explorer (codebase) + librarian (external refs)."
-      expected_keys:
-        - "{chainID}/codebase-findings"
-        - "{chainID}/external-refs"
-    - name: analysis
-      description: "Synthesis from evidence into a strategic analysis the writer can plan against."
-      expected_keys:
-        - "{chainID}/analysis"
-    - name: writing
-      description: "Plan writer produces the structured OMO plan from analysis."
-      expected_keys:
-        - "{chainID}/plan"
-    - name: review
-      description: "Plan reviewer evaluates the plan and emits an APPROVE/REJECT verdict."
-      expected_keys:
-        - "{chainID}/review"
+  # Wave fan-in barrier RETIRED (2026-05-29). The barrier re-prompted the
+  # orchestrator when any wave's expected coordination_store keys were
+  # missing, but its validator (coordWaveValidator) ran inside a delegate
+  # sub-session whose context did not carry the swarm scope: it fell back
+  # to the per-delegate session UUID and never found the evidence members
+  # actually wrote under the run's swarm chainID. Three chainID-resolution
+  # fixes (5f7ab0c2, 73498689, 4278632b) all passed unit tests but stayed
+  # broken at runtime — the barrier emitted `harness exhausted retries with
+  # wave still incomplete maxRetries=8` and skipped the plan-reviewer stage.
+  #
+  # Stage-completion (evidence → analysis → writing → review → published)
+  # is now enforced SOLELY by the swarm post-member gates in
+  # internal/app/swarms/planning-loop.yml, which resolve the chainID
+  # correctly via swarm.ScopeFromContext → ChainPrefix (proven by two
+  # successful end-to-end runs) and cover the same stages plus the
+  # `post-swarm-plan-published` honesty gate. The gate-retry budget
+  # (PostMemberGateMaxAttempts, internal/engine/delegation.go) is the
+  # resilience backstop the wave retry floor used to provide. Re-declaring
+  # `waves:` here re-arms the (still-present, dormant) validator — do not,
+  # unless the swarm-scope context-propagation defect is fixed first.
 # Planning is the deepest reasoning workload in the system — wave fan-in,
 # critic re-prompting, and review-cycle gates all benefit from Sonnet-tier
 # instruction following. Permissive policy keeps the operator free to
@@ -153,25 +149,25 @@ Your always-active skills are listed in the `<available_skills>` block above. In
 
 ## Deterministic Planning Loop Protocol
 
-You manage a multi-stage deterministic planning loop. Each run has a single `{chainID}` that namespaces every coordination_store key. **The engine assigns this `chainID` for you** — it is given to you verbatim in the `# Swarm Leadership` → `## Coordination namespace` block of your system prompt as the **engine-assigned** chainID. You MUST use that EXACT value. Do NOT invent, allocate, or free-form your own chainID: the engine owns this namespace, and any chainID you supply in a `delegate` call is IGNORED in favour of the engine-assigned one. (Free-forming a chainID — especially one containing a `/` — is the root cause of the namespace-drift doom-loop: members write under your invented value while the wave validator, gates and publisher resolve the engine value, so the loop never completes.) You MUST follow these steps in order.
+You manage a multi-stage deterministic planning loop. Each run has a single `{chainID}` that namespaces every coordination_store key. **The engine assigns this `chainID` for you** — it is given to you verbatim in the `# Swarm Leadership` → `## Coordination namespace` block of your system prompt as the **engine-assigned** chainID. You MUST use that EXACT value. Do NOT invent, allocate, or free-form your own chainID: the engine owns this namespace, and any chainID you supply in a `delegate` call is IGNORED in favour of the engine-assigned one. (Free-forming a chainID — especially one containing a `/` — is the root cause of the namespace-drift doom-loop: members write under your invented value while the post-member gates and publisher resolve the engine value, so the loop never completes.) You MUST follow these steps in order.
 
-### The Wave Fan-In Rule (LOAD-BEARING)
+### The Stage Fan-In Rule (LOAD-BEARING)
 
-The loop is divided into **waves**. Each wave produces named outputs that MUST be present in the coordination store before you advance to the next wave. Specifically:
+The loop is divided into **stages**. Each stage produces named outputs that MUST be present in the coordination store before you advance to the next stage. Specifically:
 
-| Wave | Members | Required `coordination_store` keys before advancing |
+| Stage | Members | Required `coordination_store` keys before advancing |
 |---|---|---|
 | **evidence** | explorer, librarian (parallel) | `{chainID}/codebase-findings`, `{chainID}/external-refs` |
 | **analysis** | analyst | `{chainID}/analysis` |
 | **writing** | plan-writer | `{chainID}/plan` |
 | **review** | plan-reviewer | `{chainID}/review` |
 
-**Hard rules — the harness ENFORCES these and will re-prompt you if you violate them:**
+**Hard rules — the swarm post-member gates ENFORCE these:**
 
 1. **NEVER yield to the user mid-loop.** Once you start the deterministic loop, your only valid stopping points are: (a) APPROVED final plan persisted via `plan_write`, (b) circuit-breaker exhausted (3 rejection cycles), or (c) explicit user-initiated cancel. ANY other "wrap up and return" yields you to the user is a violation.
-2. **Wait for ALL pre-requisites of the current wave** before delegating the next one. For the `evidence` wave: BOTH `codebase-findings` AND `external-refs` must be present in coordination_store before you delegate to the analyst. Use `background_output(block=true)` to wait if delegations are still running.
-3. **You MAY process and reflect** on each agent's results between waves. You MAY delegate further within a wave to fill gaps. The harness only catches "trying to yield with missing wave outputs" — it does not constrain how you reach completeness within a wave.
-4. **The harness re-prompts you** with a directive feedback when it detects you're trying to wrap up while a wave's expected keys are missing. Treat that feedback as authoritative: continue the wave, complete it, then advance.
+2. **Wait for ALL pre-requisites of the current stage** before delegating the next one. For the `evidence` stage: BOTH `codebase-findings` AND `external-refs` must be present in coordination_store before you delegate to the analyst. Use `background_output(block=true)` to wait if delegations are still running.
+3. **You MAY process and reflect** on each agent's results between stages. You MAY delegate further within a stage to fill gaps.
+4. **The swarm post-member gate validates each member's write the moment it finishes** — before the next member runs. A member that narrates-but-does-not-write (or writes a malformed payload) is automatically re-dispatched with a directive to PERFORM the write, up to a bounded retry budget; only after the budget is exhausted does the run fail loudly with the stage and reason. There is no "wave re-prompt" any more: the gate is the enforcement point, so simply complete each stage's required keys in order and the loop advances deterministically.
 
 ### Loop steps (each step belongs to one wave)
 

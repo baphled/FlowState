@@ -2,9 +2,13 @@ package app
 
 import (
 	"context"
+	"io/fs"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/coordination"
@@ -346,5 +350,80 @@ var _ = Describe("coordWaveValidator chainID resolution", func() {
 			Expect(missing).NotTo(BeEmpty(),
 				"genuinely-absent evidence must still report missing after the suffix-scan backstop")
 		})
+	})
+})
+
+// Retiring the wave-fan-in harness from the planning loop: the planner
+// manifest must no longer declare `harness.waves`. The wave-fan-in
+// validator (coordWaveValidator) ran inside a delegate sub-session whose
+// context did not carry the swarm scope, so it fell back to the
+// per-delegate session UUID and never found the evidence members actually
+// wrote — emitting `harness exhausted retries with wave still incomplete`
+// and skipping the plan-reviewer stage (live runs 2026-05-28). The swarm
+// post-member gates in internal/app/swarms/planning-loop.yml resolve the
+// chainID correctly (swarm.ScopeFromContext → ChainPrefix) and cover the
+// SAME stages plus the publication honesty gate, so the wave harness is a
+// redundant, broken parallel mechanism in front of a working gate system.
+//
+// Dropping the `waves:` block (while keeping harness_enabled +
+// critic_enabled) makes collectAgentWaves(registry) return empty for the
+// planning roster, so createHarnessStreamer never wires the validator and
+// the planning dispatch path can never emit the wave-incomplete re-prompt.
+// The validator code and its unit specs above are retained (dormant) so a
+// future non-planning orchestrator can opt back in by re-declaring waves.
+var _ = Describe("planning-loop wave-fan-in harness retirement", func() {
+	It("the embedded planner manifest declares no harness.waves", func() {
+		data, err := fs.ReadFile(agentsFS, "agents/planner.md")
+		Expect(err).NotTo(HaveOccurred(), "read embedded planner manifest")
+
+		content := string(data)
+		Expect(content).To(HavePrefix("---"), "planner manifest must have YAML frontmatter")
+		fm := strings.SplitN(content[3:], "---", 2)
+		Expect(fm).To(HaveLen(2), "planner frontmatter must be closed with ---")
+
+		var probe struct {
+			ID      string `yaml:"id"`
+			Harness *struct {
+				Enabled       bool `yaml:"enabled"`
+				CriticEnabled bool `yaml:"critic_enabled"`
+				Waves         []struct {
+					Name string `yaml:"name"`
+				} `yaml:"waves"`
+			} `yaml:"harness"`
+		}
+		Expect(yaml.Unmarshal([]byte(strings.TrimSpace(fm[0])), &probe)).To(Succeed(),
+			"parse planner frontmatter")
+
+		Expect(probe.Harness).NotTo(BeNil(),
+			"planner must keep its harness block (critic stays wired)")
+		Expect(probe.Harness.Waves).To(BeEmpty(),
+			"planner manifest must NOT declare harness.waves — the wave-fan-in barrier is retired in favour of the swarm post-member gates")
+		Expect(probe.Harness.CriticEnabled).To(BeTrue(),
+			"retiring waves must not disable the LLM critic — only the wave barrier is removed")
+	})
+
+	It("collectAgentWaves returns no stages for the planning-loop roster, so the wave validator is never wired", func() {
+		// Mirror the planning-loop roster from
+		// internal/app/swarms/planning-loop.yml. With the planner's waves
+		// retired, no member declares waves, so collectAgentWaves must be
+		// empty — createHarnessStreamer then skips coordWaveValidator
+		// wiring entirely (the planning dispatch path cannot re-prompt on
+		// "wave still incomplete").
+		registry := agent.NewRegistry()
+		registry.Register(&agent.Manifest{
+			ID:      "planner",
+			Name:    "Planner",
+			Harness: &agent.HarnessConfig{Enabled: true, CriticEnabled: true},
+		})
+		for _, id := range []string{"explorer", "librarian", "analyst", "plan-writer", "plan-reviewer"} {
+			registry.Register(&agent.Manifest{
+				ID:      id,
+				Name:    id,
+				Harness: &agent.HarnessConfig{Enabled: true},
+			})
+		}
+
+		Expect(collectAgentWaves(registry)).To(BeEmpty(),
+			"no planning-loop member declares waves once the harness is retired")
 	})
 })
