@@ -2640,6 +2640,13 @@ func (d *DelegateTool) executeSync(
 	var result delegationResult
 	var modelName, providerName string
 	var completedAt time.Time
+	// forcedToolChoice carries the per-attempt tool_choice override the
+	// PREVIOUS iteration's gate failure decided to force on re-delegation.
+	// Empty on the first attempt so multi-step members (explorer/librarian)
+	// can read/search before writing; set to "tool:coordination_store" on a
+	// narration-without-write retry so a marginal model is FORCED to emit
+	// the write the gate's directive only asked for in prose.
+	var forcedToolChoice string
 	for attempt := 1; ; attempt++ {
 		if attempt > 1 && d.turnRegistry != nil && childTurnID != "" {
 			// Re-dispatch attempt: clear the prior attempt's partial
@@ -2649,8 +2656,13 @@ func (d *DelegateTool) executeSync(
 			// completeChildTurn / failChildTurnIfOwned guards short-circuit.
 			_ = d.turnRegistry.ResetForRetry(childTurnID)
 		}
+		// Apply the corrective forced tool_choice for THIS attempt only.
+		// The engine reads it off ctx and stamps it onto the outbound
+		// ChatRequest.ToolChoice; per-turn so the first attempt and any
+		// later attempts that didn't decide to force stay unconstrained.
+		attemptCtx := session.WithToolChoiceOverride(delegateCtx, forcedToolChoice)
 		result = delegationResult{}
-		dispatchErr := d.runStreamThroughRunner(delegateCtx, target, &result, childTurnID)
+		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childTurnID)
 		if dispatchErr != nil {
 			completedAt = time.Now().UTC()
 			baseInfo.ToolCalls = result.toolCalls
@@ -2699,6 +2711,14 @@ func (d *DelegateTool) executeSync(
 		// reset at the top of the next iteration.
 		if attempt < PostMemberGateMaxAttempts {
 			target.message = appendGateDirective(target.message, gateErr)
+			// Escalate from a prose ask to a hard force: on a narration-
+			// without-write miss the next attempt FORCES the required
+			// coordination_store write via tool_choice. A marginal model
+			// (zai/glm-4.5) that ignored the text directive across every
+			// attempt in production cannot ignore a forced tool call. Empty
+			// when the failure is not the narration signature, leaving the
+			// retry unconstrained.
+			forcedToolChoice = forcedToolChoiceForGate(gateErr)
 			continue
 		}
 		// Budget exhausted — the GateError is now terminal. Honest-fail
@@ -2795,6 +2815,51 @@ func appendGateDirective(message string, gateErr error) string {
 		return directive
 	}
 	return message + "\n\n" + directive
+}
+
+// forcedCoordinationStoreTool is the coordination_store write tool the
+// corrective retry forces. Kept as a local const (the source of truth is
+// internal/tool/coordination.toolName) so the engine package does not
+// import the tool package solely for this string; a drift guard lives in
+// the delegation specs.
+const forcedCoordinationStoreTool = "coordination_store"
+
+// forcedToolChoiceForGate decides the tool_choice to FORCE on a corrective
+// re-delegation given the post-member gate failure. The synthesis-hang
+// signature is a member that NARRATED its coordination_store write but
+// emitted no tool call — the result-schema runner surfaces this as a
+// "no member output found ... narrated the write but emitted no tool call"
+// reason (internal/swarm/gate_result_schema.go noOutputDirective). For
+// that signature we return "tool:coordination_store" so even a marginal
+// model is compelled to emit the write the prose directive only asked for.
+//
+// Any other gate failure (a genuine schema mismatch on a value the member
+// DID write, a coord-store-unavailable surface, a timeout) returns empty:
+// forcing the write tool would not help and could mask the real fault.
+//
+// Expected:
+//   - gateErr is the *swarm.GateError the post-member gate returned.
+//
+// Returns:
+//   - "tool:coordination_store" for the narration-without-write signature;
+//     "" otherwise (leave the retry unconstrained).
+//
+// Side effects:
+//   - None.
+func forcedToolChoiceForGate(gateErr error) string {
+	var ge *swarm.GateError
+	if !errors.As(gateErr, &ge) || ge.Reason == "" {
+		return ""
+	}
+	// The result-schema runner's no-output reason names the coordination_store
+	// write and the missing tool call. Key off that signature so we only
+	// force when forcing is the right correction.
+	reason := strings.ToLower(ge.Reason)
+	if strings.Contains(reason, "coordination_store") ||
+		(strings.Contains(reason, "no member output") && strings.Contains(reason, "tool call")) {
+		return "tool:" + forcedCoordinationStoreTool
+	}
+	return ""
 }
 
 // runStreamThroughRunner dispatches the target's Stream + collect

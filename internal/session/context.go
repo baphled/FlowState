@@ -43,6 +43,43 @@ func ModelOverrideFromContext(ctx context.Context) string {
 	return v
 }
 
+// ToolChoiceOverrideKey is the context key used to force a specific
+// tool_choice for a single Stream turn. When non-empty, the engine sets
+// it on the outbound ChatRequest.ToolChoice, overriding the provider's
+// default "auto". The dominant case is empty (model decides).
+//
+// The synthesis-hang corrective retry (internal/engine/delegation.go
+// post-member gate loop) sets this to "tool:coordination_store" on the
+// re-delegated member turn so a marginal model (zai/glm-4.5) that
+// narrated the write instead of emitting the tool call on the first
+// attempt is FORCED to emit it. The override is per-turn and never
+// applied on the first attempt — multi-step members (explorer/librarian)
+// legitimately read or search before writing, and forcing the write on
+// turn 1 would break that.
+//
+// Recognised values mirror provider.ChatRequest.ToolChoice: "auto",
+// "any", "none", "tool:NAME". Empty/whitespace means "do not override".
+type ToolChoiceOverrideKey struct{}
+
+// WithToolChoiceOverride returns a derived context carrying a single-turn
+// tool_choice override. An empty/whitespace value short-circuits to the
+// input context unchanged — the override is opt-in and a no-op when the
+// caller has nothing to force.
+func WithToolChoiceOverride(ctx context.Context, choice string) context.Context {
+	if choice == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ToolChoiceOverrideKey{}, choice)
+}
+
+// ToolChoiceOverrideFromContext extracts the per-turn tool_choice
+// override, returning an empty string when none is set (the dominant
+// case — the model picks its own tool use).
+func ToolChoiceOverrideFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(ToolChoiceOverrideKey{}).(string)
+	return v
+}
+
 // WithPriorMessages returns a derived context carrying the supplied
 // session-scoped history. Always attaches the key — including for an
 // empty slice — so the receiving engine treats this as a "use

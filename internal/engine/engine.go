@@ -3076,6 +3076,16 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	if override := session.ModelOverrideFromContext(streamCtx); override != "" {
 		req.Model = override
 	}
+	// Per-turn forced tool_choice. The synthesis-hang corrective retry
+	// (delegation.go post-member gate loop) forces the gated member to
+	// emit the required coordination_store write on re-delegation rather
+	// than narrate it. Applied per-turn via context so the first attempt
+	// stays unconstrained — only the corrective retry sets the override.
+	// Empty means "do not set"; the provider mappers then pick their
+	// default "auto" behaviour.
+	if override := session.ToolChoiceOverrideFromContext(streamCtx); override != "" {
+		req.ToolChoice = override
+	}
 
 	// Compute the context_usage payload BEFORE streamFromProvider so
 	// the gate's refusal path (which builds the synthetic refusal

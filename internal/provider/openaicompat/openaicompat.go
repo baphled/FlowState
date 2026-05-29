@@ -17,6 +17,7 @@ import (
 	shared "github.com/baphled/flowstate/internal/provider/shared"
 	openaiAPI "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/packages/param"
 )
 
 // BuildMessages converts a slice of provider.Message to OpenAI-compatible message parameters.
@@ -289,7 +290,63 @@ func BuildParams(req provider.ChatRequest) openaiAPI.ChatCompletionNewParams {
 	if tools := BuildTools(req.Tools); len(tools) > 0 {
 		params.Tools = tools
 	}
+	if tc, ok := buildToolChoice(req.ToolChoice); ok {
+		params.ToolChoice = tc
+	}
 	return params
+}
+
+// buildToolChoice maps the provider-neutral ToolChoice string onto the
+// OpenAI-compatible tool_choice union. The mapping mirrors the Anthropic
+// provider's applyToolChoice so a forced-tool corrective retry behaves
+// identically across providers — the synthesis-hang fix forces the
+// coordination_store write on the re-delegated member turn, and zai
+// (which routes through this package) MUST carry that forcing onto the
+// wire. Before this mapping existed BuildParams silently dropped
+// req.ToolChoice, so the forced retry was a no-op for openaicompat
+// providers.
+//
+// Recognised values (see provider.ChatRequest.ToolChoice doc):
+//   - "auto"      → OfAuto "auto"     (model decides)
+//   - "any"       → OfAuto "required" (OpenAI's "must call some tool")
+//   - "none"      → OfAuto "none"     (must not call any tool)
+//   - "tool:NAME" → named-function forcing (must call NAME)
+//
+// Expected:
+//   - choice is the provider.ChatRequest.ToolChoice string; empty or
+//     whitespace yields ok=false so BuildParams leaves the field unset.
+//
+// Returns:
+//   - The mapped union and ok=true on a recognised non-empty value;
+//     the zero union and ok=false otherwise (including a malformed
+//     "tool:" with no name, which falls back to "do not set").
+//
+// Side effects:
+//   - None.
+func buildToolChoice(choice string) (openaiAPI.ChatCompletionToolChoiceOptionUnionParam, bool) {
+	var zero openaiAPI.ChatCompletionToolChoiceOptionUnionParam
+	switch c := strings.TrimSpace(choice); {
+	case c == "":
+		return zero, false
+	case c == "auto":
+		return openaiAPI.ChatCompletionToolChoiceOptionUnionParam{OfAuto: param.NewOpt("auto")}, true
+	case c == "any":
+		return openaiAPI.ChatCompletionToolChoiceOptionUnionParam{OfAuto: param.NewOpt("required")}, true
+	case c == "none":
+		return openaiAPI.ChatCompletionToolChoiceOptionUnionParam{OfAuto: param.NewOpt("none")}, true
+	case strings.HasPrefix(c, "tool:"):
+		name := strings.TrimSpace(strings.TrimPrefix(c, "tool:"))
+		if name == "" {
+			return zero, false
+		}
+		return openaiAPI.ChatCompletionToolChoiceOptionParamOfChatCompletionNamedToolChoice(
+			openaiAPI.ChatCompletionNamedToolChoiceFunctionParam{Name: name},
+		), true
+	default:
+		// Unrecognised value: leave unset rather than guess, matching the
+		// "empty means do not set" contract on the neutral field.
+		return zero, false
+	}
 }
 
 // ExtractToolCalls converts OpenAI tool call objects to provider ToolCall objects.

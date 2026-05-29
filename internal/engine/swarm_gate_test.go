@@ -859,6 +859,64 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 			Expect(runner.calls).To(Equal(1),
 				"a clean first-attempt pass is dispatched exactly once — no retry")
 		})
+
+		Context("forced tool_choice on the corrective retry", func() {
+			It("forces the coordination_store write on the re-delegated member turn", func() {
+				// The synthesis-hang signature is a marginal model (zai/glm-4.5)
+				// NARRATING the write instead of emitting the tool call. A prose
+				// directive alone was ignored across all attempts in production.
+				// The corrective re-delegation must FORCE the required tool call
+				// via tool_choice so even a marginal model emits it. The forced
+				// value names the coordination_store write the gate's output_key
+				// is read from.
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{failFor: 1}
+				engines, reviewerProv := reviewerEnginesWithProvider(swarmContextWithGates(postMemberGate()))
+				delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.StreamCallCount()).To(BeNumerically(">=", 2),
+					"the member is re-dispatched after the first narration-only miss")
+				Expect(reviewerProv.ToolChoiceForAttempt(2)).To(Equal("tool:coordination_store"),
+					"the corrective retry forces the coordination_store write, not a prose ask")
+			})
+
+			It("does NOT force tool_choice on the first attempt", func() {
+				// Multi-step members (explorer/librarian) legitimately read or
+				// search BEFORE writing. Forcing the write on the FIRST turn
+				// would break that. Forcing is reserved for the corrective retry
+				// after a narration-without-write miss.
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{failFor: 1}
+				engines, reviewerProv := reviewerEnginesWithProvider(swarmContextWithGates(postMemberGate()))
+				delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.ToolChoiceForAttempt(1)).To(BeEmpty(),
+					"the first attempt stays unconstrained so multi-step members can read/search first")
+			})
+
+			It("does not force tool_choice when the gate passes on the first attempt", func() {
+				// Clean-pass guard: a member that writes on attempt 1 is never
+				// forced — no retry happens, so the single dispatch is
+				// unconstrained.
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{failFor: 0}
+				engines, reviewerProv := reviewerEnginesWithProvider(swarmContextWithGates(postMemberGate()))
+				delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.StreamCallCount()).To(Equal(1))
+				Expect(reviewerProv.ToolChoiceForAttempt(1)).To(BeEmpty(),
+					"a clean first-attempt pass dispatches once, unconstrained")
+			})
+		})
 	})
 })
 

@@ -536,6 +536,61 @@ var _ = Describe("OpenAI Compat", func() {
 			params := openaicompat.BuildParams(req)
 			Expect(params.Tools).To(BeNil())
 		})
+
+		Context("tool_choice mapping (forced-tool corrective retry)", func() {
+			It("leaves tool_choice unset when ToolChoice is empty", func() {
+				req := provider.ChatRequest{
+					Model:    "gpt-4o",
+					Messages: []provider.Message{{Role: "user", Content: "hi"}},
+				}
+				params := openaicompat.BuildParams(req)
+				Expect(params.ToolChoice.OfAuto.Valid()).To(BeFalse())
+				Expect(params.ToolChoice.OfChatCompletionNamedToolChoice).To(BeNil())
+			})
+
+			It("maps tool:NAME onto the named-function forcing union", func() {
+				// The synthesis-hang corrective retry forces the member to
+				// emit the coordination_store write. zai routes through
+				// openaicompat, so BuildParams MUST carry the named-tool
+				// forcing onto the wire — a bare provider.ChatRequest.ToolChoice
+				// that BuildParams drops is the bug this guards.
+				req := provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "tool:coordination_store",
+				}
+				params := openaicompat.BuildParams(req)
+				Expect(params.ToolChoice.OfChatCompletionNamedToolChoice).NotTo(BeNil())
+				Expect(params.ToolChoice.OfChatCompletionNamedToolChoice.Function.Name).
+					To(Equal("coordination_store"))
+			})
+
+			It("maps any onto required", func() {
+				req := provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "any",
+				}
+				params := openaicompat.BuildParams(req)
+				Expect(params.ToolChoice.OfAuto.Or("")).To(Equal("required"))
+			})
+
+			It("maps auto and none onto their string sentinels", func() {
+				autoParams := openaicompat.BuildParams(provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "auto",
+				})
+				Expect(autoParams.ToolChoice.OfAuto.Or("")).To(Equal("auto"))
+
+				noneParams := openaicompat.BuildParams(provider.ChatRequest{
+					Model:      "glm-4.5",
+					Messages:   []provider.Message{{Role: "user", Content: "hi"}},
+					ToolChoice: "none",
+				})
+				Expect(noneParams.ToolChoice.OfAuto.Or("")).To(Equal("none"))
+			})
+		})
 	})
 
 	Describe("ExtractToolCalls", func() {

@@ -31,22 +31,24 @@ import (
 )
 
 type mockProvider struct {
-	name            string
-	streamChunks    []provider.StreamChunk
-	streamErr       error
-	chatResp        provider.ChatResponse
-	chatErr         error
-	embedResult     []float64
-	embedErr        error
-	models          []provider.Model
-	modelsErr       error
-	capturedRequest *provider.ChatRequest
+	name             string
+	streamChunks     []provider.StreamChunk
+	streamErr        error
+	chatResp         provider.ChatResponse
+	chatErr          error
+	embedResult      []float64
+	embedErr         error
+	models           []provider.Model
+	modelsErr        error
+	capturedRequest  *provider.ChatRequest
+	capturedRequests []provider.ChatRequest
 }
 
 func (m *mockProvider) Name() string { return m.name }
 
 func (m *mockProvider) Stream(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	m.capturedRequest = &req
+	m.capturedRequests = append(m.capturedRequests, req)
 
 	if m.streamErr != nil {
 		return nil, m.streamErr
@@ -88,6 +90,34 @@ func (m *mockProvider) LastRequestContainsSubstring(sub string) bool {
 		}
 	}
 	return false
+}
+
+// LastRequestToolChoice returns the ToolChoice the most-recent captured
+// Stream request carried. Used by the post-member gate forced-tool retry
+// specs to assert the corrective re-delegation forces the required
+// coordination_store write (rather than merely asking for it in prose).
+func (m *mockProvider) LastRequestToolChoice() string {
+	if m.capturedRequest == nil {
+		return ""
+	}
+	return m.capturedRequest.ToolChoice
+}
+
+// ToolChoiceForAttempt returns the ToolChoice captured on the n-th
+// Stream dispatch (1-indexed). Empty when fewer than n dispatches
+// occurred. Lets the forced-tool retry specs assert the FIRST attempt
+// stays unconstrained (multi-step members may read before writing)
+// while the corrective retry forces the required write.
+func (m *mockProvider) ToolChoiceForAttempt(n int) string {
+	if n < 1 || n > len(m.capturedRequests) {
+		return ""
+	}
+	return m.capturedRequests[n-1].ToolChoice
+}
+
+// StreamCallCount reports how many times Stream was dispatched.
+func (m *mockProvider) StreamCallCount() int {
+	return len(m.capturedRequests)
 }
 
 // hangingStreamProvider emits a fixed prelude of chunks, then leaves the
