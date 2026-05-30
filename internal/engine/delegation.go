@@ -5458,6 +5458,29 @@ func (d *DelegateTool) SetSourceAgentID(id string) {
 	d.sourceAgentID = id
 }
 
+// SetCoordinationStore updates the coordination store the tool reads
+// through when its post-member gates check for member output.
+//
+// The store is otherwise set only in the constructor
+// (NewDelegateToolWithBackground). On a manifest-switch rebind, the App
+// re-wires the members with a freshly-built store; without this setter the
+// tool would keep reading its original store while the members write to the
+// new one, so the gate reports "no member output found" even though the
+// member wrote correctly. App.wireDelegateToolIfEnabled calls this on the
+// rebind path; the singleton in App.sharedCoordinationStore makes the
+// instance identical in practice, and this setter is the belt-and-braces
+// guard that keeps the gate-read store in lockstep regardless.
+//
+// Expected:
+//   - store is the coordination store the members are wired through. May be
+//     nil; the rejection tracker is left untouched in that case.
+//
+// Side effects:
+//   - Replaces the internal coordinationStore used during gate evaluation.
+func (d *DelegateTool) SetCoordinationStore(store coordination.Store) {
+	d.coordinationStore = store
+}
+
 // Delegation returns the current delegation configuration.
 //
 // Returns:

@@ -386,6 +386,100 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 		})
 	})
 
+	Context("when the delegate tool is re-wired after a manifest switch (rebind)", func() {
+		// Regression: a manifest-switch rebind used to build a FRESH
+		// coordination store and thread it to the members, while the
+		// existing DelegateTool kept its original store. A FileStore reads
+		// from an in-memory map loaded once at construction and never
+		// re-reads the backing file, so the two instances had independent
+		// maps: a member's write landed in the new store (and on disk) but
+		// the lead's post-member gate read the stale one and reported "no
+		// member output found", failing the swarm. The fix shares ONE store
+		// across the member-write and gate-read sides.
+		var (
+			leadManifest   agent.Manifest
+			memberManifest agent.Manifest
+			lead           *engine.Engine
+			rebindApp      *App
+		)
+
+		BeforeEach(func() {
+			rebindApp = &App{
+				Registry: agent.NewRegistry(),
+				Config:   &config.AppConfig{},
+			}
+
+			leadManifest = agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			// The member opts into coordination_store so its delegate
+			// engine receives a coordination_store tool — the member-write
+			// surface whose store must match the lead's gate-read store.
+			memberManifest = agent.Manifest{
+				ID:   "explorer",
+				Name: "Explorer Agent",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"read", "coordination_store"},
+				},
+			}
+			rebindApp.Registry.Register(&leadManifest)
+			rebindApp.Registry.Register(&memberManifest)
+
+			reg := provider.NewRegistry()
+			rebindApp.providerRegistry = reg
+
+			lead = engine.New(engine.Config{
+				Manifest:      leadManifest,
+				AgentRegistry: rebindApp.Registry,
+				Registry:      reg,
+			})
+
+			// Wire once (first wiring), then again (rebind branch) to
+			// reproduce the manifest-switch path that diverged.
+			rebindApp.wireDelegateToolIfEnabled(lead, leadManifest)
+			rebindApp.wireDelegateToolIfEnabled(lead, leadManifest)
+		})
+
+		It("reads gates through the App's single shared coordination store", func() {
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			// The member-write path threads the App's shared store into each
+			// member's coordination_store tool (via buildDelegateMaps). The
+			// gate-read path is dt.CoordinationStore(). Both MUST be the same
+			// instance after the rebind — pre-fix the rebind built a fresh
+			// store for the members and left the gate reading the original.
+			sharedStore := rebindApp.coordinationStore
+			Expect(sharedStore).NotTo(BeNil(),
+				"App must hold the single shared coordination store after wiring")
+
+			Expect(dt.CoordinationStore()).To(BeIdenticalTo(sharedStore),
+				"after rebind the gate-read store must be the SAME instance "+
+					"the members write through (the App singleton)")
+		})
+
+		It("surfaces a member-written key to the gate after rebind", func() {
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+
+			// A member writes its output through the App's shared store —
+			// the exact store its coordination_store tool was wired with.
+			memberWriteStore := rebindApp.coordinationStore
+			Expect(memberWriteStore).NotTo(BeNil())
+			Expect(memberWriteStore.Set("chain/explorer/findings", []byte("done"))).To(Succeed())
+
+			// The lead's gate reads through the DelegateTool's store; it must
+			// see the member's write. Pre-fix the gate read a divergent,
+			// never-refreshed store and reported "no member output found".
+			val, err := dt.CoordinationStore().Get("chain/explorer/findings")
+			Expect(err).NotTo(HaveOccurred(),
+				"the gate-read store must see the member's write")
+			Expect(val).To(Equal([]byte("done")))
+		})
+	})
+
 	Describe("createDelegateEngine", func() {
 		It("creates an engine with a chat provider configured", func() {
 			delegateApp := &App{

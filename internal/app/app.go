@@ -192,6 +192,28 @@ type App struct {
 	// production createEngine path). Permission Mode ModeAskUser
 	// Extension plan (May 2026) Slice 2.
 	permissionPrompter *permissionPrompter
+	// coordinationStore is the SINGLE wrapped coordination store shared by
+	// every App-method wiring site (the lead DelegateTool's gate-read path,
+	// the lead/member coordination_store tools' member-write path, and the
+	// non-delegating coordination-tool path). Built once and reused so the
+	// member-write and gate-read sides never diverge.
+	//
+	// The bug this closes: createCoordinationStore returns a FRESH store on
+	// every call, and FileStore reads consult an in-memory map loaded once at
+	// construction — never re-reading the file. So two stores over the same
+	// coordination.json have independent, never-refreshed maps. On a
+	// manifest-switch rebind the members were re-wired with a fresh store
+	// while the DelegateTool kept its original; a member's write landed in
+	// the new store (and on disk) but the gate read the stale one and
+	// reported "no member output found", failing the swarm.
+	//
+	// Accessed via sharedCoordinationStore(), which lazily builds-and-caches
+	// for App instances not constructed through buildApp (test fixtures).
+	// Excludes the root engine's harness-streamer store built during
+	// setupEngine (app.go:~891): that store backs only the root engine's
+	// wave-validator/critic, not the member-write/gate-read path, and is
+	// constructed before the App struct exists.
+	coordinationStore coordination.Store
 }
 
 // BootstrapDeferred reports whether the App was constructed with
@@ -633,6 +655,13 @@ func buildApp(params appBuildParams) *App {
 	} else {
 		app.Store = planStore
 	}
+
+	// Build the single shared coordination store once, AFTER app.Store is
+	// set so the approval-wrapper's plan-persistence callback can reach the
+	// plan store. Every later wiring site (wireDelegateToolIfEnabled and
+	// friends) reads through sharedCoordinationStore so the member-write and
+	// gate-read sides never diverge across a manifest-switch rebind.
+	app.coordinationStore = wrapCoordinationStoreWithApproval(createCoordinationStore(cfg), app)
 
 	// May 2026 — task-cancel-501 regression fix. Allocate the
 	// BackgroundTaskManager unconditionally before any manifest-driven
@@ -1128,6 +1157,34 @@ func wrapCoordinationStoreWithApproval(inner coordination.Store, a *App) coordin
 		}
 	}
 	return coordination.NewPersistingStore(inner, cb)
+}
+
+// sharedCoordinationStore returns the App's single wrapped coordination
+// store, building and caching it on first use. Every App-method wiring site
+// (wireDelegateToolIfEnabled, wireCoordinationToolIfDeclared, the delegate
+// harness streamer) reads through this so the member-write and gate-read
+// sides are guaranteed to be the SAME instance.
+//
+// buildApp seeds a.coordinationStore eagerly; this accessor's lazy build
+// covers App instances hand-constructed in tests that bypass buildApp. The
+// cached store is wrapped with the post-approval plan-persistence observer
+// exactly as the per-call sites did before the singleton collapse.
+//
+// Expected:
+//   - a is a non-nil App. a.Config may be nil (createCoordinationStore then
+//     yields an in-memory store).
+//
+// Returns:
+//   - The shared, wrapped coordination.Store.
+//
+// Side effects:
+//   - On first call for an App not seeded by buildApp, constructs the
+//     file-backed (or in-memory) store and caches it on a.coordinationStore.
+func (a *App) sharedCoordinationStore() coordination.Store {
+	if a.coordinationStore == nil {
+		a.coordinationStore = wrapCoordinationStoreWithApproval(createCoordinationStore(a.Config), a)
+	}
+	return a.coordinationStore
 }
 
 // bindCompressionManifest rebinds the summariser adapter to the default
@@ -1781,7 +1838,12 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		a.backgroundManager.WithSessionManager(a.sessionManager)
 	}
 	bgManager := a.backgroundManager
-	coordinationStore := wrapCoordinationStoreWithApproval(createCoordinationStore(a.Config), a)
+	// One shared store for both the member-write path (threaded through
+	// buildDelegateMaps into each member's coordination_store tool) and the
+	// gate-read path (the DelegateTool's coordinationStore). Reusing the App
+	// singleton — rather than building a fresh store here — is what keeps the
+	// two sides identical across a manifest-switch rebind.
+	coordinationStore := a.sharedCoordinationStore()
 
 	engines, streamers := a.buildDelegateMaps(manifest.ID, coordinationStore, eng)
 
@@ -1800,6 +1862,15 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 		dt.SetDelegation(manifest.Delegation)
 		dt.SetSourceAgentID(manifest.ID)
 		dt.WithStreamers(streamers)
+		// Re-point the gate-read store at the same instance the members
+		// were just re-wired through. The DelegateTool sets its store only
+		// in the constructor, so without this the rebind would leave the
+		// gate reading a stale store while members write to the new one —
+		// the "no member output found" divergence. With the App singleton
+		// this is the same instance the tool already holds; the explicit
+		// set keeps the two in lockstep even if a future path hands the
+		// members a different store.
+		dt.SetCoordinationStore(coordinationStore)
 		a.configureDelegateTool(dt, eng)
 	}
 
@@ -1830,12 +1901,15 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 // Expected:
 //   - eng is non-nil.
 //   - existingStore may be nil. The delegating branch passes its shared
-//     store so coordinator and delegates see the same keys during a
-//     chain. The non-delegating branch passes nil; a fresh store is
-//     constructed via createCoordinationStore — file-backed paths are
-//     deterministic so the two store instances refer to the same on-disk
-//     file, and non-delegating agents do not participate in cross-agent
-//     chains.
+//     store so coordinator and delegates see the same keys during a chain.
+//     The non-delegating branch passes nil; the App's shared singleton is
+//     used instead (sharedCoordinationStore). This MUST be the same
+//     instance the delegating path uses: a FileStore reads from an
+//     in-memory map populated once at construction and never re-reads the
+//     backing file, so two stores over the same coordination.json have
+//     independent, never-refreshed maps — a write through one is invisible
+//     through the other. Sharing the single instance is the only thing that
+//     keeps reads and writes coherent; "same on-disk file" is NOT enough.
 //
 // Side effects:
 //   - Adds or removes the coordination_store tool on eng based on the
@@ -1854,7 +1928,7 @@ func (a *App) wireCoordinationToolIfDeclared(
 	}
 	store := existingStore
 	if store == nil {
-		store = wrapCoordinationStoreWithApproval(createCoordinationStore(a.Config), a)
+		store = a.sharedCoordinationStore()
 	}
 	eng.AddTool(coordinationtool.New(store))
 }
@@ -2266,7 +2340,12 @@ func (a *App) createDelegateEngine(
 	})
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
-		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, a.Config.DefaultProviderModel(), createCoordinationStore(a.Config))
+		// Reuse the same store the member's coordination_store tool was
+		// wired through (the App singleton, threaded in via buildDelegateMaps)
+		// rather than building a fresh one. The delegate harness streamer's
+		// wave-fan-in validator reads the coordination namespace; a separate
+		// store instance would read a stale, never-refreshed in-memory map.
+		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, a.Config.DefaultProviderModel(), store)
 	}
 	return eng, str
 }
