@@ -2885,7 +2885,7 @@ func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[stri
 	// reads e.swarmContext / e.agentRegistry under the caller's lock —
 	// see effectiveAllowedToolsForCtx, which now RLocks even the bound
 	// path for this read.
-	allowed = e.capToolsetAtSwarmLeadLocked(allowed, turnManifestID)
+	allowed = e.capToolsetAtSwarmLeadLocked(ctx, allowed, turnManifestID)
 
 	if permissionmode.FromContext(ctx) != permissionmode.ModePlan {
 		return allowed
@@ -2925,20 +2925,34 @@ func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[stri
 // bound manifest is default-assistant, NOT the lead). Member turns and
 // standalone (no-swarm) turns are returned unchanged.
 //
-// Discriminator. The lead's own engine is the ONLY engine that ever
-// carries a swarm context: dispatch.SetSwarmContext is called exclusively
-// on the shared dispatchEngine (the lead engine), while members run on
-// their own per-agent delegate engines (d.engines[memberID]) whose
-// swarmContext is nil. So e.swarmContext != nil already implies "this is
-// the lead engine's turn". We nonetheless ALSO exclude turns whose
-// manifest is a declared swarm member as belt-and-braces: if a future
-// wiring change ever runs a member turn on a swarm-context-bearing
-// engine, that member must keep its legitimate execution tools. The net
-// rule — swarm active AND turn manifest is not a member ⇒ cap at lead —
-// holds the invariant whether or not the lead manifest was correctly
-// bound into ctx, which is precisely the case the literal
-// LeadAgent==boundID discriminator misses (the leak binds default-
-// assistant, so LeadAgent != boundID and the cap would never fire).
+// Discriminator. The swarm context is read from the per-turn ctx scope
+// FIRST (swarm.ScopeFromContext) and only falls back to the engine field
+// e.swarmContext when no scope was attached. This matters because the
+// dispatcher attaches the scope to streamCtx on EVERY dispatch path
+// (dispatcher.go:765 swarm.WithScope(streamCtx, swarmCtx)) but only calls
+// SetSwarmContext inside its `if swarmActive` block. The swarm-id entry
+// path (agent_id == a SWARM ID) attaches a non-nil scope to ctx but the
+// pre-fix code never reached SetSwarmContext, so e.swarmContext stayed
+// nil and a cap keyed solely on the field returned `allowed` unchanged —
+// bash leaked. Keying on the ctx scope makes the cap fire on EVERY swarm
+// entry point. When the ctx scope is present, it is authoritative
+// (scoped=true): a nil scope means "this turn is standalone" and the cap
+// must NOT fire; the engine field is consulted only when no scope was
+// attached (the legacy / direct-SetSwarmContext test path).
+//
+// The lead's own engine is the ONLY engine that ever carries a swarm
+// context: dispatch.SetSwarmContext is called exclusively on the shared
+// dispatchEngine (the lead engine), while members run on their own
+// per-agent delegate engines (d.engines[memberID]) whose swarmContext is
+// nil. We nonetheless ALSO exclude turns whose manifest is a declared
+// swarm member as belt-and-braces: if a future wiring change ever runs a
+// member turn on a swarm-context-bearing engine, that member must keep
+// its legitimate execution tools. The net rule — swarm active AND turn
+// manifest is not a member ⇒ cap at lead — holds the invariant whether or
+// not the lead manifest was correctly bound into ctx, which is precisely
+// the case the literal LeadAgent==boundID discriminator misses (the leak
+// binds default-assistant, so LeadAgent != boundID and the cap would
+// never fire).
 //
 // Manifest intersection (not a static bash/read/write denylist) is used
 // deliberately: a denylist would silently miss any future execution tool
@@ -2947,11 +2961,15 @@ func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[stri
 // declares survives.
 //
 // Expected:
+//   - ctx may carry a per-turn swarm scope (swarm.WithScope). When it
+//     does (scoped=true) that scope is authoritative; otherwise the cap
+//     falls back to the engine field e.swarmContext.
 //   - allowed is the freshly composed allowed-tool set for the turn.
 //   - turnManifestID is the ID of the manifest driving the turn (bound
 //     via ctx, else e.manifest.ID).
-//   - The caller holds e.mu (read or write) — this reads e.swarmContext.
-//     e.agentRegistry is set once at construction and never mutated.
+//   - The caller holds e.mu (read or write) — the fallback path reads
+//     e.swarmContext. e.agentRegistry is set once at construction and
+//     never mutated.
 //
 // Returns:
 //   - allowed unchanged for member / no-swarm turns; otherwise the
@@ -2964,8 +2982,16 @@ func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[stri
 //
 // Side effects:
 //   - None.
-func (e *Engine) capToolsetAtSwarmLeadLocked(allowed map[string]bool, turnManifestID string) map[string]bool {
+func (e *Engine) capToolsetAtSwarmLeadLocked(ctx context.Context, allowed map[string]bool, turnManifestID string) map[string]bool {
+	// Prefer the per-turn ctx scope (attached by the dispatcher on EVERY
+	// path) over the engine field. When a scope is attached it is
+	// authoritative even when nil — nil means "standalone turn, do not
+	// cap". Only when NO scope was attached (legacy / direct
+	// SetSwarmContext callers) do we read e.swarmContext.
 	swarmCtx := e.swarmContext
+	if scoped, present := swarm.ScopeFromContext(ctx); present {
+		swarmCtx = scoped
+	}
 	if swarmCtx == nil || swarmCtx.LeadAgent == "" {
 		return allowed
 	}

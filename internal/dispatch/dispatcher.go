@@ -695,27 +695,67 @@ func (d *Dispatcher) DispatchSessioned(
 			}
 		}
 
-		// Pass 2 — auto-dispatch fallback when no mention hit.
+		// Pass 2 — agent_id resolution fallback when no mention hit.
+		//
+		// req.AgentID can be EITHER a lead-agent name whose swarm opted
+		// into auto-dispatch (e.g. "coordinator") OR a SWARM ID directly
+		// (e.g. "planning-loop", "a-team"). The previous implementation
+		// consulted only swarm.Registry.AutoDispatchSwarmFor, which
+		// matches lead-agent NAMES (registry.go:149 m.Lead != agentID) —
+		// so a SWARM ID returned (nil,false), swarmActive stayed false,
+		// SetSwarmContext was never called, the lead override was never
+		// set, and Engine.Stream fell through to the engine DEFAULT
+		// manifest (which HAS bash). Live, the planning-loop lead ran 6
+		// bash calls and dispatched zero members.
+		//
+		// swarm.Resolve is the SAME classifier d.resolve() /
+		// swarm.ResolveTarget use for the ephemeral path
+		// (dispatcher.go:1363) and that the CLI/TUI use. It subsumes
+		// AutoDispatchSwarmFor: an agent id that is a sole auto-dispatch
+		// lead resolves to KindSwarm (context.go:412-426), a bare swarm id
+		// resolves to KindSwarm (context.go:428-431), and a plain non-lead
+		// agent resolves to KindAgent → no swarm activation (the guard
+		// that keeps "default-assistant" a non-swarm turn). Routing every
+		// shape through one classifier means the swarm-id path activates
+		// the SAME machinery the lead-name path does: SetSwarmContext
+		// installs the scope (members available) and the leadOverride
+		// below binds the LEAD manifest so the runtime gate rejects bash
+		// and the lead can delegate.
+		//
+		// We call the lower-level Resolve (not ResolveTarget) so we can
+		// construct the Context with the swarm MANIFEST's id as the
+		// SwarmID — NewContext(manifest.ID, manifest) — preserving the
+		// pre-fix contract exactly: the auto-dispatch-LEAD-NAME path
+		// (agent_id == "coordinator") keeps SwarmID == "meta-swarm" (the
+		// swarm id), NOT the lead name, so the coordination-store
+		// namespace / ChainPrefix default is unchanged. ResolveTarget
+		// would have stamped SwarmID with the input token (the lead name),
+		// silently re-namespacing every auto-dispatch lead run.
+		//
+		// A KindNone (id in neither registry) leaves manifest nil — a
+		// no-op here exactly as AutoDispatchSwarmFor's (nil,false) was,
+		// leaving the plain-agent stream path to surface any error
+		// downstream.
 		if !swarmActive && req.AgentID != "" {
-			if manifest, ok := d.swarmRegistry.AutoDispatchSwarmFor(req.AgentID); ok {
+			hasAgent := d.agentLookup()
+			if kind, manifest := swarm.Resolve(req.AgentID, hasAgent, d.swarmRegistry); kind == swarm.KindSwarm && manifest != nil && manifest.Lead != "" {
 				ctx := swarm.NewContext(manifest.ID, manifest)
 				swarmCtx = &ctx
 				manifestSnapshot = d.dispatchEngine.ManifestSnapshot()
 				swarmActive = true
 				// Orchestrator Self-Execution (May 2026): set the lead
-				// override on the auto-dispatch path EXACTLY as the
-				// @-mention path does (Pass 1 / leadOverride =
-				// mentionedCtx.LeadAgent). Without it the session's
-				// agent_id stays the session default, Engine.Stream binds
-				// the DEFAULT manifest (which has bash/read/write), and the
-				// runtime tool gate lets the orchestrator self-execute —
-				// the planning-loop lead made 57 bash/read/write calls and
-				// dispatched zero members. Redirecting to ctx.LeadAgent
-				// makes session.WithStreamAgentOverride (below) bind the
-				// LEAD manifest into streamCtx so the gate evaluates the
-				// lead turn against the lead's coordination-only toolset,
-				// structurally forcing it to delegate.
-				leadOverride = ctx.LeadAgent
+				// override EXACTLY as the @-mention path does (Pass 1 /
+				// leadOverride = mentionedCtx.LeadAgent). Without it the
+				// session's agent_id stays the session default,
+				// Engine.Stream binds the DEFAULT manifest (which has
+				// bash/read/write), and the runtime tool gate lets the
+				// orchestrator self-execute. Redirecting to
+				// swarmCtx.LeadAgent makes session.WithStreamAgentOverride
+				// (below) bind the LEAD manifest into streamCtx so the
+				// gate evaluates the lead turn against the lead's
+				// coordination-only toolset, structurally forcing it to
+				// delegate.
+				leadOverride = swarmCtx.LeadAgent
 			}
 		}
 	}

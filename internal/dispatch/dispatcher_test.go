@@ -677,6 +677,91 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 		})
 	})
 
+	Context("given a session whose agent_id is a SWARM ID (not a lead-agent name)", func() {
+		// Orchestrator Self-Execution (May 2026) — swarm-id entry path.
+		// agent_id can be a SWARM ID (e.g. "a-team", "planning-loop")
+		// rather than a lead-agent name. Pass-2's AutoDispatchSwarmFor
+		// matches lead-agent NAMES only (registry.go:149 m.Lead !=
+		// agentID), so AutoDispatchSwarmFor("a-team") returns (nil,false)
+		// → swarmActive stayed false → SetSwarmContext was never called,
+		// leadOverride never set, and Engine.Stream fell through to the
+		// engine DEFAULT manifest (which HAS bash). Live, the
+		// planning-loop lead ran 6 bash calls and dispatched zero
+		// members. The fix resolves req.AgentID through
+		// swarm.ResolveTarget — the SAME resolver d.resolve() uses at
+		// dispatcher.go:1363 — so a swarm id activates swarm mode through
+		// the identical machinery the lead-name path uses.
+		BeforeEach(func() {
+			// a-team is a SWARM ID with AutoDispatchOnLead=false and is
+			// NOT a registered agent — so it can only resolve via the
+			// swarm-id branch, never via AutoDispatchSwarmFor.
+			mgr.sess.AgentID = "a-team"
+		})
+
+		It("activates swarm mode and threads the swarm LEAD through ctx via WithStreamAgentOverride", func() {
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
+
+			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1",
+				AgentID:      "a-team",
+				Content:      "please help",
+				ScanMentions: true,
+			}, broker)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(broker.publishCount, "2s").Should(Equal(1))
+
+			// swarmActive: the swarm context installed on the engine.
+			Expect(eng.installed()).NotTo(BeNil(),
+				"a session whose agent_id is a SWARM ID must install the swarm context on the engine — AutoDispatchSwarmFor matches lead NAMES only, so the swarm-id must resolve via swarm.ResolveTarget")
+			Expect(eng.installed().SwarmID).To(Equal("a-team"))
+			Expect(eng.installed().LeadAgent).To(Equal("team-lead"))
+
+			// WithStreamAgentOverride threads the LEAD so Engine.Stream
+			// binds the lead manifest and the gate forbids self-execution.
+			override := session.StreamAgentOverrideFromContext(mgr.lastStreamCtx)
+			Expect(override).To(Equal("team-lead"),
+				"a swarm-id agent_id must thread the swarm LEAD through ctx via session.WithStreamAgentOverride — exactly as the lead-name and @-mention paths do — so Engine.Stream binds the LEAD manifest and the runtime tool gate forbids the orchestrator from self-executing bash/read/write")
+
+			// The per-turn swarm scope must be attached to streamCtx so
+			// the delegate gate's activeSwarmContextForCtx finds members.
+			scope, scoped := swarm.ScopeFromContext(mgr.lastStreamCtx)
+			Expect(scoped).To(BeTrue(),
+				"the dispatcher must attach a swarm scope to streamCtx on the swarm-id path so the delegate gate reads the lead's members off ctx")
+			Expect(scope).NotTo(BeNil(),
+				"the attached scope must be non-nil on an active swarm turn — nil scope means the lead has NO members and even a legitimate delegate(member) call is rejected")
+			Expect(scope.LeadAgent).To(Equal("team-lead"))
+			Expect(scope.Members).To(ConsistOf("team-lead", "default-assistant"))
+		})
+	})
+
+	Context("given a session whose agent_id is a plain NON-swarm agent (guard)", func() {
+		// Guard for the swarm-id fix: resolving req.AgentID through
+		// swarm.ResolveTarget must NOT activate swarm mode for a plain
+		// agent id. ResolveTarget returns (id, nil, nil) for KindAgent,
+		// so the nil swarmCtx must leave swarmActive false — no
+		// SetSwarmContext, no lead override, no scope.
+		It("does NOT activate swarm mode for a plain agent id", func() {
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
+
+			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1",
+				AgentID:      "default-assistant",
+				Content:      "hello",
+				ScanMentions: true,
+			}, broker)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(broker.publishCount, "2s").Should(Equal(1))
+
+			Expect(eng.installed()).To(BeNil(),
+				"a plain non-swarm agent id must NOT activate swarm mode — swarm.ResolveTarget yields a nil swarmCtx for KindAgent")
+			override := session.StreamAgentOverrideFromContext(mgr.lastStreamCtx)
+			Expect(override).To(BeEmpty(),
+				"no lead override may be threaded for a plain agent turn")
+		})
+	})
+
 	Context("given a session whose agent_id is a plain agent", func() {
 		It("skips the swarm lifecycle entirely and forwards chunks to the broker", func() {
 			d := dispatch.New(drip, eng, swarmer, reg, mgr)

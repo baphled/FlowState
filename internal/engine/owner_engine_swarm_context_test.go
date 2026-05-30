@@ -121,10 +121,10 @@ var _ = Describe("DelegateTool.WithOwnerEngine swarm-context lookup", func() {
 // only lead — the cap must intersect the two and forbid execution tools.
 var _ = Describe("Engine swarm-lead tool cap (Orchestrator Self-Execution)", func() {
 	var (
-		eng         *engine.Engine
-		registry    *agent.Registry
-		leadID      = "planner"
-		defaultID   = "default-assistant"
+		eng       *engine.Engine
+		registry  *agent.Registry
+		leadID    = "planner"
+		defaultID = "default-assistant"
 	)
 
 	BeforeEach(func() {
@@ -249,6 +249,83 @@ var _ = Describe("Engine swarm-lead tool cap (Orchestrator Self-Execution)", fun
 				"the rejection wraps the shared ErrToolNotFound sentinel")
 			Expect(fakeBash.execCalled).To(BeFalse(),
 				"the load-bearing assertion: the gate fires BEFORE Execute — the orchestrator's bash body must never run")
+		})
+	})
+
+	When("the swarm scope is attached via ctx but SetSwarmContext was NEVER called (swarm-id dispatch path)", func() {
+		// The swarm-id entry path (agent_id == a SWARM ID) never reached
+		// the dispatcher's `if swarmActive` block before the fix, so
+		// SetSwarmContext was never called and e.swarmContext stayed nil
+		// — but the dispatcher STILL attaches the per-turn scope to ctx
+		// via swarm.WithScope(streamCtx, swarmCtx) at dispatcher.go:765
+		// on EVERY turn. The cap previously keyed solely on the engine
+		// field e.swarmContext, so with the field nil the cap's first
+		// guard returned `allowed` unchanged and bash leaked through.
+		//
+		// Re-keying the cap to swarm.ScopeFromContext(ctx) — the value
+		// EVERY dispatch path attaches — makes the cap fire on this entry
+		// path too, regardless of whether SetSwarmContext was called.
+		// This drives that exact shape: scope in ctx, e.swarmContext nil,
+		// leaky default manifest bound, lead names a coordination-only
+		// persona — the cap MUST still strip bash.
+		It("caps the effective toolset at the lead manifest using the ctx scope — execution tools are stripped", func() {
+			scope := &swarm.Context{
+				SwarmID:   "planning-loop",
+				LeadAgent: leadID,
+				Members:   []string{"analyst", "plan-writer"},
+			}
+			// Attach the scope via ctx, bind the LEAKY default manifest —
+			// but deliberately do NOT call eng.SetSwarmContext, so
+			// e.swarmContext stays nil. This is the swarm-id path: the
+			// pre-fix leak where Engine.Stream fell through to the
+			// default-assistant manifest (which HAS bash).
+			ctx := swarm.WithScope(context.Background(), scope)
+			leaky, ok := registry.Get(defaultID)
+			Expect(ok).To(BeTrue())
+			ctx = engine.WithBoundManifest(ctx, *leaky)
+
+			allowed := eng.EffectiveAllowedToolsForTest(ctx)
+
+			Expect(allowed["bash"]).To(BeFalse(),
+				"the cap must fire off the ctx-attached swarm scope even though SetSwarmContext was never called — the swarm-id dispatch path attaches the scope via ctx but never sets e.swarmContext, and the leaky default-assistant manifest is bound; bash must be stripped")
+			Expect(allowed["read"]).To(BeFalse(),
+				"read must be stripped off the ctx-scope path — the planner lead does not declare it")
+			Expect(allowed["write"]).To(BeFalse(),
+				"write must be stripped off the ctx-scope path — the planner lead does not declare it")
+		})
+
+		It("rejects a lead bash call at the runtime gate when only the ctx scope is set", func() {
+			scope := &swarm.Context{
+				SwarmID:   "planning-loop",
+				LeadAgent: leadID,
+				Members:   []string{"analyst", "plan-writer"},
+			}
+			ctx := swarm.WithScope(context.Background(), scope)
+			leaky, ok := registry.Get(defaultID)
+			Expect(ok).To(BeTrue())
+			ctx = engine.WithBoundManifest(ctx, *leaky)
+
+			fakeBash := &executableMockTool{
+				name:        "bash",
+				description: "fake bash",
+				execResult:  tool.Result{Output: "should never run"},
+			}
+			eng.AddTool(fakeBash)
+
+			result, err := eng.ExecuteToolCallForTest(ctx, "sess-swarmid-cap", &provider.ToolCall{
+				ID:        "call-bash",
+				Name:      "bash",
+				Arguments: map[string]any{},
+			})
+
+			Expect(err).NotTo(HaveOccurred(),
+				"the gate emits an IsError tool_result, not a Go error")
+			Expect(result.IsError).To(BeTrue(),
+				"the orchestrator's bash call on the swarm-id path must be rejected — the cap reads the ctx scope, not e.swarmContext")
+			Expect(errors.Is(result.Error, tool.ErrToolNotFound)).To(BeTrue(),
+				"the rejection wraps the shared ErrToolNotFound sentinel")
+			Expect(fakeBash.execCalled).To(BeFalse(),
+				"the gate must fire BEFORE Execute — the orchestrator's bash body must never run on the swarm-id path")
 		})
 	})
 
