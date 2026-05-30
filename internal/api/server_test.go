@@ -3142,6 +3142,171 @@ var _ = Describe("GET /api/swarm/events delegation projection", func() {
 	})
 })
 
+// Swarm Gate SSE Observability (May 2026). gate.failed events ARE
+// published to the bus and recorded on the turn record, but the only
+// reachable diagnostic stream — GET /api/swarm/events?session_id=X —
+// historically forwarded only tool.execute.*, background.task.*, and
+// delegation.* topics. Gate failures were therefore invisible on the
+// one stream an operator can capture, making it impossible to diagnose
+// WHY a planning-loop swarm's post-member gate halted.
+//
+// These specs pin the bridge: the swarm-events stream must forward
+// gate.failed (and the rest of the gate lifecycle) for the subscribed
+// session, carrying the reason / member / gate_name so the captured
+// stream shows the cause; and it must NOT leak gate failures from a
+// different session (the H5 session-scope guard extends to gate events).
+var _ = Describe("GET /api/swarm/events gate lifecycle projection", func() {
+	var (
+		bus *eventbus.EventBus
+		srv *api.Server
+		hs  *httptest.Server
+	)
+
+	BeforeEach(func() {
+		bus = eventbus.NewEventBus()
+		srv = api.NewServer(nil, nil, nil, nil, api.WithEventBus(bus))
+		hs = httptest.NewServer(srv.Handler())
+	})
+
+	AfterEach(func() {
+		hs.Close()
+	})
+
+	// streamGateEvents opens an SSE stream scoped to sessionID, runs
+	// publish() after the handler has subscribed, and collects up to
+	// `expect` decoded `data:` frames (including the connected hello).
+	streamGateEvents := func(sessionID string, expect int, publish func()) []map[string]any {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, hs.URL+"/api/swarm/events?session_id="+sessionID, http.NoBody)
+		Expect(err).NotTo(HaveOccurred())
+
+		respCh := make(chan *http.Response, 1)
+		go func() {
+			resp, doErr := http.DefaultClient.Do(req)
+			if doErr == nil {
+				respCh <- resp
+			}
+		}()
+
+		// Give the handler time to subscribe before we publish.
+		time.Sleep(80 * time.Millisecond)
+		publish()
+
+		var resp *http.Response
+		Eventually(respCh, 2*time.Second).Should(Receive(&resp))
+		defer resp.Body.Close()
+
+		eventsCh := make(chan []map[string]any, 1)
+		go func() {
+			reader := bufio.NewReader(resp.Body)
+			var collected []map[string]any
+			for {
+				line, readErr := reader.ReadString('\n')
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "data: ") {
+					payload := strings.TrimPrefix(trimmed, "data: ")
+					var parsed map[string]any
+					if json.Unmarshal([]byte(payload), &parsed) == nil {
+						collected = append(collected, parsed)
+					}
+				}
+				if readErr != nil {
+					break
+				}
+				if expect > 0 && len(collected) >= expect {
+					break
+				}
+			}
+			eventsCh <- collected
+		}()
+
+		var collected []map[string]any
+		Eventually(eventsCh, 3*time.Second).Should(Receive(&collected))
+		return collected
+	}
+
+	It("forwards a gate.failed event carrying the reason and member/gate_name for the subscribed session", func() {
+		// connected hello + gate.failed frame.
+		collected := streamGateEvents("planner-sess", 2, func() {
+			bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
+				SwarmID:        "planning-loop",
+				SessionID:      "planner-sess",
+				Lifecycle:      "post-member",
+				MemberID:       "analyst",
+				GateName:       "relevance",
+				GateKind:       "ext:relevance-gate",
+				Reason:         "off-topic",
+				Cause:          "runner exited non-zero",
+				CoordStoreKeys: []string{"plan", "analysis"},
+			}))
+		})
+
+		var gate map[string]any
+		for _, ev := range collected {
+			meta, _ := ev["metadata"].(map[string]any)
+			if meta != nil && meta["lifecycle"] == "post-member" {
+				gate = ev
+				break
+			}
+		}
+		Expect(gate).NotTo(BeNil(),
+			"the swarm-events SSE stream must forward gate.failed so a captured stream shows WHY the swarm halted")
+		Expect(gate["status"]).To(Equal("failed"))
+
+		metadata, ok := gate["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["reason"]).To(Equal("off-topic"),
+			"the reason is the load-bearing diagnostic — the whole point is showing WHY a gate failed")
+		Expect(metadata["member_id"]).To(Equal("analyst"))
+		Expect(metadata["gate_name"]).To(Equal("relevance"))
+	})
+
+	It("does NOT forward a gate.failed event from a different session (H5 session-scope guard)", func() {
+		// Subscribe to planner-A. Publish a gate.failed for planner-B
+		// (the leak) FIRST, then one for planner-A. With the bus queue
+		// ordering, an unfiltered handler would surface planner-B before
+		// planner-A; the filtered handler must only ever deliver the
+		// planner-A frame. We read connected + exactly one gate frame and
+		// assert it is the owned session's.
+		collected := streamGateEvents("planner-A", 2, func() {
+			bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
+				SwarmID:   "planning-loop",
+				SessionID: "planner-B",
+				Lifecycle: "post-member",
+				MemberID:  "leaked-member",
+				GateName:  "leaked-gate",
+				Reason:    "should-not-appear",
+			}))
+			bus.Publish(events.EventGateFailed, events.NewGateFailedEvent(events.GateEventData{
+				SwarmID:   "planning-loop",
+				SessionID: "planner-A",
+				Lifecycle: "post-member",
+				MemberID:  "owned-member",
+				GateName:  "owned-gate",
+				Reason:    "owned-reason",
+			}))
+		})
+
+		var gate map[string]any
+		for _, ev := range collected {
+			meta, _ := ev["metadata"].(map[string]any)
+			if meta != nil && meta["lifecycle"] == "post-member" {
+				gate = ev
+				break
+			}
+		}
+		Expect(gate).NotTo(BeNil(),
+			"the owned planner-A gate.failed must reach the wire")
+		metadata, ok := gate["metadata"].(map[string]any)
+		Expect(ok).To(BeTrue())
+		Expect(metadata["member_id"]).To(Equal("owned-member"),
+			"only the subscribed session's gate failure may reach the wire — planner-B must be dropped by the session filter")
+		Expect(metadata["reason"]).To(Equal("owned-reason"))
+	})
+})
+
 // Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Test
 // Strategy" §"API SSE seam". The /api/swarm/events endpoint already
 // subscribes to tool.execute.{before,result,error}; its projector

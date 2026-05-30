@@ -51,6 +51,12 @@ const (
 	EventPlan SwarmEventType = "plan"
 	// EventReview identifies review verdict events.
 	EventReview SwarmEventType = "review"
+	// EventGate identifies swarm gate lifecycle transitions
+	// (evaluating / passed / failed). The Status field carries the
+	// lifecycle phase ("evaluating" | "passed" | "failed") and Metadata
+	// carries the per-gate diagnostic fields (gate_name, reason, member_id,
+	// …) so a captured swarm-events stream shows WHY a gate halted.
+	EventGate SwarmEventType = "gate"
 )
 
 // SwarmEvent is the canonical structure for the multi-agent chat activity

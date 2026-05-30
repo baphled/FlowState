@@ -230,15 +230,17 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "gate.evaluating",
 		Struct:      "GateEvaluatingEvent",
 		Publishers:  []string{"engine/delegation.go"},
-		Subscribers: []string{"tui/intents/chat/intent"},
+		Subscribers: []string{"tui/intents/chat/intent", "api.handleSwarmEvents"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
 		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
 			" Published once per swarm.Dispatch call when at least one gate matches" +
 			" the lifecycle. Carries GateCount and Lifecycle; per-gate fields are empty." +
-			" The web SSE bridge does NOT subscribe to this topic — the chat surface" +
-			" is request-reply and an extra evaluating-marker risks UX noise.",
+			" Swarm Gate SSE Observability (May 2026): the /api/swarm/events SSE bridge" +
+			" (handleSwarmEvents) now forwards this topic so a captured stream shows which" +
+			" gate batch was evaluating when a swarm stalled. The request-reply chat banner" +
+			" still ignores the evaluating marker to avoid UX noise.",
 	},
 	{
 		Topic:       EventGatePassed,
@@ -246,15 +248,17 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "gate.passed",
 		Struct:      "GatePassedEvent",
 		Publishers:  []string{"engine/delegation.go"},
-		Subscribers: []string{},
+		Subscribers: []string{"api.handleSwarmEvents"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
 		Notes: "Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026)." +
 			" Single event per swarm.Dispatch call when the batch completes without halt." +
 			" Per-gate pass events are deliberately suppressed by the pass-event policy" +
-			" — surfaces want a clean failure-signal:noise ratio. No subscribers today;" +
-			" published for future timeline-style affordances and for catalog completeness.",
+			" — surfaces want a clean failure-signal:noise ratio. Swarm Gate SSE" +
+			" Observability (May 2026): the /api/swarm/events SSE bridge" +
+			" (handleSwarmEvents) forwards this topic so a captured stream can show the" +
+			" clean-pass context alongside failures.",
 	},
 	{
 		Topic:       EventGateFailed,
@@ -262,7 +266,7 @@ var Catalog = []EventCatalogEntry{
 		EventType:   "gate.failed",
 		Struct:      "GateFailedEvent",
 		Publishers:  []string{"engine/delegation.go"},
-		Subscribers: []string{"api.subscribeSessionBus", "tui/intents/chat/intent"},
+		Subscribers: []string{"api.subscribeSessionBus", "api.handleSwarmEvents", "tui/intents/chat/intent"},
 		Scope:       ScopeInternal,
 		Status:      StatusActive,
 		Delivery:    "fire-and-forget",
@@ -270,7 +274,11 @@ var Catalog = []EventCatalogEntry{
 			" One event per failing gate on halt-class failures only; continue-class" +
 			" and warn-class failures stay log-only because they do not interrupt the stream." +
 			" Replaces the silent-swallow path at internal/api/server.go's chat handler" +
-			" by giving the SSE bridge a typed signal to project to the gate-failed banner.",
+			" by giving the SSE bridge a typed signal to project to the gate-failed banner." +
+			" Swarm Gate SSE Observability (May 2026): also forwarded by the" +
+			" /api/swarm/events SSE bridge (handleSwarmEvents) — the one reachable" +
+			" diagnostic stream — so a captured stream shows WHY a swarm gate halted" +
+			" (reason / member_id / gate_name / coord_store_keys in the event metadata).",
 	},
 	{
 		Topic:       EventStreamingHeartbeat,

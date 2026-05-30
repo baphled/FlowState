@@ -2286,6 +2286,16 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 		"delegation.started":        forward,
 		"delegation.completed":      forward,
 		"delegation.failed":         forward,
+		// Swarm Gate SSE Observability (May 2026): bridge the gate
+		// lifecycle onto the one reachable diagnostic stream so a captured
+		// /api/swarm/events?session_id=X shows gate failures (and the
+		// evaluating/passed context) with their reason. gate.failed is the
+		// load-bearing diagnostic signal; evaluating/passed are included so
+		// a reader can see which gate batch was running when the swarm
+		// stalled. Topic strings match internal/plugin/events EventGate*.
+		events.EventGateEvaluating: forward,
+		events.EventGatePassed:     forward,
+		events.EventGateFailed:     forward,
 	}
 
 	for topic, handler := range handlers {
@@ -2358,6 +2368,17 @@ func eventBelongsToSession(msg any, sessionID string) bool {
 		return e.Data.ParentSessionID == sessionID || e.Data.ChildSessionID == sessionID
 	case *events.DelegationFailedEvent:
 		return e.Data.ParentSessionID == sessionID || e.Data.ChildSessionID == sessionID
+	// Swarm gate lifecycle events carry the parent SessionID that issued
+	// the swarm dispatch (GateEventData.SessionID) — the same field the
+	// turn-record subscriber filters on. Without these cases the H5 filter
+	// would drop every gate event (default → false), so the gate-failed
+	// diagnostic would never reach the swarm-events wire.
+	case *events.GateEvaluatingEvent:
+		return e.Data.SessionID == sessionID
+	case *events.GatePassedEvent:
+		return e.Data.SessionID == sessionID
+	case *events.GateFailedEvent:
+		return e.Data.SessionID == sessionID
 	default:
 		return false
 	}
@@ -2485,8 +2506,90 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 		return projectDelegationEvent(e.Data, "completed", e.Timestamp())
 	case *events.DelegationFailedEvent:
 		return projectDelegationEvent(e.Data, "failed", e.Timestamp())
+	case *events.GateEvaluatingEvent:
+		return projectGateEvent(e.Data, "evaluating", e.Timestamp())
+	case *events.GatePassedEvent:
+		return projectGateEvent(e.Data, "passed", e.Timestamp())
+	case *events.GateFailedEvent:
+		return projectGateEvent(e.Data, "failed", e.Timestamp())
 	}
 	return streaming.SwarmEvent{}
+}
+
+// projectGateEvent converts a GateEventData payload into the on-the-wire
+// `streaming.SwarmEvent` shape the swarm-events SSE stream emits, so a
+// captured stream shows WHY a swarm gate halted (Swarm Gate SSE
+// Observability, May 2026).
+//
+// The whole point of the bridge is diagnostic visibility, so every
+// useful GateEventData field is surfaced in Metadata: gate_name,
+// gate_kind, reason (the load-bearing "why"), cause, member_id,
+// lifecycle, coord_store_keys (the "what was checked?" affordance) and
+// gate_count. Empty per-gate fields (e.g. on evaluating/passed batch
+// events) are omitted so the wire stays minimal.
+//
+// Expected:
+//   - data carries the in-process bus payload populated by the engine.
+//   - status is one of "evaluating", "passed", "failed".
+//   - ts is the bus event's timestamp; preserved on the wire so client-side
+//     ordering matches engine-side firing order.
+//
+// Returns:
+//   - A populated SwarmEvent with a non-empty synthetic ID (GateEventData
+//     carries no natural id), so the SSE loop's ID=="" drop does not
+//     swallow the event.
+//
+// Side effects:
+//   - None.
+func projectGateEvent(data events.GateEventData, status string, ts time.Time) streaming.SwarmEvent {
+	metadata := map[string]interface{}{
+		"swarm_id":  data.SwarmID,
+		"lifecycle": data.Lifecycle,
+	}
+	if data.MemberID != "" {
+		metadata["member_id"] = data.MemberID
+	}
+	if data.GateName != "" {
+		metadata["gate_name"] = data.GateName
+	}
+	if data.GateKind != "" {
+		metadata["gate_kind"] = data.GateKind
+	}
+	if data.Reason != "" {
+		metadata["reason"] = data.Reason
+	}
+	if data.Cause != "" {
+		metadata["cause"] = data.Cause
+	}
+	if len(data.CoordStoreKeys) > 0 {
+		metadata["coord_store_keys"] = data.CoordStoreKeys
+	}
+	if data.GateCount > 0 {
+		metadata["gate_count"] = data.GateCount
+	}
+
+	// GateEventData has no natural unique id; synthesise a stable-enough
+	// id from the session, lifecycle, member and gate name so the SSE
+	// loop's `ID == ""` drop does not swallow the event and a UI can key
+	// on it. Failed events (per-gate) include the gate name; batch
+	// events (evaluating/passed) fall back to the lifecycle marker.
+	id := data.SessionID + ":gate:" + status + ":" + data.Lifecycle
+	if data.MemberID != "" {
+		id += ":" + data.MemberID
+	}
+	if data.GateName != "" {
+		id += ":" + data.GateName
+	}
+
+	return streaming.SwarmEvent{
+		ID:            id,
+		Type:          streaming.EventGate,
+		Status:        status,
+		AgentID:       data.SessionID,
+		Timestamp:     ts,
+		SchemaVersion: streaming.CurrentSchemaVersion,
+		Metadata:      metadata,
+	}
 }
 
 // projectDelegationEvent converts a DelegationEventData payload into the
