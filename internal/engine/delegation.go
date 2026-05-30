@@ -2772,6 +2772,21 @@ func (d *DelegateTool) executeSync(
 
 		modelName = target.engine.LastModel()
 		providerName = target.engine.LastProvider()
+		// FINAL-attempt salvage floor. The member already had its clean
+		// attempt-1 write chance plus the forced-tool-choice corrective
+		// retry above (which escalates a narrate-without-write miss into a
+		// FORCED coordination_store call). If even that produced no key, but
+		// the member's reply CARRIES the artefact (the gpt-4o signature:
+		// narrate-the-plan-in-the-reply, skip the tool call), salvage the raw
+		// reply into the gate's output_key so the post-member gate can
+		// validate the content that already exists in this turn. Runs ONLY on
+		// the final attempt — attempts 1..N-1 keep their write-or-retry
+		// behaviour so a well-behaved model still writes via the tool. A
+		// no-content reply leaves the gate failing closed (prose / render-
+		// mirror reject empty), so salvage NEVER publishes a junk plan.
+		if attempt == PostMemberGateMaxAttempts {
+			d.salvageMemberOutputIfMissing(ctx, target.agentID, baseInfo.ChainID, result.response)
+		}
 		gateErr := d.dispatchPostMemberGates(ctx, target.agentID, baseInfo.ChainID)
 		if gateErr == nil {
 			break
@@ -3782,6 +3797,97 @@ func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
 		// path only fires for genuinely-parallel swarms.
 		return d.dispatchPostMemberGates(ctx, memberID, "")
 	}
+}
+
+// salvageMemberOutputIfMissing is the FINAL-attempt floor under the
+// post-member gate: when a single-output member produced content in its
+// REPLY but never wrote it to the coord-store (the gpt-4o signature —
+// narrate the artefact, skip the coordination_store(set) call), this
+// writes the raw reply into the gate's resolved output_key so the gate
+// can validate the content that already exists in the turn instead of
+// failing the whole swarm over a missing key.
+//
+// Scope (all three are hard guards so the floor never guesses):
+//   - A gate runner and an active swarm context must exist; otherwise
+//     there is no key to resolve and salvage is a no-op.
+//   - The member must have EXACTLY ONE post-member result-schema gate
+//     carrying a non-empty OutputKey. A member with zero such gates has
+//     no key to salvage into; a member with two-or-more is multi-output,
+//     and salvage refuses to guess which slot the reply belongs to (those
+//     members must write explicitly). All planning-loop / plan-sme
+//     members are single-output, so production passes this guard.
+//   - The resolved key must be MISSING or empty. A member that wrote its
+//     own (richer) output keeps it — salvage only fills an empty slot,
+//     never overwrites an explicit write.
+//
+// The reply is salvaged RAW (not formatDelegationOutput, which wraps in
+// <task_result> tags that would pollute the markdown/prose the gate and
+// downstream consumers read). A no-content reply is still written, but
+// the post-member gate then fails closed (prose / render-mirror reject
+// empty / whitespace), so the salvage NEVER publishes a junk plan — it
+// only RECOVERS when the reply actually carries the artefact.
+//
+// Expected:
+//   - ctx is the delegation context (carries the swarm scope).
+//   - memberID is the agent id whose stream just completed.
+//   - chainID is the lead-allocated chain identifier threaded through to
+//     resolve {chainID}-templated output keys against the SAME namespace.
+//   - reply is the member's final response text (result.response).
+//
+// Side effects:
+//   - At most one Set on the coordination store, only when the guards
+//     above all pass and the resolved key is currently empty.
+func (d *DelegateTool) salvageMemberOutputIfMissing(ctx context.Context, memberID, chainID, reply string) {
+	if d.gateRunner == nil || d.coordinationStore == nil {
+		return
+	}
+	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
+	if !ok || swarmCtx == nil {
+		return
+	}
+	// Single-output scope guard: gather the member's post-member result-
+	// schema gates that carry an explicit OutputKey. Salvage proceeds ONLY
+	// when there is exactly one — a multi-output member must write its own
+	// keys (we will not guess which slot a single reply fills).
+	matches := swarm.MemberGatesFor(swarmCtx.Gates, swarm.LifecyclePostMember, memberID)
+	var resultSchemaWithKey []swarm.GateSpec
+	for _, g := range matches {
+		if g.Kind == "builtin:result-schema" && g.OutputKey != "" {
+			resultSchemaWithKey = append(resultSchemaWithKey, g)
+		}
+	}
+	if len(resultSchemaWithKey) != 1 {
+		return
+	}
+	gate := resultSchemaWithKey[0]
+	// Resolve the concrete key via the SAME logic the result-schema gate
+	// reads from (CandidateKeys → candidateKeys) so the salvage write key
+	// can never drift from the gate read key. The first candidate is the
+	// canonical (highest-priority) slot the gate probes.
+	keys := swarm.CandidateKeys(gate, swarm.GateArgs{
+		SwarmID:     swarmCtx.SwarmID,
+		ChainPrefix: swarmCtx.ChainPrefix,
+		ChainID:     chainID,
+		MemberID:    memberID,
+		CoordStore:  d.coordinationStore,
+	})
+	if len(keys) == 0 {
+		return
+	}
+	key := keys[0]
+	// Only fill an EMPTY slot — never overwrite the member's own explicit
+	// write (which is typically richer than the bare reply text). A present-
+	// but-empty value is treated as missing so a member that wrote a hollow
+	// "" can still be salvaged. A store read error is conservative: leave the
+	// slot alone and let the gate report the real failure.
+	if existing, err := d.coordinationStore.Get(key); err == nil && len(existing) > 0 {
+		return
+	} else if err != nil && !errors.Is(err, coordination.ErrKeyNotFound) {
+		return
+	}
+	// Salvage the RAW reply verbatim. A no-content reply is written too, but
+	// the post-member gate then rejects it (fail-closed), so no junk ships.
+	_ = d.coordinationStore.Set(key, []byte(reply))
 }
 
 // dispatchPostMemberGates fires every post-member gate on the active

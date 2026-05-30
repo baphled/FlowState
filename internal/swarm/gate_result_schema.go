@@ -399,6 +399,29 @@ func suffixScanForOutput(store coordination.Store, suffix string) ([]byte, bool,
 	return nil, false, nil
 }
 
+// CandidateKeys exposes the result-schema runner's coord-store key
+// resolution to in-package callers OUTSIDE this file (the engine's
+// reply-salvage step). The salvage writes the member's final reply into
+// the SAME key the post-member gate reads from, so it must resolve the
+// key with EXACTLY this runner's logic — duplicating the {chainID}
+// substitution / joinKey shape in the engine would silently drift the
+// write key from the read key. The first element is the canonical
+// (highest-priority) key the gate probes; salvage targets that one.
+//
+// Expected:
+//   - gate is the post-member result-schema gate whose OutputKey to
+//     resolve; args carries ChainPrefix + ChainID for substitution.
+//
+// Returns:
+//   - The same slice candidateKeys returns; nil when a {chainID}-
+//     templated key has no concrete ChainID to substitute.
+//
+// Side effects:
+//   - None (pure resolution).
+func CandidateKeys(gate GateSpec, args GateArgs) []string {
+	return candidateKeys(gate, args)
+}
+
 // candidateKeys lists the coord-store keys the result-schema runner
 // will probe for the gate target's terminal output, in priority order.
 // The list is stable so tests can pin the lookup ordering.

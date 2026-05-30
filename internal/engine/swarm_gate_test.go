@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -1049,6 +1050,167 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 				Expect(reviewerProv.StreamCallCount()).To(Equal(1))
 				Expect(reviewerProv.ModelForAttempt(1)).NotTo(Equal("gpt-5"),
 					"a clean first-attempt pass keeps the member's own model")
+			})
+		})
+
+		Context("salvaging the member reply into its output_key", func() {
+			// salvageGate is a single prose-tolerant post-member gate with an
+			// EXPLICIT, non-templated output_key so the resolved coord-store
+			// key is deterministic (planning/plan-reviewer/evidence) — no
+			// random per-run chainID to thread through the assertion. The real
+			// result-schema runner reads this key; the engine's salvage step
+			// must write the member's reply into the SAME key.
+			salvageGate := func() []swarm.GateSpec {
+				return []swarm.GateSpec{
+					{
+						Name:      "post-member-plan-reviewer-evidence",
+						Kind:      "builtin:result-schema",
+						SchemaRef: swarm.EvidenceBundleV1Name,
+						When:      swarm.LifecyclePostMember,
+						Target:    "plan-reviewer",
+						OutputKey: "evidence",
+					},
+				}
+			}
+
+			realRunner := func() swarm.GateRunner {
+				multi := swarm.NewMultiRunner()
+				multi.Register("builtin:result-schema", swarm.NewResultSchemaRunner())
+				return multi
+			}
+
+			It("salvages the reply into the resolved output_key when the member produced content but never wrote it", func() {
+				// gpt-4o reliably NARRATES the artefact in its reply but fails to
+				// emit the coordination_store(set) tool call. The content exists
+				// in the member's turn (result.response) — the engine must, on the
+				// FINAL attempt, salvage that reply into the gate's output_key so
+				// the post-member gate validates it and the member succeeds instead
+				// of going terminal over a missing key.
+				store := coordination.NewMemoryStore()
+				engines, _ := reviewerEnginesWithContext(swarmContextWithGates(salvageGate()))
+				delegateTool := newDelegateToolWithRunner(engines, store, realRunner())
+
+				result, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+
+				Expect(err).NotTo(HaveOccurred(),
+					"a member whose reply carries the artefact must be salvaged, not failed")
+				Expect(result.Output).To(ContainSubstring("review complete"))
+
+				val, getErr := store.Get("planning/plan-reviewer/evidence")
+				Expect(getErr).NotTo(HaveOccurred(),
+					"the salvage wrote the reply into the gate's resolved output_key")
+				Expect(string(val)).To(Equal("review complete"),
+					"the RAW reply is salvaged verbatim — no <task_result> wrapping that would pollute the prose")
+			})
+
+			It("does not salvage when the member already wrote its output_key — the explicit write wins", func() {
+				// Clean-path guard: a member that performs the coordination_store
+				// write on attempt 1 passes the gate immediately; the salvage floor
+				// must not overwrite the member's own (richer) write with the bare
+				// reply text.
+				store := coordination.NewMemoryStore()
+				Expect(store.Set("planning/plan-reviewer/evidence",
+					[]byte("# Findings\nthe member's explicit write"))).To(Succeed())
+				engines, _ := reviewerEnginesWithContext(swarmContextWithGates(salvageGate()))
+				delegateTool := newDelegateToolWithRunner(engines, store, realRunner())
+
+				result, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("review complete"))
+
+				val, getErr := store.Get("planning/plan-reviewer/evidence")
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(string(val)).To(Equal("# Findings\nthe member's explicit write"),
+					"the member's own write is preserved — salvage only fills an EMPTY key")
+			})
+
+			It("still fails terminally when the member's reply is empty — salvage rescues no content", func() {
+				// Guardrail: the salvage is a content RECOVERY, not a pass-through.
+				// A member that narrates NOTHING (empty reply) still goes terminal —
+				// salvaging an empty body leaves the prose gate failing closed, so a
+				// junk plan is NEVER published.
+				store := coordination.NewMemoryStore()
+				emptyReviewer := &mockProvider{
+					name:         "empty-reviewer-provider",
+					streamChunks: []provider.StreamChunk{{Content: "   ", Done: true}},
+				}
+				leadEng := engine.New(engine.Config{
+					ChatProvider: leadProvider(),
+					Manifest: agent.Manifest{
+						ID:                "planner",
+						Name:              "Planner",
+						Instructions:      agent.Instructions{SystemPrompt: "lead"},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+					SwarmContext: swarmContextWithGates(salvageGate()),
+				})
+				reviewerEng := engine.New(engine.Config{
+					ChatProvider: emptyReviewer,
+					Manifest: agent.Manifest{
+						ID:                "plan-reviewer",
+						Name:              "Plan Reviewer",
+						Instructions:      agent.Instructions{SystemPrompt: "review"},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+				engines := map[string]*engine.Engine{"planner": leadEng, "plan-reviewer": reviewerEng}
+				delegateTool := newDelegateToolWithRunner(engines, store, realRunner())
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue(),
+					"an empty reply is not salvageable — the gate stays terminal")
+				Expect(gateErr.MemberID).To(Equal("plan-reviewer"))
+
+				// The salvage may write the whitespace verbatim, but the prose
+				// gate rejects empty/whitespace, so the GateError above is the
+				// authoritative outcome — no RENDERABLE content was accepted. The
+				// stored value (if any) carries no usable artefact.
+				val, getErr := store.Get("planning/plan-reviewer/evidence")
+				if getErr == nil {
+					Expect(strings.TrimSpace(string(val))).To(BeEmpty(),
+						"a whitespace-only reply carries no artefact — salvage never publishes junk")
+				}
+			})
+
+			It("does NOT salvage a member with more than one result-schema output gate", func() {
+				// Safety guard: salvage refuses to guess which key to fill for a
+				// multi-output member. With two result-schema post-member gates
+				// carrying output_keys, neither is salvaged — the member must write
+				// explicitly, so the run goes terminal over the missing keys.
+				store := coordination.NewMemoryStore()
+				twoGates := []swarm.GateSpec{
+					{
+						Name:      "post-member-plan-reviewer-evidence",
+						Kind:      "builtin:result-schema",
+						SchemaRef: swarm.EvidenceBundleV1Name,
+						When:      swarm.LifecyclePostMember,
+						Target:    "plan-reviewer",
+						OutputKey: "evidence",
+					},
+					{
+						Name:      "post-member-plan-reviewer-refs",
+						Kind:      "builtin:result-schema",
+						SchemaRef: swarm.ExternalRefsV1Name,
+						When:      swarm.LifecyclePostMember,
+						Target:    "plan-reviewer",
+						OutputKey: "refs",
+					},
+				}
+				engines, _ := reviewerEnginesWithContext(swarmContextWithGates(twoGates))
+				delegateTool := newDelegateToolWithRunner(engines, store, realRunner())
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue(),
+					"a multi-output member is not salvaged — it must write explicitly")
+
+				evExists, _ := store.Exists("planning/plan-reviewer/evidence")
+				refExists, _ := store.Exists("planning/plan-reviewer/refs")
+				Expect(evExists).To(BeFalse(), "no key is salvaged for a multi-output member")
+				Expect(refExists).To(BeFalse(), "no key is salvaged for a multi-output member")
 			})
 		})
 	})
