@@ -58,6 +58,19 @@ type Engine struct {
 	// (manifest-headed) one. Guarded by mu.
 	failoverConfigBaseline    []provider.ModelPreference
 	failoverConfigBaselineSet bool
+	// preferredProviderBaseline / preferredModelBaseline capture the
+	// engine's PRIMARY model preference (preferredProvider/preferredModel)
+	// at the moment of the first per-turn reseed — i.e. the config global
+	// default pinned by SetModelPreference at app startup. The dispatch
+	// engine's FIRST pick comes from these fields via LastProvider() /
+	// LastModel() (which short-circuit on them when set), NOT from the
+	// failover base chain. ReseedFailoverBasePreferences snapshots them
+	// lazily so a no-preferred_models turn can restore the startup default
+	// and a prior manifest-headed turn does not leak its head onto the
+	// shared engine. Guarded by mu, alongside failoverConfigBaseline.
+	preferredBaselineProvider string
+	preferredBaselineModel    string
+	preferredBaselineSet      bool
 	manifest                  agent.Manifest
 	tools                     []tool.Tool
 	skills                    []skill.Skill
@@ -1795,7 +1808,17 @@ func (e *Engine) FailoverManager() *failover.Manager {
 //
 // Side effects:
 //   - Calls failoverManager.SetBasePreferences.
-//   - Captures the config baseline on first invocation (under mu).
+//   - Re-points the engine's PRIMARY model preference
+//     (preferredProvider/preferredModel) so the FIRST stream request and
+//     LastProvider()/LastModel() target the manifest head — the failover
+//     base chain alone never changes the first pick because LastProvider/
+//     LastModel short-circuit on preferredProvider/preferredModel.
+//   - Drives the failover OVERRIDE so the effective Preferences()/
+//     Candidates() chain LEADS with the manifest head, replacing the
+//     stale startup override (config default) prepended by the app-startup
+//     SetModelPreference.
+//   - Captures the config base chain AND the primary-preference baseline
+//     on first invocation (under mu).
 func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
 	if e.failoverManager == nil {
 		return
@@ -1811,14 +1834,39 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
 		copy(e.failoverConfigBaseline, baseline)
 		e.failoverConfigBaselineSet = true
 	}
+	if !e.preferredBaselineSet {
+		// Snapshot the primary preference the engine carries at app
+		// startup (the config global default pinned by SetModelPreference)
+		// so a no-preferred_models turn restores it rather than leaking a
+		// prior manifest head onto the shared engine.
+		e.preferredBaselineProvider = e.preferredProvider
+		e.preferredBaselineModel = e.preferredModel
+		e.preferredBaselineSet = true
+	}
 	configBaseline := make([]provider.ModelPreference, len(e.failoverConfigBaseline))
 	copy(configBaseline, e.failoverConfigBaseline)
+	baselineProvider := e.preferredBaselineProvider
+	baselineModel := e.preferredBaselineModel
 	e.mu.Unlock()
 
 	if len(manifest.PreferredModels) == 0 {
-		// No manifest preference — restore the config-derived chain so a
-		// prior reseed for a different agent does not leak into this turn.
+		// No manifest preference — restore the config-derived chain AND the
+		// startup primary preference so a prior reseed for a different
+		// agent does not leak into this turn. The override is restored to
+		// the startup default (or cleared when there was none) so the
+		// effective chain matches the restored primary pick.
+		e.mu.Lock()
+		e.preferredProvider = baselineProvider
+		e.preferredModel = baselineModel
+		e.mu.Unlock()
 		e.failoverManager.SetBasePreferences(configBaseline)
+		if baselineProvider != "" {
+			e.failoverManager.SetOverride(provider.ModelPreference{
+				Provider: baselineProvider, Model: baselineModel,
+			})
+		} else {
+			e.failoverManager.ClearOverride()
+		}
 		return
 	}
 
@@ -1846,7 +1894,26 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
 		}
 	}
 
+	manifestHead := prefs[0]
+
+	// Re-point the engine's PRIMARY pick at the manifest head. The first
+	// stream request and LastProvider()/LastModel() read these fields
+	// directly (short-circuit), so without this the engine keeps routing
+	// the first attempt on the config default — failover never engages
+	// because the default succeeds.
+	e.mu.Lock()
+	e.preferredProvider = manifestHead.Provider
+	e.preferredModel = manifestHead.Model
+	e.mu.Unlock()
+
+	// The base chain ALREADY leads with the manifest head (prefs[0]), so
+	// clear any stale startup override (the config default prepended by
+	// app-startup SetModelPreference) rather than re-prepending the head —
+	// that would duplicate it. With the override cleared the effective
+	// chain is exactly prefs: manifest head → manifest tail → config tail,
+	// deduped, cascading on the head's error.
 	e.failoverManager.SetBasePreferences(prefs)
+	e.failoverManager.ClearOverride()
 }
 
 // EventBus returns the engine's event bus for plugin event subscriptions.

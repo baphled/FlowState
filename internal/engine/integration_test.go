@@ -324,6 +324,88 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 			Expect(prefs).To(Equal([]provider.ModelPreference{configHead, configTail}),
 				"no preferred_models means the config-derived chain is preserved verbatim")
 		})
+
+		// The dispatch engine's FIRST pick does NOT come from the failover
+		// BASE preferences — it comes from preferredProvider/preferredModel
+		// via LastProvider()/LastModel(), which short-circuit on those
+		// fields when set (engine.go:1870-1921). At app startup
+		// SetModelPreference pins both fields (and a failover override) to
+		// the config global default (zai/glm-4.6). Reseeding only the
+		// failover BASE chain therefore never changes the first pick: the
+		// default succeeds, failover never walks the reseeded chain, and the
+		// lead stays on zai/glm-4.6. The per-turn reseed MUST also re-point
+		// the engine's primary preference at the manifest head so the first
+		// stream request targets the manifest head and failover cascades
+		// through the reseeded tail on its error. See bug-fix note
+		// "Dispatch Engine Primary Preference Ignores Current-Turn Manifest
+		// (May 2026)".
+		Describe("primary model preference follows the current-turn manifest head", func() {
+			BeforeEach(func() {
+				// Reproduce the production dispatch engine: startup pins the
+				// primary preference AND a failover override to the config
+				// global default (zai/glm-4.6).
+				eng.SetModelPreference(configHead.Provider, configHead.Model)
+			})
+
+			It("repoints LastProvider/LastModel to the manifest head while keeping the fallback tail", func() {
+				eng.ReseedFailoverBasePreferences(agent.Manifest{
+					ID: "planner",
+					PreferredModels: []agent.ModelPreference{
+						{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+						{Provider: "openai", Model: "gpt-4o"},
+					},
+				})
+
+				Expect(eng.LastProvider()).To(Equal("anthropic"),
+					"the engine's first pick must be the manifest head, NOT the startup config default (zai)")
+				Expect(eng.LastModel()).To(Equal("claude-sonnet-4-6"),
+					"the engine's first pick model must be the manifest head model")
+
+				prefs := eng.FailoverManager().Preferences()
+				Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-6"}),
+					"the effective failover chain must LEAD with the manifest head, not the stale startup override (zai)")
+				Expect(prefs).To(ContainElement(provider.ModelPreference{Provider: "openai", Model: "gpt-4o"}),
+					"the openai fallback tier must survive so failover cascades after the head errors")
+				Expect(prefs).To(ContainElement(configHead),
+					"the config default (zai) must survive as the final fallback tier")
+
+				// openai must precede zai in the effective chain — failover
+				// cascades head → openai → zai when the head errors.
+				openaiIdx, zaiIdx := -1, -1
+				for i, p := range prefs {
+					if p == (provider.ModelPreference{Provider: "openai", Model: "gpt-4o"}) {
+						openaiIdx = i
+					}
+					if p == configHead {
+						zaiIdx = i
+					}
+				}
+				Expect(openaiIdx).To(BeNumerically(">=", 0))
+				Expect(zaiIdx).To(BeNumerically(">", openaiIdx),
+					"failover must reach openai before zai")
+			})
+
+			It("restores the startup config-default primary preference when the manifest declares no preferred_models", func() {
+				// A planner turn reseeds to anthropic; a subsequent
+				// default-agent turn (no preferred_models) must NOT leak the
+				// anthropic head — the shared engine restores the startup
+				// config default.
+				eng.ReseedFailoverBasePreferences(agent.Manifest{
+					ID: "planner",
+					PreferredModels: []agent.ModelPreference{
+						{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+					},
+				})
+				Expect(eng.LastProvider()).To(Equal("anthropic"))
+
+				eng.ReseedFailoverBasePreferences(agent.Manifest{ID: "default"})
+
+				Expect(eng.LastProvider()).To(Equal(configHead.Provider),
+					"a no-preferred_models turn must restore the startup config default, not leak the prior anthropic head")
+				Expect(eng.LastModel()).To(Equal(configHead.Model),
+					"a no-preferred_models turn must restore the startup config-default model")
+			})
+		})
 	})
 
 	Describe("embedded prompt loading", func() {
