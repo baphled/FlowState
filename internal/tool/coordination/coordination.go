@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	store "github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -110,7 +111,7 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - May read from or write to the backing coordination store.
-func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	operation, ok := input.Arguments["operation"].(string)
 	if !ok || operation == "" {
 		return tool.Result{}, errors.New("operation argument is required")
@@ -120,7 +121,7 @@ func (t *Tool) Execute(_ context.Context, input tool.Input) (tool.Result, error)
 	case operationGet:
 		return t.executeGet(input)
 	case operationSet:
-		return t.executeSet(input)
+		return t.executeSet(ctx, input)
 	case operationList:
 		return t.executeList(input)
 	case operationDelete:
@@ -157,16 +158,28 @@ func (t *Tool) executeGet(input tool.Input) (tool.Result, error) {
 
 // executeSet stores the requested value for the requested key.
 //
+// When the call runs inside an engine-owned swarm (the dispatcher stamped
+// a per-run chainID, surfaced via swarm.MemberCoordChainID off ctx), the
+// WRITE key is normalised so its chainID-prefix segment is the engine-
+// authoritative chainID, preserving the semantic suffix. This stops a swarm
+// member writing the deliverable under whatever free-form (often slashed)
+// chainID the lead dictated in its delegate brief: the engine, not the LLM,
+// owns the key namespace, so the post-member gate (which resolves the SAME
+// authoritative chainID via resolveSwarmChainNamespace) always finds the
+// output. Outside a swarm — and for any standalone CLI / test write —
+// MemberCoordChainID returns "" and the key passes through verbatim.
+//
 // Expected:
 //   - input contains non-empty "key" and "value" string arguments.
 //
 // Returns:
-//   - A tool.Result confirming the stored key.
+//   - A tool.Result confirming the stored key (the normalised key when a
+//     swarm rewrite applied).
 //   - An error if required arguments are missing or the store write fails.
 //
 // Side effects:
 //   - Writes to the backing coordination store.
-func (t *Tool) executeSet(input tool.Input) (tool.Result, error) {
+func (t *Tool) executeSet(ctx context.Context, input tool.Input) (tool.Result, error) {
 	key, ok := input.Arguments["key"].(string)
 	if !ok || key == "" {
 		return tool.Result{}, errors.New("key argument is required for set")
@@ -176,6 +189,8 @@ func (t *Tool) executeSet(input tool.Input) (tool.Result, error) {
 	if !ok {
 		return tool.Result{}, errors.New("value argument is required for set")
 	}
+
+	key = swarm.NormaliseMemberCoordKey(swarm.MemberCoordChainID(ctx), key)
 
 	if err := t.store.Set(key, []byte(value)); err != nil {
 		return tool.Result{}, fmt.Errorf("setting key %q: %w", key, err)

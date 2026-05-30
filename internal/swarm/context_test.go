@@ -561,4 +561,84 @@ var _ = Describe("swarm.Context", func() {
 			Expect(swarm.SlugifyChainID("///")).To(BeEmpty())
 		})
 	})
+
+	// NormaliseMemberCoordKey is the WRITE-side counterpart of the gate's
+	// READ-side key resolution. It rewrites a member's coord-store write key
+	// so the chainID prefix is the engine-authoritative value, regardless of
+	// what (often slashed) free-form value the lead dictated in its brief.
+	Describe("NormaliseMemberCoordKey", func() {
+		const chainID = "planning-loop-7d67530ef355"
+
+		It("re-anchors a slashed free-form chainID onto the authoritative chainID", func() {
+			// Live planning-loop session 836526fd: the lead free-formed
+			// chainID=planning/planner and the explorer wrote
+			// planning/planner/codebase-findings.
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "planning/planner/codebase-findings")).
+				To(Equal(chainID + "/codebase-findings"))
+		})
+
+		It("recovers each single-segment member suffix from a drifted prefix", func() {
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "x/external-refs")).To(Equal(chainID + "/external-refs"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "x/analysis")).To(Equal(chainID + "/analysis"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "x/y/plan")).To(Equal(chainID + "/plan"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "x/review")).To(Equal(chainID + "/review"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "x/requirements")).To(Equal(chainID + "/requirements"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "x/interview")).To(Equal(chainID + "/interview"))
+		})
+
+		It("prefixes a bare suffix-only key", func() {
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "codebase-findings")).To(Equal(chainID + "/codebase-findings"))
+		})
+
+		It("preserves multi-segment section suffixes (sub-swarm)", func() {
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "bogus/sections/architecture")).
+				To(Equal(chainID + "/sections/architecture"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "planning/planner/sections/testing")).
+				To(Equal(chainID + "/sections/testing"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "sections/security")).
+				To(Equal(chainID + "/sections/security"))
+		})
+
+		It("is a no-op when the key is already correctly prefixed", func() {
+			Expect(swarm.NormaliseMemberCoordKey(chainID, chainID+"/codebase-findings")).
+				To(Equal(chainID + "/codebase-findings"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, chainID+"/sections/architecture")).
+				To(Equal(chainID + "/sections/architecture"))
+		})
+
+		It("replaces the first segment for an unknown suffix (safe degrade)", func() {
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "bogus/custom-key")).To(Equal(chainID + "/custom-key"))
+			Expect(swarm.NormaliseMemberCoordKey(chainID, "lone-key")).To(Equal(chainID + "/lone-key"))
+		})
+
+		It("leaves the key untouched when no authoritative chainID is supplied", func() {
+			Expect(swarm.NormaliseMemberCoordKey("", "planning/planner/codebase-findings")).
+				To(Equal("planning/planner/codebase-findings"))
+		})
+	})
+
+	Describe("MemberCoordChainID", func() {
+		It("returns the slugified authoritative chainID inside an engine-owned swarm", func() {
+			sc := &swarm.Context{SwarmID: "planning-loop"}
+			sc.ChainPrefix = "planning-loop-7d67530ef355"
+			sc.ChainIDAssigned = true
+			ctx := swarm.WithScope(context.Background(), sc)
+			Expect(swarm.MemberCoordChainID(ctx)).To(Equal("planning-loop-7d67530ef355"))
+		})
+
+		It("returns empty when the chainID is not engine-assigned", func() {
+			sc := &swarm.Context{SwarmID: "planning-loop", ChainPrefix: "planning-loop"}
+			ctx := swarm.WithScope(context.Background(), sc)
+			Expect(swarm.MemberCoordChainID(ctx)).To(BeEmpty())
+		})
+
+		It("returns empty for a standalone (no-scope) context", func() {
+			Expect(swarm.MemberCoordChainID(context.Background())).To(BeEmpty())
+		})
+
+		It("returns empty for an explicit standalone (nil scope) marker", func() {
+			ctx := swarm.WithScope(context.Background(), nil)
+			Expect(swarm.MemberCoordChainID(ctx)).To(BeEmpty())
+		})
+	})
 })

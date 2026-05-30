@@ -7,6 +7,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	store "github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 	coordination "github.com/baphled/flowstate/internal/tool/coordination"
 )
@@ -115,6 +116,109 @@ var _ = Describe("CoordinationTool", func() {
 
 				_, storeErr := mem.Get("chain1/temp")
 				Expect(storeErr).To(HaveOccurred())
+			})
+		})
+
+		Context("inside an engine-owned swarm", func() {
+			// The engine OWNS the chainID for planning-loop runs
+			// (ChainIDAssigned && ChainPrefix != ""). resolveSwarmChainNamespace
+			// resolves member output via SlugifyChainID(ChainPrefix), but the
+			// member writes to whatever coordination_store key the LEAD dictated
+			// in its delegate brief. Live planning-loop session 836526fd: the
+			// planner free-formed chainID=planning/planner (a slashed value) and
+			// told the explorer to write planning/planner/codebase-findings, while
+			// the post-member gate looked under {engineChainID}/codebase-findings —
+			// MISMATCH → gate sees empty → swarm fails. The engine must normalise
+			// the member write key to the authoritative chainID prefix so the gate
+			// (which resolves the authoritative chainID) finds it.
+			var ownedCtx context.Context
+
+			BeforeEach(func() {
+				swarmCtx := swarm.Context{
+					SwarmID:     "planning-loop",
+					LeadAgent:   "planner",
+					ChainPrefix: "planning-loop-7d67530ef355",
+				}
+				swarmCtx.AssignRunChainID("836526fd-8bcd-4d32-8ec8-99bc1c225968")
+				// AssignRunChainID is a no-op when ChainPrefix != SwarmID, so
+				// stamp the owned flag directly for an explicit per-run prefix.
+				if !swarmCtx.ChainIDAssigned {
+					swarmCtx.ChainPrefix = "planning-loop-7d67530ef355"
+					swarmCtx.ChainIDAssigned = true
+				}
+				ownedCtx = swarm.WithScope(ctx, &swarmCtx)
+			})
+
+			It("normalises a slashed free-form chainID write to the authoritative chainID", func() {
+				_, err := t.Execute(ownedCtx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "set",
+						"key":       "planning/planner/codebase-findings",
+						"value":     `{"findings":[{"file":"x.go"}]}`,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				// The post-member gate resolves SlugifyChainID(ChainPrefix) and
+				// reads {chainID}/codebase-findings — the write MUST land there.
+				val, getErr := mem.Get("planning-loop-7d67530ef355/codebase-findings")
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(string(val)).To(ContainSubstring("x.go"))
+
+				// The drifted key must NOT exist.
+				_, driftErr := mem.Get("planning/planner/codebase-findings")
+				Expect(driftErr).To(HaveOccurred())
+			})
+
+			It("prefixes a bare suffix-only key with the authoritative chainID", func() {
+				_, err := t.Execute(ownedCtx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "set",
+						"key":       "external-refs",
+						"value":     `{"references":[{"url":"http://x"}]}`,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				val, getErr := mem.Get("planning-loop-7d67530ef355/external-refs")
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(string(val)).To(ContainSubstring("http://x"))
+			})
+
+			It("preserves multi-segment section suffixes under the authoritative chainID", func() {
+				_, err := t.Execute(ownedCtx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "set",
+						"key":       "bogus-prefix/sections/architecture",
+						"value":     `{"section":"architecture"}`,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				val, getErr := mem.Get("planning-loop-7d67530ef355/sections/architecture")
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(string(val)).To(ContainSubstring("architecture"))
+			})
+		})
+
+		Context("standalone (no swarm scope)", func() {
+			It("leaves the write key unchanged", func() {
+				_, err := t.Execute(ctx, tool.Input{
+					Name: "coordination_store",
+					Arguments: map[string]interface{}{
+						"operation": "set",
+						"key":       "freeform/whatever-key",
+						"value":     "v",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				val, getErr := mem.Get("freeform/whatever-key")
+				Expect(getErr).NotTo(HaveOccurred())
+				Expect(string(val)).To(Equal("v"))
 			})
 		})
 
