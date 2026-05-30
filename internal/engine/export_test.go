@@ -233,6 +233,15 @@ func (e *Engine) ExecuteToolCallForTest(ctx context.Context, sessionID string, t
 	return e.executeToolCall(ctx, sessionID, toolCall)
 }
 
+// EffectiveAllowedToolsForTest exposes effectiveAllowedToolsForCtx so the
+// swarm-lead tool-cap test (Orchestrator Self-Execution, May 2026) can pin
+// that a swarm-lead turn's advertised/effective toolset never exceeds the
+// lead manifest's declared tools — the defence-in-depth invariant that
+// holds even if a future caller fails to bind the lead manifest into ctx.
+func (e *Engine) EffectiveAllowedToolsForTest(ctx context.Context) map[string]bool {
+	return e.effectiveAllowedToolsForCtx(ctx)
+}
+
 // SetEnginesForTest installs the engines map on a DelegateTool after
 // construction so depth-resolution tests can swap in a lead engine
 // carrying the swarm context without rebuilding the tool.

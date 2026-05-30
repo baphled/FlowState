@@ -702,6 +702,20 @@ func (d *Dispatcher) DispatchSessioned(
 				swarmCtx = &ctx
 				manifestSnapshot = d.dispatchEngine.ManifestSnapshot()
 				swarmActive = true
+				// Orchestrator Self-Execution (May 2026): set the lead
+				// override on the auto-dispatch path EXACTLY as the
+				// @-mention path does (Pass 1 / leadOverride =
+				// mentionedCtx.LeadAgent). Without it the session's
+				// agent_id stays the session default, Engine.Stream binds
+				// the DEFAULT manifest (which has bash/read/write), and the
+				// runtime tool gate lets the orchestrator self-execute —
+				// the planning-loop lead made 57 bash/read/write calls and
+				// dispatched zero members. Redirecting to ctx.LeadAgent
+				// makes session.WithStreamAgentOverride (below) bind the
+				// LEAD manifest into streamCtx so the gate evaluates the
+				// lead turn against the lead's coordination-only toolset,
+				// structurally forcing it to delegate.
+				leadOverride = ctx.LeadAgent
 			}
 		}
 	}

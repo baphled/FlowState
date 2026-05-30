@@ -640,6 +640,41 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 			// wrapWithSwarmLifecycle helper.
 			Eventually(eng.flushCallCount, "2s").Should(Equal(1))
 		})
+
+		It("threads the swarm LEAD through ctx via WithStreamAgentOverride so the engine binds the lead manifest and the lead cannot self-execute", func() {
+			// Orchestrator Self-Execution (May 2026): the auto-dispatch
+			// path must set the lead override exactly as the @-mention
+			// path does (dispatcher.go:692/735-736). Without it the
+			// session's default-assistant manifest stays bound at
+			// Engine.Stream, the runtime tool gate evaluates the lead's
+			// bash/read/write call against default-assistant (which HAS
+			// them), and the orchestrator self-executes instead of
+			// dispatching members. The planning-loop reproduction:
+			// planner lead made 57 bash/read/write calls, children=0.
+			//
+			// The fix reuses the working mention-path machinery: set
+			// leadOverride = swarmCtx.LeadAgent on auto-dispatch so
+			// session.WithStreamAgentOverride redirects agentID to the
+			// lead at session/manager.go:1410-1412, and Engine.Stream
+			// binds the LEAD (coordinator) manifest into streamCtx at
+			// engine.go:3203 — the runtime gate then evaluates against
+			// the lead manifest's declared coordination tools only.
+			d := dispatch.New(drip, eng, swarmer, reg, mgr)
+
+			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1",
+				AgentID:      "coordinator",
+				Content:      "please plan something",
+				ScanMentions: true,
+			}, broker)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(broker.publishCount, "2s").Should(Equal(1))
+
+			override := session.StreamAgentOverrideFromContext(mgr.lastStreamCtx)
+			Expect(override).To(Equal("coordinator"),
+				"the auto-dispatch swarm lead must thread through ctx via session.WithStreamAgentOverride — exactly as the @-mention path does — so Engine.Stream binds the LEAD manifest and the runtime tool gate forbids the orchestrator from self-executing bash/read/write")
+		})
 	})
 
 	Context("given a session whose agent_id is a plain agent", func() {

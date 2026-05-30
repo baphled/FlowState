@@ -2823,11 +2823,15 @@ func mcpServerForTool(mcpServerTools map[string][]string, toolName string) strin
 // Side effects:
 //   - None.
 func (e *Engine) effectiveAllowedToolsForCtx(ctx context.Context) map[string]bool {
-	if _, ok := manifestFromContext(ctx); ok {
-		// Bound path takes no engine lock — the manifest is carried by
-		// ctx and buildAllowedToolSetFor is pure over its inputs.
-		return e.effectiveAllowedToolsForCtxLocked(ctx)
-	}
+	// Always RLock. Pre-Orchestrator-Self-Execution (May 2026) the
+	// bound path skipped the lock because the seam read only ctx state
+	// and buildAllowedToolSetFor was pure over its inputs. The swarm-
+	// lead tool cap in effectiveAllowedToolsForCtxLocked now reads
+	// e.swarmContext, so even the bound path must hold the read lock to
+	// snapshot it without racing SetSwarmContext. The schema-build
+	// surface (assembleToolSchemasLocked) already holds the write lock
+	// when it calls the Locked body directly, so this RLock applies only
+	// to the runtime-gate surface, which never holds e.mu on entry.
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.effectiveAllowedToolsForCtxLocked(ctx)
@@ -2857,11 +2861,31 @@ func (e *Engine) effectiveAllowedToolsForCtx(ctx context.Context) map[string]boo
 //   - None.
 func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[string]bool {
 	var allowed map[string]bool
+	var turnManifestID string
 	if bound, ok := manifestFromContext(ctx); ok {
 		allowed = e.buildAllowedToolSetFor(bound)
+		turnManifestID = bound.ID
 	} else {
 		allowed = e.buildAllowedToolSetFor(e.manifest)
+		turnManifestID = e.manifest.ID
 	}
+
+	// Orchestrator Self-Execution (May 2026) — defence-in-depth tool
+	// cap. When this turn is a swarm LEAD turn (the engine carries a
+	// swarm context whose LeadAgent matches the turn's manifest — the
+	// same discriminator used at appendSwarmLeadSectionFor), the
+	// effective toolset is intersected with the lead manifest's OWN
+	// declared tools. This is the structural guarantee that a swarm-
+	// lead turn can never surface execution tools it did not declare,
+	// even if a future caller fails to bind the lead manifest into ctx
+	// (Part 1 binds it on the auto-dispatch path; this cap holds the
+	// invariant regardless). Applied here so BOTH the schema-
+	// advertisement surface (assembleToolSchemasLocked) and the runtime
+	// gate (executeToolCall) inherit it from the single seam. The cap
+	// reads e.swarmContext / e.agentRegistry under the caller's lock —
+	// see effectiveAllowedToolsForCtx, which now RLocks even the bound
+	// path for this read.
+	allowed = e.capToolsetAtSwarmLeadLocked(allowed, turnManifestID)
 
 	if permissionmode.FromContext(ctx) != permissionmode.ModePlan {
 		return allowed
@@ -2888,6 +2912,86 @@ func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[stri
 		}
 	}
 	return filtered
+}
+
+// capToolsetAtSwarmLeadLocked intersects the supplied allowed-tool set
+// with the swarm lead manifest's own declared tools when the current
+// turn is a swarm-LEAD turn — the Orchestrator Self-Execution (May 2026)
+// defence-in-depth invariant. The returned set can never exceed
+// BuildAllowedToolSet of the lead's manifest for a lead turn, so an
+// orchestrator turn physically cannot surface execution tools the lead
+// did not declare — even when a leaky session-default manifest is bound
+// into ctx (the root of the auto-dispatch self-execution bug, where the
+// bound manifest is default-assistant, NOT the lead). Member turns and
+// standalone (no-swarm) turns are returned unchanged.
+//
+// Discriminator. The lead's own engine is the ONLY engine that ever
+// carries a swarm context: dispatch.SetSwarmContext is called exclusively
+// on the shared dispatchEngine (the lead engine), while members run on
+// their own per-agent delegate engines (d.engines[memberID]) whose
+// swarmContext is nil. So e.swarmContext != nil already implies "this is
+// the lead engine's turn". We nonetheless ALSO exclude turns whose
+// manifest is a declared swarm member as belt-and-braces: if a future
+// wiring change ever runs a member turn on a swarm-context-bearing
+// engine, that member must keep its legitimate execution tools. The net
+// rule — swarm active AND turn manifest is not a member ⇒ cap at lead —
+// holds the invariant whether or not the lead manifest was correctly
+// bound into ctx, which is precisely the case the literal
+// LeadAgent==boundID discriminator misses (the leak binds default-
+// assistant, so LeadAgent != boundID and the cap would never fire).
+//
+// Manifest intersection (not a static bash/read/write denylist) is used
+// deliberately: a denylist would silently miss any future execution tool
+// added to the registry, whereas intersecting against the lead's
+// declared set is closed by construction — only what the lead explicitly
+// declares survives.
+//
+// Expected:
+//   - allowed is the freshly composed allowed-tool set for the turn.
+//   - turnManifestID is the ID of the manifest driving the turn (bound
+//     via ctx, else e.manifest.ID).
+//   - The caller holds e.mu (read or write) — this reads e.swarmContext.
+//     e.agentRegistry is set once at construction and never mutated.
+//
+// Returns:
+//   - allowed unchanged for member / no-swarm turns; otherwise the
+//     intersection of allowed with the lead manifest's BuildAllowedToolSet.
+//     When the lead manifest cannot be resolved from the registry the
+//     set is returned unchanged (Part 1's ctx binding remains the
+//     primary enforcement; this cap is best-effort defence-in-depth and
+//     must not fail closed on an unresolvable lead, which would break
+//     legitimate lead turns whose manifest simply isn't registered).
+//
+// Side effects:
+//   - None.
+func (e *Engine) capToolsetAtSwarmLeadLocked(allowed map[string]bool, turnManifestID string) map[string]bool {
+	swarmCtx := e.swarmContext
+	if swarmCtx == nil || swarmCtx.LeadAgent == "" {
+		return allowed
+	}
+	// A turn whose manifest is a declared member keeps its own tools —
+	// members legitimately execute. Only the lead (non-member turn on
+	// the swarm-context-bearing engine) is capped.
+	for _, member := range swarmCtx.Members {
+		if member == turnManifestID {
+			return allowed
+		}
+	}
+	if e.agentRegistry == nil {
+		return allowed
+	}
+	leadManifest, ok := e.agentRegistry.Get(swarmCtx.LeadAgent)
+	if !ok || leadManifest == nil {
+		return allowed
+	}
+	leadAllowed := e.buildAllowedToolSetFor(*leadManifest)
+	capped := make(map[string]bool, len(allowed))
+	for name, on := range allowed {
+		if on && leadAllowed[name] {
+			capped[name] = true
+		}
+	}
+	return capped
 }
 
 // sortedKeys returns the keys of a string-keyed set in
