@@ -1667,12 +1667,25 @@ func (a *App) applyModelPreference(
 	if manifest.Complexity != "" {
 		if cfg, err := resolver.Resolve(manifest.Complexity); err == nil &&
 			cfg.Model != "" && !engine.IsAbstractModelDescriptor(cfg.Model) {
-			prov := cfg.Provider
-			if prov == "" {
-				prov = src.LastProvider()
+			// A tier config with an EXPLICIT provider is a deliberate
+			// per-agent routing decision — honour it outright. But the
+			// built-in DefaultCategoryRouting tiers all carry an empty
+			// Provider (e.g. "deep" -> {Model: "reasoning"}), so pinning
+			// here would fill the provider from the lead's global default
+			// and clobber any preferred_models the manifest declares. When
+			// the tier provider is empty AND the manifest declares
+			// preferred_models, DEFER to those (fall through to the guard
+			// below) rather than override them with the global default. Only
+			// when the manifest has no preferred_models do we pin the
+			// global-default provider with the tier-resolved model.
+			if cfg.Provider != "" || len(manifest.PreferredModels) == 0 {
+				prov := cfg.Provider
+				if prov == "" {
+					prov = src.LastProvider()
+				}
+				eng.SetModelPreference(prov, cfg.Model)
+				return
 			}
-			eng.SetModelPreference(prov, cfg.Model)
-			return
 		}
 	}
 	if len(manifest.PreferredModels) > 0 {

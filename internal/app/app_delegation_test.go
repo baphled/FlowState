@@ -784,6 +784,85 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			return memberEng
 		}
 
+		// wireMemberWithComplexity is wireMember plus a non-empty complexity.
+		// The complexity resolves through DefaultCategoryRouting, whose tier
+		// configs all carry an EMPTY provider (e.g. "deep" -> {Model:
+		// "reasoning"}). That empty-provider tier must NOT win outright over a
+		// member's declared preferred_models: an empty-provider tier alias is
+		// not a deliberate per-agent provider routing decision, so the manifest
+		// preferences stay authoritative.
+		wireMemberWithComplexity := func(
+			memberID, complexity string,
+			prefs []agent.ModelPreference,
+		) *engine.Engine {
+			app, reg := buildPluginApp([]provider.Model{
+				{ID: "glm-5", Provider: "zai", ContextLength: 200000},
+			})
+			leadManifest := agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			memberManifest := agent.Manifest{
+				ID:              memberID,
+				Name:            memberID,
+				Complexity:      complexity,
+				PreferredModels: prefs,
+			}
+			app.Registry.Register(&leadManifest)
+			app.Registry.Register(&memberManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: leadManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, leadManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()[memberID]
+			Expect(memberEng).NotTo(BeNil())
+			return memberEng
+		}
+
+		It("keeps manifest preferred_models authoritative when complexity resolves "+
+			"to an empty-provider tier alias", func() {
+			// analyst/planner declare complexity "deep" AND preferred_models.
+			// "deep" -> DefaultCategoryRouting["deep"] = {Model: "reasoning",
+			// Provider: ""}. With an empty tier provider the resolution must
+			// DEFER to the manifest preferences rather than pin (global-default
+			// provider, tier-model) and clobber them.
+			memberEng := wireMemberWithComplexity("analyst", "deep",
+				[]agent.ModelPreference{
+					{Provider: "anthropic", Model: "claude-opus-4-6"},
+					{Provider: "zai", Model: "glm-4.6"},
+				})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(prefs).NotTo(BeEmpty(),
+				"member with preferred_models must keep effective failover preferences "+
+					"even when it also declares a complexity")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-opus-4-6"}),
+				"an empty-provider tier alias must NOT pin (global-default, tier-model) "+
+					"ahead of the manifest's anthropic head")
+			// The manifest's own fallback tail must survive ahead of any
+			// inherited global default; the tier-resolved global-default model
+			// must NOT have been prepended as a SetOverride.
+			glm46Idx, anthropicIdx := -1, -1
+			for i, p := range prefs {
+				switch {
+				case p.Provider == "anthropic" && p.Model == "claude-opus-4-6":
+					anthropicIdx = i
+				case p.Provider == "zai" && p.Model == "glm-4.6":
+					glm46Idx = i
+				}
+			}
+			Expect(anthropicIdx).To(Equal(0), "anthropic head must be first")
+			Expect(glm46Idx).To(BeNumerically(">", anthropicIdx),
+				"the manifest's glm-4.6 tail must follow its anthropic head")
+		})
+
 		It("keeps the manifest's anthropic head as the first effective failover preference", func() {
 			memberEng := wireMember("plan-writer", []agent.ModelPreference{
 				{Provider: "anthropic", Model: "claude-sonnet-4"},
