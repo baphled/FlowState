@@ -363,8 +363,72 @@ type streamAccumState struct {
 // the synthesis only fires when the turn produced reasoning but no
 // content, and at worst attaches an extra placeholder that the UI is
 // already designed to render.
+//
+// This predicate gates ONLY the synthesizePlaceholderAssistant
+// double-stamp suppression below — a wire-shape (reasoning-channel)
+// concern. The tool_use_no_calls stamp guard uses a SEPARATE predicate,
+// providerToolUseFinishIsTrustworthy, because that is a TRUST concern
+// (does the provider's tool-use finish always carry a real call) that
+// resolves to a different provider set. Keeping them apart prevents the
+// trust allowlist from silently changing placeholder-synthesis behaviour.
 func providerProducesUnifiedAssistant(providerID string) bool {
 	return providerID == "anthropic"
+}
+
+// providerToolUseFinishIsTrustworthy reports whether the named provider's
+// finish_reason="tool_use" (mapped to stop_reason="tool_use") is reliable:
+// when this provider reports a tool-use finish, a real tool_call block
+// always accompanies the turn. For such a provider a flushed content row
+// carrying stop_reason="tool_use" with zero inline tool_call data is a
+// healthy unified-assistant wrap-up (the tool_use landed as a separate
+// Role:"tool_call" row, or an earlier round's delegation/tool call was the
+// real artefact), NOT a wire-contract violation — so the
+// tool_use_no_calls detector at flushContent MUST NOT fire on it.
+//
+// Wire mechanics, identical across every trusted member. On a HEALTHY
+// content+tool turn the provider emits the tool_call chunk(s) BEFORE the
+// terminal stop_reason chunk:
+//   - Anthropic: `content_block_stop` emits the tool_call
+//     (anthropic/streaming.go:345) and the terminal `message_delta` carries
+//     stop_reason (anthropic/streaming.go:176) — message_delta is last.
+//   - OpenAI-compat: RunStream emits tool_call chunks as they finish AND
+//     flushes accumulated tool_calls before mirroring finish_reason into
+//     the stop_reason chunk (openaicompat.go:548-588);
+//     finish_reason="tool_calls" maps to stop_reason="tool_use"
+//     (openaicompat.go:842-843).
+// Because the tool_call chunk precedes the stop_reason chunk, the
+// accumulator's `applyToolCall` flushes the in-progress content row while
+// turnStopReason is still "" — so a healthy turn's content row carries
+// StopReason="" by construction and the detector never sees it. The row
+// that DOES carry stop_reason="tool_use" is a swarm-lead wrap-up emitted
+// AFTER the real tool/delegation work — on a trustworthy provider that
+// finish reflects real earlier work, so it must NOT be stamped. Live
+// evidence: anthropic session 271080ed and the gpt-4o failover that
+// regressed the same way.
+//
+// anthropic + openai are trusted; every other provider returns false. This
+// is NOT a wire-packing distinction (the openai-family wire is structurally
+// identical) but a TRUST distinction: glm-5/glm-4.6 (served via zai, and
+// reachable via openzen/ollamacloud) genuinely VIOLATE the contract — the
+// model announces a tool, the provider reports finish_reason="tool_calls",
+// and glm emits ZERO tool_call blocks anywhere in the turn (live dogfood
+// sessions 8169ca2d, 32ab2e60). That produces the identical persisted shape
+// (content row, stop_reason="tool_use", no tool_call) as the healthy
+// wrap-up, so the provider ID is the only signal that separates a
+// trustworthy finish (anthropic, openai) from a lying model (glm via zai).
+// zai therefore stays OUT so the genuine Bug-G violation is still caught.
+// The remaining openaicompat providers (openzen, ollamacloud, ollama,
+// github-copilot) stay OUT conservatively — they can serve the same
+// unreliable glm-class models, and "default to false" keeps catching real
+// violations until a provider is proven trustworthy. Extending the set is
+// safe and additive once a false-positive on that provider is observed.
+func providerToolUseFinishIsTrustworthy(providerID string) bool {
+	switch providerID {
+	case "anthropic", "openai":
+		return true
+	default:
+		return false
+	}
 }
 
 // AccumulateStream wraps rawCh with a goroutine that records assistant and tool
@@ -909,19 +973,22 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	//     detector and the session stayed active.
 	//
 	// Provider discrimination (May 2026): the detector must NOT fire on a
-	// UNIFIED-ASSISTANT provider (Anthropic). There a healthy
-	// content+tool_use turn legitimately carries stop_reason="tool_use"
-	// while the tool_use blocks land as separate Role:"tool_call" rows —
-	// so this flushed content row ALWAYS has zero inline tool_call data by
-	// construction (see the flushContent note above) and is NOT a wire-
-	// contract violation. Without this guard a fully-successful Anthropic
-	// swarm lead (plan published, final message end_turn) was falsely
-	// stamped tool_use_no_calls and latched to status=failed (live session
-	// 271080ed). The asymmetry mirrors synthesizePlaceholderAssistant's
-	// providerProducesUnifiedAssistant gate below. For non-unified
-	// providers (zai/glm) the per-message wire contract still holds and
-	// the genuine Bug-G detection is preserved.
-	if msg.StopReason == "tool_use" && !providerProducesUnifiedAssistant(s.lastProviderID) {
+	// provider whose tool_use finish is TRUSTWORTHY (Anthropic, OpenAI).
+	// There a healthy content+tool_use turn legitimately carries
+	// stop_reason="tool_use" while the real tool_use landed as a separate
+	// Role:"tool_call" row (or an earlier round's delegation/tool call was
+	// the real artefact) — so this flushed content row has zero inline
+	// tool_call data by construction (see the flushContent note above and
+	// the wire-ordering proof in providerToolUseFinishIsTrustworthy) and is
+	// NOT a wire-contract violation. Without this guard a fully-successful
+	// Anthropic swarm lead (plan published, final message end_turn) was
+	// falsely stamped tool_use_no_calls and latched to status=failed (live
+	// session 271080ed); the SAME false-positive then regressed when a
+	// planning-loop lead failed over to openai/gpt-4o. For providers whose
+	// tool_use finish is NOT trustworthy (zai/glm, which announce a tool
+	// then emit zero calls — sessions 8169ca2d, 32ab2e60) the per-message
+	// wire contract still holds and the genuine Bug-G detection is preserved.
+	if msg.StopReason == "tool_use" && !providerToolUseFinishIsTrustworthy(s.lastProviderID) {
 		msg.StopReason = StopReasonToolUseNoCalls
 	}
 	// Stream-truncation detector (Bug F, May 2026). When a content-bearing

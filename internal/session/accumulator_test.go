@@ -2641,6 +2641,140 @@ var _ = Describe("AccumulateStream", func() {
 						"successful swarm lead session is falsely latched to status=failed")
 			})
 
+			It("does NOT stamp StopReasonToolUseNoCalls on openai (gpt-4o) when an EARLIER delegation succeeded and the FINAL response has stop_reason=tool_use", func() {
+				// OpenAI-family extension of the anthropic anti-stamp case
+				// above. The openaicompat RunStream loop emits the
+				// `tool_call` chunk(s) and `flushAccumulatedToolCalls`
+				// BEFORE it mirrors finish_reason into the `stop_reason`
+				// chunk (internal/provider/openaicompat/openaicompat.go:
+				// 548-588). So on a HEALTHY gpt-4o content+tool turn the
+				// accumulator's applyToolCall flushes the content row while
+				// turnStopReason is still "" — the persisted content row
+				// carries StopReason="" by construction, exactly as on
+				// Anthropic. OpenAI maps finish_reason="tool_calls" ->
+				// stop_reason="tool_use" (mapFinishReason:842-843); on a
+				// trustworthy provider that finish ALWAYS accompanies a real
+				// tool_call. A swarm lead that delegated, then emitted a
+				// final wrap-up message under that finish_reason is the same
+				// healthy shape as the Anthropic case — it MUST NOT be
+				// stamped. Live evidence: a planning-loop run whose lead
+				// failed over to openai/gpt-4o was falsely stamped
+				// tool_use_no_calls and latched to status=failed.
+				rawCh := make(chan provider.StreamChunk, 8)
+				rawCh <- provider.StreamChunk{
+					Content:    "Delegating to plan-writer to apply the nits.",
+					ProviderID: "openai",
+					ModelID:    "gpt-4o",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-gpt4o-failover",
+						TargetAgent: "plan-writer",
+						Status:      "started",
+					},
+					ProviderID: "openai",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-gpt4o-failover",
+						TargetAgent: "plan-writer",
+						Status:      "completed",
+					},
+					ProviderID: "openai",
+				}
+				rawCh <- provider.StreamChunk{
+					Content:    "Good, I have the full plan. Now I'll apply all five nits systematically...",
+					ProviderID: "openai",
+					ModelID:    "gpt-4o",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "openai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "openai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).NotTo(BeEmpty(),
+					"the wrap-up assistant message must be persisted")
+				final := assistantMsgs[len(assistantMsgs)-1]
+				Expect(final.Content).To(ContainSubstring("Good, I have the full plan"),
+					"the final assistant content message is the one carrying stop_reason='tool_use'")
+				Expect(final.StopReason).NotTo(Equal(session.StopReasonToolUseNoCalls),
+					"openai is a trustworthy unified-assistant provider: a healthy gpt-4o swarm "+
+						"lead wrap-up that reports finish_reason='tool_calls' MUST NOT be "+
+						"misclassified as a wire-contract violation — otherwise a successful "+
+						"failover-to-gpt-4o swarm lead is falsely latched to status=failed")
+			})
+
+			It("STILL stamps StopReasonToolUseNoCalls on zai (glm) when the FINAL response has stop_reason=tool_use and zero tool_call blocks", func() {
+				// Anti-regression guard for the openai extension: widening
+				// the trusted set to include openai must NOT excuse the
+				// genuine glm/zai model-defect. glm-5 announces a tool,
+				// the provider reports finish_reason='tool_calls', and glm
+				// emits ZERO tool_calls anywhere (live dogfood session
+				// 32ab2e60). zai stays OUT of the trusted set so this
+				// genuine contract violation is still caught.
+				rawCh := make(chan provider.StreamChunk, 8)
+				rawCh <- provider.StreamChunk{
+					Content:    "Delegating to plan-writer to apply the nits.",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-zai-regression",
+						TargetAgent: "plan-writer",
+						Status:      "started",
+					},
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-zai-regression",
+						TargetAgent: "plan-writer",
+						Status:      "completed",
+					},
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{
+					Content:    "Good, I have the full plan. Now I'll apply all five nits systematically...",
+					ProviderID: "zai",
+					ModelID:    "glm-5",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "zai",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "zai"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				final := assistantMsgs[len(assistantMsgs)-1]
+				Expect(final.StopReason).To(Equal(session.StopReasonToolUseNoCalls),
+					"extending the trusted set to openai must NOT excuse the genuine glm/zai "+
+						"defect — zai stays non-unified so the real Bug-G contract violation is "+
+						"still caught (dogfood session 32ab2e60)")
+			})
+
 			It("stamps StopReasonToolUseNoCalls when an EARLIER tool_call fired but the FINAL response has stop_reason=tool_use and zero tool_call blocks", func() {
 				// Same shape as the delegation case but with a real
 				// tool_call earlier in the turn rather than a
