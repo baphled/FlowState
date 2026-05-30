@@ -260,7 +260,10 @@ func (r *flakyMemberGateRunner) Run(_ context.Context, gate swarm.GateSpec, args
 }
 
 func validVerdictPayload() []byte {
-	return []byte(`{"verdict":"approve"}`)
+	// The review-verdict gate now keys on the recognised verdict TOKEN the
+	// approve/reject loop reads (coordination.ContainsRecognisedVerdict),
+	// not a JSON `verdict` enum. A real reviewer emits "VERDICT: APPROVE".
+	return []byte("VERDICT: APPROVE")
 }
 
 func reviewerEngines() (map[string]*engine.Engine, *engine.Engine) {
@@ -306,7 +309,7 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(swarm.SeedDefaultSchemas()).To(Succeed())
 	})
 
-	It("halts the delegation with a GateError when the reviewer writes a malformed verdict", func() {
+	It("halts the delegation with a GateError when the reviewer writes no recognised verdict token", func() {
 		store := coordination.NewMemoryStore()
 		Expect(store.Set("planning/plan-reviewer/review", []byte(`{"reasoning":"missing verdict"}`))).To(Succeed())
 
@@ -330,12 +333,13 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(gateErr.GateName).To(Equal("post-member-plan-reviewer-result-schema"))
 		Expect(gateErr.MemberID).To(Equal("plan-reviewer"))
 		Expect(gateErr.SwarmID).To(Equal("planning-loop"))
-		Expect(gateErr.Reason).To(ContainSubstring("schema validation failed"))
+		Expect(gateErr.Reason).To(MatchRegexp(`(?i)verdict`),
+			"the failure must name the missing verdict token, the SAME signal the approve/reject loop reads")
 	})
 
-	It("returns the delegation result unchanged when the reviewer writes a valid verdict", func() {
+	It("returns the delegation result unchanged when the reviewer writes a recognised verdict token", func() {
 		store := coordination.NewMemoryStore()
-		Expect(store.Set("planning/plan-reviewer/review", []byte(`{"verdict":"approve"}`))).To(Succeed())
+		Expect(store.Set("planning/plan-reviewer/review", []byte("VERDICT: APPROVE"))).To(Succeed())
 
 		engines, _ := reviewerEngines()
 		delegateTool := engine.NewDelegateToolWithBackground(

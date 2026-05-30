@@ -358,7 +358,14 @@ var _ = Describe("DelegateTool swarm-aware preamble injection", func() {
 	}
 
 	Describe("when a swarm is active and the member has a post-member schema gate", func() {
-		It("injects the swarm ID, coord-store key, and schema name into the delegation message", func() {
+		It("injects the swarm ID, coord-store key, and a prose contract for a prose-tolerant bundle member", func() {
+			// evidence-bundle-v1 is a planning-loop PROSE-TOLERANT schema: the
+			// member's output is consumed as raw text by the next LLM member and
+			// the gate validates presence + non-emptiness, NOT a JSON struct
+			// (internal/swarm/gate_result_schema.go). The preamble must therefore
+			// ask for clear prose/Markdown under the key — NOT "conform to the
+			// evidence-bundle-v1 JSON schema" — so the member's effort matches
+			// what the gate accepts.
 			gates := []swarm.GateSpec{
 				{
 					Name:      "post-explorer-codebase",
@@ -386,8 +393,10 @@ var _ = Describe("DelegateTool swarm-aware preamble injection", func() {
 				"member must know which swarm it belongs to")
 			Expect(body).To(ContainSubstring("dev-feature/explorer/codebase-findings"),
 				"member must know the exact coord-store key it must write")
-			Expect(body).To(ContainSubstring("evidence-bundle-v1"),
-				"member must know the schema it must conform to")
+			Expect(body).To(MatchRegexp(`(?i)prose or Markdown|as text`),
+				"a prose-tolerant member must be asked for prose/Markdown, not a JSON schema")
+			Expect(body).NotTo(ContainSubstring("JSON schema"),
+				"a prose-tolerant member must NOT be told to conform to a JSON schema")
 			Expect(body).To(ContainSubstring("Survey the codebase."),
 				"original message must be preserved after the preamble")
 		})
@@ -479,8 +488,11 @@ var _ = Describe("DelegateTool swarm-aware preamble injection", func() {
 			Expect(body).To(ContainSubstring("dev-feature/explorer/findings"),
 				"member must receive the canonical coord-store key derived from "+
 					"swarmCtx.ChainPrefix, not whatever its manifest body hardcoded as an example")
-			Expect(body).To(ContainSubstring("evidence-bundle-v1"),
-				"schema reference must be injected so the member knows its output contract")
+			// evidence-bundle-v1 is prose-tolerant, so the output contract the
+			// member receives is a prose/Markdown instruction, not the JSON schema
+			// name (see the prose-contract spec above).
+			Expect(body).To(MatchRegexp(`(?i)prose or Markdown|as text`),
+				"the output contract for a prose-tolerant member must be a prose instruction")
 			Expect(body).To(ContainSubstring("Survey the codebase."),
 				"original message must be preserved after the preamble")
 		})

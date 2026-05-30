@@ -149,9 +149,14 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			gate = planningLoopGate()
 		})
 
-		It("passes when the verdict matches the schema", func() {
+		// The review-verdict gate now validates the SAME signal the
+		// approve/reject loop keys on: the recognised verdict TOKEN
+		// (containsApprovalVerdict greps "APPROVE"; the reviewer prompt emits
+		// "VERDICT: APPROVE | REJECT"). It no longer json.Unmarshal-validates
+		// a lowercase `verdict` enum that NO Go consumer reads.
+		It("passes when the verdict body carries a recognised verdict token (VERDICT: APPROVE)", func() {
 			store := newGateStore(map[string][]byte{
-				"planning/plan-reviewer/review": []byte(`{"verdict":"approve","reasoning":"looks good"}`),
+				"planning/plan-reviewer/review": []byte("VERDICT: APPROVE\nCONFIDENCE: 0.9\nBLOCKING_ISSUES:\n- None"),
 			})
 
 			err := runner.Run(context.Background(), gate, planningLoopArgs(store))
@@ -159,10 +164,25 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
+		DescribeTable("ACCEPTS any recognised verdict token (the loop keys on these tokens, not a JSON enum)",
+			func(body string) {
+				store := newGateStore(map[string][]byte{
+					"planning/plan-reviewer/review": []byte(body),
+				})
+
+				Expect(runner.Run(context.Background(), gate, planningLoopArgs(store))).NotTo(HaveOccurred(),
+					"a body carrying a recognised verdict token must pass the member gate")
+			},
+			Entry("APPROVE prose", "VERDICT: APPROVE\nlooks good"),
+			Entry("REJECT prose (the loop-back verdict)", "VERDICT: REJECT\nmissing guardrails"),
+			Entry("REVISE token", "Verdict: REVISE — tighten the scope"),
+			Entry("ABORT token", "VERDICT: ABORT"),
+		)
+
 		It("falls back to the generic output key when the reviewer-specific key is absent", func() {
 			gate.Target = "explorer"
 			store := newGateStore(map[string][]byte{
-				"planning/explorer/output": []byte(`{"verdict":"approve"}`),
+				"planning/explorer/output": []byte("VERDICT: APPROVE"),
 			})
 			args := planningLoopArgs(store)
 			args.MemberID = "explorer"
@@ -172,7 +192,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 
-		It("returns a GateError when the verdict is missing the required field", func() {
+		It("returns a GateError when the body carries no recognised verdict token", func() {
 			store := newGateStore(map[string][]byte{
 				"planning/plan-reviewer/review": []byte(`{"reasoning":"forgot the verdict"}`),
 			})
@@ -181,7 +201,8 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 
 			var gateErr *swarm.GateError
 			Expect(errors.As(err, &gateErr)).To(BeTrue())
-			Expect(gateErr.Reason).To(ContainSubstring("schema validation failed"))
+			Expect(gateErr.Reason).To(MatchRegexp(`(?i)verdict`),
+				"the failure must name the missing verdict token so the lead re-prompts the reviewer")
 			Expect(gateErr.GateName).To(Equal(gate.Name))
 			Expect(gateErr.MemberID).To(Equal("plan-reviewer"))
 		})
@@ -189,7 +210,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 		It("returns a GateError when the schema_ref is empty", func() {
 			gate.SchemaRef = ""
 			store := newGateStore(map[string][]byte{
-				"planning/plan-reviewer/review": []byte(`{"verdict":"approve"}`),
+				"planning/plan-reviewer/review": []byte("VERDICT: APPROVE"),
 			})
 
 			err := runner.Run(context.Background(), gate, planningLoopArgs(store))
@@ -202,7 +223,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 		It("returns a GateError when the schema_ref is unknown to the registry", func() {
 			gate.SchemaRef = "ghost-schema"
 			store := newGateStore(map[string][]byte{
-				"planning/plan-reviewer/review": []byte(`{"verdict":"approve"}`),
+				"planning/plan-reviewer/review": []byte("VERDICT: APPROVE"),
 			})
 
 			err := runner.Run(context.Background(), gate, planningLoopArgs(store))
@@ -241,7 +262,13 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				"the reason must direct the lead to re-delegate the write, not accept the narration")
 		})
 
-		It("returns a GateError when the coord-store payload is not valid JSON", func() {
+		It("returns a GateError when a strict-JSON schema's coord-store payload is not valid JSON", func() {
+			// Guards the DEFAULT (strict) result-schema path. review-verdict-v1
+			// no longer JSON-decodes (it token-checks), so this pins a schema
+			// that STAYS strict — code-review-verdict-v1, used by the bug-triage
+			// swarm and typed-parsed downstream — must still reject a non-JSON
+			// body with the "decoding member output as JSON" reason.
+			gate.SchemaRef = swarm.CodeReviewVerdictV1Name
 			store := newGateStore(map[string][]byte{
 				"planning/plan-reviewer/review": []byte(`{not json`),
 			})
@@ -267,7 +294,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			gate.Target = "explorer"
 			gate.OutputKey = "evidence"
 			store := newGateStore(map[string][]byte{
-				"planning/explorer/evidence": []byte(`{"verdict":"approve"}`),
+				"planning/explorer/evidence": []byte("VERDICT: APPROVE"),
 				"planning/explorer/output":   []byte(`{"intentionally":"wrong"}`),
 			})
 			args := planningLoopArgs(store)
@@ -299,7 +326,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 		It("uses the legacy plan-reviewer convention when no explicit output_key is set", func() {
 			gate.OutputKey = ""
 			store := newGateStore(map[string][]byte{
-				"planning/plan-reviewer/review": []byte(`{"verdict":"approve"}`),
+				"planning/plan-reviewer/review": []byte("VERDICT: APPROVE"),
 			})
 
 			err := runner.Run(context.Background(), gate, planningLoopArgs(store))
@@ -377,7 +404,7 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				gate.Target = "plan-reviewer"
 				gate.OutputKey = "{chainID}/review"
 				store := newGateStore(map[string][]byte{
-					"plan-auth-2026-04-23/review": []byte(`{"verdict":"approve","reasoning":"looks good"}`),
+					"plan-auth-2026-04-23/review": []byte("VERDICT: APPROVE\nlooks good"),
 				})
 				args := planningLoopArgs(store)
 				args.MemberID = "plan-reviewer"
@@ -489,14 +516,18 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				Expect(errors.As(err, &gateErr)).To(BeTrue())
 			})
 
-			It("does NOT relax JSON strictness for a NON-plan schema (evidence-bundle still rejects non-JSON)", func() {
-				// The Markdown-tolerant bypass is plan-document-v1 ONLY. A genuinely
-				// JSON schema (evidence-bundle-v1) must STILL reject a non-JSON body
-				// with the existing "decoding member output as JSON" reason — the
-				// fix must not weaken JSON strictness for the other result-schema
-				// gates.
+			It("does NOT relax JSON strictness for a non-planning-loop schema (section-v1 still rejects non-JSON)", func() {
+				// The prose/verdict-token relaxation is scoped to the FOUR
+				// planning-loop schemas (evidence-bundle-v1, external-refs-v1,
+				// analysis-bundle-v1, review-verdict-v1) whose outputs are consumed
+				// as raw text by the next LLM member. A genuinely typed-parsed schema
+				// used by ANOTHER swarm — section-v1, which the plan-sme-swarm
+				// publisher (Pass 2) unmarshals into Go structs — must STILL reject a
+				// non-JSON body with the existing "decoding member output as JSON"
+				// reason. The relaxation must not weaken JSON strictness for the
+				// default result-schema path.
 				g := planWriterGate()
-				g.SchemaRef = swarm.EvidenceBundleV1Name
+				g.SchemaRef = swarm.SectionV1Name
 				store := newGateStore(map[string][]byte{
 					"plan-chain-2026-05-30/plan": []byte("# Not JSON at all"),
 				})
@@ -509,8 +540,76 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				var gateErr *swarm.GateError
 				Expect(errors.As(err, &gateErr)).To(BeTrue())
 				Expect(gateErr.Reason).To(ContainSubstring("decoding member output as JSON"),
-					"a non-plan schema must still fail a non-JSON body via the generic decode")
+					"a non-planning-loop schema must still fail a non-JSON body via the generic decode")
 			})
+		})
+
+		// Planning-loop member outputs are consumed as RAW TEXT by the next
+		// LLM member (coordination tool returns string(val) verbatim; the
+		// analyst reads codebase-findings/external-refs as prose, the
+		// plan-writer reads the analysis as prose — no Go struct unmarshals
+		// these bundles in the planning loop). JSON-schema-validating them
+		// rejected good prose/Markdown for no consumer benefit, which was the
+		// swarm's chronic false-failure source. The gate's job for these
+		// schemas is "did the member produce SOME content" (presence +
+		// non-empty), NOT "is it this JSON struct".
+		Context("when the gate validates a prose-tolerant planning-loop bundle (evidence/external-refs/analysis)", func() {
+			proseGate := func(schemaRef, suffix string) swarm.GateSpec {
+				return swarm.GateSpec{
+					Name:      "post-member-prose-tolerant",
+					Kind:      "builtin:result-schema",
+					SchemaRef: schemaRef,
+					When:      swarm.LifecyclePostMember,
+					Target:    "explorer",
+					OutputKey: "{chainID}/" + suffix,
+				}
+			}
+
+			runProseGate := func(schemaRef, suffix, body string) error {
+				g := proseGate(schemaRef, suffix)
+				store := newGateStore(map[string][]byte{
+					"prose-chain-2026-05-30/" + suffix: []byte(body),
+				})
+				args := planningLoopArgs(store)
+				args.MemberID = "explorer"
+				args.ChainID = "prose-chain-2026-05-30"
+				return runner.Run(context.Background(), g, args)
+			}
+
+			DescribeTable("ACCEPTS a prose / Markdown body (the next LLM member reads it as text)",
+				func(schemaRef, suffix string) {
+					body := "## Findings\n\n- `internal/foo/bar.go:42` does the thing\n- relevant to the request"
+					Expect(runProseGate(schemaRef, suffix, body)).NotTo(HaveOccurred(),
+						"a prose/Markdown bundle the next member reads as text must pass the member gate")
+				},
+				Entry("evidence-bundle-v1", swarm.EvidenceBundleV1Name, "codebase-findings"),
+				Entry("external-refs-v1", swarm.ExternalRefsV1Name, "external-refs"),
+				Entry("analysis-bundle-v1", swarm.AnalysisBundleV1Name, "analysis"),
+			)
+
+			DescribeTable("still ACCEPTS a structured JSON body (back-compat — a member that emits JSON is fine)",
+				func(schemaRef, suffix, body string) {
+					Expect(runProseGate(schemaRef, suffix, body)).NotTo(HaveOccurred(),
+						"a JSON body must still pass — relaxation widens acceptance, it does not forbid JSON")
+				},
+				Entry("evidence-bundle-v1", swarm.EvidenceBundleV1Name, "codebase-findings", `{"findings":[{"file":"a.go"}]}`),
+				Entry("external-refs-v1", swarm.ExternalRefsV1Name, "external-refs", `{"references":[{"url":"http://x"}]}`),
+				Entry("analysis-bundle-v1", swarm.AnalysisBundleV1Name, "analysis", `{"key_findings":["a"],"recommendations":["b"]}`),
+			)
+
+			DescribeTable("REJECTS an empty / whitespace-only body (the narrated-nothing case still fails)",
+				func(schemaRef, suffix, body string) {
+					err := runProseGate(schemaRef, suffix, body)
+					var gateErr *swarm.GateError
+					Expect(errors.As(err, &gateErr)).To(BeTrue(),
+						"an empty/whitespace bundle must still fail — the gate guards against the member narrating a write but producing nothing")
+				},
+				Entry("evidence empty", swarm.EvidenceBundleV1Name, "codebase-findings", ""),
+				Entry("evidence whitespace", swarm.EvidenceBundleV1Name, "codebase-findings", "   \n\t  "),
+				Entry("evidence empty JSON object", swarm.EvidenceBundleV1Name, "codebase-findings", "{}"),
+				Entry("external-refs empty", swarm.ExternalRefsV1Name, "external-refs", ""),
+				Entry("analysis whitespace", swarm.AnalysisBundleV1Name, "analysis", "\n\n   "),
+			)
 		})
 	})
 

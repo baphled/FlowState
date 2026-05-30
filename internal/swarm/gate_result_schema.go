@@ -119,12 +119,125 @@ func (resultSchemaRunner) Run(ctx context.Context, gate GateSpec, args GateArgs)
 		}
 		return nil
 	}
+	// Planning-loop prose bundles (evidence / external-refs / analysis) are
+	// consumed as RAW TEXT by the next LLM member — the coordination tool
+	// returns string(val) verbatim into the consumer's tool-result, and the
+	// analyst reads codebase-findings/external-refs as prose while the
+	// plan-writer reads the analysis as prose. No Go code unmarshals these
+	// bundles in the planning loop, so JSON-schema-validating them rejected
+	// good prose/Markdown for no consumer benefit (the swarm's chronic
+	// false-failure source). The gate's job for these schemas is "did the
+	// member produce SOME content", not "is it this JSON struct": a non-empty,
+	// non-trivial body passes; an empty / whitespace-only / empty-object body
+	// still FAILS so the narrated-nothing synthesis-hang case is caught.
+	// Scoped to exactly the three planning-loop prose schema names — every
+	// OTHER result-schema gate (section-v1, code-review-verdict-v1, …) stays
+	// on the strict decode+validate default path below.
+	if isProseTolerantSchema(gate.SchemaRef) {
+		if err := validateNonEmptyMemberOutput(payload); err != nil {
+			return newGateFailure(gate, args, err.Error(), err)
+		}
+		return nil
+	}
+	// The plan-reviewer verdict DOES drive a machine decision, but the real
+	// consumers grep a verdict TOKEN, not the JSON `verdict` enum:
+	// coordination.containsApprovalVerdict and app.App.PersistApprovedPlan
+	// both strings.Contains the uppercase "APPROVE", while the schema required
+	// a lowercase `verdict: approve` nobody reads. Validate the SAME signal
+	// the approve/reject loop keys on — the member output must carry one of
+	// the recognised verdict tokens (APPROVE / REJECT / REVISE / ABORT,
+	// centralised in internal/coordination so the gate and persisting store
+	// cannot drift). A body with no recognised verdict token FAILS so the lead
+	// re-prompts the reviewer for an explicit verdict.
+	if gate.SchemaRef == ReviewVerdictV1Name {
+		if err := validateVerdictToken(payload); err != nil {
+			return newGateFailure(gate, args, err.Error(), err)
+		}
+		return nil
+	}
 	instance, err := decodeJSONInstance(payload)
 	if err != nil {
 		return newGateFailure(gate, args, err.Error(), err)
 	}
 	if err := resolved.Validate(instance); err != nil {
 		return newGateFailure(gate, args, fmt.Sprintf("schema validation failed: %s", err.Error()), err)
+	}
+	return nil
+}
+
+// isProseTolerantSchema reports whether the schema_ref names one of the
+// planning-loop bundles whose member output is consumed as RAW TEXT by the
+// next LLM member (evidence-bundle-v1 / external-refs-v1 / analysis-bundle-v1).
+// For these the result-schema gate validates presence + non-emptiness rather
+// than a JSON struct, because no Go code typed-parses them. Any other schema
+// (including section-v1 and code-review-verdict-v1, which ARE typed-parsed by
+// other swarms' publishers) is NOT prose-tolerant and stays on the strict
+// decode+validate path.
+//
+// Expected:
+//   - schemaRef is the gate's SchemaRef.
+//
+// Returns:
+//   - True for the three planning-loop prose schemas; false otherwise.
+//
+// Side effects:
+//   - None.
+func isProseTolerantSchema(schemaRef string) bool {
+	switch schemaRef {
+	case EvidenceBundleV1Name, ExternalRefsV1Name, AnalysisBundleV1Name:
+		return true
+	default:
+		return false
+	}
+}
+
+// validateNonEmptyMemberOutput is the prose-tolerant predicate: the member
+// must have produced SOME substantive content. It accepts any non-trivial
+// body (prose, Markdown, or JSON — JSON is just a non-empty body here) and
+// rejects the narrated-nothing cases: an empty payload, a whitespace-only
+// payload, or an empty JSON object/array ("{}" / "[]") which carries no
+// findings for the next member to read.
+//
+// Expected:
+//   - payload is the raw bytes the member wrote to the coord-store.
+//
+// Returns:
+//   - nil when the body is substantive.
+//   - An error naming the empty-output failure otherwise.
+//
+// Side effects:
+//   - None.
+func validateNonEmptyMemberOutput(payload []byte) error {
+	trimmed := strings.TrimSpace(string(payload))
+	if trimmed == "" || trimmed == "{}" || trimmed == "[]" {
+		return fmt.Errorf("member produced no substantive output (empty or contentless body): %s", noOutputDirective)
+	}
+	return nil
+}
+
+// validateVerdictToken is the review-verdict predicate: the member output
+// must carry one of the recognised verdict tokens the approve/reject loop
+// keys on (APPROVE / REJECT / REVISE / ABORT). This validates the SAME signal
+// the real consumers read (coordination.containsApprovalVerdict /
+// app.App.PersistApprovedPlan grep the token), not the JSON `verdict` enum
+// nobody parses.
+//
+// Expected:
+//   - payload is the raw review body the plan-reviewer wrote.
+//
+// Returns:
+//   - nil when a recognised verdict token is present.
+//   - An error naming the missing-verdict failure otherwise.
+//
+// Side effects:
+//   - None.
+func validateVerdictToken(payload []byte) error {
+	if !coordination.ContainsRecognisedVerdict(payload) {
+		return fmt.Errorf(
+			"review output carries no recognised verdict token (expected one of %s) — "+
+				"re-delegate the reviewer with an explicit instruction to emit a VERDICT line",
+			strings.Join(coordination.RecognisedVerdictTokens, " / "),
+		)
 	}
 	return nil
 }

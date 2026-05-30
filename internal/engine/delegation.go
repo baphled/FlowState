@@ -5220,11 +5220,61 @@ func (d *DelegateTool) buildMemberSwarmPreamble(agentID, chainID string) string 
 		b.WriteString(" Write your result to coordination_store key=**" + fullKey + "**.")
 	}
 	if schemaRef != "" {
-		b.WriteString(" Your output MUST conform to the **" + schemaRef + "** JSON schema.")
-		b.WriteString(" Produce only valid JSON matching that schema — no markdown fences, no extra keys.")
+		b.WriteString(memberOutputContract(schemaRef))
 	}
 
 	return b.String()
+}
+
+// memberOutputContract returns the output-format clause for a member's swarm
+// preamble, scoped to what the member's post-member gate ACTUALLY validates.
+//
+// The planning-loop gates no longer JSON-schema-validate members whose output
+// is consumed as raw text by the next LLM member (see
+// internal/swarm/gate_result_schema.go). Asking those members for "valid JSON
+// only" while the gate accepts prose was the lockstep half of the
+// false-failure: the model spent effort emitting brittle JSON the gate didn't
+// need and the next member couldn't read as naturally as prose. The wording is
+// therefore scoped on the SAME schema signal the gate keys on:
+//
+//   - evidence-bundle-v1 / external-refs-v1 / analysis-bundle-v1 (prose
+//     bundles): clear, complete written findings/analysis (prose or Markdown
+//     fine) — the gate checks presence + non-emptiness, not a JSON struct.
+//   - plan-document-v1: a Markdown plan document — the gate routes through the
+//     publisher's render predicate, which accepts raw Markdown.
+//   - review-verdict-v1: an explicit VERDICT line (one of the recognised
+//     verdict tokens) plus rationale — the gate (and the approve/reject loop)
+//     keys on the verdict TOKEN, not a JSON enum.
+//   - any OTHER schema (section-v1, code-review-verdict-v1, …): unchanged —
+//     these ARE typed-parsed by their swarm's publisher, so "valid JSON only"
+//     still holds. This is what keeps the wording change from forcing prose on
+//     swarms whose gates still need JSON.
+//
+// Expected:
+//   - schemaRef is the gate's non-empty SchemaRef.
+//
+// Returns:
+//   - A leading-space-prefixed clause to append to the preamble builder.
+//
+// Side effects:
+//   - None.
+func memberOutputContract(schemaRef string) string {
+	switch schemaRef {
+	case swarm.EvidenceBundleV1Name, swarm.ExternalRefsV1Name, swarm.AnalysisBundleV1Name:
+		return " Write your findings as clear, complete prose or Markdown under that key —" +
+			" a downstream agent reads them as text, so do NOT wrap them in JSON;" +
+			" just make sure the key is non-empty and substantive."
+	case swarm.PlanDocumentV1Name:
+		return " Write a complete Markdown plan document under that key" +
+			" (e.g. starting with a `# ` heading) — prose/Markdown, not a JSON blob."
+	case swarm.ReviewVerdictV1Name:
+		return " Write your review under that key with an explicit verdict line —" +
+			" `VERDICT: " + strings.Join(coordination.RecognisedVerdictTokens, " | ") + "`" +
+			" — followed by your rationale. The loop keys on the verdict token, so it MUST be present."
+	default:
+		return " Your output MUST conform to the **" + schemaRef + "** JSON schema." +
+			" Produce only valid JSON matching that schema — no markdown fences, no extra keys."
+	}
 }
 
 // emitDelegationEvent sends a DelegationInfo chunk to the output channel when available.

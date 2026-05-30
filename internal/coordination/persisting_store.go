@@ -113,6 +113,55 @@ func isApprovalKey(key string) bool {
 	return prefix != ""
 }
 
+// ApprovalVerdictToken is the verdict token the approve/reject loop keys
+// on. The PersistingStore approval callback and app.App.PersistApprovedPlan
+// both grep this exact substring (case-sensitive) to decide a plan is
+// approved, so it is the single source of truth for "approved" — any gate
+// or consumer that needs the same signal must reference this constant
+// rather than re-spelling the literal.
+const ApprovalVerdictToken = "APPROVE"
+
+// RecognisedVerdictTokens is the full set of verdict tokens the planning-loop
+// review surface uses. APPROVE / REJECT are the prose verbs the
+// plan-reviewer agent actually emits ("VERDICT: APPROVE | REJECT"); REVISE /
+// ABORT are the schema-contract aliases the review-verdict-v1 doc names.
+// A review payload carrying ANY of these tokens is a recognised verdict;
+// the swarm result-schema gate validates "did the reviewer emit a
+// recognised verdict" against this set, which is the SAME family of signals
+// the approve/reject loop keys on (ApprovalVerdictToken is the
+// approved-specifically member). Centralised here so the gate
+// (internal/swarm) and the persisting store cannot drift apart.
+var RecognisedVerdictTokens = []string{
+	ApprovalVerdictToken, // APPROVE
+	"REJECT",
+	"REVISE",
+	"ABORT",
+}
+
+// ContainsRecognisedVerdict reports whether the review payload carries any
+// recognised verdict token (case-sensitive). The swarm result-schema gate
+// uses this to validate the plan-reviewer's output against the SAME signal
+// the approve/reject loop reads, instead of a JSON `verdict` enum no Go
+// consumer parses.
+//
+// Expected:
+//   - value is the raw review-verdict payload written to the coordination store.
+//
+// Returns:
+//   - True when value contains at least one RecognisedVerdictTokens entry.
+//
+// Side effects:
+//   - None.
+func ContainsRecognisedVerdict(value []byte) bool {
+	s := string(value)
+	for _, tok := range RecognisedVerdictTokens {
+		if strings.Contains(s, tok) {
+			return true
+		}
+	}
+	return false
+}
+
 // containsApprovalVerdict reports whether the review payload contains
 // the word "APPROVE" (case-sensitive). Matches the existing
 // PersistApprovedPlan check on app.App so the two paths stay aligned.
@@ -126,5 +175,5 @@ func isApprovalKey(key string) bool {
 // Side effects:
 //   - None.
 func containsApprovalVerdict(value []byte) bool {
-	return strings.Contains(string(value), "APPROVE")
+	return strings.Contains(string(value), ApprovalVerdictToken)
 }
