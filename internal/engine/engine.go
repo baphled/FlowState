@@ -46,36 +46,45 @@ const (
 
 // Engine orchestrates AI agent interactions with providers, tools, and context management.
 type Engine struct {
-	chatProvider         provider.Provider
-	embeddingProvider    provider.Provider
-	failoverManager      *failover.Manager
-	manifest             agent.Manifest
-	tools                []tool.Tool
-	skills               []skill.Skill
-	skillsResolver       func(agent.Manifest) []skill.Skill
-	store                *recall.FileContextStore
-	chainStore           recall.ChainContextStore
-	windowBuilder        *ctxstore.WindowBuilder
-	recallBroker         recall.Broker
-	contextAssemblyHooks []plugin.ContextAssemblyHook
-	tokenCounter         ctxstore.TokenCounter
-	systemPromptBudget   int
-	streamTimeout        time.Duration
-	hookChain            *hook.Chain
-	toolRegistry         *tool.Registry
-	permissionHandler    tool.PermissionHandler
-	providerRegistry     *provider.Registry
-	agentRegistry        *agent.Registry
-	swarmRegistry        *swarm.Registry
-	agentsFileLoader     *agent.AgentsFileLoader
-	lastContextResult    ctxstore.BuildResult
-	agentOverrides       map[string]string
-	preferredProvider    string
-	preferredModel       string
-	bus                  *eventbus.EventBus
-	mcpServerTools       map[string][]string
-	toolTimeout          time.Duration
-	categoryResolver     *CategoryResolver
+	chatProvider      provider.Provider
+	embeddingProvider provider.Provider
+	failoverManager   *failover.Manager
+	// failoverConfigBaseline captures the config-derived base preferences
+	// the failover manager was seeded with at app startup
+	// (applyFailoverPreferences → providers.BuildConfigPreferences).
+	// ReseedFailoverBasePreferences snapshots it lazily on first call so
+	// each per-turn reseed can rebuild "manifest head + config tail"
+	// against the ORIGINAL config chain rather than a previously-reseeded
+	// (manifest-headed) one. Guarded by mu.
+	failoverConfigBaseline    []provider.ModelPreference
+	failoverConfigBaselineSet bool
+	manifest                  agent.Manifest
+	tools                     []tool.Tool
+	skills                    []skill.Skill
+	skillsResolver            func(agent.Manifest) []skill.Skill
+	store                     *recall.FileContextStore
+	chainStore                recall.ChainContextStore
+	windowBuilder             *ctxstore.WindowBuilder
+	recallBroker              recall.Broker
+	contextAssemblyHooks      []plugin.ContextAssemblyHook
+	tokenCounter              ctxstore.TokenCounter
+	systemPromptBudget        int
+	streamTimeout             time.Duration
+	hookChain                 *hook.Chain
+	toolRegistry              *tool.Registry
+	permissionHandler         tool.PermissionHandler
+	providerRegistry          *provider.Registry
+	agentRegistry             *agent.Registry
+	swarmRegistry             *swarm.Registry
+	agentsFileLoader          *agent.AgentsFileLoader
+	lastContextResult         ctxstore.BuildResult
+	agentOverrides            map[string]string
+	preferredProvider         string
+	preferredModel            string
+	bus                       *eventbus.EventBus
+	mcpServerTools            map[string][]string
+	toolTimeout               time.Duration
+	categoryResolver          *CategoryResolver
 
 	// toolCallCorrelator assigns a stable FlowState-internal identifier to
 	// every tool call observed on the stream path and reuses it whenever
@@ -1751,6 +1760,93 @@ func (e *Engine) SkipAgentFiles() bool {
 //   - None.
 func (e *Engine) FailoverManager() *failover.Manager {
 	return e.failoverManager
+}
+
+// ReseedFailoverBasePreferences re-seeds the failover manager's base
+// preferences from the supplied agent manifest so the SHARED dispatch
+// engine routes the CURRENT turn on that agent's preferred_models rather
+// than the config global-default head seeded once at app startup.
+//
+// The dispatch engine is the App's single primary engine; its failover
+// chain was seeded purely from config (applyFailoverPreferences →
+// providers.BuildConfigPreferences) and SetManifest / SetSwarmContext
+// never touched the failover manager. As a result a sessioned turn for
+// an agent whose manifest declared a non-default head (e.g. planner →
+// anthropic/claude-sonnet-4-6) still routed on the config default
+// (zai/glm-4.6). The Dispatcher calls this at the per-turn
+// re-identification site (swarm-lead AND plain sessioned paths) so each
+// turn routes on its own agent's chain.
+//
+// Semantics (mirrors createDelegateEngine's per-delegate seeding at
+// app.go:2181-2204):
+//   - The config-derived chain the manager was seeded with at startup is
+//     snapshotted lazily on first call (failoverConfigBaseline) so every
+//     reseed rebuilds against the ORIGINAL config tail, not a prior
+//     manifest-headed reseed.
+//   - manifest.PreferredModels (mapped to provider prefs) lead the chain.
+//   - For non-strict policy the config baseline is appended as a deduped
+//     fallback tail so the turn survives when all preferred models are
+//     rate-limited. Strict policy gets the manifest head only — no tail.
+//   - When the manifest declares no PreferredModels the config baseline
+//     is restored verbatim (behaviour unchanged).
+//
+// A nil failover manager is a silent no-op (test surfaces and CLI
+// one-shots without failover wiring).
+//
+// Side effects:
+//   - Calls failoverManager.SetBasePreferences.
+//   - Captures the config baseline on first invocation (under mu).
+func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
+	if e.failoverManager == nil {
+		return
+	}
+
+	e.mu.Lock()
+	if !e.failoverConfigBaselineSet {
+		// Snapshot the config-derived chain exactly once — this is the
+		// chain the manager carries at app startup before any per-turn
+		// reseed has mutated it.
+		baseline := e.failoverManager.Preferences()
+		e.failoverConfigBaseline = make([]provider.ModelPreference, len(baseline))
+		copy(e.failoverConfigBaseline, baseline)
+		e.failoverConfigBaselineSet = true
+	}
+	configBaseline := make([]provider.ModelPreference, len(e.failoverConfigBaseline))
+	copy(configBaseline, e.failoverConfigBaseline)
+	e.mu.Unlock()
+
+	if len(manifest.PreferredModels) == 0 {
+		// No manifest preference — restore the config-derived chain so a
+		// prior reseed for a different agent does not leak into this turn.
+		e.failoverManager.SetBasePreferences(configBaseline)
+		return
+	}
+
+	prefs := make([]provider.ModelPreference, 0, len(manifest.PreferredModels)+len(configBaseline))
+	seen := make(map[string]bool, len(manifest.PreferredModels)+len(configBaseline))
+	for _, p := range manifest.PreferredModels {
+		mp := provider.ModelPreference{Provider: p.Provider, Model: p.Model}
+		key := mp.Provider + "/" + mp.Model
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		prefs = append(prefs, mp)
+	}
+	// Strict-policy agents only ever run on their declared models — no
+	// config fallback tail. Matches createDelegateEngine.
+	if manifest.ModelPolicy != agent.ModelPolicyStrict {
+		for _, p := range configBaseline {
+			key := p.Provider + "/" + p.Model
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			prefs = append(prefs, p)
+		}
+	}
+
+	e.failoverManager.SetBasePreferences(prefs)
 }
 
 // EventBus returns the engine's event bus for plugin event subscriptions.

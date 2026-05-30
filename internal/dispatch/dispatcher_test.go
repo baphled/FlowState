@@ -187,7 +187,7 @@ func (f *fakeDispatchEngine) RestoreManifest(_ any) {
 	f.events = append(f.events, lifecycleEvent{call: "RestoreManifest"})
 }
 
-func (f *fakeDispatchEngine) SkipAgentFiles() bool    { return false }
+func (f *fakeDispatchEngine) SkipAgentFiles() bool     { return false }
 func (f *fakeDispatchEngine) SetSkipAgentFiles(_ bool) {}
 func (f *fakeDispatchEngine) installed() *swarm.Context {
 	f.mu.Lock()
@@ -228,6 +228,32 @@ func (h *hookedDispatchEngine) SetSwarmContext(ctx *swarm.Context) {
 	if h.onSetSwarmContext != nil {
 		h.onSetSwarmContext(ctx)
 	}
+}
+
+// reseedingDispatchEngine embeds fakeDispatchEngine and additionally
+// implements the dispatch package's optional failoverReseeder capability
+// (satisfied in production by *engine.Engine). It records the manifests
+// the Dispatcher reseeds the failover chain from so the per-turn-reseed
+// spec can pin that the Dispatcher hands the CURRENT turn's agent
+// (swarm lead OR plain session agent), not the config global default.
+type reseedingDispatchEngine struct {
+	*fakeDispatchEngine
+	reMu          sync.Mutex
+	reseededAgent []agent.Manifest
+}
+
+func (r *reseedingDispatchEngine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
+	r.reMu.Lock()
+	defer r.reMu.Unlock()
+	r.reseededAgent = append(r.reseededAgent, manifest)
+}
+
+func (r *reseedingDispatchEngine) reseeds() []agent.Manifest {
+	r.reMu.Lock()
+	defer r.reMu.Unlock()
+	out := make([]agent.Manifest, len(r.reseededAgent))
+	copy(out, r.reseededAgent)
+	return out
 }
 
 var _ = Describe("Dispatcher.DispatchEphemeral", func() {
@@ -636,6 +662,76 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 			Eventually(broker.done, "2s").Should(Receive())
 			Expect(eng.installed()).To(BeNil())
 			Expect(eng.flushCallCount()).To(Equal(0))
+		})
+	})
+
+	// Per-turn failover reseed (Dispatch Engine Failover Ignores
+	// Current-Turn Manifest — May 2026). The SHARED dispatch engine's
+	// failover chain is config-seeded once at startup; the Dispatcher must
+	// reseed it per turn from the agent that drives the turn so the engine
+	// routes on that agent's preferred_models, not the config default.
+	Context("per-turn failover reseed from the current-turn agent manifest", func() {
+		var reEng *reseedingDispatchEngine
+
+		BeforeEach(func() {
+			// Re-register the two agents WITH preferred_models so the spec
+			// can pin the manifest the Dispatcher reseeds from. Register
+			// overwrites by ID.
+			reg.Register(&agent.Manifest{
+				ID:   "default-assistant",
+				Name: "Default Assistant",
+				PreferredModels: []agent.ModelPreference{
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				},
+			})
+			reg.Register(&agent.Manifest{
+				ID:   "coordinator",
+				Name: "Coordinator",
+				PreferredModels: []agent.ModelPreference{
+					{Provider: "openai", Model: "gpt-4o"},
+				},
+			})
+			reEng = &reseedingDispatchEngine{fakeDispatchEngine: &fakeDispatchEngine{}}
+		})
+
+		It("reseeds the dispatch engine from the plain session agent's manifest", func() {
+			d := dispatch.New(drip, reEng, swarmer, reg, mgr)
+
+			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1",
+				AgentID:      "default-assistant",
+				Content:      "hello",
+				ScanMentions: true,
+			}, broker)
+			Expect(err).NotTo(HaveOccurred())
+
+			reseeds := reEng.reseeds()
+			Expect(reseeds).To(HaveLen(1),
+				"the Dispatcher must reseed the shared engine's failover chain once per sessioned turn")
+			Expect(reseeds[0].ID).To(Equal("default-assistant"))
+			Expect(reseeds[0].PreferredModels).To(ConsistOf(
+				agent.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-6"}),
+				"reseed must carry the plain session agent's preferred_models, not the config default")
+		})
+
+		It("reseeds the dispatch engine from the swarm LEAD's manifest, not the session agent", func() {
+			mgr.sess.AgentID = "coordinator"
+			d := dispatch.New(drip, reEng, swarmer, reg, mgr)
+
+			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1",
+				AgentID:      "coordinator",
+				Content:      "please plan something",
+				ScanMentions: true,
+			}, broker)
+			Expect(err).NotTo(HaveOccurred())
+
+			reseeds := reEng.reseeds()
+			Expect(reseeds).To(HaveLen(1))
+			Expect(reseeds[0].ID).To(Equal("coordinator"),
+				"on an auto-dispatch swarm turn the reseed must use the swarm LEAD manifest")
+			Expect(reseeds[0].PreferredModels).To(ConsistOf(
+				agent.ModelPreference{Provider: "openai", Model: "gpt-4o"}))
 		})
 	})
 

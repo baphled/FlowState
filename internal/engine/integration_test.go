@@ -250,6 +250,82 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 		})
 	})
 
+	// ReseedFailoverBasePreferences is the per-turn reseed seam the
+	// Dispatcher invokes at the swarm-lead re-identification site AND on
+	// the plain sessioned path so the SHARED dispatch engine routes on
+	// the CURRENT turn's agent manifest preferred_models — not the
+	// config global-default head seeded once at app startup. Pre-fix the
+	// dispatch engine's failover chain was config-only, so a planner
+	// session (manifest head anthropic/claude-sonnet-4-6) routed on the
+	// global default zai/glm-4.6. See bug-fix note "Dispatch Engine
+	// Failover Ignores Current-Turn Manifest (May 2026)".
+	Describe("ReseedFailoverBasePreferences honours the current-turn agent manifest", func() {
+		var (
+			reg *provider.Registry
+			eng *engine.Engine
+			mgr *failover.Manager
+		)
+
+		// configHead pins the config global-default head the dispatch
+		// engine is seeded with at app startup (providers.default → zai).
+		configHead := provider.ModelPreference{Provider: "zai", Model: "glm-4.6"}
+		configTail := provider.ModelPreference{Provider: "openai", Model: "gpt-4o"}
+
+		BeforeEach(func() {
+			reg = provider.NewRegistry()
+			health := failover.NewHealthManager()
+			mgr = failover.NewManager(reg, health, 5*time.Minute)
+			// Seed the config-derived chain exactly as applyFailoverPreferences
+			// does at app startup (providers.BuildConfigPreferences output).
+			mgr.SetBasePreferences([]provider.ModelPreference{configHead, configTail})
+
+			eng = engine.New(engine.Config{
+				Registry:        reg,
+				FailoverManager: mgr,
+				Manifest: agent.Manifest{
+					ID:   "planner",
+					Name: "Planner",
+				},
+			})
+		})
+
+		It("leads the failover chain with the manifest preferred_models head, config chain as deduped tail", func() {
+			eng.ReseedFailoverBasePreferences(agent.Manifest{
+				ID: "planner",
+				PreferredModels: []agent.ModelPreference{
+					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+					{Provider: "openai", Model: "gpt-4o"},
+				},
+			})
+
+			prefs := eng.FailoverManager().Preferences()
+
+			Expect(prefs).NotTo(BeEmpty())
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-6"}),
+				"manifest head must lead the chain, NOT the config global default (zai/glm-4.6)")
+			Expect(prefs).To(ContainElement(configHead),
+				"config-derived head must survive as a fallback tail entry")
+			// openai/gpt-4o is in BOTH the manifest head and the config
+			// tail — it must appear exactly once (dedup).
+			gptCount := 0
+			for _, p := range prefs {
+				if p == (provider.ModelPreference{Provider: "openai", Model: "gpt-4o"}) {
+					gptCount++
+				}
+			}
+			Expect(gptCount).To(Equal(1), "shared provider/model must be deduped across head and tail")
+		})
+
+		It("leaves the config-derived chain unchanged when the manifest declares no preferred_models", func() {
+			eng.ReseedFailoverBasePreferences(agent.Manifest{ID: "planner"})
+
+			prefs := eng.FailoverManager().Preferences()
+
+			Expect(prefs).To(Equal([]provider.ModelPreference{configHead, configTail}),
+				"no preferred_models means the config-derived chain is preserved verbatim")
+		})
+	})
+
 	Describe("embedded prompt loading", func() {
 		var chatProvider *mockProvider
 

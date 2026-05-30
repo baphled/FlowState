@@ -142,6 +142,18 @@ type SessionManager interface {
 	SendMessageWithAttachments(ctx context.Context, sessionID, message string, attachmentIDs []string) (<-chan provider.StreamChunk, error)
 }
 
+// failoverReseeder is the optional per-turn failover-reseed capability
+// the production *engine.Engine satisfies. The Dispatcher type-asserts
+// its dispatchEngine to this narrow interface rather than widening the
+// shared swarm.DispatchEngine — every swarm.DispatchEngine fake (api,
+// orchestrator, swarm, the DelegateTool) would otherwise need a stub for
+// a method only the primary engine implements. Fakes that don't satisfy
+// it simply skip the reseed (their specs pin lifecycle ordering, not
+// failover routing). See engine.Engine.ReseedFailoverBasePreferences.
+type failoverReseeder interface {
+	ReseedFailoverBasePreferences(manifest agent.Manifest)
+}
+
 // Dispatcher is the single owner of the "user input → engine stream"
 // lifecycle. Wiring is constructor-injected; nil-tolerance is per-method
 // because tests for the ephemeral path do not need the session manager
@@ -738,6 +750,26 @@ func (d *Dispatcher) DispatchSessioned(
 	// having correctly installed planning-loop at turn start.
 	streamCtx = swarm.WithScope(streamCtx, swarmCtx)
 
+	// Per-turn failover reseed. The dispatch engine is the App's SINGLE
+	// shared primary engine; its failover chain is seeded purely from
+	// config (applyFailoverPreferences → providers.BuildConfigPreferences)
+	// at app startup, and neither SetManifest nor SetSwarmContext touches
+	// the failover manager. Without this reseed every sessioned turn —
+	// swarm lead or plain agent — routes on the config global-default head
+	// (zai/glm-4.6) regardless of the turn's agent manifest preferred_models.
+	//
+	// Reseed from the agent the engine will actually run as this turn:
+	//   - swarm active  → the swarm lead (swarmCtx.LeadAgent)
+	//   - plain session → the session's agent (req.AgentID)
+	// The engine rebuilds "manifest head + config tail (deduped)"; an agent
+	// with no preferred_models restores the config chain verbatim, so this
+	// is a no-op for the historical config-only behaviour.
+	reseedAgentID := req.AgentID
+	if swarmActive && swarmCtx != nil && swarmCtx.LeadAgent != "" {
+		reseedAgentID = swarmCtx.LeadAgent
+	}
+	d.reseedDispatchFailover(reseedAgentID)
+
 	chunks, err := d.sessionManager.SendMessageWithAttachments(
 		streamCtx, req.SessionID, req.Content, req.AttachmentIDs,
 	)
@@ -817,6 +849,35 @@ func (d *Dispatcher) DispatchSessioned(
 	}
 
 	return SessionedHandle{Snapshot: snap, TurnID: turnID}, nil
+}
+
+// reseedDispatchFailover re-seeds the shared dispatch engine's failover
+// base preferences from the manifest of the agent that drives this turn.
+// It resolves agentID through the agent registry and, when the engine
+// implements failoverReseeder (the production *engine.Engine), hands it
+// the resolved manifest so routing leads with that agent's
+// preferred_models. Every guard below degrades to a silent no-op so the
+// reseed never blocks a turn:
+//   - empty agentID (ephemeral / unidentified turns)
+//   - nil agentRegistry or unknown agent (test surfaces)
+//   - dispatchEngine that does not implement failoverReseeder (fakes)
+//
+// An unknown agent intentionally does NOT reseed: leaving the engine on
+// its current (config-derived or prior-turn) chain is safer than wiping
+// it to an empty manifest.
+func (d *Dispatcher) reseedDispatchFailover(agentID string) {
+	if agentID == "" || d.agentRegistry == nil {
+		return
+	}
+	reseeder, ok := d.dispatchEngine.(failoverReseeder)
+	if !ok {
+		return
+	}
+	manifest, found := d.agentRegistry.Get(agentID)
+	if !found || manifest == nil {
+		return
+	}
+	reseeder.ReseedFailoverBasePreferences(*manifest)
 }
 
 // wrapWithTurnLifecycle observes the chunks channel as it drains and
