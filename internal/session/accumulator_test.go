@@ -2566,6 +2566,81 @@ var _ = Describe("AccumulateStream", func() {
 						"old predicate read turnHadDelegation=true and skipped this case")
 			})
 
+			It("does NOT stamp StopReasonToolUseNoCalls on a unified-assistant provider (anthropic) when an EARLIER delegation succeeded and the FINAL response has stop_reason=tool_use", func() {
+				// Inverse of the zai/glm delegation case above. On a
+				// UNIFIED-ASSISTANT provider (Anthropic), a healthy
+				// content+delegate turn legitimately carries
+				// stop_reason="tool_use" while the actual tool_use blocks
+				// are split into separate Role:"tool_call" rows — so the
+				// flushed text row ALWAYS has zero inline ToolCalls by
+				// construction. The detector must NOT mislabel this healthy
+				// parallel-delegation wrap-up as a wire-contract violation,
+				// otherwise a fully-successful Anthropic swarm lead session
+				// (plan published, final message end_turn) is falsely
+				// latched to status=failed. Live evidence: session 271080ed
+				// (anthropic/claude-sonnet-4-6).
+				rawCh := make(chan provider.StreamChunk, 8)
+				// Earlier in the turn: announce + dispatch a delegation.
+				rawCh <- provider.StreamChunk{
+					Content:    "Delegating to plan-writer to apply the nits.",
+					ProviderID: "anthropic",
+					ModelID:    "claude-sonnet-4-6",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-271080ed",
+						TargetAgent: "plan-writer",
+						Status:      "started",
+					},
+					ProviderID: "anthropic",
+				}
+				rawCh <- provider.StreamChunk{
+					DelegationInfo: &provider.DelegationInfo{
+						ChainID:     "chain-271080ed",
+						TargetAgent: "plan-writer",
+						Status:      "completed",
+					},
+					ProviderID: "anthropic",
+				}
+				// Final assistant message — wrap-up prose. On Anthropic the
+				// upstream stop_reason for a content+tool_use turn is
+				// "tool_use", but the tool_use blocks land as separate
+				// tool_call rows; this flushed content row has none inline.
+				rawCh <- provider.StreamChunk{
+					Content:    "Good, I have the full plan. Now I'll apply all five nits systematically...",
+					ProviderID: "anthropic",
+					ModelID:    "claude-sonnet-4-6",
+				}
+				rawCh <- provider.StreamChunk{
+					EventType:  "stop_reason",
+					StopReason: "tool_use",
+					ProviderID: "anthropic",
+				}
+				rawCh <- provider.StreamChunk{Done: true, ProviderID: "anthropic"}
+				close(rawCh)
+
+				out := session.AccumulateStream(context.Background(), appender, "sess-1", "agent-1", rawCh)
+				drainChannel(out)
+
+				var assistantMsgs []session.Message
+				for _, m := range appender.messages {
+					if m.Role == "assistant" {
+						assistantMsgs = append(assistantMsgs, m)
+					}
+				}
+				Expect(assistantMsgs).NotTo(BeEmpty(),
+					"the wrap-up assistant message must be persisted")
+				final := assistantMsgs[len(assistantMsgs)-1]
+				Expect(final.Content).To(ContainSubstring("Good, I have the full plan"),
+					"the final assistant content message is the one carrying stop_reason='tool_use'")
+				Expect(final.StopReason).NotTo(Equal(session.StopReasonToolUseNoCalls),
+					"on a unified-assistant provider the flushed content row ALWAYS has zero "+
+						"inline tool_call blocks by construction (tool_use lands as separate "+
+						"tool_call rows) — the detector MUST NOT misclassify this healthy "+
+						"Anthropic delegation wrap-up as a wire-contract violation, otherwise a "+
+						"successful swarm lead session is falsely latched to status=failed")
+			})
+
 			It("stamps StopReasonToolUseNoCalls when an EARLIER tool_call fired but the FINAL response has stop_reason=tool_use and zero tool_call blocks", func() {
 				// Same shape as the delegation case but with a real
 				// tool_call earlier in the turn rather than a

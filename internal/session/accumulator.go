@@ -907,7 +907,21 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	//     then its wrap-up message emitted stop_reason="tool_use" with
 	//     toolCalls=None. The over-narrow turn-scope gate skipped the
 	//     detector and the session stayed active.
-	if msg.StopReason == "tool_use" {
+	//
+	// Provider discrimination (May 2026): the detector must NOT fire on a
+	// UNIFIED-ASSISTANT provider (Anthropic). There a healthy
+	// content+tool_use turn legitimately carries stop_reason="tool_use"
+	// while the tool_use blocks land as separate Role:"tool_call" rows —
+	// so this flushed content row ALWAYS has zero inline tool_call data by
+	// construction (see the flushContent note above) and is NOT a wire-
+	// contract violation. Without this guard a fully-successful Anthropic
+	// swarm lead (plan published, final message end_turn) was falsely
+	// stamped tool_use_no_calls and latched to status=failed (live session
+	// 271080ed). The asymmetry mirrors synthesizePlaceholderAssistant's
+	// providerProducesUnifiedAssistant gate below. For non-unified
+	// providers (zai/glm) the per-message wire contract still holds and
+	// the genuine Bug-G detection is preserved.
+	if msg.StopReason == "tool_use" && !providerProducesUnifiedAssistant(s.lastProviderID) {
 		msg.StopReason = StopReasonToolUseNoCalls
 	}
 	// Stream-truncation detector (Bug F, May 2026). When a content-bearing
