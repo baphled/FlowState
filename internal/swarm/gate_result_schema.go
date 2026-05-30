@@ -92,6 +92,26 @@ func (resultSchemaRunner) Run(ctx context.Context, gate GateSpec, args GateArgs)
 	if err != nil {
 		return newGateFailure(gate, args, err.Error(), err)
 	}
+	// plan-document-v1 is validated by the publisher-render mirror, NOT the
+	// raw JSON schema. The member gate must ACCEPT exactly the bodies the
+	// post-swarm publisher (parsePlan / renderStructuredPlan) can render into a
+	// non-empty plan document — a {"markdown"/"plan":...} envelope OR the
+	// structured {title, content:{executive_summary, phased_slices}} shape —
+	// and REJECT only genuinely non-renderable bodies (a contentless spec
+	// blob, an empty body). A pure JSON schema cannot express "renderable into
+	// a plan" without drifting from the renderer; routing through
+	// ValidatePlanDocumentBody makes member-gate acceptance equivalent to
+	// publisher renderability by construction. This closes the incoherence
+	// where the tightened schema rejected the structured body at the member
+	// gate even though renderStructuredPlan turns that exact body into a plan
+	// at publish. The JSON decode above still runs first so a non-JSON payload
+	// fails with the usual "decoding member output as JSON" reason.
+	if gate.SchemaRef == PlanDocumentV1Name {
+		if err := ValidatePlanDocumentBody(payload); err != nil {
+			return newGateFailure(gate, args, fmt.Sprintf("plan-document validation failed: %s", err.Error()), err)
+		}
+		return nil
+	}
 	if err := resolved.Validate(instance); err != nil {
 		return newGateFailure(gate, args, fmt.Sprintf("schema validation failed: %s", err.Error()), err)
 	}

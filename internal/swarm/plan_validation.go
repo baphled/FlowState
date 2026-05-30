@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -32,6 +33,51 @@ const (
 	// it — a title line alone ("# TBD") is a stub, not a plan.
 	reasonHeadingOnly planValidationReason = "plan artifact is a bare heading with no content — a plan needs a body, not just a title"
 )
+
+// ValidatePlanDocumentBody is the gate-side predicate for the
+// `plan-document-v1` member gate (post-member-plan-writer-plan-document). It
+// returns nil iff payload is a body the post-swarm publisher can render into a
+// non-empty plan document, and an error naming the actionable reason
+// otherwise.
+//
+// It is the SINGLE SOURCE OF TRUTH the result-schema runner consults for
+// plan-document-v1 instead of the raw JSON schema: by resolving the body
+// through the SAME resolveValidationBody + isPlanDocument path the publisher
+// (parsePlan / renderStructuredPlan) and the post-swarm honesty gate
+// (gate_artifact_published.go) use, member-gate ACCEPTANCE is equivalent to
+// publisher RENDERABILITY by construction — they cannot drift. This closes the
+// incoherence where the tightened JSON schema rejected the structured
+// `content`-object body AT THE MEMBER GATE even though renderStructuredPlan can
+// turn that exact body into a coherent plan at publish time.
+//
+// Accepted shapes (whatever resolveValidationBody can turn into a plan):
+//   - a {"markdown": "..."} / {"plan": "..."} envelope carrying a real
+//     markdown plan body (the plan-writer happy path);
+//   - the structured {title, content:{executive_summary, phased_slices:[...]}}
+//     shape carrying real prose (renderStructuredPlan salvages it).
+//
+// Rejected shapes (the incident intent preserved):
+//   - a contentless / metadata-only JSON blob ({"id":"x"}), an empty body,
+//     a heading-less prose dump, a bare-heading stub, or a structured shape
+//     with no renderable prose — none of which the publisher would write.
+//
+// Expected:
+//   - payload is the raw coord-store "<chainID>/plan" value the member wrote;
+//     it has already passed JSON-validity decoding at the runner.
+//
+// Returns:
+//   - nil when the body renders to a non-empty plan document.
+//   - An error carrying the planValidationReason otherwise.
+//
+// Side effects:
+//   - None.
+func ValidatePlanDocumentBody(payload []byte) error {
+	body := resolveValidationBody(payload)
+	if ok, reason := isPlanDocument(body); !ok {
+		return errors.New(string(reason))
+	}
+	return nil
+}
 
 // isPlanDocument reports whether body is a publishable plan document and, when
 // it is not, an actionable reason why.
@@ -104,8 +150,10 @@ func hasContentBeyondHeadings(body string) bool {
 // contentless JSON spec blob fails both.
 func resolveValidationBody(raw []byte) string {
 	var env planEnvelope
-	if err := json.Unmarshal(raw, &env); err == nil && strings.TrimSpace(env.Markdown) != "" {
-		return env.Markdown
+	if err := json.Unmarshal(raw, &env); err == nil {
+		if md := env.body(); md != "" {
+			return md
+		}
 	}
 	if _, md, ok := renderStructuredPlan(raw); ok {
 		return md

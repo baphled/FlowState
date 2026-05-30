@@ -64,12 +64,29 @@ const approveVerdict = "approve"
 //
 //	{"markdown": "# Title\n...", "id": "<chainID>", "title": "Title"}
 //
-// Only Markdown and Title are load-bearing for the publisher. When the
-// coord-store value is NOT this JSON shape (e.g. a raw markdown body),
-// the publisher falls back to treating the whole value as the plan body.
+// Some agent prompts emit the markdown body under the alias key `plan`
+// instead of `markdown`; both are accepted (Markdown takes precedence when
+// both are present and non-empty). Only the markdown body and Title are
+// load-bearing for the publisher. When the coord-store value is NOT this JSON
+// shape (e.g. a raw markdown body), the publisher falls back to treating the
+// whole value as the plan body.
 type planEnvelope struct {
 	Markdown string `json:"markdown"`
+	Plan     string `json:"plan"`
 	Title    string `json:"title"`
+}
+
+// body returns the envelope's markdown plan body, preferring the `markdown`
+// key and falling back to the `plan` alias. Empty when neither carries a
+// non-whitespace string.
+func (e planEnvelope) body() string {
+	if md := strings.TrimSpace(e.Markdown); md != "" {
+		return e.Markdown
+	}
+	if p := strings.TrimSpace(e.Plan); p != "" {
+		return e.Plan
+	}
+	return ""
 }
 
 // sectionEnvelope is the section-v1 JSON shape each SME section
@@ -392,8 +409,10 @@ func planMarkdownOverride(store coordination.Store, chainID string) (string, boo
 // incident intent.
 func parsePlan(raw []byte) (title, body string) {
 	var env planEnvelope
-	if err := json.Unmarshal(raw, &env); err == nil && strings.TrimSpace(env.Markdown) != "" {
-		return env.Title, env.Markdown
+	if err := json.Unmarshal(raw, &env); err == nil {
+		if md := env.body(); md != "" {
+			return env.Title, md
+		}
 	}
 
 	if t, md, ok := renderStructuredPlan(raw); ok {

@@ -406,6 +406,74 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				Expect(err).NotTo(HaveOccurred())
 			})
 		})
+
+		// Coherence fix: the member plan-document gate must ACCEPT any body
+		// the post-swarm publisher can render into a non-empty plan document.
+		// The live failure: the plan-writer (gpt-4o) wrote the structured
+		// `content`-object body (NO top-level markdown/plan string) to
+		// "<chainID>/plan". The post-swarm honesty gate (gate_artifact_published.go)
+		// already resolveValidationBody-renders that body and PASSES it — but
+		// the earlier MEMBER gate validated it with a pure JSON schema that
+		// REJECTED it, halting the run before publish ever ran. The member
+		// gate must mirror the publisher's render predicate so its verdict is
+		// identical: accept iff the body renders to a coherent plan document.
+		Context("when the gate validates a plan-document body (post-member-plan-writer-plan-document)", func() {
+			planWriterGate := func() swarm.GateSpec {
+				return swarm.GateSpec{
+					Name:      "post-member-plan-writer-plan-document",
+					Kind:      "builtin:result-schema",
+					SchemaRef: swarm.PlanDocumentV1Name,
+					When:      swarm.LifecyclePostMember,
+					Target:    "plan-writer",
+					OutputKey: "{chainID}/plan",
+				}
+			}
+
+			runPlanWriterGate := func(planBody string) error {
+				g := planWriterGate()
+				store := newGateStore(map[string][]byte{
+					"plan-chain-2026-05-30/plan": []byte(planBody),
+				})
+				args := planningLoopArgs(store)
+				args.MemberID = "plan-writer"
+				args.ChainID = "plan-chain-2026-05-30"
+				return runner.Run(context.Background(), g, args)
+			}
+
+			It("ACCEPTS the structured content-object body the publisher renders", func() {
+				// The ACTUAL emitted shape from the failing run: real plan prose
+				// nested under `content` (executive_summary + phased_slices) with
+				// NO top-level markdown/plan string. renderStructuredPlan turns
+				// this into a coherent plan, so the publisher succeeds — the
+				// member gate must therefore PASS it (was failing pre-fix).
+				body := `{"id":"pmr-1","title":"Permission-Mode Redesign","status":"draft",` +
+					`"content":{"executive_summary":"Redesign permission mode.",` +
+					`"phased_slices":[{"title":"Slice 1","description":"Do the thing."}]}}`
+				Expect(runPlanWriterGate(body)).NotTo(HaveOccurred(),
+					"a body the publisher renders into a plan must pass the member gate")
+			})
+
+			It("still ACCEPTS a {markdown:...}-enveloped plan body (happy path preserved)", func() {
+				body := `{"markdown":"# Plan\n\nReal plan content.","id":"plan-1","title":"Sample"}`
+				Expect(runPlanWriterGate(body)).NotTo(HaveOccurred())
+			})
+
+			It("still REJECTS a contentless JSON spec blob (the incident intent preserved)", func() {
+				err := runPlanWriterGate(`{"id":"x"}`)
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue())
+				Expect(gateErr.Reason).To(MatchRegexp(`(?i)plan|render`),
+					"a non-renderable contentless blob must fail with an actionable reason")
+			})
+
+			It("still REJECTS a structured content body with no renderable prose", func() {
+				// content present but empty — nothing to render, so the publisher
+				// would refuse it; the member gate must refuse it too.
+				err := runPlanWriterGate(`{"title":"Empty","content":{"executive_summary":"","phased_slices":[]}}`)
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue())
+			})
+		})
 	})
 
 	// Defect 4 (fabricated publication) — the honesty gate. The

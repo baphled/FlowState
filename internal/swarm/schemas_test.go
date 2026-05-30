@@ -143,40 +143,56 @@ var _ = Describe("planning-loop schemas", func() {
 		})
 	})
 
-	Describe(swarm.PlanDocumentV1Name+" renderable-markdown contract", func() {
-		// The member gate must reject a plan body that carries NO renderable
-		// markdown string. The live bug: gpt-4o emitted a structured body
-		// nested under a `content` OBJECT with executive_summary + phased_slices
-		// but NO top-level `markdown`/`plan` string — the publisher cannot
-		// render an envelope it has no markdown for, so the post-swarm publish
-		// fails. The schema must FAIL such a body so the forced-tool-choice
-		// retry re-prompts the writer for a compliant {"markdown":...} body.
+	Describe(swarm.PlanDocumentV1Name+" renderable-plan contract", func() {
+		// The member plan-document gate must ACCEPT any body the post-swarm
+		// publisher can render into a non-empty plan document, and REJECT
+		// only genuinely non-renderable bodies — so its verdict is identical
+		// to the publisher's (and to the post-swarm honesty gate, which
+		// already render-mirrors via resolveValidationBody). The single
+		// source of truth is swarm.ValidatePlanDocumentBody, which the
+		// result-schema runner calls for plan-document-v1; these specs assert
+		// that real-gate predicate directly rather than the raw JSON schema
+		// (which is no longer the authority for this gate — see
+		// gate_result_schema.go).
 		It("accepts a body with a non-empty markdown string", func() {
-			Expect(mustValidate(swarm.PlanDocumentV1Name,
-				`{"markdown":"# Plan\n\nbody","id":"plan-1","title":"Sample"}`)).To(Succeed())
+			Expect(swarm.ValidatePlanDocumentBody(
+				[]byte(`{"markdown":"# Plan\n\nbody","id":"plan-1","title":"Sample"}`))).To(Succeed())
 		})
 
 		It("accepts a body with a non-empty plan string (alternate key)", func() {
-			Expect(mustValidate(swarm.PlanDocumentV1Name,
-				`{"plan":"# Plan\n\nbody","title":"Sample"}`)).To(Succeed())
+			Expect(swarm.ValidatePlanDocumentBody(
+				[]byte(`{"plan":"# Plan\n\nbody","title":"Sample"}`))).To(Succeed())
 		})
 
-		It("rejects the structured content-object body with no renderable markdown", func() {
-			// The ACTUAL emitted shape from the failing run.
+		It("accepts the structured content-object body the publisher renders", func() {
+			// FLIPPED (was: rejects). The ACTUAL emitted shape from the failing
+			// run — real plan prose nested under `content` with NO top-level
+			// markdown/plan string. renderStructuredPlan turns it into a
+			// coherent plan document, so the publisher succeeds; the member
+			// gate must therefore ACCEPT it. Rejecting it (the pre-fix schema)
+			// halted the run BEFORE publish could render the very body it can
+			// render — the Part 1 / Part 2 incoherence this fix closes.
 			body := `{"id":"pmr-1","title":"Permission-Mode Redesign","status":"draft",` +
 				`"content":{"executive_summary":"Redesign permission mode.",` +
 				`"phased_slices":[{"title":"Slice 1","description":"Do the thing."}]}}`
-			Expect(mustValidate(swarm.PlanDocumentV1Name, body)).To(HaveOccurred())
+			Expect(swarm.ValidatePlanDocumentBody([]byte(body))).To(Succeed())
 		})
 
 		It("rejects a body with an empty markdown string", func() {
-			Expect(mustValidate(swarm.PlanDocumentV1Name,
-				`{"markdown":"","title":"Sample"}`)).To(HaveOccurred())
+			Expect(swarm.ValidatePlanDocumentBody(
+				[]byte(`{"markdown":"","title":"Sample"}`))).To(HaveOccurred())
 		})
 
-		It("rejects a metadata-only body with no markdown or plan", func() {
-			Expect(mustValidate(swarm.PlanDocumentV1Name,
-				`{"id":"x","title":"y","status":"draft"}`)).To(HaveOccurred())
+		It("rejects a metadata-only body with no markdown, plan, or renderable content", func() {
+			Expect(swarm.ValidatePlanDocumentBody(
+				[]byte(`{"id":"x","title":"y","status":"draft"}`))).To(HaveOccurred())
+		})
+
+		It("rejects a structured content body that carries no renderable prose", func() {
+			// content present but empty — nothing for renderStructuredPlan to
+			// salvage, so the publisher refuses it and the gate must too.
+			Expect(swarm.ValidatePlanDocumentBody(
+				[]byte(`{"title":"Empty","content":{"executive_summary":"","phased_slices":[]}}`))).To(HaveOccurred())
 		})
 	})
 })
