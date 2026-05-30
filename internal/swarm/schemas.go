@@ -249,20 +249,33 @@ func AnalysisBundleV1Schema() *jsonschema.Schema {
 // `plan`); other metadata fields the writer chooses to attach
 // (id, title, status) are accepted but not required.
 //
+// Renderable-markdown requirement (the contract gap fix): the
+// member gate MUST reject a body that carries no renderable plan
+// prose. The live failure was a model (gpt-4o) emitting a
+// structured body nested under a `content` OBJECT
+// (executive_summary + phased_slices) with NO top-level
+// `markdown`/`plan` string. The all-optional schema PASSED it,
+// so the member gate let it through, and the post-swarm publisher
+// — which renders the `markdown` field of the envelope — had
+// nothing to render and failed the whole (expensive) run at the
+// honesty gate. Requiring a non-empty `markdown` OR `plan` string
+// makes the member gate catch the non-renderable shape, so the
+// forced-tool-choice retry (PostMemberGateMaxAttempts +
+// appendGateDirective) re-prompts the writer for a compliant
+// {"markdown": "..."} body BEFORE the run reaches publish.
+//
 // Phase 1 shape:
 //
-//   - object root with optional `markdown` and `plan` strings
-//     (agent prompts inconsistently use either key); a stricter
-//     rev can enforce mutually-exclusive presence once the
-//     writer's contract is firmer.
-//   - additional metadata strings (id / title / status) accepted
-//     but not required.
-//
-// The choice to leave required minimal is intentional: today's
-// plan-writer prompt does not pin a single key name. The wrapper
-// itself is the load-bearing invariant — a bare markdown string
-// written directly to the coord-store fails JSON decoding before
-// the schema runs, so this layer just confirms the wrapper.
+//   - object root that MUST carry a non-empty `markdown` OR a
+//     non-empty `plan` string (agent prompts inconsistently use
+//     either key); whichever is present is the renderable plan
+//     body. A body with neither (or an empty-string value) is
+//     REJECTED — it has nothing the publisher can render.
+//   - additional metadata strings (id / title / status) and any
+//     extra fields (e.g. a structured `content` object) are
+//     accepted but NOT sufficient on their own: the schema stays
+//     permissive about EXTRA fields, only the renderable-markdown
+//     requirement is enforced.
 //
 // Returns:
 //   - A fresh *jsonschema.Schema. Callers Resolve before registering.
@@ -279,7 +292,32 @@ func PlanDocumentV1Schema() *jsonschema.Schema {
 			"title":    {Type: "string"},
 			"status":   {Type: "string"},
 		},
+		// At least one of `markdown` / `plan` must be present AND a
+		// non-empty string. AnyOf requires the named key (so the
+		// metadata-only and content-object bodies fail) and pins
+		// minLength:1 on it (so an empty-string value fails too).
+		AnyOf: []*jsonschema.Schema{
+			{
+				Required: []string{"markdown"},
+				Properties: map[string]*jsonschema.Schema{
+					"markdown": {Type: "string", MinLength: schemaIntPtr(1)},
+				},
+			},
+			{
+				Required: []string{"plan"},
+				Properties: map[string]*jsonschema.Schema{
+					"plan": {Type: "string", MinLength: schemaIntPtr(1)},
+				},
+			},
+		},
 	}
+}
+
+// schemaIntPtr returns a pointer to n for jsonschema's *int constraint
+// fields (MinLength etc.). Kept local so the schema constructors stay
+// declarative without a sprinkling of throwaway address-of locals.
+func schemaIntPtr(n int) *int {
+	return &n
 }
 
 // CodeReviewVerdictV1Schema returns the Phase 2 schema for

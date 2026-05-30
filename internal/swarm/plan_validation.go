@@ -95,14 +95,20 @@ func hasContentBeyondHeadings(body string) bool {
 //
 // Mirroring parsePlan's precedence: a {"markdown": "..."} envelope is
 // unwrapped to its inner markdown (which must itself pass plan-document
-// validation); any other value (a bare JSON object / raw text) is validated
-// verbatim. This keeps the gate's verdict consistent with the publisher's
-// refusal — a valid envelope-wrapped plan passes both; a JSON spec blob fails
-// both.
+// validation); a structured `content`-object body carrying real plan prose is
+// RENDERED to the same markdown the publisher would write (so the gate
+// validates the salvaged document, not the raw JSON); any other value (a
+// contentless JSON blob / raw text) is validated verbatim. This keeps the
+// gate's verdict consistent with the publisher's behaviour — a valid
+// envelope-wrapped plan and a salvageable structured plan pass both; a
+// contentless JSON spec blob fails both.
 func resolveValidationBody(raw []byte) string {
 	var env planEnvelope
 	if err := json.Unmarshal(raw, &env); err == nil && strings.TrimSpace(env.Markdown) != "" {
 		return env.Markdown
+	}
+	if _, md, ok := renderStructuredPlan(raw); ok {
+		return md
 	}
 	return string(raw)
 }

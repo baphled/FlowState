@@ -142,4 +142,41 @@ var _ = Describe("planning-loop schemas", func() {
 			Expect(mustValidate(swarm.CodeReviewVerdictV1Name, codeReviewMissingSummaryPayload())).To(HaveOccurred())
 		})
 	})
+
+	Describe(swarm.PlanDocumentV1Name+" renderable-markdown contract", func() {
+		// The member gate must reject a plan body that carries NO renderable
+		// markdown string. The live bug: gpt-4o emitted a structured body
+		// nested under a `content` OBJECT with executive_summary + phased_slices
+		// but NO top-level `markdown`/`plan` string — the publisher cannot
+		// render an envelope it has no markdown for, so the post-swarm publish
+		// fails. The schema must FAIL such a body so the forced-tool-choice
+		// retry re-prompts the writer for a compliant {"markdown":...} body.
+		It("accepts a body with a non-empty markdown string", func() {
+			Expect(mustValidate(swarm.PlanDocumentV1Name,
+				`{"markdown":"# Plan\n\nbody","id":"plan-1","title":"Sample"}`)).To(Succeed())
+		})
+
+		It("accepts a body with a non-empty plan string (alternate key)", func() {
+			Expect(mustValidate(swarm.PlanDocumentV1Name,
+				`{"plan":"# Plan\n\nbody","title":"Sample"}`)).To(Succeed())
+		})
+
+		It("rejects the structured content-object body with no renderable markdown", func() {
+			// The ACTUAL emitted shape from the failing run.
+			body := `{"id":"pmr-1","title":"Permission-Mode Redesign","status":"draft",` +
+				`"content":{"executive_summary":"Redesign permission mode.",` +
+				`"phased_slices":[{"title":"Slice 1","description":"Do the thing."}]}}`
+			Expect(mustValidate(swarm.PlanDocumentV1Name, body)).To(HaveOccurred())
+		})
+
+		It("rejects a body with an empty markdown string", func() {
+			Expect(mustValidate(swarm.PlanDocumentV1Name,
+				`{"markdown":"","title":"Sample"}`)).To(HaveOccurred())
+		})
+
+		It("rejects a metadata-only body with no markdown or plan", func() {
+			Expect(mustValidate(swarm.PlanDocumentV1Name,
+				`{"id":"x","title":"y","status":"draft"}`)).To(HaveOccurred())
+		})
+	})
 })

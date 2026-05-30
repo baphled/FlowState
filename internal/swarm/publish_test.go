@@ -427,6 +427,59 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 		})
 	})
 
+	Context("structured plan-body salvage (Part 2: render content-object bodies)", func() {
+		// The live failing run: the plan-writer emitted a structured body
+		// nested under a `content` OBJECT (executive_summary + phased_slices)
+		// with NO top-level markdown/plan string. Rather than fall through to
+		// raw-JSON → reject (dooming the whole expensive run), the publisher
+		// RENDERS this contentful structured shape into a coherent markdown
+		// plan document so it can publish. A genuinely contentless spec blob
+		// is still REFUSED (preserving the 939a23fa incident intent).
+		It("renders the content-object body into a publishable markdown plan", func() {
+			body := `{"id":"pmr-1","title":"Permission-Mode Redesign","status":"draft",` +
+				`"content":{"executive_summary":"Redesign permission mode to be explicit.",` +
+				`"phased_slices":[` +
+				`{"title":"Slice 1: Audit","description":"Audit every permission call site."},` +
+				`{"title":"Slice 2: Migrate","description":"Migrate to explicit grants."}` +
+				`]}}`
+			store := newGateStore(map[string][]byte{
+				"struct-chain/plan":   []byte(body),
+				"struct-chain/review": []byte(`{"verdict":"approve"}`),
+			})
+
+			path, err := swarm.PublishPlanToVault(store, outputDir, "struct-chain")
+			Expect(err).NotTo(HaveOccurred(),
+				"a contentful structured body must be salvaged into a plan, not refused")
+			Expect(path).To(Equal(filepath.Join(outputDir, "Permission-Mode Redesign.md")))
+
+			out, readErr := os.ReadFile(path)
+			Expect(readErr).NotTo(HaveOccurred())
+			rendered := string(out)
+			Expect(rendered).To(ContainSubstring("# Permission-Mode Redesign"),
+				"the title becomes the H1 heading")
+			Expect(rendered).To(ContainSubstring("Redesign permission mode to be explicit."),
+				"the executive summary prose is carried into the body")
+			Expect(rendered).To(ContainSubstring("Slice 1: Audit"))
+			Expect(rendered).To(ContainSubstring("Audit every permission call site."))
+			Expect(rendered).To(ContainSubstring("Slice 2: Migrate"))
+			// The publish succeeding at all proves the rendered body passed
+			// isPlanDocument (the publisher refuses a non-plan body), so no
+			// separate validity assertion is needed here.
+		})
+
+		It("still REFUSES a genuinely contentless spec blob (no prose to render)", func() {
+			store := newGateStore(map[string][]byte{
+				"contentless-chain/plan": []byte(`{"id":"x","title":"y","status":"draft"}`),
+			})
+			path, err := swarm.PublishPlanToVault(store, outputDir, "contentless-chain")
+			Expect(err).To(HaveOccurred(),
+				"a metadata-only blob carries no plan prose — refuse, do not fabricate")
+			Expect(path).To(BeEmpty())
+			entries, _ := os.ReadDir(outputDir)
+			Expect(entries).To(BeEmpty())
+		})
+	})
+
 	Context("SME section fan-in (Pass 2: structure + depth)", func() {
 		// sectionJSON builds a section-v1 JSON value for a coord-store
 		// "<chainID>/sections/<name>" key, matching the schema the SME

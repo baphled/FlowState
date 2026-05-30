@@ -370,21 +370,166 @@ func planMarkdownOverride(store coordination.Store, chainID string) (string, boo
 //  2. otherwise the raw value is the body verbatim and the title is left
 //     empty (slugifyPlanName then derives one from the H1 or chainID).
 //
-// A bare structured-JSON object (NOT the markdown envelope) is DELIBERATELY
-// returned verbatim as the body, NOT rendered to markdown. The earlier "Bug
-// 2 fix" rendered any JSON object to headings+bullets; that over-broad
-// salvage is exactly how a JSON agent-spec blob at "<chainID>/plan" became
-// 200 lines of garbage in the vault (the incident). isPlanDocument then
+// A bare structured-JSON object that carries NO recognised plan prose is
+// DELIBERATELY returned verbatim as the body, NOT rendered to markdown. The
+// earlier "Bug 2 fix" rendered ANY JSON object to headings+bullets; that
+// over-broad salvage is exactly how a JSON agent-spec blob at "<chainID>/plan"
+// became 200 lines of garbage in the vault (the incident). isPlanDocument then
 // rejects the verbatim JSON object as a non-plan artifact, so the publish
 // refuses it and the loop honest-fails. The publisher's job is to write a
-// COHERENT plan or refuse — not to dress up a spec blob as one.
+// COHERENT plan or refuse — not to dress up a contentless spec blob as one.
+//
+// The ONE structured shape that IS salvaged (Part 2 of the contract-gap fix):
+// the plan-writer model (gpt-4o) sometimes emits the real plan content nested
+// under a `content` OBJECT — {"title":..,"content":{"executive_summary":..,
+// "phased_slices":[..]}} — with no top-level `markdown`/`plan` string. That
+// body carries genuine plan PROSE, just structured; rendering it into a
+// coherent markdown document (title heading, executive-summary section, a
+// section per phased slice) salvages an otherwise-doomed expensive run rather
+// than refusing it. This is NARROW: it fires only when real prose is present
+// (a recognised executive_summary / phased_slices), so a contentless
+// metadata-only blob still falls through to verbatim → reject, preserving the
+// incident intent.
 func parsePlan(raw []byte) (title, body string) {
 	var env planEnvelope
 	if err := json.Unmarshal(raw, &env); err == nil && strings.TrimSpace(env.Markdown) != "" {
 		return env.Title, env.Markdown
 	}
 
+	if t, md, ok := renderStructuredPlan(raw); ok {
+		return t, md
+	}
+
 	return "", string(raw)
+}
+
+// structuredPlanEnvelope is the alternate, fully-structured shape the
+// plan-writer model emits when it nests the real plan content under a
+// `content` object instead of flattening it to a `markdown` string:
+//
+//	{"id":..,"title":"...","status":..,
+//	 "content":{"executive_summary":"...","phased_slices":[{...}]}}
+//
+// Only the renderable fields are modelled; extra keys are ignored.
+type structuredPlanEnvelope struct {
+	Title   string `json:"title"`
+	Content struct {
+		ExecutiveSummary string                     `json:"executive_summary"`
+		PhasedSlices     []structuredPlanPhasedSlice `json:"phased_slices"`
+	} `json:"content"`
+}
+
+// structuredPlanPhasedSlice is one entry in a structured plan's
+// content.phased_slices array. The model's key names vary, so the renderer
+// accepts the common synonyms for a slice's heading (title/name) and prose
+// (description/body/details/summary), rendering whichever is present.
+type structuredPlanPhasedSlice struct {
+	Title       string `json:"title"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Body        string `json:"body"`
+	Details     string `json:"details"`
+	Summary     string `json:"summary"`
+}
+
+// heading returns the slice's renderable heading text (title preferred,
+// else name), trimmed; "" when neither is set.
+func (s structuredPlanPhasedSlice) heading() string {
+	if h := strings.TrimSpace(s.Title); h != "" {
+		return h
+	}
+	return strings.TrimSpace(s.Name)
+}
+
+// prose returns the slice's renderable body prose, picking the first
+// non-empty of description / body / details / summary; "" when none set.
+func (s structuredPlanPhasedSlice) prose() string {
+	for _, candidate := range []string{s.Description, s.Body, s.Details, s.Summary} {
+		if p := strings.TrimSpace(candidate); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// renderStructuredPlan recognises the structured `content`-object plan shape
+// and renders it into a coherent markdown plan document. It returns ok=false
+// (rendering nothing) UNLESS the body carries real plan prose — a non-empty
+// executive_summary OR at least one phased slice with renderable content — so
+// a contentless metadata-only blob is NOT salvaged and falls through to the
+// caller's verbatim → reject path (preserving the JSON-spec-blob refusal).
+//
+// The rendered document is: a "# Title" H1 (the title is also returned so the
+// publisher derives the filename from it), then an "## Executive Summary"
+// section when present, then a "## Phased Slices" section with each slice as a
+// "### heading" + its prose.
+func renderStructuredPlan(raw []byte) (title, body string, ok bool) {
+	var env structuredPlanEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return "", "", false
+	}
+
+	summary := strings.TrimSpace(env.Content.ExecutiveSummary)
+	slices := renderableSlices(env.Content.PhasedSlices)
+
+	// Salvage ONLY when there is real plan prose to render. With neither an
+	// executive summary nor any contentful slice, this is an empty structured
+	// shell (or a non-plan blob) — refuse by returning ok=false.
+	if summary == "" && len(slices) == 0 {
+		return "", "", false
+	}
+
+	heading := strings.TrimSpace(env.Title)
+	if heading == "" {
+		heading = "Plan"
+	}
+
+	var b strings.Builder
+	b.WriteString("# ")
+	b.WriteString(heading)
+	b.WriteString("\n")
+
+	if summary != "" {
+		b.WriteString("\n## Executive Summary\n\n")
+		b.WriteString(summary)
+		b.WriteString("\n")
+	}
+
+	if len(slices) > 0 {
+		b.WriteString("\n## Phased Slices\n")
+		for _, sl := range slices {
+			b.WriteString("\n### ")
+			b.WriteString(sl.heading())
+			b.WriteString("\n")
+			if p := sl.prose(); p != "" {
+				b.WriteString("\n")
+				b.WriteString(p)
+				b.WriteString("\n")
+			}
+		}
+	}
+
+	return strings.TrimSpace(env.Title), b.String(), true
+}
+
+// renderableSlices returns the phased slices that carry renderable content
+// (a heading and/or prose), each with a guaranteed non-empty heading so the
+// rendered "### " line is never bare. A slice with neither heading nor prose
+// contributes nothing and is dropped.
+func renderableSlices(slices []structuredPlanPhasedSlice) []structuredPlanPhasedSlice {
+	var out []structuredPlanPhasedSlice
+	for i, sl := range slices {
+		heading := sl.heading()
+		prose := sl.prose()
+		if heading == "" && prose == "" {
+			continue
+		}
+		if heading == "" {
+			heading = fmt.Sprintf("Phase %d", i+1)
+		}
+		out = append(out, structuredPlanPhasedSlice{Title: heading, Description: prose})
+	}
+	return out
 }
 
 // assemblePlanBody returns the final markdown to write: the OMO spine first,
