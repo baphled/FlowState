@@ -440,6 +440,21 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				return runner.Run(context.Background(), g, args)
 			}
 
+			It("ACCEPTS a raw-Markdown plan body (the plan-writer ideal output)", func() {
+				// THE BUG: the plan-writer writes a RAW MARKDOWN body
+				// ("# Implementation Plan...") to "<chainID>/plan" — the ideal
+				// plan output the publisher renders verbatim. The runner used to
+				// json.Unmarshal the payload FIRST and rejected the '#'-leading
+				// body with "invalid character '#' looking for beginning of
+				// value", halting the swarm BEFORE ValidatePlanDocumentBody (which
+				// accepts raw Markdown) ever ran. The member gate must route a
+				// plan-document body through the Markdown-tolerant predicate before
+				// the generic JSON decode so a raw-Markdown plan passes.
+				body := "# Implementation Plan\n\nReal coherent content."
+				Expect(runPlanWriterGate(body)).NotTo(HaveOccurred(),
+					"a raw-Markdown plan the publisher renders verbatim must pass the member gate")
+			})
+
 			It("ACCEPTS the structured content-object body the publisher renders", func() {
 				// The ACTUAL emitted shape from the failing run: real plan prose
 				// nested under `content` (executive_summary + phased_slices) with
@@ -472,6 +487,29 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				err := runPlanWriterGate(`{"title":"Empty","content":{"executive_summary":"","phased_slices":[]}}`)
 				var gateErr *swarm.GateError
 				Expect(errors.As(err, &gateErr)).To(BeTrue())
+			})
+
+			It("does NOT relax JSON strictness for a NON-plan schema (evidence-bundle still rejects non-JSON)", func() {
+				// The Markdown-tolerant bypass is plan-document-v1 ONLY. A genuinely
+				// JSON schema (evidence-bundle-v1) must STILL reject a non-JSON body
+				// with the existing "decoding member output as JSON" reason — the
+				// fix must not weaken JSON strictness for the other result-schema
+				// gates.
+				g := planWriterGate()
+				g.SchemaRef = swarm.EvidenceBundleV1Name
+				store := newGateStore(map[string][]byte{
+					"plan-chain-2026-05-30/plan": []byte("# Not JSON at all"),
+				})
+				args := planningLoopArgs(store)
+				args.MemberID = "plan-writer"
+				args.ChainID = "plan-chain-2026-05-30"
+
+				err := runner.Run(context.Background(), g, args)
+
+				var gateErr *swarm.GateError
+				Expect(errors.As(err, &gateErr)).To(BeTrue())
+				Expect(gateErr.Reason).To(ContainSubstring("decoding member output as JSON"),
+					"a non-plan schema must still fail a non-JSON body via the generic decode")
 			})
 		})
 	})
