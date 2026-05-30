@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -10,6 +11,8 @@ import (
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
 )
@@ -353,6 +356,136 @@ var _ = Describe("Engine swarm-lead tool cap (Orchestrator Self-Execution)", fun
 
 			Expect(allowed["bash"]).To(BeTrue(),
 				"the cap keys on swarmCtx.LeadAgent == manifest.ID; a member turn (different lead) keeps its own declared tools")
+		})
+	})
+})
+
+// Planning-Loop Async-Member Pipeline Halt (May 2026).
+//
+// The planning-loop swarm stalled after its first delegation wave and
+// produced no plan: the lead (planner) delegated its roster members
+// (explorer, librarian) with run_in_background:true. The async path
+// (executeAsync → executeBackgroundTask) carries NO post-member gate
+// and NO lifecycle flush, so member output is never gated, never
+// surfaced to the root coordination_store, and the lead is never
+// re-entered to sequence the next member — the lead's turn "succeeds"
+// after firing two detached goroutines and the pipeline dies.
+//
+// The pipeline is LEAD-LLM-driven: a swarm lead MUST delegate each
+// roster member SYNCHRONOUSLY (executeSync → post-member gate →
+// lead-resume). Background delegation of a roster member must be
+// impossible regardless of what the model requested. These specs pin
+// that invariant at the Execute boundary while guarding the two paths
+// that must stay async-capable: standalone (non-swarm) background
+// delegations, and the sub-swarm dispatch path.
+var _ = Describe("Swarm lead member delegation is forced synchronous", func() {
+	var (
+		leadEng      *engine.Engine
+		memberEng    *engine.Engine
+		bgMgr        *engine.BackgroundTaskManager
+		delegateTool *engine.DelegateTool
+	)
+
+	BeforeEach(func() {
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{name: "spy"})
+
+		leadEng = engine.New(engine.Config{
+			Manifest:      agent.Manifest{ID: "planner", Name: "Planner", Delegation: agent.Delegation{CanDelegate: true}},
+			AgentRegistry: agent.NewRegistry(),
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+		})
+		memberEng = engine.New(engine.Config{
+			Manifest:      agent.Manifest{ID: "explorer", Name: "Explorer"},
+			AgentRegistry: agent.NewRegistry(),
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+		})
+
+		bgMgr = engine.NewBackgroundTaskManager()
+		delegateTool = engine.NewDelegateToolWithBackground(
+			map[string]*engine.Engine{"explorer": memberEng},
+			agent.Delegation{CanDelegate: true},
+			"planner",
+			bgMgr,
+			nil,
+		).WithStreamers(map[string]streaming.Streamer{
+			"explorer": streamerFunc(func(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+				ch := make(chan provider.StreamChunk, 1)
+				ch <- provider.StreamChunk{Content: "explorer findings", Done: true}
+				close(ch)
+				return ch, nil
+			}),
+		})
+	})
+
+	When("a swarm lead delegates a roster member with run_in_background:true", func() {
+		It("forces the delegation synchronous — never returns a background task_id and never launches a background task", func() {
+			// Install the active swarm context on the lead engine and
+			// route the lookup through the owner engine, exactly as the
+			// production lead turn does.
+			leadEng.SetSwarmContext(&swarm.Context{
+				SwarmID:     "planning-loop",
+				LeadAgent:   "planner",
+				Members:     []string{"explorer"},
+				ChainPrefix: "planning",
+			})
+			delegateTool.WithOwnerEngine(leadEng)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "lead-sess")
+			result, err := delegateTool.Execute(ctx, tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type":     "explorer",
+					"message":           "investigate the codebase",
+					"run_in_background": true,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Async path returns {"task_id":...,"status":"running"}
+			// immediately. The forced-sync path returns the member's
+			// actual response inline. The load-bearing distinction: a
+			// swarm-member delegation must NEVER yield a background task
+			// handle, because that handle means the post-member gate and
+			// lead-resume were skipped.
+			Expect(result.Output).NotTo(ContainSubstring("task_id"),
+				"a swarm lead delegating a roster member must go through executeSync, not executeAsync — a task_id means the member ran detached with no gate and no lead-resume")
+			Expect(result.Output).NotTo(ContainSubstring(`"status": "running"`),
+				"forced-sync delegation must not report the async 'running' status")
+			Expect(result.Output).To(ContainSubstring("explorer findings"),
+				"the forced-sync path returns the member's response inline so the lead can sequence the next member")
+
+			// No background task may be launched for a roster member.
+			Consistently(func() int {
+				return bgMgr.ActiveCount()
+			}, 200*time.Millisecond, 20*time.Millisecond).Should(Equal(0),
+				"forcing sync means no goroutine is detached — the background manager must see zero active tasks for a swarm-member delegation")
+			Expect(bgMgr.List()).To(BeEmpty(),
+				"no background task record may exist for a force-synced swarm-member delegation")
+		})
+	})
+
+	When("a standalone (non-swarm) caller delegates with run_in_background:true", func() {
+		It("still runs asynchronously — the force-sync rule is swarm-member-only", func() {
+			// No SetSwarmContext, no WithOwnerEngine → no active swarm
+			// context. Legitimate standalone background delegation must
+			// stay async.
+			ctx := context.WithValue(context.Background(), session.IDKey{}, "standalone-sess")
+			result, err := delegateTool.Execute(ctx, tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type":     "explorer",
+					"message":           "background investigation",
+					"run_in_background": true,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Output).To(ContainSubstring("task_id"),
+				"a standalone background delegation has no active swarm context, so the force-sync rule must not fire — it stays async and returns a task handle")
+			Expect(result.Output).To(ContainSubstring("running"),
+				"standalone background delegation reports the async 'running' status")
 		})
 	})
 })

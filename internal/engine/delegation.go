@@ -1575,6 +1575,46 @@ func (d *DelegateTool) Execute(ctx context.Context, input tool.Input) (tool.Resu
 
 	baseInfo := d.buildDelegationInfo(target, chainID)
 
+	// Planning-Loop Async-Member Pipeline Halt (May 2026).
+	//
+	// A swarm lead MUST delegate each roster member SYNCHRONOUSLY. The
+	// pipeline is lead-LLM-driven: executeSync blocks on the member,
+	// fires the post-member result-schema gate (dispatchPostMemberGates),
+	// surfaces the member output to the ROOT coordination_store, and
+	// returns the result into the lead's turn so it sequences the next
+	// member. The async path (executeAsync → executeBackgroundTask)
+	// carries NEITHER the gate NOR the lifecycle flush, so a backgrounded
+	// member runs detached: its output is never gated, never surfaced to
+	// root, and the lead is never re-entered. The lead's turn then
+	// "succeeds" after firing N detached goroutines and the pipeline dies
+	// (live: planning-loop session 03785a78 — two `{"task_id":...,
+	// "status":"running"}` tool_results, empty root coord_store, no plan).
+	//
+	// So: when an active swarm context is in flight, a member delegation
+	// is force-synced regardless of what the model requested. The planner
+	// asked for run_in_background; the swarm structure overrides it. We
+	// override at the dispatch branch (not by stripping the lead's
+	// background_* tools) because the lead legitimately KEEPS
+	// background_output/background_cancel in its toolset to poll/cancel
+	// its OWN standalone async work — only roster-member delegation must
+	// be sync.
+	//
+	// Discriminator precision — this fires on EXACTLY the right path:
+	//   - Sub-swarm dispatch (tryDispatchSwarmTarget for a swarm-id in
+	//     Members[]) already returned at the top of Execute with
+	//     handled=true, so it never reaches here — its own correctly-
+	//     working DispatchSwarmMembers path is untouched.
+	//   - A standalone (non-swarm) background delegation has no active
+	//     swarm context (activeSwarmContextForCtx returns ok=false), so
+	//     params.runAsync is left untouched and it stays async.
+	// Therefore control reaching this branch with an active swarm context
+	// is necessarily a lead delegating an ordinary roster member.
+	if params.runAsync {
+		if _, inSwarm := d.activeSwarmContextForCtx(ctx); inSwarm {
+			params.runAsync = false
+		}
+	}
+
 	if params.runAsync {
 		return d.executeAsync(ctx, target, baseInfo, outChan, hasOutput)
 	}
