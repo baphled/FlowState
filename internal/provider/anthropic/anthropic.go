@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -1121,7 +1122,51 @@ func parseAnthropicStreamError(err error) error {
 		return provErr
 	}
 
+	// Transport/timeout errors (connection refused, DNS failure, and the
+	// stream-guard's "timeout awaiting response headers") are NOT
+	// anthropicAPI.Error values, so parseAnthropicError returns nil and the
+	// raw error would flow through unclassified. Classify them as a retriable
+	// NetworkError so the failover HealthManager (markProviderHealth ->
+	// cooldown) skips a dead/flapping Anthropic provider on subsequent turns
+	// instead of re-paying the full ResponseHeaderTimeout every turn. In-turn
+	// failover advances regardless of type; this closes the CROSS-turn gap.
+	// Mirrors openaicompat.ParseProviderError's *url.Error branch.
+	if provErr := classifyAnthropicTransportError(err); provErr != nil {
+		return provErr
+	}
+
 	return err
+}
+
+// classifyAnthropicTransportError maps a transport-level error (any *url.Error
+// — timeout awaiting response headers, connection refused, DNS failure — or a
+// bare context.DeadlineExceeded) to a retriable NetworkError provider.Error.
+// Returns nil for any other error so the caller falls through to the raw error.
+//
+// Expected:
+//   - err may be nil or any error.
+//
+// Returns:
+//   - A retriable *provider.Error{NetworkError} for transport/timeout errors.
+//   - nil otherwise.
+//
+// Side effects:
+//   - None.
+func classifyAnthropicTransportError(err error) *provider.Error {
+	if err == nil {
+		return nil
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) || errors.Is(err, context.DeadlineExceeded) {
+		return &provider.Error{
+			ErrorType:   provider.ErrorTypeNetworkError,
+			Provider:    providerName,
+			Message:     err.Error(),
+			IsRetriable: true,
+			RawError:    err,
+		}
+	}
+	return nil
 }
 
 // containsBillingKeyword checks whether the message contains billing-related terms.

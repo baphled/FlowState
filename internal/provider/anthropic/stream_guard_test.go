@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -72,4 +73,50 @@ func TestStreamGuardWiredIntoConstructor(t *testing.T) {
 			Messages: []provider.Message{{Role: "user", Content: "hello"}},
 		})
 	}, 3*time.Second)
+}
+
+// TestStreamGuardTimeoutClassifiedAsRetriableNetworkError pins that a
+// header-timeout (the stream-guard firing on a dead/flapping provider) surfaces
+// as a retriable *provider.Error{NetworkError}, NOT a raw *url.Error. That
+// classification is what lets the failover HealthManager apply a cooldown so a
+// dead Anthropic provider is SKIPPED on subsequent turns instead of re-paying
+// the full ResponseHeaderTimeout every turn. Without it, in-turn failover still
+// advances but the provider is never health-marked (the cross-turn gap). This
+// mirrors openaicompat.ParseProviderError's *url.Error -> NetworkError branch.
+func TestStreamGuardTimeoutClassifiedAsRetriableNetworkError(t *testing.T) {
+	restore := SetStreamGuardHeaderTimeoutForTest(700 * time.Millisecond)
+	defer restore()
+
+	srv := blackholeServer()
+	defer srv.Close()
+
+	p, err := NewWithOptions("sk-ant-test-key", option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+
+	ch, err := p.Stream(context.Background(), provider.ChatRequest{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var streamErr error
+	for c := range ch {
+		if c.Error != nil {
+			streamErr = c.Error
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected a terminal error from the dead provider, got none")
+	}
+
+	var provErr *provider.Error
+	if !errors.As(streamErr, &provErr) {
+		t.Fatalf("header-timeout surfaced as %T (%v); want *provider.Error so the failover HealthManager can cool the provider down", streamErr, streamErr)
+	}
+	if provErr.ErrorType != provider.ErrorTypeNetworkError || !provErr.IsRetriable {
+		t.Fatalf("got ErrorType=%v IsRetriable=%v; want network_error + retriable", provErr.ErrorType, provErr.IsRetriable)
+	}
 }

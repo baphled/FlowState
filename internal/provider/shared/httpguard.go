@@ -23,7 +23,8 @@ import (
 // Proven against both Stainless SDKs (anthropic-sdk-go, openai-go) over a real
 // HTTP/2 connection — Go 1.26 honours ResponseHeaderTimeout on h2, unlike older
 // releases that documented it as "no effect for HTTP/2". See
-// internal/provider/*/flap_stall_diag_test.go for the reproductions.
+// internal/provider/*/stream_guard_test.go for the reproductions (black-hole
+// no-headers servers + the openaicompat HTTP/2 mechanism proof).
 const DefaultResponseHeaderTimeout = 60 * time.Second
 
 // StreamGuardHTTPClient returns an *http.Client whose transport is a clone of
