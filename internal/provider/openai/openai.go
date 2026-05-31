@@ -9,11 +9,21 @@ import (
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	"github.com/baphled/flowstate/internal/provider/shared"
 	openaiAPI "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
 
 var errAPIKeyRequired = errors.New("OpenAI API key is required")
+
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to the OpenAI client via shared.StreamGuardHTTPClient. The openai-go
+// SDK passes NO per-attempt request timeout of its own, so without this a
+// flapping provider that accepts the connection but never responds hangs the
+// caller indefinitely (proven: internal/provider/openaicompat/flap_stall_diag_test.go).
+// It does NOT cap total stream duration. Overridable in tests via
+// SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
 
 // Provider implements the provider.Provider interface for OpenAI.
 type Provider struct {
@@ -72,13 +82,9 @@ func (p *Provider) notifyResponseObserver(raw *http.Response) {
 // Side effects:
 //   - None.
 func New(apiKey string) (*Provider, error) {
-	if apiKey == "" {
-		return nil, errAPIKeyRequired
-	}
-	client := openaiAPI.NewClient(option.WithAPIKey(apiKey))
-	return &Provider{
-		client: client,
-	}, nil
+	// Route through NewWithOptions so the bare constructor shares the
+	// single guarded client-build path (api key + stream-guard http client).
+	return NewWithOptions(apiKey)
 }
 
 // NewWithOptions creates a new OpenAI provider with custom request options.
@@ -97,7 +103,12 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 	if apiKey == "" {
 		return nil, errAPIKeyRequired
 	}
-	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	allOpts := append([]option.RequestOption{
+		option.WithAPIKey(apiKey),
+		// Stream-guard client first so caller-supplied opts (and tests
+		// passing their own WithHTTPClient) still override it.
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
+	}, opts...)
 	client := openaiAPI.NewClient(allOpts...)
 	return &Provider{
 		client: client,

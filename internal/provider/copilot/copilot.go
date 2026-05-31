@@ -12,11 +12,20 @@ import (
 	"github.com/baphled/flowstate/internal/oauth"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	"github.com/baphled/flowstate/internal/provider/shared"
 	openaiAPI "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
 
 var errTokenRequired = errors.New("GitHub token is required")
+
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to the Copilot client via shared.StreamGuardHTTPClient. Copilot is
+// served through the openai-go SDK, which passes NO per-attempt request timeout
+// — so without this a flapping endpoint that never responds hangs the caller
+// indefinitely. It does NOT cap total stream duration. Overridable in tests via
+// SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
 
 // ErrEmbedNotSupported is returned when embedding is not supported by Copilot.
 var ErrEmbedNotSupported = errors.New("embedding is not supported by GitHub Copilot")
@@ -322,6 +331,9 @@ func (p *Provider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64,
 func (p *Provider) buildClient(token string) openaiAPI.Client {
 	return openaiAPI.NewClient(
 		option.WithBaseURL(p.baseURL),
+		// Stream-guard client: time-to-first-byte ceiling so a flapping
+		// Copilot endpoint that never responds cannot hang the caller.
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
 		option.WithHeader("Authorization", "Bearer "+token),
 		option.WithHeader("Content-Type", headerContentType),
 		option.WithHeader("Accept", headerAccept),

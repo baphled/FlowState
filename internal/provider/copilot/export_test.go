@@ -1,13 +1,6 @@
-package ollama
+package copilot
 
 import "time"
-
-// ResolveOllamaContextLengthForTest is a test-only export of the
-// unexported resolveOllamaContextLength so external_test specs can drive
-// it without widening the production API surface.
-func ResolveOllamaContextLengthForTest(modelID string) int {
-	return resolveOllamaContextLength(modelID)
-}
 
 // SetStreamGuardHeaderTimeoutForTest overrides the package-level
 // streamGuardHeaderTimeout (the time-to-first-byte ceiling injected into the
@@ -17,4 +10,10 @@ func SetStreamGuardHeaderTimeoutForTest(d time.Duration) (restore func()) {
 	prev := streamGuardHeaderTimeout
 	streamGuardHeaderTimeout = d
 	return func() { streamGuardHeaderTimeout = prev }
+}
+
+// SetBaseURLForTest overrides the Copilot chat base URL so a spec can point the
+// streaming client (built via buildClient) at a local test server.
+func (p *Provider) SetBaseURLForTest(u string) {
+	p.baseURL = u
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
+	"github.com/baphled/flowstate/internal/provider/shared"
 	openaiAPI "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
@@ -26,6 +27,14 @@ const (
 )
 
 var errAPIKeyRequired = errors.New("OpenZen API key is required")
+
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to the OpenZen client via shared.StreamGuardHTTPClient. OpenZen is
+// served through the openai-go SDK, which passes NO per-attempt request timeout
+// — so without this a flapping endpoint that never responds hangs the caller
+// indefinitely. It does NOT cap total stream duration. Overridable in tests via
+// SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
 
 // Provider implements the provider.Provider interface for OpenZen.
 type Provider struct {
@@ -82,7 +91,13 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 		return nil, errAPIKeyRequired
 	}
 
-	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey), option.WithBaseURL(defaultBaseURL)}, opts...)
+	allOpts := append([]option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(defaultBaseURL),
+		// Stream-guard client first so caller opts (and tests passing
+		// their own WithHTTPClient) override it.
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
+	}, opts...)
 	client := openaiAPI.NewClient(allOpts...)
 	return &Provider{client: client}, nil
 }

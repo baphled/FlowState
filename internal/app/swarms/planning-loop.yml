@@ -50,6 +50,16 @@ harness:
   # independent.
   parallel: false
 
+  # Defence-in-depth ceiling on a single member's whole stream (all its
+  # internal failover attempts). The PRIMARY recoverability fix is the
+  # per-provider stream guard (Transport.ResponseHeaderTimeout = 60s) which
+  # makes failover advance past a flapping provider in ~60s; this caps a
+  # member that wedges for a NON-network reason (runaway model, gate-retry
+  # loop) so a run terminates instead of hanging indefinitely. 20m clears
+  # legitimate long members (an explorer pass has been observed at ~14m)
+  # while bounding a wedge. Zero/unset = the historical no-deadline contract.
+  member_timeout: 20m
+
   # Swarm-level post-member gates, one per member that writes
   # structured output to the coord-store. Each gate names the
   # corresponding JSON schema registered in

@@ -1,13 +1,6 @@
-package ollama
+package zai
 
 import "time"
-
-// ResolveOllamaContextLengthForTest is a test-only export of the
-// unexported resolveOllamaContextLength so external_test specs can drive
-// it without widening the production API surface.
-func ResolveOllamaContextLengthForTest(modelID string) int {
-	return resolveOllamaContextLength(modelID)
-}
 
 // SetStreamGuardHeaderTimeoutForTest overrides the package-level
 // streamGuardHeaderTimeout (the time-to-first-byte ceiling injected into the

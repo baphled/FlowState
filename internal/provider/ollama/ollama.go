@@ -13,7 +13,16 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/shared"
 	ollamaAPI "github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/envconfig"
 )
+
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to the Ollama client via shared.StreamGuardHTTPClient. The Ollama SDK
+// default (http.DefaultClient) has no such timeout, so a local server that
+// accepts the connection without responding would otherwise hang the caller.
+// It does NOT cap total stream duration. Overridable in tests via
+// SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
 
 // Provider implements the provider.Provider interface for Ollama.
 type Provider struct {
@@ -33,10 +42,15 @@ type Provider struct {
 // Side effects:
 //   - Reads Ollama client configuration from environment variables.
 func New(host string) (*Provider, error) {
-	client, err := ollamaAPI.ClientFromEnvironment()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create ollama client: %w", err)
-	}
+	// Mirror ClientFromEnvironment (base = envconfig.Host(), reading
+	// OLLAMA_HOST exactly as the SDK default) but with a stream-guard
+	// client so a stalled Ollama server that accepts the connection
+	// without responding cannot hang the caller — matching the remote
+	// providers' time-to-first-byte ceiling.
+	client := ollamaAPI.NewClient(
+		envconfig.Host(),
+		shared.StreamGuardHTTPClient(streamGuardHeaderTimeout),
+	)
 	return &Provider{
 		client: client,
 		host:   host,

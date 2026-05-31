@@ -87,6 +87,16 @@ const (
 		"cc_entrypoint=sdk-cli; cch=00000;"
 )
 
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to every Anthropic client via shared.StreamGuardHTTPClient. It
+// surfaces a flapping provider that accepts the connection but never sends a
+// response within one failover-able window — complementing, not replacing, the
+// 10-minute total wall-clock (defaultStreamRequestTimeout): the header timeout
+// fires fast on a dead first-byte, the wall-clock caps a pathological body.
+// Unlike the wall-clock it does NOT cap total stream duration. Overridable in
+// tests via SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
+
 // Provider implements the provider.Provider interface for Anthropic Claude.
 type Provider struct {
 	client       anthropicAPI.Client
@@ -160,11 +170,10 @@ func (p *Provider) notifyResponseObserver(raw *http.Response) {
 // Side effects:
 //   - None.
 func New(apiKey string) (*Provider, error) {
-	if apiKey == "" {
-		return nil, errAPIKeyRequired
-	}
-	client := anthropicAPI.NewClient(option.WithAPIKey(apiKey))
-	return &Provider{client: client}, nil
+	// Route through NewWithOptions so the bare constructor shares the
+	// single guarded client-build path (api key + stream-guard http
+	// client). See streamGuardHeaderTimeout / shared.StreamGuardHTTPClient.
+	return NewWithOptions(apiKey)
 }
 
 // IsOAuthToken reports whether the given token is an Anthropic OAuth token.
@@ -268,6 +277,9 @@ func newOAuthClient(token string, extraOpts ...option.RequestOption) anthropicAP
 		// the cache boundary by sitting before the first
 		// caller-supplied cache_control breakpoint.
 		option.WithHeaderAdd(oauthBillingHeaderName, oauthBillingHeaderValue),
+		// Stream-guard client (time-to-first-byte ceiling). Placed
+		// before extraOpts so callers/tests can override it.
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
 	}
 	opts = append(opts, extraOpts...)
 	return anthropicAPI.NewClient(opts...)
@@ -316,7 +328,12 @@ func NewWithOptions(
 		return nil, errAPIKeyRequired
 	}
 	allOpts := append(
-		[]option.RequestOption{option.WithAPIKey(apiKey)}, opts...,
+		[]option.RequestOption{
+			option.WithAPIKey(apiKey),
+			// Stream-guard client first so caller-supplied opts (and
+			// tests passing their own WithHTTPClient) still override it.
+			option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
+		}, opts...,
 	)
 	client := anthropicAPI.NewClient(allOpts...)
 	return &Provider{client: client}, nil

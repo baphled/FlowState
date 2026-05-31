@@ -65,6 +65,15 @@ func BaseURLForPlan(plan string) string {
 
 var errAPIKeyRequired = errors.New("Z.AI API key is required")
 
+// streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
+// applied to the Z.AI client via shared.StreamGuardHTTPClient. Z.AI is served
+// through the openai-go SDK, which passes NO per-attempt request timeout — so
+// without this a flapping endpoint that never responds hangs the caller
+// indefinitely (proven: internal/provider/openaicompat/flap_stall_diag_test.go).
+// It does NOT cap total stream duration. Overridable in tests via
+// SetStreamGuardHeaderTimeoutForTest (export_test.go).
+var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
+
 // Provider implements the provider.Provider interface for Z.AI.
 type Provider struct {
 	client openaiAPI.Client
@@ -119,7 +128,13 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 		return nil, errAPIKeyRequired
 	}
 
-	allOpts := append([]option.RequestOption{option.WithAPIKey(apiKey), option.WithBaseURL(defaultBaseURL)}, opts...)
+	allOpts := append([]option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(defaultBaseURL),
+		// Stream-guard client first so caller opts (incl. the plan-
+		// specific WithBaseURL and any test WithHTTPClient) override it.
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
+	}, opts...)
 	client := openaiAPI.NewClient(allOpts...)
 	return &Provider{client: client}, nil
 }
