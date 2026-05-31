@@ -56,7 +56,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flowstate",
 		Short: "FlowState AI assistant CLI",
-		Long:  "FlowState provides an AI assistant TUI plus CLI entry points for chat, serving, discovery, and session management.",
+		Long:  "FlowState provides an AI assistant with CLI entry points for running prompts, serving the web frontend, discovery, and session management.",
 		Args:  cobra.NoArgs,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			// Bootstrap MUST run before the App's agent / swarm / skill
@@ -130,7 +130,6 @@ func NewRootCmd(application *app.App) *cobra.Command {
 	// `flowstate --version` does not materialise permissions.yaml or the
 	// agent/skill/swarm/gate seed directories.
 	bootstrapping := []*cobra.Command{
-		newChatCmd(getApp),
 		newAuthCmd(getApp),
 		newRunCmd(getApp),
 		newServeCmd(getApp),
@@ -304,25 +303,23 @@ func resolveFlagOverrides(cmd *cobra.Command, baseCfg *config.AppConfig) (*confi
 	return cfg, anyChanged, nil
 }
 
-// runRoot displays the root command stub with configuration information.
+// runRoot is the no-argument default action. The interactive TUI has
+// been decommissioned in favour of the Vue web frontend, so a bare
+// `flowstate` invocation no longer launches a UI. Instead it prints the
+// command help so the operator can discover `flowstate serve` (web
+// frontend), `flowstate run` (one-shot prompt), and the other CLI
+// entry points.
 //
 // Expected:
 //   - cmd is a non-nil cobra.Command.
-//   - application is a non-nil App instance.
+//   - application is a non-nil App instance (unused; retained so the
+//     RunE signature stays uniform with the other commands).
 //
 // Returns:
-//   - nil on success, or an error if output fails.
+//   - nil on success, or an error if writing help fails.
 //
 // Side effects:
-//   - Writes configuration information to stdout.
-func runRoot(cmd *cobra.Command, application *app.App) error {
-	_, err := fmt.Fprintf(
-		cmd.OutOrStdout(),
-		"root stub: launch TUI with config=%q agents-dir=%q skills-dir=%q sessions-dir=%q\n",
-		application.ConfigPath(),
-		application.AgentsDir(),
-		application.SkillsDir(),
-		application.SessionsDir(),
-	)
-	return err
+//   - Writes command help to stdout.
+func runRoot(cmd *cobra.Command, _ *app.App) error {
+	return cmd.Help()
 }

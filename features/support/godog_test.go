@@ -57,7 +57,6 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSkillAutoloadingSteps(ctx)
 	RegisterHarnessSteps(ctx)
 	RegisterSessionEnrichmentSteps(ctx, s)
-	RegisterSessionDeleteSteps(ctx)
 	RegisterSessionForkSteps(ctx, s)
 	RegisterMultilineInputSteps(ctx, s)
 	si := &SessionIsolationSteps{}
@@ -65,14 +64,10 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterSessionVisibilitySteps(ctx, si)
 	sto := &StreamingToolOutputSteps{}
 	RegisterStreamingToolOutputSteps(ctx, sto)
-	rts := &ReadToolSteps{}
-	RegisterReadToolSteps(ctx, rts)
 	// Planning steps are in the same package
 	RegisterPlanningSteps(ctx)
 	RegisterOrchestratorMetadataSteps(ctx)
 	RegisterConfigSteps(ctx)
-	ss := &ScrollingSteps{}
-	RegisterScrollingSteps(ctx, ss)
 	RegisterPluginSteps(ctx)
 	RegisterDelegationSessionSteps(ctx)
 	s.RegisterSteps(ctx)
@@ -86,12 +81,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterAutoCompactionSteps(ctx)
 	RegisterSessionMemorySteps(ctx)
 	RegisterCompressionE2ESteps(ctx)
-	RegisterDualPaneLayoutSteps(ctx)
-	RegisterSessionTreeNavigationSteps(ctx)
-	RegisterSwarmActivityTimelineSteps(ctx)
-	RegisterMultiAgentChatUXE2ESteps(ctx)
 	RegisterRecallLearningSteps(ctx)
-	RegisterStreamingErrorSteps(ctx)
 	RegisterAdultingMemorySteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)

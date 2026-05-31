@@ -94,7 +94,7 @@ var _ = Describe("CLI Commands", func() {
 			testApp := createTestApp("", "")
 			err := cmd(testApp, "--help")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring("FlowState provides an AI assistant TUI"))
+			Expect(out.String()).To(ContainSubstring("FlowState provides an AI assistant"))
 			Expect(out.String()).To(ContainSubstring("Available Commands"))
 		})
 	})
@@ -244,41 +244,17 @@ var _ = Describe("CLI Commands", func() {
 		})
 	})
 
-	Describe("session resume", func() {
-		It("returns error when session not found", func() {
-			testApp := createTestApp("", "")
-			err := cmd(testApp, "session", "resume", "my-session-123")
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring(`session "my-session-123" not found`))
-		})
-
-		It("returns error when session not found among existing sessions", func() {
-			testApp := createTestApp("", "")
-			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
-			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
-			Expect(err).NotTo(HaveOccurred())
-			testApp.Sessions = sessStore
-
-			store := recall.NewEmptyContextStore("")
-			store.Append(provider.Message{Role: "user", Content: "hello"})
-			Expect(sessStore.Save("existing-session", store, ctxstore.SessionMetadata{
-				AgentID: "test-agent",
-				Title:   "Existing",
-			})).To(Succeed())
-
-			err = cmd(testApp, "session", "resume", "wrong-id")
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring(`session "wrong-id" not found`))
-		})
-	})
-
 	Describe("root (no args)", func() {
-		It("prints root stub with config info", func() {
+		It("prints command help (interactive TUI decommissioned)", func() {
 			testApp := createTestApp("", "")
 			err := cmd(testApp)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring("root stub"))
-			Expect(out.String()).To(ContainSubstring("config="))
+			// The no-arg default now prints help instead of launching
+			// the (removed) interactive TUI; guide the operator to the
+			// available CLI entry points.
+			Expect(out.String()).To(ContainSubstring("Usage:"))
+			Expect(out.String()).To(ContainSubstring("serve"))
+			Expect(out.String()).To(ContainSubstring("run"))
 		})
 	})
 
@@ -316,103 +292,7 @@ var _ = Describe("CLI Commands", func() {
 			testApp := createTestApp("", "")
 			err := cmd(testApp, "session", "--help")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring("Inspect saved sessions"))
-		})
-	})
-
-	Describe("chat", func() {
-		Context("without --message flag", func() {
-			It("returns error when engine is not configured", func() {
-				testApp := createTestApp("", "")
-				err := cmd(testApp, "chat")
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("engine not configured"))
-			})
-		})
-
-		Context("with --message flag", func() {
-			It("prints the agent and message with response placeholder when engine is nil", func() {
-				testApp := createTestApp("", "")
-				err := cmd(testApp, "chat", "--message", "Hello world", "--agent", "test-agent")
-				Expect(err).To(HaveOccurred())
-				Expect(out.String()).To(ContainSubstring("[test-agent] Hello world"))
-			})
-
-			It("prints the agent message with default agent", func() {
-				testApp := createTestApp("", "")
-				err := cmd(testApp, "chat", "--message", "Hello")
-				Expect(err).To(HaveOccurred())
-				Expect(out.String()).To(ContainSubstring("[default-assistant] Hello"))
-			})
-
-			It("streams and returns response when engine is configured", func() {
-				testApp := createRunTestApp([]provider.StreamChunk{
-					{Content: "Hi there"},
-					{Content: "!", Done: true},
-				}, nil)
-				err := cmd(testApp, "chat", "--message", "Hello", "--agent", "tester")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(out.String()).To(ContainSubstring("[tester] Hello"))
-				Expect(out.String()).To(ContainSubstring("Hi there!"))
-			})
-
-			It("generates a session ID when none provided", func() {
-				testApp := createRunTestApp([]provider.StreamChunk{
-					{Content: "ok", Done: true},
-				}, nil)
-				err := cmd(testApp, "chat", "--message", "test")
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("uses provided session ID", func() {
-				testApp := createRunTestApp([]provider.StreamChunk{
-					{Content: "ok", Done: true},
-				}, nil)
-				err := cmd(testApp, "chat", "--message", "test", "--session", "my-sess")
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("returns stream error from engine", func() {
-				testApp := createRunTestApp([]provider.StreamChunk{
-					{Content: "partial"},
-					{Error: errors.New("stream broke"), Done: true},
-				}, nil)
-				err := cmd(testApp, "chat", "--message", "test")
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("stream error"))
-			})
-
-			It("returns error when provider fails to start stream", func() {
-				testApp := createRunTestApp(nil, errors.New("provider down"))
-				err := cmd(testApp, "chat", "--message", "test")
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("streaming response"))
-			})
-
-			It("writes JSON events to stdout when --output json is used", func() {
-				testApp := createRunTestApp([]provider.StreamChunk{
-					{Content: "hello"},
-					{Content: " json", Done: true},
-				}, nil)
-				err := cmd(testApp, "chat", "--message", "Hello", "--agent", "tester", "--output", "json")
-				Expect(err).NotTo(HaveOccurred())
-				output := out.String()
-				Expect(output).To(ContainSubstring(`"type":"chunk"`))
-				Expect(output).To(ContainSubstring(`"type":"done"`))
-				Expect(output).NotTo(ContainSubstring("Response:"))
-			})
-		})
-
-		Context("with --help flag", func() {
-			It("shows chat usage", func() {
-				testApp := createTestApp("", "")
-				err := cmd(testApp, "chat", "--help")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(out.String()).To(ContainSubstring("Start an interactive chat session"))
-				Expect(out.String()).To(ContainSubstring("--message"))
-				Expect(out.String()).To(ContainSubstring("--agent"))
-				Expect(out.String()).To(ContainSubstring("--session"))
-			})
+			Expect(out.String()).To(ContainSubstring("Inspect saved FlowState sessions"))
 		})
 	})
 
@@ -555,13 +435,18 @@ var _ = Describe("CLI Commands", func() {
 			Expect(os.Unsetenv("OPENAI_API_KEY")).To(Succeed())
 		})
 
+		// The no-arg root action prints command help (the interactive TUI
+		// it used to launch has been decommissioned), so it no longer
+		// echoes the resolved directory paths. These specs now assert the
+		// override flag is accepted and the command exits cleanly with the
+		// help/usage surface shown.
 		It("applies agents-dir override", func() {
 			testApp := createTestApp("", "")
 			testApp.Config.Providers.Default = "openai"
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--agents-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring(overrideDir))
+			Expect(out.String()).To(ContainSubstring("Usage:"))
 		})
 
 		It("applies skills-dir override", func() {
@@ -570,7 +455,7 @@ var _ = Describe("CLI Commands", func() {
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--skills-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring(overrideDir))
+			Expect(out.String()).To(ContainSubstring("Usage:"))
 		})
 
 		It("applies sessions-dir override", func() {
@@ -579,17 +464,6 @@ var _ = Describe("CLI Commands", func() {
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--sessions-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
-		})
-	})
-
-	Describe("chat with model flag", func() {
-		It("returns error when model is invalid", func() {
-			testApp := createRunTestApp([]provider.StreamChunk{
-				{Content: "ok", Done: true},
-			}, nil)
-			err := cmd(testApp, "chat", "--message", "test", "--model", "nonexistent-model")
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("setting model"))
 		})
 	})
 
@@ -681,98 +555,6 @@ var _ = Describe("CLI Commands", func() {
 			}, nil)
 			err := cmd(testApp, "run", "--prompt", "test", "--agent", "", "--json")
 			Expect(err).NotTo(HaveOccurred())
-		})
-	})
-
-	Describe("chat with session persistence", func() {
-		It("saves session when session store is available", func() {
-			testApp := createRunTestApp([]provider.StreamChunk{
-				{Content: "chat saved", Done: true},
-			}, nil)
-			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
-			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
-			Expect(err).NotTo(HaveOccurred())
-			testApp.Sessions = sessStore
-
-			err = cmd(testApp, "chat", "--message", "test save", "--session", "chat-save")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring("chat saved"))
-		})
-
-		// Deferral 2 of commit 32ba71d: root sessions created by the CLI
-		// single-message chat entry point must drop a sidecar so the
-		// hierarchy survives app restarts. See the sibling Context under
-		// "run with session persistence" for the full motivation.
-		Context("when app SessionsDir is configured", func() {
-			It("writes a .meta.json sidecar for the root chat session", func() {
-				dataDir := GinkgoT().TempDir()
-				testApp, err := app.NewForTest(app.TestConfig{DataDir: dataDir})
-				Expect(err).NotTo(HaveOccurred())
-				chatProvider := &runTestProvider{
-					name: "run-test-provider",
-					streamChunks: []provider.StreamChunk{
-						{Content: "sidecar chat", Done: true},
-					},
-				}
-				eng := engine.New(engine.Config{
-					ChatProvider: chatProvider,
-					Manifest: agent.Manifest{
-						ID:                "worker",
-						Name:              "Worker",
-						Instructions:      agent.Instructions{SystemPrompt: "You are a helpful worker."},
-						ContextManagement: agent.DefaultContextManagement(),
-					},
-				})
-				testApp.Engine = eng
-				testApp.Streamer = eng
-
-				err = cmd(testApp, "chat", "--message", "hello", "--agent", "tester", "--session", "root-chat-sidecar")
-				Expect(err).NotTo(HaveOccurred())
-
-				metaPath := filepath.Join(testApp.SessionsDir(), "root-chat-sidecar.meta.json")
-				Expect(metaPath).To(BeAnExistingFile())
-
-				data, readErr := os.ReadFile(metaPath)
-				Expect(readErr).NotTo(HaveOccurred())
-				Expect(string(data)).To(ContainSubstring(`"id":"root-chat-sidecar"`))
-				Expect(string(data)).To(ContainSubstring(`"agent_id":"tester"`))
-				Expect(string(data)).To(ContainSubstring(`"status":"active"`))
-				Expect(string(data)).To(ContainSubstring(`"parent_id":""`))
-			})
-		})
-
-		It("loads existing session when session ID is provided", func() {
-			testApp := createRunTestApp([]provider.StreamChunk{
-				{Content: "chat resumed", Done: true},
-			}, nil)
-			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
-			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
-			Expect(err).NotTo(HaveOccurred())
-			testApp.Sessions = sessStore
-
-			store := recall.NewEmptyContextStore("")
-			store.Append(provider.Message{Role: "user", Content: "previous chat"})
-			Expect(sessStore.Save("chat-resume", store, ctxstore.SessionMetadata{
-				AgentID: "test-agent",
-			})).To(Succeed())
-
-			err = cmd(testApp, "chat", "--message", "resume chat", "--session", "chat-resume")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring("chat resumed"))
-		})
-
-		It("handles session load gracefully for non-existent session", func() {
-			testApp := createRunTestApp([]provider.StreamChunk{
-				{Content: "fresh chat", Done: true},
-			}, nil)
-			sessDir := filepath.Join(GinkgoT().TempDir(), "sessions")
-			sessStore, err := ctxstore.NewFileSessionStore(sessDir)
-			Expect(err).NotTo(HaveOccurred())
-			testApp.Sessions = sessStore
-
-			err = cmd(testApp, "chat", "--message", "test", "--session", "nonexistent-session")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(out.String()).To(ContainSubstring("fresh chat"))
 		})
 	})
 

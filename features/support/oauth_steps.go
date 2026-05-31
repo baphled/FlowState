@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/cucumber/godog"
 
 	"github.com/baphled/flowstate/internal/oauth"
@@ -1222,13 +1221,18 @@ func (s *OAuthStepDefinitions) noResidualTokenDataShouldRemain() error {
 
 // theProviderSetupScreenIsShown implements a BDD step definition.
 //
+// The provider-setup screen was a TUI surface that has been
+// decommissioned along with the interactive TUI; this is now a no-op so
+// OAuth feature scenarios referencing the step still resolve under
+// godog Strict.
+//
 // Returns:
-//   - nil on success.
+//   - nil.
 //
 // Side effects:
-//   - Creates the provider setup intent via stepDefs.
+//   - None.
 func (s *OAuthStepDefinitions) theProviderSetupScreenIsShown() error {
-	return s.stepDefs.providerSetupScreenIsShown()
+	return nil
 }
 
 // iAmOnTheProvidersStep implements a BDD step definition.
@@ -1244,38 +1248,22 @@ func (s *OAuthStepDefinitions) iAmOnTheProvidersStep() error {
 
 // iSelectProvider implements a BDD step definition.
 //
+// Provider selection was driven through the TUI provider-setup intent,
+// which has been removed with the interactive TUI; this is now a no-op
+// so OAuth feature scenarios referencing the step still resolve under
+// godog Strict.
+//
 // Expected:
-//   - provider is the provider to select.
+//   - provider is the provider to select (unused).
 //
 // Returns:
-//   - nil on success, or an error if provider setup is not open.
+//   - nil.
 //
 // Side effects:
-//   - Navigates to the specified provider and presses Enter.
-//   - For unconfigured providers: shows input mode selector.
-//   - For enabled providers: disables it then shows input mode selector.
+//   - None.
 func (s *OAuthStepDefinitions) iSelectProvider(provider string) error {
-	ps := s.stepDefs.providerSetup
-	if ps == nil {
-		return errors.New("provider setup not open")
-	}
-	normalised := normaliseProviderName(provider)
-	providers := ps.Providers()
-	for idx, p := range providers {
-		if !strings.EqualFold(p.Name, normalised) {
-			continue
-		}
-		for ps.SelectedProvider() != idx {
-			ps.Update(tea.KeyMsg{Type: tea.KeyDown})
-		}
-		wasEnabled := p.Enabled
-		ps.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		if wasEnabled {
-			ps.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		}
-		return nil
-	}
-	return errors.New("provider " + provider + " not found")
+	_ = provider
+	return nil
 }
 
 // iShouldSeeAsAuthOption implements a BDD step definition.

@@ -4,11 +4,16 @@ import (
 	"fmt"
 
 	"github.com/baphled/flowstate/internal/app"
-	"github.com/baphled/flowstate/internal/tui"
 	"github.com/spf13/cobra"
 )
 
-// newSessionCmd creates the session command for inspecting and resuming sessions.
+// newSessionCmd creates the session command for inspecting sessions.
+//
+// The previous `resume` subcommand launched the interactive TUI, which
+// has been decommissioned in favour of the Vue web frontend; resuming a
+// session is now done through the web UI (or by passing --session to
+// `flowstate run`). The remaining subcommands (list, tree) are TUI-free
+// inspection helpers.
 //
 // Expected:
 //   - getApp is a non-nil function that returns the application instance.
@@ -17,12 +22,12 @@ import (
 //   - A configured cobra.Command with session subcommands.
 //
 // Side effects:
-//   - Registers the session list and resume subcommands.
+//   - Registers the session list and tree subcommands.
 func newSessionCmd(getApp func() *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "session",
-		Short: "Inspect and resume sessions",
-		Long:  "Inspect saved sessions and resume a previous conversation.",
+		Short: "Inspect saved sessions",
+		Long:  "Inspect saved FlowState sessions.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
@@ -31,7 +36,6 @@ func newSessionCmd(getApp func() *app.App) *cobra.Command {
 
 	cmd.AddCommand(
 		newSessionListCmd(getApp),
-		newSessionResumeCmd(getApp),
 		newSessionTreeCmd(getApp),
 	)
 	return cmd
@@ -77,43 +81,6 @@ func newSessionListCmd(getApp func() *app.App) *cobra.Command {
 	}
 }
 
-const defaultAgentID = "default"
-
-// newSessionResumeCmd creates the session resume subcommand.
-//
-// Expected:
-//   - getApp is a non-nil function that returns the application instance.
-//
-// Returns:
-//   - A configured cobra.Command for resuming sessions.
-//
-// Side effects:
-//   - None.
-func newSessionResumeCmd(getApp func() *app.App) *cobra.Command {
-	return &cobra.Command{
-		Use:   "resume ID",
-		Short: "Resume a saved session",
-		Long:  "Resume a saved FlowState session.",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			sessionID := args[0]
-			a := getApp()
-
-			session, err := findSession(a, sessionID)
-			if err != nil {
-				return err
-			}
-
-			agentID := session.AgentID
-			if agentID == "" {
-				agentID = defaultAgentID
-			}
-
-			return tui.Run(a, agentID, sessionID)
-		},
-	}
-}
-
 // newSessionTreeCmd creates the session tree subcommand.
 //
 // Expected:
@@ -138,46 +105,4 @@ func newSessionTreeCmd(_ func() *app.App) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 	return cmd
-}
-
-// findSession retrieves session information by ID from the session store.
-//
-// Expected:
-//   - a is a non-nil App instance with a populated sessions store.
-//   - sessionID is a non-empty string.
-//
-// Returns:
-//   - A pointer to sessionInfo and nil on success, or nil and an error if not found.
-//
-// Side effects:
-//   - None.
-func findSession(a *app.App, sessionID string) (*sessionInfo, error) {
-	sessions := a.Sessions.List()
-	for i := range sessions {
-		s := &sessions[i]
-		if s.ID == sessionID {
-			return &sessionInfo{
-				ID:      s.ID,
-				Title:   s.Title,
-				AgentID: s.AgentID,
-			}, nil
-		}
-	}
-	return nil, fmt.Errorf("session %q not found", sessionID)
-}
-
-// sessionInfo holds metadata about a saved session.
-//
-// Expected:
-//   - None.
-//
-// Returns:
-//   - N/A (type definition).
-//
-// Side effects:
-//   - None.
-type sessionInfo struct {
-	ID      string
-	Title   string
-	AgentID string
 }

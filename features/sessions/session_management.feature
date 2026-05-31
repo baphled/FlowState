@@ -22,21 +22,6 @@ Feature: Session Management
     Then I should see my previous session
     And it should contain "Hello"
 
-  Scenario: List available sessions
-    Given I have multiple sessions
-    When I open the session browser
-    Then I should see a list of sessions
-    And each session should show its title
-    And sessions should be sorted by last updated
-
-  Scenario: Switch to another session
-    Given I have multiple sessions
-    And I am in session "Session A"
-    When I open the session browser
-    And I select "Session B"
-    Then I should be in session "Session B"
-    And I should see the messages from "Session B"
-
   Scenario: Create new session
     Given I am in an existing session
     When I create a new session
@@ -50,24 +35,12 @@ Feature: Session Management
     Then the session title should be auto-generated
     And the title should be relevant to the conversation
 
-  Scenario: Search sessions
-    Given I have sessions about various topics
-    When I open the session browser
-    And I search for "recipe"
-    Then I should only see sessions mentioning "recipe"
-
   Scenario: Fork a session
     Given I am in a session with history
     When I fork the session at message 3
     Then a new session should be created
     And it should contain messages 1 through 3
     And the original session should be unchanged
-
-  Scenario: Delete a session
-    Given I have a session named "Old Session"
-    When I delete "Old Session"
-    Then it should no longer appear in the session list
-    And I should be prompted to confirm deletion
 
   @enrichment
   Scenario: Session includes system prompt and skills

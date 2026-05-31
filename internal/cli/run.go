@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/sessionid"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
 
@@ -417,9 +418,8 @@ func configDefaultAgent(application *app.App) string {
 // pre-existing callers that pass only the user-supplied flag (with no
 // config fallback) keep their old behaviour.
 //
-// The two-argument shape mirrors resolveChatAgentName so the CLI run
-// command can honour the operator's config.default_agent the same
-// way `flowstate chat` already does.
+// The two-argument shape lets the CLI run command honour the
+// operator's config.default_agent.
 func resolveAgentName(agent, defaultAgent string) string {
 	name := strings.TrimSpace(agent)
 	if name != "" {
@@ -679,4 +679,74 @@ func writeRunOutput(cmd *cobra.Command, opts *RunOptions, agentName, sessionID, 
 		_, _ = fmt.Fprintln(cmd.OutOrStdout())
 	}
 	return nil
+}
+
+// generateSessionID creates a unique session ID as a UUID v4.
+//
+// The canonical session-ID format is a UUID v4 per the Session Management
+// architecture doc and the ADR - Multi-Agent Recall Context Sharing house
+// rule. The session.Manager CreateSession and CreateWithParent methods
+// already use uuid.New().String(); the CLI matches so filenames
+// (<id>.json/.meta.json/.events.jsonl/.jsonl), ChildSessions raw-string
+// equality, and ctxstore IDKey lookups agree across the whole process.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A canonical UUID v4 session ID string.
+//
+// Side effects:
+//   - None.
+func generateSessionID() string {
+	return uuid.NewString()
+}
+
+// persistRootSessionMetadata writes a <sessionID>.meta.json sidecar so
+// the App.restorePersistedSessions path can rebuild the session
+// hierarchy graph after a restart. Without the sidecar, root sessions
+// started from the CLI entry point survive as a ctxstore message file
+// but vanish from the in-memory manager, and Manager.ChildSessions
+// returns nothing for them.
+//
+// Matches the engine-side convention from
+// DelegateTool.persistSessionMetadata (internal/engine/delegation.go):
+// empty sessionsDir disables persistence silently, and write failures
+// are swallowed so persistence never blocks the user-facing command.
+//
+// Expected:
+//   - sessionsDir may be empty (disables persistence silently).
+//   - sessionID is the root session identifier; empty is a no-op.
+//   - agentID is the agent that owns the session (persisted verbatim).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Writes <sessionsDir>/<sessionID>.meta.json when both inputs are
+//     non-empty and the write succeeds.
+func persistRootSessionMetadata(sessionsDir, sessionID, agentID string) {
+	if sessionsDir == "" || sessionID == "" {
+		return
+	}
+	createdAt := time.Now()
+	// Preserve CreatedAt across session resumption so the session's
+	// first-seen timestamp remains stable for session-list ordering and
+	// audit trails. A read-error here (corrupt sidecar, permissions)
+	// falls through to time.Now() so the happy path doesn't depend on
+	// the lookup succeeding.
+	if existing, err := session.LoadSessionMetadata(sessionsDir, sessionID); err == nil && existing != nil && !existing.CreatedAt.IsZero() {
+		createdAt = existing.CreatedAt
+	}
+	sess := &session.Session{
+		ID:        sessionID,
+		AgentID:   agentID,
+		Status:    string(session.StatusActive),
+		CreatedAt: createdAt,
+	}
+	// Swallow the error: persistence must never block the user-facing
+	// command. Matches DelegateTool.persistSessionMetadata.
+	if err := session.PersistSession(sessionsDir, sess); err != nil {
+		return
+	}
 }

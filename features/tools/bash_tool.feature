@@ -55,19 +55,7 @@ Feature: Bash Tool
     Then I should see an indicator that the command is running
     And when complete, I should see the output
 
-  Scenario: Cancel running command
-    Given the AI is running a long command
-    When I press Ctrl+k
-    Then the stream is cancelled and a notification confirms
-    And the AI should be informed of the cancellation
-
   Scenario: Working directory context
     Given I am in directory "/home/user/projects"
     When the AI runs "pwd"
     Then the output should show "/home/user/projects"
-
-  Scenario: Remember permission for session
-    Given bash tool permission is set to "ask"
-    When the AI requests to run "ls"
-    And I approve with "remember for session" using the "s" key
-    Then subsequent "ls" requests auto-approve without prompting

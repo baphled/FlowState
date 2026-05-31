@@ -38,7 +38,6 @@ var _ = Describe("cli root command bootstrap annotations", func() {
 		// subcommand without extending this spec is intentional: the
 		// spec exists to catch silent drops, not to enumerate.
 		mustNeedBootstrap := []string{
-			"chat",
 			"auth",
 			"run",
 			"serve",
