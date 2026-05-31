@@ -2708,23 +2708,26 @@ func (d *DelegateTool) executeSync(
 		// ChatRequest.ToolChoice; per-turn so the first attempt and any
 		// later attempts that didn't decide to force stay unconstrained.
 		attemptCtx := session.WithToolChoiceOverride(delegateCtx, forcedToolChoice)
-		// Pair the forced tool_choice with a reliable-model override on the
+		// Pair the forced tool_choice with a capable-model override on the
 		// SAME corrective retry. Forcing tool_choice made the marginal model
 		// (zai/glm-4.5) EMIT the coordination_store write — but glm-4.5 cannot
 		// reliably emit a single clean JSON object for a result-schema bundle
 		// (it appends a second object / trailing junk, surfacing downstream as
 		// `invalid character ',' after top-level value`). So the retry also
-		// re-routes the struggling member onto the lead's already-resolved
-		// (provider, model), which is proven reachable AND reliable in THIS
-		// deployment (the lead ran a full turn on it before delegating). This
-		// is deployment-adaptive — no hardcoded model string that might be
-		// unreachable here — and only fires on the forced-tool corrective
+		// ESCALATES the struggling member onto its OWN preferred_models chain
+		// head (the most-capable tier the member declares) — not the lead's
+		// current model, which is itself glm when anthropic + openai are down
+		// and would re-route glm → glm (a no-op). The engine's failover then
+		// cascades down the member's chain to a reachable tier if the head is
+		// unreachable, so "only glm reachable" is unchanged from today. With no
+		// member chain, correctiveRetryModel falls back to the lead's resolved
+		// pair (prior behaviour). This only fires on the forced-tool corrective
 		// retry, never on attempt 1 (forcedToolChoice is empty there), so
 		// multi-step members keep their own manifest-resolved model on the
-		// first pass. Empty lead values are a no-op: the child keeps the
+		// first pass. Empty values are a no-op: the child keeps the
 		// manifest-tier override resolveChildModelOverride already stamped.
 		if forcedToolChoice != "" {
-			if prov, model := d.correctiveRetryModel(); prov != "" || model != "" {
+			if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
 				if prov != "" {
 					attemptCtx = context.WithValue(attemptCtx, session.ProviderOverrideKey{}, prov)
 				}
@@ -4905,31 +4908,56 @@ func (d *DelegateTool) resolveChildModelChain(target delegationTarget) []provide
 
 // correctiveRetryModel returns the (provider, model) the post-member gate
 // corrective retry should route a struggling swarm member onto, alongside
-// the forced tool_choice. The source is the swarm LEAD's already-resolved
-// pair (d.ownerEngine.LastProvider / LastModel): by the time a member's
-// retry fires the lead has run at least one full turn (its delegate call is
-// what spawned the member), so LastProvider/LastModel name the exact pair
-// the lead's own turn succeeded on — proven reachable AND reliable in THIS
-// deployment. That makes it a deployment-adaptive target with no hardcoded
-// model string that could be unreachable here.
+// the forced tool_choice.
 //
-// Why the lead's pair and NOT the member manifest's preferred_models[1+]:
-// the member's manifest tier is already stamped on the child ctx by
-// resolveChildModelOverride (preferred_models[0]); when that tier's provider
-// is unreachable the engine's failover cascades through the GLOBAL chain
-// (config default), NOT the manifest's secondary tiers — so the member lands
-// on the global default (zai/glm-4.5) regardless of what tier-2/3 declare.
-// Honouring the manifest chain on failover is a larger failover-manager
-// change (per-agent chains) out of scope here. The lead's resolved pair is
-// the minimal, evidence-backed escalation target.
+// Primary source — the MEMBER's own preferred_models chain HEAD
+// (resolveChildModelChain(target)[0]): the most-capable tier the member
+// declares. The corrective retry ESCALATES the struggling member onto its
+// own capable tier, not the lead's current model.
 //
-// Returns empty strings when no lead engine is wired (non-swarm delegate, or
-// a legacy test surface without WithOwnerEngine) — the caller treats empty
-// as "no override", leaving the member's manifest-tier override in place so
-// the retry still forces the tool, just without re-routing the model.
+// Why NOT the lead's pair (the previous behaviour): the lead's resolved
+// (provider, model) is only "reliable" when the lead itself is on a capable
+// model. When anthropic + openai are unavailable, the LEAD fails over onto
+// the weak global default (zai/glm) too — so copying the lead's pair routed
+// the member glm → glm, a NO-OP. A member that STALLS on glm (narrates the
+// write, emits no tool call) was then re-rolled on glm and stalled every
+// attempt. Targeting the member's own capable HEAD instead means the retry
+// attempts the member's best tier first; the engine's failover manager then
+// cascades down the member's chain to a reachable tier if the head is down —
+// so "only the weak model reachable" degrades to the prior behaviour with no
+// regression, while a reachable capable tier is genuinely re-attempted.
+//
+// Why the chain HEAD and not "the highest tier strictly above the just-failed
+// model": the just-failed pair is not cleanly determinable at the retry point
+// — the member's engine LastProvider/LastModel report the post-failover
+// LANDING (e.g. glm) rather than a clean chain entry, and the capable head was
+// never "unreliable", merely unreachable (a transient condition worth
+// re-attempting). Stamping the head and letting failover skip an unreachable
+// head is the simpler, evidence-backed choice with identical end behaviour.
+//
+// Fallback — when the member declares NO preferred_models (empty/nil chain,
+// or a registry-less surface), there is no capable tier to escalate onto, so
+// the retry keeps the prior behaviour and routes onto the swarm LEAD's
+// already-resolved pair (d.ownerEngine.LastProvider / LastModel). This
+// preserves the override rather than losing it entirely (which would leave
+// the member on its stalled tier).
+//
+// Returns empty strings only when BOTH the member chain is empty AND no lead
+// engine is wired (non-swarm delegate, or a legacy test surface without
+// WithOwnerEngine) — the caller treats empty as "no override", leaving the
+// member's manifest-tier override in place so the retry still forces the
+// tool, just without re-routing the model.
 //
 // Side effects: none.
-func (d *DelegateTool) correctiveRetryModel() (string, string) {
+func (d *DelegateTool) correctiveRetryModel(target delegationTarget) (string, string) {
+	// Primary: escalate onto the member's capable preferred-tier head.
+	if chain := d.resolveChildModelChain(target); len(chain) > 0 {
+		head := chain[0]
+		if head.Provider != "" || head.Model != "" {
+			return head.Provider, head.Model
+		}
+	}
+	// Fallback: the lead's already-resolved pair (prior behaviour).
 	if d.ownerEngine == nil {
 		return "", ""
 	}

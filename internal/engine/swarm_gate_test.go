@@ -222,6 +222,45 @@ func newDelegateToolWithRunnerAndOwner(
 	return tool.WithGateRunner(runner).WithOwnerEngine(owner)
 }
 
+// newDelegateToolWithRunnerOwnerAndRegistry mirrors
+// newDelegateToolWithRunnerAndOwner but also installs an agent registry
+// so the corrective-retry model override can read the MEMBER's declared
+// preferred_models chain (resolveChildModelChain). The corrective retry
+// escalates the struggling member onto its OWN capable preferred tier
+// (the chain head), not the lead's current model — so a member stalling
+// on a weak fallback (zai/glm) is re-rolled on its capable tier when one
+// is reachable, rather than re-pinned to the lead's (possibly-glm) model.
+func newDelegateToolWithRunnerOwnerAndRegistry(
+	engines map[string]*engine.Engine,
+	store coordination.Store,
+	runner swarm.GateRunner,
+	owner *engine.Engine,
+	reg *agent.Registry,
+) *engine.DelegateTool {
+	tool := engine.NewDelegateToolWithBackground(
+		engines,
+		agent.Delegation{CanDelegate: true},
+		"planner",
+		nil,
+		store,
+	)
+	return tool.WithGateRunner(runner).WithOwnerEngine(owner).WithRegistry(reg)
+}
+
+// memberChainRegistry builds an agent registry whose plan-reviewer member
+// declares the given preferred_models chain (capable head first). Used by
+// the corrective-retry escalation specs to assert the retry targets the
+// member's capable tier.
+func memberChainRegistry(prefs ...agent.ModelPreference) *agent.Registry {
+	reg := agent.NewRegistry()
+	reg.Register(&agent.Manifest{
+		ID:              "plan-reviewer",
+		Name:            "Plan Reviewer",
+		PreferredModels: prefs,
+	})
+	return reg
+}
+
 // flakyMemberGateRunner fails the first failFor post-member gate
 // dispatches with the no-output GateError shape, then passes. It records
 // the dispatch count so a spec can assert the exact number of member
@@ -980,18 +1019,62 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		})
 
 		Context("model override on the corrective retry", func() {
-			It("routes the corrective retry onto the lead's resolved model", func() {
-				// Forcing the tool_choice on the retry made the marginal
-				// member (zai/glm-4.5) emit the coordination_store write —
-				// but glm-4.5 cannot reliably emit a single clean JSON object
-				// for the bundle schema (it appends a second object / trailing
-				// junk, surfacing as `invalid character ',' after top-level
-				// value`). The corrective retry must ALSO route the struggling
-				// member onto a tool-AND-structured-JSON-reliable model. The
-				// lead engine resolved to a reachable, proven model in this
-				// deployment (production: openai/gpt-5), so the retry copies
-				// the lead's resolved (provider, model) rather than hardcoding
-				// a bare string that may be unreachable here.
+			It("escalates the corrective retry onto the MEMBER's capable preferred tier, not the lead's model", func() {
+				// Bug (May 2026): the corrective retry copied the LEAD's
+				// current (provider, model). When the lead itself has failed
+				// over onto a weak model (anthropic + openai unavailable →
+				// everything cascades to zai/glm), the retry routed the
+				// member glm → glm — a NO-OP, so a member STALLING on glm was
+				// re-rolled on glm and stalled every time.
+				//
+				// Fix: the corrective retry escalates the struggling member
+				// onto its OWN preferred_models chain head (the most-capable
+				// tier the member declares), not the lead's current model. The
+				// member here declares [anthropic/claude-sonnet-4-6 →
+				// openai/gpt-4o → zai/glm-5.1]; the retry must target the
+				// capable HEAD (anthropic/claude-sonnet-4-6). The engine's
+				// failover then cascades down the member's chain to a reachable
+				// tier if the head is down — so "only glm reachable" degrades
+				// to today's behaviour with no regression, while a reachable
+				// capable tier is genuinely re-attempted.
+				//
+				// The lead is pinned to the WEAK glm model to prove the retry
+				// does NOT copy it.
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{failFor: 1}
+				engines, leadEng, reviewerProv := reviewerEnginesWithLeadAndProvider(
+					swarmContextWithGates(postMemberGate()))
+				leadEng.SetModelPreference("zai", "glm-5.1")
+				reg := memberChainRegistry(
+					agent.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+					agent.ModelPreference{Provider: "openai", Model: "gpt-4o"},
+					agent.ModelPreference{Provider: "zai", Model: "glm-5.1"},
+				)
+				delegateTool := newDelegateToolWithRunnerOwnerAndRegistry(
+					engines, store, runner, leadEng, reg)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.StreamCallCount()).To(BeNumerically(">=", 2),
+					"the member is re-dispatched after the first miss")
+				Expect(reviewerProv.ProviderForAttempt(2)).To(Equal("anthropic"),
+					"the corrective retry escalates onto the member's capable preferred provider, not the lead's glm")
+				Expect(reviewerProv.ModelForAttempt(2)).To(Equal("claude-sonnet-4-6"),
+					"the corrective retry escalates onto the member's capable preferred model (chain head), not the lead's glm")
+				Expect(reviewerProv.ToolChoiceForAttempt(2)).To(Equal("tool:coordination_store"),
+					"the corrective retry still forces the coordination_store write")
+			})
+
+			It("falls back to the lead's resolved model when the member declares NO preferred_models", func() {
+				// Fallback guard: a member with an empty preferred_models chain
+				// (or a registry-less surface) has no capable tier to escalate
+				// onto, so the corrective retry keeps the existing behaviour and
+				// routes onto the lead's already-resolved (provider, model). The
+				// override must NOT be lost entirely (which would leave the
+				// member on its stalled tier). No registry is wired here, so
+				// resolveChildModelChain returns nil and the lead-model fallback
+				// fires.
 				store := coordination.NewMemoryStore()
 				runner := &flakyMemberGateRunner{failFor: 1}
 				engines, leadEng, reviewerProv := reviewerEnginesWithLeadAndProvider(
@@ -1005,9 +1088,9 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 				Expect(reviewerProv.StreamCallCount()).To(BeNumerically(">=", 2),
 					"the member is re-dispatched after the first miss")
 				Expect(reviewerProv.ProviderForAttempt(2)).To(Equal("openai"),
-					"the corrective retry routes onto the lead's resolved provider")
+					"with no member chain the retry falls back to the lead's resolved provider")
 				Expect(reviewerProv.ModelForAttempt(2)).To(Equal("gpt-5"),
-					"the corrective retry routes onto the lead's resolved model")
+					"with no member chain the retry falls back to the lead's resolved model")
 				Expect(reviewerProv.ToolChoiceForAttempt(2)).To(Equal("tool:coordination_store"),
 					"the corrective retry still forces the coordination_store write")
 			})
