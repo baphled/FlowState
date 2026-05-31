@@ -520,6 +520,14 @@ func (p *Provider) Chat(
 		if provErr := parseAnthropicError(err); provErr != nil {
 			return provider.ChatResponse{}, provErr
 		}
+		// Transport/timeout errors (the stream-guard's header timeout,
+		// *url.Error, context.DeadlineExceeded) are not anthropicAPI.Error
+		// values; classify them as a retriable NetworkError for symmetry with
+		// the streaming path (parseAnthropicStreamError) so any failover/health
+		// consumer of the non-stream Chat path sees the same typed signal.
+		if provErr := classifyAnthropicTransportError(err); provErr != nil {
+			return provider.ChatResponse{}, provErr
+		}
 
 		return provider.ChatResponse{},
 			fmt.Errorf("anthropic chat failed: %w", err)

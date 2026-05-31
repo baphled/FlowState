@@ -630,12 +630,25 @@ func (sh *StreamHook) attemptCandidate(
 	firstChunk, ok, peekErr := peekFirstChunk(timeoutCtx, ch, candidate.Provider)
 	if peekErr != nil {
 		cancel()
+		// A stall before the first chunk (the per-attempt StreamTimeout or a
+		// clamped parent deadline) is a transport-level failure. Tag it as a
+		// retriable NetworkError and health-mark it so a persistently-stalling
+		// provider is cooled down and SKIPPED on subsequent turns instead of
+		// re-stalled every turn. Without the typed wrap, markProviderHealth's
+		// keyword-only fallback misses the bare context-deadline error.
+		peekErr = failoverTransportError(candidate.Provider, peekErr)
+		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, peekErr)
 		sh.publishFailoverError(ctx, candidate, peekErr)
 		return nil, peekErr
 	}
 	if !ok {
 		cancel()
-		closeErr := fmt.Errorf("provider %s: stream closed immediately", candidate.Provider)
+		// A stream that opens then closes without emitting any chunk produced
+		// nothing usable — a transport-level failure. Health-mark it so it is
+		// skipped next turn rather than re-tried into the same empty result.
+		closeErr := failoverTransportError(candidate.Provider,
+			fmt.Errorf("provider %s: stream closed immediately", candidate.Provider))
+		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, closeErr)
 		sh.publishFailoverError(ctx, candidate, closeErr)
 		return nil, closeErr
 	}
@@ -762,6 +775,33 @@ func streamWithReplay(
 //
 // Side effects:
 //   - May update HealthManager state.
+// failoverTransportError tags a transport-level failover failure — a pre-first-
+// chunk stall (peek-timeout) or an immediately-closed stream — as a retriable
+// NetworkError so markProviderHealth's typed branch applies a cooldown and the
+// candidate is skipped on subsequent turns instead of re-stalled. The original
+// error is preserved via RawError and surfaced in the wrapper's Error() string,
+// so upstream errors.As/errors.Is and the existing substring observability
+// assertions ("stream closed immediately", context-deadline) still hold.
+//
+// Expected:
+//   - providerName identifies the failing candidate.
+//   - err is the underlying transport error (non-nil).
+//
+// Returns:
+//   - A retriable *provider.Error{NetworkError} wrapping err.
+//
+// Side effects:
+//   - None.
+func failoverTransportError(providerName string, err error) *provider.Error {
+	return &provider.Error{
+		ErrorType:   provider.ErrorTypeNetworkError,
+		Provider:    providerName,
+		Message:     err.Error(),
+		IsRetriable: true,
+		RawError:    err,
+	}
+}
+
 func markProviderHealth(health RateLimitAware, providerName, model string, err error) {
 	if err == nil {
 		return

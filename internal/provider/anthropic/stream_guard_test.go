@@ -120,3 +120,36 @@ func TestStreamGuardTimeoutClassifiedAsRetriableNetworkError(t *testing.T) {
 		t.Fatalf("got ErrorType=%v IsRetriable=%v; want network_error + retriable", provErr.ErrorType, provErr.IsRetriable)
 	}
 }
+
+// TestChatTransportErrorClassifiedAsRetriableNetworkError pins that the
+// non-stream Chat path classifies a transport/header-timeout error the same way
+// the streaming path does — a retriable *provider.Error{NetworkError} — so any
+// failover/health consumer of Chat sees the same typed signal (symmetry with
+// parseAnthropicStreamError).
+func TestChatTransportErrorClassifiedAsRetriableNetworkError(t *testing.T) {
+	restore := SetStreamGuardHeaderTimeoutForTest(700 * time.Millisecond)
+	defer restore()
+
+	srv := blackholeServer()
+	defer srv.Close()
+
+	p, err := NewWithOptions("sk-ant-test-key", option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+
+	_, chatErr := p.Chat(context.Background(), provider.ChatRequest{
+		Model:    "claude-3-5-sonnet-20241022",
+		Messages: []provider.Message{{Role: "user", Content: "hi"}},
+	})
+	if chatErr == nil {
+		t.Fatal("expected an error from the dead provider, got nil")
+	}
+	var provErr *provider.Error
+	if !errors.As(chatErr, &provErr) {
+		t.Fatalf("Chat header-timeout surfaced as %T (%v); want *provider.Error", chatErr, chatErr)
+	}
+	if provErr.ErrorType != provider.ErrorTypeNetworkError || !provErr.IsRetriable {
+		t.Fatalf("got ErrorType=%v IsRetriable=%v; want network_error + retriable", provErr.ErrorType, provErr.IsRetriable)
+	}
+}

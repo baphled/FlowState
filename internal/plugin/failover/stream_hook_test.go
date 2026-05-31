@@ -2131,3 +2131,65 @@ var _ = Describe("StreamHook M2 — prepend* goroutines exit on ctx cancel", fun
 		})
 	})
 })
+
+var _ = Describe("StreamHook transport-failure health marking", func() {
+	var (
+		registry *provider.Registry
+		health   *failover.HealthManager
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		registry.Register(&mockStreamProvider{
+			name:     "ok",
+			streamFn: successStreamFn(provider.StreamChunk{Content: "hi", Done: true}),
+		})
+	})
+
+	It("marks a provider unhealthy when it stalls before the first chunk (peek-timeout)", func() {
+		registry.Register(&mockStreamProvider{
+			name: "stalls",
+			streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				return make(chan provider.StreamChunk), nil // never sends, never closes
+			},
+		})
+		mgr := failover.NewManager(registry, health, 80*time.Millisecond)
+		mgr.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "stalls", Model: "m"},
+			{Provider: "ok", Model: "m2"},
+		})
+		sh := failover.NewStreamHook(mgr, nil, "")
+
+		ch, err := sh.Execute(baseHandler(registry))(context.Background(), &provider.ChatRequest{})
+		Expect(err).NotTo(HaveOccurred()) // fails over to "ok"
+		for range ch {
+		}
+		Expect(health.IsRateLimited("stalls", "m")).To(BeTrue(),
+			"a provider that stalls before the first chunk must be cooled down so it is skipped on the next turn instead of re-stalled")
+	})
+
+	It("marks a provider unhealthy when it closes the stream immediately", func() {
+		registry.Register(&mockStreamProvider{
+			name: "closes",
+			streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+				ch := make(chan provider.StreamChunk)
+				close(ch) // opens then closes without emitting a chunk
+				return ch, nil
+			},
+		})
+		mgr := failover.NewManager(registry, health, 2*time.Second)
+		mgr.SetBasePreferences([]provider.ModelPreference{
+			{Provider: "closes", Model: "m"},
+			{Provider: "ok", Model: "m2"},
+		})
+		sh := failover.NewStreamHook(mgr, nil, "")
+
+		ch, err := sh.Execute(baseHandler(registry))(context.Background(), &provider.ChatRequest{})
+		Expect(err).NotTo(HaveOccurred())
+		for range ch {
+		}
+		Expect(health.IsRateLimited("closes", "m")).To(BeTrue(),
+			"a provider that opens then closes without sending must be cooled down so it is skipped on the next turn")
+	})
+})
