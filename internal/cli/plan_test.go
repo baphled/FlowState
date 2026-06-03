@@ -300,7 +300,7 @@ var _ = Describe("Plan Command", func() {
 			err := publishCmd("plan", "publish", "--chain", "mhc-2026-05-27")
 			Expect(err).NotTo(HaveOccurred())
 
-			expected := filepath.Join(vaultDir, "mental-health-companion.md")
+			expected := filepath.Join(vaultDir, "Mental Health Companion.md")
 			Expect(publishOut.String()).To(ContainSubstring(expected))
 			Expect(expected).To(BeAnExistingFile())
 
@@ -321,7 +321,7 @@ var _ = Describe("Plan Command", func() {
 			err := publishCmd("plan", "publish", "--chain", "override-chain", "--output-dir", altDir)
 			Expect(err).NotTo(HaveOccurred())
 
-			expected := filepath.Join(altDir, "override-plan.md")
+			expected := filepath.Join(altDir, "Override Plan.md")
 			Expect(expected).To(BeAnExistingFile())
 			Expect(publishOut.String()).To(ContainSubstring(expected))
 		})
