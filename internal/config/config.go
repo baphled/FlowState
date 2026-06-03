@@ -270,6 +270,21 @@ func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 	return parseDurationField(c.BackgroundOutputTimeout, "background_output_timeout")
 }
 
+// TodoStrictModeEnabled reports whether the D9 hard-gate todo_strict_mode
+// feature flag is on, with nil-receiver safety mirroring the Parsed*/
+// Resolved* accessors. A nil *AppConfig (legitimate in the delegate-engine
+// path before any config is loaded) reports false — the v1 default — rather
+// than panicking on the embedded Features struct deref.
+//
+// Returns:
+//   - true when Features.TodoStrictMode is set; false when unset or nil receiver.
+func (c *AppConfig) TodoStrictModeEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.Features.TodoStrictMode
+}
+
 // SystemPromptBudgetEnv is the environment variable operators set to
 // override AppConfig.SystemPromptBudget without editing config.yaml.
 // The env wins over the YAML field (matching the existing OPENAI_API_KEY

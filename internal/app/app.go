@@ -2332,7 +2332,7 @@ func (a *App) createDelegateEngine(
 		StreamTimeout:             a.Config.ParsedStreamTimeout(),
 		ToolTimeout:               a.Config.ParsedToolTimeout(),
 		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
-		TodoStrictMode:            a.Config.Features.TodoStrictMode,
+		TodoStrictMode:            a.Config.TodoStrictModeEnabled(),
 		CompactionConfig:          a.delegateCompactionConfig(),
 		CompactionStoreDir:        a.delegateCompactionStoreDir(),
 		KnownSkillsFunc:           delegateKnownSkillsFunc,
