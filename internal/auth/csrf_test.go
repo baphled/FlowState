@@ -40,8 +40,11 @@ var _ = Describe("CSRF wrapper composition", func() {
 	)
 
 	BeforeEach(func() {
-		mem = store.NewMemoryStore()
 		now = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+		// QA BUG-3 fix (May 2026): thread the same frozen clock into the
+		// MemoryStore so Get's read-time expiry check honours it too.
+		// See session_test.go BeforeEach for the full rationale.
+		mem = store.NewMemoryStore(store.WithNow(func() time.Time { return now }))
 		sessCfg = auth.SessionConfig{
 			CookieName:    "flowstate_session",
 			CookiePath:    "/api",

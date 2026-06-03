@@ -24,8 +24,13 @@ var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 	)
 
 	BeforeEach(func() {
-		mem = store.NewMemoryStore()
 		now = time.Date(2026, 5, 13, 12, 0, 0, 0, time.UTC)
+		// QA BUG-3 fix (May 2026): thread the same frozen clock into the
+		// MemoryStore so Get's read-time expiry check honours it too.
+		// Without WithNow, the store's default time.Now marks a session
+		// with a frozen ExpiresAt as expired against the wall clock —
+		// HandleLogin then returns 500 after 2026-05-20.
+		mem = store.NewMemoryStore(store.WithNow(func() time.Time { return now }))
 	})
 
 	newMgr := func(mode string) *auth.SessionManager {
