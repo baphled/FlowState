@@ -331,6 +331,16 @@ type streamAccumState struct {
 	// delegation_started / delegation message; that artefact is the
 	// turn's deliverable.
 	turnHadDelegation bool
+	// turnSawDone records whether a terminal chunk.Done arrived this
+	// turn. The stream-truncation detector (Bug F) must fire ONLY on the
+	// close-without-Done path: a cleanly-Done turn that simply carried no
+	// upstream stop_reason chunk is NOT a wire-level truncation. Gating
+	// the truncation stamp on !turnSawDone keeps the genuine wire-cut
+	// signature (channel closes with no Done) flagged while leaving a
+	// content-bearing Done turn's StopReason empty. Reset on the
+	// fresh-turn signal so a Done in an earlier round of a multi-round
+	// stream does not suppress truncation detection on a later round.
+	turnSawDone bool
 }
 
 // providerProducesUnifiedAssistant reports whether the named provider's
@@ -592,6 +602,12 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 		// per-bubble usage badge) read them from the live stream.
 		return
 	case chunk.Done:
+		// A terminal Done arrived this turn — the stream closed cleanly,
+		// not by a wire-level cut. flushContent / synthesizePlaceholder
+		// consult turnSawDone so the truncation detector does NOT stamp
+		// stream_truncated on a cleanly-Done turn that merely lacked an
+		// upstream stop_reason chunk.
+		s.turnSawDone = true
 		flushThinking(appender, s)
 		flushContent(appender, s)
 		synthesizePlaceholderAssistant(appender, s)
@@ -624,6 +640,11 @@ func applyThinkingAndContent(
 		// chunk that carries content / thinking opens a new turn so the
 		// per-turn placeholder gate must be reset.
 		s.turnPlaceholderEmitted = false
+		// Bug F refinement — a new content/thinking-bearing turn clears
+		// the prior turn's Done marker so a Done in an earlier round of a
+		// multi-round stream does not suppress truncation detection on a
+		// later round that genuinely closes without Done.
+		s.turnSawDone = false
 	}
 	if chunk.Thinking != "" || chunk.Signature != "" {
 		s.thinkingBuf.WriteString(chunk.Thinking)
@@ -1014,7 +1035,13 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	// generate the comprehensive revision:" (154 chars), Thinking=2074,
 	// ToolCalls=0, StopReason="". The model announced intent and the
 	// stream cut before the planned tool_use payload landed.
+	//
+	// Done-awareness (Bug F refinement): the detector fires ONLY on the
+	// close-without-Done path (!turnSawDone). A turn that reached a
+	// terminal Done chunk with no upstream stop_reason is a clean close,
+	// not a wire-level truncation — leave its StopReason empty.
 	if msg.StopReason == "" &&
+		!s.turnSawDone &&
 		!s.turnHadToolCall &&
 		!s.turnHadDelegation &&
 		strings.TrimSpace(msg.Content) != "" {
@@ -1416,7 +1443,18 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 		// the Vue MessageBubble (web/src/components/chat/MessageBubble.vue)
 		// already routes non-empty stop_reason values through the
 		// soft-error path, so no UI change is required.
-		stopReason = StopReasonStreamTruncated
+		//
+		// Done-awareness (Bug F refinement): truncation fires ONLY on the
+		// close-without-Done path (!turnSawDone). A thinking-only turn that
+		// reached a terminal Done with no upstream stop_reason is a clean
+		// close, not a wire-cut — fall back to the StopReasonThinkingOnly
+		// sentinel, which keeps stop_reason non-empty for the UI affordance
+		// without misclassifying the turn as a failure.
+		if !s.turnSawDone {
+			stopReason = StopReasonStreamTruncated
+		} else {
+			stopReason = StopReasonThinkingOnly
+		}
 	}
 	appender.AppendMessage(s.sessionID, Message{
 		Role:           "assistant",

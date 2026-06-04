@@ -1851,8 +1851,14 @@ var _ = Describe("AccumulateStream", func() {
 			Expect(emptyMsgs[0].StopReason).To(Equal(session.StopReasonEmptyTurn),
 				"empty-turn synthesis path is independent of the fabrication guard")
 
-			// Thinking-only path with no upstream stop_reason — re-pinned
-			// to the new StopReasonStreamTruncated sentinel.
+			// Thinking-only path with no upstream stop_reason that DID reach
+			// a terminal Done — re-pinned to StopReasonThinkingOnly under the
+			// Bug F Done-awareness refinement (June 2026). A clean close
+			// (turnSawDone) is NOT a wire-level truncation: the placeholder
+			// keeps the non-empty thinking_only sentinel for the UI affordance
+			// without flipping the session to failed. The genuine wire-cut
+			// signature (close WITHOUT Done) still stamps stream_truncated —
+			// see the "stream-truncation detection (Bug F)" specs below.
 			thinkingAppender := &fakeAppender{}
 			thinkingCh := make(chan provider.StreamChunk, 2)
 			thinkingCh <- provider.StreamChunk{Thinking: "reasoning only", ProviderID: "zai"}
@@ -1868,10 +1874,10 @@ var _ = Describe("AccumulateStream", func() {
 				}
 			}
 			Expect(thinkingMsgs).To(HaveLen(1))
-			Expect(thinkingMsgs[0].StopReason).To(Equal(session.StopReasonStreamTruncated),
-				"thinking-only with no upstream stop_reason IS the openaicompat truncation signature — "+
-					"the synthesised placeholder must stamp stream_truncated so the session manager "+
-					"can flip status active -> failed")
+			Expect(thinkingMsgs[0].StopReason).To(Equal(session.StopReasonThinkingOnly),
+				"thinking-only that reached a terminal Done with no upstream stop_reason is a "+
+					"clean close, not a wire-cut — the placeholder stamps thinking_only, not "+
+					"stream_truncated; truncation fires only on the close-without-Done path")
 		})
 	})
 
