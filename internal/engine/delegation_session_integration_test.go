@@ -404,9 +404,18 @@ var _ = Describe("Delegation message accumulation", Label("integration"), func()
 					},
 				},
 			}
+			// Grant the bash capability so the fail-closed runtime tool gate
+			// (BuildAllowedToolSet, engine.go) allows the dispatched bash
+			// call. Without it the result is IsError and applyToolResult
+			// maps it to role "tool_error" rather than "tool_result", so the
+			// tool_result assertion below never finds its message. The shared
+			// fixture predates the gate (13cd1fb2); grant it locally here so
+			// the sibling spec's ungranted-tool path stays untouched.
+			toolInputManifest := newDelegationTestManifest("target-agent")
+			toolInputManifest.Capabilities = agent.Capabilities{Tools: []string{"bash"}}
 			toolInputEngine := engine.New(engine.Config{
 				ChatProvider: toolInputProvider,
-				Manifest:     newDelegationTestManifest("target-agent"),
+				Manifest:     toolInputManifest,
 				Tools:        []tool.Tool{bashTool},
 			})
 			toolMgr := session.NewManager(toolInputEngine)
