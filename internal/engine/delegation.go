@@ -2817,6 +2817,17 @@ func (d *DelegateTool) executeSync(
 		// last attempt, so the Turn is Completed (NOT Failed) and the
 		// turnOwnedByWrap guard keeps turnRegistry.Fail call-count at 0 —
 		// the gate rejection is not a stream failure (B5/S4.2 contract).
+		//
+		// Publish gate.failed EXACTLY ONCE here, on budget exhaustion.
+		// dispatchPostMemberGates evaluates silently per attempt (no
+		// gate.failed publication) so a single logical halt does not emit
+		// one event per retry — the surface (SSE bridge / TUI subscriber)
+		// sees the one halt the run actually ends on. swarmCtx resolves to
+		// the active context the gate ran against; nil only when the gate
+		// runner is unwired, in which case gateErr would have been nil.
+		if swarmCtx, ok := d.activeSwarmContextForCtx(ctx); ok {
+			d.publishGateFailed(ctx, swarmCtx, swarm.LifecyclePostMember, target.agentID, gateErr)
+		}
 		completedAt = time.Now().UTC()
 		baseInfo.ToolCalls = result.toolCalls
 		baseInfo.LastTool = result.lastTool
@@ -3916,8 +3927,17 @@ func (d *DelegateTool) salvageMemberOutputIfMissing(ctx context.Context, memberI
 // {chainID}-templated output keys in the manifest resolve against the
 // SAME namespace the member wrote to. Empty when the lead has not
 // allocated one — the result-schema runner then suffix-scans.
+// dispatchPostMemberGates evaluates every post-member gate for memberID
+// WITHOUT publishing gate.failed. The post-member dispatcher is invoked
+// once per retry attempt by the bounded re-delegation loop (executeSync,
+// PostMemberGateMaxAttempts); publishing gate.failed here would emit one
+// event per failed attempt — N events for a single logical halt. The
+// loop owns the failure publication and calls publishGateFailed exactly
+// once when the budget is exhausted. gate.evaluating / gate.passed
+// success-path semantics are unchanged: a passing gate still publishes
+// gate.passed every attempt (the success path is not retried).
 func (d *DelegateTool) dispatchPostMemberGates(ctx context.Context, memberID, chainID string) error {
-	return d.dispatchMemberGates(ctx, swarm.LifecyclePostMember, memberID, chainID)
+	return d.dispatchMemberGatesSilent(ctx, swarm.LifecyclePostMember, memberID, chainID)
 }
 
 // dispatchPreMemberGates fires every pre-member gate on the active
@@ -3968,16 +3988,47 @@ func (d *DelegateTool) dispatchPreMemberGates(ctx context.Context, memberID, cha
 //     halting gate, gate.passed once on a clean batch. Pass-event
 //     policy: halt-class only on gate.failed.
 func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID, chainID string) error {
+	swarmCtx, err := d.dispatchMemberGatesSilentCtx(ctx, when, memberID, chainID)
+	if err != nil {
+		// The pre-member dispatcher is not retried, so a single halt maps
+		// to a single gate.failed — publish it here. swarmCtx is non-nil
+		// whenever err is non-nil (the silent core only returns an error
+		// after resolving the active swarm context).
+		d.publishGateFailed(ctx, swarmCtx, when, memberID, err)
+	}
+	return err
+}
+
+// dispatchMemberGatesSilent evaluates every matching gate exactly as
+// dispatchMemberGates does — publishing gate.evaluating before dispatch
+// and gate.passed on a clean batch — but does NOT publish gate.failed on
+// a halt. It returns the first *swarm.GateError so the caller can decide
+// when to publish the failure. This is the path the bounded post-member
+// retry loop uses so a single logical halt produces exactly one
+// gate.failed (published once on budget exhaustion) instead of one per
+// attempt. Side effects and nil-return conditions otherwise match
+// dispatchMemberGates.
+func (d *DelegateTool) dispatchMemberGatesSilent(ctx context.Context, when, memberID, chainID string) error {
+	_, err := d.dispatchMemberGatesSilentCtx(ctx, when, memberID, chainID)
+	return err
+}
+
+// dispatchMemberGatesSilentCtx is the shared evaluation core. It returns
+// the resolved swarm context alongside the gate error so the publishing
+// wrapper (dispatchMemberGates) can attribute a gate.failed without
+// re-resolving the context. The returned context is non-nil whenever the
+// error is non-nil; both are nil/zero on the no-op and pass paths.
+func (d *DelegateTool) dispatchMemberGatesSilentCtx(ctx context.Context, when, memberID, chainID string) (*swarm.Context, error) {
 	if d.gateRunner == nil {
-		return nil
+		return nil, nil
 	}
 	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	matches := swarm.MemberGatesFor(swarmCtx.Gates, when, memberID)
 	if len(matches) == 0 {
-		return nil
+		return nil, nil
 	}
 	args := swarm.GateArgs{
 		SwarmID:     swarmCtx.SwarmID,
@@ -3989,11 +4040,10 @@ func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID, 
 	d.publishGateEvaluating(ctx, swarmCtx, when, memberID, len(matches))
 	report := swarm.Dispatch(ctx, d.gateRunner, matches, args)
 	if report.Halted {
-		d.publishGateFailed(ctx, swarmCtx, when, memberID, report.Err)
-		return report.Err
+		return swarmCtx, report.Err
 	}
 	d.publishGatePassed(ctx, swarmCtx, when, memberID, len(matches))
-	return nil
+	return swarmCtx, nil
 }
 
 // dispatchPreSwarmGatesOnce fires every pre-swarm gate on the active
