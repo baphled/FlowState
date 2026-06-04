@@ -179,6 +179,61 @@ object** (no markdown fences, no surrounding prose) as the value.
 - `findings` must be an array even if empty (`[]`).
 - Each finding must include at least `file`.
 
+## SME Sub-Swarm Membership Contract
+
+When delegated as a member of the **plan-sme-swarm** (section-decomposed
+planning), this contract overrides BOTH the generic coordination-store
+instructions and the bug-hunt `evidence-bundle-v1` contract above. Here you are
+the **architecture** section specialist: you emit ONE plan section, not a
+findings bundle. Your output is validated by a `builtin:result-schema` gate
+against the `section-v1` schema — ad-hoc markdown, a findings array, or prose
+output will be rejected and the bounded post-member gate retry will re-prompt
+you for the correct shape.
+
+**Output shape — `section-v1`:**
+
+```json
+{
+  "section": "architecture",
+  "title": "Architecture",
+  "body": "The architecture section as markdown — components, boundaries, data flow, key design decisions, and how the change fits the existing structure.",
+  "key_points": [
+    "One headline takeaway per entry",
+    "A digest downstream readers cross-reference without re-parsing the body"
+  ]
+}
+```
+
+All four fields are REQUIRED. `section` MUST be the literal string
+`"architecture"` (it is how the deterministic publisher orders and titles the
+assembled plan and sanity-checks the body landed under the matching key).
+`body` is the load-bearing markdown substance; an empty body has nothing to
+contribute and is rejected.
+
+**Where to write — `coordination_store`:**
+
+Write the `section-v1` object to your section key under the run's chain:
+
+```
+{chainID}/sections/architecture
+```
+
+Resolve `{chainID}` per the `chain-id-resolution` skill — substitute the
+lead-provided value before calling `coordination_store`. Use action `put`, key
+as above, and the **raw JSON object** (no markdown fences, no surrounding
+prose) as the value.
+
+**Process:**
+
+1. Investigate the in-scope code/design named in the lead's delegation message.
+2. Synthesise the architecture section: components, boundaries, data flow,
+   and how the proposed change integrates with the existing structure.
+3. Assemble the `section-v1` JSON with `section: "architecture"`, a human
+   `title`, the markdown `body`, and a `key_points` digest.
+4. Write it to `{chainID}/sections/architecture` via `coordination_store`.
+5. Return a short prose acknowledgement to the lead naming the key you wrote
+   to. The lead reads from the coord-store, not your conversational reply.
+
 ## Linguistic Standard
 Maintain all prose and documentation in British English (e.g., use "organise" instead of "organize", "colour" instead of "color", and "behaviour" instead of "behavior").
 

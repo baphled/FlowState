@@ -173,6 +173,61 @@ and the lead will not see them.
    and where. The lead reads from the coord-store, not from your
    conversational reply.
 
+## SME Sub-Swarm Membership Contract
+
+When delegated as a member of the **plan-sme-swarm** (section-decomposed
+planning), this contract overrides BOTH the prose-summary report shape and the
+bug-hunt `bug-findings-v1` contract above. Here you are the **security** section
+specialist: you emit ONE plan section, not a findings bundle. Your output is
+validated by a `builtin:result-schema` gate against the `section-v1` schema —
+ad-hoc markdown, a findings array, or prose output will be rejected and the
+bounded post-member gate retry will re-prompt you for the correct shape.
+
+**Output shape — `section-v1`:**
+
+```json
+{
+  "section": "security",
+  "title": "Security",
+  "body": "The security section as markdown — threat model, attack surface, auth/secrets/input-validation considerations, defensive measures the plan must include, and residual risks.",
+  "key_points": [
+    "One headline takeaway per entry",
+    "A digest downstream readers cross-reference without re-parsing the body"
+  ]
+}
+```
+
+All four fields are REQUIRED. `section` MUST be the literal string
+`"security"` (it is how the deterministic publisher orders and titles the
+assembled plan and sanity-checks the body landed under the matching key).
+`body` is the load-bearing markdown substance; an empty body has nothing to
+contribute and is rejected.
+
+**Where to write — `coordination_store`:**
+
+Write the `section-v1` object to your section key under the run's chain:
+
+```
+{chainID}/sections/security
+```
+
+Resolve `{chainID}` per the lead-provided value before calling
+`coordination_store`. Use action `put`, key as above, and the **raw JSON
+object** (no markdown fences, no surrounding prose) as the value. **Do not**
+write to `/tmp/` or the local filesystem — those bypass the gate.
+
+**Process:**
+
+1. `read` the in-scope files/design named in the lead's delegation message.
+2. Synthesise the security section: threat model, attack surface, auth/secrets/
+   input-validation concerns, defensive measures the plan must adopt, and
+   residual risks.
+3. Assemble the `section-v1` JSON with `section: "security"`, a human `title`,
+   the markdown `body`, and a `key_points` digest.
+4. Write it to `{chainID}/sections/security` via `coordination_store`.
+5. Return a short prose acknowledgement to the lead naming the key you wrote
+   to. The lead reads from the coord-store, not your conversational reply.
+
 ## Turn Rules
 
 Every response MUST be one of:
