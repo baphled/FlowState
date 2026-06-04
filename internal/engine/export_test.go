@@ -179,6 +179,23 @@ func (e *Engine) SetStreamIdleTimeoutForTest(d time.Duration) {
 	e.streamIdleTimeout = d
 }
 
+// SetMaxToolLoopIterationsForTest overrides the engine's default absolute
+// tool-loop iteration backstop (engineMaxToolLoopIterations) so specs can
+// drive the runaway-loop scenario at small counts without spinning the real
+// 50-iteration ceiling. Setting zero/negative disables the backstop,
+// matching the disabled-when-unset production gate semantics.
+func (e *Engine) SetMaxToolLoopIterationsForTest(n int) {
+	e.maxToolLoopIterations = n
+}
+
+// SetMaxIdenticalToolCallsForTest overrides the engine's default
+// consecutive-identical-call repeat-detection threshold
+// (engineMaxIdenticalToolCalls) so specs can pin the boundary behaviour.
+// Setting zero/negative disables repeat detection entirely.
+func (e *Engine) SetMaxIdenticalToolCallsForTest(n int) {
+	e.maxIdenticalToolCalls = n
+}
+
 // PublishStreamingHeartbeatForTest exposes the heartbeat publish helper
 // so specs can pin the bus payload shape without standing up a full
 // Stream goroutine + ticker. Mirrors the production publishStreamingHeartbeat

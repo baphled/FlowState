@@ -66,13 +66,30 @@ var _ = Describe("Engine persists openaicompat tool_use intent", func() {
 	// never dispatched and the persisted message lost all trace of it.
 
 	It("persists the tool_call on provider.Message.ToolCalls even when the tool is not registered", func() {
+		// Stateful handler: request 1 surfaces the tool_call (the intent this
+		// spec pins); request 2+ (the tool-loop continuation, since
+		// plan_reviewer is unregistered and re-requested) returns a plain text
+		// completion with finish_reason:stop so the loop terminates naturally.
+		// Without this the stateless re-emit drove the engine's tool loop
+		// unbounded and hung the suite — see the b9d67f81 tool-not-found-
+		// continues regression and its loop cap.
+		var calls int
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
-			chunks := []string{
-				`{"id":"chatcmpl-repro","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_repro","type":"function","function":{"name":"plan_reviewer","arguments":"{\"all\":false}"}}]},"finish_reason":null}]}`,
-				`{"id":"chatcmpl-repro","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			calls++
+			var chunks []string
+			if calls == 1 {
+				chunks = []string{
+					`{"id":"chatcmpl-repro","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_repro","type":"function","function":{"name":"plan_reviewer","arguments":"{\"all\":false}"}}]},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-repro","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+				}
+			} else {
+				chunks = []string{
+					`{"id":"chatcmpl-repro","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","content":"Done."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-repro","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
 			}
 			for _, chunk := range chunks {
 				fmt.Fprintf(w, "data: %s\n\n", chunk)
@@ -173,17 +190,33 @@ var _ = Describe("Engine persists openaicompat tool_use intent", func() {
 // assertion is on the channel returned by engine.Stream.
 var _ = Describe("Engine enforces text-before-tool_use ordering on openaicompat streams", func() {
 	It("must not surface a tool_use before any content or thinking when the openaicompat stream opens with a bare function call", func() {
+		// Stateful handler: request 1 carries the bare leading tool_call (the
+		// ordering shape this spec pins); request 2+ (the unregistered-tool
+		// continuation) returns a plain text completion with finish_reason:stop
+		// so the tool loop terminates naturally instead of re-requesting
+		// forever — see the b9d67f81 tool-not-found-continues regression and
+		// its loop cap.
+		var calls int
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
+			calls++
 			// The very first delta carries a tool_call with no prior text
 			// or reasoning delta. This is the canonical repro shape for
 			// the reported bug: agents emit tool calls as the first
 			// artefact of a turn with nothing preceding them.
-			chunks := []string{
-				`{"id":"chatcmpl-order","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_ordering","type":"function","function":{"name":"plan_reviewer","arguments":"{\"all\":false}"}}]},"finish_reason":null}]}`,
-				`{"id":"chatcmpl-order","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+			var chunks []string
+			if calls == 1 {
+				chunks = []string{
+					`{"id":"chatcmpl-order","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_ordering","type":"function","function":{"name":"plan_reviewer","arguments":"{\"all\":false}"}}]},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-order","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+				}
+			} else {
+				chunks = []string{
+					`{"id":"chatcmpl-order","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{"role":"assistant","content":"Done."},"finish_reason":null}]}`,
+					`{"id":"chatcmpl-order","object":"chat.completion.chunk","model":"glm-4.7","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				}
 			}
 			for _, chunk := range chunks {
 				fmt.Fprintf(w, "data: %s\n\n", chunk)

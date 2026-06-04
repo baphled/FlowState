@@ -1271,6 +1271,20 @@ func matchesFabricationSignature(content string) bool {
 // render branch, not by any backend consumer.
 const StopReasonTurnInterrupted = "turn_interrupted"
 
+// StopReasonToolLoopExceeded is the synthetic stop reason stamped on the
+// terminal Done chunk when the engine's tool loop hits a cap — either the
+// repeat-call detector (the same tool name + canonicalised arguments
+// recurring across consecutive continuations) or the absolute iteration
+// backstop. It bounds the unbounded re-request hang where a provider
+// re-emits the same (often tool-not-found) call every continuation,
+// spinning the loop forever (15,404 iterations observed before the cap).
+//
+// Wire-format-stable and non-empty: the value is read by the Vue
+// `MessageBubble` soft-error render branch, which keys on
+// `stopReason !== ""`. A blank value would collapse back into the
+// indistinguishable-from-success path.
+const StopReasonToolLoopExceeded = "tool_loop_exceeded"
+
 // synthesizePlaceholderAssistant emits an empty-content assistant message
 // carrying the accumulated thinking blocks when a turn produced reasoning
 // without an enclosing assistant artefact.

@@ -319,6 +319,21 @@ type Engine struct {
 	// Done chunk arrives (provider never emits message_stop).
 	streamIdleTimeout time.Duration
 
+	// maxToolLoopIterations is the absolute ceiling on tool-loop
+	// continuations per turn in streamWithToolLoop. Defaults to
+	// engineMaxToolLoopIterations via Engine.New; overridable via
+	// SetMaxToolLoopIterationsForTest. Zero/negative disables the
+	// backstop. Turn-local state in the loop counts against this; the
+	// field itself is the shared, read-only ceiling.
+	maxToolLoopIterations int
+
+	// maxIdenticalToolCalls is the consecutive-identical-batch threshold
+	// for the primary repeat-call detector in streamWithToolLoop.
+	// Defaults to engineMaxIdenticalToolCalls via Engine.New; overridable
+	// via SetMaxIdenticalToolCallsForTest. Zero/negative disables repeat
+	// detection.
+	maxIdenticalToolCalls int
+
 	// microCompactor is the RLM Phase A Layer 1 compactor. It applies the
 	// hot/cold tool-result split to the in-flight provider message slice
 	// produced by buildContextWindow. Nil disables Phase A regardless of
@@ -945,6 +960,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		nowFunc:                   resolveNowFunc(cfg),
 		heartbeatInterval:         defaultStreamingHeartbeatInterval,
 		streamIdleTimeout:         engineStreamIdleTimeout,
+		maxToolLoopIterations:     engineMaxToolLoopIterations,
+		maxIdenticalToolCalls:     engineMaxIdenticalToolCalls,
 	}
 }
 
@@ -965,6 +982,26 @@ const defaultStreamingHeartbeatInterval = 15 * time.Second
 // on a silent connection with no read deadline configured
 // (internal/provider/anthropic/anthropic.go:streamMessages).
 const engineStreamIdleTimeout = 60 * time.Second
+
+// engineMaxToolLoopIterations is the absolute backstop on the number of
+// tool-loop continuations streamWithToolLoop will run for a single turn.
+// Since b9d67f81 the tool-not-found path returns a nil-Go-error
+// tool.Result{Error: ErrToolNotFound} that falls through and re-requests,
+// so a provider re-emitting the same call loops forever (15,404 iterations
+// observed). This fixed ceiling guarantees termination even when the
+// repeat-call detector cannot fingerprint the batch. Overridable via
+// SetMaxToolLoopIterationsForTest; zero/negative disables the backstop
+// (defence-in-depth gate, mirroring engineStreamIdleTimeout's disable-when-
+// unset semantics).
+const engineMaxToolLoopIterations = 50
+
+// engineMaxIdenticalToolCalls is the primary trip threshold: when the SAME
+// tool batch fingerprint (tool name + canonicalised arguments) recurs this
+// many CONSECUTIVE tool-loop iterations, the loop is considered stuck and
+// terminated. Set to 3 so two legitimate retries of an identical call still
+// pass while a genuinely stuck re-request trips quickly. Overridable via
+// SetMaxIdenticalToolCallsForTest; zero/negative disables repeat detection.
+const engineMaxIdenticalToolCalls = 3
 
 // resolveFactService returns the RLM Phase B service the engine should
 // attach. Nil when the feature is disabled in CompactionConfig — the
@@ -4245,6 +4282,16 @@ func (e *Engine) streamWithToolLoop(
 	defer e.evictCompletedBackgroundTasks()
 
 	attempt := 0
+	// Turn-local tool-loop guard state. Declared here (never on the Engine)
+	// so concurrent turns can never share it. iterations counts continuations
+	// (about-to-re-request passes); lastFingerprint / identicalRun track the
+	// primary repeat-call detector — when the same canonicalised tool batch
+	// recurs maxIdenticalToolCalls consecutive times the loop is stuck. Both
+	// guards trip the turn with StopReasonToolLoopExceeded. See
+	// engineMaxToolLoopIterations / engineMaxIdenticalToolCalls.
+	iterations := 0
+	lastFingerprint := ""
+	identicalRun := 0
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
 		if result.done {
@@ -4394,6 +4441,60 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		attempt++
+
+		// Tool-loop cap (continuation path only). We are about to re-request
+		// the provider with the just-computed tool results. A legitimately
+		// completing turn never reaches here — it returns at the result.done
+		// or len(toolCalls)==0 early-exits above. So tripping a cap here can
+		// only fire on the re-request path, never on a clean completion.
+		//
+		// Layered guards (both active):
+		//   1. Repeat detection (primary): fingerprint this batch as
+		//      (tool name + canonicalised args); if the SAME fingerprint
+		//      recurs maxIdenticalToolCalls consecutive iterations, trip.
+		//   2. Fixed-N backstop: an absolute ceiling of maxToolLoopIterations
+		//      total continuations, trip regardless of fingerprint. Covers
+		//      stuck loops the fingerprint can't catch (e.g. cycling args).
+		// Zero/negative on either field disables that respective check.
+		iterations++
+		fingerprint := fingerprintToolBatch(result.toolCalls)
+		if e.maxIdenticalToolCalls > 0 {
+			if fingerprint != "" && fingerprint == lastFingerprint {
+				identicalRun++
+			} else {
+				identicalRun = 1
+			}
+			lastFingerprint = fingerprint
+		}
+
+		repeatTripped := e.maxIdenticalToolCalls > 0 && identicalRun >= e.maxIdenticalToolCalls
+		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
+		if repeatTripped || backstopTripped {
+			reason := "iteration_backstop"
+			if repeatTripped {
+				reason = "identical_call_repeat"
+			}
+			slog.Warn("engine tool loop capped",
+				"session", sessionID,
+				"trip", reason,
+				"iterations", iterations,
+				"identical_run", identicalRun,
+				"max_iterations", e.maxToolLoopIterations,
+				"max_identical", e.maxIdenticalToolCalls,
+			)
+			// The assistant turn's tool-use intent is already persisted via
+			// storeAssistantToolUseBatch above. Emit the typed terminal Done
+			// (mirroring the idle-watchdog termination arm) and return so
+			// consumers stop hanging. No bus event — no subscriber exists.
+			outChan <- provider.StreamChunk{
+				Done:       true,
+				StopReason: session.StopReasonToolLoopExceeded,
+				ModelID:    e.LastModel(),
+				ProviderID: e.LastProvider(),
+			}
+			return
+		}
+
 		var streamErr error
 		providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 		if streamErr != nil {
@@ -4411,6 +4512,45 @@ func (e *Engine) streamWithToolLoop(
 		// last emission for this session.
 		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 	}
+}
+
+// fingerprintToolBatch produces a deterministic signature for a batch of
+// tool calls so the tool-loop repeat detector can recognise the SAME request
+// recurring across continuations. The signature is the ordered list of
+// (tool name + canonicalised arguments) for every call in the batch.
+//
+// Arguments are canonicalised by compact-JSON of a key-sorted copy of the
+// arg map (json.Marshal already emits map keys in sorted order), so two
+// semantically identical calls whose maps were assembled in different orders
+// fingerprint identically. The batch order is preserved deliberately: a
+// provider that re-emits the same multi-call batch is just as stuck as one
+// re-emitting a single call. An empty batch returns "" — the caller treats a
+// blank fingerprint as "cannot fingerprint", never matching the previous run
+// (the absolute backstop still bounds those turns).
+func fingerprintToolBatch(toolCalls []*provider.ToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, tc := range toolCalls {
+		if tc == nil {
+			continue
+		}
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(tc.Name)
+		b.WriteByte('|')
+		if args, err := json.Marshal(tc.Arguments); err == nil {
+			b.Write(args)
+		} else {
+			// Defensive: an un-marshalable arg map is rare, but fall back to
+			// the Go-syntax rendering so distinct args still fingerprint
+			// distinctly rather than collapsing to a shared "".
+			fmt.Fprintf(&b, "%#v", tc.Arguments)
+		}
+	}
+	return b.String()
 }
 
 // toolCallExecResult holds the outcome of a single tool call execution.
