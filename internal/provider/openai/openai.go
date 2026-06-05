@@ -252,8 +252,31 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	// callers selecting the model fell through to the engine's
 	// ctxstore.DefaultModelContextFallback (16K) and forced spurious
 	// overflow refusals.
+	//
+	// gpt-5.x context-truncation fix: the static catalog enumerated only
+	// the bare "gpt-5" id, so every point-release and size variant
+	// (gpt-5.5, gpt-5-mini, …) fell through to the fallback. A planning-
+	// swarm plan-writer on gpt-5.5 hit limit=32768 (SystemPromptBudget),
+	// truncated at percentage=100 before emitting its plan document, and
+	// failed the swarm's plan gate. The gpt-5 family ships the same
+	// 400K-context / 128K-max-output budget (OpenAI published specs), so
+	// enumerate the family explicitly — mirroring zai.go's hardcoded
+	// defaultContextLength catalog — rather than leaning on the fallback.
+	// gpt5ContextLength / gpt5OutputLimit name the shared family budget so
+	// future point-releases inherit it from a single source of truth.
+	const (
+		gpt5ContextLength = 400000
+		gpt5OutputLimit   = 128000
+	)
 	return []provider.Model{
-		{ID: "gpt-5", Provider: "openai", ContextLength: 400000, OutputLimit: 128000},
+		{ID: "gpt-5", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
+		{ID: "gpt-5.1", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
+		{ID: "gpt-5.2", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
+		{ID: "gpt-5.4", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
+		{ID: "gpt-5.4-mini", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
+		{ID: "gpt-5.5", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
+		{ID: "gpt-5-mini", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
+		{ID: "gpt-5-nano", Provider: "openai", ContextLength: gpt5ContextLength, OutputLimit: gpt5OutputLimit},
 		{ID: "gpt-4o", Provider: "openai", ContextLength: 128000, OutputLimit: 16384},
 		{ID: "gpt-4o-mini", Provider: "openai", ContextLength: 128000, OutputLimit: 16384},
 		{ID: "gpt-4-turbo", Provider: "openai", ContextLength: 128000, OutputLimit: 4096},

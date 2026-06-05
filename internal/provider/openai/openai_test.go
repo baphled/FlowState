@@ -131,6 +131,20 @@ var _ = Describe("OpenAI Provider", func() {
 				outputLimit   int
 			}{
 				{id: "gpt-5", contextLength: 400000, outputLimit: 128000},
+				// gpt-5.x family — without explicit entries these
+				// (notably gpt-5.5 and gpt-5-mini, used live by the
+				// planning swarm) fell through to the engine's
+				// ctxstore.DefaultModelContextFallback / SystemPromptBudget
+				// (16-32K), truncating the plan-writer mid-document and
+				// failing the swarm plan gate. They report the published
+				// gpt-5-class budget (400K context, 128K max output).
+				{id: "gpt-5.1", contextLength: 400000, outputLimit: 128000},
+				{id: "gpt-5.2", contextLength: 400000, outputLimit: 128000},
+				{id: "gpt-5.4", contextLength: 400000, outputLimit: 128000},
+				{id: "gpt-5.4-mini", contextLength: 400000, outputLimit: 128000},
+				{id: "gpt-5.5", contextLength: 400000, outputLimit: 128000},
+				{id: "gpt-5-mini", contextLength: 400000, outputLimit: 128000},
+				{id: "gpt-5-nano", contextLength: 400000, outputLimit: 128000},
 				{id: "gpt-4o", contextLength: 128000, outputLimit: 16384},
 				{id: "gpt-4o-mini", contextLength: 128000, outputLimit: 16384},
 				{id: "gpt-4-turbo", contextLength: 128000, outputLimit: 4096},
