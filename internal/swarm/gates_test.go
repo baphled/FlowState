@@ -762,6 +762,29 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 				"an enveloped markdown plan passes plan-document validation")
 		})
 
+		It("PASSES on the descendant member plan when the bare key holds the lead's prose (the live divergence)", func() {
+			// REGRESSION (2026-06-05): the bare "<chainID>/plan" held the lead's
+			// prose summary while the REAL markdown plan landed one level deeper
+			// at "<chainID>/<member>/plan". The publisher disambiguates to the
+			// descendant and records "<chainID>/<member>/plan_publication"; this
+			// defence-in-depth honesty gate must validate the SAME real plan and
+			// find the record under the resolved descendant chain — not refuse on
+			// the bare prose key.
+			vaultPath := outputDir + "/Auth-Track.md"
+			store := newGateStore(map[string][]byte{
+				"plan-auth/plan":                        []byte("the plan has been written to the coordination store."),
+				"plan-auth/plan-writer/plan":            []byte("# Auth Track\n\nPhase 1: close the perimeter."),
+				"plan-auth/plan-writer/plan_publication": []byte(`{"vault_path":"` + vaultPath + `","published_at":"2026-06-05T10:00:00Z"}`),
+			})
+			args := planningLoopArgs(store)
+			args.ChainID = "plan-auth"
+
+			runner := swarm.NewArtifactPublishedRunner(outputDir, newFakeStat(map[string]bool{vaultPath: true}))
+			Expect(runner.Run(context.Background(), gate, args)).To(Succeed(),
+				"the descendant member plan + its publication record satisfy the honesty gate")
+			Expect(statted).To(ContainElement(vaultPath))
+		})
+
 		It("FAILS when the claimed vault path escapes the resolved output dir (path-traversal honesty)", func() {
 			escapePath := "/tmp/elsewhere/Plan.md"
 			store := newGateStore(map[string][]byte{

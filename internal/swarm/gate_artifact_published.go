@@ -152,7 +152,18 @@ func (r artifactPublishedRunner) Run(_ context.Context, gate GateSpec, args Gate
 	// vault file lands, so its absence means the plan never reached the
 	// vault — the headline "no plan in Obsidian" bug. An approved plan
 	// sitting only in the coord-store is NOT a complete loop.
-	claim, ok := r.publicationClaim(args)
+	//
+	// Look for the record under the chain the plan ACTUALLY resolved to
+	// (planKey with the "/plan" tail stripped): when descendant
+	// disambiguation selected "<chainID>/<member>/plan", the publisher
+	// recorded "<chainID>/<member>/plan_publication" — not the bare
+	// "<chainID>/plan_publication". Threading the resolved chain keeps the
+	// record lookup aligned with the publisher's write.
+	claimArgs := args
+	if resolved := strings.TrimSuffix(planKey, "/"+planSuffix); resolved != "" && resolved != planKey {
+		claimArgs.ChainID = resolved
+	}
+	claim, ok := r.publicationClaim(claimArgs)
 	if !ok || claim.VaultPath == "" {
 		return newGateFailure(gate, args,
 			"loop did not publish the plan to the vault — no plan_publication record "+
@@ -181,10 +192,26 @@ func (r artifactPublishedRunner) resolvePlanBody(gate GateSpec, args GateArgs) (
 		if args.ChainID != "" {
 			key := strings.ReplaceAll(gate.OutputKey, chainIDPlaceholder, args.ChainID)
 			body, err := args.CoordStore.Get(key)
+			if err == nil && isResolvablePlan(body) {
+				return key, body, nil
+			}
+			// Bare "<chainID>/plan" is absent or a non-plan blob (the live
+			// 2026-06-05 divergence: the lead's prose summary sat at the bare
+			// key while the REAL plan was written one level deeper under
+			// "<chainID>/<member>/plan"). Mirror the publisher's descendant
+			// disambiguation so this defence-in-depth honesty gate validates
+			// the SAME real plan the publisher wrote, scoped to the named
+			// chain's prefix (never crossing to a sibling chain).
+			descChain, descBody, found, descErr := scanDescendantPlan(args.CoordStore, args.ChainID)
+			if descErr == nil && found {
+				return descChain + "/" + planSuffix, descBody, nil
+			}
 			if err != nil {
 				return key, nil, fmt.Errorf(
 					"no plan artifact at %q — the loop cannot be complete without a plan", key)
 			}
+			// Bare key present but a non-plan blob and no valid descendant:
+			// surface IT so the SHAPE check below refuses loudly with a reason.
 			return key, body, nil
 		}
 		suffix := strings.TrimPrefix(gate.OutputKey, chainIDPlaceholder+"/")

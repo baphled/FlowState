@@ -330,6 +330,98 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 			entries, _ := os.ReadDir(outputDir)
 			Expect(entries).To(BeEmpty())
 		})
+
+		Context("two competing '/plan' keys under the SAME named chain (the live divergence)", func() {
+			// REGRESSION (2026-06-05, observed live): the planning swarm dispatched
+			// the plan-writer under a DEEPER chain than the post-swarm publisher
+			// resolved. The REAL markdown plan landed at "<chain>/<member>/plan"
+			// while a bare "<chain>/plan" key held the LEAD'S PROSE summary ("the
+			// plan has been written to …") plus leaked failover JSON. The publisher
+			// read the bare "<chain>/plan" DIRECTLY, found no markdown heading, and
+			// refused: `refusing to publish chain "planner" … plan artifact has no
+			// markdown heading structure` — so the real plan never reached the vault.
+			//
+			// The named-chain read must DISAMBIGUATE: when the bare "<chain>/plan"
+			// is not a coherent plan document, prefer a descendant
+			// "<chain>/<member>/plan" key whose body IS one. Disambiguation is
+			// SCOPED to the named chain's prefix — it must never cross to a sibling
+			// chain (the no-cross-chain guard above still holds).
+			It("publishes the descendant member's REAL plan, not the bare prose key", func() {
+				realPlan := "# Planning-Loop Auth Track\n\nPhase 1: close the unauthenticated perimeter.\n\nPhase 2: cross-tenant ownership."
+				leadProse := `the plan has been written to the coordination store. {"from":"anthropic/claude","to":"openai/gpt-4o","reason":"billing"}`
+				store := newGateStore(map[string][]byte{
+					// The lead's prose summary (NOT a plan) at the bare key.
+					"planner/plan": []byte(leadProse),
+					// The real markdown plan the member actually wrote, one level deeper.
+					"planner/plan-writer/plan": []byte(realPlan),
+				})
+
+				path, err := swarm.PublishPlanToVault(store, outputDir, "planner")
+				Expect(err).NotTo(HaveOccurred(), "the real descendant plan must publish, not refuse on the prose key")
+				Expect(path).NotTo(BeEmpty())
+
+				body, readErr := os.ReadFile(path)
+				Expect(readErr).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("Phase 1: close the unauthenticated perimeter."),
+					"the REAL member-written plan is published")
+				Expect(string(body)).NotTo(ContainSubstring("the plan has been written to"),
+					"the lead's prose summary must NOT be published")
+				Expect(string(body)).NotTo(ContainSubstring(`"reason":"billing"`),
+					"leaked failover JSON must NOT reach the vault")
+			})
+
+			It("publishes the descendant plan even when the bare key is absent entirely", func() {
+				// Same divergence, but the lead wrote nothing at the bare key — only
+				// the deeper member key exists. The publisher must still find it under
+				// the named chain rather than no-op'ing as "named chain has no plan".
+				realPlan := "# Planning-Loop Quota Track\n\nPhase 1: per-tenant quota store."
+				store := newGateStore(map[string][]byte{
+					"planning-loop/planner/plan": []byte(realPlan),
+				})
+
+				path, err := swarm.PublishPlanToVault(store, outputDir, "planning-loop")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(path).NotTo(BeEmpty())
+
+				body, readErr := os.ReadFile(path)
+				Expect(readErr).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("Phase 1: per-tenant quota store."))
+			})
+
+			It("still prefers the bare '<chain>/plan' key when IT is a valid plan", func() {
+				// Backwards-compat guard: disambiguation only kicks in when the bare
+				// key is NOT a coherent plan. A valid bare key wins (the direct-read
+				// happy path is unchanged) even if a descendant key also exists.
+				barePlan := "# Canonical Bare Plan\n\nThis is the real plan at the bare key."
+				descendant := "# Descendant Stub\n\nShould be ignored when the bare key is valid."
+				store := newGateStore(map[string][]byte{
+					"valid-chain/plan":             []byte(barePlan),
+					"valid-chain/plan-writer/plan": []byte(descendant),
+				})
+
+				path, err := swarm.PublishPlanToVault(store, outputDir, "valid-chain")
+				Expect(err).NotTo(HaveOccurred())
+				body, readErr := os.ReadFile(path)
+				Expect(readErr).NotTo(HaveOccurred())
+				Expect(string(body)).To(ContainSubstring("This is the real plan at the bare key."))
+				Expect(string(body)).NotTo(ContainSubstring("Should be ignored"))
+			})
+
+			It("does NOT cross to a sibling chain's descendant plan", func() {
+				// The no-cross-chain guard MUST survive disambiguation: a descendant
+				// plan under a DIFFERENT chain prefix is not a candidate for the named
+				// chain. "absent-chain" has neither a bare nor a descendant plan, so
+				// the publish is a clean no-op despite a valid plan under another chain.
+				store := newGateStore(map[string][]byte{
+					"other-chain/plan-writer/plan": []byte("# Other Chain Plan\n\nbody"),
+				})
+				path, err := swarm.PublishPlanToVault(store, outputDir, "absent-chain")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(path).To(BeEmpty(), "a descendant under a sibling chain is NOT the named chain's plan")
+				entries, _ := os.ReadDir(outputDir)
+				Expect(entries).To(BeEmpty())
+			})
+		})
 	})
 
 	Context("a JSON-spec blob at the canonical plan key (THE INCIDENT — garbage to vault)", func() {

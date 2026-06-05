@@ -279,18 +279,133 @@ func resolvePlanForChain(store coordination.Store, chainID string) (string, []by
 		if err != nil {
 			return "", nil, false, fmt.Errorf("probing plan key %q: %w", key, err)
 		}
-		if !exists {
-			// Named chain has no plan: honest no-op, do NOT scan for a
-			// different chain.
-			return "", nil, false, nil
+		var bareRaw []byte
+		if exists {
+			raw, err := store.Get(key)
+			if err != nil {
+				return "", nil, false, fmt.Errorf("reading plan key %q: %w", key, err)
+			}
+			// The bare "<chainID>/plan" key exists AND is a coherent plan
+			// document: the direct-read happy path, unchanged. Only when this
+			// key is absent OR holds a non-plan blob (the live 2026-06-05
+			// divergence: the lead's prose summary + leaked failover JSON sat
+			// at the bare key while the REAL plan was written one level deeper)
+			// do we disambiguate to a descendant member key below.
+			if isResolvablePlan(raw) {
+				return chainID, raw, true, nil
+			}
+			bareRaw = raw
 		}
-		raw, err := store.Get(key)
+
+		// Disambiguation (the live divergence): the post-swarm publisher and
+		// the plan-writer member can resolve DIFFERENT chains for the same run
+		// — the member wrote the real markdown plan to "<chainID>/<member>/plan"
+		// while the bare "<chainID>/plan" holds the lead's prose. Prefer the
+		// DEEPEST descendant "<chainID>/.../plan" key whose body IS a coherent
+		// plan document. This is SCOPED to the named chain's prefix: it never
+		// crosses to a sibling chain (the no-cross-chain guard is preserved —
+		// a missing plan under the named chain with a valid plan under ANOTHER
+		// chain is still a clean no-op).
+		descChain, descRaw, found, err := scanDescendantPlan(store, chainID)
 		if err != nil {
-			return "", nil, false, fmt.Errorf("reading plan key %q: %w", key, err)
+			return "", nil, false, err
 		}
-		return chainID, raw, true, nil
+		if found {
+			return descChain, descRaw, true, nil
+		}
+
+		// No valid descendant plan. If the bare key existed but was a non-plan
+		// blob (a JSON agent-spec, prose dump), surface IT so the publisher's
+		// plan-document validation REFUSES it loudly (honest-fail with a reason)
+		// — the headline-incident guard: a JSON spec blob at the canonical key
+		// must NOT silently no-op. If the bare key was absent entirely, this is
+		// an honest no-op (do NOT scan for a different chain).
+		if bareRaw != nil {
+			return chainID, bareRaw, true, nil
+		}
+		return "", nil, false, nil
 	}
 	return scanForSuffix(store, planSuffix)
+}
+
+// isResolvablePlan reports whether a raw "<chainID>/plan" value resolves to a
+// coherent, publishable plan document. It mirrors the publisher's OWN
+// acceptance path (resolveValidationBody → isPlanDocument): an {"markdown":...}
+// envelope is unwrapped, a structured content-object body is rendered, and any
+// other value is validated verbatim — so a value rejected here is exactly one
+// PublishPlanToVault would later refuse. Used by resolvePlanForChain to decide
+// whether the bare named key is the real plan or a prose/JSON blob that should
+// yield to a deeper member-written key.
+func isResolvablePlan(raw []byte) bool {
+	if strings.TrimSpace(string(raw)) == "" {
+		return false
+	}
+	ok, _ := isPlanDocument(resolveValidationBody(raw))
+	return ok
+}
+
+// scanDescendantPlan finds the deepest "<chainID>/<...>/plan" key under the
+// named chain whose body resolves to a coherent plan document. It is the
+// disambiguation backstop for the live divergence where the real plan lands a
+// level deeper than the bare "<chainID>/plan" key.
+//
+// Scope and determinism:
+//   - Candidates MUST be strict descendants of the named chain
+//     ("<chainID>/" prefix) AND end in "/plan" with at least one intermediate
+//     segment — a sibling chain's plan is never a candidate (no-cross-chain).
+//   - The bare "<chainID>/plan" key is excluded (the caller already handled it).
+//   - Among valid-plan candidates the DEEPEST (most path segments) wins; ties
+//     break on the lexically-smallest key so the result is deterministic
+//     despite the store's unordered key listing.
+//
+// Returns the resolved descendant chainID (the key with "/plan" stripped), its
+// bytes, found=true on a hit; ("", nil, false, nil) when no valid descendant
+// plan exists.
+func scanDescendantPlan(store coordination.Store, chainID string) (string, []byte, bool, error) {
+	keys, err := store.List("")
+	if err != nil {
+		return "", nil, false, fmt.Errorf("listing coord-store keys: %w", err)
+	}
+	prefix := chainID + "/"
+	tail := "/" + planSuffix
+	bareKey := chainID + "/" + planSuffix
+
+	bestKey := ""
+	bestDepth := -1
+	for _, k := range keys {
+		if k == bareKey {
+			continue
+		}
+		if !strings.HasPrefix(k, prefix) || !strings.HasSuffix(k, tail) {
+			continue
+		}
+		// Require at least one intermediate segment between the chain prefix
+		// and the "/plan" tail (a strict descendant, e.g. "<chain>/<member>/plan").
+		inner := strings.TrimSuffix(strings.TrimPrefix(k, prefix), tail)
+		if inner == "" {
+			continue
+		}
+		raw, getErr := store.Get(k)
+		if getErr != nil {
+			return "", nil, false, fmt.Errorf("reading coord-store key %q: %w", k, getErr)
+		}
+		if !isResolvablePlan(raw) {
+			continue
+		}
+		depth := strings.Count(k, "/")
+		if depth > bestDepth || (depth == bestDepth && k < bestKey) {
+			bestDepth = depth
+			bestKey = k
+		}
+	}
+	if bestKey == "" {
+		return "", nil, false, nil
+	}
+	raw, getErr := store.Get(bestKey)
+	if getErr != nil {
+		return "", nil, false, fmt.Errorf("reading coord-store key %q: %w", bestKey, getErr)
+	}
+	return strings.TrimSuffix(bestKey, tail), raw, true, nil
 }
 
 // scanForSuffix returns the chainID prefix and value of the first
