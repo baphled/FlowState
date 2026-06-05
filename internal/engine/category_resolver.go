@@ -198,16 +198,53 @@ func (r *CategoryResolver) Resolve(category string) (CategoryConfig, error) {
 		return CategoryConfig{}, errUnknownCategory
 	}
 	if r.modelLister != nil && isAbstractDescriptor(cfg.Model) {
-		if models, err := r.modelLister(); err == nil && len(models) > 0 {
-			chosen, swap := r.resolveModelWithCapability(cfg.Model, models)
-			cfg.Model = chosen
-			if swap != nil && r.notifier != nil {
-				swap.Category = category
-				r.notifier(*swap)
-			}
-		}
+		cfg = r.resolveAbstract(category, cfg)
 	}
 	return cfg, nil
+}
+
+// resolveAbstract resolves an abstract-descriptor cfg against the live
+// model list, applying capability filtering and stamping the resolved
+// model's OWNING provider when the tier config did not pin one. Extracted
+// from Resolve to keep the nesting flat. Caller guarantees a model lister
+// is configured and cfg.Model is an abstract descriptor.
+//
+// Expected:
+//   - category is the routing category being resolved (for swap notify).
+//   - cfg.Model is an abstract descriptor.
+//
+// Returns:
+//   - cfg with Model resolved to a real ID and Provider stamped to the
+//     resolved model's owner when cfg.Provider was empty. Returned
+//     unchanged when the lister errors or yields no models.
+//
+// Side effects:
+//   - Invokes the swap notifier when capability filtering changed the pick.
+func (r *CategoryResolver) resolveAbstract(category string, cfg CategoryConfig) CategoryConfig {
+	models, err := r.modelLister()
+	if err != nil || len(models) == 0 {
+		return cfg
+	}
+	chosen, swap := r.resolveModelWithCapability(cfg.Model, models)
+	cfg.Model = chosen
+	// Carry the resolved model's OWNING provider out of the resolver. The
+	// abstract descriptor was just resolved against the live model list, so
+	// each candidate knows which provider serves it
+	// (provider.Model.Provider). When the tier config did not pin an
+	// explicit provider, stamp the owner so callers never have to guess —
+	// pairing a lister-resolved model with an unrelated provider (e.g. the
+	// lead's) would manufacture an impossible (provider, model) failover
+	// candidate.
+	if cfg.Provider == "" {
+		if owner := providerForModel(chosen, models); owner != "" {
+			cfg.Provider = owner
+		}
+	}
+	if swap != nil && r.notifier != nil {
+		swap.Category = category
+		r.notifier(*swap)
+	}
+	return cfg
 }
 
 // resolveModelWithCapability picks a model ID from the available list
@@ -260,6 +297,29 @@ func (r *CategoryResolver) resolveModelWithCapability(descriptor string, models 
 		Chosen:   chosen,
 		Reason:   r.denyReason(original),
 	}
+}
+
+// providerForModel returns the Provider of the model in models whose ID
+// matches the resolved id. Used by Resolve to stamp the owning provider
+// onto a lister-resolved abstract descriptor so downstream callers never
+// pair the model with a provider that does not serve it.
+//
+// Expected:
+//   - id is a resolved (non-abstract) model ID.
+//   - models is the candidate list the id was resolved from.
+//
+// Returns:
+//   - The matching model's Provider, or "" when no model matches.
+//
+// Side effects:
+//   - None.
+func providerForModel(id string, models []provider.Model) string {
+	for _, m := range models {
+		if m.ID == id {
+			return m.Provider
+		}
+	}
+	return ""
 }
 
 // pickByDescriptor applies the abstract descriptor's strategy to the

@@ -1710,41 +1710,27 @@ func (a *App) buildComplexityResolver() *engine.CategoryResolver {
 // manifest's own tail (e.g. zai/glm-4.6). Members kept synthesis-hanging on
 // the global default despite commit 04adb404 setting their preferred_models.
 //
-// The guard: when the manifest declares preferred_models AND complexity did
-// not resolve to an explicit per-agent model, leave the manifest-seeded base
-// preferences intact rather than overriding them with the lead's model. The
-// explicit-complexity path is still honoured (a deliberate per-agent routing
-// decision); only the global-default fallback is suppressed. We never silently
-// ignore declared preferences — the deferral is logged.
+// The guard (pinTierModel): a manifest that declares preferred_models is
+// authoritative — its SetBasePreferences chain is left intact regardless of
+// what the complexity tier resolves to, even when that tier carries an
+// EXPLICIT provider. A config category_routing override must not be able to
+// prepend a pair ahead of the member's declared head and silently hijack it.
+// Only a member with NO preferred_models picks up the tier-resolved model.
+// We never silently ignore declared preferences — the deferral is logged.
+//
+// A second guard stops impossible (provider, model) pairs: the tier model is
+// pinned only when the resolved provider actually serves it. The resolver
+// stamps the owning provider onto a lister-resolved abstract descriptor; the
+// model is never blindly paired with the lead's provider (which produced an
+// impossible zai+gpt-5 candidate).
 func (a *App) applyModelPreference(
 	resolver *engine.CategoryResolver,
 	eng *engine.Engine,
 	manifest *agent.Manifest,
 	src *engine.Engine,
 ) {
-	if manifest.Complexity != "" {
-		if cfg, err := resolver.Resolve(manifest.Complexity); err == nil &&
-			cfg.Model != "" && !engine.IsAbstractModelDescriptor(cfg.Model) {
-			// A tier config with an EXPLICIT provider is a deliberate
-			// per-agent routing decision — honour it outright. But the
-			// built-in DefaultCategoryRouting tiers all carry an empty
-			// Provider (e.g. "deep" -> {Model: "reasoning"}), so pinning
-			// here would fill the provider from the lead's global default
-			// and clobber any preferred_models the manifest declares. When
-			// the tier provider is empty AND the manifest declares
-			// preferred_models, DEFER to those (fall through to the guard
-			// below) rather than override them with the global default. Only
-			// when the manifest has no preferred_models do we pin the
-			// global-default provider with the tier-resolved model.
-			if cfg.Provider != "" || len(manifest.PreferredModels) == 0 {
-				prov := cfg.Provider
-				if prov == "" {
-					prov = src.LastProvider()
-				}
-				eng.SetModelPreference(prov, cfg.Model)
-				return
-			}
-		}
+	if a.pinTierModel(resolver, eng, manifest, src) {
+		return
 	}
 	if len(manifest.PreferredModels) > 0 {
 		// Manifest preferences are authoritative — they are already the
@@ -1760,6 +1746,99 @@ func (a *App) applyModelPreference(
 		return
 	}
 	eng.SetModelPreference(src.LastProvider(), src.LastModel())
+}
+
+// pinTierModel pins eng to the manifest's complexity-tier model when, and
+// only when, doing so is safe. It returns true when it set a preference
+// (caller must stop), false when applyModelPreference should fall through
+// to its manifest-defer / lead-inheritance paths.
+//
+// Two guards live here:
+//
+//   - Manifest precedence (Issue #27): a config category_routing tier —
+//     even one with an EXPLICIT provider — must NOT outrank a member that
+//     declares its own preferred_models. createDelegateEngine already
+//     seeded the child failover manager's BASE preferences from the
+//     manifest; pinning here routes through SetModelPreference →
+//     SetOverride, which PREPENDS the tier pair ahead of the manifest head
+//     and shoves the member's intended model (e.g. openai/gpt-5-mini) down
+//     the chain so it is never attempted. So we only pin when the manifest
+//     declares NO preferred_models; members WITH preferences fall through.
+//   - No impossible pairs: when the tier left the provider empty, the
+//     resolver has already stamped the lister-resolved model's owner. If it
+//     is still empty we consider the lead's provider, but pin ONLY when
+//     that provider actually serves the model — never blindly, which would
+//     manufacture an impossible (provider, model) candidate (e.g. zai+gpt-5).
+//
+// Expected:
+//   - manifest, eng, src are non-nil; resolver may resolve or error.
+//
+// Returns:
+//   - true when a preference was pinned; false to fall through.
+//
+// Side effects:
+//   - Calls eng.SetModelPreference when it pins.
+func (a *App) pinTierModel(
+	resolver *engine.CategoryResolver,
+	eng *engine.Engine,
+	manifest *agent.Manifest,
+	src *engine.Engine,
+) bool {
+	if manifest.Complexity == "" || len(manifest.PreferredModels) > 0 {
+		return false
+	}
+	cfg, err := resolver.Resolve(manifest.Complexity)
+	if err != nil || cfg.Model == "" || engine.IsAbstractModelDescriptor(cfg.Model) {
+		return false
+	}
+	prov := cfg.Provider
+	if prov == "" {
+		prov = src.LastProvider()
+	}
+	if !a.providerServesModel(prov, cfg.Model) {
+		// (prov, cfg.Model) is not a valid pair — defer to lead inheritance
+		// rather than stamp an impossible candidate.
+		return false
+	}
+	eng.SetModelPreference(prov, cfg.Model)
+	return true
+}
+
+// providerServesModel reports whether the named provider is registered AND
+// lists model among its available models. It is the guard that stops an
+// impossible (provider, model) pair — e.g. the lead's provider paired with
+// a model only another provider serves — from entering a delegate's
+// failover chain. A registry or lister error, or a missing provider, is
+// treated as "cannot confirm" and returns false so the caller defers to a
+// known-good pairing rather than risking a phantom candidate.
+//
+// Expected:
+//   - providerName and model are the candidate pair to validate.
+//
+// Returns:
+//   - true only when providerName is registered and its Models() contains
+//     model; false otherwise (including any lookup error).
+//
+// Side effects:
+//   - None (read-only registry/provider lookups).
+func (a *App) providerServesModel(providerName, model string) bool {
+	if providerName == "" || model == "" || a.providerRegistry == nil {
+		return false
+	}
+	p, err := a.providerRegistry.Get(providerName)
+	if err != nil || p == nil {
+		return false
+	}
+	models, err := p.Models()
+	if err != nil {
+		return false
+	}
+	for _, m := range models {
+		if m.ID == model {
+			return true
+		}
+	}
+	return false
 }
 
 // formatPreferredModels renders a manifest's preferred_models as a compact

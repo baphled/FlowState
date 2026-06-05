@@ -796,6 +796,63 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			Expect(deepEng.LastModel()).NotTo(Equal("haiku-large"))
 			Expect(deepEng.LastModel()).To(Equal("capable-small"))
 		})
+
+		It("never stamps the lead's provider onto a lister-resolved model it does "+
+			"not serve", func() {
+			// Regression: the abstract-lister path used to pair the resolved
+			// model with src.LastProvider() (the LEAD's provider) without
+			// checking the lead actually serves that model. With the lead on
+			// "zai" and the lister returning models owned by "openai", that
+			// produced an impossible (zai, openai-model) failover candidate.
+			// The effective (provider, model) pair must be self-consistent:
+			// the provider must own the resolved model.
+			openaiSmall := provider.Model{ID: "gpt-5-mini", Provider: "openai", ContextLength: 8192}
+			openaiLarge := provider.Model{ID: "gpt-5", Provider: "openai", ContextLength: 400000}
+
+			lister := &modelsProvider{name: "openai", models: []provider.Model{openaiSmall, openaiLarge}}
+			reg := provider.NewRegistry()
+			reg.Register(lister)
+			app := &App{
+				Registry:         agent.NewRegistry(),
+				defaultProvider:  lister,
+				providerRegistry: reg,
+				Config: &config.AppConfig{
+					ToolCapableModels:   []string{"*"},
+					ToolIncapableModels: []string{},
+				},
+			}
+
+			// Member declares NO preferred_models, so it routes purely via
+			// its complexity tier through the abstract lister.
+			deepManifest := agent.Manifest{
+				ID:         "abstract-member",
+				Name:       "Abstract Member",
+				Complexity: "deep",
+			}
+			app.Registry.Register(&coordManifest)
+			app.Registry.Register(&deepManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: coordManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			// Lead runs on a DIFFERENT provider than the lister owner.
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, coordManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()["abstract-member"]
+			Expect(memberEng).NotTo(BeNil())
+
+			// The resolved model ("gpt-5", openai's largest) must be paired
+			// with its real owner "openai" — never with the lead's "zai".
+			Expect(memberEng.LastModel()).To(Equal("gpt-5"),
+				"deep complexity resolves to the largest lister model")
+			Expect(memberEng.LastProvider()).To(Equal("openai"),
+				"the resolved model must be stamped with the provider that "+
+					"actually serves it, never the lead's zai")
+		})
 	})
 
 	// Regression: swarm/delegate members must run on their manifest's
@@ -955,6 +1012,85 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 			Expect(anthropicIdx).To(Equal(0), "anthropic head must be first")
 			Expect(glm46Idx).To(BeNumerically(">", anthropicIdx),
 				"the manifest's glm-4.6 tail must follow its anthropic head")
+		})
+
+		// wireMemberWithRoutingOverride is wireMemberWithComplexity plus an
+		// explicit config category_routing override that pins a real
+		// (provider, model) pair for the member's complexity tier. This is
+		// the EXPLICIT-provider tier case: a config.yaml override such as
+		//   category_routing:
+		//     low: {provider: zai, model: glm-5.1}
+		// must NOT hijack a member that declares its own preferred_models.
+		// The member's declared head (e.g. openai/gpt-5-mini) stays
+		// authoritative — the explicit tier pair must not be prepended ahead
+		// of it via SetOverride.
+		wireMemberWithRoutingOverride := func(
+			memberID, complexity string,
+			routing map[string]engine.CategoryConfig,
+			prefs []agent.ModelPreference,
+		) *engine.Engine {
+			app, reg := buildPluginApp([]provider.Model{
+				{ID: "glm-5", Provider: "zai", ContextLength: 200000},
+			})
+			app.Config.CategoryRouting = routing
+			leadManifest := agent.Manifest{
+				ID:         "coordinator",
+				Name:       "Coordinator",
+				Delegation: agent.Delegation{CanDelegate: true},
+			}
+			memberManifest := agent.Manifest{
+				ID:              memberID,
+				Name:            memberID,
+				Complexity:      complexity,
+				PreferredModels: prefs,
+			}
+			app.Registry.Register(&leadManifest)
+			app.Registry.Register(&memberManifest)
+
+			lead := engine.New(engine.Config{
+				Manifest: leadManifest, Registry: reg, AgentRegistry: app.Registry,
+			})
+			lead.SetModelPreference("zai", "glm-5")
+
+			app.wireDelegateToolIfEnabled(lead, leadManifest)
+
+			dt, found := lead.GetDelegateTool()
+			Expect(found).To(BeTrue())
+			memberEng := dt.Engines()[memberID]
+			Expect(memberEng).NotTo(BeNil())
+			return memberEng
+		}
+
+		It("keeps manifest preferred_models authoritative even when the tier "+
+			"config carries an EXPLICIT provider", func() {
+			// A config category_routing override pins low -> {provider: zai,
+			// model: glm-5.1}. The member declares preferred_models with
+			// openai/gpt-5-mini as its head. The explicit-provider tier must
+			// NOT be prepended ahead of the manifest head — the member must
+			// still run on openai/gpt-5-mini first.
+			memberEng := wireMemberWithRoutingOverride("worker", "low",
+				map[string]engine.CategoryConfig{
+					"low": {Provider: "zai", Model: "glm-5.1"},
+				},
+				[]agent.ModelPreference{
+					{Provider: "openai", Model: "gpt-5-mini"},
+					{Provider: "zai", Model: "glm-4.6"},
+				})
+
+			prefs := memberEng.FailoverManager().Preferences()
+			Expect(prefs).NotTo(BeEmpty(),
+				"member with preferred_models must keep effective failover "+
+					"preferences even under an explicit-provider tier override")
+			Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "openai", Model: "gpt-5-mini"}),
+				"an explicit-provider config tier (zai/glm-5.1) must NOT be "+
+					"prepended ahead of the manifest's openai/gpt-5-mini head")
+			// The hijacking pair must not appear ahead of the manifest head.
+			for i, p := range prefs {
+				if p.Provider == "zai" && p.Model == "glm-5.1" {
+					Expect(i).To(BeNumerically(">", 0),
+						"the tier override pair must never sit at the head of the chain")
+				}
+			}
 		})
 
 		It("keeps the manifest's anthropic head as the first effective failover preference", func() {
