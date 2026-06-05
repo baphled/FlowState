@@ -5,15 +5,6 @@ import (
 	"strings"
 )
 
-// chainIDSeparator is the single character a coordination-store key uses
-// to separate the chain-namespace prefix from the per-role suffix:
-// "<chainID>/<suffix>". A chainID that itself contains this character
-// breaks the "split on the FIRST '/'" parsing every coord-store reader
-// relies on (the publisher's scanForSuffix, the wave validator's
-// suffix-scan, the gate key resolver's joinKey). SlugifyChainID removes
-// it so a chainID can NEVER fracture key parsing.
-const chainIDSeparator = "/"
-
 // SlugifyChainID normalises a chainID into a key-safe slug so it can never
 // break "<chainID>/<suffix>" coordination-store key parsing. It is the
 // single boundary every chainID — engine-assigned, caller-supplied, or
@@ -194,8 +185,8 @@ func NormaliseMemberCoordKey(authoritativeChainID, key string) string {
 		}
 	}
 	// Unknown suffix: replace the first segment (or prefix a bare key).
-	if idx := strings.Index(key, "/"); idx >= 0 {
-		return authoritativeChainID + "/" + key[idx+1:]
+	if _, rest, ok := strings.Cut(key, "/"); ok {
+		return authoritativeChainID + "/" + rest
 	}
 	return authoritativeChainID + "/" + key
 }

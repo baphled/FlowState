@@ -935,10 +935,10 @@ func titleWord(w string) string {
 // deeper headings ("##", "###") are ignored so the filename tracks the
 // plan's title, not a sub-section.
 func firstH1(body string) string {
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "# ") {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, "# "))
+		if rest, ok := strings.CutPrefix(trimmed, "# "); ok {
+			return strings.TrimSpace(rest)
 		}
 	}
 	return ""
