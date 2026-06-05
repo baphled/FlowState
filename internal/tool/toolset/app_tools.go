@@ -32,7 +32,7 @@ const DefaultVaultCollection = "flowstate-vault"
 
 // BuildAppTools returns the base tool slice the FlowState engine starts
 // with: bash, read, write, web, the skill loader, the todowrite + todo_update
-// pair, and the plan_list/plan_read read-only plan tools bound to plansDir.
+// pair, and the plan_list/plan_read/plan_write plan tools bound to plansDir.
 // The slice is the canonical seed for an engine's tool registry; callers
 // compose conditional tools on top of it via the Append* helpers below.
 //
@@ -94,6 +94,7 @@ func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store,
 		todotool.NewUpdate(todoStore),
 		plan.NewList(plansDir),
 		plan.NewRead(plansDir),
+		plan.NewWrite(plansDir),
 	}
 }
 

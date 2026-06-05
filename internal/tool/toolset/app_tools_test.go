@@ -24,7 +24,7 @@ var _ = Describe("BuildAppTools", func() {
 
 		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", nil)
 
-		Expect(tools).To(HaveLen(9))
+		Expect(tools).To(HaveLen(10))
 		names := make([]string, 0, len(tools))
 		for _, t := range tools {
 			names = append(names, t.Name())
@@ -39,7 +39,27 @@ var _ = Describe("BuildAppTools", func() {
 			"todo_update",
 			"plan_list",
 			"plan_read",
+			"plan_write",
 		}))
+	})
+
+	// Symmetry guard: the primary engine historically wired the read-only
+	// plan_list/plan_read pair but NOT plan_write, while delegate/member
+	// engines (post the planning-swarm fix) gain plan_write when their
+	// manifest declares it. A default assistant placed in a plan-authoring
+	// posture would otherwise advertise list+read but silently swallow a
+	// plan_write call — the same prompt/tool mismatch the swarm fix closes.
+	It("includes plan_write so the primary engine is symmetric with delegates", func() {
+		loader := skill.NewFileSkillLoader("")
+		todos := todotool.NewMemoryStore()
+
+		tools := toolset.BuildAppTools(loader, todos, "/tmp/plans", nil)
+
+		names := make([]string, 0, len(tools))
+		for _, t := range tools {
+			names = append(names, t.Name())
+		}
+		Expect(names).To(ContainElement("plan_write"))
 	})
 
 	// Pre-existing wiring bug surfaced by live verification of cbe4464e:

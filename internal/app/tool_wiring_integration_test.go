@@ -783,6 +783,154 @@ var _ = Describe("Tool wiring integration", func() {
 		})
 	})
 
+	// Regression guard for the planning-swarm "no plan produced under GLM" bug.
+	// The plan-writer member manifest declares plan_write in capabilities.tools
+	// and its prompt emphatically orders the model to CALL plan_write, but
+	// buildToolsForManifestWithStore never constructed any plan.* tool — only
+	// plan_list/plan_read were wired on the PRIMARY engine via BuildAppTools.
+	// A member therefore advertised a tool list WITHOUT plan_write while its
+	// prompt commanded it to call plan_write: GLM emitted a fictional
+	// plan_write call, the engine returned ErrToolNotFound, GLM retried the
+	// identical call, the identical-call cap tripped, the run ended with
+	// tool_loop_exceeded, and the plan-document-v1 gate failed because
+	// {chainID}/plan stayed empty. The fix registers plan tools on delegate/
+	// member engines, gated on manifest declaration via BuildAllowedToolSet.
+	Context("when a delegate agent declares plan_write in capabilities.tools", func() {
+		var plansDir string
+
+		BeforeEach(func() {
+			var err error
+			plansDir, err = os.MkdirTemp("", "plans-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(plansDir) })
+			application.Config = &config.AppConfig{PlanLocation: plansDir}
+		})
+
+		It("registers plan_write in the delegate engine's tools", func() {
+			delegateManifest := agent.Manifest{
+				ID:   "plan-writer",
+				Name: "Plan Writer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"file", "coordination_store", "skill_load", "plan_write"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&delegateManifest)
+
+			tools := application.buildToolsForManifestWithStore(delegateManifest, nil)
+
+			names := make([]string, 0, len(tools))
+			for _, t := range tools {
+				names = append(names, t.Name())
+			}
+			Expect(names).To(ContainElement("plan_write"),
+				"delegate engine must register plan_write when the manifest declares it; "+
+					"without it the plan-writer prompt's 'MUST call plan_write' order hits "+
+					"ErrToolNotFound and the planning swarm spins to tool_loop_exceeded")
+		})
+
+		It("surfaces plan_write in the provider request for a delegate agent", func() {
+			delegateManifest := agent.Manifest{
+				ID:   "plan-writer",
+				Name: "Plan Writer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"file", "coordination_store", "skill_load", "plan_write"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&delegateManifest)
+
+			delegateTools := application.buildToolsForManifestWithStore(delegateManifest, nil)
+			eng = engine.New(engine.Config{
+				Manifest:      delegateManifest,
+				AgentRegistry: agentReg,
+				Registry:      providerReg,
+				ChatProvider:  spy,
+				Tools:         delegateTools,
+			})
+
+			_, err := eng.Stream(context.Background(), "plan-writer", "write the plan")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(spy.capturedRequest).NotTo(BeNil())
+			names := make([]string, 0, len(spy.capturedRequest.Tools))
+			for _, t := range spy.capturedRequest.Tools {
+				names = append(names, t.Name)
+			}
+			Expect(names).To(ContainElement("plan_write"),
+				"plan_write must reach the provider for a delegate agent that declares it; "+
+					"a missing entry is exactly the schema/prompt mismatch that stalls the swarm")
+		})
+
+		It("dispatches plan_write to the real plan.Write.Execute writing under the resolved plan location", func() {
+			delegateManifest := agent.Manifest{
+				ID:   "plan-writer",
+				Name: "Plan Writer",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"file", "coordination_store", "skill_load", "plan_write"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&delegateManifest)
+
+			tools := application.buildToolsForManifestWithStore(delegateManifest, nil)
+
+			var planWrite tool.Tool
+			for _, t := range tools {
+				if t.Name() == "plan_write" {
+					planWrite = t
+					break
+				}
+			}
+			Expect(planWrite).NotTo(BeNil(), "plan_write must be present to dispatch")
+
+			result, err := planWrite.Execute(context.Background(), tool.Input{
+				Name: "plan_write",
+				Arguments: map[string]interface{}{
+					"markdown": "---\nid: swarm-plan\ntitle: Swarm Plan\n---\n# Plan\n\nDeliver the thing.\n",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred(),
+				"plan_write must resolve to the real plan.Write tool bound to the plans dir, "+
+					"not a tool-not-found stub")
+
+			entries, readErr := os.ReadDir(plansDir)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(entries).NotTo(BeEmpty(),
+				"plan.Write.Execute must persist a plan file under cfg.ResolvedPlanLocation()")
+		})
+	})
+
+	Context("when a non-delegating manifest omits plan_write from capabilities.tools", func() {
+		It("preserves fail-closed: plan_write is not wired", func() {
+			plansDir, err := os.MkdirTemp("", "plans-*")
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() { os.RemoveAll(plansDir) })
+			application.Config = &config.AppConfig{PlanLocation: plansDir}
+
+			noPlanManifest := agent.Manifest{
+				ID:   "executor",
+				Name: "Executor",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"bash", "file", "web"},
+				},
+				Delegation: agent.Delegation{CanDelegate: false},
+			}
+			agentReg.Register(&noPlanManifest)
+
+			tools := application.buildToolsForManifestWithStore(noPlanManifest, nil)
+
+			names := make([]string, 0, len(tools))
+			for _, t := range tools {
+				names = append(names, t.Name())
+			}
+			Expect(names).NotTo(ContainElement("plan_write"),
+				"a manifest that does not declare plan_write must NOT receive it; "+
+					"the BuildAllowedToolSet filter keeps plan tools fail-closed")
+		})
+	})
+
 	Context("when a non-delegating manifest omits coordination_store from capabilities.tools", func() {
 		It("preserves the guard: coordination_store is not wired", func() {
 			noCoordManifest := agent.Manifest{

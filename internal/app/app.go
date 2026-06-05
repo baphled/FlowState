@@ -57,6 +57,7 @@ import (
 	"github.com/baphled/flowstate/internal/tool/mcpproxy"
 	"github.com/baphled/flowstate/internal/tool/multiedit"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
+	plantool "github.com/baphled/flowstate/internal/tool/plan"
 	"github.com/baphled/flowstate/internal/tool/read"
 	skilltool "github.com/baphled/flowstate/internal/tool/skill"
 	todotool "github.com/baphled/flowstate/internal/tool/todo"
@@ -2499,6 +2500,30 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {
 		tools = append(tools, coordinationtool.New(store))
+	}
+
+	// Plan tools (plan_list/plan_read/plan_write) are appended to the
+	// candidate slice and gated downstream by BuildAllowedToolSet, exactly
+	// like the MCP/memory/vault tools below. Without this, a delegate or
+	// swarm member whose manifest declares plan_write (e.g. plan-writer)
+	// advertised a tool list WITHOUT plan_write while its prompt commanded
+	// it to CALL plan_write: the provider emitted a fictional plan_write
+	// call, the engine returned ErrToolNotFound, the model retried the
+	// identical call, the identical-call cap tripped, the run ended with
+	// tool_loop_exceeded, and the planning swarm's plan-document-v1 gate
+	// failed because {chainID}/plan stayed empty. The tools resolve their
+	// target directory through cfg.ResolvedPlanLocation() — the same
+	// resolution BuildAppTools uses for the primary engine. A nil Config
+	// leaves them off (tests that do not exercise plan tools), and a
+	// manifest that does not declare them never receives them because the
+	// allowed-set filter below is fail-closed.
+	if a.Config != nil {
+		plansDir := a.Config.ResolvedPlanLocation()
+		tools = append(tools,
+			plantool.NewList(plansDir),
+			plantool.NewRead(plansDir),
+			plantool.NewWrite(plansDir),
+		)
 	}
 
 	if a.Engine != nil {
