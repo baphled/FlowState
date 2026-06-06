@@ -502,6 +502,74 @@ type Validator interface {
 	HasSwarm(id string) bool
 }
 
+// ValidationWarning is an advisory finding from Manifest.Warnings — a
+// configuration that is LEGAL (Validate still succeeds) but historically
+// footgun-prone, so it is surfaced at validate time (`make check` /
+// `flowstate swarm validate`) BEFORE a run rather than only manifesting as
+// a confusing runtime failure. Carries Field so a surface can render it
+// like a ValidationError without substring-matching the message.
+type ValidationWarning struct {
+	Field   string
+	Message string
+}
+
+// String renders the warning in "field: message" form, matching
+// ValidationError.Error so the two render identically in a validate
+// listing.
+//
+// Returns:
+//   - The string "<field>: <message>" describing the advisory.
+//
+// Side effects:
+//   - None.
+func (w ValidationWarning) String() string {
+	return w.Field + ": " + w.Message
+}
+
+// Warnings returns the manifest's advisory (non-fatal) findings. Unlike
+// Validate — which returns a hard error that fails the build — warnings
+// flag legal-but-risky configurations a maintainer should eyeball.
+//
+// Today the sole rule is the chain_prefix-vs-id footgun (the headline
+// incident): a swarm whose context.chain_prefix differs from its id used
+// to DISABLE per-run chain assignment, so the post-swarm publisher resolved
+// an empty chain and suffix-scanned a FOREIGN chain's "*/plan", aborting
+// the run. Per-run assignment now anchors the run namespace UNDER the
+// pinned prefix (AssignRunChainID), so a differing prefix is safe — but it
+// remains a deliberate, easy-to-mistake choice, so it is surfaced as a
+// WARNING. An empty chain_prefix (defaults to the id at NewContext) and a
+// prefix equal to the id are the canonical, footgun-free cases and produce
+// no warning — so the legitimate embedded swarms that intentionally pin a
+// differing prefix (planning-loop, plan-sme-swarm, meta-swarm) validate
+// cleanly while still being flagged for a maintainer's eye.
+//
+// Expected:
+//   - m is a non-nil Manifest pointer.
+//
+// Returns:
+//   - A slice of advisory warnings; empty when the manifest is clean.
+//
+// Side effects:
+//   - None.
+func (m *Manifest) Warnings() []ValidationWarning {
+	var warnings []ValidationWarning
+
+	prefix := strings.TrimSpace(m.Context.ChainPrefix)
+	if prefix != "" && prefix != strings.TrimSpace(m.ID) {
+		warnings = append(warnings, ValidationWarning{
+			Field: "context.chain_prefix",
+			Message: fmt.Sprintf(
+				"chain_prefix %q differs from swarm id %q; the per-run chain is "+
+					"now anchored under the pinned prefix (safe), but confirm this "+
+					"is intentional — a differing prefix historically disabled "+
+					"per-run chain assignment and invited cross-chain publishes",
+				prefix, m.ID),
+		})
+	}
+
+	return warnings
+}
+
 // noopValidator is the zero-value Validator returned to Validate when
 // the caller passes nil. It accepts no agents and no swarms so the
 // "lead must resolve" / "members must resolve" rules still fire and

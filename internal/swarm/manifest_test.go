@@ -262,3 +262,62 @@ harness:
 		})
 	})
 })
+
+var _ = Describe("Manifest.Warnings (advisory, non-fatal)", func() {
+	// Warnings surface the chain_prefix != id footgun class at validate
+	// time (make check / `flowstate swarm validate`) BEFORE a run. Per-run
+	// chain assignment now anchors the per-run namespace under the pinned
+	// prefix, so a differing prefix is SAFE — hence a WARNING (not an
+	// error): it explains the implication without failing the build, so the
+	// legitimate embedded swarms that intentionally pin a differing prefix
+	// (planning-loop, plan-sme-swarm, meta-swarm) keep validating cleanly.
+
+	manifestWithPrefix := func(id, prefix string) *swarm.Manifest {
+		return &swarm.Manifest{
+			SchemaVersion: swarm.SchemaVersionV1,
+			ID:            id,
+			Lead:          "planner",
+			Members:       []string{"reviewer"},
+			Context:       swarm.ContextConfig{ChainPrefix: prefix},
+		}
+	}
+
+	It("warns when chain_prefix differs from the swarm id", func() {
+		m := manifestWithPrefix("mental-health-swarm", "mental-health")
+
+		warnings := m.Warnings()
+
+		Expect(warnings).NotTo(BeEmpty(),
+			"a differing chain_prefix is the historical footgun class and must be surfaced")
+		var found bool
+		for _, w := range warnings {
+			if w.Field == "context.chain_prefix" {
+				found = true
+				Expect(w.Message).To(ContainSubstring("mental-health"))
+				Expect(w.Message).To(ContainSubstring("mental-health-swarm"))
+			}
+		}
+		Expect(found).To(BeTrue(), "the warning names the context.chain_prefix field")
+	})
+
+	It("does NOT warn when chain_prefix equals the swarm id", func() {
+		m := manifestWithPrefix("dev-swarm", "dev-swarm")
+
+		Expect(m.Warnings()).To(BeEmpty(),
+			"a prefix matching the id is the canonical default — no footgun, no warning")
+	})
+
+	It("does NOT warn when chain_prefix is omitted (defaults to the id)", func() {
+		m := manifestWithPrefix("a-team", "")
+
+		Expect(m.Warnings()).To(BeEmpty(),
+			"an empty prefix defaults to the swarm id at NewContext — no differing prefix")
+	})
+
+	It("does NOT turn a warning into a validation error", func() {
+		m := manifestWithPrefix("mental-health-swarm", "mental-health")
+
+		Expect(m.Validate(nil)).To(Succeed(),
+			"a differing prefix is advisory only — it must never fail validation")
+	})
+})

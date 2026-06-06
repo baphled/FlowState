@@ -148,7 +148,11 @@ check-agent-manifests: build ## Validate embedded agent manifests against catego
 	@echo "Validating embedded agent manifests..."
 	@./build/flowstate agents validate --agents-dir internal/app/agents
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-agent-manifests ## Run all checks
+check-swarm-manifests: build ## Validate embedded swarm manifests and surface chain_prefix footgun warnings
+	@echo "Validating embedded swarm manifests..."
+	@./build/flowstate swarm validate --swarm-dir internal/app/swarms
+
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-agent-manifests check-swarm-manifests ## Run all checks
 
 #
 # Dependencies

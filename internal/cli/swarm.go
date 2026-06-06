@@ -299,10 +299,37 @@ func runSwarmValidate(w io.Writer, dir, id string) error {
 		if _, perr := fmt.Fprintf(w, "PASS\t%s\n", m.ID); perr != nil {
 			return perr
 		}
+		if perr := printSwarmWarnings(w, m); perr != nil {
+			return perr
+		}
 	}
 
 	if loadErr != nil {
 		return loadErr
+	}
+	return nil
+}
+
+// printSwarmWarnings writes the manifest's advisory (non-fatal) warnings to
+// w as indented "WARN\t<field>: <message>" lines beneath its PASS line, so
+// `flowstate swarm validate` (and the check-swarm-manifests make target that
+// drives it) surface the chain_prefix-vs-id footgun class BEFORE a run
+// without failing the build. A clean manifest writes nothing.
+//
+// Expected:
+//   - w is a non-nil writer.
+//   - m is a non-nil manifest already past Validate.
+//
+// Returns:
+//   - nil on success, or the first write error.
+//
+// Side effects:
+//   - Writes one line per warning to w.
+func printSwarmWarnings(w io.Writer, m *swarm.Manifest) error {
+	for _, warning := range m.Warnings() {
+		if _, perr := fmt.Fprintf(w, "WARN\t%s\n", warning.String()); perr != nil {
+			return perr
+		}
 	}
 	return nil
 }
@@ -332,8 +359,10 @@ func validateSingle(w io.Writer, manifests []*swarm.Manifest, dir, id string, lo
 				_, _ = fmt.Fprintf(w, "FAIL\t%s\n", id)
 				return fmt.Errorf("validating swarm %q: %w", id, err)
 			}
-			_, perr := fmt.Fprintf(w, "PASS\t%s\n", id)
-			return perr
+			if _, perr := fmt.Fprintf(w, "PASS\t%s\n", id); perr != nil {
+				return perr
+			}
+			return printSwarmWarnings(w, m)
 		}
 	}
 
