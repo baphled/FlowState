@@ -16,6 +16,80 @@ import (
 
 const replayBufferSize = 16
 
+// Default bounds for the transient-error backoff retry loop. A swarm member
+// that hits a TRANSIENT provider failure (HTTP 429 / rate_limit, a network
+// blip, a 5xx) on EVERY capable candidate must not kill the whole run — it
+// should back off until the soonest provider recovers and retry, bounded so
+// it can never hang. See StreamHook.Execute for the full rationale.
+const (
+	// Caps the number of full candidate-chain passes (1 initial attempt +
+	// N-1 retries). After the cap the loop fails terminally with "all
+	// providers failed" — the prior behaviour.
+	defaultMaxRetryRounds = 4
+	// Caps the cumulative time spent sleeping between retry rounds,
+	// independent of the per-round window. Even if every provider reports a
+	// long cooldown the loop gives up after this budget so a caller waiting
+	// on the stream is never blocked indefinitely.
+	defaultMaxTotalWait = 90 * time.Second
+	// Floors a computed backoff so a near-zero or already-elapsed cooldown
+	// still yields forward progress (a tight re-attempt) without a busy spin.
+	minBackoffWait = 50 * time.Millisecond
+	// Caps a single round's sleep so one provider reporting a multi-minute
+	// Retry-After does not consume the whole MaxTotalWait budget in one wait.
+	maxPerRoundWait = 30 * time.Second
+)
+
+// RetryBackoffConfig tunes the transient-error backoff retry loop in
+// StreamHook.Execute. The zero value is NOT usable directly — NewStreamHook
+// seeds sane defaults; callers (and tests) override via SetRetryBackoff.
+type RetryBackoffConfig struct {
+	// MaxRounds is the maximum number of candidate-chain passes, counting
+	// the initial attempt. MaxRounds <= 1 disables retry (single pass,
+	// legacy behaviour). Values <= 0 fall back to defaultMaxRetryRounds.
+	MaxRounds int
+	// MaxTotalWait caps cumulative backoff sleep across all rounds. Values
+	// <= 0 fall back to defaultMaxTotalWait.
+	MaxTotalWait time.Duration
+	// Sleep waits for d or until ctx is done, returning ctx.Err() on
+	// cancellation. Injected so tests can model wall-clock recovery
+	// deterministically without real sleeps. Nil falls back to the
+	// ctx-aware default.
+	Sleep func(ctx context.Context, d time.Duration) error
+}
+
+// withDefaults returns a copy of the config with any unset field populated
+// from the package defaults, so a partially-specified override (common in
+// tests) stays safe.
+func (c RetryBackoffConfig) withDefaults() RetryBackoffConfig {
+	if c.MaxRounds <= 0 {
+		c.MaxRounds = defaultMaxRetryRounds
+	}
+	if c.MaxTotalWait <= 0 {
+		c.MaxTotalWait = defaultMaxTotalWait
+	}
+	if c.Sleep == nil {
+		c.Sleep = ctxAwareSleep
+	}
+	return c
+}
+
+// ctxAwareSleep waits for d or returns early with ctx.Err() if ctx is done
+// first. It is the production backoff: respecting ctx cancellation/deadline
+// during the wait is mandatory so a cancelled request never sleeps on.
+func ctxAwareSleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // StreamHook is a hook.Hook middleware that handles multi-provider retry with
 // peek-and-replay. It queries the Manager for healthy candidates and tries each
 // in order, peeking at the first chunk to detect async errors before committing.
@@ -23,6 +97,7 @@ type StreamHook struct {
 	manager  *Manager
 	eventBus *eventbus.EventBus
 	agentID  string
+	retry    RetryBackoffConfig
 }
 
 // NewStreamHook creates a new StreamHook with the given failover manager,
@@ -39,7 +114,27 @@ type StreamHook struct {
 // Side effects:
 //   - None.
 func NewStreamHook(manager *Manager, bus *eventbus.EventBus, agentID string) *StreamHook {
-	return &StreamHook{manager: manager, eventBus: bus, agentID: agentID}
+	return &StreamHook{
+		manager:  manager,
+		eventBus: bus,
+		agentID:  agentID,
+		retry:    RetryBackoffConfig{}.withDefaults(),
+	}
+}
+
+// SetRetryBackoff overrides the transient-error backoff retry configuration.
+// Unset fields in cfg are populated from the package defaults, so callers may
+// override only the field they care about. Primarily a test seam for injecting
+// a deterministic Sleep, but also the wiring point for an operator-configurable
+// cap should the app layer expose one.
+//
+// Expected:
+//   - cfg carries the desired bounds and/or Sleep; unset fields default.
+//
+// Side effects:
+//   - Replaces the receiver's retry config.
+func (sh *StreamHook) SetRetryBackoff(cfg RetryBackoffConfig) {
+	sh.retry = cfg.withDefaults()
 }
 
 // Execute returns a hook.HandlerFunc that wraps the next handler with multi-provider
@@ -112,57 +207,292 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 			return nil, fmt.Errorf("all providers failed: %w", err)
 		}
 
-		var lastErr error
-		// previousFailed records the FIRST candidate that failed before
-		// this attempt succeeded. It powers the user-visible
-		// "provider_changed" Track B affordance: when the second (or
-		// later) candidate succeeds, the user is no longer on their
-		// primary model and the chat UI must surface the transition.
-		// We track only the first failure (not a list) because the
-		// toast renders one alert: "switched away from <primary>". A
-		// chain of multiple failures collapses to "primary failed" in
-		// the user's mental model — listing every retired candidate
-		// would be noise.
-		var previousFailed *failedCandidate
-		for _, candidate := range candidates {
-			req.Provider = candidate.Provider
-			req.Model = candidate.Model
+		// state carries failure bookkeeping across retry rounds:
+		// state.lastErr is surfaced in the terminal wrap, and
+		// state.previousFailed records the FIRST candidate that failed so
+		// an eventual success still surfaces the user-visible
+		// "provider_changed" switch-away toast ("switched away from
+		// <primary>"). Only the first failure is tracked — a chain of
+		// failures collapses to "primary failed" in the user's mental
+		// model, and listing every retired candidate would be noise.
+		var state retryState
 
-			replayCh, err := sh.attemptCandidate(ctx, next, req, candidate)
-			if err != nil {
-				lastErr = err
-				if previousFailed == nil {
-					previousFailed = &failedCandidate{
-						provider: candidate.Provider,
-						model:    candidate.Model,
-						reason:   classifyFailoverReason(err),
-					}
+		// totalWaited accumulates backoff sleep across rounds so the loop
+		// gives up once the MaxTotalWait budget is exhausted, independent
+		// of the per-round window. This is the hang-guard: even if every
+		// provider keeps reporting a long cooldown the caller is never
+		// blocked past MaxTotalWait.
+		var totalWaited time.Duration
+
+		// Transient-error backoff retry loop. A round is one full pass over
+		// the current healthy candidate chain. When EVERY failure in a round
+		// is TRANSIENT (HTTP 429 / rate_limit, a network blip, a 5xx) the
+		// candidates were all cooled down in health, so a naive return here
+		// would kill the whole swarm on a recoverable blip. Instead we back
+		// off until the soonest candidate's cooldown expires and re-attempt.
+		//
+		// The loop is bounded two ways — MaxRounds (attempt count) and
+		// MaxTotalWait (cumulative sleep) — so it can never hang. A
+		// PERMANENT error (auth/401, invalid model/400, context-length) is
+		// never retried: roundAllTransient goes false and we fail fast.
+		for round := range sh.retry.MaxRounds {
+			if round > 0 {
+				candidates = sh.nextRoundCandidates(ctx, req)
+				if len(candidates) == 0 {
+					break
 				}
-				continue
 			}
-			// model_active fires on EVERY successful stream so the chat UI
-			// can pivot the persistent toolbar chip from the user's
-			// selection to the actual model the moment streaming starts.
-			// The user reported (May 2026) that the chip "shows what was
-			// selected, not what actually ran" — until this prepend, the
-			// chip had no signal during streaming distinguishing the two,
-			// so a selection that didn't match the actual call (failover,
-			// agent override, manifest override) read wrong until the
-			// post-stream reconcile pulled the engine-stamped pair.
-			//
-			// Order: model_active first, then provider_changed (when
-			// failover happened). Both must arrive before any user-visible
-			// content; the relative order between them is unspecified at
-			// the consumer (the frontend handles them as independent
-			// events).
-			replayCh = prependModelActiveChunk(ctx, replayCh, candidate)
-			if previousFailed != nil {
-				replayCh = prependProviderChangedChunk(ctx, replayCh, previousFailed, candidate)
+
+			replayCh, attempts, ok := sh.runCandidateRound(ctx, next, req, candidates, &state)
+			if ok {
+				return sh.decorateSuccess(ctx, replayCh, attempts.winner, state.previousFailed), nil
 			}
-			return replayCh, nil
+
+			waited, retry := sh.backoffBeforeRetry(ctx, round, attempts, totalWaited)
+			if !retry {
+				break
+			}
+			totalWaited += waited
 		}
-		return nil, fmt.Errorf("all providers failed: %w", lastErr)
+		return nil, fmt.Errorf("all providers failed: %w", state.lastErr)
 	}
+}
+
+// nextRoundCandidates re-fetches the healthy candidate chain for a retry round.
+// The backoff between rounds waited for cooldowns to lapse, so previously
+// rate-limited pairs should now re-enter the pool. The same agent-chain and
+// pinned-provider ordering applied on the first pass is re-applied so retry
+// rounds honour the agent's preferred order.
+//
+// Expected:
+//   - req carries the pinned provider/model (if any) to re-promote.
+//
+// Returns:
+//   - The ordered healthy candidate chain (possibly empty).
+//
+// Side effects:
+//   - None.
+func (sh *StreamHook) nextRoundCandidates(ctx context.Context, req *provider.ChatRequest) []provider.ModelPreference {
+	candidates := sh.manager.Candidates()
+	candidates = sh.prependAgentChain(ctx, candidates)
+	return promotePinned(candidates, req.Provider, req.Model)
+}
+
+// decorateSuccess prepends the model_active (and, on failover, provider_changed)
+// observability chunks to a winning replay channel.
+//
+// The model_active chunk fires on EVERY successful stream so the chat UI can
+// pivot the toolbar chip from the user's selection to the actual model the
+// moment streaming starts. The provider_changed chunk fires only when an
+// earlier candidate failed, announcing the switch-away from the primary. Order
+// is model_active first; the relative order is unspecified at the consumer.
+//
+// Expected:
+//   - replayCh is the winning candidate's stream.
+//   - winner identifies the provider/model that succeeded.
+//   - previousFailed is the first failure this call, or nil.
+//
+// Returns:
+//   - The decorated replay channel.
+//
+// Side effects:
+//   - None.
+func (sh *StreamHook) decorateSuccess(
+	ctx context.Context,
+	replayCh <-chan provider.StreamChunk,
+	winner provider.ModelPreference,
+	previousFailed *failedCandidate,
+) <-chan provider.StreamChunk {
+	replayCh = prependModelActiveChunk(ctx, replayCh, winner)
+	if previousFailed != nil {
+		replayCh = prependProviderChangedChunk(ctx, replayCh, previousFailed, winner)
+	}
+	return replayCh
+}
+
+// backoffBeforeRetry decides whether to back off and start another retry round,
+// and performs the wait. It returns the duration actually slept and whether the
+// caller should retry. We retry only when: the round actually attempted a
+// candidate, EVERY failure was transient, this is not the last permitted round,
+// and the cumulative wait budget is not exhausted. A ctx cancel/deadline during
+// the sleep aborts the retry (returns retry=false) so a cancelled request never
+// sleeps on.
+//
+// Expected:
+//   - round is the zero-based round index just completed.
+//   - attempts summarises the failed round.
+//   - totalWaited is the cumulative sleep so far.
+//
+// Returns:
+//   - The duration slept (zero when not retrying) and whether to retry.
+//
+// Side effects:
+//   - Sleeps via the configured Sleep func.
+func (sh *StreamHook) backoffBeforeRetry(
+	ctx context.Context,
+	round int,
+	attempts roundOutcome,
+	totalWaited time.Duration,
+) (time.Duration, bool) {
+	if round == sh.retry.MaxRounds-1 || !attempts.allTransient || len(attempts.pairs) == 0 {
+		return 0, false
+	}
+	wait := computeBackoff(sh.manager.Health(), attempts.pairs)
+	if remaining := sh.retry.MaxTotalWait - totalWaited; wait > remaining {
+		wait = remaining
+	}
+	if wait <= 0 {
+		return 0, false
+	}
+	if err := sh.retry.Sleep(ctx, wait); err != nil {
+		return 0, false
+	}
+	return wait, true
+}
+
+// roundOutcome summarises one pass over the candidate chain for the retry
+// loop. It never escapes Execute.
+type roundOutcome struct {
+	// winner is the candidate whose stream succeeded; only meaningful when
+	// runCandidateRound reports ok==true.
+	winner provider.ModelPreference
+	// pairs are the (provider, model) candidates attempted this round, in
+	// order, used to compute the soonest cooldown for backoff.
+	pairs []provider.ModelPreference
+	// allTransient is true when every failure this round was a TRANSIENT
+	// provider error (rate-limit / overload / network / 5xx). A single
+	// permanent failure (auth, model-not-found, context-window) sets it
+	// false so the loop fails fast instead of retrying.
+	allTransient bool
+}
+
+// retryState carries the failure bookkeeping that must persist ACROSS retry
+// rounds: the most recent error (surfaced in the terminal "all providers
+// failed" wrap) and the first failed candidate (powering the user-visible
+// provider_changed switch-away toast on an eventual success).
+type retryState struct {
+	lastErr        error
+	previousFailed *failedCandidate
+}
+
+// runCandidateRound attempts each candidate once, returning the success replay
+// channel (ok==true) or a summary used to decide on backoff. The shared
+// retryState is updated in place so its semantics persist across rounds.
+//
+// Expected:
+//   - candidates is the current healthy chain for this round (non-empty).
+//   - state is the cross-round failure bookkeeping (non-nil).
+//
+// Returns:
+//   - The replay channel and winning candidate on the first success.
+//   - The round outcome (attempted pairs, transient-only flag) when no
+//     candidate succeeded; ok is false in that case.
+//
+// Side effects:
+//   - Sets req.Provider / req.Model per attempt.
+//   - Updates state.lastErr / state.previousFailed.
+func (sh *StreamHook) runCandidateRound(
+	ctx context.Context,
+	next hook.HandlerFunc,
+	req *provider.ChatRequest,
+	candidates []provider.ModelPreference,
+	state *retryState,
+) (<-chan provider.StreamChunk, roundOutcome, bool) {
+	outcome := roundOutcome{allTransient: true}
+	for _, candidate := range candidates {
+		req.Provider = candidate.Provider
+		req.Model = candidate.Model
+		outcome.pairs = append(outcome.pairs, candidate)
+
+		replayCh, err := sh.attemptCandidate(ctx, next, req, candidate)
+		if err != nil {
+			state.lastErr = err
+			if !isTransientFailoverError(err) {
+				outcome.allTransient = false
+			}
+			if state.previousFailed == nil {
+				state.previousFailed = &failedCandidate{
+					provider: candidate.Provider,
+					model:    candidate.Model,
+					reason:   classifyFailoverReason(err),
+				}
+			}
+			continue
+		}
+		outcome.winner = candidate
+		return replayCh, outcome, true
+	}
+	return nil, outcome, false
+}
+
+// isTransientFailoverError reports whether err is a TRANSIENT provider failure
+// that warrants a backoff-and-retry rather than a terminal abort. It reuses
+// provider.IsRetriableErrorType (rate-limit / overload / network / server) for
+// typed errors and the rate-limit keyword fallback for untyped ones. Permanent
+// failures — auth (401/403), model-not-found / invalid model (400), context
+// length, billing/quota — return false so the loop fails fast.
+//
+// Expected:
+//   - err may be nil (returns false).
+//
+// Returns:
+//   - true when err is a retryable transient provider error.
+//
+// Side effects:
+//   - None.
+func isTransientFailoverError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var provErr *provider.Error
+	if errors.As(err, &provErr) {
+		return provider.IsRetriableErrorType(provErr.ErrorType)
+	}
+	// Untyped error: only the rate-limit keyword shapes are treated as
+	// transient. Anything else is conservatively permanent — retrying an
+	// unclassifiable failure risks spinning on a genuine hard error.
+	return (&RateLimitDetector{}).isRateLimitedError(err)
+}
+
+// computeBackoff returns how long to wait before the next retry round. It picks
+// the SOONEST RateLimitedUntil across the attempted pairs (so we wake as soon
+// as any provider recovers, respecting carrier-issued Retry-After, which is
+// baked into the cooldown via cooldownForProviderError). The result is floored
+// at minBackoffWait (forward progress without a busy spin) and capped at
+// maxPerRoundWait (one long cooldown must not consume the whole budget).
+//
+// Expected:
+//   - health is the manager's HealthManager.
+//   - pairs are the candidates attempted this round (non-empty).
+//
+// Returns:
+//   - The clamped wait duration.
+//
+// Side effects:
+//   - None.
+func computeBackoff(health *HealthManager, pairs []provider.ModelPreference) time.Duration {
+	var soonest time.Time
+	for _, p := range pairs {
+		until, ok := health.RateLimitedUntil(p.Provider, p.Model)
+		if !ok {
+			// This pair is already healthy again — re-attempt immediately.
+			return minBackoffWait
+		}
+		if soonest.IsZero() || until.Before(soonest) {
+			soonest = until
+		}
+	}
+	if soonest.IsZero() {
+		return minBackoffWait
+	}
+	wait := time.Until(soonest)
+	if wait < minBackoffWait {
+		wait = minBackoffWait
+	}
+	if wait > maxPerRoundWait {
+		wait = maxPerRoundWait
+	}
+	return wait
 }
 
 // failedCandidate captures the provider/model pair of a candidate that was
@@ -775,6 +1105,7 @@ func streamWithReplay(
 //
 // Side effects:
 //   - May update HealthManager state.
+//
 // failoverTransportError tags a transport-level failover failure — a pre-first-
 // chunk stall (peek-timeout) or an immediately-closed stream — as a retriable
 // NetworkError so markProviderHealth's typed branch applies a cooldown and the

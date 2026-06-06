@@ -2193,3 +2193,281 @@ var _ = Describe("StreamHook transport-failure health marking", func() {
 			"a provider that opens then closes without sending must be cooled down so it is skipped on the next turn")
 	})
 })
+
+// transientRateLimitError builds a typed rate-limit *provider.Error carrying a
+// RetryAfter so markProviderHealth cools the candidate for exactly that window.
+func transientRateLimitError(prov string, retryAfter time.Duration) error {
+	return &provider.Error{
+		ErrorType:   provider.ErrorTypeRateLimit,
+		Provider:    prov,
+		HTTPStatus:  429,
+		Message:     "Rate limit reached for requests",
+		IsRetriable: true,
+		RateLimit:   &provider.RateLimit{RetryAfter: retryAfter},
+	}
+}
+
+// transientNetworkError builds a typed network *provider.Error (a retryable
+// connection blip, e.g. a failed POST to the provider endpoint).
+func transientNetworkError(prov string) error {
+	return &provider.Error{
+		ErrorType:   provider.ErrorTypeNetworkError,
+		Provider:    prov,
+		Message:     `Post "https://api.example/v1/chat": connection refused`,
+		IsRetriable: true,
+	}
+}
+
+// permanentAuthError builds a typed auth-failure *provider.Error (a 401 that
+// must never be retried — the credential is wrong and retrying just burns time).
+func permanentAuthError(prov string) error {
+	return &provider.Error{
+		ErrorType:  provider.ErrorTypeAuthFailure,
+		Provider:   prov,
+		HTTPStatus: 401,
+		Message:    "invalid api key",
+	}
+}
+
+var _ = Describe("StreamHook transient-error backoff retry", func() {
+	var (
+		manager  *failover.Manager
+		registry *provider.Registry
+		health   *failover.HealthManager
+		sh       *failover.StreamHook
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		manager = failover.NewManager(registry, health, 2*time.Second)
+		sh = failover.NewStreamHook(manager, nil, "backoff-agent")
+	})
+
+	Context("when every capable candidate is transiently rate-limited", func() {
+		var (
+			sleepDurations []time.Duration
+			anthropicCalls int32
+		)
+
+		BeforeEach(func() {
+			sleepDurations = nil
+			anthropicCalls = 0
+
+			// anthropic fails round 1 with a typed 429 carrying a 50ms
+			// RetryAfter, then succeeds round 2. The fake sleep models
+			// wall-clock recovery by clearing the cooldown the failover
+			// loop is waiting on, so Candidates() re-admits the pair.
+			registry.Register(&mockStreamProvider{
+				name: "anthropic",
+				streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					n := atomic.AddInt32(&anthropicCalls, 1)
+					if n == 1 {
+						return nil, transientRateLimitError("anthropic", 50*time.Millisecond)
+					}
+					return successStreamFn(
+						provider.StreamChunk{Content: "Recovered", Done: true},
+					)(context.Background(), provider.ChatRequest{})
+				},
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-3"},
+			})
+
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    3,
+				MaxTotalWait: time.Second,
+				Sleep: func(_ context.Context, d time.Duration) error {
+					sleepDurations = append(sleepDurations, d)
+					// Simulate the cooldown window elapsing.
+					health.MarkRateLimited("anthropic", "claude-3", time.Now().Add(-time.Second))
+					return nil
+				},
+			})
+		})
+
+		It("backs off then retries and succeeds when the provider recovers", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred(),
+				"a transient rate limit on every candidate must back off and retry, not fail terminally")
+
+			var chunks []provider.StreamChunk
+			for chunk := range ch {
+				chunks = append(chunks, chunk)
+			}
+			chunks = stripTransitionChunks(chunks)
+			Expect(chunks).To(HaveLen(1))
+			Expect(chunks[0].Content).To(Equal("Recovered"))
+			Expect(sleepDurations).To(HaveLen(1),
+				"the loop must wait exactly one round before the retry succeeds")
+			Expect(atomic.LoadInt32(&anthropicCalls)).To(Equal(int32(2)))
+		})
+	})
+
+	Context("when a candidate fails with a transient network error", func() {
+		var calls int32
+
+		BeforeEach(func() {
+			calls = 0
+			registry.Register(&mockStreamProvider{
+				name: "zai",
+				streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					n := atomic.AddInt32(&calls, 1)
+					if n == 1 {
+						return nil, transientNetworkError("zai")
+					}
+					return successStreamFn(
+						provider.StreamChunk{Content: "After blip", Done: true},
+					)(context.Background(), provider.ChatRequest{})
+				},
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.1"},
+			})
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    3,
+				MaxTotalWait: time.Second,
+				Sleep: func(_ context.Context, _ time.Duration) error {
+					health.MarkRateLimited("zai", "glm-5.1", time.Now().Add(-time.Second))
+					return nil
+				},
+			})
+		})
+
+		It("retries the chain and succeeds", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+			var chunks []provider.StreamChunk
+			for chunk := range ch {
+				chunks = append(chunks, chunk)
+			}
+			chunks = stripTransitionChunks(chunks)
+			Expect(chunks).To(HaveLen(1))
+			Expect(chunks[0].Content).To(Equal("After blip"))
+			Expect(atomic.LoadInt32(&calls)).To(Equal(int32(2)))
+		})
+	})
+
+	Context("when the only candidate fails with a permanent auth error", func() {
+		var (
+			calls      int32
+			sleepCalls int32
+		)
+
+		BeforeEach(func() {
+			calls = 0
+			sleepCalls = 0
+			registry.Register(&mockStreamProvider{
+				name: "openai",
+				streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					atomic.AddInt32(&calls, 1)
+					return nil, permanentAuthError("openai")
+				},
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "openai", Model: "gpt-4o"},
+			})
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    3,
+				MaxTotalWait: time.Second,
+				Sleep: func(_ context.Context, _ time.Duration) error {
+					atomic.AddInt32(&sleepCalls, 1)
+					return nil
+				},
+			})
+		})
+
+		It("fails fast without backing off", func() {
+			handler := sh.Execute(baseHandler(registry))
+			_, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("all providers failed"))
+			Expect(atomic.LoadInt32(&sleepCalls)).To(Equal(int32(0)),
+				"a permanent auth failure must never trigger a backoff/retry")
+			Expect(atomic.LoadInt32(&calls)).To(Equal(int32(1)),
+				"the candidate must be attempted exactly once for a permanent error")
+		})
+	})
+
+	Context("when transient errors persist past the retry cap", func() {
+		var (
+			calls      int32
+			sleepCalls int32
+		)
+
+		BeforeEach(func() {
+			calls = 0
+			sleepCalls = 0
+			// Always transient, never recovers.
+			registry.Register(&mockStreamProvider{
+				name: "zai",
+				streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					atomic.AddInt32(&calls, 1)
+					return nil, transientRateLimitError("zai", 10*time.Millisecond)
+				},
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.1"},
+			})
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    2,
+				MaxTotalWait: time.Second,
+				Sleep: func(_ context.Context, _ time.Duration) error {
+					atomic.AddInt32(&sleepCalls, 1)
+					// Re-open the candidate so the next round attempts it
+					// again (modelling the cooldown elapsing each round).
+					health.MarkRateLimited("zai", "glm-5.1", time.Now().Add(-time.Second))
+					return nil
+				},
+			})
+		})
+
+		It("fails terminally after the bounded number of rounds", func() {
+			handler := sh.Execute(baseHandler(registry))
+			_, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("all providers failed"))
+			// MaxRounds=2 → one initial pass + one retry pass = 2 attempts,
+			// with exactly one backoff between them.
+			Expect(atomic.LoadInt32(&sleepCalls)).To(Equal(int32(1)),
+				"the loop must stop backing off once MaxRounds is reached")
+			Expect(atomic.LoadInt32(&calls)).To(Equal(int32(2)))
+		})
+	})
+
+	Context("when the context is cancelled during backoff", func() {
+		var calls int32
+
+		BeforeEach(func() {
+			calls = 0
+			registry.Register(&mockStreamProvider{
+				name: "zai",
+				streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					atomic.AddInt32(&calls, 1)
+					return nil, transientRateLimitError("zai", time.Hour)
+				},
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.1"},
+			})
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    5,
+				MaxTotalWait: time.Hour,
+				Sleep: func(_ context.Context, _ time.Duration) error {
+					return context.Canceled
+				},
+			})
+		})
+
+		It("aborts the retry loop and fails terminally", func() {
+			handler := sh.Execute(baseHandler(registry))
+			_, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("all providers failed"))
+			Expect(atomic.LoadInt32(&calls)).To(Equal(int32(1)),
+				"a cancelled backoff must not start another retry round")
+		})
+	})
+})
