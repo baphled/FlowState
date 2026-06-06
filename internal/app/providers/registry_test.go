@@ -177,7 +177,61 @@ var _ = Describe("providers.BuildConfigPreferences", func() {
 		Expect(prefs[0].Provider).To(Equal("zai"))
 		Expect(prefs[0].Model).To(Equal("glm-4.7"))
 	})
+
+	// Regression: failover preference order must prefer capable cloud
+	// providers over a tiny local model. Before the reorder, the literal
+	// slice put ollama at index 0 and zai at index 5, so with a non-ollama
+	// default the auto-failover tail reached ollama/llama3.2 BEFORE
+	// zai/glm-5.1 — stranding a swarm on a model too weak to emit a
+	// structured delegate call. We use default=openai so NEITHER zai nor
+	// ollama is hoisted, exercising the literal-order tail directly.
+	It("orders capable cloud providers ahead of the tiny local provider", func() {
+		cfg := &config.AppConfig{
+			Providers: config.ProvidersConfig{
+				Default:   "openai",
+				Ollama:    config.ProviderConfig{Model: "llama3.2"},
+				Anthropic: config.ProviderConfig{Model: "claude-sonnet-4"},
+				OpenAI:    config.ProviderConfig{Model: "gpt-5.5"},
+				ZAI:       config.ProviderConfig{Model: "glm-5.1"},
+			},
+		}
+
+		prefs := providers.BuildConfigPreferences(cfg)
+
+		names := make([]string, 0, len(prefs))
+		for _, p := range prefs {
+			names = append(names, p.Provider)
+		}
+
+		// Default openai is hoisted to the head.
+		Expect(names[0]).To(Equal("openai"))
+		// zai (capable cloud) must precede ollama (tiny local) in the tail.
+		zaiIdx := indexOfString(names, "zai")
+		ollamaIdx := indexOfString(names, "ollama")
+		anthropicIdx := indexOfString(names, "anthropic")
+		Expect(zaiIdx).To(BeNumerically(">", -1))
+		Expect(ollamaIdx).To(BeNumerically(">", -1))
+		Expect(zaiIdx).To(BeNumerically("<", ollamaIdx),
+			"capable cloud zai must precede tiny-local ollama in failover order")
+		Expect(anthropicIdx).To(BeNumerically("<", ollamaIdx),
+			"capable cloud anthropic must precede tiny-local ollama in failover order")
+		// ollama must be the last entry — the last-resort failover target.
+		Expect(ollamaIdx).To(Equal(len(names)-1),
+			"tiny-local ollama must be the final failover candidate")
+	})
 })
+
+// indexOfString returns the index of the first occurrence of target in
+// names, or -1 when absent. Inlined to keep the ordering assertions
+// readable without pulling in slices.Index just for the test.
+func indexOfString(names []string, target string) int {
+	for i, n := range names {
+		if n == target {
+			return i
+		}
+	}
+	return -1
+}
 
 var _ = Describe("providers.ResolveDefault", func() {
 	Context("when the default provider is registered", func() {

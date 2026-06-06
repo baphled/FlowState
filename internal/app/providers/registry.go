@@ -142,14 +142,23 @@ func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
 		model string
 	}
 
+	// Order capable cloud providers first and the tiny local provider
+	// (ollama) last. The failover loop walks this list in order after the
+	// default-hoist below, so a non-ollama default that hits a transient
+	// failure cascades through capable cloud models (anthropic, openai,
+	// zai, github, openzen, ollamacloud) BEFORE ever reaching a local
+	// llama3.2 that cannot reliably emit a structured delegate tool call.
+	// Putting ollama at the tail makes it the last-resort target rather
+	// than the first failover hop. See bug-fix note: "Failover Prefers
+	// Tiny Local Model Over Capable Cloud (June 2026)".
 	allProviders := []namedProvider{
-		{"ollama", cfg.Providers.Ollama.Model},
-		{"ollamacloud", cfg.Providers.OllamaCloud.Model},
 		{"anthropic", cfg.Providers.Anthropic.Model},
 		{"openai", cfg.Providers.OpenAI.Model},
-		{"github", cfg.Providers.GitHub.Model},
 		{"zai", cfg.Providers.ZAI.Model},
+		{"github", cfg.Providers.GitHub.Model},
 		{"openzen", cfg.Providers.OpenZen.Model},
+		{"ollamacloud", cfg.Providers.OllamaCloud.Model},
+		{"ollama", cfg.Providers.Ollama.Model},
 	}
 
 	defaultName := cfg.Providers.Default

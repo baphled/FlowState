@@ -179,6 +179,70 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	Describe("Candidates capability filtering", func() {
+		// keepCapable models the engine's IsToolCapableModel bound to the
+		// operator's allow/deny lists: a tool-incapable local model
+		// (llama3.2) must be dropped from the auto-failover tail while a
+		// capable cloud model (glm-5.1) is kept. The predicate is injected
+		// from the layer above (app/engine) so the failover package keeps
+		// no dependency on the engine's capability tables.
+		keepCapable := func(_ string, model string) bool {
+			return model != "llama3.2"
+		}
+
+		It("excludes a tool-incapable base candidate and keeps a capable one", func() {
+			mgr.SetCapabilityFilter(keepCapable)
+			mgr.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.1"},
+				{Provider: "ollama", Model: "llama3.2"},
+			})
+
+			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.1"},
+			}))
+		})
+
+		It("falls back to the unfiltered base list when filtering leaves zero candidates", func() {
+			mgr.SetCapabilityFilter(keepCapable)
+			// Every base candidate is tool-incapable. Rather than strand the
+			// caller with a hard nil ("no healthy providers available"), the
+			// empty-guard returns the unfiltered list — a last-resort weak
+			// model beats no model at all.
+			base := []provider.ModelPreference{
+				{Provider: "ollama", Model: "llama3.2"},
+			}
+			mgr.SetBasePreferences(base)
+
+			Expect(mgr.Candidates()).To(Equal(base))
+		})
+
+		It("does not apply the capability filter to an explicit override", func() {
+			mgr.SetCapabilityFilter(keepCapable)
+			mgr.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.1"},
+			})
+			// The override is the user's explicit head choice. Even when it
+			// is a tool-incapable model, a deliberate selection must be
+			// honoured — only the auto-failover tail is capability-filtered.
+			mgr.SetOverride(provider.ModelPreference{Provider: "ollama", Model: "llama3.2"})
+
+			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
+				{Provider: "ollama", Model: "llama3.2"},
+				{Provider: "zai", Model: "glm-5.1"},
+			}))
+		})
+
+		It("leaves candidates untouched when no capability filter is set", func() {
+			prefs := []provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.1"},
+				{Provider: "ollama", Model: "llama3.2"},
+			}
+			mgr.SetBasePreferences(prefs)
+
+			Expect(mgr.Candidates()).To(Equal(prefs))
+		})
+	})
+
 	Describe("LastProvider and LastModel", func() {
 		It("returns empty strings initially", func() {
 			Expect(mgr.LastProvider()).To(BeEmpty())

@@ -31,6 +31,16 @@ type Manager struct {
 	timeout         time.Duration
 	lastProvider    string
 	lastModel       string
+	// capabilityFilter, when non-nil, reports whether a (provider, model)
+	// pair is tool-capable enough to be an auto-failover target. It is
+	// injected from the layer above (app/engine wires the engine's
+	// IsToolCapableModel bound to cfg.ToolCapableModels /
+	// cfg.ToolIncapableModels) so the failover package keeps no dependency
+	// on the engine's capability tables — failover sits below engine in
+	// the dependency graph and importing it would form a cycle. nil means
+	// "no capability filtering" (the legacy behaviour), so existing
+	// callers and tests that never wire a filter are unaffected.
+	capabilityFilter func(providerName, model string) bool
 	// contextFallback is the token cap returned when the registered
 	// provider/model lookup fails. Defaults to defaultManagerFallback
 	// (16K). App.New overrides this from cfg.SystemPromptBudget so
@@ -57,6 +67,35 @@ func (m *Manager) SetContextFallback(limit int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.contextFallback = limit
+}
+
+// SetCapabilityFilter installs a predicate that reports whether a
+// (provider, model) pair is tool-capable enough to be an AUTO-FAILOVER
+// target. When set, base preferences that fail the predicate are dropped
+// from the candidate list so a transient failure on a capable model does
+// not cascade onto a model too weak to drive a swarm (e.g. a local
+// llama3.2 that malforms the delegate tool call).
+//
+// Scope and guards (see healthyCandidates):
+//   - Only base preferences are filtered. An explicit user/manifest
+//     override is the caller's deliberate head choice and is never
+//     dropped — running a solo agent on ollama must still work.
+//   - If filtering would leave ZERO base candidates, the unfiltered base
+//     list is returned instead. A last-resort weak model beats a hard
+//     nil ("no healthy providers available").
+//   - A nil filter (the default) disables filtering entirely, preserving
+//     the legacy behaviour for callers that never wire one.
+//
+// Expected:
+//   - filter reports true for pairs that should remain failover targets;
+//     may be nil to disable filtering.
+//
+// Side effects:
+//   - Mutates the receiver under its write lock.
+func (m *Manager) SetCapabilityFilter(filter func(providerName, model string) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.capabilityFilter = filter
 }
 
 // ResolveContextLength returns the context length for a given provider/model.
@@ -338,13 +377,23 @@ func (m *Manager) effectivePreferences() []provider.ModelPreference {
 	return result
 }
 
-// healthyCandidates returns effective preferences filtered by health state.
+// healthyCandidates returns effective preferences filtered by capability
+// (base tail only) and then by health state.
+//
+// Filtering order and rationale:
+//  1. Capability-filter the BASE preferences via capabilityFilteredBase
+//     so a tool-incapable model (e.g. ollama/llama3.2) is dropped from
+//     the auto-failover tail. The explicit override is NOT subject to
+//     this filter — it is the caller's deliberate head choice.
+//  2. Compose override (if set) ahead of the capability-filtered base.
+//  3. Health-filter the composed list, dropping rate-limited pairs while
+//     preserving order.
 //
 // Expected: called under at least an RLock on m.mu.
-// Returns: preferences with rate-limited entries removed, preserving order.
+// Returns: capability- then health-filtered preferences, preserving order.
 // Side effects: none.
 func (m *Manager) healthyCandidates() []provider.ModelPreference {
-	prefs := m.effectivePreferences()
+	prefs := m.capabilityFilteredPreferences()
 	if len(prefs) == 0 {
 		return nil
 	}
@@ -355,4 +404,54 @@ func (m *Manager) healthyCandidates() []provider.ModelPreference {
 		}
 	}
 	return result
+}
+
+// capabilityFilteredPreferences composes the effective preference list
+// with the capability filter applied to the BASE tail only. The override
+// (the caller's explicit head choice) is always preserved unfiltered and
+// prepended.
+//
+// Empty-guard: when the capability filter would remove every base
+// candidate, the unfiltered base list is used instead — a last-resort
+// weak model beats a hard nil. This mirrors the prependAgentChain
+// empty-guard in stream_hook.go.
+//
+// Expected: called under at least an RLock on m.mu.
+// Returns: override (if any) prepended to the capability-filtered base.
+// Side effects: none.
+func (m *Manager) capabilityFilteredPreferences() []provider.ModelPreference {
+	base := m.capabilityFilteredBase()
+	if m.override == nil {
+		return base
+	}
+	result := make([]provider.ModelPreference, 0, 1+len(base))
+	result = append(result, *m.override)
+	result = append(result, base...)
+	return result
+}
+
+// capabilityFilteredBase returns the base preferences with tool-incapable
+// pairs removed. When no filter is installed (the legacy default) the base
+// is returned untouched. When filtering would empty the list, the
+// unfiltered base is returned so the caller never strands on a hard nil.
+//
+// Expected: called under at least an RLock on m.mu.
+// Returns: the base preferences, capability-filtered with empty-guard.
+// Side effects: none.
+func (m *Manager) capabilityFilteredBase() []provider.ModelPreference {
+	if m.capabilityFilter == nil || len(m.basePreferences) == 0 {
+		return m.basePreferences
+	}
+	filtered := make([]provider.ModelPreference, 0, len(m.basePreferences))
+	for _, pref := range m.basePreferences {
+		if m.capabilityFilter(pref.Provider, pref.Model) {
+			filtered = append(filtered, pref)
+		}
+	}
+	if len(filtered) == 0 {
+		// Every base candidate is tool-incapable. Better a last-resort
+		// weak model than nil — fall back to the unfiltered base.
+		return m.basePreferences
+	}
+	return filtered
 }

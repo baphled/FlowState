@@ -1329,8 +1329,33 @@ func applyFailoverPreferences(failoverManager *failover.Manager, cfg *config.App
 	if failoverManager == nil {
 		return
 	}
+	failoverManager.SetCapabilityFilter(capabilityFilterFor(cfg))
 	if prefs := providers.BuildConfigPreferences(cfg); len(prefs) > 0 {
 		failoverManager.SetBasePreferences(prefs)
+	}
+}
+
+// capabilityFilterFor returns a predicate that reports whether a
+// (provider, model) pair is tool-capable enough to be an auto-failover
+// target, bound to the operator's allow/deny lists
+// (cfg.ToolCapableModels / cfg.ToolIncapableModels). It is installed on
+// the failover Manager so the auto-failover tail never lands on a
+// tool-incapable model (e.g. ollama/llama3.2 that malforms the delegate
+// tool call). The Manager applies it to the base tail only and preserves
+// explicit overrides / the empty-guard fallback (see
+// Manager.SetCapabilityFilter).
+//
+// Returns nil when neither list is configured, leaving failover
+// capability-unfiltered (the legacy behaviour) rather than fail-closing
+// the entire tail.
+func capabilityFilterFor(cfg *config.AppConfig) func(providerName, model string) bool {
+	if cfg == nil || (len(cfg.ToolCapableModels) == 0 && len(cfg.ToolIncapableModels) == 0) {
+		return nil
+	}
+	allow := cfg.ToolCapableModels
+	deny := cfg.ToolIncapableModels
+	return func(providerName, model string) bool {
+		return engine.IsToolCapableModel(providerName, model, allow, deny)
 	}
 }
 
@@ -2335,6 +2360,13 @@ func (a *App) createDelegateEngine(
 	var childFailoverMgr *failover.Manager
 	if a.plugins != nil && a.plugins.healthManager != nil {
 		childFailoverMgr = failover.NewManager(a.providerRegistry, a.plugins.healthManager, 5*time.Minute)
+		// Capability-filter the child's auto-failover tail too, so a
+		// delegate engine whose preferred chain exhausts does not cascade
+		// onto a tool-incapable local model. The agent's declared
+		// preferred_models are threaded as the override/chain ahead of the
+		// base pool, so this only governs the fallback tail (see
+		// Manager.SetCapabilityFilter guards).
+		childFailoverMgr.SetCapabilityFilter(capabilityFilterFor(a.Config))
 		if len(manifest.PreferredModels) > 0 {
 			prefs := agentToProviderPreferences(manifest.PreferredModels)
 			// For permissive/empty policy, append parent preferences as fallback so
