@@ -73,32 +73,39 @@ func BuildWithFailures(
 	failures := make(map[string]error)
 
 	ollamaProvider, ollamaErr := ollama.New(cfg.Providers.Ollama.Host)
-	recordProvider(providerRegistry, failures, "ollama", ollamaProvider, ollamaErr)
+	recordProvider(providerRegistry, failures, "ollama", ollamaProvider, ollamaErr,
+		cfg.Providers.Ollama.EffectiveMaxConcurrent("ollama"))
 
 	ollamaCloudKey := ResolveProviderKey("OLLAMA_CLOUD_API_KEY", cfg.Providers.OllamaCloud.APIKey)
 	ollamaCloudProvider, ollamaCloudErr := ollamacloud.NewFromConfig(ollamaCloudKey, cfg.Providers.OllamaCloud.Host)
-	recordProvider(providerRegistry, failures, "ollamacloud", ollamaCloudProvider, ollamaCloudErr)
+	recordProvider(providerRegistry, failures, "ollamacloud", ollamaCloudProvider, ollamaCloudErr,
+		cfg.Providers.OllamaCloud.EffectiveMaxConcurrent("ollamacloud"))
 
 	openaiProvider, openaiErr := buildOpenAIProvider(cfg)
-	recordProvider(providerRegistry, failures, "openai", openaiProvider, openaiErr)
+	recordProvider(providerRegistry, failures, "openai", openaiProvider, openaiErr,
+		cfg.Providers.OpenAI.EffectiveMaxConcurrent("openai"))
 
 	anthropicKey := ResolveProviderKey("ANTHROPIC_API_KEY", cfg.Providers.Anthropic.APIKey)
 	anthropicProvider, anthropicErr := anthropic.NewFromConfig(anthropicKey)
-	recordProvider(providerRegistry, failures, "anthropic", anthropicProvider, anthropicErr)
+	recordProvider(providerRegistry, failures, "anthropic", anthropicProvider, anthropicErr,
+		cfg.Providers.Anthropic.EffectiveMaxConcurrent("anthropic"))
 
 	githubToken := ResolveProviderKey("GITHUB_TOKEN", cfg.Providers.GitHub.APIKey)
 	copilotProvider, copilotErr := copilot.NewFromConfig(nil, githubToken)
-	recordProvider(providerRegistry, failures, "copilot", copilotProvider, copilotErr)
+	recordProvider(providerRegistry, failures, "copilot", copilotProvider, copilotErr,
+		cfg.Providers.GitHub.EffectiveMaxConcurrent("copilot"))
 
 	zaiKey := ResolveProviderKey("ZAI_API_KEY", cfg.Providers.ZAI.APIKey)
 	zaiPlan := zaiPlanFromConfig(cfg)
 	zaiProvider, zaiErr := zai.NewFromConfig(zaiKey, zaiPlan)
-	recordProvider(providerRegistry, failures, "zai", zaiProvider, zaiErr)
+	recordProvider(providerRegistry, failures, "zai", zaiProvider, zaiErr,
+		cfg.Providers.ZAI.EffectiveMaxConcurrent("zai"))
 	logZAIPlanResolution(zaiPlan, zaiErr)
 
 	openzenKey := ResolveProviderKey("OPENZEN_API_KEY", cfg.Providers.OpenZen.APIKey)
 	openzenProvider, openzenErr := openzen.NewFromConfig(openzenKey)
-	recordProvider(providerRegistry, failures, "openzen", openzenProvider, openzenErr)
+	recordProvider(providerRegistry, failures, "openzen", openzenProvider, openzenErr,
+		cfg.Providers.OpenZen.EffectiveMaxConcurrent("openzen"))
 
 	warnIfOpenCodeAuthPresent(failures)
 
@@ -284,14 +291,27 @@ func buildOpenAIProvider(cfg *config.AppConfig) (*openai.Provider, error) {
 // recordProvider registers a provider on success or records the error
 // under name in the failures map. Logs a warning on failure so startup
 // diagnostics remain visible even when the failure is not fatal.
+//
+// When maxConcurrent > 0 the provider is wrapped in a
+// provider.ConcurrencyLimitedProvider before registration so FlowState never
+// exceeds the provider's concurrent-request cap, regardless of how the
+// concurrency arises (e.g. a swarm lead's batched delegate tool calls each
+// opening their own stream). Wrapping here — rather than at the traced-provider
+// seam in the composition root — ensures BOTH the default provider AND all
+// failover targets resolved from this registry inherit the cap. A
+// maxConcurrent of 0 leaves the provider unwrapped, preserving prior behaviour.
 func recordProvider(
 	registry *provider.Registry,
 	failures map[string]error,
 	name string,
 	p provider.Provider,
 	err error,
+	maxConcurrent int,
 ) {
 	if err == nil {
+		if maxConcurrent > 0 {
+			p = provider.NewConcurrencyLimitedProvider(p, maxConcurrent)
+		}
 		registry.Register(p)
 		return
 	}

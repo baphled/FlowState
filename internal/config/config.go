@@ -566,6 +566,64 @@ type ProviderConfig struct {
 	Model  string      `json:"model" yaml:"model"`
 	OAuth  OAuthConfig `json:"oauth" yaml:"oauth"`
 	Plan   string      `json:"plan,omitempty" yaml:"plan,omitempty"`
+
+	// MaxConcurrentRequests caps the number of simultaneous in-flight chat
+	// calls (Stream/Chat) FlowState will make to this provider. It exists to
+	// respect a provider's per-account concurrent-request limit: the swarm
+	// lead can emit several `delegate` tool calls in one turn, which the
+	// engine executes as concurrent goroutines, each opening its own provider
+	// stream. Without a cap, N batched delegates open N concurrent streams and
+	// can trip a provider's concurrency limit (observed as HTTP 429 against
+	// z.ai). The cap is enforced by a ConcurrencyLimitedProvider decorator
+	// applied at registration time (see internal/app/providers).
+	//
+	//   - 0 / unset → unlimited (no decorator applied), preserving the
+	//     historical behaviour for providers without a configured cap.
+	//   - N > 0     → at most N simultaneous Stream/Chat calls; further calls
+	//     queue (block) until a slot frees.
+	//
+	// Embeddings (Embed) are NOT gated by this cap.
+	//
+	// See EffectiveMaxConcurrent for the resolved value, which supplies a
+	// provider-specific default (currently zai) when this field is unset.
+	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty" yaml:"max_concurrent_requests,omitempty"`
+}
+
+// DefaultZAIMaxConcurrent is the placeholder default cap on simultaneous
+// in-flight chat calls to the z.ai provider when MaxConcurrentRequests is
+// unset. z.ai enforces a per-account concurrent-request limit; exceeding it
+// surfaces as HTTP 429 and fails swarm members. The exact documented cap is
+// being researched separately; 2 is a conservative placeholder that can be
+// overridden via providers.zai.max_concurrent_requests in config.
+const DefaultZAIMaxConcurrent = 2
+
+// EffectiveMaxConcurrent returns the concurrency cap to apply to in-flight
+// chat calls for the provider identified by name.
+//
+// Resolution:
+//   - If MaxConcurrentRequests is explicitly set (> 0), it wins for every
+//     provider, including zai.
+//   - Otherwise, zai falls back to DefaultZAIMaxConcurrent (a known provider
+//     with a documented concurrency limit).
+//   - Otherwise, 0 (unlimited) — no decorator is applied and behaviour is
+//     unchanged from before this cap existed.
+//
+// Expected:
+//   - name is the provider's registry name (e.g. "zai", "anthropic").
+//
+// Returns:
+//   - The effective maximum simultaneous chat calls; 0 means unlimited.
+//
+// Side effects:
+//   - None.
+func (p ProviderConfig) EffectiveMaxConcurrent(name string) int {
+	if p.MaxConcurrentRequests > 0 {
+		return p.MaxConcurrentRequests
+	}
+	if name == "zai" {
+		return DefaultZAIMaxConcurrent
+	}
+	return 0
 }
 
 // OAuthConfig holds OAuth-specific configuration for a provider.
