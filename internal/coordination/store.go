@@ -3,6 +3,7 @@ package coordination
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -116,13 +117,16 @@ func (s *MemoryStore) Set(key string, value []byte) error {
 	return nil
 }
 
-// List returns all keys matching the given prefix.
+// List returns all keys matching the given prefix in sorted (ascending
+// lexical) order. Sorting matches FileStore.List so the Store contract is
+// deterministic regardless of backend — any caller that scans the result
+// gets the same stable ordering whether wired to memory or disk.
 //
 // Expected:
 //   - prefix is the string prefix to filter keys by.
 //
 // Returns:
-//   - A slice of matching key strings and nil error.
+//   - A sorted slice of matching key strings and nil error.
 //   - An empty slice if no keys match.
 //
 // Side effects:
@@ -141,6 +145,8 @@ func (s *MemoryStore) List(prefix string) ([]string, error) {
 	if keys == nil {
 		return []string{}, nil
 	}
+
+	sort.Strings(keys)
 
 	return keys, nil
 }

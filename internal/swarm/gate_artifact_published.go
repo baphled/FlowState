@@ -16,6 +16,40 @@ import (
 // validator share the same authoritative literal.
 const ArtifactPublishedGateKind = "builtin:artifact-published"
 
+// DeclaresArtifactPublishedGate reports whether any gate in specs is an
+// artifact-published gate (kind == ArtifactPublishedGateKind). The
+// deterministic plan publisher exists SOLELY to feed that gate — it
+// writes the vault file and the plan_publication record the gate then
+// verifies. A swarm that declares no such gate has no plan to publish, so
+// the post-swarm flush must NOT invoke the publisher for it.
+//
+// This is the source-of-truth guard against the cross-chain-publish
+// footgun: before this check, FlushSwarmLifecycle published
+// UNCONDITIONALLY for every swarm, so a non-planning swarm (e.g.
+// meta-swarm, or a custom swarm pinning a differing chain_prefix with no
+// per-run chain) resolved an empty chain and the publisher suffix-scanned
+// a FOREIGN chain's "*/plan", aborting the run. Gating the publish on the
+// gate's presence removes the publish path entirely for swarms that never
+// intended to publish.
+//
+// Expected:
+//   - specs is the swarm's harness gate slice (may be nil/empty).
+//
+// Returns:
+//   - true when at least one gate's Kind equals ArtifactPublishedGateKind.
+//   - false for a nil/empty slice or a slice with no such gate.
+//
+// Side effects:
+//   - None.
+func DeclaresArtifactPublishedGate(specs []GateSpec) bool {
+	for _, g := range specs {
+		if g.Kind == ArtifactPublishedGateKind {
+			return true
+		}
+	}
+	return false
+}
+
 // planPublicationSuffix is the coord-store sub-key a lead writes its
 // (self-reported) publication record under: the bug this gate exists to
 // catch is a fabricated record claiming a vault path the file never

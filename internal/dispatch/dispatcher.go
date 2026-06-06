@@ -768,8 +768,14 @@ func (d *Dispatcher) DispatchSessioned(
 		// drift bug class — members inventing `mental-health-swarm-design/*`
 		// while the run's chain was `mental-health-companion-2026-05-27`).
 		// AssignRunChainID stamps a per-run namespace onto swarmCtx.ChainPrefix
-		// when the manifest left chain_prefix at its default; an explicitly
-		// pinned chain_prefix is honoured untouched. Done BEFORE
+		// anchored under the existing prefix — the swarm-id default when the
+		// manifest left chain_prefix blank, OR an operator's pinned prefix
+		// (which is preserved as the base, e.g. "planning" -> "planning-<hash>").
+		// A pinned prefix that differs from the id used to DISABLE assignment,
+		// which left the run with an empty resolved chain and let the post-swarm
+		// publisher suffix-scan a FOREIGN chain's "*/plan" (the cross-chain
+		// publish footgun); anchoring under the pinned prefix closes that. Done
+		// BEFORE
 		// SetSwarmContext so the lead's system-prompt namespace block, the
 		// member-target chain resolution, and the post-swarm publish/gate
 		// all read the same engine-assigned value. swarmCtx is a freshly

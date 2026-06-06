@@ -105,18 +105,51 @@ var _ = Describe("swarm.Context", func() {
 				"two runs of the same swarm must not collide on coord-store keys")
 		})
 
-		It("honours an explicit manifest chain_prefix (backwards compat)", func() {
+		It("anchors the per-run namespace under an explicit manifest chain_prefix", func() {
+			// A pinned chain_prefix that differs from the swarm id used to
+			// DISABLE per-run assignment entirely (ChainPrefix left verbatim,
+			// ChainIDAssigned false). That was the cross-chain-publish footgun:
+			// an unassigned run resolved to an empty chain and the post-swarm
+			// publisher suffix-scanned a FOREIGN chain's "*/plan". The pinned
+			// prefix is now PRESERVED AS THE BASE of the per-run namespace, so
+			// the operator's documented prefix survives AND the run owns a
+			// coherent, per-run chain.
 			m := &swarm.Manifest{
 				ID:      "tech-team",
 				Lead:    "tech-lead",
 				Context: swarm.ContextConfig{ChainPrefix: "tech"},
 			}
 			ctx := swarm.NewContext("tech-team", m)
+			Expect(ctx.ChainPrefix).To(Equal("tech"),
+				"precondition: NewContext honours the pinned prefix")
 
 			ctx.AssignRunChainID("session-abc")
 
-			Expect(ctx.ChainPrefix).To(Equal("tech"),
-				"an explicitly pinned chain_prefix is the caller's choice and must not be overwritten")
+			Expect(ctx.ChainPrefix).NotTo(Equal("tech"),
+				"a per-run namespace replaces the bare pinned prefix so the run owns its chain")
+			Expect(ctx.ChainPrefix).To(HavePrefix("tech-"),
+				"the per-run namespace stays anchored under the operator's pinned prefix")
+			Expect(ctx.ChainIDAssigned).To(BeTrue(),
+				"the run now owns an engine-assigned chain even with a pinned prefix")
+		})
+
+		It("is deterministic and run-distinct for a pinned chain_prefix", func() {
+			mk := func() swarm.Context {
+				return swarm.NewContext("tech-team", &swarm.Manifest{
+					ID:      "tech-team",
+					Lead:    "tech-lead",
+					Context: swarm.ContextConfig{ChainPrefix: "tech"},
+				})
+			}
+			a, b, c := mk(), mk(), mk()
+			a.AssignRunChainID("session-one")
+			b.AssignRunChainID("session-one")
+			c.AssignRunChainID("session-two")
+
+			Expect(a.ChainPrefix).To(Equal(b.ChainPrefix),
+				"same run id under a pinned prefix yields the same namespace")
+			Expect(a.ChainPrefix).NotTo(Equal(c.ChainPrefix),
+				"distinct runs under a pinned prefix never collide")
 		})
 
 		It("is a no-op for an empty run id", func() {

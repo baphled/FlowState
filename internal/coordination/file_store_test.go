@@ -201,6 +201,29 @@ var _ = Describe("FileStore", func() {
 				Expect(keys).To(BeEmpty())
 			})
 		})
+
+		Context("ordering", func() {
+			It("returns matching keys in deterministic sorted order", func() {
+				// The backing map iterates in random order; any caller that
+				// scans the result (e.g. the publisher's suffix-scan) must get
+				// a stable, debuggable ordering rather than a coin-flip. Seed
+				// keys whose insertion order differs from their sorted order so
+				// a passing test cannot be a map-iteration fluke.
+				store.Set("chainD/zeta", []byte("z"))
+				store.Set("chainD/alpha", []byte("a"))
+				store.Set("chainD/mu", []byte("m"))
+
+				keys, err := store.List("chainD/")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(Equal([]string{"chainD/alpha", "chainD/mu", "chainD/zeta"}))
+			})
+
+			It("returns the full key set in sorted order", func() {
+				keys, err := store.List("")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(keys).To(Equal([]string{"chainA/plan", "chainA/review", "chainB/plan"}))
+			})
+		})
 	})
 
 	Describe("Store interface compliance", func() {

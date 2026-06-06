@@ -4149,7 +4149,17 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 	// dir is configured; a write failure is surfaced so the post-swarm
 	// gate then fails rather than silently passing on a half-published
 	// loop. See swarm.PublishPlanToVault.
-	if err := d.publishPlanForSwarm(chainID); err != nil {
+	//
+	// CHAIN-SAFE PUBLISH (the cross-chain-publish footgun): publish ONLY
+	// for a swarm that declares an artifact-published post-swarm gate — the
+	// publisher exists solely to feed that gate. Before this guard the
+	// publish ran for EVERY swarm, so a non-planning swarm (e.g.
+	// mental-health-swarm pinning a differing chain_prefix with no per-run
+	// chain) resolved an empty chain and the publisher suffix-scanned a
+	// FOREIGN chain's "*/plan", aborting the whole run. A swarm with no
+	// such gate now never touches the publish path, so it can never publish
+	// (or suffix-scan) into a chain it does not own.
+	if err := d.publishPlanForSwarm(swarmCtx, chainID); err != nil {
 		return err
 	}
 
@@ -4163,9 +4173,10 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 // or when there is simply no plan to publish.
 //
 // Expected:
+//   - swarmCtx is the active swarm context; its Gates decide whether this
+//     swarm publishes at all.
 //   - chainID is the lead-allocated chain for this run (Bug 1). When
-//     non-empty the publisher reads "<chainID>/plan" directly; empty
-//     triggers the publisher's suffix-scan fallback.
+//     non-empty the publisher reads "<chainID>/plan" directly.
 //
 // Returns:
 //   - nil when the publish succeeds or there is nothing to publish.
@@ -4177,8 +4188,26 @@ func (d *DelegateTool) FlushSwarmLifecycle(ctx context.Context) error {
 // Side effects:
 //   - On a successful publish: one vault file written and one coord-store
 //     "<chainID>/plan_publication" key set.
-func (d *DelegateTool) publishPlanForSwarm(chainID string) error {
+func (d *DelegateTool) publishPlanForSwarm(swarmCtx *swarm.Context, chainID string) error {
 	if d.coordinationStore == nil || d.planOutputDir == "" {
+		return nil
+	}
+	// Chain-safe publish (the footgun guard): publish ONLY when the swarm
+	// declares an artifact-published gate — the publisher's whole reason to
+	// exist is to feed that gate. A swarm without one has no plan to ship,
+	// so this is a clean no-op rather than a publish that could suffix-scan
+	// a foreign chain.
+	if swarmCtx == nil || !swarm.DeclaresArtifactPublishedGate(swarmCtx.Gates) {
+		return nil
+	}
+	// Belt-and-braces against the empty-chain suffix-scan: a publishing
+	// swarm whose run never resolved an owned chain (no engine assignment,
+	// no caller chain) must NOT fall through to PublishPlanToVault's
+	// suffix-scan fallback, which would grab a foreign "*/plan". The
+	// pinned-prefix per-run assignment (swarm.AssignRunChainID) means a
+	// real run always has a chain here; an empty value is therefore an
+	// honest no-op, never a cross-run scan.
+	if strings.TrimSpace(chainID) == "" {
 		return nil
 	}
 	if _, err := swarm.PublishPlanToVault(d.coordinationStore, d.planOutputDir, chainID); err != nil {

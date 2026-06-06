@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 )
 
 // Context is the swarm-runtime envelope the runner constructs when an
@@ -118,13 +119,21 @@ func NewContext(id string, m *Manifest) Context {
 // same namespace on every read while two concurrent runs of the same
 // swarm never collide on coord-store keys.
 //
-// BACKWARDS COMPAT: the per-run id is only assigned when ChainPrefix is
-// still the manifest default — i.e. equal to SwarmID, which is what
-// NewContext sets when the manifest leaves chain_prefix blank. An
-// operator who pinned an explicit chain_prefix in the manifest made a
-// deliberate namespacing choice; that prefix is honoured untouched. An
-// empty runID is a no-op so callers without a stable run identifier keep
-// the static default.
+// PER-RUN NAMESPACE FOR PINNED PREFIXES (cross-chain-publish footgun fix):
+// the per-run id is anchored under the EXISTING ChainPrefix, whichever it
+// is — the swarm-id default when the manifest left chain_prefix blank, OR
+// an operator's explicitly pinned prefix. Previously a pinned prefix that
+// differed from the swarm id DISABLED assignment entirely (the run kept a
+// bare static prefix and ChainIDAssigned stayed false); that was exactly
+// the footgun. An unassigned run resolved to an empty chain, and the
+// post-swarm publisher suffix-scanned a FOREIGN chain's "*/plan". Anchoring
+// the per-run suffix under the pinned prefix PRESERVES the operator's
+// documented base namespace AND gives every run a coherent, owned chain —
+// so the empty-chain suffix-scan is never reached for any in-flight swarm.
+//
+// An empty runID is a no-op so callers without a stable run identifier keep
+// the static prefix. A zero-value Context (no ChainPrefix anchor) is also a
+// no-op — there is nothing to extend.
 //
 // Expected:
 //   - runID is a stable per-run identifier (e.g. the session id);
@@ -139,13 +148,14 @@ func (c *Context) AssignRunChainID(runID string) {
 	if c == nil || runID == "" {
 		return
 	}
-	// Only the manifest default (ChainPrefix == SwarmID) is replaced; an
-	// explicit chain_prefix is the operator's choice. An empty SwarmID
-	// (zero-value Context) has nothing to anchor under, so leave it.
-	if c.SwarmID == "" || c.ChainPrefix != c.SwarmID {
+	// Anchor the per-run suffix under whatever base prefix is in play (the
+	// swarm-id default OR an operator's pinned prefix). A run already
+	// assigned (idempotency / double-call) or with no anchor at all is a
+	// no-op.
+	if c.ChainIDAssigned || strings.TrimSpace(c.ChainPrefix) == "" {
 		return
 	}
-	c.ChainPrefix = c.SwarmID + "-" + runChainIDSuffix(runID)
+	c.ChainPrefix = c.ChainPrefix + "-" + runChainIDSuffix(runID)
 	c.ChainIDAssigned = true
 }
 

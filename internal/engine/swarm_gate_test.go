@@ -543,20 +543,29 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		// real vault file AND the plan_publication record so the
 		// downstream honesty gate can verify it — without an LLM emitting
 		// a write tool call (Defect 2's synthesis-hang).
+		//
+		// The run must OWN its chain: the engine stamps a per-run chainID
+		// at swarm start (AssignRunChainID) so the publisher targets the
+		// owned namespace, never an empty-chain suffix-scan of a foreign
+		// "*/plan" (the cross-chain-publish footgun).
 		outputDir := GinkgoT().TempDir()
 		store := coordination.NewMemoryStore()
-		Expect(store.Set("readyz-chain/plan",
+		gates := []swarm.GateSpec{
+			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
+		}
+		swarmCtx := defaultPrefixSwarmContextWithGates(gates)
+		swarmCtx.AssignRunChainID("session-readyz")
+		assignedChain := swarmCtx.ChainPrefix
+
+		Expect(store.Set(assignedChain+"/plan",
 			[]byte(`{"markdown":"# Readyz Plan\n\nbody","title":"Readyz Plan"}`))).To(Succeed())
-		Expect(store.Set("readyz-chain/review", validVerdictPayload())).To(Succeed())
+		Expect(store.Set(assignedChain+"/review", validVerdictPayload())).To(Succeed())
 
 		// A runner that records, AT GATE-DISPATCH TIME, whether the
 		// publish already happened: the publication record must exist
 		// before the post-swarm gate runs.
-		probe := &publishProbeRunner{store: store, key: "readyz-chain/plan_publication"}
-		gates := []swarm.GateSpec{
-			{Name: "post-swarm-plan-published", Kind: "builtin:artifact-published", When: swarm.LifecyclePostSwarm, OutputKey: "{chainID}/plan"},
-		}
-		engines, _ := reviewerEnginesWithContext(swarmContextWithGates(gates))
+		probe := &publishProbeRunner{store: store, key: assignedChain + "/plan_publication"}
+		engines, _ := reviewerEnginesWithContext(swarmCtx)
 		delegateTool := newDelegateToolWithRunner(engines, store, probe).
 			WithPlanOutputDir(outputDir)
 
@@ -871,6 +880,64 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 		Expect(exists).To(BeFalse(),
 			"with no output dir the publisher writes nothing and fabricates no record")
 		Expect(runner.calls).To(HaveLen(1), "the post-swarm gate still fires")
+	})
+
+	Context("a NON-planning swarm (no artifact-published gate) at post-swarm", func() {
+		// The headline incident: `mental-health-swarm` pins chain_prefix
+		// "mental-health" while its id is "mental-health-swarm", declares no
+		// artifact-published gate, and dispatches no member that supplies a
+		// chainID. Under the old code FlushSwarmLifecycle published
+		// UNCONDITIONALLY: with an empty resolved chain the publisher
+		// suffix-scanned a FOREIGN chain's "*/plan" (a stale "planner/plan"
+		// failover-envelope JSON) and aborted the entire run with
+		// "refusing to publish chain ... no markdown heading structure".
+		//
+		// A swarm that does not publish plans must NEVER touch the publish
+		// path: the post-swarm flush is a clean no-op, never errors, and
+		// never reads — let alone publishes — another chain's plan.
+
+		// nonPlanningSwarmContext mirrors the incident's manifest shape: a
+		// pinned prefix that differs from the swarm id, no per-run assignment,
+		// and NO artifact-published gate.
+		nonPlanningSwarmContext := func() *swarm.Context {
+			return &swarm.Context{
+				SwarmID:     "mental-health-swarm",
+				LeadAgent:   "planner",
+				Members:     []string{"plan-reviewer"},
+				ChainPrefix: "mental-health",
+				Gates:       nil,
+			}
+		}
+
+		It("does NOT publish or error, and does NOT touch a foreign chain's plan", func() {
+			outputDir := GinkgoT().TempDir()
+			store := coordination.NewMemoryStore()
+			// A stale FOREIGN chain's plan key sits in the store from an
+			// earlier, unrelated planning run. It is exactly the kind of
+			// non-plan blob the old suffix-scan grabbed and choked on.
+			Expect(store.Set("planner/plan",
+				[]byte(`{"role":"assistant","content":"failover envelope, not a plan"}`))).To(Succeed())
+
+			runner := &recordingRunner{}
+			engines, _ := reviewerEnginesWithContext(nonPlanningSwarmContext())
+			delegateTool := newDelegateToolWithRunner(engines, store, runner).
+				WithPlanOutputDir(outputDir)
+
+			// The whole run must NOT abort.
+			Expect(delegateTool.FlushSwarmLifecycle(context.Background())).To(Succeed(),
+				"a non-planning swarm's post-swarm flush must never abort on a foreign plan key")
+
+			// Nothing was published.
+			entries, _ := os.ReadDir(outputDir)
+			Expect(entries).To(BeEmpty(),
+				"a swarm with no artifact-published gate writes no vault file")
+
+			// The foreign chain was NOT consumed / recorded against.
+			exists, err := store.Exists("planner/plan_publication")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(exists).To(BeFalse(),
+				"the foreign chain must never receive a publication record from another swarm's run")
+		})
 	})
 
 	Context("post-member gate retry (single-miss is not terminal)", func() {

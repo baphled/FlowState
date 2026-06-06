@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,13 +127,20 @@ func (fs *FileStore) Set(key string, value []byte) error {
 	return fs.persist()
 }
 
-// List returns all keys matching the given prefix.
+// List returns all keys matching the given prefix in sorted (ascending
+// lexical) order.
+//
+// The backing map iterates in random order, so an unsorted result made any
+// caller that scans the list (historically the publisher's "*/plan"
+// suffix-scan) non-deterministic — the "first" match was a coin-flip across
+// runs, which is impossible to reason about or debug. Sorting makes the
+// result stable and reproducible regardless of insertion order.
 //
 // Expected:
 //   - prefix is the string prefix to filter keys by.
 //
 // Returns:
-//   - A slice of matching key strings and nil error.
+//   - A sorted slice of matching key strings and nil error.
 //   - An empty slice if no keys match.
 //
 // Side effects:
@@ -151,6 +159,8 @@ func (fs *FileStore) List(prefix string) ([]string, error) {
 	if keys == nil {
 		return []string{}, nil
 	}
+
+	sort.Strings(keys)
 
 	return keys, nil
 }
