@@ -4321,8 +4321,10 @@ func (e *Engine) streamWithToolLoop(
 	lastFingerprint := ""
 	identicalRun := 0
 	const maxToolUseNoCallsRetries = 3
+	const maxOverflowRetries = 1
 	var toolUseNoCallsAttempts int
 	todoRetries := 0
+	overflowRetries := 0
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
 		if result.done {
@@ -4371,6 +4373,44 @@ func (e *Engine) streamWithToolLoop(
 				}))
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
+			}
+			if result.contextOverflow {
+				if overflowRetries < maxOverflowRetries {
+					overflowRetries++
+					slog.Warn("context window overflow detected, attempting compaction and retry",
+						"session", sessionID,
+						"overflow_retry", overflowRetries,
+						"max_overflow_retries", maxOverflowRetries,
+					)
+					compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+					if compacted {
+						if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID); rebuilt != nil {
+							messages = rebuilt
+						}
+						var retryErr error
+						providerChunks, retryErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+						if retryErr == nil {
+							attempt++
+							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+							continue
+						}
+						slog.Error("context overflow retry stream failed",
+							"session", sessionID,
+							"error", retryErr,
+						)
+					} else {
+						slog.Warn("context overflow: compaction did not fire",
+							"session", sessionID,
+						)
+					}
+				} else {
+					slog.Warn("context overflow retries exhausted",
+						"session", sessionID,
+						"overflow_retries", overflowRetries,
+					)
+				}
+				e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
 				retryLimit := e.effectiveTodoRetryLimit(sessionID)
@@ -4854,6 +4894,7 @@ type streamChunkResult struct {
 	thinkingContent string
 	stopReason      string // upstream provider stop reason from the terminal Done chunk
 	done            bool
+	contextOverflow bool // true when the terminal Done chunk carried ErrorTypeContextWindowExceeded
 }
 
 // turnOpenMarker is the thinking payload surfaced on the synthetic flush
@@ -5135,11 +5176,20 @@ func (e *Engine) processStreamChunks(
 				// return on Done, so this MUST land first.
 				emitPostTurn()
 				outChan <- chunk
+				var overflow bool
+				if chunk.Error != nil {
+					var pErr *provider.Error
+					if errors.As(chunk.Error, &pErr) &&
+						pErr.ErrorType == provider.ErrorTypeContextWindowExceeded {
+						overflow = true
+					}
+				}
 				return streamChunkResult{
 					responseContent: responseContent.String(),
 					thinkingContent: thinkingContent.String(),
 					stopReason:      chunk.StopReason,
 					done:            true,
+					contextOverflow: overflow,
 				}
 			}
 			outChan <- chunk
