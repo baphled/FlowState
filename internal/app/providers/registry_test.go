@@ -158,6 +158,7 @@ var _ = Describe("providers.BuildConfigPreferences", func() {
 			providerNames = append(providerNames, p.Provider)
 		}
 		Expect(providerNames).To(ContainElement("zai"))
+		Expect(providerNames).To(ContainElement("copilot"))
 		Expect(providerNames).To(ContainElement("openzen"))
 	})
 

@@ -821,7 +821,6 @@ var _ = Describe("GET /api/v1/sessions/{id}/todos", func() {
 	})
 })
 
-
 // Phase 2 GREEN gate per "Dispatcher Service Unification (May 2026)" v6.
 //
 // The refresh-bug class is structurally closed when /messages routes through
@@ -2411,7 +2410,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — scope=forever 
 		raw, rerr := os.ReadFile(permsPath)
 		Expect(rerr).NotTo(HaveOccurred())
 		var parsed struct {
-			Version int                            `yaml:"version"`
+			Version int `yaml:"version"`
 			Tools   map[string]struct {
 				Allow []string `yaml:"allow"`
 				Deny  []string `yaml:"deny"`
@@ -4970,7 +4969,6 @@ var _ = Describe("Content-Security-Policy header (task-09)", func() {
 	})
 })
 
-
 // Phase 2 RED gate per "Turn-Based Post-Then-Poll Architecture
 // (May 2026)". These specs pin the HTTP surface that exposes the Turn
 // resource introduced in Phase 1 (internal/turn package + dispatcher
@@ -4990,11 +4988,11 @@ var _ = Describe("Content-Security-Policy header (task-09)", func() {
 // integration bugs.
 var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_id})", func() {
 	var (
-		drip     *dripStreamer
-		mgr      *session.Manager
-		srv      *api.Server
-		httpSrv  *httptest.Server
-		reg      *agent.Registry
+		drip    *dripStreamer
+		mgr     *session.Manager
+		srv     *api.Server
+		httpSrv *httptest.Server
+		reg     *agent.Registry
 	)
 
 	// uuidV4Regex matches the google/uuid library's default canonical
@@ -5595,7 +5593,7 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 		// Poll the list endpoint until the summary surfaces activeTurnId.
 		// The handler reads via registry.FindActiveBySession at L1138.
 		var (
-			gotActive  string
+			gotActive   string
 			lastListRaw []byte
 		)
 		Eventually(func() string {
@@ -6132,7 +6130,7 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 // Phase-4-Commit-1b RED gate per "Turn-Based Post-Then-Poll Architecture
 // (May 2026)" §4d Commit 1b. The long-poll endpoint shape:
 //
-//   GET /api/v1/sessions/{id}/turns/{turn_id}?wait=true&since=N
+//	GET /api/v1/sessions/{id}/turns/{turn_id}?wait=true&since=N
 //
 // Replaces the FE's 250ms-cadence polling loop with a server-side hold
 // so each chunk surfaces in the FE within the broadcast latency

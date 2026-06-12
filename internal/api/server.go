@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -1587,6 +1588,7 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	// fallback when no in-content @-mention resolves to a swarm.
 	snap, snapErr := s.sessionManager.SnapshotSession(id)
 	if snapErr != nil {
+		slog.Error("handleSessionMessage: SnapshotSession failed", "session_id", id, "error", snapErr)
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
@@ -1616,7 +1618,36 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "a turn is already running for this session", http.StatusConflict)
 			return
 		}
-		http.Error(w, "session not found", http.StatusNotFound)
+		if errors.Is(err, session.ErrSessionNotFound) {
+			slog.Error("handleSessionMessage: session deleted between snapshot and dispatch",
+				"session_id", id, "error", err)
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		var provErr *provider.Error
+		if errors.As(err, &provErr) {
+			slog.Error("handleSessionMessage: provider error",
+				"session_id", id,
+				"error_type", provErr.ErrorType,
+				"error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		if strings.Contains(err.Error(), "no healthy providers") || strings.Contains(err.Error(), "all providers failed") {
+			slog.Error("handleSessionMessage: no providers available",
+				"session_id", id, "error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		slog.Error("handleSessionMessage: DispatchSessioned failed with unexpected error",
+			"session_id", id, "error", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
 		return
 	}
 	// Phase 2 response shape: legacy SessionResponse fields stay at the
@@ -1733,7 +1764,7 @@ type turnResponse struct {
 	//
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
-	ContextUsage   *turn.ContextUsage            `json:"context_usage,omitempty"`
+	ContextUsage   *turn.ContextUsage           `json:"context_usage,omitempty"`
 	ProviderQuotas []turn.ProviderQuotaSnapshot `json:"provider_quotas,omitempty"`
 	// CompactionEvents + GateFailures + CriticalError surface the
 	// remaining SSE-only event projections onto the polling wire
@@ -1790,6 +1821,7 @@ type turnResponse struct {
 //
 // Side effects:
 //   - None — read-only against the in-memory Turn registry.
+//
 // longPollTimeout is the maximum time handleGetTurn holds a wait=true
 // request before returning the current snapshot. Sized at 25s so the
 // handler returns well within the 30s nginx / proxy default keep-alive
@@ -1799,7 +1831,8 @@ type turnResponse struct {
 // without a server-side mutation costs one round-trip per 25s.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1b.
+//
+//	Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1b.
 const longPollTimeout = 25 * time.Second
 
 func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
@@ -2980,10 +3013,10 @@ type permissionGrantResponse struct {
 //   - "once"    — resume only this call; no persistence.
 //   - "session" — resume + remember resource for the session.
 //   - "forever" — append the (tool, resource) pair to permissions.yaml
-//                 via the atomic-flock writer, then resume. Falls back
-//                 to GrantSession semantics when the writer is unwired
-//                 OR features.permission_grant_forever_enabled is
-//                 false (the no-code-change rollback path).
+//     via the atomic-flock writer, then resume. Falls back
+//     to GrantSession semantics when the writer is unwired
+//     OR features.permission_grant_forever_enabled is
+//     false (the no-code-change rollback path).
 //   - "deny"    — resume with the original IsError tool_result.
 //
 // Expected:

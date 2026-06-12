@@ -718,7 +718,7 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 	registry := pluginpkg.NewRegistry()
 	healthManager := failover.NewHealthManager()
 	tiers := resolveFailoverTiers(cfg.Plugins.Failover.Tiers)
-	chain := failover.NewFallbackChain(defaultFailoverProviders(), tiers)
+	chain := failover.NewFallbackChain(buildFailoverProviders(cfg), tiers)
 	failoverHk := failover.NewHook(chain, healthManager)
 
 	return &pluginRuntime{
@@ -3884,8 +3884,30 @@ func failoverHookAdapter(fh *failover.Hook) hook.Hook {
 	}
 }
 
+// buildFailoverProviders derives the failover provider list from application
+// configuration, using the same ordering as BuildConfigPreferences so that
+// all configured providers participate in the fallback chain.
+//
+// Expected:
+//   - cfg is a non-nil AppConfig with at least one provider model set.
+//
+// Returns:
+//   - A slice of ProviderModel entries derived from cfg, in default-first order.
+//
+// Side effects:
+//   - None.
+func buildFailoverProviders(cfg *config.AppConfig) []failover.ProviderModel {
+	prefs := providers.BuildConfigPreferences(cfg)
+	result := make([]failover.ProviderModel, len(prefs))
+	for i, p := range prefs {
+		result[i] = failover.ProviderModel{Provider: p.Provider, Model: p.Model}
+	}
+	return result
+}
+
 // defaultFailoverProviders returns the default provider/model entries for the
-// failover fallback chain, ordered by tier preference.
+// failover fallback chain, ordered by tier preference. Used only by test helpers
+// that lack access to application configuration.
 //
 // Returns:
 //   - A slice of ProviderModel entries from Tier0 through Tier3.
@@ -3895,7 +3917,7 @@ func failoverHookAdapter(fh *failover.Hook) hook.Hook {
 func defaultFailoverProviders() []failover.ProviderModel {
 	return []failover.ProviderModel{
 		{Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-		{Provider: "github-copilot", Model: "claude-sonnet-4-20250514"},
+		{Provider: "copilot", Model: "claude-sonnet-4-20250514"},
 		{Provider: "openai", Model: "gpt-4o"},
 		{Provider: "ollama", Model: "llama3.2"},
 	}
@@ -3928,10 +3950,10 @@ func resolveFailoverTiers(configTiers map[string]string) map[string]string {
 //   - None.
 func defaultFailoverTiers() map[string]string {
 	return map[string]string{
-		"anthropic":      failover.Tier0,
-		"github-copilot": failover.Tier1,
-		"openai":         failover.Tier2,
-		"ollama":         failover.Tier3,
+		"anthropic": failover.Tier0,
+		"copilot":   failover.Tier1,
+		"openai":    failover.Tier2,
+		"ollama":    failover.Tier3,
 	}
 }
 

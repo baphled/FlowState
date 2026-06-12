@@ -162,7 +162,7 @@ func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
 		{"anthropic", cfg.Providers.Anthropic.Model},
 		{"openai", cfg.Providers.OpenAI.Model},
 		{"zai", cfg.Providers.ZAI.Model},
-		{"github", cfg.Providers.GitHub.Model},
+		{"copilot", cfg.Providers.GitHub.Model},
 		{"openzen", cfg.Providers.OpenZen.Model},
 		{"ollamacloud", cfg.Providers.OllamaCloud.Model},
 		{"ollama", cfg.Providers.Ollama.Model},
