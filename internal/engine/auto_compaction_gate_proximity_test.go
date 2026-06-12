@@ -17,6 +17,7 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // gateProxCounter is a deterministic TokenCounter sized for the gate-
@@ -266,6 +267,55 @@ var _ = Describe("Engine auto-compaction gate-proximity force-trigger", func() {
 		Expect(got.LatencyMS).To(BeNumerically(">=", 0))
 		Expect(got.Trigger).To(Equal("gate_proximity"),
 			"gate-proximity fire must stamp Trigger so subscribers can attribute the cause")
+	})
+
+	// Tool-schema token inclusion in gate-proximity estimate.
+	//
+	// gateProximityForceCompact builds a syntheticReq but leaves Tools nil,
+	// so estimateRequestTokens only counts message tokens. Under heavy tool
+	// sets the unaccounted schema tokens push the true request size above the
+	// gate-proximity boundary while the estimate stays below — the force-
+	// trigger fires too late. Fix: populate Tools in syntheticReq from
+	// e.ToolSchemas() so the estimate matches what the provider actually sees.
+	//
+	// Boundary: limit=100_000, reserve=4_096, safetyMargin=5_000
+	//   → gate-proximity fires when estimated > 90_904
+	//
+	// Token arithmetic (each mockTool name="t" description="d", gateProxCounter):
+	//   Count("t") = 1, Count("d") = 1, overhead = 32 → 34 tokens per tool.
+	//   "next user turn" = 3 words = 3 tokens.
+	//   Fire spec:  90 msgs×1_000 + 3 user + 30 tools×34 = 91_023 > 90_904 → fires.
+	//   Quiet spec: 80 msgs×1_000 + 3 user + 30 tools×34 = 81_023 < 90_904 → quiet.
+	Context("tool schema token inclusion in gate-proximity estimate", func() {
+		It("fires when tool schema tokens push the estimate above the gate-proximity boundary", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			tools := make([]tool.Tool, 30)
+			for i := range tools {
+				tools[i] = &mockTool{name: "t", description: "d"}
+			}
+			eng, store := newGateProxEngineWithTools(summariser, true, 0.99, tools)
+			seedGateProxMessages(store, 90)
+
+			_ = eng.BuildContextWindowForTest(context.Background(), "sess-gate-tool-fire", "next user turn")
+
+			Expect(summariser.calls.Load()).To(BeNumerically(">=", int32(1)),
+				"gate-proximity estimate must include tool schema tokens so 91_023 > 90_904 fires")
+		})
+
+		It("stays silent when tool schema tokens do not push the estimate above the boundary", func() {
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+			tools := make([]tool.Tool, 30)
+			for i := range tools {
+				tools[i] = &mockTool{name: "t", description: "d"}
+			}
+			eng, store := newGateProxEngineWithTools(summariser, true, 0.99, tools)
+			seedGateProxMessages(store, 80)
+
+			_ = eng.BuildContextWindowForTest(context.Background(), "sess-gate-tool-quiet", "next user turn")
+
+			Expect(summariser.calls.Load()).To(Equal(int32(0)),
+				"tool schema tokens within gate-proximity margin must not trigger compaction")
+		})
 	})
 
 	// Phase-5 Slice α — model-switch compaction trigger.
@@ -730,6 +780,52 @@ func newModelSwitchEngine(
 		CompressionConfig: cfg,
 		Registry:          registry,
 		FailoverManager:   mgr,
+	})
+	return eng, store
+}
+
+// newGateProxEngineWithTools wires an Engine identical to newGateProxEngine
+// but pre-registers tools so that estimateRequestTokens inside
+// gateProximityForceCompact counts tool schema tokens alongside message
+// tokens. The extra cost shifts the estimated total above or below the
+// 90_904 gate-proximity boundary depending on the seeded message count,
+// allowing the specs below to verify that tool schemas are included in
+// the estimate.
+func newGateProxEngineWithTools(
+	summariser ctxstore.Summariser,
+	enabled bool,
+	ratioThreshold float64,
+	tools []tool.Tool,
+) (*engine.Engine, *recall.FileContextStore) {
+	tempDir := GinkgoT().TempDir()
+	store, err := recall.NewFileContextStore(tempDir+"/ctx.json", "test-model")
+	Expect(err).NotTo(HaveOccurred())
+
+	cfg := ctxstore.DefaultCompressionConfig()
+	cfg.AutoCompaction.Enabled = enabled
+	cfg.AutoCompaction.Threshold = ratioThreshold
+
+	cm := agent.DefaultContextManagement()
+	cm.CompactionThreshold = 0
+	cm.SlidingWindowSize = 200
+
+	testManifest := agent.Manifest{
+		ID:           "gate-prox-tool-schema-agent",
+		Instructions: agent.Instructions{SystemPrompt: "sys"},
+		Capabilities: agent.Capabilities{
+			Tools: []string{"t"},
+		},
+		ContextManagement: cm,
+	}
+
+	eng := engine.New(engine.Config{
+		ChatProvider:      &t10FakeProvider{},
+		Manifest:          testManifest,
+		Store:             store,
+		TokenCounter:      gateProxCounter{},
+		AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
+		CompressionConfig: cfg,
+		Tools:             tools,
 	})
 	return eng, store
 }

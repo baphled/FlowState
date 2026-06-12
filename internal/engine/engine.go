@@ -6156,7 +6156,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// through outputReserveFor with no MaxTokens override — matching
 	// the production seam where Stream() callers seldom set
 	// MaxTokens explicitly.
-	forceCompactForGate := e.gateProximityForceCompact(&manifestCopy, userMessage, tokenBudget)
+	forceCompactForGate := e.gateProximityForceCompact(&manifestCopy, userMessage, tokenBudget, e.assembleToolSchemasLocked(context.Background()))
 	// Translate the bool into the trigger discriminant string the
 	// downstream emit site stamps on the bus event. "gate_proximity"
 	// is the canonical name for Slice 6a's force tier; empty means
@@ -7224,21 +7224,11 @@ func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget 
 	// (sliding-window slice) — that's a separate decision about what
 	// content to summarise — but the trigger decision now uses the
 	// same scope the chip and gate use.
-	all := e.store.AllMessages()
-	var fullWindowTokens int
-	for i := range all {
-		fullWindowTokens += e.tokenCounter.Count(all[i].Content)
-		fullWindowTokens += e.tokenCounter.Count(all[i].Thinking)
-		for _, tc := range all[i].ToolCalls {
-			fullWindowTokens += e.tokenCounter.Count(tc.Name)
-			for k, v := range tc.Arguments {
-				fullWindowTokens += e.tokenCounter.Count(k)
-				if s, ok := v.(string); ok {
-					fullWindowTokens += e.tokenCounter.Count(s)
-				}
-			}
-		}
+	syntheticAll := &provider.ChatRequest{
+		Messages: e.store.AllMessages(),
+		Tools:    e.assembleToolSchemasLocked(context.Background()),
 	}
+	fullWindowTokens := e.estimateRequestTokens(syntheticAll)
 	ratio := float64(fullWindowTokens) / float64(tokenBudget)
 	if ratio <= threshold {
 		return nil, 0, fullWindowTokens, false
@@ -7335,7 +7325,7 @@ func (e *Engine) shouldAutoCompactForGate(estimated, limit, reserve int) bool {
 //
 // Side effects:
 //   - None.
-func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage string, tokenBudget int) bool {
+func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage string, tokenBudget int, tools []provider.Tool) bool {
 	if e == nil || tokenBudget <= 0 || e.tokenCounter == nil || e.store == nil {
 		return false
 	}
@@ -7350,6 +7340,7 @@ func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage
 		Provider: prefProvider,
 		Model:    prefModel,
 		Messages: candidate,
+		Tools:    tools,
 	}
 	estimated := e.estimateRequestTokens(syntheticReq)
 	reserve := e.outputReserveFor(syntheticReq)
@@ -7429,7 +7420,7 @@ func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, o
 	// in-flight user turn to anticipate.
 	manifestCopy := e.Manifest()
 	tokenBudget := e.ModelContextLimit()
-	if !e.gateProximityForceCompact(&manifestCopy, "", tokenBudget) {
+	if !e.gateProximityForceCompact(&manifestCopy, "", tokenBudget, e.ToolSchemas()) {
 		return false
 	}
 	summary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, "tool_result_wave")

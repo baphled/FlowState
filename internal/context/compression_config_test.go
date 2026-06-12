@@ -44,12 +44,13 @@ var _ = Describe("CompressionConfig", func() {
 			Expect(cfg.SessionMemory.Enabled).To(BeFalse())
 		})
 
-		It("sets auto-compaction threshold to 0.75", func() {
+		It("sets auto-compaction threshold to 0.50", func() {
 			cfg := flowctx.DefaultCompressionConfig()
 
-			// 0.75 is the bound default shared with
-			// internal/agent/manifest.go CompactionThreshold.
-			Expect(cfg.AutoCompaction.Threshold).To(Equal(0.75))
+			// 0.50 accounts for tool-schema tokens (~15–20% of window)
+			// that were excluded from the threshold estimate when firing
+			// at 0.75, causing proactive compaction to trigger too late.
+			Expect(cfg.AutoCompaction.Threshold).To(Equal(0.50))
 		})
 
 		It("seeds micro-compaction defaults", func() {

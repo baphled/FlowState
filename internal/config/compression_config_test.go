@@ -36,10 +36,10 @@ var _ = Describe("CompressionConfig wiring", func() {
 			Expect(cfg.Compression.SessionMemory.Enabled).To(BeFalse())
 		})
 
-		It("defaults auto-compaction threshold to 0.75", func() {
+		It("defaults auto-compaction threshold to 0.50", func() {
 			cfg := config.DefaultConfig()
 
-			Expect(cfg.Compression.AutoCompaction.Threshold).To(Equal(0.75))
+			Expect(cfg.Compression.AutoCompaction.Threshold).To(Equal(0.50))
 		})
 
 		It("defaults micro-compaction numeric fields", func() {
@@ -61,7 +61,7 @@ var _ = Describe("CompressionConfig wiring", func() {
 			Expect(cfg.Compression.MicroCompaction.TokenThreshold).To(Equal(1000))
 			Expect(cfg.Compression.MicroCompaction.PlaceholderTokens).To(Equal(50))
 			Expect(cfg.Compression.MicroCompaction.StorageDir).To(Equal("~/.flowstate/compacted"))
-			Expect(cfg.Compression.AutoCompaction.Threshold).To(Equal(0.75))
+			Expect(cfg.Compression.AutoCompaction.Threshold).To(Equal(0.50))
 			Expect(cfg.Compression.SessionMemory.StorageDir).To(Equal("~/.flowstate/session-memory"))
 		})
 
@@ -110,7 +110,7 @@ log_level: info
 				Expect(cfg.Compression.MicroCompaction.HotTailSize).To(Equal(5))
 				Expect(cfg.Compression.MicroCompaction.TokenThreshold).To(Equal(1000))
 				Expect(cfg.Compression.MicroCompaction.PlaceholderTokens).To(Equal(50))
-				Expect(cfg.Compression.AutoCompaction.Threshold).To(Equal(0.75))
+				Expect(cfg.Compression.AutoCompaction.Threshold).To(Equal(0.50))
 
 				Expect(cfg.Compression.MicroCompaction.StorageDir).To(Equal(filepath.Join(homeDir, ".flowstate", "compacted")))
 				Expect(cfg.Compression.SessionMemory.StorageDir).To(Equal(filepath.Join(homeDir, ".flowstate", "session-memory")))
