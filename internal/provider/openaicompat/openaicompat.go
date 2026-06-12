@@ -960,6 +960,10 @@ func ParseProviderError(providerName string, err error) *provider.Error {
 	var openaiErr *openaiAPI.Error
 	if errors.As(err, &openaiErr) {
 		errType, retriable := classifyHTTPStatus(openaiErr.StatusCode)
+		if openaiErr.StatusCode == http.StatusBadRequest && isContextWindowError(openaiErr.Code, openaiErr.Message) {
+			errType = provider.ErrorTypeContextWindowExceeded
+			retriable = false
+		}
 		return &provider.Error{
 			HTTPStatus:  openaiErr.StatusCode,
 			ErrorCode:   openaiErr.Code,
@@ -1287,6 +1291,30 @@ func classifyHTTPStatus(status int) (provider.ErrorType, bool) {
 	default:
 		return provider.ErrorTypeUnknown, false
 	}
+}
+
+// isContextWindowError reports whether the given OpenAI-compatible error code
+// or message indicates a context-window overflow. It mirrors the keyword set
+// used by the Anthropic provider's containsContextWindowKeyword function.
+//
+// Expected:
+//   - code is the error code from the provider response body (may be empty).
+//   - message is the human-readable error message (may be empty).
+//
+// Returns:
+//   - true when the error is a context-window overflow.
+//
+// Side effects:
+//   - None.
+func isContextWindowError(code, message string) bool {
+	if code == "context_length_exceeded" {
+		return true
+	}
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "context_length_exceeded") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "context length") ||
+		strings.Contains(lower, "prompt is too long")
 }
 
 // WrapChatError wraps a Chat() or Stream() error as a *provider.Error when possible.

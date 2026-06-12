@@ -2254,6 +2254,74 @@ var _ = Describe("ParseProviderError", func() {
 		})
 	})
 
+	Context("when the 400 response indicates context-window overflow", func() {
+		It("classifies 400 with code context_length_exceeded as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"This model's maximum context length is 4096 tokens","type":"invalid_request_error","code":"context_length_exceeded"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 400 with message containing 'context window' as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"This model's context window is 4096 tokens and you requested more","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 400 with message containing 'context length' as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"Maximum context length exceeded for this model","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("classifies 400 with message containing 'prompt is too long' as context-window overflow", func() {
+			err := newOpenAIError(
+				`{"message":"The prompt is too long for this model","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeContextWindowExceeded))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("keeps 400 with unrelated message as unknown", func() {
+			err := newOpenAIError(
+				`{"message":"Invalid request: unknown field 'foo'","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+
+		It("keeps 400 with unrelated code and message as unknown", func() {
+			err := newOpenAIError(
+				`{"message":"Invalid parameter value for field temperature","type":"invalid_request_error","code":"invalid_request_error"}`,
+				http.StatusBadRequest,
+			)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeUnknown))
+			Expect(result.IsRetriable).To(BeFalse())
+		})
+	})
+
 	// Sibling follow-up to anthropic Phase 3 #3 — OpenAI exposes
 	// `retry-after` and `x-ratelimit-*` on 429 errors; Z.AI also
 	// returns `retry-after` on 429 / 1001. Capturing them here on
