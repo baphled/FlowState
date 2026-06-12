@@ -792,6 +792,11 @@ type engineParams struct {
 	// hard-gate that rejects non-todowrite tool calls after >3 calls
 	// without invoking todowrite.
 	todoStrictMode bool
+	// todoStore is the session-scoped todo store wired by buildToolPipeline.
+	// Forwarded to engine.Config.TodoStore so the engine's tool loop can
+	// detect incomplete todos and inject continuation prompts when the model
+	// ends a turn without completing its planned work.
+	todoStore todotool.Store
 	// compaction carries the RLM Phase A Layer 1 settings parsed from
 	// cfg.Compaction. The store directory is the active sessions dir so
 	// per-session cold storage lands at <sessionsDir>/<sid>/compacted/.
@@ -1090,6 +1095,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		backgroundOutputTimeout: in.setup.cfg.ParsedBackgroundOutputTimeout(),
 		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
 		todoStrictMode:          in.setup.cfg.Features.TodoStrictMode,
+		todoStore:               in.tools.todoStore,
 		compaction:              in.setup.cfg.Compaction,
 		compactionStoreDir:      sessionsDirFromCfg(in.setup.cfg),
 		swarmRegistry:           in.swarmRegistry,
@@ -1568,6 +1574,7 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		ToolTimeout:               params.toolTimeout,
 		SystemPromptBudget:        params.systemPromptBudget,
 		TodoStrictMode:            params.todoStrictMode,
+		TodoStore:                 params.todoStore,
 		CompactionConfig:          params.compaction,
 		CompactionStoreDir:        params.compactionStoreDir,
 		SwarmRegistry:             params.swarmRegistry,

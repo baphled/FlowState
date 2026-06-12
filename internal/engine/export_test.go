@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
 )
 
@@ -390,4 +391,50 @@ func (d *DelegateTool) ResolveChildModelChainForTest(agentID, categoryProvider, 
 		resolvedProvider: categoryProvider,
 		resolvedModel:    categoryModel,
 	})
+}
+
+// DelegationResultForTest re-exports delegationResult for external tests.
+type DelegationResultForTest = delegationResult
+
+// MaxDelegationResultBytesForTest re-exports the truncation ceiling.
+const MaxDelegationResultBytesForTest = maxDelegationResultBytes
+
+// CollectDelegationResultForTest exposes collectDelegationResult for
+// white-box testing of the truncation and drain logic from package engine_test.
+func CollectDelegationResultForTest(d *DelegateTool, chunks <-chan provider.StreamChunk) (DelegationResultForTest, error) {
+	return d.collectDelegationResult(chunks)
+}
+
+// Response returns the accumulated response text.
+func (r DelegationResultForTest) Response() string { return r.response }
+
+// Truncated reports whether the response was truncated.
+func (r DelegationResultForTest) Truncated() bool { return r.truncated }
+
+// ToolCallCount returns the total number of chunks observed.
+func (r DelegationResultForTest) ToolCallCount() int { return r.toolCalls }
+
+// SetTodoStoreForTest wires an external todo.Store into the engine so
+// specs can pre-populate todo state without going through the todowrite
+// tool. Mirrors the production app.go wiring path for test isolation.
+func (e *Engine) SetTodoStoreForTest(s todo.Store) {
+	e.todoStore = s
+}
+
+// GetTodoIncompleteExhaustedForTest returns the per-session exhaustion
+// counter so specs can assert that the adaptive-limit mechanism records
+// consecutive budget overruns correctly.
+func (e *Engine) GetTodoIncompleteExhaustedForTest(sessionID string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.todoIncompleteExhausted[sessionID]
+}
+
+// ResetTodoIncompleteExhaustedForTest zeroes the per-session exhaustion
+// counter so consecutive spec scenarios within the same engine instance
+// do not bleed exhaustion state into each other.
+func (e *Engine) ResetTodoIncompleteExhaustedForTest(sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.todoIncompleteExhausted, sessionID)
 }
