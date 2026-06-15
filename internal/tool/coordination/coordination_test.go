@@ -139,13 +139,8 @@ var _ = Describe("CoordinationTool", func() {
 					LeadAgent:   "planner",
 					ChainPrefix: "planning-loop-7d67530ef355",
 				}
-				swarmCtx.AssignRunChainID("836526fd-8bcd-4d32-8ec8-99bc1c225968")
-				// AssignRunChainID is a no-op when ChainPrefix != SwarmID, so
-				// stamp the owned flag directly for an explicit per-run prefix.
-				if !swarmCtx.ChainIDAssigned {
-					swarmCtx.ChainPrefix = "planning-loop-7d67530ef355"
-					swarmCtx.ChainIDAssigned = true
-				}
+				swarmCtx.ChainPrefix = "planning-loop-7d67530ef355"
+				swarmCtx.ChainIDAssigned = true
 				ownedCtx = swarm.WithScope(ctx, &swarmCtx)
 			})
 

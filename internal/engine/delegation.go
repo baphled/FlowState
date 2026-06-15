@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -309,11 +310,17 @@ type delegationParams struct {
 	runAsync     bool
 }
 
+// maxDelegationResultBytes caps the accumulated response text collected from a
+// delegated agent's stream. Results exceeding this limit are truncated in-place
+// and flagged so callers can log a warning.
+const maxDelegationResultBytes = 100 * 1024
+
 // delegationResult carries the aggregated response and stream metadata from delegation.
 type delegationResult struct {
 	response  string
 	toolCalls int
 	lastTool  string
+	truncated bool
 }
 
 // NewDelegateTool creates a new delegation tool for the given engines, delegation configuration,
@@ -2934,15 +2941,24 @@ const forcedCoordinationStoreTool = "coordination_store"
 // that signature we return "tool:coordination_store" so even a marginal
 // model is compelled to emit the write the prose directive only asked for.
 //
-// Any other gate failure (a genuine schema mismatch on a value the member
-// DID write, a coord-store-unavailable surface, a timeout) returns empty:
-// forcing the write tool would not help and could mask the real fault.
+// A schema validation failure also triggers the forced write: the member
+// DID write a coordination_store key but the payload failed the result-
+// schema gate (e.g. the vault-explorer in session 579c829d wrote an empty
+// placeholder before gathering data, then the final structured write was
+// lost to tool_use_no_calls). Forcing the write on retry compels the model
+// to overwrite the stale key with a schema-conforming payload. Without this
+// the retry loop re-dispatches with no tool_choice override, the marginal
+// model produces tool_use_no_calls again, and the run exhausts its budget.
+//
+// A coord-store-unavailable surface or a timeout returns empty: forcing
+// the write tool would not help and could mask the real fault.
 //
 // Expected:
 //   - gateErr is the *swarm.GateError the post-member gate returned.
 //
 // Returns:
-//   - "tool:coordination_store" for the narration-without-write signature;
+//   - "tool:coordination_store" for the narration-without-write signature
+//     or a schema-validation failure on a coordination_store payload;
 //     "" otherwise (leave the retry unconstrained).
 //
 // Side effects:
@@ -2955,9 +2971,13 @@ func forcedToolChoiceForGate(gateErr error) string {
 	// The result-schema runner's no-output reason names the coordination_store
 	// write and the missing tool call. Key off that signature so we only
 	// force when forcing is the right correction.
+	// Schema validation failures also trigger the force: the member wrote
+	// a coordination_store key but the payload was incomplete or malformed,
+	// and forcing the write is the correct recovery.
 	reason := strings.ToLower(ge.Reason)
 	if strings.Contains(reason, "coordination_store") ||
-		(strings.Contains(reason, "no member output") && strings.Contains(reason, "tool call")) {
+		(strings.Contains(reason, "no member output") && strings.Contains(reason, "tool call")) ||
+		strings.Contains(reason, "schema validation failed") {
 		return "tool:" + forcedCoordinationStoreTool
 	}
 	return ""
@@ -3894,7 +3914,7 @@ func (d *DelegateTool) salvageMemberOutputIfMissing(ctx context.Context, memberI
 	// but-empty value is treated as missing so a member that wrote a hollow
 	// "" can still be salvaged. A store read error is conservative: leave the
 	// slot alone and let the gate report the real failure.
-	if existing, err := d.coordinationStore.Get(key); err == nil && len(existing) > 0 {
+	if existing, err := d.coordinationStore.Get(key); err == nil && hasSubstantiveOutput(existing) {
 		return
 	} else if err != nil && !errors.Is(err, coordination.ErrKeyNotFound) {
 		return
@@ -3902,6 +3922,15 @@ func (d *DelegateTool) salvageMemberOutputIfMissing(ctx context.Context, memberI
 	// Salvage the RAW reply verbatim. A no-content reply is written too, but
 	// the post-member gate then rejects it (fail-closed), so no junk ships.
 	_ = d.coordinationStore.Set(key, []byte(reply))
+}
+
+// hasSubstantiveOutput reports whether the stored value has meaningful
+// content, as opposed to being empty, whitespace-only, or a bare empty
+// JSON object/array. Mirrors the result-schema gate's non-empty predicate
+// so the salvage slot stays in sync with the gate read key.
+func hasSubstantiveOutput(val []byte) bool {
+	trimmed := strings.TrimSpace(string(val))
+	return trimmed != "" && trimmed != "{}" && trimmed != "[]"
 }
 
 // dispatchPostMemberGates fires every post-member gate on the active
@@ -4698,6 +4727,10 @@ func (d *DelegateTool) executeBackgroundTask(
 		return "", err
 	}
 
+	if result.truncated {
+		slog.Warn("delegation result truncated", "bytes", len(result.response), "max", maxDelegationResultBytes)
+	}
+
 	d.circuitBreaker.RecordSuccess()
 	completedAt := time.Now().UTC()
 	baseInfo.ModelName = target.engine.LastModel()
@@ -5211,6 +5244,7 @@ func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChun
 	var response strings.Builder
 	toolCalls := 0
 	lastTool := ""
+	var truncated bool
 	for chunk := range chunks {
 		toolCalls++
 		if chunk.ToolCall != nil && chunk.ToolCall.Name != "" {
@@ -5219,20 +5253,22 @@ func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChun
 		if chunk.Error != nil {
 			return delegationResult{}, fmt.Errorf("delegation stream error: %w", chunk.Error)
 		}
-		// streaming.IsControlEvent gate — same rationale as
-		// teeToParentStream above. Without this, harness_attempt_start
-		// Content (`{"attempt":N,...}`) is concatenated into the
-		// delegated agent's response, then wrapped by
-		// formatDelegationOutput into <task_result>{"attempt":...}…</task_result>
-		// and persisted as a tool_result. Session 2d8dc0ac msg 167 is
-		// the canonical example.
 		if streaming.IsControlEvent(chunk.EventType) {
 			continue
 		}
+		if truncated {
+			continue
+		}
 		response.WriteString(chunk.Content)
+		if response.Len() > maxDelegationResultBytes {
+			truncated = true
+		}
+	}
+	if truncated {
+		response.WriteString("[...truncated]")
 	}
 
-	return delegationResult{response: response.String(), toolCalls: toolCalls, lastTool: lastTool}, nil
+	return delegationResult{response: response.String(), toolCalls: toolCalls, lastTool: lastTool, truncated: truncated}, nil
 }
 
 // checkRejectionLimit returns errMaxRejectionsExhausted when the rejection

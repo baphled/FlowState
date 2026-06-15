@@ -1083,6 +1083,25 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 				Expect(reviewerProv.ToolChoiceForAttempt(1)).To(BeEmpty(),
 					"a clean first-attempt pass dispatches once, unconstrained")
 			})
+
+			It("forces the coordination_store write when the gate fails with a schema validation error", func() {
+				store := coordination.NewMemoryStore()
+				runner := &flakyMemberGateRunner{
+					failFor: 1,
+					reason: "schema validation failed: validating root: required: " +
+						`missing properties: ["summary" "findings"]`,
+				}
+				engines, reviewerProv := reviewerEnginesWithProvider(swarmContextWithGates(postMemberGate()))
+				delegateTool := newDelegateToolWithRunner(engines, store, runner)
+
+				_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reviewerProv.StreamCallCount()).To(BeNumerically(">=", 2),
+					"the member is re-dispatched after the schema-validation miss")
+				Expect(reviewerProv.ToolChoiceForAttempt(2)).To(Equal("tool:coordination_store"),
+					"the corrective retry forces the coordination_store write even on a schema validation failure")
+			})
 		})
 
 		Context("model override on the corrective retry", func() {
