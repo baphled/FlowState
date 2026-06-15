@@ -46,6 +46,18 @@ const PlanDocumentV1Name = "plan-document-v1"
 // can quote concerns and references without re-parsing prose.
 const CodeReviewVerdictV1Name = "code-review-verdict-v1"
 
+// VaultFindingsV1Name is the SchemaRef for the vault-explorer
+// agent's terminal output inside the mental-health-swarm.
+// Validates that the member wrote structured findings with at
+// least a summary and a findings array.
+const VaultFindingsV1Name = "vault-findings-v1"
+
+// TrackerAnalysisV1Name is the SchemaRef for the tracker-analyst
+// agent's terminal output inside the mental-health-swarm.
+// Validates that the member wrote structured analysis with at
+// least a summary and a metrics array.
+const TrackerAnalysisV1Name = "tracker-analysis-v1"
+
 // SectionV1Name is the SchemaRef the section-decomposed planning
 // sub-swarm (internal/app/swarms/plan-sme-swarm.yml) uses on the
 // per-member post-member gate to validate each SME's plan-section
@@ -542,6 +554,117 @@ func SectionV1Schema() *jsonschema.Schema {
 	}
 }
 
+// VaultFindingsV1Schema returns the Phase 1 schema for the vault-explorer
+// agent's terminal output inside the mental-health-swarm. The agent
+// writes findings as structured JSON to the coord-store under
+// `{chainID}/vault-explorer/findings`; this schema validates that the
+// shape is parseable and carries the load-bearing fields.
+//
+// Phase 1 shape:
+//
+//   - object root with required `summary` (string) and `findings` array.
+//   - each finding entry has required `area` (string), `pattern` (string),
+//     `confidence` (enum: high/medium/low), and `implication` (string);
+//     optional `evidence` array of strings provides supporting citations.
+//   - `search_strategies_used` (string array) and `limitations` (string)
+//     are optional metadata.
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func VaultFindingsV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"summary": {Type: "string"},
+			"task":    {Type: "string"},
+			"findings": {
+				Type: "array",
+				Items: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"area":        {Type: "string"},
+						"pattern":     {Type: "string"},
+						"confidence":  {Type: "string", Enum: []any{"high", "medium", "low"}},
+						"evidence":    {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+						"implication": {Type: "string"},
+					},
+					Required: []string{"area", "pattern", "confidence", "implication"},
+				},
+			},
+			"search_strategies_used": {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+			"limitations":            {Type: "string"},
+		},
+		Required: []string{"summary", "findings"},
+	}
+}
+
+// TrackerAnalysisV1Schema returns the Phase 1 schema for the tracker-analyst
+// agent's terminal output inside the mental-health-swarm. The agent writes
+// structured analysis to `{chainID}/tracker-analyst/analysis`; this schema
+// validates the shape is parseable and carries the load-bearing fields.
+//
+// Phase 1 shape:
+//
+//   - object root with required `summary` (string) and `metrics` array.
+//   - `date_range` is an object with optional `from` and `to` strings.
+//   - each metric entry has required `name` (string); optional `current_value`,
+//     `previous_value`, `change`, `assessment`, `confidence`, and
+//     `data_points` (integer).
+//   - `correlations` and `alerts` arrays accept any type.
+//   - `data_quality` is an object with optional `completeness_pct`,
+//     `date_gaps` (string array), and `notes` (string).
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func TrackerAnalysisV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"summary": {Type: "string"},
+			"date_range": {
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"from": {Type: "string"},
+					"to":   {Type: "string"},
+				},
+			},
+			"metrics": {
+				Type: "array",
+				Items: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"name":           {Type: "string"},
+						"current_value":  {},
+						"previous_value": {},
+						"change":         {Type: "string"},
+						"assessment":     {Type: "string"},
+						"confidence":     {Type: "string"},
+						"data_points":    {Type: "integer"},
+					},
+					Required: []string{"name"},
+				},
+			},
+			"correlations": {Type: "array"},
+			"alerts":       {Type: "array"},
+			"data_quality": {
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"completeness_pct": {},
+					"date_gaps":        {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+					"notes":            {Type: "string"},
+				},
+			},
+		},
+		Required: []string{"summary", "metrics"},
+	}
+}
+
 // floatPtr is a tiny helper for the *float64 fields the jsonschema-go
 // library uses for numeric bounds. Pulled out so the schema bodies
 // above stay readable.
@@ -582,6 +705,8 @@ func SeedDefaultSchemas() error {
 		{PlanDocumentV1Name, PlanDocumentV1Schema()},
 		{CodeReviewVerdictV1Name, CodeReviewVerdictV1Schema()},
 		{SectionV1Name, SectionV1Schema()},
+		{VaultFindingsV1Name, VaultFindingsV1Schema()},
+		{TrackerAnalysisV1Name, TrackerAnalysisV1Schema()},
 	}
 	for _, seed := range seeds {
 		if err := RegisterSchema(seed.name, seed.schema); err != nil {
