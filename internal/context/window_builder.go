@@ -833,7 +833,7 @@ func (b *WindowBuilder) appendRecentMessages(
 ) {
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
-		slidingWindowSize = 10
+		slidingWindowSize = 50
 	}
 
 	recentMessages := store.GetRecent(slidingWindowSize)

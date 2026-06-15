@@ -6470,7 +6470,7 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
-		slidingWindowSize = 10
+		slidingWindowSize = 50
 	}
 	recent := explicitMessages
 	if len(recent) > slidingWindowSize {
@@ -6918,7 +6918,12 @@ const toolOutputPruneTailGuard = 1
 // exceed toolOutputPruneCharLimit. These are tools whose results are
 // load-bearing for downstream agents or for plan correctness — a
 // truncated plan_write return, for example, drops the persisted plan
-// ID downstream readers need.
+// ID downstream readers need. delegate results carry the entire
+// sub-agent output (up to 100 KB); truncating to 2 KB silently
+// discards the sub-agent's work. bash output frequently contains
+// compilation errors or test results whose tail holds the root cause;
+// truncating to the first 2 KB causes the agent to "fix" visible
+// errors while the real failure remains invisible.
 //
 // Option (b) (per the May 2026 rename brief) — protect by tool name
 // list. The simpler choice over a `Tool.PreserveOnCompact() bool`
@@ -6941,6 +6946,8 @@ var protectedCompactionToolNames = map[string]struct{}{
 	"coordination_store": {},
 	"recall_search":      {},
 	"question_request":   {},
+	"delegate":           {},
+	"bash":               {},
 }
 
 // pruneOldToolOutputs runs the Stage-1 prune pass over the cold-range
@@ -7190,7 +7197,7 @@ func (e *Engine) autoCompactionThreshold(manifest *agent.Manifest, tokenBudget i
 func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, int, bool) {
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
-		slidingWindowSize = 10
+		slidingWindowSize = 50
 	}
 	recent := e.store.GetRecent(slidingWindowSize)
 	if len(recent) == 0 {

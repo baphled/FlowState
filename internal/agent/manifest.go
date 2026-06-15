@@ -394,7 +394,7 @@ func DefaultContextManagementWith(embeddingModel string) ContextManagement {
 	return ContextManagement{
 		MaxRecursionDepth:   2,
 		SummaryTier:         "quick",
-		SlidingWindowSize:   10,
+		SlidingWindowSize:   50,
 		CompactionThreshold: 0.75,
 		EmbeddingModel:      embeddingModel,
 	}

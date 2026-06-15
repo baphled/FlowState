@@ -17,7 +17,8 @@ var _ = Describe("Manifest", func() {
 
 			Expect(defaults.MaxRecursionDepth).To(Equal(2))
 			Expect(defaults.SummaryTier).To(Equal("quick"))
-			Expect(defaults.SlidingWindowSize).To(Equal(10))
+			Expect(defaults.SlidingWindowSize).To(Equal(50),
+				"a 50-message window ensures the agent retains its multi-step plan across tool calls; 10 was too aggressive — after 5 tool pairs the plan was invisible")
 			Expect(defaults.CompactionThreshold).To(Equal(0.75))
 			Expect(defaults.EmbeddingModel).To(Equal("nomic-embed-text"))
 		})

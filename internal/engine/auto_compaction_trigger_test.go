@@ -562,8 +562,9 @@ var _ = Describe("Engine auto-compaction Stage-1 prune pass", func() {
 
 		// 3 tool waves with 4000-char bodies (twice the prune
 		// ceiling). Tail-guard of 1 protects the most recent
-		// tool_result ("edit"). Eligible: bash + read = 2.
-		seedToolWave(store, []string{"bash", "read", "edit"}, 4000)
+		// tool_result ("edit"). Eligible: read + grep = 2.
+		// Uses unprotected tool names; bash and delegate are protected.
+		seedToolWave(store, []string{"read", "grep", "edit"}, 4000)
 
 		mu, observed := subscribeOne(eng)
 
@@ -587,8 +588,9 @@ var _ = Describe("Engine auto-compaction Stage-1 prune pass", func() {
 		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
 
 		// 4 oversized tool waves; tail-guard of 1 protects the
-		// most recent tool ("grep"). Eligible: bash + read + edit.
-		seedToolWave(store, []string{"bash", "read", "edit", "grep"}, 4000)
+		// most recent tool ("webfetch"). Eligible: read + grep + edit.
+		// Uses unprotected tool names; bash and delegate are protected.
+		seedToolWave(store, []string{"read", "grep", "edit", "webfetch"}, 4000)
 
 		mu, observed := subscribeOne(eng)
 		_ = eng.BuildContextWindowForTest(context.Background(), "sess-tail-guard", "next user turn")
@@ -611,7 +613,7 @@ var _ = Describe("Engine auto-compaction Stage-1 prune pass", func() {
 		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
 
 		// plan_write at position 0 — eligible by position. Tail-
-		// guard protects only the last tool (edit). plan_write is
+		// guard protects only the last (edit). plan_write and bash are
 		// protected BY NAME so should NOT be pruned.
 		seedToolWave(store, []string{"plan_write", "bash", "read", "edit"}, 4000)
 
@@ -628,9 +630,10 @@ var _ = Describe("Engine auto-compaction Stage-1 prune pass", func() {
 		mu.Unlock()
 
 		// 4 tools; tail-guard protects "edit"; plan_write at pos 0
-		// is protected by name. Eligible truncations: bash + read = 2.
-		Expect(got.PrunedToolOutputs).To(Equal(2),
-			"plan_write must be protected by name even when position-eligible")
+		// is protected by name; bash is protected by name.
+		// Eligible truncations: read only = 1.
+		Expect(got.PrunedToolOutputs).To(Equal(1),
+			"plan_write and bash must be protected by name even when position-eligible")
 	})
 
 	It("skips the LLM summariser when pruning alone drops below the threshold", func() {
@@ -647,7 +650,9 @@ var _ = Describe("Engine auto-compaction Stage-1 prune pass", func() {
 		// Prune saves ~1497 tokens per truncation × 3 truncated =
 		// ~4491 tokens reclaimed. Post-prune ≈ 3529 → ratio 0.035 →
 		// below 0.05 threshold → skip summariser.
-		seedToolWave(store, []string{"bash", "read", "edit", "grep"}, 8000)
+		// Uses unprotected tool names (read, edit, grep, webfetch);
+		// bash and delegate are now protected and would not prune.
+		seedToolWave(store, []string{"read", "edit", "grep", "webfetch"}, 8000)
 
 		mu, observed := subscribeOne(eng)
 
@@ -678,7 +683,7 @@ var _ = Describe("Engine auto-compaction Stage-1 prune pass", func() {
 		// fall through to the summariser.
 		eng, store := newTestEngineWithCompactor(summariser, 0.60, true)
 
-		seedToolWave(store, []string{"bash", "read", "edit"}, 4000)
+		seedToolWave(store, []string{"read", "grep", "edit"}, 4000)
 
 		mu, observed := subscribeOne(eng)
 		_ = eng.BuildContextWindowForTest(context.Background(), "sess-prune-then-summarise", "next user turn")
