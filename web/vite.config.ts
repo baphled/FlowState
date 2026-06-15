@@ -25,7 +25,7 @@ export default defineConfig(({ mode }) => {
       // Set VITE_HOST=0.0.0.0 (or a specific interface) in web/.env.local
       // to opt-in to LAN access — e.g. for testing the UI from a mobile
       // device on the same network.
-      host: env.VITE_HOST || process.env.VITE_HOST || "127.0.0.1",
+      host: env.VITE_HOST || process.env.VITE_HOST || "0.0.0.0",
       proxy: {
         "/api": {
           target: "http://localhost:8080",
