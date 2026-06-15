@@ -1281,7 +1281,17 @@ type toolPipelineResult struct {
 //   - Connects to configured MCP servers.
 func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	mcpMgr := mcpclient.NewManager()
-	todoStore := todotool.NewMemoryStore()
+	todoDir := filepath.Join(cfg.DataDir, "todos")
+	fileStore, ferr := todotool.NewFileStore(todoDir)
+	if ferr != nil {
+		log.Printf("warning: failed to create file-backed todo store at %s, falling back to in-memory: %v", todoDir, ferr)
+	}
+	var todoStore todotool.Store
+	if fileStore != nil {
+		todoStore = fileStore
+	} else {
+		todoStore = todotool.NewMemoryStore()
+	}
 	// Pre-existing wiring bug surfaced by live verification of the
 	// Plan-mode output-dir slice (cbe4464e): the main engine's seed
 	// tool slice was constructed without a pathguard, so every
