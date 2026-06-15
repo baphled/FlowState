@@ -59,7 +59,15 @@ const canonicalAutoContinueSentence = `Once the list is recorded, work through i
 // instruction. The fix introduced the patch-op sibling tool todo_update; this
 // pin names the tool explicitly so per-transition discipline survives prompt
 // drift. Registered at internal/tool/todo/update.go.
-const canonicalTodoUpdateSentence = "Use `todo_update` for every status transition — one call per flip, marking each item `in_progress` when you start it and `completed` when it is done. Reserve `todowrite` for the initial list creation only"
+const canonicalTodoUpdateSentence = "Use `todo_update` for every status transition — one call per flip, marking each item `in_progress` when you start it and `completed` when it is done"
+
+// canonicalCompletionGuardSentence is the case-sensitive substring every
+// agent prompt MUST carry alongside the todo_update mandate. Bug provenance:
+// session f75f29ec showed agents marking items completed without actually
+// doing the work — status flips based on intent rather than evidence. The
+// guard clause forbids marking complete based on anything other than
+// verified, actually-done work.
+const canonicalCompletionGuardSentence = "never mark complete based on intent, expectation, or assumption"
 
 // exemptedPrompts is the documented allow-list for prompts that are out of
 // scope of the propagation contract. Each entry MUST cite a reason and a
@@ -178,6 +186,18 @@ var _ = Describe("Todo Discipline directive on agent prompts", func() {
 			content := readFile(path)
 			Expect(content).To(ContainSubstring(canonicalTodoUpdateSentence),
 				"agent prompt missing canonical todo_update transition sentence: %s", path)
+		}
+	})
+
+	It("every agent prompt carries the canonical completion guard sentence", func() {
+		for _, path := range listAgentPrompts() {
+			if reason, exempt := todoExempt[filepath.Base(path)]; exempt {
+				By("skipping " + path + " — " + reason)
+				continue
+			}
+			content := readFile(path)
+			Expect(content).To(ContainSubstring(canonicalCompletionGuardSentence),
+				"agent prompt missing canonical completion guard sentence: %s", path)
 		}
 	})
 
