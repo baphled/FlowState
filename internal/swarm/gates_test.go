@@ -772,8 +772,8 @@ var _ = Describe("swarm gates (T-swarm-3 Phase 1)", func() {
 			// the bare prose key.
 			vaultPath := outputDir + "/Auth-Track.md"
 			store := newGateStore(map[string][]byte{
-				"plan-auth/plan":                        []byte("the plan has been written to the coordination store."),
-				"plan-auth/plan-writer/plan":            []byte("# Auth Track\n\nPhase 1: close the perimeter."),
+				"plan-auth/plan":                         []byte("the plan has been written to the coordination store."),
+				"plan-auth/plan-writer/plan":             []byte("# Auth Track\n\nPhase 1: close the perimeter."),
 				"plan-auth/plan-writer/plan_publication": []byte(`{"vault_path":"` + vaultPath + `","published_at":"2026-06-05T10:00:00Z"}`),
 			})
 			args := planningLoopArgs(store)

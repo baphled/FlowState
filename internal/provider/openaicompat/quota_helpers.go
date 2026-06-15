@@ -35,7 +35,7 @@ import (
 //
 // Returns:
 //   - A populated *quota.RateLimitVariant with TightestPercentRemaining
-//     + TightestResetAt computed across non-sentinel windows.
+//   - TightestResetAt computed across non-sentinel windows.
 //   - nil when rl is nil.
 //
 // Side effects:

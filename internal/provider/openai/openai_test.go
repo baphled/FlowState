@@ -851,9 +851,9 @@ var _ = Describe("OpenAI Provider image attachments (PR3 task-11)", func() {
 
 	Describe("Chat path threads image attachments and preserves usage", func() {
 		var (
-			server     *httptest.Server
+			server       *httptest.Server
 			capturedBody map[string]interface{}
-			prov       *openai.Provider
+			prov         *openai.Provider
 		)
 
 		BeforeEach(func() {

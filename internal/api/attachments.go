@@ -65,12 +65,12 @@ type attachmentErrorBody struct {
 // Cap-precedence error codes per plan §7a. Stable wire-string values
 // — never re-spell.
 const (
-	errCodeMediaTypeNotAllowed     = "media_type_not_allowed"
-	errCodeFileTooLarge            = "file_too_large"
-	errCodeTooManyAttachments      = "too_many_attachments"
-	errCodeSessionBudgetExhausted  = "session_budget_exhausted"
-	errCodeRequestTooLarge         = "request_too_large"
-	errCodeProviderDoesNotSupport  = "provider_does_not_support_pdf"
+	errCodeMediaTypeNotAllowed    = "media_type_not_allowed"
+	errCodeFileTooLarge           = "file_too_large"
+	errCodeTooManyAttachments     = "too_many_attachments"
+	errCodeSessionBudgetExhausted = "session_budget_exhausted"
+	errCodeRequestTooLarge        = "request_too_large"
+	errCodeProviderDoesNotSupport = "provider_does_not_support_pdf"
 )
 
 // writeAttachmentError emits the structured JSON error envelope.

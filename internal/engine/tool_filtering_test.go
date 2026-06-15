@@ -751,7 +751,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 	// (which has no path-scoping option) returns tool-not-found.
 	Describe("Plan-mode schema filter", func() {
 		var (
-			planAllTools     []tool.Tool
+			planAllTools []tool.Tool
 			// strippedToolNames are removed entirely from the schema under Plan mode.
 			strippedToolNames = []string{"bash"}
 			// planScopedToolNames REMAIN in the schema under Plan mode and

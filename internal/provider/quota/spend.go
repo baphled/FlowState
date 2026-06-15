@@ -167,12 +167,12 @@ type CapConfig struct {
 //
 // Plan §"Engine integration / spend accumulation rules" lines 299-318.
 type SpendRecord struct {
-	Provider    string                 // canonical provider id ("anthropic", "openai", ...)
-	Model       string                 // wire-confirmed model id from message_start
-	AccountHash string                 // HashAccount(api_key)[:12]; empty for ollama-style local
-	RequestID   string                 // upstream message id; partitions per-call dedupe
-	Usage       *provider.UsageDelta   // cumulative tokens for the stream so far (snapshot, not increment)
-	CapConfig   CapConfig              // per-provider cap + period + thresholds
+	Provider    string               // canonical provider id ("anthropic", "openai", ...)
+	Model       string               // wire-confirmed model id from message_start
+	AccountHash string               // HashAccount(api_key)[:12]; empty for ollama-style local
+	RequestID   string               // upstream message id; partitions per-call dedupe
+	Usage       *provider.UsageDelta // cumulative tokens for the stream so far (snapshot, not increment)
+	CapConfig   CapConfig            // per-provider cap + period + thresholds
 }
 
 // requestCumulative tracks the highest cumulative output_tokens seen
@@ -446,7 +446,7 @@ func (t *Tracker) RecordSpend(ctx context.Context, rec SpendRecord) error {
 		period = "monthly"
 	}
 	var (
-		spentMinor   int64
+		spentMinor    int64
 		spentCurrency = entry.Currency
 	)
 	switch {

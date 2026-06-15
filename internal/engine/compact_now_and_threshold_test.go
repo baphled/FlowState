@@ -405,4 +405,3 @@ var _ = Describe("CompactNow session-model fallback (May 2026 'Unknown Model' re
 				"Model field which most providers reject")
 	})
 })
-

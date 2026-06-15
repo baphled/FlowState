@@ -42,14 +42,14 @@ import (
 // shape (snake_case JSON tags) is preserved so the SPA's existing
 // TypeScript types deserialise unchanged.
 type quotaDashboardEntry struct {
-	Provider      string                       `json:"provider"`
-	AccountHash   string                       `json:"account_hash"`
-	Model         string                       `json:"model,omitempty"`
-	ObservedAt    string                       `json:"observed_at"`
-	Stale         bool                         `json:"stale,omitempty"`
-	StoreBackend  string                       `json:"store_backend,omitempty"`
-	PricingSource string                       `json:"pricing_source,omitempty"`
-	Variant       string                       `json:"variant"`
+	Provider      string                            `json:"provider"`
+	AccountHash   string                            `json:"account_hash"`
+	Model         string                            `json:"model,omitempty"`
+	ObservedAt    string                            `json:"observed_at"`
+	Stale         bool                              `json:"stale,omitempty"`
+	StoreBackend  string                            `json:"store_backend,omitempty"`
+	PricingSource string                            `json:"pricing_source,omitempty"`
+	Variant       string                            `json:"variant"`
 	RateLimit     *dashboardProviderQuotaRateLimit  `json:"rate_limit,omitempty"`
 	TokenSpend    *dashboardProviderQuotaTokenSpend `json:"token_spend,omitempty"`
 	NotConfigured *dashboardProviderQuotaNotConfig  `json:"not_configured,omitempty"`

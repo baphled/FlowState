@@ -116,7 +116,7 @@ var _ = Describe("Fresh fetch (200 OK round trip — plan lines 345-346)", func(
 		Expect(result.FromCache).To(BeFalse())
 		Expect(result.ETag).To(Equal(`"abc123"`))
 		Expect(result.Table.Models).To(HaveKey("anthropic/claude-opus-4-7"))
-		Expect(result.Table.Source).To(Equal("registry:" + server.URL),
+		Expect(result.Table.Source).To(Equal("registry:"+server.URL),
 			"successful registry fetch MUST stamp Table.Source=registry:<url> — plan §Pricing table line 386")
 		Expect(hits.Load()).To(Equal(int32(1)))
 

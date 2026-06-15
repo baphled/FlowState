@@ -173,20 +173,20 @@ type Session struct {
 // session broker reports an active Publish for this session. The field
 // defaults to false; callers that have broker context set it after listing.
 type Summary struct {
-	ID                string    `json:"id"`
-	AgentID           string    `json:"agentId"`
-	CurrentAgentID    string    `json:"currentAgentId,omitempty"`
-	CurrentModelID    string    `json:"currentModelId,omitempty"`
-	CurrentProviderID string    `json:"currentProviderId,omitempty"`
-	ParentID          string    `json:"parentId,omitempty"`
+	ID                string `json:"id"`
+	AgentID           string `json:"agentId"`
+	CurrentAgentID    string `json:"currentAgentId,omitempty"`
+	CurrentModelID    string `json:"currentModelId,omitempty"`
+	CurrentProviderID string `json:"currentProviderId,omitempty"`
+	ParentID          string `json:"parentId,omitempty"`
 	// ChainID surfaces the delegation coordination chain identifier so the
 	// Vue chatStore can rebuild its (chainId → childSessionId) map from
 	// the session list on cold load — closing the reload-hole left by
 	// a488b858 where SwarmEvents do not replay on reconnect. Omitted when
 	// empty so root sessions stay byte-identical to their pre-field shape.
-	ChainID      string    `json:"chainId,omitempty"`
-	Title        string    `json:"title"`
-	IsStreaming  bool      `json:"isStreaming"`
+	ChainID     string `json:"chainId,omitempty"`
+	Title       string `json:"title"`
+	IsStreaming bool   `json:"isStreaming"`
 	// ActiveTurnID is the in-flight Turn UUID for this session, or ""
 	// when no Turn is Running. Populated by the API layer (not the
 	// manager) at GET /api/v1/sessions via
@@ -199,8 +199,8 @@ type Summary struct {
 	// Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 	//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
 	ActiveTurnID string    `json:"activeTurnId"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 	// PermissionMode mirrors Session.PermissionMode so the Vue
 	// chatStore can hydrate the chip directly from the session list
 	// on cold load — backend payload is the canonical source per the
@@ -1278,6 +1278,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 //   - Accumulates assistant and tool messages from the stream into session history.
 //   - Updates the session timestamp.
 //   - Delegates streaming to the configured provider.
+//
 // SendMessageWithAttachments is SendMessage augmented with per-turn
 // attachment ids. The ids are resolved against the manager's
 // AttachmentStore and the materialised slice is threaded onto the

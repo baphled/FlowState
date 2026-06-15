@@ -28,15 +28,15 @@ func recordOnly(rec *store.Record, next http.Handler) http.Handler {
 
 var _ = Describe("CSRF wrapper composition", func() {
 	var (
-		mem       *store.MemoryStore
-		sessCfg   auth.SessionConfig
-		mgr       *auth.SessionManager
-		now       time.Time
-		csrfCfg   auth.CSRFConfig
-		recBound  func(http.Handler) http.Handler
-		called    bool
-		nextH     http.Handler
-		validRec  *store.Record
+		mem      *store.MemoryStore
+		sessCfg  auth.SessionConfig
+		mgr      *auth.SessionManager
+		now      time.Time
+		csrfCfg  auth.CSRFConfig
+		recBound func(http.Handler) http.Handler
+		called   bool
+		nextH    http.Handler
+		validRec *store.Record
 	)
 
 	BeforeEach(func() {

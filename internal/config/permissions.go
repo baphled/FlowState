@@ -47,10 +47,10 @@ import (
 // (zero-value map); v2 readers consult it on engine.BuildAllowedToolSet
 // extensions if/when the engine widens its allowed set in future slices.
 type Permissions struct {
-	Version       int                          `yaml:"version" json:"version"`
-	PlanOutputDir string                       `yaml:"plan_output_dir,omitempty" json:"plan_output_dir,omitempty"`
-	Tools         map[string]ToolRules         `yaml:"tools" json:"tools"`
-	Agents        map[string]AgentPermissions  `yaml:"agents,omitempty" json:"agents,omitempty"`
+	Version       int                         `yaml:"version" json:"version"`
+	PlanOutputDir string                      `yaml:"plan_output_dir,omitempty" json:"plan_output_dir,omitempty"`
+	Tools         map[string]ToolRules        `yaml:"tools" json:"tools"`
+	Agents        map[string]AgentPermissions `yaml:"agents,omitempty" json:"agents,omitempty"`
 }
 
 // ToolRules holds the allow and deny glob lists for a single tool.

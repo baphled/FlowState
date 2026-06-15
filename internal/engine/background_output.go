@@ -188,7 +188,7 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 //
 // Shape mirrors the Bug 2 precedent for delegation-allowlist rejection
 // (`internal/engine/delegation.go` formatRejection at ~4847+) — the
-// matching ids labelled with a heading, then `  - \`<id>\`` lines —
+// matching ids labelled with a heading, then `  - \`<id>\“ lines —
 // because the same model surface consumes both errors.
 //
 // Expected:

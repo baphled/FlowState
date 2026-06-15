@@ -479,7 +479,7 @@ var _ = Describe("DelegateTool child Turn lifecycle (swarm fan-out)", func() {
 			alphaCalls := &atomic.Int32{}
 			bravoCalls := &atomic.Int32{}
 			streamers := map[string]streaming.Streamer{
-				"alpha": retryStreamerWith(0, nil, alphaCalls),               // succeed on attempt 1
+				"alpha": retryStreamerWith(0, nil, alphaCalls),                 // succeed on attempt 1
 				"bravo": retryStreamerWith(1, retryableSwarmErr(), bravoCalls), // fail attempt 1, succeed attempt 2
 			}
 

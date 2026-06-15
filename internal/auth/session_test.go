@@ -17,10 +17,10 @@ import (
 
 var _ = Describe("SessionManager", func() {
 	var (
-		mem  *store.MemoryStore
-		cfg  auth.SessionConfig
-		mgr  *auth.SessionManager
-		now  time.Time
+		mem   *store.MemoryStore
+		cfg   auth.SessionConfig
+		mgr   *auth.SessionManager
+		now   time.Time
 		clock func() time.Time
 	)
 

@@ -288,10 +288,10 @@ const engineShutdownTimeout = 30 * time.Second
 //   - PrincipalID:    env FLOWSTATE_AUTH_PRINCIPAL_ID → cfg.Auth.PrincipalID
 //   - DisplayName:    env FLOWSTATE_AUTH_DISPLAY_NAME → cfg.Auth.DisplayName
 //   - AllowedOrigins: env FLOWSTATE_AUTH_ALLOWED_ORIGINS (CSV) →
-//                     cfg.Auth.AllowedOrigins → ["localhost:*"]
+//     cfg.Auth.AllowedOrigins → ["localhost:*"]
 //   - SecureCookies:  env FLOWSTATE_AUTH_SECURE_COOKIES → cfg.Auth.SecureCookies
 //   - CSRFKey:        env FLOWSTATE_AUTH_CSRF_KEY → cfg.Auth.CSRFKey →
-//                     FAIL (no ephemeral fallback per PR5/C10)
+//     FAIL (no ephemeral fallback per PR5/C10)
 //
 // Expected:
 //   - apiServer is non-nil.
@@ -524,9 +524,9 @@ func multiUserPath() string {
 // worse than refusing to start.
 //
 // Resolution order (highest precedence first):
-//   1. FLOWSTATE_AUTH_CSRF_KEY env var
-//   2. cfgKey (cfg.Auth.CSRFKey)
-//   3. ERROR — operator must configure a key.
+//  1. FLOWSTATE_AUTH_CSRF_KEY env var
+//  2. cfgKey (cfg.Auth.CSRFKey)
+//  3. ERROR — operator must configure a key.
 //
 // Key padding/truncation: a configured key is materialised into a
 // 32-byte slice. Keys shorter than 32 bytes are zero-padded (gorilla/csrf

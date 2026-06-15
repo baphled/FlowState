@@ -6,8 +6,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/eventlogger"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/plugin/sessionrecorder"
 )
 

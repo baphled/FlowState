@@ -61,9 +61,9 @@ import (
 // guard is the "round-trip through the matcher" spec: the matcher
 // (config.Permissions) consumes the file the writer produces.
 type permissionsYAMLSchema struct {
-	Version       int                              `yaml:"version,omitempty"`
-	PlanOutputDir string                           `yaml:"plan_output_dir,omitempty"`
-	Tools         map[string]permissionsToolRule   `yaml:"tools,omitempty"`
+	Version       int                            `yaml:"version,omitempty"`
+	PlanOutputDir string                         `yaml:"plan_output_dir,omitempty"`
+	Tools         map[string]permissionsToolRule `yaml:"tools,omitempty"`
 	// Agents holds per-agent grants persisted by Slice 5's AppendMCPGrant
 	// path. v1 callers (AppendAllow) never populate this map; the
 	// writer round-trips it verbatim so a v2 file with both tool and

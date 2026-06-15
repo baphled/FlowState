@@ -816,7 +816,7 @@ var _ = Describe("Anthropic Stream wall-clock timeout", func() {
 		// Anthropic extended-thinking responses don't trip it,
 		// short enough that a truly stuck connection surfaces
 		// within a single user-perceptible failure window.
-		Expect(DefaultStreamRequestTimeoutForTest()).To(Equal(10 * time.Minute),
+		Expect(DefaultStreamRequestTimeoutForTest()).To(Equal(10*time.Minute),
 			"defaultStreamRequestTimeout pins the production wall-clock cap; "+
 				"changing it requires reviewing the trade-off between "+
 				"legitimate long-thinking allowances and stuck-connection "+

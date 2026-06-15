@@ -406,6 +406,7 @@ func providerProducesUnifiedAssistant(providerID string) bool {
 //     the stop_reason chunk (openaicompat.go:548-588);
 //     finish_reason="tool_calls" maps to stop_reason="tool_use"
 //     (openaicompat.go:842-843).
+//
 // Because the tool_call chunk precedes the stop_reason chunk, the
 // accumulator's `applyToolCall` flushes the in-progress content row while
 // turnStopReason is still "" — so a healthy turn's content row carries

@@ -100,10 +100,10 @@ func seedPermissionsFile(path string, tools map[string]map[string][]string) {
 
 var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", func() {
 	var (
-		dir          string
-		permsPath    string
-		writer       *pathguard.Writer
-		reloader     *reloadablePerms
+		dir             string
+		permsPath       string
+		writer          *pathguard.Writer
+		reloader        *reloadablePerms
 		reloaderSpyImpl *reloaderSpy
 	)
 
@@ -454,8 +454,8 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			writerA := pathguard.NewWriter(permsPath, nil)
 
 			const (
-				goroutines     = 6
-				appendsPerGo   = 3
+				goroutines      = 6
+				appendsPerGo    = 3
 				expectedAppends = goroutines * appendsPerGo
 			)
 

@@ -53,11 +53,11 @@ func DefaultCSRFConfig() CSRFConfig {
 //
 // Composition (plan §"CSRF" lines 287-296):
 //
-//   handler = RequireOrigin(originCfg,                                // PR1
-//             RequireSession(sessionMgr,                              // C6
-//             Protect(csrfCfg)(                                       // C5 layer 1
-//             RequireCSRFRecordBound(sessionMgr)(                     // C5 layer 2
-//             innerHandler))))
+//	handler = RequireOrigin(originCfg,                                // PR1
+//	          RequireSession(sessionMgr,                              // C6
+//	          Protect(csrfCfg)(                                       // C5 layer 1
+//	          RequireCSRFRecordBound(sessionMgr)(                     // C5 layer 2
+//	          innerHandler))))
 //
 // Order matters: Origin → Session → gorilla/csrf → Record-bound CSRF →
 // inner. gorilla/csrf BEFORE Record-bound because gorilla rejects forged

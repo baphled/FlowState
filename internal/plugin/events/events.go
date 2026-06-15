@@ -1752,10 +1752,10 @@ func NewToolArgsValidationFailedEvent(data ToolArgsValidationFailedEventData, ts
 // AgentName + DenialReason explain the why; Provider + Model + SessionID
 // + ChainID + Mode pin the context for dashboards and forensic logs.
 type PermissionRequiredEventData struct {
-	RequestID    string
-	ToolName     string
-	AgentName    string
-	Resource     string
+	RequestID string
+	ToolName  string
+	AgentName string
+	Resource  string
 	// ResourceKind disambiguates the Resource field — "path" for
 	// filesystem-tool denials (Slice 2 + pathguard), "mcp_server" for
 	// MCP-server-tool denials (Slice 5). Empty string is treated as

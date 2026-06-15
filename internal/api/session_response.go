@@ -107,7 +107,8 @@ func WithIsStreaming(streaming bool) SessionResponseOption {
 // for both idle and running sessions.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+//
+//	Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
 func WithActiveTurnID(turnID string) SessionResponseOption {
 	return func(o *sessionResponseOptions) {
 		o.activeTurnID = turnID

@@ -65,7 +65,7 @@ func (r *recordingDispatchEngine) RestoreManifest(_ any) {
 	r.restoreCalls++
 }
 
-func (r *recordingDispatchEngine) SkipAgentFiles() bool    { return false }
+func (r *recordingDispatchEngine) SkipAgentFiles() bool     { return false }
 func (r *recordingDispatchEngine) SetSkipAgentFiles(_ bool) {}
 
 func (r *recordingDispatchEngine) snapshotCallCount() int {
@@ -115,11 +115,11 @@ func (s *silentStreamer) Stream(_ context.Context, agentID, message string) (<-c
 // so the test stays focused on the engine lifecycle calls.
 type silentConsumer struct{}
 
-func (silentConsumer) WriteChunk(string) error  { return nil }
-func (silentConsumer) WriteError(error)         {}
-func (silentConsumer) Done()                    {}
-func (silentConsumer) WriteToolCall(string)     {}
-func (silentConsumer) WriteToolResult(string)   {}
+func (silentConsumer) WriteChunk(string) error { return nil }
+func (silentConsumer) WriteError(error)        {}
+func (silentConsumer) Done()                   {}
+func (silentConsumer) WriteToolCall(string)    {}
+func (silentConsumer) WriteToolResult(string)  {}
 
 var _ streaming.StreamConsumer = silentConsumer{}
 

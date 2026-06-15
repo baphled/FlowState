@@ -97,7 +97,8 @@ type ModelInfo struct {
 // turn endpoint or the SSE channel.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
 type ContextUsage struct {
 	InputTokens   int    `json:"input_tokens"`
 	OutputReserve int    `json:"output_reserve"`
@@ -124,19 +125,20 @@ type ContextUsage struct {
 // package owns the wire shape without dragging internal/api.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
 type ProviderQuotaSnapshot struct {
-	Provider      string                     `json:"provider"`
-	AccountHash   string                     `json:"account_hash"`
-	Model         string                     `json:"model,omitempty"`
-	ObservedAt    string                     `json:"observed_at"`
-	Stale         bool                       `json:"stale,omitempty"`
-	StoreBackend  string                     `json:"store_backend,omitempty"`
-	PricingSource string                     `json:"pricing_source,omitempty"`
-	Variant       string                     `json:"variant"`
-	RateLimit     *ProviderQuotaRateLimit    `json:"rate_limit,omitempty"`
-	TokenSpend    *ProviderQuotaTokenSpend   `json:"token_spend,omitempty"`
-	NotConfigured *ProviderQuotaNotConfig    `json:"not_configured,omitempty"`
+	Provider      string                   `json:"provider"`
+	AccountHash   string                   `json:"account_hash"`
+	Model         string                   `json:"model,omitempty"`
+	ObservedAt    string                   `json:"observed_at"`
+	Stale         bool                     `json:"stale,omitempty"`
+	StoreBackend  string                   `json:"store_backend,omitempty"`
+	PricingSource string                   `json:"pricing_source,omitempty"`
+	Variant       string                   `json:"variant"`
+	RateLimit     *ProviderQuotaRateLimit  `json:"rate_limit,omitempty"`
+	TokenSpend    *ProviderQuotaTokenSpend `json:"token_spend,omitempty"`
+	NotConfigured *ProviderQuotaNotConfig  `json:"not_configured,omitempty"`
 }
 
 // ProviderQuotaRateLimit mirrors sseProviderQuotaRateLimit at
@@ -206,7 +208,8 @@ func (s ProviderQuotaSnapshot) partitionKey() string {
 // growth) — no per-event id is required.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
 type CompactionEvent struct {
 	SessionID      string `json:"session_id"`
 	AgentID        string `json:"agent_id"`
@@ -236,7 +239,8 @@ type CompactionEvent struct {
 // policy) but the slice preserves history for future affordances.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
 type GateFailure struct {
 	SwarmID        string   `json:"swarm_id"`
 	Lifecycle      string   `json:"lifecycle"`
@@ -268,7 +272,8 @@ type GateFailure struct {
 // transient and don't populate this field).
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
 type TurnCriticalError struct {
 	Message       string `json:"message"`
 	CorrelationID string `json:"correlation_id,omitempty"`
@@ -463,7 +468,8 @@ type Turn struct {
 // returning from background still observes the disposition.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Permission Mode ModeAskUser Extension (May 2026).md §3 + §17.1.
+//
+//	Permission Mode ModeAskUser Extension (May 2026).md §3 + §17.1.
 type TurnPermissionRequest struct {
 	RequestID    string `json:"request_id"`
 	ToolName     string `json:"tool_name"`
@@ -1218,7 +1224,8 @@ func (r *Registry) SetHeartbeat(turnID, phase string, tokenCount int) {
 // observe a torn pair.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
 func (r *Registry) SetProviderModel(turnID, provider, model string) {
 	if turnID == "" {
 		return
@@ -1272,7 +1279,8 @@ func (r *Registry) SetProviderModel(turnID, provider, model string) {
 // observe a torn ContextUsage value.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
 func (r *Registry) SetContextUsage(turnID string, cu *ContextUsage) {
 	if turnID == "" || cu == nil {
 		return
@@ -1326,7 +1334,8 @@ func (r *Registry) SetContextUsage(turnID string, cu *ContextUsage) {
 // observe a torn slice (mid-append) or a torn snapshot entry.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
 func (r *Registry) UpsertProviderQuota(turnID string, snap ProviderQuotaSnapshot) {
 	if turnID == "" {
 		return
@@ -1392,7 +1401,8 @@ func (r *Registry) UpsertProviderQuota(turnID string, snap ProviderQuotaSnapshot
 // observe a torn slice.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
 func (r *Registry) AppendCompactionEvent(turnID string, ev CompactionEvent) {
 	if turnID == "" {
 		return
@@ -1426,7 +1436,8 @@ func (r *Registry) AppendCompactionEvent(turnID string, ev CompactionEvent) {
 // Concurrency: acquires r.mu via Lock.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
 func (r *Registry) AppendGateFailure(turnID string, gf GateFailure) {
 	if turnID == "" {
 		return
@@ -1475,7 +1486,8 @@ func (r *Registry) AppendGateFailure(turnID string, gf GateFailure) {
 // torn payload.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+//	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
 func (r *Registry) SetCriticalError(turnID string, ce *TurnCriticalError) {
 	if turnID == "" || ce == nil {
 		return
@@ -1626,7 +1638,8 @@ func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 // predicate.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Permission Mode ModeAskUser Extension (May 2026).md §11 R5 + §17.1.
+//
+//	Permission Mode ModeAskUser Extension (May 2026).md §11 R5 + §17.1.
 func permissionRequestsDiffer(live, baseline []TurnPermissionRequest) bool {
 	if len(live) != len(baseline) {
 		return true
@@ -1675,7 +1688,8 @@ func permissionRequestsDiffer(live, baseline []TurnPermissionRequest) bool {
 // never observe a torn slice.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Permission Mode ModeAskUser Extension (May 2026).md §17.1.
+//
+//	Permission Mode ModeAskUser Extension (May 2026).md §17.1.
 func (r *Registry) UpsertPermissionRequest(turnID string, req TurnPermissionRequest) {
 	if turnID == "" || req.RequestID == "" {
 		return

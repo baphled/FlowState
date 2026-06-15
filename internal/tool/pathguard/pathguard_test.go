@@ -574,8 +574,8 @@ var _ = Describe("Pathguard — Plan-Mode Output Directory overlay (Slice 1)", f
 // project_flowstate_agent_tools_fail_closed).
 var _ = Describe("Pathguard — ModeAskUser PermissionPrompter (Slice 2)", func() {
 	var (
-		denied   string
-		askUser  = func() context.Context {
+		denied  string
+		askUser = func() context.Context {
 			ctx := context.Background()
 			ctx = permissionmode.WithMode(ctx, permissionmode.ModeAskUser)
 			return ctx

@@ -24,8 +24,8 @@ import (
 type fakeCompactionController struct {
 	mu sync.Mutex
 
-	threshold       float64
-	setThresholdErr error
+	threshold         float64
+	setThresholdErr   error
 	setThresholdCalls []float64
 
 	compactNowSummary string

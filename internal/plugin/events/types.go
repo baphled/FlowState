@@ -76,7 +76,7 @@ const (
 	EventDelegationStarted       = "delegation.started"
 	EventDelegationCompleted     = "delegation.completed"
 	EventDelegationFailed        = "delegation.failed"
-	EventRecallEmbeddingStored = "recall.embedding.stored"
+	EventRecallEmbeddingStored   = "recall.embedding.stored"
 	// EventRecallSearched and EventRecallChainSearched (May 2026)
 	// were removed by Bug Hunt #63 (May 11 2026) — both fired on
 	// every tool call (high frequency) with zero non-test

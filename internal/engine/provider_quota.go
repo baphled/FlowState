@@ -24,17 +24,17 @@ import (
 // stamps it. The engine MUST NOT emit it (the api fan-out would
 // double-stamp).
 type providerQuotaPayload struct {
-	Provider      string                            `json:"provider"`
-	AccountHash   string                            `json:"account_hash"`
-	Model         string                            `json:"model,omitempty"`
-	ObservedAt    string                            `json:"observed_at"`
-	Stale         bool                              `json:"stale,omitempty"`
-	StoreBackend  string                            `json:"store_backend,omitempty"`
-	PricingSource string                            `json:"pricing_source,omitempty"`
-	Variant       string                            `json:"variant"`
-	RateLimit     *providerQuotaRateLimitPayload    `json:"rate_limit,omitempty"`
-	TokenSpend    *providerQuotaTokenSpendPayload   `json:"token_spend,omitempty"`
-	NotConfigured *providerQuotaNotConfigPayload    `json:"not_configured,omitempty"`
+	Provider      string                          `json:"provider"`
+	AccountHash   string                          `json:"account_hash"`
+	Model         string                          `json:"model,omitempty"`
+	ObservedAt    string                          `json:"observed_at"`
+	Stale         bool                            `json:"stale,omitempty"`
+	StoreBackend  string                          `json:"store_backend,omitempty"`
+	PricingSource string                          `json:"pricing_source,omitempty"`
+	Variant       string                          `json:"variant"`
+	RateLimit     *providerQuotaRateLimitPayload  `json:"rate_limit,omitempty"`
+	TokenSpend    *providerQuotaTokenSpendPayload `json:"token_spend,omitempty"`
+	NotConfigured *providerQuotaNotConfigPayload  `json:"not_configured,omitempty"`
 }
 
 type providerQuotaRateLimitPayload struct {

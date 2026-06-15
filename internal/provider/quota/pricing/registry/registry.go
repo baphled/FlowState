@@ -190,10 +190,10 @@ func DefaultCachePath() (string, error) {
 //  3. Otherwise issue an HTTP GET with If-None-Match=<cached ETag>.
 //     200 → parse, atomicwrite the new cache, return Table.
 //     304 → cache is still authoritative; bump FetchedAt and return
-//          Table from cache.
+//     Table from cache.
 //     anything else → fall back to cache (even if expired); emit
-//          structured warning; if no cache exists, return
-//          Unreachable.
+//     structured warning; if no cache exists, return
+//     Unreachable.
 //
 // Concurrent Load calls on the same CachePath are safe — the
 // atomicwrite.File pattern ensures readers see either the old or new
@@ -242,10 +242,10 @@ func Load(ctx context.Context, opts LoadOptions) LoadResult {
 			if parseErr == nil {
 				table.Source = pricing.SourceRegistryString(opts.URL)
 				return LoadResult{
-					Table:       table,
-					FromCache:   true,
-					ETag:        cached.ETag,
-					FetchedAt:   cached.FetchedAt,
+					Table:     table,
+					FromCache: true,
+					ETag:      cached.ETag,
+					FetchedAt: cached.FetchedAt,
 				}
 			}
 			// Cache parse failure is unexpected (the loader wrote it)

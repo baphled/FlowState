@@ -18,9 +18,9 @@ import (
 
 var _ = Describe("HandleLogin (B8 mode-fingerprint defence)", func() {
 	var (
-		mem  *store.MemoryStore
-		mgr  *auth.SessionManager
-		now  time.Time
+		mem *store.MemoryStore
+		mgr *auth.SessionManager
+		now time.Time
 	)
 
 	BeforeEach(func() {

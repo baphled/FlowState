@@ -145,7 +145,7 @@ var ErrSessionModeMismatch = errors.New("auth: session mode mismatch")
 //   - SameSite    = Lax
 //   - Max-Age     = cfg.Lifetime in seconds
 //   - Value       = 256-bit random opaque token (base64 URL-safe; matches
-//                   scs's RandomBytes(32) token-generation idiom)
+//     scs's RandomBytes(32) token-generation idiom)
 //
 // principal.Mode is stamped onto the Record so RequireSession's
 // mode-mismatch check (round-5 B3) has the necessary anchor.

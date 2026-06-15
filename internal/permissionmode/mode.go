@@ -5,25 +5,25 @@
 // session. The valid set is fixed at five values:
 //
 //   - ModePlan         — read-only; the engine filters write tools out
-//                        of the schema list and the assistant cannot
-//                        mutate the workspace. Enforcement for Plan
-//                        lives engine-side (schema filter), NOT here.
+//     of the schema list and the assistant cannot
+//     mutate the workspace. Enforcement for Plan
+//     lives engine-side (schema filter), NOT here.
 //   - ModeDefault      — current behaviour: permissions.yaml + the
-//                        legacy denied-roots check both apply.
+//     legacy denied-roots check both apply.
 //   - ModeAcceptEdits  — Write/Edit/MultiEdit prompts auto-accept;
-//                        pathguard still enforces deny rules.
+//     pathguard still enforces deny rules.
 //   - ModeAskUser      — interactive: pathguard denial publishes a
-//                        permission_required event and suspends the
-//                        tool call until the operator grants or denies.
-//                        Slice 1 of the Permission Mode ModeAskUser
-//                        Extension plan (May 2026) ships only the
-//                        enum extension — the interactive plumbing
-//                        lands in Slices 2-5. Until then ModeAskUser
-//                        behaves identically to ModeDefault at the
-//                        pathguard + engine seams.
+//     permission_required event and suspends the
+//     tool call until the operator grants or denies.
+//     Slice 1 of the Permission Mode ModeAskUser
+//     Extension plan (May 2026) ships only the
+//     enum extension — the interactive plumbing
+//     lands in Slices 2-5. Until then ModeAskUser
+//     behaves identically to ModeDefault at the
+//     pathguard + engine seams.
 //   - ModeYolo         — full bypass: every pathguard *ForTool check
-//                        short-circuits to PASS. Reserved for trusted
-//                        sandboxes (e.g. ephemeral worktree agents).
+//     short-circuits to PASS. Reserved for trusted
+//     sandboxes (e.g. ephemeral worktree agents).
 //
 // This package owns the canonical context key + accessors so that the
 // session manager (the producer) and pathguard (the consumer) can

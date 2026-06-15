@@ -548,7 +548,7 @@ func parsePlan(raw []byte) (title, body string) {
 type structuredPlanEnvelope struct {
 	Title   string `json:"title"`
 	Content struct {
-		ExecutiveSummary string                     `json:"executive_summary"`
+		ExecutiveSummary string                      `json:"executive_summary"`
 		PhasedSlices     []structuredPlanPhasedSlice `json:"phased_slices"`
 	} `json:"content"`
 }

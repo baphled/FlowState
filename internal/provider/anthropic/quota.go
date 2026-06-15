@@ -133,11 +133,11 @@ func (q *Quota) RecordResponse(_, modelID string, headers http.Header, _ provide
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.snap = quota.Snapshot{
-		Provider:     providerName,
-		AccountHash:  q.accountHash,
-		Model:        modelID,
-		ObservedAt:   time.Now(),
-		RateLimit:    rateLimitToVariant(rl),
+		Provider:    providerName,
+		AccountHash: q.accountHash,
+		Model:       modelID,
+		ObservedAt:  time.Now(),
+		RateLimit:   rateLimitToVariant(rl),
 	}
 }
 

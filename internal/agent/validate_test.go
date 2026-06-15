@@ -440,8 +440,8 @@ var _ = Describe("ValidateManifestSet", func() {
 	Context("when the directory contains non-manifest files", func() {
 		It("skips non-.md entries silently", func() {
 			fs := manifestFS(map[string]string{
-				"agents/README.txt":   "not a manifest",
-				"agents/notes.go":     "not a manifest",
+				"agents/README.txt": "not a manifest",
+				"agents/notes.go":   "not a manifest",
 				"agents/Good.md": "---\n" +
 					"id: Good\n" +
 					"name: Good\n" +

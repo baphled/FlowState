@@ -201,25 +201,25 @@ var canonicalTools = map[string]bool{
 	"lsp":       true,
 
 	// Coordination + delegation infrastructure.
-	"coordination_store":  true,
-	"background_output":   true,
-	"background_cancel":   true,
-	"autoresearch_run":    true,
-	"todowrite":           true,
-	"todo_update":         true,
+	"coordination_store": true,
+	"background_output":  true,
+	"background_cancel":  true,
+	"autoresearch_run":   true,
+	"todowrite":          true,
+	"todo_update":        true,
 
 	// Knowledge / skill / plan tools.
-	"skill_load":     true,
-	"plan_list":      true,
-	"plan_read":      true,
-	"plan_write":     true,
-	"plan_enter":     true,
-	"plan_exit":      true,
+	"skill_load": true,
+	"plan_list":  true,
+	"plan_read":  true,
+	"plan_write": true,
+	"plan_enter": true,
+	"plan_exit":  true,
 
 	// Memory MCP-shaped natives (registered directly in toolset.AppendMemoryTools).
-	"search_nodes":  true,
-	"open_nodes":    true,
-	"chain_search":  true,
+	"search_nodes":       true,
+	"open_nodes":         true,
+	"chain_search":       true,
 	"chain_get_messages": true,
 
 	// Swarm and vault tools.
@@ -230,14 +230,14 @@ var canonicalTools = map[string]bool{
 	"vault_sync":     true,
 
 	// Other registered tools.
-	"web":          true,
-	"websearch":    true,
-	"question":     true,
-	"apply_patch":  true,
-	"batch":        true,
-	"display":      true,
-	"truncate":     true,
-	"invalid":      true,
+	"web":         true,
+	"websearch":   true,
+	"question":    true,
+	"apply_patch": true,
+	"batch":       true,
+	"display":     true,
+	"truncate":    true,
+	"invalid":     true,
 }
 
 // roleWritePattern matches role prose that promises write capability.

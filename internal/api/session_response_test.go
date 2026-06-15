@@ -91,7 +91,8 @@ var _ = Describe("NewSessionResponse model+provider projection", func() {
 // /sessions probe. IsStreaming is preserved through Commit 2.
 //
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
-//   Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+//
+//	Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
 var _ = Describe("NewSessionResponse activeTurnId field", func() {
 	It("emits activeTurnId: \"\" when no turn is running (sibling to isStreaming)", func() {
 		sess := &session.Session{ID: "sess-active-empty", AgentID: "agent-a"}
