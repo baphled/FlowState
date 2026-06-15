@@ -123,3 +123,22 @@ Feature: Context Compression — Layers 1 and 2
     Given a transcript of 50 large assistant messages
     When the window is built with and without the L1 splitter
     Then the compressed window tokens are at most 60 percent of the uncompressed window tokens
+
+  @auto-compaction
+  Scenario: Default auto-compaction threshold is 0.50 to account for tool-schema overhead
+    Given the default compression configuration is loaded
+    Then the auto-compaction threshold is 0.50
+
+  @e2e
+  Scenario: Soft trigger includes tool schema tokens when computing the full-window ratio
+    Given an engine is wired with 3 single-word tools and a 0.50 auto-compaction threshold
+    And 49 messages of 100 words each are seeded into the tool-schema session store
+    When the context window is built with the next user turn for the tool-schema engine
+    Then auto-compaction fires because the tool schema tokens push the ratio above the threshold
+
+  @e2e
+  Scenario: Gate-proximity trigger includes tool schema tokens in the estimated request size
+    Given an engine is wired with 30 single-word tools and an inert auto-compaction threshold
+    And 90 messages of 1000 words each are seeded into the tool-schema session store
+    When the context window is built with the next user turn for the tool-schema engine
+    Then auto-compaction fires because the tool schema tokens push the request above the gate-proximity boundary

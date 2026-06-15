@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cucumber/godog"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/tool"
 )
 
 // compressionE2EState holds scenario state for the @e2e scenarios that
@@ -36,7 +38,52 @@ type compressionE2EState struct {
 	benchMessages         []provider.Message
 	benchUncompressedToks int
 	benchCompressedToks   int
+
+	// tool-schema compaction scenario state
+	toolSchemaEng        *engine.Engine
+	toolSchemaStore      *recall.FileContextStore
+	toolSchemaSummariser *countingE2ESummariser
 }
+
+// countingE2ESummariser counts how many times Summarise is called and
+// returns a canned valid compaction summary. Used by the tool-schema
+// compaction BDD scenarios to verify that maybeAutoCompact fired.
+type countingE2ESummariser struct {
+	calls atomic.Int32
+	resp  string
+}
+
+func (s *countingE2ESummariser) Summarise(_ context.Context, _, _ string, _ []provider.Message) (string, error) {
+	s.calls.Add(1)
+	return s.resp, nil
+}
+
+// wordE2ECounter is a deterministic one-token-per-word counter for the
+// tool-schema BDD scenarios. It advertises a fixed model limit so the
+// token-boundary arithmetic in the scenarios is predictable.
+type wordE2ECounter struct{ limit int }
+
+func (w wordE2ECounter) Count(text string) int {
+	if text == "" {
+		return 0
+	}
+	return len(strings.Fields(text))
+}
+
+func (w wordE2ECounter) ModelLimit(_ string) int { return w.limit }
+
+// singleWordToolE2E is a tool.Tool stub whose Name and Description are
+// single words. With wordE2ECounter (one token per word) each stub
+// contributes Name(1) + Description(1) + overhead(32) = 34 tokens to
+// estimateRequestTokens, making the per-tool contribution predictable.
+type singleWordToolE2E struct{ n string }
+
+func (t *singleWordToolE2E) Name() string        { return t.n }
+func (t *singleWordToolE2E) Description() string { return "d" }
+func (t *singleWordToolE2E) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	return tool.Result{}, nil
+}
+func (t *singleWordToolE2E) Schema() tool.Schema { return tool.Schema{} }
 
 // RegisterCompressionE2ESteps wires the plan T20 @e2e scenarios that
 // close the remaining deviations: cross-session recall through the
@@ -61,6 +108,9 @@ func RegisterCompressionE2ESteps(ctx *godog.ScenarioContext) {
 		state.benchMessages = nil
 		state.benchUncompressedToks = 0
 		state.benchCompressedToks = 0
+		state.toolSchemaEng = nil
+		state.toolSchemaStore = nil
+		state.toolSchemaSummariser = nil
 
 		dir, err := os.MkdirTemp("", "compression-e2e-*")
 		if err != nil {
@@ -242,6 +292,132 @@ func RegisterCompressionE2ESteps(ctx *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	ctx.Step(`^an engine is wired with (\d+) single-word tools and a 0\.50 auto-compaction threshold$`, func(n int) error {
+		return state.buildToolSchemaEngine(n, 0.50, 10_000)
+	})
+
+	ctx.Step(`^an engine is wired with (\d+) single-word tools and an inert auto-compaction threshold$`, func(n int) error {
+		return state.buildToolSchemaEngine(n, 0.99, 100_000)
+	})
+
+	ctx.Step(`^(\d+) messages of (\d+) words each are seeded into the tool-schema session store$`, func(msgCount, wordCount int) error {
+		if state.toolSchemaStore == nil {
+			return errors.New("tool-schema engine not wired by a prior Given step")
+		}
+		words := make([]string, wordCount)
+		for i := range words {
+			words[i] = "w"
+		}
+		content := strings.Join(words, " ")
+		for range msgCount {
+			state.toolSchemaStore.Append(provider.Message{Role: "assistant", Content: content})
+		}
+		return nil
+	})
+
+	ctx.Step(`^the context window is built with the next user turn for the tool-schema engine$`, func() error {
+		if state.toolSchemaEng == nil {
+			return errors.New("tool-schema engine not wired by a prior Given step")
+		}
+		chunks, err := state.toolSchemaEng.Stream(context.Background(), "tool-schema-session", "next user turn")
+		if err != nil {
+			return fmt.Errorf("stream: %w", err)
+		}
+		for range chunks {
+		}
+		return nil
+	})
+
+	ctx.Step(`^auto-compaction fires because the tool schema tokens push the ratio above the threshold$`, func() error {
+		if state.toolSchemaSummariser == nil {
+			return errors.New("tool-schema summariser not configured")
+		}
+		if state.toolSchemaSummariser.calls.Load() < 1 {
+			return fmt.Errorf(
+				"summariser was not called; compaction did not fire — "+
+					"tool schema tokens must be included in the full-window ratio "+
+					"so 49 msgs×100 tokens + 3 tools×34 tokens = 5_002 exceeds "+
+					"the 0.50×10_000 = 5_000 boundary (got calls = %d)",
+				state.toolSchemaSummariser.calls.Load(),
+			)
+		}
+		return nil
+	})
+
+	ctx.Step(`^auto-compaction fires because the tool schema tokens push the request above the gate-proximity boundary$`, func() error {
+		if state.toolSchemaSummariser == nil {
+			return errors.New("tool-schema summariser not configured")
+		}
+		if state.toolSchemaSummariser.calls.Load() < 1 {
+			return fmt.Errorf(
+				"summariser was not called; compaction did not fire — "+
+					"tool schema tokens must be included in the gate-proximity estimate "+
+					"so 90 msgs×1_000 tokens + 3 user tokens + 30 tools×34 tokens = 91_023 "+
+					"exceeds the gate boundary at 90_904 (got calls = %d)",
+				state.toolSchemaSummariser.calls.Load(),
+			)
+		}
+		return nil
+	})
+}
+
+// buildToolSchemaEngine wires a deterministic Engine for the tool-schema
+// compaction scenarios. It uses wordE2ECounter (one token per word) with
+// the given limit and installs toolCount single-word tools so the
+// per-tool token contribution is predictable: each tool adds 34 tokens
+// (1 name + 1 description + 32 overhead via estimateRequestTokens).
+//
+// Expected:
+//   - toolCount is the number of single-word tool stubs to install.
+//   - threshold is the auto-compaction ratio threshold.
+//   - limit is the model context window size advertised by wordE2ECounter.
+//
+// Returns:
+//   - An error when store or engine construction fails.
+//
+// Side effects:
+//   - Sets s.toolSchemaEng, s.toolSchemaStore, s.toolSchemaSummariser.
+func (s *compressionE2EState) buildToolSchemaEngine(toolCount int, threshold float64, limit int) error {
+	resp, err := bddSummaryJSON(nil)
+	if err != nil {
+		return fmt.Errorf("bdd summary json: %w", err)
+	}
+	s.toolSchemaSummariser = &countingE2ESummariser{resp: resp}
+
+	tools := make([]tool.Tool, toolCount)
+	for i := range tools {
+		tools[i] = &singleWordToolE2E{n: fmt.Sprintf("t%d", i)}
+	}
+
+	store, err := recall.NewFileContextStore(filepath.Join(s.tempDir, "ctx.json"), "test-model")
+	if err != nil {
+		return fmt.Errorf("new file context store: %w", err)
+	}
+	s.toolSchemaStore = store
+
+	cfg := flowctx.DefaultCompressionConfig()
+	cfg.AutoCompaction.Enabled = true
+	cfg.AutoCompaction.Threshold = threshold
+
+	cm := agent.DefaultContextManagement()
+	cm.CompactionThreshold = 0
+	cm.SlidingWindowSize = 200
+
+	s.toolSchemaEng = engine.New(engine.Config{
+		ChatProvider: &capturingStubProvider{},
+		Manifest: agent.Manifest{
+			ID:                "tool-schema-agent",
+			Instructions:      agent.Instructions{SystemPrompt: "sys"},
+			ContextManagement: cm,
+		},
+		Store:             s.toolSchemaStore,
+		TokenCounter:      wordE2ECounter{limit: limit},
+		AutoCompactor:     flowctx.NewAutoCompactor(s.toolSchemaSummariser),
+		CompressionConfig: cfg,
+		Tools:             tools,
+	})
+	return nil
 }
 
 // capturingStubProvider is a provider.Provider double used by the

@@ -34,6 +34,9 @@ type autoCompactionState struct {
 	rehydrateMessages []provider.Message
 	rehydrateErr      error
 
+	// cfg holds the CompressionConfig loaded by the default-threshold scenario.
+	cfg flowctx.CompressionConfig
+
 	tempDir string
 }
 
@@ -94,6 +97,7 @@ func RegisterAutoCompactionSteps(ctx *godog.ScenarioContext) {
 		state.rehydrateSummary = flowctx.CompactionSummary{}
 		state.rehydrateMessages = nil
 		state.rehydrateErr = nil
+		state.cfg = flowctx.CompressionConfig{}
 
 		dir, err := os.MkdirTemp("", "auto-compaction-bdd-*")
 		if err != nil {
@@ -252,6 +256,18 @@ func RegisterAutoCompactionSteps(ctx *godog.ScenarioContext) {
 			if m.Content == "" {
 				return fmt.Errorf("rehydrated[%d].Content is empty", i+1)
 			}
+		}
+		return nil
+	})
+
+	ctx.Step(`^the default compression configuration is loaded$`, func() error {
+		state.cfg = flowctx.DefaultCompressionConfig()
+		return nil
+	})
+
+	ctx.Step(`^the auto-compaction threshold is 0\.50$`, func() error {
+		if state.cfg.AutoCompaction.Threshold != 0.50 {
+			return fmt.Errorf("auto-compaction threshold = %v; want 0.50", state.cfg.AutoCompaction.Threshold)
 		}
 		return nil
 	})
