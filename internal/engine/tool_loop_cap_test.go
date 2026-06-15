@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/todo"
 )
 
 // repeatingToolProvider is a STATEFUL mock provider that re-emits a fixed
@@ -310,6 +312,59 @@ var _ = Describe("Engine tool-loop cap", func() {
 				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),
 					"2 identical then a distinct call must NOT trip the repeat detector")
 			}
+		})
+	})
+
+	Context("when the cap trips but the session has incomplete todos", func() {
+		It("injects todo continuations before finally terminating, and emits a visible warning", func() {
+			prov := &repeatingToolProvider{
+				name: "loop-with-todos",
+				call: &provider.ToolCall{
+					ID:        "call_todo_loop",
+					Name:      "missing_tool",
+					Arguments: map[string]any{"x": 1},
+				},
+			}
+
+			loopSessionID := "loop-cap-todo-session"
+			todoStore := todo.NewMemoryStore()
+			todoStore.Set(loopSessionID, []todo.Item{
+				{Content: "finish important work", Status: "pending", Priority: "high"},
+			})
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{},
+			})
+			eng.SetMaxIdenticalToolCallsForTest(3)
+			eng.SetTodoStoreForTest(todoStore)
+
+			ctx := context.WithValue(context.Background(), session.IDKey{}, loopSessionID)
+			chunks, err := eng.Stream(ctx, loopSessionID, "Go")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue(),
+				"the turn must terminate even with incomplete todos; it hung instead")
+
+			Expect(prov.callCount()).To(BeNumerically(">", 3),
+				"the engine must inject at least one todo continuation before the final termination")
+
+			var hasWarning bool
+			var hasTerminalLoopExceeded bool
+			for _, c := range received {
+				if c.Content != "" && strings.Contains(c.Content, "[WARNING]") && strings.Contains(c.Content, "incomplete task") {
+					hasWarning = true
+				}
+				if c.Done && c.StopReason == session.StopReasonToolLoopExceeded {
+					hasTerminalLoopExceeded = true
+				}
+			}
+			Expect(hasWarning).To(BeTrue(),
+				"a visible warning about incomplete tasks must be emitted when the cap finally terminates")
+			Expect(hasTerminalLoopExceeded).To(BeTrue(),
+				"the final terminal chunk must still carry StopReasonToolLoopExceeded")
 		})
 	})
 })

@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -120,7 +121,7 @@ var _ = Describe("Engine todo-completion continuation", func() {
 	})
 
 	Context("when the model ends a turn cleanly with pending todos", func() {
-		It("injects a continuation prompt and retries until the model completes", func() {
+		It("injects a continuation prompt and retries", func() {
 			prov := &scriptedTodoProvider{
 				name: "todo-prov",
 				script: []todoProviderTurn{
@@ -147,14 +148,14 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			received, closed := drain(chunks)
 			Expect(closed).To(BeTrue(), "channel must close; turn hung")
 
-			var lastContent string
+			var hasCompletionContent bool
 			for _, c := range received {
-				if c.Content != "" {
-					lastContent = c.Content
+				if c.Content != "" && strings.Contains(c.Content, "All tasks complete.") {
+					hasCompletionContent = true
 				}
 			}
-			Expect(lastContent).To(ContainSubstring("All tasks complete."),
-				"engine should have retried until the provider returned a clean completion")
+			Expect(hasCompletionContent).To(BeTrue(),
+				"engine should have retried and received the provider's default completion response")
 
 			Expect(prov.callCount()).To(BeNumerically(">=", 2),
 				"engine should have called the provider multiple times due to todo retry")
@@ -227,7 +228,7 @@ var _ = Describe("Engine todo-completion continuation", func() {
 	})
 
 	Context("when todo retries are exhausted", func() {
-		It("records the exhaustion and stops retrying", func() {
+		It("records the exhaustion, emits a visible warning, and stops retrying", func() {
 			prov := &scriptedTodoProvider{
 				name: "stubborn-prov",
 				script: []todoProviderTurn{
@@ -236,6 +237,8 @@ var _ = Describe("Engine todo-completion continuation", func() {
 					{content: "nope 3"},
 					{content: "nope 4"},
 					{content: "nope 5"},
+					{content: "nope 6"},
+					{content: "nope 7"},
 				},
 			}
 
@@ -254,12 +257,21 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			chunks, err := eng.Stream(ctx, sessionID, "Go")
 			Expect(err).NotTo(HaveOccurred())
 
-			_, closed := drain(chunks)
+			received, closed := drain(chunks)
 			Expect(closed).To(BeTrue(), "channel must eventually close even when retries are exhausted")
 
 			exhaustionCount := eng.GetTodoIncompleteExhaustedForTest(sessionID)
 			Expect(exhaustionCount).To(Equal(1),
 				"exhaustion counter must be incremented once when the retry budget is spent")
+
+			var hasWarning bool
+			for _, c := range received {
+				if c.Content != "" && strings.Contains(c.Content, "[WARNING]") && strings.Contains(c.Content, "incomplete task") {
+					hasWarning = true
+				}
+			}
+			Expect(hasWarning).To(BeTrue(),
+				"a visible warning must be emitted to the stream when retries are exhausted with incomplete todos")
 		})
 
 		It("bumps the effective retry limit after repeated exhaustions", func() {

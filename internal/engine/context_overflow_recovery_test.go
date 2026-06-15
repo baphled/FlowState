@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -208,13 +209,13 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 			received, closed := drain(chunks)
 			Expect(closed).To(BeTrue())
 
-			var lastContent string
+			var hasDefaultContent bool
 			for _, c := range received {
-				if c.Content != "" {
-					lastContent = c.Content
+				if c.Content != "" && strings.Contains(c.Content, "All done.") {
+					hasDefaultContent = true
 				}
 			}
-			Expect(lastContent).To(ContainSubstring("All done."),
+			Expect(hasDefaultContent).To(BeTrue(),
 				"engine should retry via todo-continuation until the script is exhausted")
 
 			Expect(prov.callCount()).To(BeNumerically(">=", 2),

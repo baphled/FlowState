@@ -4321,7 +4321,7 @@ func (e *Engine) streamWithToolLoop(
 	lastFingerprint := ""
 	identicalRun := 0
 	const maxToolUseNoCallsRetries = 3
-	const maxOverflowRetries = 1
+	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
 	todoRetries := 0
 	overflowRetries := 0
@@ -4442,6 +4442,7 @@ func (e *Engine) streamWithToolLoop(
 				e.todoIncompleteExhausted[sessionID]++
 				exhaustCount := e.todoIncompleteExhausted[sessionID]
 				e.mu.Unlock()
+				e.emitTodoExhaustionWarning(sessionID, incompletes, outChan)
 				slog.Warn("todo incomplete retries exhausted",
 					"session", sessionID,
 					"exhaustion_count", exhaustCount,
@@ -4453,11 +4454,6 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		if len(result.toolCalls) == 0 {
-			// Channel closed without a terminal Done chunk and no tool
-			// calls pending. This is a different failure mode (stream
-			// truncation) from tool_use_no_calls — do NOT retry the raw
-			// stream. We do, however, check for incomplete todos and inject
-			// a continuation prompt when the session has outstanding work.
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
 				retryLimit := e.effectiveTodoRetryLimit(sessionID)
 				if todoRetries < retryLimit {
@@ -4488,6 +4484,7 @@ func (e *Engine) streamWithToolLoop(
 				e.todoIncompleteExhausted[sessionID]++
 				exhaustCount := e.todoIncompleteExhausted[sessionID]
 				e.mu.Unlock()
+				e.emitTodoExhaustionWarning(sessionID, incompletes, outChan)
 				slog.Warn("todo incomplete retries exhausted after stream truncation",
 					"session", sessionID,
 					"exhaustion_count", exhaustCount,
@@ -4676,10 +4673,44 @@ func (e *Engine) streamWithToolLoop(
 				"max_iterations", e.maxToolLoopIterations,
 				"max_identical", e.maxIdenticalToolCalls,
 			)
-			// The assistant turn's tool-use intent is already persisted via
-			// storeAssistantToolUseBatch above. Emit the typed terminal Done
-			// (mirroring the idle-watchdog termination arm) and return so
-			// consumers stop hanging. No bus event — no subscriber exists.
+			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				retryLimit := e.effectiveTodoRetryLimit(sessionID)
+				if todoRetries < retryLimit {
+					todoRetries++
+					slog.Info("tool loop capped but incomplete todos remain, injecting continuation",
+						"session", sessionID,
+						"trip", reason,
+						"incomplete_count", len(incompletes),
+						"todo_retry", todoRetries,
+						"retry_limit", retryLimit,
+					)
+					contMsg := buildTodoContinuationMessage(incompletes)
+					messages = append(messages, contMsg)
+					var streamErr error
+					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+					if streamErr != nil {
+						slog.Error("todo continuation stream failed after tool loop cap",
+							"session", sessionID,
+							"error", streamErr,
+						)
+						e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+						return
+					}
+					attempt++
+					iterations = 0
+					identicalRun = 0
+					lastFingerprint = ""
+					e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+					continue
+				}
+				e.emitTodoExhaustionWarning(sessionID, incompletes, outChan)
+				slog.Warn("tool loop capped with incomplete todos, retries exhausted",
+					"session", sessionID,
+					"trip", reason,
+					"todo_retry", todoRetries,
+					"retry_limit", retryLimit,
+				)
+			}
 			outChan <- provider.StreamChunk{
 				Done:       true,
 				StopReason: session.StopReasonToolLoopExceeded,
@@ -5381,7 +5412,7 @@ func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) 
 // Adaptive growth: when a session repeatedly exhausts this budget the
 // effective limit grows by todoExhaustionBump per exhaustion cycle (up to
 // the exhaustion counter reaching todoExhaustionThreshold).
-const maxTodoIncompleteRetries = 3
+const maxTodoIncompleteRetries = 5
 
 // todoExhaustionThreshold is the number of consecutive per-session
 // todo-retry exhaustion events that trigger an automatic bump to the
@@ -5439,6 +5470,86 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 	}
 	sb.WriteString("\nResume working on these tasks now.")
 	return provider.Message{Role: "user", Content: sb.String()}
+}
+
+// emitTodoExhaustionWarning pushes a visible content chunk through the
+// stream channel so the user is informed when the engine stops despite
+// having incomplete todos. Without this the agent appears to finish
+// normally, masking the fact that work remains undone.
+func (e *Engine) emitTodoExhaustionWarning(sessionID string, incompletes []todo.Item, outChan chan<- provider.StreamChunk) {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\n\n[WARNING] The agent stopped with %d incomplete task(s):\n", len(incompletes))
+	for _, it := range incompletes {
+		fmt.Fprintf(&sb, "  - [%s] %s\n", it.Status, it.Content)
+	}
+	sb.WriteString("\nYou may need to prompt the agent to continue working on these tasks.")
+	outChan <- provider.StreamChunk{Content: sb.String()}
+}
+
+// buildTodoContextMessage renders the current session's todo list as a
+// system-role message for injection into the context window. Returns nil
+// when the store is unconfigured or the session has no todos, so callers
+// can skip the injection without a branch.
+//
+// Expected:
+//   - sessionID identifies the active session.
+//
+// Returns:
+//   - A pointer to a system-role provider.Message containing the rendered
+//     list, or nil when there is nothing to inject.
+//
+// Side effects:
+//   - Reads from e.todoStore (read-locked by the store implementation).
+func (e *Engine) buildTodoContextMessage(sessionID string) *provider.Message {
+	if e.todoStore == nil {
+		return nil
+	}
+	items := e.todoStore.Get(sessionID)
+	if len(items) == 0 {
+		return nil
+	}
+	msg := renderTodoSystemMessage(items)
+	return &msg
+}
+
+// renderTodoSystemMessage formats the todo list as a system-role message
+// with a clear header and per-item status indicators.
+func renderTodoSystemMessage(items []todo.Item) provider.Message {
+	var sb strings.Builder
+	sb.WriteString("# Current Task List\n\n")
+	sb.WriteString("This is your live todo list from the store. When updating statuses, use these exact items as your source of truth — do not reconstruct from memory.\n\n")
+	for i, it := range items {
+		marker := "[ ]"
+		switch it.Status {
+		case "completed":
+			marker = "[x]"
+		case "in_progress":
+			marker = "[~]"
+		case "cancelled":
+			marker = "[-]"
+		}
+		sb.WriteString(fmt.Sprintf("%d. %s %s (%s priority)\n", i, marker, it.Content, it.Priority))
+	}
+	return provider.Message{Role: "system", Content: sb.String()}
+}
+
+// appendTodoContext injects the current todo state as a system message
+// immediately after the first system prompt in messages, when a todo
+// store is configured and the session has todos. Returns messages
+// unchanged when there is nothing to inject.
+func (e *Engine) appendTodoContext(messages []provider.Message, sessionID string) []provider.Message {
+	todoMsg := e.buildTodoContextMessage(sessionID)
+	if todoMsg == nil {
+		return messages
+	}
+	if len(messages) == 0 {
+		return []provider.Message{*todoMsg}
+	}
+	result := make([]provider.Message, 0, len(messages)+1)
+	result = append(result, messages[0])
+	result = append(result, *todoMsg)
+	result = append(result, messages[1:]...)
+	return result
 }
 
 // executeToolCall finds and executes the specified tool with the given arguments.
@@ -6102,8 +6213,9 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// stores upstream.
 	if priorMsgs, ok := session.PriorMessagesFromContext(ctx); ok {
 		systemPrompt := e.BuildSystemPromptCtx(ctx)
-		messages := make([]provider.Message, 0, len(priorMsgs)+2)
+		messages := make([]provider.Message, 0, len(priorMsgs)+3)
 		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
+		messages = e.appendTodoContext(messages, sessionID)
 		messages = append(messages, priorMsgs...)
 		messages = append(messages, provider.Message{Role: "user", Content: userMessage})
 		slog.Info("engine context window", "source", "session-scoped", "messages", len(messages))
@@ -6112,10 +6224,12 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 
 	if e.windowBuilder == nil || e.store == nil {
 		systemPrompt := e.BuildSystemPromptCtx(ctx)
-		return []provider.Message{
+		messages := []provider.Message{
 			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userMessage},
 		}
+		messages = e.appendTodoContext(messages, sessionID)
+		messages = append(messages, provider.Message{Role: "user", Content: userMessage})
+		return messages
 	}
 
 	tokenBudget := e.ModelContextLimit()
@@ -6197,6 +6311,8 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// persisted Store is untouched: only the provider request gets
 	// the rewritten view.
 	result.Messages = e.applyMicroCompaction(ctx, sessionID, result.Messages)
+
+	result.Messages = e.appendTodoContext(result.Messages, sessionID)
 
 	slog.Info("engine context window", "tokenBudget", tokenBudget, "messages", len(result.Messages))
 
