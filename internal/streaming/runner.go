@@ -162,14 +162,16 @@ func IsControlEvent(eventType string) bool {
 		"harness_wave_incomplete",
 		"plan_artifact",
 		"review_verdict",
-		"status_transition":
+		"status_transition",
+		"provider_changed",
+		"model_active":
 		return true
 	default:
 		return false
 	}
 }
 
-// dispatchHarnessEvent checks whether the chunk is a harness lifecycle event or typed plan event
+// dispatchHarnessEvent checks whether the chunk is a recognised control event
 // and delivers it to the consumer if supported. Returns true if the chunk was handled.
 //
 // Expected:
@@ -177,13 +179,16 @@ func IsControlEvent(eventType string) bool {
 //   - chunk is the current stream chunk to inspect.
 //
 // Returns:
-//   - true if the chunk carried a harness or typed plan event type (regardless of consumer support).
+//   - true if the chunk carried a recognised control event type (regardless of
+//     consumer support), preventing its Content from leaking into the text stream.
 //   - false if the chunk is not a recognised event type.
 //
 // Side effects:
 //   - If c implements HarnessEventConsumer, calls the corresponding method for harness event types.
 //   - If c implements EventConsumer, calls WriteEvent for plan_artifact, review_verdict, and
 //     status_transition event types.
+//   - provider_changed and model_active are silently consumed (no consumer interface delivery)
+//     since the dispatcher's turn registry tap handles their data for the long-poll API surface.
 func dispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
 	var harnessFunc func(HarnessEventConsumer)
 	switch chunk.EventType {
@@ -203,6 +208,8 @@ func dispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
 		return true
 	case "status_transition":
 		deliverTypedEvent(c, StatusTransitionEvent{})
+		return true
+	case "provider_changed", "model_active":
 		return true
 	default:
 		return false
