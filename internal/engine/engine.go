@@ -2074,6 +2074,43 @@ func (e *Engine) SetModelPreference(providerName string, modelName string) {
 	}
 }
 
+// providerServesModel reports whether the named provider is registered
+// AND lists the given model among its available models. It is the guard
+// that stops a stale session override pair — e.g. openai+claude-3.5-sonnet
+// from a session whose CurrentProviderID and CurrentModelID diverged —
+// from entering the failover chain. A registry or lookup error returns
+// false so the caller falls back to engine defaults rather than risking
+// a phantom candidate.
+//
+// Expected:
+//   - providerName and model are the candidate pair to validate.
+//
+// Returns:
+//   - true only when providerName is registered and its Models() contains
+//     model; false otherwise (including any lookup error).
+//
+// Side effects:
+//   - None (read-only registry/provider lookups).
+func (e *Engine) providerServesModel(providerName, model string) bool {
+	if providerName == "" || model == "" || e.providerRegistry == nil {
+		return false
+	}
+	p, err := e.providerRegistry.Get(providerName)
+	if err != nil || p == nil {
+		return false
+	}
+	models, err := p.Models()
+	if err != nil {
+		return false
+	}
+	for _, m := range models {
+		if m.ID == model {
+			return true
+		}
+	}
+	return false
+}
+
 // SetManifest updates the engine to use a different agent manifest.
 //
 // Expected:
@@ -3433,6 +3470,14 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	}
 	if override := session.ModelOverrideFromContext(streamCtx); override != "" {
 		req.Model = override
+	}
+	if e.providerRegistry != nil && req.Provider != "" && req.Model != "" && !e.providerServesModel(req.Provider, req.Model) {
+		slog.Warn("session override pair not servable; falling back to engine defaults",
+			"provider_override", req.Provider,
+			"model_override", req.Model,
+		)
+		req.Provider = e.LastProvider()
+		req.Model = e.LastModel()
 	}
 	// Per-turn forced tool_choice. The synthesis-hang corrective retry
 	// (delegation.go post-member gate loop) forces the gated member to
