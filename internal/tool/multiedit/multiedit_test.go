@@ -73,5 +73,32 @@ var _ = Describe("MultiEdit tool", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Error).To(HaveOccurred())
 		})
+
+		It("edits a file addressed by an absolute path outside the working directory", func() {
+			outsideDir, err := os.MkdirTemp("", "multiedit-absolute-*")
+			Expect(err).NotTo(HaveOccurred())
+			defer os.RemoveAll(outsideDir)
+
+			absPath := filepath.Join(outsideDir, "abs.txt")
+			Expect(os.WriteFile(absPath, []byte("one\ntwo\nthree\n"), 0o600)).To(Succeed())
+
+			result, err := multiedit.New().Execute(context.Background(), tool.Input{
+				Name: "multiedit",
+				Arguments: map[string]any{
+					"file_path": absPath,
+					"edits": []any{
+						map[string]any{"old_string": "one", "new_string": "1"},
+						map[string]any{"old_string": "three", "new_string": "3"},
+					},
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred(),
+				"multiedit must accept absolute paths like read and write do — only \"..\" traversal and the pathguard deny-list block access")
+
+			updated, readErr := os.ReadFile(absPath)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(updated)).To(Equal("1\ntwo\n3\n"))
+		})
 	})
 })

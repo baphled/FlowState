@@ -2874,6 +2874,16 @@ func (d *DelegateTool) executeSync(
 	d.recordChildModelAttribution(delegateSessionID, providerName, modelName)
 	d.closeSessionIfManaged(delegateSessionID)
 
+	if d.gateRunner == nil && !hasSubstantiveOutput([]byte(result.response)) {
+		slog.Warn("delegate response is empty or non-substantive",
+			"agent", target.agentID,
+			"model", modelName,
+			"provider", providerName,
+			"tool_calls", result.toolCalls,
+			"last_tool", result.lastTool,
+		)
+	}
+
 	return tool.Result{
 		Output: formatDelegationOutput(result.response),
 		Title:  target.message,

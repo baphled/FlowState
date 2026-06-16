@@ -128,27 +128,27 @@ func (t *InsertTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 		priority = "medium"
 	}
 
-	current := t.store.Get(sessionID)
-	if idx < 0 || idx > len(current) {
-		return tool.Result{}, fmt.Errorf("index %d out of range: stored list has %d entries (valid range 0-%d)", idx, len(current), len(current))
-	}
-
 	newItem := Item{
 		Content:  content,
 		Status:   status,
 		Priority: priority,
 	}
 
-	updated := make([]Item, 0, len(current)+1)
-	updated = append(updated, current[:idx]...)
-	updated = append(updated, newItem)
-	updated = append(updated, current[idx:]...)
-
-	if err := t.store.Set(sessionID, updated); err != nil {
-		return tool.Result{}, fmt.Errorf("storing inserted todos: %w", err)
+	result, err := t.store.Apply(sessionID, func(current []Item) ([]Item, error) {
+		if idx < 0 || idx > len(current) {
+			return nil, fmt.Errorf("index %d out of range: stored list has %d entries (valid range 0-%d)", idx, len(current), len(current))
+		}
+		updated := make([]Item, 0, len(current)+1)
+		updated = append(updated, current[:idx]...)
+		updated = append(updated, newItem)
+		updated = append(updated, current[idx:]...)
+		return updated, nil
+	})
+	if err != nil {
+		return tool.Result{}, err
 	}
 
-	out, err := json.MarshalIndent(updated, "", "  ")
+	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("serialising todos: %w", err)
 	}

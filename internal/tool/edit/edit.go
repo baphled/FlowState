@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
@@ -126,24 +124,19 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		return tool.Result{}, errors.New("new_string argument is required")
 	}
 
-	rawPath := strings.TrimSpace(file)
+	cleaned, resolveErr := pathguard.ResolvePath(file)
+	if resolveErr != nil {
+		return tool.Result{Error: resolveErr}, nil
+	}
 	if t.guard != nil {
-		if err := t.guard.CheckForTool(ctx, "edit", rawPath); err != nil {
+		if err := t.guard.CheckForTool(ctx, "edit", cleaned); err != nil {
 			return tool.Result{Error: err}, nil
 		}
 	}
-	if !filepath.IsLocal(rawPath) {
-		return tool.Result{Error: errors.New("path traversal not allowed")}, nil
-	}
-	root, err := os.OpenRoot(".")
-	if err != nil {
-		return tool.Result{Error: fmt.Errorf("open root failed: %w", err)}, err
-	}
-	defer root.Close()
 
-	data, err := root.ReadFile(rawPath)
-	if err != nil {
-		return tool.Result{Error: fmt.Errorf("read failed: %w", err)}, err
+	data, readErr := os.ReadFile(cleaned)
+	if readErr != nil {
+		return tool.Result{Error: fmt.Errorf("read failed: %w", readErr)}, readErr
 	}
 
 	if !bytes.Contains(data, []byte(oldString)) {
@@ -151,9 +144,9 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	}
 
 	updated := bytes.Replace(data, []byte(oldString), []byte(newString), 1)
-	if err := root.WriteFile(rawPath, updated, 0o600); err != nil {
+	if err := os.WriteFile(cleaned, updated, 0o600); err != nil {
 		return tool.Result{Error: fmt.Errorf("write failed: %w", err)}, err
 	}
 
-	return tool.Result{Output: fmt.Sprintf("replaced %q with %q in %s", oldString, newString, rawPath)}, nil
+	return tool.Result{Output: fmt.Sprintf("replaced %q with %q in %s", oldString, newString, cleaned)}, nil
 }

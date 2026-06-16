@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/session"
@@ -119,9 +118,9 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		return tool.Result{}, errors.New("limit must be >= 0")
 	}
 
-	cleaned := filepath.Clean(path)
-	if strings.Contains(cleaned, "..") {
-		return tool.Result{Error: errors.New("path traversal not allowed")}, nil
+	cleaned, resolveErr := pathguard.ResolvePath(path)
+	if resolveErr != nil {
+		return tool.Result{Error: resolveErr}, nil
 	}
 
 	if t.guard != nil {

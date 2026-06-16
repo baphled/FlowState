@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
@@ -95,9 +94,9 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		content = ""
 	}
 
-	cleaned := filepath.Clean(path)
-	if strings.Contains(cleaned, "..") {
-		return tool.Result{Error: errors.New("path traversal not allowed")}, nil
+	cleaned, resolveErr := pathguard.ResolvePath(path)
+	if resolveErr != nil {
+		return tool.Result{Error: resolveErr}, nil
 	}
 
 	if t.guard != nil {

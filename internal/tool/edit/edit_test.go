@@ -101,5 +101,31 @@ var _ = Describe("Edit Tool", func() {
 			Expect(result.Error).To(HaveOccurred())
 			Expect(result.Error.Error()).To(ContainSubstring("path traversal"))
 		})
+
+		It("edits a file addressed by an absolute path outside the working directory", func() {
+			outsideDir, err := os.MkdirTemp("", "edit-absolute-*")
+			Expect(err).NotTo(HaveOccurred())
+			defer os.RemoveAll(outsideDir)
+
+			absPath := filepath.Join(outsideDir, "abs.txt")
+			Expect(os.WriteFile(absPath, []byte("hello world"), 0o600)).To(Succeed())
+
+			result, err := editTool.Execute(ctx, tool.Input{
+				Name: "edit",
+				Arguments: map[string]interface{}{
+					"file":       absPath,
+					"old_string": "hello",
+					"new_string": "goodbye",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Error).NotTo(HaveOccurred(),
+				"edit must accept absolute paths like read and write do — only \"..\" traversal and the pathguard deny-list block access")
+
+			data, readErr := os.ReadFile(absPath)
+			Expect(readErr).NotTo(HaveOccurred())
+			Expect(string(data)).To(Equal("goodbye world"))
+		})
 	})
 })

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/tool"
@@ -133,20 +132,16 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 //   - May read a patch file from disk.
 func loadPatchText(ctx context.Context, value string, guard *pathguard.Guard) (string, error) {
 	if info, err := os.Stat(value); err == nil && !info.IsDir() {
+		cleaned, resolveErr := pathguard.ResolvePath(value)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
 		if guard != nil {
-			if err := guard.CheckForTool(ctx, "apply_patch", value); err != nil {
+			if err := guard.CheckForTool(ctx, "apply_patch", cleaned); err != nil {
 				return "", err
 			}
 		}
-		if !filepath.IsLocal(value) {
-			return "", errors.New("path traversal not allowed")
-		}
-		root, err := os.OpenRoot(".")
-		if err != nil {
-			return "", fmt.Errorf("open root failed: %w", err)
-		}
-		defer root.Close()
-		content, readErr := root.ReadFile(value)
+		content, readErr := os.ReadFile(cleaned)
 		if readErr != nil {
 			return "", fmt.Errorf("read patch failed: %w", readErr)
 		}
@@ -167,12 +162,6 @@ func loadPatchText(ctx context.Context, value string, guard *pathguard.Guard) (s
 // Side effects:
 //   - Reads and writes files in the current directory.
 func applyPatchText(ctx context.Context, patchText string, guard *pathguard.Guard) (string, error) {
-	root, err := os.OpenRoot(".")
-	if err != nil {
-		return "", fmt.Errorf("open root failed: %w", err)
-	}
-	defer root.Close()
-
 	lines := strings.Split(patchText, "\n")
 	index := 0
 	var output strings.Builder
@@ -190,17 +179,16 @@ func applyPatchText(ctx context.Context, patchText string, guard *pathguard.Guar
 			return "", fmt.Errorf("invalid patch header: %s", line)
 		}
 
-		path := strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
-		rawPath := strings.TrimSpace(path)
+		cleaned, resolveErr := pathguard.ResolvePath(strings.TrimPrefix(line, "*** Update File: "))
+		if resolveErr != nil {
+			return "", resolveErr
+		}
 		if guard != nil {
-			if err := guard.CheckForTool(ctx, "apply_patch", rawPath); err != nil {
+			if err := guard.CheckForTool(ctx, "apply_patch", cleaned); err != nil {
 				return "", err
 			}
 		}
-		if !filepath.IsLocal(rawPath) {
-			return "", errors.New("path traversal not allowed")
-		}
-		content, err := root.ReadFile(rawPath)
+		content, err := os.ReadFile(cleaned)
 		if err != nil {
 			return "", fmt.Errorf("read target failed: %w", err)
 		}
@@ -210,10 +198,10 @@ func applyPatchText(ctx context.Context, patchText string, guard *pathguard.Guar
 			return "", err
 		}
 		index = nextIndex
-		if err := root.WriteFile(rawPath, updated, 0o600); err != nil {
+		if err := os.WriteFile(cleaned, updated, 0o600); err != nil {
 			return "", fmt.Errorf("write target failed: %w", err)
 		}
-		fmt.Fprintf(&output, "updated %s\n", rawPath)
+		fmt.Fprintf(&output, "updated %s\n", cleaned)
 	}
 
 	return strings.TrimSpace(output.String()), nil

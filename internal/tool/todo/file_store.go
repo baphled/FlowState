@@ -143,3 +143,35 @@ func (s *FileStore) loadLocked(sessionID string) ([]Item, error) {
 func (s *FileStore) pathFor(sessionID string) string {
 	return filepath.Join(s.baseDir, sessionID+".json")
 }
+
+// Apply atomically reads, transforms, and writes the todo list for
+// sessionID under a single write lock, persisting the result to disk.
+// See Store.Apply for the full contract.
+func (s *FileStore) Apply(sessionID string, fn func(current []Item) (next []Item, err error)) ([]Item, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current, ok := s.cache[sessionID]
+	if !ok {
+		loaded, err := s.loadLocked(sessionID)
+		if err != nil {
+			return []Item{}, err
+		}
+		current = loaded
+		s.cache[sessionID] = loaded
+	}
+
+	currentCopy := make([]Item, len(current))
+	copy(currentCopy, current)
+
+	result, err := fn(currentCopy)
+	if err != nil {
+		return currentCopy, err
+	}
+
+	s.cache[sessionID] = result
+	if err := s.persistLocked(sessionID, result); err != nil {
+		return currentCopy, err
+	}
+	return result, nil
+}

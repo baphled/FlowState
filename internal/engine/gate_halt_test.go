@@ -138,20 +138,11 @@ var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
 // implementer to spike the seam — chose the dispatch path because the
 // chain-counter contract is a turn-time property, not a tool-set
 // property.
-var _ = Describe("Engine.executeToolCall D9 todo_strict_mode gate", func() {
+var _ = Describe("Engine.executeToolCall todo counter tracking", func() {
 	makeEngine := func(strict bool) *engine.Engine {
 		providerReg := provider.NewRegistry()
 		providerReg.Register(&mockProvider{name: "spy"})
 		eng := engine.New(engine.Config{
-			// PR7 (Coordinator Over-Execution, May 2026) — the
-			// D9 specs drive bash/read/todowrite through the
-			// dispatch path to exercise the chain counter. The
-			// runtime tool gate requires those tools to be in
-			// capabilities.tools; under the inheritance floor
-			// todowrite is implicit but bash and read must be
-			// declared. Without this declaration the new gate
-			// fires before todoStrictGate's chain counter
-			// observes the call.
 			Manifest: agent.Manifest{
 				ID:   "lead",
 				Name: "Lead",
@@ -178,88 +169,39 @@ var _ = Describe("Engine.executeToolCall D9 todo_strict_mode gate", func() {
 		})
 	}
 
-	When("TodoStrictMode is false (the v1 default)", func() {
-		It("does not reject even after many non-todowrite tool calls in a row", func() {
-			eng := makeEngine(false)
-			// Six non-todowrite calls — would trip the strict mode if enabled.
-			for i := 0; i < 6; i++ {
-				result, err := runTool(eng, "sess-soft", "bash")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(result.IsError).To(BeFalse(),
-					"strict mode is off — no gate should fire")
-				Expect(result.Output).To(Equal("fake output"))
-			}
-		})
-	})
-
-	When("TodoStrictMode is true", func() {
-		It("permits the first 3 non-todowrite tool calls without intervention", func() {
+	Describe("counter tracking (no blocking — soft enforcement only)", func() {
+		It("never blocks tool calls regardless of count — the hard gate was removed", func() {
 			eng := makeEngine(true)
-			for i := 0; i < 3; i++ {
-				result, err := runTool(eng, "sess-strict", "bash")
+			for i := 0; i < 10; i++ {
+				result, err := runTool(eng, "sess-no-block", "bash")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.IsError).To(BeFalse(),
-					"strict mode rejects the FOURTH call, not the first three")
+					"the hard gate was removed — no tool call should ever be blocked by the todo counter")
 				Expect(result.Output).To(Equal("fake output"))
 			}
 		})
 
-		It("rejects the FOURTH non-todowrite tool call with a structured tool_result error", func() {
+		It("resets the counter on a todowrite call", func() {
 			eng := makeEngine(true)
-			// Fire 3 non-todowrite calls (all succeed).
-			for i := 0; i < 3; i++ {
-				_, err := runTool(eng, "sess-strict", "bash")
+			for i := 0; i < 5; i++ {
+				_, err := runTool(eng, "sess-reset", "bash")
 				Expect(err).NotTo(HaveOccurred())
 			}
-			// Fourth call must be rejected.
-			result, err := runTool(eng, "sess-strict", "read")
-			Expect(err).NotTo(HaveOccurred(),
-				"the gate is an IsError tool_result, not a Go error — the agent's tool loop sees it and is expected to call todowrite next")
-			Expect(result.IsError).To(BeTrue())
-			Expect(result.Output).To(ContainSubstring("todo_strict_mode"))
-			Expect(result.Output).To(ContainSubstring("todowrite"))
-			Expect(result.Output).To(ContainSubstring("'read'"),
-				"the message must name the tool that was rejected so the model knows which call to defer")
-		})
-
-		It("resets the counter on a todowrite call so the next batch fires fresh", func() {
-			eng := makeEngine(true)
-			// Run 3 non-todowrite calls.
-			for i := 0; i < 3; i++ {
-				_, err := runTool(eng, "sess-strict", "bash")
-				Expect(err).NotTo(HaveOccurred())
-			}
-			// Call todowrite — resets the counter.
-			result, err := runTool(eng, "sess-strict", "todowrite")
+			result, err := runTool(eng, "sess-reset", "todowrite")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.IsError).To(BeFalse(),
-				"todowrite itself is never gated by D9 — it is the gate's resolution path")
-
-			// Next 3 non-todowrite calls should succeed again.
-			for i := 0; i < 3; i++ {
-				result, err := runTool(eng, "sess-strict", "bash")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(result.IsError).To(BeFalse(),
-					"counter must reset after todowrite; the gate fires only on the next batch's 4th call")
-			}
+			Expect(result.IsError).To(BeFalse())
 		})
 
-		It("counts per-session, not globally — session A's tool calls do not gate session B", func() {
+		It("counts per-session, not globally", func() {
 			eng := makeEngine(true)
-			// Session A burns its budget.
-			for i := 0; i < 4; i++ {
+			for i := 0; i < 6; i++ {
 				result, _ := runTool(eng, "sess-A", "bash")
-				if i < 3 {
-					Expect(result.IsError).To(BeFalse())
-				} else {
-					Expect(result.IsError).To(BeTrue())
-				}
+				Expect(result.IsError).To(BeFalse())
 			}
-			// Session B starts fresh — no gate, even though session A is gated.
 			result, err := runTool(eng, "sess-B", "bash")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.IsError).To(BeFalse(),
-				"per-session counters prevent one agent's behaviour from gating another")
+				"per-session counters are independent")
 		})
 	})
 })

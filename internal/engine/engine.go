@@ -5427,36 +5427,19 @@ func (e *Engine) deriveToolCtx(parent context.Context, t tool.Tool) (context.Con
 // the strict mode rejects the FOURTH non-todowrite call.
 const todoStrictModeThreshold = 3
 
-// todoStrictGate is the D9 hard-gate enforcement point (Agent Runtime
-// Quality plan, May 2026). Called at the very top of executeToolCall
-// so it sees every tool dispatch before any registry lookup or
-// execution side-effect.
+// todoStrictGate tracks the per-session count of non-todo tool calls for
+// informational display in the todo context message. It NEVER blocks tool
+// dispatch — the hard gate was removed after evidence (June 2026 sessions)
+// showed it actively harmed investigation agents by interrupting legitimate
+// work and forcing wasted todo-compliance calls. The soft mechanisms
+// (continuation loop, stale-continuation detection, prompt visibility)
+// are the enforcement layer; this counter is purely for the progress
+// nudge in renderTodoSystemMessage.
 //
 // Semantics:
-//   - When TodoStrictMode is false (the v1 default): always returns
-//     (zero Result, false). The counter is still tracked so flipping
-//     the flag mid-session takes effect on the next call; this is
-//     cheap and avoids a behavioural cliff at flag-flip time.
-//   - When TodoStrictMode is true and toolName is "todowrite" or
-//     "todo_update": reset the per-session counter to 0 and let the
-//     call through. The reset is the contract: a todowrite or
-//     todo_update anywhere in the chain re-arms the gate for the
-//     next batch of tool calls.
-//   - When TodoStrictMode is true and the counter is at or beyond
-//     todoStrictModeThreshold: return a structured tool.Result with
-//     IsError=true whose output instructs the model to call
-//     todowrite first. Counter is NOT incremented on the rejected
-//     call — the user-facing surface should not penalise the model
-//     for the gate's own emission.
-//   - When TodoStrictMode is true and the counter is below the
-//     threshold: increment and let through.
-//
-// Returns:
-//   - tool.Result populated with the rejection payload when blocked=true.
-//   - blocked=true when the call should be rejected without dispatch.
-//
-// Side effects:
-//   - Mutates e.todoNonTodowriteToolCalls[sessionID] under e.mu.
+//   - When toolName is a todo tool: reset the counter to 0.
+//   - Otherwise: increment the counter.
+//   - Always returns (zero Result, false) — never blocks.
 func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -5464,22 +5447,7 @@ func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) 
 		delete(e.todoNonTodowriteToolCalls, sessionID)
 		return tool.Result{}, false
 	}
-	current := e.todoNonTodowriteToolCalls[sessionID]
-	complexity := e.sessionComplexity[sessionID]
-	gateEnabled := e.todoStrictMode || complexity.EnforcesTodoGate()
-	if gateEnabled && current >= todoStrictModeThreshold {
-		msg := fmt.Sprintf(
-			"todo_strict_mode: this chain has made %d tool calls without updating the todo list. "+
-				"Call todowrite (or todo_update, todo_append, todo_insert) before running '%s' (or any other tool). "+
-				"Rationale: task complexity is %s — see Agent Runtime Quality plan D9.",
-			current, toolName, complexity.String(),
-		)
-		return tool.Result{
-			Output:  msg,
-			IsError: true,
-		}, true
-	}
-	e.todoNonTodowriteToolCalls[sessionID] = current + 1
+	e.todoNonTodowriteToolCalls[sessionID]++
 	return tool.Result{}, false
 }
 
@@ -5671,19 +5639,11 @@ func renderTodoSystemMessage(items []todo.Item, toolCallCount int, complexity Ta
 		sb.WriteString(fmt.Sprintf("%d. %s %s (%s priority)\n", i, marker, it.Content, it.Priority))
 	}
 
-	if complexity.EnforcesTodoGate() {
-		remaining := todoStrictModeThreshold - toolCallCount
-		if remaining > 0 {
-			sb.WriteString(fmt.Sprintf(
-				"\n⚠️ Task complexity: %s. You have %d tool call(s) remaining before you MUST update your todo list (via todo_update, todo_append, or todo_insert).\n",
-				complexity.String(), remaining,
-			))
-		} else {
-			sb.WriteString(fmt.Sprintf(
-				"\n⚠️ Task complexity: %s. You have exhausted your tool-call budget — your next non-todo tool call will be BLOCKED. Update your todo list now.\n",
-				complexity.String(),
-			))
-		}
+	if toolCallCount > 0 {
+		sb.WriteString(fmt.Sprintf(
+			"\n📋 %d tool calls since your last todo list update. Update your progress via todo_update when you complete a task.\n",
+			toolCallCount,
+		))
 	}
 
 	return provider.Message{Role: "system", Content: sb.String()}

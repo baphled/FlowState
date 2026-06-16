@@ -91,6 +91,29 @@ var _ = Describe("ApplyPatch tool", func() {
 		Expect(result.Error.Error()).To(ContainSubstring("path traversal"))
 	})
 
+	It("applies a patch to a file addressed by an absolute path outside the working directory", func() {
+		outsideDir, err := os.MkdirTemp("", "apply-patch-absolute-*")
+		Expect(err).NotTo(HaveOccurred())
+		defer os.RemoveAll(outsideDir)
+
+		absPath := filepath.Join(outsideDir, "abs.txt")
+		Expect(os.WriteFile(absPath, []byte("hello\nworld\n"), 0o600)).To(Succeed())
+
+		result, err := toolInstance.Execute(context.Background(), tool.Input{
+			Arguments: map[string]interface{}{
+				"patch": "*** Begin Patch\n*** Update File: " + absPath + "\n@@\n-hello\n+goodbye\n*** End Patch\n",
+			},
+		})
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.Error).NotTo(HaveOccurred(),
+			"apply_patch must accept absolute paths like read and write do — only \"..\" traversal and the pathguard deny-list block access")
+
+		updated, readErr := os.ReadFile(absPath)
+		Expect(readErr).NotTo(HaveOccurred())
+		Expect(string(updated)).To(Equal("goodbye\nworld\n"))
+	})
+
 	It("registers in the default toolset", func() {
 		registry := toolset.NewDefaultRegistry("test-key", "")
 		toolRegistered, err := registry.Get("apply_patch")

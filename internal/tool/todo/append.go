@@ -120,20 +120,20 @@ func (t *AppendTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 		priority = "medium"
 	}
 
-	current := t.store.Get(sessionID)
-	updated := make([]Item, 0, len(current)+1)
-	updated = append(updated, current...)
-	updated = append(updated, Item{
+	newItem := Item{
 		Content:  content,
 		Status:   status,
 		Priority: priority,
-	})
-
-	if err := t.store.Set(sessionID, updated); err != nil {
-		return tool.Result{}, fmt.Errorf("storing appended todos: %w", err)
 	}
 
-	out, err := json.MarshalIndent(updated, "", "  ")
+	result, err := t.store.Apply(sessionID, func(current []Item) ([]Item, error) {
+		return append(current, newItem), nil
+	})
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("appending todo: %w", err)
+	}
+
+	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("serialising todos: %w", err)
 	}

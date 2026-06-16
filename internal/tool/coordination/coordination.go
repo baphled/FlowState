@@ -186,8 +186,8 @@ func (t *Tool) executeSet(ctx context.Context, input tool.Input) (tool.Result, e
 	}
 
 	value, ok := input.Arguments["value"].(string)
-	if !ok {
-		return tool.Result{}, errors.New("value argument is required for set")
+	if !ok || value == "" {
+		return tool.Result{}, errors.New("value argument must be a non-empty string for set")
 	}
 
 	key = swarm.NormaliseMemberCoordKey(swarm.MemberCoordChainID(ctx), key)

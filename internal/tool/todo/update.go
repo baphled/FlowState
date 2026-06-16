@@ -132,20 +132,20 @@ func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 		return tool.Result{}, errors.New("todo_update requires at least one of status, content, or priority")
 	}
 
-	current := t.store.Get(sessionID)
-	if idx < 0 || idx >= len(current) {
-		return tool.Result{}, fmt.Errorf("index %d out of range: stored list has %d entries", idx, len(current))
+	result, err := t.store.Apply(sessionID, func(current []Item) ([]Item, error) {
+		if idx < 0 || idx >= len(current) {
+			return nil, fmt.Errorf("index %d out of range: stored list has %d entries", idx, len(current))
+		}
+		updated := make([]Item, len(current))
+		copy(updated, current)
+		applyPatch(&updated[idx], patch)
+		return updated, nil
+	})
+	if err != nil {
+		return tool.Result{}, err
 	}
 
-	updated := make([]Item, len(current))
-	copy(updated, current)
-	applyPatch(&updated[idx], patch)
-
-	if err := t.store.Set(sessionID, updated); err != nil {
-		return tool.Result{}, fmt.Errorf("storing patched todos: %w", err)
-	}
-
-	out, err := json.MarshalIndent(updated, "", "  ")
+	out, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return tool.Result{}, fmt.Errorf("serialising todos: %w", err)
 	}
