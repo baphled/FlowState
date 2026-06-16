@@ -680,9 +680,16 @@ func TrackerAnalysisV1Schema() *jsonschema.Schema {
 func floatPtr(v float64) *float64 { return &v }
 
 // SeedDefaultSchemas registers every Phase 1 builtin schema with the
-// in-process registry. The CLI / app construction calls this once at
-// startup so the planning-loop swarm's post-member gates have schemas
-// to look up.
+// in-process registry and marks those that are prose-tolerant. The CLI /
+// app construction calls this once at startup so the planning-loop
+// swarm's post-member gates have schemas to look up.
+//
+// Schemas marked prose-tolerant have their post-member gate validate
+// presence + non-emptiness rather than strict JSON structure — because
+// no Go code typed-parses their output; it is consumed as raw text by
+// the next LLM member. Add new prose-tolerant schemas by setting
+// proseTolerant: true in the seed list below — no separate list to
+// maintain.
 //
 // Returns:
 //   - nil on success.
@@ -692,25 +699,32 @@ func floatPtr(v float64) *float64 { return &v }
 //     half-seeded registry.
 //
 // Side effects:
-//   - Calls RegisterSchema for each Phase 1 builtin.
+//   - Calls RegisterSchema for each Phase 1 builtin and
+//     MarkSchemaProseTolerant for those with proseTolerant: true.
 func SeedDefaultSchemas() error {
 	seeds := []struct {
-		name   string
-		schema *jsonschema.Schema
+		name          string
+		schema        *jsonschema.Schema
+		proseTolerant bool
 	}{
-		{ReviewVerdictV1Name, ReviewVerdictV1Schema()},
-		{EvidenceBundleV1Name, EvidenceBundleV1Schema()},
-		{ExternalRefsV1Name, ExternalRefsV1Schema()},
-		{AnalysisBundleV1Name, AnalysisBundleV1Schema()},
-		{PlanDocumentV1Name, PlanDocumentV1Schema()},
-		{CodeReviewVerdictV1Name, CodeReviewVerdictV1Schema()},
-		{SectionV1Name, SectionV1Schema()},
-		{VaultFindingsV1Name, VaultFindingsV1Schema()},
-		{TrackerAnalysisV1Name, TrackerAnalysisV1Schema()},
+		{ReviewVerdictV1Name, ReviewVerdictV1Schema(), false},
+		{EvidenceBundleV1Name, EvidenceBundleV1Schema(), true},
+		{ExternalRefsV1Name, ExternalRefsV1Schema(), true},
+		{AnalysisBundleV1Name, AnalysisBundleV1Schema(), true},
+		{PlanDocumentV1Name, PlanDocumentV1Schema(), false},
+		{CodeReviewVerdictV1Name, CodeReviewVerdictV1Schema(), false},
+		{SectionV1Name, SectionV1Schema(), false},
+		{VaultFindingsV1Name, VaultFindingsV1Schema(), true},
+		{TrackerAnalysisV1Name, TrackerAnalysisV1Schema(), true},
 	}
 	for _, seed := range seeds {
 		if err := RegisterSchema(seed.name, seed.schema); err != nil {
 			return err
+		}
+		if seed.proseTolerant {
+			if err := MarkSchemaProseTolerant(seed.name); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

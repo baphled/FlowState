@@ -165,30 +165,22 @@ func (resultSchemaRunner) Run(ctx context.Context, gate GateSpec, args GateArgs)
 	return nil
 }
 
-// isProseTolerantSchema reports whether the schema_ref names one of the
-// planning-loop bundles whose member output is consumed as RAW TEXT by the
-// next LLM member (evidence-bundle-v1 / external-refs-v1 / analysis-bundle-v1).
-// For these the result-schema gate validates presence + non-emptiness rather
-// than a JSON struct, because no Go code typed-parses them. Any other schema
-// (including section-v1 and code-review-verdict-v1, which ARE typed-parsed by
-// other swarms' publishers) is NOT prose-tolerant and stays on the strict
-// decode+validate path.
+// isProseTolerantSchema delegates to the schema registry's
+// IsProseTolerantSchema. The registry is the single source of truth —
+// schemas are marked as prose-tolerant at registration time in
+// SeedDefaultSchemas by setting proseTolerant: true in the seed struct.
+// Do not add a hardcoded list here; add to SeedDefaultSchemas instead.
 //
 // Expected:
 //   - schemaRef is the gate's SchemaRef.
 //
 // Returns:
-//   - True for the three planning-loop prose schemas; false otherwise.
+//   - True when the schema is registered as prose-tolerant; false otherwise.
 //
 // Side effects:
 //   - None.
 func isProseTolerantSchema(schemaRef string) bool {
-	switch schemaRef {
-	case EvidenceBundleV1Name, ExternalRefsV1Name, AnalysisBundleV1Name:
-		return true
-	default:
-		return false
-	}
+	return IsProseTolerantSchema(schemaRef)
 }
 
 // validateNonEmptyMemberOutput is the prose-tolerant predicate: the member

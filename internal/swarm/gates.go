@@ -592,10 +592,12 @@ func embedAsJSONValue(raw []byte) json.RawMessage {
 // the schemas/ directory loader can plug in without taking a build-
 // time dependency on this package.
 var schemaRegistry = struct {
-	mu      sync.RWMutex
-	schemas map[string]*jsonschema.Resolved
+	mu            sync.RWMutex
+	schemas       map[string]*jsonschema.Resolved
+	proseTolerant map[string]struct{} // schemas where the gate validates presence + non-emptiness, not JSON structure
 }{
-	schemas: make(map[string]*jsonschema.Resolved),
+	schemas:       make(map[string]*jsonschema.Resolved),
+	proseTolerant: make(map[string]struct{}),
 }
 
 // RegisterSchema installs schema under name in the Phase 1 registry.
@@ -680,18 +682,68 @@ func RegisteredSchemaNames() []string {
 	return out
 }
 
+// MarkSchemaProseTolerant marks a previously-registered schema as
+// prose-tolerant. When the result-schema gate encounters a prose-tolerant
+// schema it validates presence + non-emptiness rather than strict JSON
+// structure — because no Go code typed-parses the output; it is consumed
+// as raw text by the next LLM member. Calling this before the schema is
+// registered is an error (call it from SeedDefaultSchemas or equivalent
+// setup after RegisterSchema, never before).
+//
+// Expected:
+//   - name is the SchemaRef of an already-registered schema.
+//
+// Returns:
+//   - nil on success.
+//   - An error when name is not yet registered.
+//
+// Side effects:
+//   - Adds the name to the proseTolerant set under the write lock.
+func MarkSchemaProseTolerant(name string) error {
+	schemaRegistry.mu.Lock()
+	defer schemaRegistry.mu.Unlock()
+	if _, ok := schemaRegistry.schemas[name]; !ok {
+		return fmt.Errorf("swarm.MarkSchemaProseTolerant: schema %q is not registered", name)
+	}
+	schemaRegistry.proseTolerant[name] = struct{}{}
+	return nil
+}
+
+// IsProseTolerantSchema reports whether the named schema is registered
+// as prose-tolerant in the schema registry. This is the single source
+// of truth for the result-schema gate's prose-tolerance decision — add
+// new prose-tolerant schemas by calling MarkSchemaProseTolerant, not by
+// maintaining a separate hardcoded list.
+//
+// Expected:
+//   - name is the SchemaRef to query.
+//
+// Returns:
+//   - true when the schema is registered as prose-tolerant.
+//   - false when unknown or not marked.
+//
+// Side effects:
+//   - None (read-only access under the registry's RLock).
+func IsProseTolerantSchema(name string) bool {
+	schemaRegistry.mu.RLock()
+	defer schemaRegistry.mu.RUnlock()
+	_, ok := schemaRegistry.proseTolerant[name]
+	return ok
+}
+
 // ClearSchemasForTest empties the Phase 1 registry. Tests use this in
 // BeforeEach so a stray Register call from a sibling spec does not
 // leak across test boundaries. Not exported under a non-_test name
 // because production code never needs to clear the registry.
 //
 // Side effects:
-//   - Replaces schemaRegistry.schemas with an empty map under the
-//     write lock.
+//   - Replaces schemaRegistry.schemas with an empty map and clears
+//     the proseTolerant set under the write lock.
 func ClearSchemasForTest() {
 	schemaRegistry.mu.Lock()
 	defer schemaRegistry.mu.Unlock()
 	schemaRegistry.schemas = make(map[string]*jsonschema.Resolved)
+	schemaRegistry.proseTolerant = make(map[string]struct{})
 }
 
 // PostMemberGatesFor returns the gates from specs whose When is
