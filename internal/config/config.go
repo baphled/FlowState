@@ -718,16 +718,14 @@ type FailoverConfig struct {
 //
 // Fields:
 //
-//   - TodoStrictMode — D9. When true, the engine rejects non-
-//     todowrite tool calls once a session's agent-turn-chain has
-//     fired more than 3 tool calls without invoking todowrite. The
-//     rejection is a structured tool.Result with IsError=true whose
-//     output instructs the model to call todowrite first. When false
-//     (the v1 default), only the soft-nudge system-reminder fires
-//     (D6, ships separately). Per D9 rationale: the user constraint
-//     "mandatory AND stick to them" deserves a hard-gate upgrade
-//     path even though v1 ships off; flip the flag in config.yaml
-//     to opt in without a code change.
+//   - TodoStrictMode — D9. When true (the default), the engine
+//     rejects non-todowrite/non-todo_update tool calls once a
+//     session's agent-turn-chain has fired more than 3 tool calls
+//     without invoking either todo tool. The rejection is a structured
+//     tool.Result with IsError=true whose output instructs the model
+//     to call todowrite first. Set features.todo_strict_mode: false
+//     in config.yaml to disable the hard gate and fall back to the
+//     soft-nudge-only contract (D6).
 type FeaturesConfig struct {
 	TodoStrictMode bool `json:"todo_strict_mode" yaml:"todo_strict_mode"`
 
@@ -1327,6 +1325,14 @@ func DefaultConfig() *AppConfig {
 		ToolCapableModels:   defaultToolCapableModels(),
 		ToolIncapableModels: defaultToolIncapableModels(),
 		Features: FeaturesConfig{
+			// TodoStrictMode defaults false. The engine now uses
+			// complexity-based estimation (EstimateComplexity) to
+			// decide per-session whether to enforce the hard todo
+			// gate. Only sessions classified as ComplexityComplex
+			// get the gate automatically. Set this to true to force
+			// the hard gate on ALL sessions regardless of estimated
+			// complexity (the pre-compatibility override).
+			TodoStrictMode: false,
 			// PermissionGrantForeverEnabled defaults true — Slice 4
 			// of the Permission Mode ModeAskUser Extension plan
 			// (May 2026) ships the atomic-flock YAML writer as the

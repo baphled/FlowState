@@ -1091,7 +1091,7 @@ var _ = Describe("AppConfig.Features (D9 todo_strict_mode)", func() {
 		cfg, err := config.LoadConfigFromPath(configPath)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.Features.TodoStrictMode).To(BeFalse(),
-			"D9 ships off so existing deployments stay on the soft-nudge default")
+			"complexity-based estimation replaces the global flag; operators opt in to force-all")
 	})
 
 	It("parses features.todo_strict_mode: true from YAML", func() {

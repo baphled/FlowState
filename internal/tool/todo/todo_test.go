@@ -90,7 +90,7 @@ var _ = Describe("TodoTool", func() {
 				Expect(todos[0].Priority).To(Equal("high"))
 			})
 
-			It("replaces the entire todo list on subsequent calls", func() {
+			It("rejects subsequent calls when session already has a todo list", func() {
 				ctx := sessionCtx()
 				firstInput := tool.Input{
 					Name: "todowrite",
@@ -119,13 +119,9 @@ var _ = Describe("TodoTool", func() {
 						},
 					},
 				}
-				result, err := t.Execute(ctx, secondInput)
-				Expect(err).NotTo(HaveOccurred())
-
-				var todos []todotool.Item
-				Expect(json.Unmarshal([]byte(result.Output), &todos)).To(Succeed())
-				Expect(todos).To(HaveLen(1))
-				Expect(todos[0].Content).To(Equal("Second todo"))
+				_, err = t.Execute(ctx, secondInput)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("already has a todo list"))
 			})
 
 			It("counts only non-completed items in the title", func() {

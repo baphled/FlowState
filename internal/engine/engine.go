@@ -211,6 +211,28 @@ type Engine struct {
 	// headroom on subsequent turns. Protected by e.mu.
 	todoIncompleteExhausted map[string]int
 
+	// todoContinuationFired tracks whether a continuation prompt was
+	// injected this turn. When combined with workToolCallsSinceContinuation,
+	// the engine can detect stale continuations where the model marks
+	// items completed without doing any real work. Set true when a
+	// continuation fires; reset on turn-end acceptance. Protected by e.mu.
+	todoContinuationFired map[string]bool
+
+	// workToolCallsSinceContinuation counts non-todowrite/non-todo_update
+	// tool calls since the last continuation injection. Used by
+	// hasIncompleteTodos to detect the stale-continuation bypass: if
+	// the continuation fired but zero work calls were made and all
+	// items are now completed, the model is trying to short-circuit
+	// without doing the work. Incremented in executeToolCall; reset on
+	// continuation injection and on turn-end acceptance. Protected by e.mu.
+	workToolCallsSinceContinuation map[string]int
+
+	// sessionComplexity stores the estimated TaskComplexity for each
+	// session, set from the first user message via EstimateComplexity.
+	// The strict gate consults this map: only ComplexityComplex sessions
+	// enforce the hard gate. Protected by e.mu.
+	sessionComplexity map[string]TaskComplexity
+
 	// knownSkillsFunc is the optional catalogue accessor consulted by
 	// executeToolCall before the generic tool-not-found fallback. Item
 	// 3 of the Agent Runtime Quality plan (May 2026). Nil disables the
@@ -928,68 +950,71 @@ func resolveToolTimeout(cfg Config) time.Duration {
 //     the caller after assembly.
 func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 	return &Engine{
-		chatProvider:              cfg.ChatProvider,
-		embeddingProvider:         cfg.EmbeddingProvider,
-		failoverManager:           cfg.FailoverManager,
-		manifest:                  cfg.Manifest,
-		tools:                     cfg.Tools,
-		skills:                    cfg.Skills,
-		skillsResolver:            cfg.SkillsResolver,
-		store:                     cfg.Store,
-		chainStore:                cfg.ChainStore,
-		windowBuilder:             deps.windowBuilder,
-		recallBroker:              cfg.RecallBroker,
-		contextAssemblyHooks:      deps.assemblyHooks,
-		tokenCounter:              cfg.TokenCounter,
-		systemPromptBudget:        cfg.SystemPromptBudget,
-		streamTimeout:             deps.streamTimeout,
-		hookChain:                 deps.chain,
-		toolRegistry:              cfg.ToolRegistry,
-		permissionHandler:         cfg.PermissionHandler,
-		providerRegistry:          cfg.Registry,
-		agentRegistry:             cfg.AgentRegistry,
-		swarmRegistry:             cfg.SwarmRegistry,
-		agentsFileLoader:          cfg.AgentsFileLoader,
-		agentOverrides:            make(map[string]string),
-		bus:                       deps.bus,
-		systemPromptDirty:         true,
-		mcpServerTools:            cfg.MCPServerTools,
-		toolTimeout:               resolveToolTimeout(cfg),
-		categoryResolver:          cfg.CategoryResolver,
-		autoCompactor:             cfg.AutoCompactor,
-		compressionConfig:         cfg.CompressionConfig,
-		compressionMetrics:        cfg.CompressionMetrics,
-		recorder:                  cfg.Recorder,
-		knowledgeExtractor:        cfg.KnowledgeExtractor,
-		knowledgeExtractorFactory: cfg.KnowledgeExtractorFactory,
-		sessionSplitters:          make(map[string]*sessionSplitterEntry),
-		sessionCompressionMetrics: make(map[string]*ctxstore.CompressionMetrics),
-		sessionCompactionMemo:     make(map[string]sessionCompactionMemoEntry),
-		sessionRehydrated:         make(map[string]struct{}),
-		seededSessions:            make(map[string]struct{}),
-		sessionLookup:             cfg.SessionLookup,
-		permissionPrompter:        cfg.PermissionPrompter,
-		todoStrictMode:            cfg.TodoStrictMode,
-		todoNonTodowriteToolCalls: make(map[string]int),
-		todoStore:                 cfg.TodoStore,
-		todoIncompleteExhausted:   make(map[string]int),
-		knownSkillsFunc:           cfg.KnownSkillsFunc,
-		lastUsagePayload:          make(map[string]string),
-		sessionOutputTokens:       make(map[string]int64),
-		quotaTracker:              cfg.QuotaTracker,
-		quotaAccountHashes:        cfg.QuotaAccountHashes,
-		quotaCaps:                 cfg.QuotaCaps,
-		lastProviderQuotaPayload:  make(map[string]string),
-		toolCallCorrelator:        resolveToolCallCorrelator(cfg),
-		swarmContext:              cfg.SwarmContext,
-		microCompactor:            resolveMicroCompactor(cfg),
-		compactionConfig:          cfg.CompactionConfig,
-		factService:               resolveFactService(cfg),
-		nowFunc:                   resolveNowFunc(cfg),
-		heartbeatInterval:         defaultStreamingHeartbeatInterval,
-		streamIdleTimeout:         engineStreamIdleTimeout,
-		maxToolLoopIterations:     engineMaxToolLoopIterations,
-		maxIdenticalToolCalls:     engineMaxIdenticalToolCalls,
+		chatProvider:                   cfg.ChatProvider,
+		embeddingProvider:              cfg.EmbeddingProvider,
+		failoverManager:                cfg.FailoverManager,
+		manifest:                       cfg.Manifest,
+		tools:                          cfg.Tools,
+		skills:                         cfg.Skills,
+		skillsResolver:                 cfg.SkillsResolver,
+		store:                          cfg.Store,
+		chainStore:                     cfg.ChainStore,
+		windowBuilder:                  deps.windowBuilder,
+		recallBroker:                   cfg.RecallBroker,
+		contextAssemblyHooks:           deps.assemblyHooks,
+		tokenCounter:                   cfg.TokenCounter,
+		systemPromptBudget:             cfg.SystemPromptBudget,
+		streamTimeout:                  deps.streamTimeout,
+		hookChain:                      deps.chain,
+		toolRegistry:                   cfg.ToolRegistry,
+		permissionHandler:              cfg.PermissionHandler,
+		providerRegistry:               cfg.Registry,
+		agentRegistry:                  cfg.AgentRegistry,
+		swarmRegistry:                  cfg.SwarmRegistry,
+		agentsFileLoader:               cfg.AgentsFileLoader,
+		agentOverrides:                 make(map[string]string),
+		bus:                            deps.bus,
+		systemPromptDirty:              true,
+		mcpServerTools:                 cfg.MCPServerTools,
+		toolTimeout:                    resolveToolTimeout(cfg),
+		categoryResolver:               cfg.CategoryResolver,
+		autoCompactor:                  cfg.AutoCompactor,
+		compressionConfig:              cfg.CompressionConfig,
+		compressionMetrics:             cfg.CompressionMetrics,
+		recorder:                       cfg.Recorder,
+		knowledgeExtractor:             cfg.KnowledgeExtractor,
+		knowledgeExtractorFactory:      cfg.KnowledgeExtractorFactory,
+		sessionSplitters:               make(map[string]*sessionSplitterEntry),
+		sessionCompressionMetrics:      make(map[string]*ctxstore.CompressionMetrics),
+		sessionCompactionMemo:          make(map[string]sessionCompactionMemoEntry),
+		sessionRehydrated:              make(map[string]struct{}),
+		seededSessions:                 make(map[string]struct{}),
+		sessionLookup:                  cfg.SessionLookup,
+		permissionPrompter:             cfg.PermissionPrompter,
+		todoStrictMode:                 cfg.TodoStrictMode,
+		todoNonTodowriteToolCalls:      make(map[string]int),
+		todoStore:                      cfg.TodoStore,
+		todoIncompleteExhausted:        make(map[string]int),
+		todoContinuationFired:          make(map[string]bool),
+		workToolCallsSinceContinuation: make(map[string]int),
+		sessionComplexity:              make(map[string]TaskComplexity),
+		knownSkillsFunc:                cfg.KnownSkillsFunc,
+		lastUsagePayload:               make(map[string]string),
+		sessionOutputTokens:            make(map[string]int64),
+		quotaTracker:                   cfg.QuotaTracker,
+		quotaAccountHashes:             cfg.QuotaAccountHashes,
+		quotaCaps:                      cfg.QuotaCaps,
+		lastProviderQuotaPayload:       make(map[string]string),
+		toolCallCorrelator:             resolveToolCallCorrelator(cfg),
+		swarmContext:                   cfg.SwarmContext,
+		microCompactor:                 resolveMicroCompactor(cfg),
+		compactionConfig:               cfg.CompactionConfig,
+		factService:                    resolveFactService(cfg),
+		nowFunc:                        resolveNowFunc(cfg),
+		heartbeatInterval:              defaultStreamingHeartbeatInterval,
+		streamIdleTimeout:              engineStreamIdleTimeout,
+		maxToolLoopIterations:          engineMaxToolLoopIterations,
+		maxIdenticalToolCalls:          engineMaxIdenticalToolCalls,
 	}
 }
 
@@ -3397,6 +3422,10 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	e.mu.Lock()
 	e.currentSessionID = sessionID
+	if _, exists := e.sessionComplexity[sessionID]; !exists {
+		complexity, _ := EstimateComplexity(message)
+		e.sessionComplexity[sessionID] = complexity
+	}
 	e.mu.Unlock()
 
 	// Resolve THIS call's manifest. When the caller supplies an
@@ -4469,6 +4498,7 @@ func (e *Engine) streamWithToolLoop(
 					)
 					contMsg := buildTodoContinuationMessage(incompletes)
 					messages = append(messages, contMsg)
+					e.resetContinuationState(sessionID)
 					var streamErr error
 					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 					if streamErr != nil {
@@ -4511,6 +4541,7 @@ func (e *Engine) streamWithToolLoop(
 					)
 					contMsg := buildTodoContinuationMessage(incompletes)
 					messages = append(messages, contMsg)
+					e.resetContinuationState(sessionID)
 					var streamErr error
 					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 					if streamErr != nil {
@@ -4731,6 +4762,7 @@ func (e *Engine) streamWithToolLoop(
 					)
 					contMsg := buildTodoContinuationMessage(incompletes)
 					messages = append(messages, contMsg)
+					e.resetContinuationState(sessionID)
 					var streamErr error
 					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 					if streamErr != nil {
@@ -5405,10 +5437,11 @@ const todoStrictModeThreshold = 3
 //     (zero Result, false). The counter is still tracked so flipping
 //     the flag mid-session takes effect on the next call; this is
 //     cheap and avoids a behavioural cliff at flag-flip time.
-//   - When TodoStrictMode is true and toolName == "todowrite": reset
-//     the per-session counter to 0 and let the call through. The
-//     reset is the contract: a todowrite anywhere in the chain
-//     re-arms the gate for the next batch of tool calls.
+//   - When TodoStrictMode is true and toolName is "todowrite" or
+//     "todo_update": reset the per-session counter to 0 and let the
+//     call through. The reset is the contract: a todowrite or
+//     todo_update anywhere in the chain re-arms the gate for the
+//     next batch of tool calls.
 //   - When TodoStrictMode is true and the counter is at or beyond
 //     todoStrictModeThreshold: return a structured tool.Result with
 //     IsError=true whose output instructs the model to call
@@ -5427,20 +5460,19 @@ const todoStrictModeThreshold = 3
 func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if toolName == "todowrite" {
-		// Reset on every todowrite, regardless of strict mode, so the
-		// counter never drifts when the flag is flipped between
-		// invocations.
+	if isTodoTool(toolName) {
 		delete(e.todoNonTodowriteToolCalls, sessionID)
 		return tool.Result{}, false
 	}
 	current := e.todoNonTodowriteToolCalls[sessionID]
-	if e.todoStrictMode && current >= todoStrictModeThreshold {
+	complexity := e.sessionComplexity[sessionID]
+	gateEnabled := e.todoStrictMode || complexity.EnforcesTodoGate()
+	if gateEnabled && current >= todoStrictModeThreshold {
 		msg := fmt.Sprintf(
-			"todo_strict_mode: this chain has made %d tool calls without invoking todowrite. "+
-				"Call todowrite with the task breakdown before running '%s' (or any other tool). "+
-				"Rationale: features.todo_strict_mode is enabled — see Agent Runtime Quality plan D9.",
-			current, toolName,
+			"todo_strict_mode: this chain has made %d tool calls without updating the todo list. "+
+				"Call todowrite (or todo_update, todo_append, todo_insert) before running '%s' (or any other tool). "+
+				"Rationale: task complexity is %s — see Agent Runtime Quality plan D9.",
+			current, toolName, complexity.String(),
 		)
 		return tool.Result{
 			Output:  msg,
@@ -5489,6 +5521,13 @@ func (e *Engine) effectiveTodoRetryLimit(sessionID string) int {
 // item whose status is "pending" or "in_progress", and returns those items.
 // Returns (false, nil) when no todoStore is configured or when every item
 // is completed or cancelled.
+//
+// Stale-continuation bypass detection: when a continuation was injected
+// but the model made zero "work" tool calls (non-todowrite, non-todo_update)
+// and all items appear completed, this method reports the items as
+// incomplete anyway. This prevents the model from marking everything
+// done via todo_update calls without doing any actual work, which would
+// otherwise short-circuit the continuation loop.
 func (e *Engine) hasIncompleteTodos(sessionID string) (bool, []todo.Item) {
 	if e.todoStore == nil {
 		return false, nil
@@ -5500,7 +5539,57 @@ func (e *Engine) hasIncompleteTodos(sessionID string) (bool, []todo.Item) {
 			incomplete = append(incomplete, it)
 		}
 	}
+
+	// Stale-continuation check: if a continuation was injected, the
+	// model made no work tool calls, and all items are now marked
+	// completed/cancelled, the model tried to bypass the continuation.
+	// Force-report items as incomplete so the continuation fires again.
+	if len(incomplete) == 0 {
+		if e.isContinuationStale(sessionID) {
+			// Return the now-completed items so the continuation
+			// message enumerates what the model skipped.
+			for _, it := range items {
+				incomplete = append(incomplete, it)
+			}
+			return true, incomplete
+		}
+	}
+
 	return len(incomplete) > 0, incomplete
+}
+
+// isContinuationStale reports whether the session has a stale continuation:
+// a continuation was injected (todoContinuationFired) but the model made
+// zero non-todowrite/non-todo_update tool calls since. When true, the
+// model likely called todo_update to mark items completed without doing
+// any actual work, bypassing the intent of the continuation loop.
+//
+// Returns:
+//   - true when the continuation is stale (injected but no work done).
+func (e *Engine) isContinuationStale(sessionID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.todoContinuationFired[sessionID] && e.workToolCallsSinceContinuation[sessionID] == 0
+}
+
+// resetContinuationState resets the stale-continuation detection state
+// for a session. Called when a new continuation is injected (prepares
+// for the next detection cycle).
+func (e *Engine) resetContinuationState(sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.todoContinuationFired[sessionID] = true
+	e.workToolCallsSinceContinuation[sessionID] = 0
+}
+
+// clearContinuationState clears the stale-continuation detection state
+// for a session. Called on normal turn-end acceptance (when work was
+// done and items are legitimately completed).
+func (e *Engine) clearContinuationState(sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.todoContinuationFired, sessionID)
+	delete(e.workToolCallsSinceContinuation, sessionID)
 }
 
 // buildTodoContinuationMessage constructs the user-role continuation prompt
@@ -5553,13 +5642,19 @@ func (e *Engine) buildTodoContextMessage(sessionID string) *provider.Message {
 	if len(items) == 0 {
 		return nil
 	}
-	msg := renderTodoSystemMessage(items)
+
+	e.mu.Lock()
+	toolCallCount := e.todoNonTodowriteToolCalls[sessionID]
+	complexity := e.sessionComplexity[sessionID]
+	e.mu.Unlock()
+
+	msg := renderTodoSystemMessage(items, toolCallCount, complexity)
 	return &msg
 }
 
 // renderTodoSystemMessage formats the todo list as a system-role message
 // with a clear header and per-item status indicators.
-func renderTodoSystemMessage(items []todo.Item) provider.Message {
+func renderTodoSystemMessage(items []todo.Item, toolCallCount int, complexity TaskComplexity) provider.Message {
 	var sb strings.Builder
 	sb.WriteString("# Current Task List\n\n")
 	sb.WriteString("This is your live todo list from the store. When updating statuses, use these exact items as your source of truth — do not reconstruct from memory.\n\n")
@@ -5575,6 +5670,22 @@ func renderTodoSystemMessage(items []todo.Item) provider.Message {
 		}
 		sb.WriteString(fmt.Sprintf("%d. %s %s (%s priority)\n", i, marker, it.Content, it.Priority))
 	}
+
+	if complexity.EnforcesTodoGate() {
+		remaining := todoStrictModeThreshold - toolCallCount
+		if remaining > 0 {
+			sb.WriteString(fmt.Sprintf(
+				"\n⚠️ Task complexity: %s. You have %d tool call(s) remaining before you MUST update your todo list (via todo_update, todo_append, or todo_insert).\n",
+				complexity.String(), remaining,
+			))
+		} else {
+			sb.WriteString(fmt.Sprintf(
+				"\n⚠️ Task complexity: %s. You have exhausted your tool-call budget — your next non-todo tool call will be BLOCKED. Update your todo list now.\n",
+				complexity.String(),
+			))
+		}
+	}
+
 	return provider.Message{Role: "system", Content: sb.String()}
 }
 
@@ -5774,6 +5885,16 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			return result, nil
 		}
 		input.Arguments = validated
+
+		// Track non-todo work calls for stale-continuation detection.
+		// Only todowrite and todo_update are excluded — all other
+		// tool calls (bash, read, write, web, skill_load, etc.)
+		// count as "real work" that legitimises completion.
+		if !isTodoTool(toolCall.Name) {
+			e.mu.Lock()
+			e.workToolCallsSinceContinuation[sessionID]++
+			e.mu.Unlock()
+		}
 
 		toolCtx, cancel := e.deriveToolCtx(ctx, t)
 		result, err := t.Execute(toolCtx, input)
