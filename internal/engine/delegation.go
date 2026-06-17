@@ -2799,6 +2799,28 @@ func (d *DelegateTool) executeSync(
 		}
 		gateErr := d.dispatchPostMemberGates(ctx, target.agentID, baseInfo.ChainID)
 		if gateErr == nil {
+			if d.gateRunner == nil && !hasSubstantiveOutput([]byte(result.response)) {
+				if attempt < PostMemberGateMaxAttempts {
+					if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
+						if prov != "" {
+							delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, prov)
+						}
+						if model != "" {
+							delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, model)
+						}
+					}
+					target.message = appendPlainDirective(target.message)
+					forcedToolChoice = ""
+					continue
+				}
+				slog.Warn("delegate response empty or non-substantive after retries",
+					"agent", target.agentID,
+					"model", modelName,
+					"provider", providerName,
+					"tool_calls", result.toolCalls,
+					"last_tool", result.lastTool,
+				)
+			}
 			break
 		}
 		// The member produced no usable output. Re-delegate while budget
@@ -2874,16 +2896,6 @@ func (d *DelegateTool) executeSync(
 	d.recordChildModelAttribution(delegateSessionID, providerName, modelName)
 	d.closeSessionIfManaged(delegateSessionID)
 
-	if d.gateRunner == nil && !hasSubstantiveOutput([]byte(result.response)) {
-		slog.Warn("delegate response is empty or non-substantive",
-			"agent", target.agentID,
-			"model", modelName,
-			"provider", providerName,
-			"tool_calls", result.toolCalls,
-			"last_tool", result.lastTool,
-		)
-	}
-
 	return tool.Result{
 		Output: formatDelegationOutput(result.response),
 		Title:  target.message,
@@ -2929,6 +2941,29 @@ func appendGateDirective(message string, gateErr error) string {
 		return message
 	}
 	directive := "Your previous attempt did not write its output to the coordination_store. " + ge.Reason
+	if message == "" {
+		return directive
+	}
+	return message + "\n\n" + directive
+}
+
+// appendPlainDirective appends a directive to produce substantive output
+// to a plain delegate's prompt before re-delegation. Unlike the gate retry
+// path (which instructs the member to write to the coordination_store), the
+// plain delegation path has no post-member gate — the response was simply
+// empty or non-substantive (narration without analysis).
+//
+// Expected:
+//   - message is the delegate's current prompt (target.message).
+//
+// Returns:
+//   - The message with the directive appended on a fresh paragraph, or the
+//     directive alone when the original message is empty.
+//
+// Side effects:
+//   - None.
+func appendPlainDirective(message string) string {
+	directive := "Your previous response was empty or lacked substantive content. Provide a detailed, thorough analysis with specific findings — do not simply narrate your process."
 	if message == "" {
 		return directive
 	}
