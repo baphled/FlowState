@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"strings"
 	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -182,7 +181,7 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 	})
 
 	Context("when the turn ends cleanly (no overflow) with pending todos", func() {
-		It("still triggers todo-continuation as normal", func() {
+		It("triggers todo-continuation and retries indefinitely", func() {
 			prov := &overflowScriptedProvider{
 				name: "normal-with-todos-prov",
 				script: []overflowProviderTurn{
@@ -202,24 +201,22 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 			})
 			eng.SetTodoStoreForTest(todoStore)
 
-			ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
 			chunks, err := eng.Stream(ctx, sessionID, "Go")
 			Expect(err).NotTo(HaveOccurred())
 
-			received, closed := drain(chunks)
-			Expect(closed).To(BeTrue())
+			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
+				BeNumerically(">=", 4),
+				"todo-continuation must fire repeatedly on clean turn ends with pending todos",
+			)
 
-			var hasDefaultContent bool
-			for _, c := range received {
-				if c.Content != "" && strings.Contains(c.Content, "All done.") {
-					hasDefaultContent = true
-				}
-			}
-			Expect(hasDefaultContent).To(BeTrue(),
-				"engine should retry via todo-continuation until the script is exhausted")
+			cancel()
 
-			Expect(prov.callCount()).To(BeNumerically(">=", 2),
-				"todo-continuation must still fire on a clean (non-overflow) turn end")
+			_, closed := drain(chunks)
+			Expect(closed).To(BeTrue(),
+				"channel must close after context cancellation")
 		})
 	})
 

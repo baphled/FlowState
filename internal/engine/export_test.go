@@ -420,21 +420,3 @@ func (r DelegationResultForTest) ToolCallCount() int { return r.toolCalls }
 func (e *Engine) SetTodoStoreForTest(s todo.Store) {
 	e.todoStore = s
 }
-
-// GetTodoIncompleteExhaustedForTest returns the per-session exhaustion
-// counter so specs can assert that the adaptive-limit mechanism records
-// consecutive budget overruns correctly.
-func (e *Engine) GetTodoIncompleteExhaustedForTest(sessionID string) int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.todoIncompleteExhausted[sessionID]
-}
-
-// ResetTodoIncompleteExhaustedForTest zeroes the per-session exhaustion
-// counter so consecutive spec scenarios within the same engine instance
-// do not bleed exhaustion state into each other.
-func (e *Engine) ResetTodoIncompleteExhaustedForTest(sessionID string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	delete(e.todoIncompleteExhausted, sessionID)
-}

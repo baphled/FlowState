@@ -200,16 +200,9 @@ type Engine struct {
 	// end of each turn to detect incomplete todos. When the model stops
 	// without making tool calls but the session still has pending or
 	// in_progress todos, the engine injects a continuation user message
-	// and retries the provider stream up to effectiveTodoRetryLimit times
-	// per turn. Nil disables the todo-completion check entirely.
+	// and retries the provider stream indefinitely until all todos are
+	// completed or cancelled. Nil disables the todo-completion check entirely.
 	todoStore todo.Store
-
-	// todoIncompleteExhausted counts how many consecutive turns within
-	// a session have exhausted the todo-incomplete retry budget. When
-	// this counter reaches todoExhaustionThreshold the effective per-turn
-	// retry limit is bumped by todoExhaustionBump so the model gets more
-	// headroom on subsequent turns. Protected by e.mu.
-	todoIncompleteExhausted map[string]int
 
 	// todoContinuationFired tracks whether a continuation prompt was
 	// injected this turn. When combined with workToolCallsSinceContinuation,
@@ -994,7 +987,6 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		todoStrictMode:                 cfg.TodoStrictMode,
 		todoNonTodowriteToolCalls:      make(map[string]int),
 		todoStore:                      cfg.TodoStore,
-		todoIncompleteExhausted:        make(map[string]int),
 		todoContinuationFired:          make(map[string]bool),
 		workToolCallsSinceContinuation: make(map[string]int),
 		sessionComplexity:              make(map[string]TaskComplexity),
@@ -3940,6 +3932,9 @@ func runKnowledgeExtraction(extractor *recall.KnowledgeExtractor, msgs []provide
 //     path is what surfaces the saturation as a stream_critical SSE
 //     event the Vue chat banner can render.
 func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("stream from provider: %w", ctx.Err())
+	}
 	slog.Info("engine stream request", "provider", e.LastProvider(), "model", e.LastModel(), "messages", len(req.Messages))
 	if pErr := e.checkContextWindowOverflow(req); pErr != nil {
 		slog.Warn("engine refused over-budget request",
@@ -4397,7 +4392,6 @@ func (e *Engine) streamWithToolLoop(
 	const maxToolUseNoCallsRetries = 3
 	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
-	todoRetries := 0
 	overflowRetries := 0
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
@@ -4487,42 +4481,26 @@ func (e *Engine) streamWithToolLoop(
 				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
-				retryLimit := e.effectiveTodoRetryLimit(sessionID)
-				if todoRetries < retryLimit {
-					todoRetries++
-					slog.Info("incomplete todos after turn end, injecting continuation",
-						"session", sessionID,
-						"incomplete_count", len(incompletes),
-						"todo_retry", todoRetries,
-						"retry_limit", retryLimit,
-					)
-					contMsg := buildTodoContinuationMessage(incompletes)
-					messages = append(messages, contMsg)
-					e.resetContinuationState(sessionID)
-					var streamErr error
-					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
-					if streamErr != nil {
-						slog.Error("todo continuation stream failed",
-							"session", sessionID,
-							"error", streamErr,
-						)
-						e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
-						return
-					}
-					attempt++
-					e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
-					continue
-				}
-				e.mu.Lock()
-				e.todoIncompleteExhausted[sessionID]++
-				exhaustCount := e.todoIncompleteExhausted[sessionID]
-				e.mu.Unlock()
-				e.emitTodoExhaustionWarning(sessionID, incompletes, outChan)
-				slog.Warn("todo incomplete retries exhausted",
+				slog.Info("incomplete todos after turn end, injecting continuation",
 					"session", sessionID,
-					"exhaustion_count", exhaustCount,
-					"retry_limit", retryLimit,
+					"incomplete_count", len(incompletes),
 				)
+				contMsg := buildTodoContinuationMessage(incompletes)
+				messages = append(messages, contMsg)
+				e.resetContinuationState(sessionID)
+				var streamErr error
+				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				if streamErr != nil {
+					slog.Error("todo continuation stream failed",
+						"session", sessionID,
+						"error", streamErr,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				attempt++
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				continue
 			}
 			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
@@ -4530,42 +4508,26 @@ func (e *Engine) streamWithToolLoop(
 
 		if len(result.toolCalls) == 0 {
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
-				retryLimit := e.effectiveTodoRetryLimit(sessionID)
-				if todoRetries < retryLimit {
-					todoRetries++
-					slog.Info("incomplete todos after stream truncation, injecting continuation",
-						"session", sessionID,
-						"incomplete_count", len(incompletes),
-						"todo_retry", todoRetries,
-						"retry_limit", retryLimit,
-					)
-					contMsg := buildTodoContinuationMessage(incompletes)
-					messages = append(messages, contMsg)
-					e.resetContinuationState(sessionID)
-					var streamErr error
-					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
-					if streamErr != nil {
-						slog.Error("todo continuation stream failed after truncation",
-							"session", sessionID,
-							"error", streamErr,
-						)
-						e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
-						return
-					}
-					attempt++
-					e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
-					continue
-				}
-				e.mu.Lock()
-				e.todoIncompleteExhausted[sessionID]++
-				exhaustCount := e.todoIncompleteExhausted[sessionID]
-				e.mu.Unlock()
-				e.emitTodoExhaustionWarning(sessionID, incompletes, outChan)
-				slog.Warn("todo incomplete retries exhausted after stream truncation",
+				slog.Info("incomplete todos after stream truncation, injecting continuation",
 					"session", sessionID,
-					"exhaustion_count", exhaustCount,
-					"retry_limit", retryLimit,
+					"incomplete_count", len(incompletes),
 				)
+				contMsg := buildTodoContinuationMessage(incompletes)
+				messages = append(messages, contMsg)
+				e.resetContinuationState(sessionID)
+				var streamErr error
+				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				if streamErr != nil {
+					slog.Error("todo continuation stream failed after truncation",
+						"session", sessionID,
+						"error", streamErr,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				attempt++
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				continue
 			}
 			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
@@ -4750,43 +4712,30 @@ func (e *Engine) streamWithToolLoop(
 				"max_identical", e.maxIdenticalToolCalls,
 			)
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
-				retryLimit := e.effectiveTodoRetryLimit(sessionID)
-				if todoRetries < retryLimit {
-					todoRetries++
-					slog.Info("tool loop capped but incomplete todos remain, injecting continuation",
-						"session", sessionID,
-						"trip", reason,
-						"incomplete_count", len(incompletes),
-						"todo_retry", todoRetries,
-						"retry_limit", retryLimit,
-					)
-					contMsg := buildTodoContinuationMessage(incompletes)
-					messages = append(messages, contMsg)
-					e.resetContinuationState(sessionID)
-					var streamErr error
-					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
-					if streamErr != nil {
-						slog.Error("todo continuation stream failed after tool loop cap",
-							"session", sessionID,
-							"error", streamErr,
-						)
-						e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
-						return
-					}
-					attempt++
-					iterations = 0
-					identicalRun = 0
-					lastFingerprint = ""
-					e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
-					continue
-				}
-				e.emitTodoExhaustionWarning(sessionID, incompletes, outChan)
-				slog.Warn("tool loop capped with incomplete todos, retries exhausted",
+				slog.Info("tool loop capped but incomplete todos remain, injecting continuation",
 					"session", sessionID,
 					"trip", reason,
-					"todo_retry", todoRetries,
-					"retry_limit", retryLimit,
+					"incomplete_count", len(incompletes),
 				)
+				contMsg := buildTodoContinuationMessage(incompletes)
+				messages = append(messages, contMsg)
+				e.resetContinuationState(sessionID)
+				var streamErr error
+				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				if streamErr != nil {
+					slog.Error("todo continuation stream failed after tool loop cap",
+						"session", sessionID,
+						"error", streamErr,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				attempt++
+				iterations = 0
+				identicalRun = 0
+				lastFingerprint = ""
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				continue
 			}
 			outChan <- provider.StreamChunk{
 				Done:       true,
@@ -5420,13 +5369,6 @@ func (e *Engine) deriveToolCtx(parent context.Context, t tool.Tool) (context.Con
 	return context.WithTimeout(parent, e.toolTimeout)
 }
 
-// todoStrictModeThreshold is the >N threshold from D9. When the
-// per-session non-todowrite tool-call counter exceeds this value and
-// TodoStrictMode is true, the gate fires. Picked at 3 per the plan's
-// "multi-step turn" definition (≥3 tool calls in a single agent turn);
-// the strict mode rejects the FOURTH non-todowrite call.
-const todoStrictModeThreshold = 3
-
 // todoStrictGate tracks the per-session count of non-todo tool calls for
 // informational display in the todo context message. It NEVER blocks tool
 // dispatch — the hard gate was removed after evidence (June 2026 sessions)
@@ -5449,40 +5391,6 @@ func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) 
 	}
 	e.todoNonTodowriteToolCalls[sessionID]++
 	return tool.Result{}, false
-}
-
-// maxTodoIncompleteRetries is the base number of times streamWithToolLoop
-// will re-inject a continuation prompt and retry the provider when the
-// model ends its turn with incomplete todos still in the session store.
-// Adaptive growth: when a session repeatedly exhausts this budget the
-// effective limit grows by todoExhaustionBump per exhaustion cycle (up to
-// the exhaustion counter reaching todoExhaustionThreshold).
-const maxTodoIncompleteRetries = 5
-
-// todoExhaustionThreshold is the number of consecutive per-session
-// todo-retry exhaustion events that trigger an automatic bump to the
-// effective retry limit. Two consecutive exhaustions mean the task is
-// genuinely complex — give the model more headroom rather than silently
-// stopping.
-const todoExhaustionThreshold = 2
-
-// todoExhaustionBump is the number of additional retries added to the
-// effective limit each time the exhaustion threshold is crossed. Kept
-// small (2) so runaway agents cannot spiral to unlimited retries; the
-// growth is linear, not exponential.
-const todoExhaustionBump = 2
-
-// effectiveTodoRetryLimit returns the per-session retry limit for the
-// todo-completion continuation loop. The base is maxTodoIncompleteRetries;
-// once a session's exhaustion counter has crossed todoExhaustionThreshold
-// the limit is raised by todoExhaustionBump per increment above that
-// threshold. Called under e.mu.
-func (e *Engine) effectiveTodoRetryLimit(sessionID string) int {
-	e.mu.Lock()
-	exhaustions := e.todoIncompleteExhausted[sessionID]
-	e.mu.Unlock()
-	bumps := exhaustions / todoExhaustionThreshold
-	return maxTodoIncompleteRetries + bumps*todoExhaustionBump
 }
 
 // hasIncompleteTodos reports whether the session's todo list contains any
@@ -5516,9 +5424,7 @@ func (e *Engine) hasIncompleteTodos(sessionID string) (bool, []todo.Item) {
 		if e.isContinuationStale(sessionID) {
 			// Return the now-completed items so the continuation
 			// message enumerates what the model skipped.
-			for _, it := range items {
-				incomplete = append(incomplete, it)
-			}
+			incomplete = append(incomplete, items...)
 			return true, incomplete
 		}
 	}
@@ -5550,16 +5456,6 @@ func (e *Engine) resetContinuationState(sessionID string) {
 	e.workToolCallsSinceContinuation[sessionID] = 0
 }
 
-// clearContinuationState clears the stale-continuation detection state
-// for a session. Called on normal turn-end acceptance (when work was
-// done and items are legitimately completed).
-func (e *Engine) clearContinuationState(sessionID string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	delete(e.todoContinuationFired, sessionID)
-	delete(e.workToolCallsSinceContinuation, sessionID)
-}
-
 // buildTodoContinuationMessage constructs the user-role continuation prompt
 // injected into the message history when the engine detects incomplete todos
 // after a model turn ends without tool calls. The message enumerates each
@@ -5572,20 +5468,6 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 	}
 	sb.WriteString("\nResume working on these tasks now.")
 	return provider.Message{Role: "user", Content: sb.String()}
-}
-
-// emitTodoExhaustionWarning pushes a visible content chunk through the
-// stream channel so the user is informed when the engine stops despite
-// having incomplete todos. Without this the agent appears to finish
-// normally, masking the fact that work remains undone.
-func (e *Engine) emitTodoExhaustionWarning(sessionID string, incompletes []todo.Item, outChan chan<- provider.StreamChunk) {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "\n\n[WARNING] The agent stopped with %d incomplete task(s):\n", len(incompletes))
-	for _, it := range incompletes {
-		fmt.Fprintf(&sb, "  - [%s] %s\n", it.Status, it.Content)
-	}
-	sb.WriteString("\nYou may need to prompt the agent to continue working on these tasks.")
-	outChan <- provider.StreamChunk{Content: sb.String()}
 }
 
 // buildTodoContextMessage renders the current session's todo list as a

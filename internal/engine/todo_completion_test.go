@@ -121,7 +121,7 @@ var _ = Describe("Engine todo-completion continuation", func() {
 	})
 
 	Context("when the model ends a turn cleanly with pending todos", func() {
-		It("injects a continuation prompt and retries", func() {
+		It("injects a continuation prompt and retries indefinitely", func() {
 			prov := &scriptedTodoProvider{
 				name: "todo-prov",
 				script: []todoProviderTurn{
@@ -141,12 +141,22 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			})
 			eng.SetTodoStoreForTest(todoStore)
 
-			ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
 			chunks, err := eng.Stream(ctx, sessionID, "Go")
 			Expect(err).NotTo(HaveOccurred())
 
+			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
+				BeNumerically(">=", 6),
+				"engine must retry past the old retry limit when todos remain incomplete",
+			)
+
+			cancel()
+
 			received, closed := drain(chunks)
-			Expect(closed).To(BeTrue(), "channel must close; turn hung")
+			Expect(closed).To(BeTrue(),
+				"channel must close after context cancellation")
 
 			var hasCompletionContent bool
 			for _, c := range received {
@@ -156,9 +166,6 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			}
 			Expect(hasCompletionContent).To(BeTrue(),
 				"engine should have retried and received the provider's default completion response")
-
-			Expect(prov.callCount()).To(BeNumerically(">=", 2),
-				"engine should have called the provider multiple times due to todo retry")
 		})
 	})
 
@@ -227,8 +234,8 @@ var _ = Describe("Engine todo-completion continuation", func() {
 		})
 	})
 
-	Context("when todo retries are exhausted", func() {
-		It("records the exhaustion, emits a visible warning, and stops retrying", func() {
+	Context("when the model never completes its todos", func() {
+		It("keeps retrying indefinitely until the context is cancelled", func() {
 			prov := &scriptedTodoProvider{
 				name: "stubborn-prov",
 				script: []todoProviderTurn{
@@ -237,8 +244,6 @@ var _ = Describe("Engine todo-completion continuation", func() {
 					{content: "nope 3"},
 					{content: "nope 4"},
 					{content: "nope 5"},
-					{content: "nope 6"},
-					{content: "nope 7"},
 				},
 			}
 
@@ -253,63 +258,22 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			})
 			eng.SetTodoStoreForTest(todoStore)
 
-			ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID)
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
 			chunks, err := eng.Stream(ctx, sessionID, "Go")
 			Expect(err).NotTo(HaveOccurred())
 
-			received, closed := drain(chunks)
-			Expect(closed).To(BeTrue(), "channel must eventually close even when retries are exhausted")
+			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
+				BeNumerically(">=", 6),
+				"engine must keep retrying indefinitely, not stop at the old retry limit",
+			)
 
-			exhaustionCount := eng.GetTodoIncompleteExhaustedForTest(sessionID)
-			Expect(exhaustionCount).To(Equal(1),
-				"exhaustion counter must be incremented once when the retry budget is spent")
+			cancel()
 
-			var hasWarning bool
-			for _, c := range received {
-				if c.Content != "" && strings.Contains(c.Content, "[WARNING]") && strings.Contains(c.Content, "incomplete task") {
-					hasWarning = true
-				}
-			}
-			Expect(hasWarning).To(BeTrue(),
-				"a visible warning must be emitted to the stream when retries are exhausted with incomplete todos")
-		})
-
-		It("bumps the effective retry limit after repeated exhaustions", func() {
-			sessionID2 := "bumped-session"
-			prov := &scriptedTodoProvider{
-				name: "persistent-prov",
-				script: []todoProviderTurn{
-					{content: "1"}, {content: "2"}, {content: "3"}, {content: "4"},
-					{content: "5"}, {content: "6"}, {content: "7"}, {content: "8"},
-					{content: "9"}, {content: "10"},
-				},
-			}
-
-			todoStore.Set(sessionID2, []todo.Item{
-				{Content: "always pending", Status: "pending", Priority: "high"},
-			})
-
-			eng := engine.New(engine.Config{
-				ChatProvider: prov,
-				Manifest:     manifest,
-				Tools:        []tool.Tool{},
-			})
-			eng.SetTodoStoreForTest(todoStore)
-
-			for range 2 {
-				prov.mu.Lock()
-				prov.calls = 0
-				prov.mu.Unlock()
-				ctx := context.WithValue(context.Background(), session.IDKey{}, sessionID2)
-				ch, err := eng.Stream(ctx, sessionID2, "Go")
-				Expect(err).NotTo(HaveOccurred())
-				_, closed := drain(ch)
-				Expect(closed).To(BeTrue())
-			}
-
-			exhaustionCount := eng.GetTodoIncompleteExhaustedForTest(sessionID2)
-			Expect(exhaustionCount).To(BeNumerically(">=", 1),
-				"exhaustion counter must grow with repeated budget overruns")
+			_, closed := drain(chunks)
+			Expect(closed).To(BeTrue(),
+				"channel must close after context cancellation")
 		})
 	})
 

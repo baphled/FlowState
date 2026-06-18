@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -316,7 +315,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 	})
 
 	Context("when the cap trips but the session has incomplete todos", func() {
-		It("injects todo continuations before finally terminating, and emits a visible warning", func() {
+		It("injects todo continuations and keeps retrying until the context is cancelled", func() {
 			prov := &repeatingToolProvider{
 				name: "loop-with-todos",
 				call: &provider.ToolCall{
@@ -340,31 +339,22 @@ var _ = Describe("Engine tool-loop cap", func() {
 			eng.SetMaxIdenticalToolCallsForTest(3)
 			eng.SetTodoStoreForTest(todoStore)
 
-			ctx := context.WithValue(context.Background(), session.IDKey{}, loopSessionID)
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			ctx = context.WithValue(ctx, session.IDKey{}, loopSessionID)
 			chunks, err := eng.Stream(ctx, loopSessionID, "Go")
 			Expect(err).NotTo(HaveOccurred())
 
-			received, closed := drain(chunks)
+			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
+				BeNumerically(">=", 6),
+				"engine must keep retrying past the loop cap when todos are incomplete",
+			)
+
+			cancel()
+
+			_, closed := drain(chunks)
 			Expect(closed).To(BeTrue(),
-				"the turn must terminate even with incomplete todos; it hung instead")
-
-			Expect(prov.callCount()).To(BeNumerically(">", 3),
-				"the engine must inject at least one todo continuation before the final termination")
-
-			var hasWarning bool
-			var hasTerminalLoopExceeded bool
-			for _, c := range received {
-				if c.Content != "" && strings.Contains(c.Content, "[WARNING]") && strings.Contains(c.Content, "incomplete task") {
-					hasWarning = true
-				}
-				if c.Done && c.StopReason == session.StopReasonToolLoopExceeded {
-					hasTerminalLoopExceeded = true
-				}
-			}
-			Expect(hasWarning).To(BeTrue(),
-				"a visible warning about incomplete tasks must be emitted when the cap finally terminates")
-			Expect(hasTerminalLoopExceeded).To(BeTrue(),
-				"the final terminal chunk must still carry StopReasonToolLoopExceeded")
+				"channel must close after context cancellation")
 		})
 	})
 })
