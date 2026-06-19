@@ -5,7 +5,6 @@
 /docblocks
 /bin/
 node_modules/
-web/.tmp/
 *.exe
 *.exe~
 *.dll

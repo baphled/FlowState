@@ -370,35 +370,9 @@ qdrant-status: ## Show Qdrant health and list collections
 #
 # Web Frontend (Vue 3 + TypeScript)
 #
-
-WEB_DIR := web
-
-web-install: ## Install web frontend dependencies
-	cd $(WEB_DIR) && npm install
-
-web-dev: ## Start Vite dev server (proxies /api → :8080)
-	cd $(WEB_DIR) && npm run dev
-
-web-build: ## Build web frontend for production
-	cd $(WEB_DIR) && npm run build
-
-web-test: ## Run Playwright E2E tests
-	cd $(WEB_DIR) && npx playwright test
-
-web-test-ui: ## Run Playwright tests with interactive UI
-	cd $(WEB_DIR) && npx playwright test --ui
-
-web-server: ## Start the Go web API server (cmd/flowstate-web)
-	go run ./cmd/flowstate-web
-
-web-start: ## Start both the Go API server and Vite dev server concurrently
-	@echo "Starting FlowState web stack (Go API on :8080, Vite on :5173)…"
-	@trap 'kill 0' INT; \
-	  go run ./cmd/flowstate-web & \
-	  cd $(WEB_DIR) && npm run dev; \
-	  wait
-
-web-check: web-build web-test ## Build and test web frontend
+# NOTE: The Vue frontend now lives in its own repository (flowstate-web).
+# The web-* make targets and the web/ directory were removed when it was
+# extracted. Run the frontend's own npm scripts in that repo instead.
 
 #
 # Help
