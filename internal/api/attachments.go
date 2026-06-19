@@ -448,17 +448,3 @@ func writeAttachmentParseError(w http.ResponseWriter, err error) {
 	}
 	http.Error(w, "invalid multipart body", http.StatusBadRequest)
 }
-
-// writeAttachmentStoreError maps storage-layer errors to HTTP codes.
-func writeAttachmentStoreError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, session.ErrAttachmentTooLarge):
-		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
-	case errors.Is(err, session.ErrAttachmentUnsupportedType):
-		http.Error(w, err.Error(), http.StatusUnsupportedMediaType)
-	case errors.Is(err, session.ErrAttachmentSessionCap):
-		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
-	default:
-		http.Error(w, "attachment storage error", http.StatusInternalServerError)
-	}
-}

@@ -50,7 +50,7 @@ func (m *testStoreAdapter) Get(ctx context.Context, k quota.SpendStoreKey) (quot
 	snap, err := m.inner.Get(ctx, quotastore.Key{ProviderID: k.ProviderID, AccountHash: k.AccountHash, ModelID: k.ModelID})
 	if err != nil {
 		if err == quotastore.ErrSnapshotNotFound {
-			return quota.Snapshot{}, quota.SpendStoreErrNotFound
+			return quota.Snapshot{}, quota.ErrSpendStoreNotFound
 		}
 		return quota.Snapshot{}, err
 	}

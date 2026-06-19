@@ -88,10 +88,10 @@ type SpendStoreEntry struct {
 	Snapshot Snapshot
 }
 
-// SpendStoreErrNotFound is the sentinel SpendStore implementations
+// ErrSpendStoreNotFound is the sentinel SpendStore implementations
 // return when a key has no recorded Snapshot. RecordSpend treats it
 // as the "first call" path rather than an error.
-var SpendStoreErrNotFound = errors.New("quota: spend snapshot not found")
+var ErrSpendStoreNotFound = errors.New("quota: spend snapshot not found")
 
 // PriceEntry is the per-model pricing record the spend math consumes.
 // Mirrors pricing.Entry (the package's own struct) field-for-field so
@@ -453,7 +453,7 @@ func (t *Tracker) RecordSpend(ctx context.Context, rec SpendRecord) error {
 	case getErr != nil:
 		// Sentinel SpendStoreErrNotFound is the first-call path —
 		// quiet init. Any other error propagates.
-		if !errors.Is(getErr, SpendStoreErrNotFound) {
+		if !errors.Is(getErr, ErrSpendStoreNotFound) {
 			return getErr
 		}
 		spentMinor = delta
@@ -623,7 +623,7 @@ func (t *Tracker) ResetSpend(ctx context.Context, providerID, accountHash, model
 		ModelID:     modelID,
 	}
 	if _, err := t.spend.storeBackend.Get(ctx, key); err != nil {
-		if errors.Is(err, SpendStoreErrNotFound) {
+		if errors.Is(err, ErrSpendStoreNotFound) {
 			return false, nil
 		}
 		return false, err

@@ -269,10 +269,7 @@ func memberChainRegistry(prefs ...agent.ModelPreference) *agent.Registry {
 type flakyMemberGateRunner struct {
 	failFor    int
 	calls      int
-	gateName   string
 	reason     string
-	memberID   string
-	swarmID    string
 	lifecycles []string
 }
 

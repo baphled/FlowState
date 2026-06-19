@@ -1092,15 +1092,6 @@ func (m *multiSessionManager) SendMessageWithAttachments(
 	return out, nil
 }
 
-func (m *multiSessionManager) sessionAgentID(id string) string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if s, ok := m.sessions[id]; ok {
-		return s.AgentID
-	}
-	return ""
-}
-
 // Phase 3 GREEN gate per "Dispatcher Service Unification (May 2026)"
 // v6. Closes S2: the swarm-lifecycle race surface that preserves through
 // Phase 2. DispatchSessioned for the SAME sessionID must serialise

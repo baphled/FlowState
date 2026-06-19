@@ -47,7 +47,7 @@ func (m *memorySpendStore) Get(ctx context.Context, key quota.SpendStoreKey) (qu
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrSnapshotNotFound) {
-			return quota.Snapshot{}, quota.SpendStoreErrNotFound
+			return quota.Snapshot{}, quota.ErrSpendStoreNotFound
 		}
 		return quota.Snapshot{}, err
 	}
@@ -786,7 +786,7 @@ type errorListShim struct {
 }
 
 func (s *errorListShim) Get(_ context.Context, _ quota.SpendStoreKey) (quota.Snapshot, error) {
-	return quota.Snapshot{}, quota.SpendStoreErrNotFound
+	return quota.Snapshot{}, quota.ErrSpendStoreNotFound
 }
 
 func (s *errorListShim) Put(_ context.Context, _ quota.SpendStoreKey, _ quota.Snapshot) error {

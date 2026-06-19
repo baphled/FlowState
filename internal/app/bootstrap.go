@@ -2,7 +2,6 @@ package app
 
 import (
 	"log"
-	"path/filepath"
 
 	"github.com/baphled/flowstate/internal/config"
 )
@@ -116,35 +115,5 @@ func Bootstrap(cfg *config.AppConfig) {
 	// on every call, so this is the single ingestion point.
 	if err := config.EnsurePermissionsFile(config.Dir(), cfg.VaultPath); err != nil {
 		log.Printf("warning: bootstrapping permissions.yaml: %v", err)
-	}
-}
-
-// expectedBootstrapPaths returns the filesystem paths Bootstrap would
-// materialise or migrate into, in the order Bootstrap visits them. Reserved
-// for the bootstrap test helpers; the cli layer uses
-// internal/cli.AnnotationBootstrap + cli/root.go's PersistentPreRunE to
-// decide when to invoke Bootstrap.
-//
-// Expected:
-//   - cfg is a non-nil AppConfig.
-//
-// Returns:
-//   - A slice of absolute paths (config dir, agents dir, skills dir, swarms
-//     dir, gates dir, memory tools dir, permissions.yaml). May contain
-//     duplicates when cfg defaults collapse two roots onto the same parent.
-//
-// Side effects:
-//   - None.
-func expectedBootstrapPaths(cfg *config.AppConfig) []string {
-	if cfg == nil {
-		return nil
-	}
-	return []string{
-		cfg.AgentDir,
-		cfg.SkillDir,
-		resolveSwarmDir(cfg),
-		cfg.GatesDir,
-		DefaultMemoryToolsDir(),
-		filepath.Join(config.Dir(), "permissions.yaml"),
 	}
 }

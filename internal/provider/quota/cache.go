@@ -99,10 +99,7 @@ func MarshalCache(entries []SpendStoreEntry, now time.Time) ([]byte, error) {
 		if e.Snapshot.TokenSpend == nil {
 			continue
 		}
-		out = append(out, SpendCacheEntry{
-			Key:      e.Key,
-			Snapshot: e.Snapshot,
-		})
+		out = append(out, SpendCacheEntry(e))
 	}
 	env := CacheEnvelope{
 		Version:   CacheEnvelopeVersion,
@@ -149,10 +146,7 @@ func UnmarshalCache(data []byte) ([]SpendStoreEntry, error) {
 			// rather than re-hydrate a stale RateLimit.
 			continue
 		}
-		out = append(out, SpendStoreEntry{
-			Key:      e.Key,
-			Snapshot: e.Snapshot,
-		})
+		out = append(out, SpendStoreEntry(e))
 	}
 	return out, nil
 }

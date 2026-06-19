@@ -617,7 +617,7 @@ func newMemoryStoreShim() *memoryStoreShim {
 func (m *memoryStoreShim) Get(_ context.Context, key quota.SpendStoreKey) (quota.Snapshot, error) {
 	snap, ok := m.data[key]
 	if !ok {
-		return quota.Snapshot{}, quota.SpendStoreErrNotFound
+		return quota.Snapshot{}, quota.ErrSpendStoreNotFound
 	}
 	return snap, nil
 }

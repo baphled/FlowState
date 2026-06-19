@@ -2738,8 +2738,8 @@ var _ = Describe("Context propagation", func() {
 		})
 
 		It("is nil-safe (defensive — engine call sites that lose the ctx must not crash)", func() {
-			//nolint:staticcheck // intentional nil-ctx probe — guards against engine-side regressions
-			id, ok := turn.TurnIDFromContext(nil)
+			var nilCtx context.Context
+			id, ok := turn.TurnIDFromContext(nilCtx)
 			Expect(ok).To(BeFalse())
 			Expect(id).To(BeEmpty())
 		})

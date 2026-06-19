@@ -316,7 +316,7 @@ func (m *memorySpendStoreAdapter) Get(ctx context.Context, key quota.SpendStoreK
 	})
 	if err != nil {
 		if isStoreNotFound(err) {
-			return quota.Snapshot{}, quota.SpendStoreErrNotFound
+			return quota.Snapshot{}, quota.ErrSpendStoreNotFound
 		}
 		return quota.Snapshot{}, err
 	}

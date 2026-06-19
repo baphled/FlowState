@@ -1,6 +1,7 @@
 package swarm_test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -723,7 +724,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				CoordStore: store,
 			}
 			runner := swarm.NewArtifactPublishedRunner(outputDir, nil)
-			Expect(runner.Run(nil, gate, args)).To(Succeed(),
+			Expect(runner.Run(context.TODO(), gate, args)).To(Succeed(),
 				"the gate verifies the threaded chain's real publication")
 		})
 
@@ -753,7 +754,7 @@ var _ = Describe("PublishPlanToVault (deterministic post-swarm publisher)", func
 				// gate finds the record the publisher just wrote.
 			}
 			runner := swarm.NewArtifactPublishedRunner(outputDir, nil)
-			Expect(runner.Run(nil, gate, args)).To(Succeed(),
+			Expect(runner.Run(context.TODO(), gate, args)).To(Succeed(),
 				"the gate passes only because the publisher wrote a real file")
 		})
 	})

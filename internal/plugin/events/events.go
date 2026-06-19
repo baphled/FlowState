@@ -1788,19 +1788,7 @@ func (d PermissionRequiredEventData) MarshalJSON() ([]byte, error) {
 		ChainID      string `json:"chain_id,omitempty"`
 		Mode         string `json:"mode,omitempty"`
 	}
-	return json.Marshal(payload{
-		RequestID:    d.RequestID,
-		ToolName:     d.ToolName,
-		AgentName:    d.AgentName,
-		Resource:     d.Resource,
-		ResourceKind: d.ResourceKind,
-		DenialReason: d.DenialReason,
-		Provider:     d.Provider,
-		Model:        d.Model,
-		SessionID:    d.SessionID,
-		ChainID:      d.ChainID,
-		Mode:         d.Mode,
-	})
+	return json.Marshal(payload(d))
 }
 
 // PermissionRequiredEvent is the bus event published when pathguard /
@@ -1858,15 +1846,7 @@ func (d PermissionResolutionEventData) MarshalJSON() ([]byte, error) {
 		Scope     string `json:"scope,omitempty"`
 		Mode      string `json:"mode,omitempty"`
 	}
-	return json.Marshal(payload{
-		RequestID: d.RequestID,
-		SessionID: d.SessionID,
-		ToolName:  d.ToolName,
-		AgentName: d.AgentName,
-		Resource:  d.Resource,
-		Scope:     d.Scope,
-		Mode:      d.Mode,
-	})
+	return json.Marshal(payload(d))
 }
 
 // PermissionGrantedEvent is published when an operator clicks one of

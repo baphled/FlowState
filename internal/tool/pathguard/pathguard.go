@@ -747,7 +747,7 @@ func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) e
 		}
 	}
 
-	denial, deniedResource := g.computeCommandDenial(tool, command, mode)
+	deniedResource, denial := g.computeCommandDenial(tool, command, mode)
 	if denial == nil {
 		return nil
 	}
@@ -760,19 +760,19 @@ func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) e
 
 // computeCommandDenial evaluates the tokenised command against the
 // matcher + denied-roots and returns the first denial encountered
-// together with the resource string that triggered it. Returns (nil,
-// "") when every path-shaped token passes.
+// together with the resource string that triggered it. Returns ("",
+// nil) when every path-shaped token passes.
 //
 // Extracted from CheckCommandForTool so the ask-user escalation site
 // can decide independently of the underlying decision flow. Under
 // ModeAskUser the per-session allow set short-circuits the matcher
 // per token; outside ModeAskUser the allow set is ignored.
-func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.Mode) (error, string) {
+func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.Mode) (string, error) {
 	if g.perms == nil || tool == "" {
 		if err := g.CheckCommand(command); err != nil {
-			return err, command
+			return command, err
 		}
-		return nil, ""
+		return "", nil
 	}
 
 	home, _ := os.UserHomeDir()
@@ -797,7 +797,7 @@ func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.M
 		if decision, matched := g.perms.Match(tool, abs); matched {
 			switch decision {
 			case "deny":
-				return fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config", abs, tool), abs
+				return abs, fmt.Errorf("access denied: %s is blocked by the %q tool's permissions config", abs, tool)
 			case "allow":
 				continue // exempt from legacy check
 			}
@@ -813,11 +813,11 @@ func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.M
 				continue
 			}
 			if strings.HasPrefix(abs, d+string(filepath.Separator)) || abs == d {
-				return fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d), abs
+				return abs, fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d)
 			}
 		}
 	}
-	return nil, ""
+	return "", nil
 }
 
 // pathguardSessionID extracts the active session ID from the tool-

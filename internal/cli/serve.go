@@ -555,7 +555,7 @@ func resolveCSRFKey(cfgKey string) ([]byte, error) {
 			"Either set FLOWSTATE_AUTH_CSRF_KEY in the environment, " +
 			"add `auth.csrf_key: <key>` to config.yaml, or disable auth " +
 			"with `auth.enabled: false`. Generate a key with " +
-			"`flowstate auth csrf-key gen`.")
+			"`flowstate auth csrf-key gen`")
 	}
 	// Take the first 32 bytes; pad with zero if shorter (defensive —
 	// gorilla/csrf panics on empty key but accepts any length 32).

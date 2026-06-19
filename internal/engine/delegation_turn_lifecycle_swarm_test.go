@@ -142,12 +142,6 @@ func (s *memberAwareSpyRegistry) ResetForRetry(turnID string) error {
 	return nil
 }
 
-func (s *memberAwareSpyRegistry) startReuseCountForSession(id string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.startReuseBySess[id]
-}
-
 func (s *memberAwareSpyRegistry) completeCountForSession(id string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -2440,62 +2440,6 @@ func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []sk
 	return base
 }
 
-// appendSwarmLeadSection appends a "Swarm Leadership" block to base when
-// the engine holds a swarm.Context AND the engine's manifest is the
-// swarm's lead. The block tells the model:
-//
-//  1. its swarm identity ("You are leading swarm <id>") so it stops
-//     behaving as a solo agent;
-//  2. the resolved roster of member ids together with each member's
-//     human-readable Name and Metadata.Role pulled from agentRegistry
-//     when the registry can resolve them — falls back to the bare id
-//     when the member has no registered manifest;
-//  3. an explicit instruction to call the `delegate` tool with
-//     `subagent_type: <member-id>` whenever a task matches a member's
-//     specialty, then synthesise findings into a final report;
-//  4. the canonical coord-store namespace prefix
-//     "<chain_prefix>/<lead-id>/..." so every member writes under a
-//     predictable path.
-//
-// Members who are not the lead receive the swarm.Context for chain-
-// prefix namespacing but they are targets, not coordinators — so this
-// section is suppressed for them. The function is pure and idempotent:
-// repeated calls with the same engine state produce the same string.
-//
-// Defence-in-depth note (post `ADR - Swarm Dispatch Across Access
-// Methods`): the "do not block on user confirmation" directive in
-// the prompt body used to be load-bearing — when the TUI persistently
-// re-identified the chat as the swarm lead, the lead's LLM saw a
-// chat surface and hedged with "Action Required: confirm dispatch"
-// preambles. With the orchestrator-driven dispatch path landed (the
-// TUI now invokes the lead via orchestrator.Stream rather than a
-// persistent SetManifest swap) the lead is invoked the same way the
-// CLI invokes it — as a one-shot per-call Stream.
-// The directive is retained as belt-and-braces so a future surface
-// that re-introduces a chat-style intake by accident still gets the
-// signal pushed through to the model. Same goes for the
-// "do not call suggest_delegate" line: the tool already refuses
-// lead-self-dispatch (errSuggestDelegateLeadSelfDispatch in
-// suggest_delegate.go), but spelling it out at the prompt layer
-// keeps the model from wasting tokens trying.
-//
-// Expected:
-//   - base is the partially built system prompt; non-empty in normal
-//     use but the function is robust to empty input.
-//   - The caller already holds e.mu (BuildSystemPrompt does so).
-//
-// Returns:
-//   - base unchanged when no swarm context is set or the engine is not
-//     the swarm's lead.
-//   - base with a "\n\n# Swarm Leadership\n..." block appended when the
-//     engine is the lead.
-//
-// Side effects:
-//   - None; reads e.swarmContext, e.manifest, and e.agentRegistry.
-func (e *Engine) appendSwarmLeadSection(base string) string {
-	return e.appendSwarmLeadSectionFor(base, e.manifest)
-}
-
 // appendSwarmLeadSectionFor renders the swarm-lead block using the
 // supplied manifest as the lead-identity source. Used by the
 // ctx-bound build path so concurrent streams pinned to different
@@ -2634,23 +2578,6 @@ func (e *Engine) resolveSwarmMemberDetails(memberID string) (string, string, boo
 	return "", "", false
 }
 
-// appendDelegationSections builds and appends delegation sections
-// using the engine's active manifest's allowlist. Convenience
-// wrapper for appendDelegationSectionsFor used by call sites that
-// already operate against the engine's stored manifest.
-//
-// Expected:
-//   - base is the current system prompt string.
-//
-// Returns:
-//   - The base string with appended delegation sections.
-//
-// Side effects:
-//   - None.
-func (e *Engine) appendDelegationSections(base string) string {
-	return e.appendDelegationSectionsFor(base, e.manifest)
-}
-
 // appendDelegationSectionsFor builds and appends delegation
 // sections using the supplied manifest's allowlist. The ctx-bound
 // build path calls this so each concurrent stream's prompt
@@ -2701,21 +2628,6 @@ func (e *Engine) appendDelegationSectionsFor(base string, manifest agent.Manifes
 	}
 
 	return base
-}
-
-// buildAllowedToolSet returns the set of tool names allowed by the
-// engine's active manifest. Convenience wrapper for
-// buildAllowedToolSetFor used by call sites that operate against
-// the engine's stored manifest.
-//
-// Returns:
-//   - A non-nil map of allowed tool names; see buildAllowedToolSetFor
-//     for the full contract.
-//
-// Side effects:
-//   - None.
-func (e *Engine) buildAllowedToolSet() map[string]bool {
-	return e.buildAllowedToolSetFor(e.manifest)
 }
 
 // buildAllowedToolSetFor returns the set of tool names allowed by
@@ -9011,22 +8923,6 @@ func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args m
 	}
 }
 
-// publishProviderErrorEvent publishes a typed provider error event to the engine bus.
-//
-// Expected:
-//   - sessionID identifies the session where the error occurred.
-//   - phase describes the streaming phase when the error happened.
-//   - err describes the provider failure.
-//
-// Returns:
-//   - None.
-//
-// Side effects:
-//   - Publishes a provider.error event on the engine bus.
-func (e *Engine) publishProviderErrorEvent(sessionID string, phase string, err error) {
-	e.publishProviderErrorEventCtx(context.Background(), sessionID, phase, err)
-}
-
 // publishProviderErrorEventCtx is the ctx-aware variant of
 // publishProviderErrorEvent. Uses the in-flight stream's bound
 // manifest (when present) for AgentID stamping so concurrent
@@ -9100,21 +8996,6 @@ func (e *Engine) applyCategoryParams(req *provider.ChatRequest) {
 	}
 }
 
-// publishProviderRequestEvent publishes a provider request event to the engine bus
-// before each outbound provider call.
-//
-// Expected:
-//   - req contains the full ChatRequest being sent to the provider.
-//
-// Returns:
-//   - None.
-//
-// Side effects:
-//   - Publishes a provider.request event on the engine bus.
-func (e *Engine) publishProviderRequestEvent(sessionID string, req provider.ChatRequest) {
-	e.publishProviderRequestEventCtx(context.Background(), sessionID, req)
-}
-
 // publishProviderRequestEventCtx is the ctx-aware variant of
 // publishProviderRequestEvent. The AgentID stamped on the event
 // is sourced from the manifest bound to ctx (the in-flight
@@ -9158,22 +9039,6 @@ func (e *Engine) activeAgentID(ctx context.Context) string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.manifest.ID
-}
-
-// publishProviderResponseEvent publishes a provider response event to the engine bus
-// after a provider stream completes successfully.
-//
-// Expected:
-//   - sessionID identifies the session that received the response.
-//   - responseContent is the assembled response text from the stream.
-//
-// Returns:
-//   - None.
-//
-// Side effects:
-//   - Publishes a provider.response event on the engine bus.
-func (e *Engine) publishProviderResponseEvent(sessionID string, responseContent string) {
-	e.publishProviderResponseEventCtx(context.Background(), sessionID, responseContent)
 }
 
 // publishProviderResponseEventCtx is the ctx-aware variant of

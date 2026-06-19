@@ -41,7 +41,6 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/sessionrecorder"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/ollama"
-	"github.com/baphled/flowstate/internal/provider/quota"
 	recall "github.com/baphled/flowstate/internal/recall"
 	qdrantrecall "github.com/baphled/flowstate/internal/recall/qdrant"
 	vaultrecall "github.com/baphled/flowstate/internal/recall/vault"
@@ -810,12 +809,6 @@ type engineParams struct {
 	// engine.Config.
 	recallEmbeddingModel   string
 	sessionEmbeddingLookup func(string) (string, bool)
-	// quotaTracker / quotaAccountHashes / quotaCaps carry the PR5
-	// provider-quota wiring from buildQuotaWiring. Nil tracker means
-	// the feature is off — engine.Config drops the field cleanly.
-	quotaTracker       *quota.Tracker
-	quotaAccountHashes map[string]string
-	quotaCaps          map[string]quota.CapConfig
 	// guard is the pathguard.Guard threaded out of buildToolPipeline
 	// so createEngine can wire the PermissionPrompter into it after
 	// the bus + registry are constructed (Permission Mode ModeAskUser

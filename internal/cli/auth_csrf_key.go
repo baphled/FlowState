@@ -55,10 +55,6 @@ const csrfKeyLen = 32
 // users.json (auth_user.go:121) and OAuth-token persistence convention.
 const configFilePerm = 0o600
 
-// configDirPerm is the directory mode used when ensuring the config
-// dir exists. Matches auth_user.writeUsersFile (0o700).
-const configDirPerm = 0o700
-
 // generateCSRFKey is the indirection point for tests — allows the spec
 // to swap in a deterministic source without monkey-patching crypto/rand.
 // Production calls cryptoRandRead.
@@ -225,7 +221,7 @@ func runAuthCSRFKeyGen(cmd *cobra.Command, printOnly bool) error {
 				"runtime precedence (env > config) would override the value " +
 				"written to config.yaml on the next server boot. " +
 				"Either unset FLOWSTATE_AUTH_CSRF_KEY and re-run, " +
-				"or pass --print-only to skip the config write.")
+				"or pass --print-only to skip the config write")
 	}
 
 	path, err := resolveConfigWritePath(cmd)
