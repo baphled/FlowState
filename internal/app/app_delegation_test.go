@@ -18,7 +18,9 @@ import (
 	"github.com/baphled/flowstate/internal/plugin/eventbus"
 	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	todotool "github.com/baphled/flowstate/internal/tool/todo"
 )
 
 // mockProvider is a simple mock implementation of provider.Provider for testing.
@@ -39,6 +41,30 @@ func (m *mockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]floa
 	return nil, errMockNotImplemented
 }
 func (m *mockProvider) Models() ([]provider.Model, error) { return nil, nil }
+
+// streamingMockProvider is a mock provider that counts Stream calls and
+// returns configurable streaming responses. Used to verify the engine's
+// retry loop fires when todos are incomplete.
+type streamingMockProvider struct {
+	name     string
+	streamFn func(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error)
+}
+
+func (p *streamingMockProvider) Name() string { return p.name }
+
+func (p *streamingMockProvider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	return p.streamFn(ctx, req)
+}
+
+func (p *streamingMockProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+	return provider.ChatResponse{}, nil
+}
+
+func (p *streamingMockProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+	return nil, nil
+}
+
+func (p *streamingMockProvider) Models() ([]provider.Model, error) { return nil, nil }
 
 // modelsProvider is a mock provider that returns a configurable model list,
 // used to test complexity-based model routing in buildDelegateMaps.
@@ -621,6 +647,108 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 					names = append(names, loaded[i].Name)
 				}
 				Expect(names).To(ContainElement("memory-keeper"))
+			})
+		})
+		Context("when the app has a TodoStore configured", func() {
+			It("registers todowrite tools on the delegate engine", func() {
+				todoApp := &App{
+					TodoStore:       todotool.NewMemoryStore(),
+					Registry:        agent.NewRegistry(),
+					defaultProvider: &mockProvider{name: "anthropic"},
+					Config:          &config.AppConfig{},
+				}
+				todoProviderReg := provider.NewRegistry()
+				todoProviderReg.Register(&mockProvider{name: "anthropic"})
+				todoApp.providerRegistry = todoProviderReg
+
+				explorerManifest := agent.Manifest{
+					ID:                "explorer-todo",
+					Name:              "Explorer Agent",
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				todoApp.Registry.Register(&explorerManifest)
+
+				coordinationStore := coordination.NewMemoryStore()
+				delegateEngine, _ := todoApp.createDelegateEngine(explorerManifest, coordinationStore, nil)
+				Expect(delegateEngine).NotTo(BeNil())
+				Expect(delegateEngine.HasTool("todowrite")).To(BeTrue(),
+					"delegate engine must have todowrite when TodoStore is configured")
+				Expect(delegateEngine.HasTool("todo_update")).To(BeTrue(),
+					"delegate engine must have todo_update when TodoStore is configured")
+			})
+		})
+
+		Context("when streaming through a delegate engine with pending todos", func() {
+			It("retries the model via hasIncompleteTodos through the exact createDelegateEngine path", func() {
+				const sessionID = "test-delegate-todo-session"
+
+				var mu sync.Mutex
+				var streamCallCount int
+
+				countingProvider := &streamingMockProvider{
+					name: "todo-count-provider",
+					streamFn: func(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						mu.Lock()
+						streamCallCount++
+						mu.Unlock()
+						ch := make(chan provider.StreamChunk, 2)
+						ch <- provider.StreamChunk{Content: "working..."}
+						ch <- provider.StreamChunk{Done: true}
+						close(ch)
+						return ch, nil
+					},
+				}
+
+				providerReg := provider.NewRegistry()
+				providerReg.Register(countingProvider)
+
+				todoStore := todotool.NewMemoryStore()
+				todoStore.Set(sessionID, []todotool.Item{
+					{Content: "finish the pending task", Status: "pending", Priority: "high"},
+				})
+
+				delegateApp := &App{
+					TodoStore:        todoStore,
+					Registry:         agent.NewRegistry(),
+					defaultProvider:  countingProvider,
+					providerRegistry: providerReg,
+					Config:           &config.AppConfig{},
+				}
+
+				manifest := agent.Manifest{
+					ID:                "test-agent-delegate",
+					Name:              "Test Delegate Agent",
+					ContextManagement: agent.DefaultContextManagement(),
+				}
+				delegateApp.Registry.Register(&manifest)
+
+				eng, str := delegateApp.createDelegateEngine(manifest, coordination.NewMemoryStore(), nil)
+				Expect(eng).NotTo(BeNil())
+				Expect(str).NotTo(BeNil())
+
+				ctx, cancel := context.WithCancel(context.Background())
+				DeferCleanup(cancel)
+				ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
+
+				chunks, err := str.Stream(ctx, sessionID, "Go")
+				Expect(err).NotTo(HaveOccurred())
+
+				// With pending todos, hasIncompleteTodos must fire and the
+				// engine must retry the model. This proves the exact
+				// createDelegateEngine -> Config -> assembleEngine ->
+				// todoStore wiring is intact for delegate sessions.
+				Eventually(func() int {
+					mu.Lock()
+					defer mu.Unlock()
+					return streamCallCount
+				}, "3s", "100ms").Should(BeNumerically(">=", 3),
+					"delegate engine must retry the model when todos are pending")
+
+				cancel()
+
+				// Drain and verify the channel closes cleanly
+				for range chunks {
+				}
 			})
 		})
 	})

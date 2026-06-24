@@ -327,6 +327,10 @@ type Engine struct {
 
 	nowFunc func() time.Time
 
+	// onStreamCancel mirrors Config.OnStreamCancel. When non-nil, invoked
+	// from processStreamChunks when the stream context is cancelled.
+	onStreamCancel func(sessionID string)
+
 	// heartbeatInterval is the cadence at which Stream() publishes a
 	// streaming.heartbeat event onto the bus during an active turn so
 	// the chat UI's stall watchdog re-arms even when the provider is
@@ -595,6 +599,12 @@ type Config struct {
 	// construction via SetSwarmContext when the CLI run path resolves
 	// `--agent <swarm-id>` after the engine is already up.
 	SwarmContext *swarm.Context
+
+	// OnStreamCancel, when non-nil, is invoked when the stream context is
+	// cancelled (e.g. user cancels their prompt). The callback receives the
+	// sessionID so it can clean up associated resources (e.g. cancel
+	// background tasks spawned by that session).
+	OnStreamCancel func(sessionID string)
 
 	NowFunc func() time.Time
 
@@ -1003,6 +1013,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		compactionConfig:               cfg.CompactionConfig,
 		factService:                    resolveFactService(cfg),
 		nowFunc:                        resolveNowFunc(cfg),
+		onStreamCancel:                 cfg.OnStreamCancel,
 		heartbeatInterval:              defaultStreamingHeartbeatInterval,
 		streamIdleTimeout:              engineStreamIdleTimeout,
 		maxToolLoopIterations:          engineMaxToolLoopIterations,
@@ -3280,6 +3291,25 @@ func (e *Engine) SetSessionLookup(lookup SessionLookup) {
 	e.mu.Unlock()
 }
 
+// SetOnStreamCancel sets the callback invoked when the stream context is
+// cancelled. The callback receives the sessionID so downstream wiring
+// (e.g. background task cancellation) can clean up per-session resources.
+//
+// Expected:
+//   - fn may be nil (disables the callback).
+//
+// Side effects:
+//   - Replaces any previously set onStreamCancel callback under the engine
+//     write lock.
+func (e *Engine) SetOnStreamCancel(fn func(sessionID string)) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.onStreamCancel = fn
+	e.mu.Unlock()
+}
+
 // SeedHistory pre-populates the context store with historical messages for
 // sessionID so that the engine retains conversation context after a restart.
 //
@@ -4400,6 +4430,16 @@ func (e *Engine) streamWithToolLoop(
 				contMsg := buildTodoContinuationMessage(incompletes)
 				messages = append(messages, contMsg)
 				e.resetContinuationState(sessionID)
+				// Prevent infinite stale-continuation loop: if this retry was
+				// triggered because all items are completed/cancelled (stale
+				// detection), clear the fired flag so it fires at most once
+				// per continuation cycle. The model gets one chance to correct,
+				// but the session completes if it continues only calling todo tools.
+				if allTodosTerminal(incompletes) {
+					e.mu.Lock()
+					e.todoContinuationFired[sessionID] = false
+					e.mu.Unlock()
+				}
 				var streamErr error
 				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 				if streamErr != nil {
@@ -4427,6 +4467,16 @@ func (e *Engine) streamWithToolLoop(
 				contMsg := buildTodoContinuationMessage(incompletes)
 				messages = append(messages, contMsg)
 				e.resetContinuationState(sessionID)
+				// Prevent infinite stale-continuation loop: if this retry was
+				// triggered because all items are completed/cancelled (stale
+				// detection), clear the fired flag so it fires at most once
+				// per continuation cycle. The model gets one chance to correct,
+				// but the session completes if it continues only calling todo tools.
+				if allTodosTerminal(incompletes) {
+					e.mu.Lock()
+					e.todoContinuationFired[sessionID] = false
+					e.mu.Unlock()
+				}
 				var streamErr error
 				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 				if streamErr != nil {
@@ -4959,6 +5009,9 @@ func (e *Engine) processStreamChunks(
 		select {
 		case <-ctx.Done():
 			emitPostTurn()
+			if e.onStreamCancel != nil {
+				e.onStreamCancel(sessionID)
+			}
 			outChan <- provider.StreamChunk{Error: ctx.Err(), Done: true, ModelID: e.LastModel(), ProviderID: e.LastProvider()}
 			return streamChunkResult{responseContent: responseContent.String(), thinkingContent: thinkingContent.String(), done: true}
 		case <-idleC:
@@ -5352,6 +5405,22 @@ func (e *Engine) hasIncompleteTodos(sessionID string) (bool, []todo.Item) {
 //
 // Returns:
 //   - true when the continuation is stale (injected but no work done).
+
+// allTodosTerminal returns true when every todo item has a terminal status
+// (completed or cancelled). Used to distinguish stale-continuation retries
+// from real pending-work retries when hasIncompleteTodos returns hasMore=true
+// but all items are already resolved.
+func allTodosTerminal(items []todo.Item) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, it := range items {
+		if it.Status != "completed" && it.Status != "cancelled" {
+			return false
+		}
+	}
+	return true
+}
 func (e *Engine) isContinuationStale(sessionID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -354,11 +354,13 @@ func (m *Manager) SessionMCPGrants(sessionID string) []string {
 
 // MarkEndedFromEvent flips the matching session's status to
 // StatusCompleted in response to an external "session.ended" event.
-// Idempotent and status-precedence-aware: failed > completed > active —
-// a previously-failed session is NOT downgraded to completed when an
-// end event arrives later. Unknown session IDs are silently ignored
-// (events for foreign sessions, or for sessions that pre-date the
-// manager's restart, simply have nothing to do here).
+// Idempotent and status-precedence-aware (Option A, June 2026):
+// abandoned > completed > active > failed — a previously-failed
+// session that was demoted back to active by the recovery-demotion
+// path is now eligible for this seal. Previously-completed and
+// abandoned sessions are skipped (terminal). Unknown session IDs
+// are silently ignored (events for foreign sessions, or for sessions
+// that pre-date the manager's restart, simply have nothing to do here).
 //
 // This is the bus-driven counterpart to CloseSession. Wire-up at the
 // app level: subscribe to the event bus, type-assert the published
@@ -384,8 +386,14 @@ func (m *Manager) MarkEndedFromEvent(sessionID string) {
 	if !ok {
 		return
 	}
-	if sess.Status == string(StatusFailed) ||
-		sess.Status == string(StatusCompleted) ||
+	// Option A (June 2026): a previously-failed-but-recovered session
+	// (demoted back to active by the recovery-demotion path in
+	// appendSessionMessage) can now be sealed as completed. The status
+	// precedence is: abandoned > completed > active > failed — failed
+	// is no longer terminal; a recovered session reaches the end event
+	// with a clean stop and should become completed alongside every
+	// other sealed session.
+	if sess.Status == string(StatusCompleted) ||
 		sess.Status == string(StatusAbandoned) {
 		return
 	}
@@ -1237,6 +1245,24 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 			sess.Status != string(StatusFailed) &&
 			sess.Status != string(StatusAbandoned) {
 			sess.Status = string(StatusFailed)
+		} else if msg.StopReason != StopReasonStreamTruncated &&
+			msg.StopReason != StopReasonToolUseNoCalls &&
+			msg.StopReason != StopReasonAbandonedTool &&
+			sess.Status == string(StatusFailed) {
+			// Failed-recovery demotion (Option A, June 2026). A healthy
+			// assistant message arrived on a session that was previously
+			// marked failed by a sentinel-stamped turn. The engine's
+			// tool-loop continuation injected a continuation prompt and
+			// the model produced a genuine assistant response, proving
+			// the session is still viable — for example, the Z.AI glm
+			// provider family falsely flags tool_use_no_calls on every
+			// turn, but subsequent turns complete successfully. Demote
+			// back to active so downstream consumers (UI, API, delegation
+			// chain) see the recovery. A previously-demoted session can
+			// still transition to completed via CloseSession or
+			// MarkEndedFromEvent, both updated below to allow the
+			// failed -> completed edge.
+			sess.Status = string(StatusActive)
 		}
 	}
 

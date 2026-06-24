@@ -932,6 +932,200 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	// Failed-recovery demotion (Option A, June 2026).
+	//
+	// When the engine's tool-loop continuation produces a healthy
+	// assistant message (clean stop_reason) on a session that was
+	// previously marked failed by a sentinel-stamped turn, the session
+	// manager must demote the session back to StatusActive. This is the
+	// key behavioural change: "failed" is no longer terminal — the Z.AI
+	// glm provider family falsely flags tool_use_no_calls on every turn
+	// but subsequent turns complete successfully. The engine's tool loop
+	// continues running regardless, proving the session is still viable.
+	//
+	// Once demoted to active, the session can still transition to
+	// completed via CloseSession or MarkEndedFromEvent (both updated to
+	// allow the failed -> completed edge).
+	Describe("appendSessionMessage demotes failed -> active on healthy stop_reason (recovery demotion)", func() {
+		It("demotes failed -> active when a healthy assistant message arrives on a failed session", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.Status).To(Equal(string(session.StatusActive)))
+
+			// First: trigger the failed flip with a sentinel.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"precondition: sentinel stamps the session as failed")
+
+			// Then: a healthy assistant message arrives (the engine's
+			// tool-loop continuation injected a continuation prompt and
+			// the model produced a genuine response).
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "Here is the completed plan.",
+				StopReason: "end_turn",
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"a healthy assistant message on a failed session MUST demote to active — "+
+					"the engine's tool-loop continuation proves the session is still viable")
+		})
+
+		It("preserves failed status when another sentinel message arrives (idempotent)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.Status).To(Equal(string(session.StatusActive)))
+
+			// First sentinel: active -> failed.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)))
+
+			// Second sentinel: stays failed (the demotion only fires on
+			// healthy stop_reasons, not on sentinel ones).
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)),
+				"a second sentinel on a failed session must NOT trigger demotion — "+
+					"only healthy stop_reasons drive the recovery path")
+		})
+
+		It("demotes for any healthy stop_reason (end_turn, tool_use, stop)", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Trigger failed flip.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonStreamTruncated,
+			})
+
+			// Demote with a healthy tool_use stop_reason.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "Using the write tool.",
+				StopReason: "tool_use",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"a healthy tool_use stop_reason must also trigger demotion — "+
+					"any healthy stop_reason proves engine viability")
+		})
+
+		It("does NOT demote a completed or abandoned session", func() {
+			// A completed or abandoned session is terminal; no demotion
+			// should occur even if a healthy assistant message arrives.
+			By("seeding a completed session and verifying healthy messages do not demote")
+			mgr := session.NewManager(&mockStreamer{})
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mgr.CloseSession(sess.ID)).To(Succeed())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "A late message on completed session.",
+				StopReason: "end_turn",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusCompleted)),
+				"completed session must stay completed — demotion only applies to failed")
+
+			By("seeding an abandoned session and verifying healthy messages do not demote")
+			mgr2 := session.NewManager(&mockStreamer{})
+			mgr2.RestoreSessions([]*session.Session{
+				{ID: "abandoned-1", AgentID: "worker", Status: string(session.StatusAbandoned), CreatedAt: time.Now()},
+			})
+
+			mgr2.AppendMessage("abandoned-1", session.Message{
+				Role:       "assistant",
+				Content:    "A late message on abandoned session.",
+				StopReason: "end_turn",
+			})
+
+			loaded2, err := mgr2.GetSession("abandoned-1")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded2.Status).To(Equal(string(session.StatusAbandoned)),
+				"abandoned session must stay abandoned — demotion only applies to failed")
+		})
+
+		It("still allows CloseSession to seal a demoted session as completed", func() {
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Trigger failed flip.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				StopReason: session.StopReasonToolUseNoCalls,
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusFailed)))
+
+			// Demote back to active.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "Recovered and completed.",
+				StopReason: "end_turn",
+			})
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)))
+
+			// Seal as completed.
+			Expect(mgr.CloseSession(sess.ID)).To(Succeed())
+
+			loaded, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusCompleted)),
+				"a demoted (active) session must be sealable as completed via CloseSession")
+		})
+
+		It("does not demote active->failed if the healthy message is on an active session (no-op)", func() {
+			// Independence pin: a healthy message on a session that was
+			// NEVER failed must not flip to active (it already is active)
+			// and must not be accidentally treated as a demotion event.
+			sess, err := mgr.CreateSession("agent-x")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sess.Status).To(Equal(string(session.StatusActive)))
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:       "assistant",
+				Content:    "Normal message, never failed.",
+				StopReason: "end_turn",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.Status).To(Equal(string(session.StatusActive)),
+				"a healthy message on an already-active session is a no-op — "+
+					"the demotion path only triggers when status is failed")
+		})
+	})
+
 	Describe("Session hierarchy types", func() {
 		It("exposes parent identifiers on Session", func() {
 			typ := reflect.TypeOf(session.Session{})
@@ -2556,8 +2750,9 @@ var _ = Describe("Manager", func() {
 
 	// MarkEndedFromEvent is the bus-driven counterpart to CloseSession.
 	// Specs cover the four branches: known-session-active, known-session-
-	// already-completed (idempotent), known-session-failed (terminal,
-	// not downgraded), and unknown-session (silent no-op).
+	// already-completed (idempotent), known-session-failed (now sealed
+	// as completed — Option A June 2026: a recovered session reaches the
+	// end event with a clean stop), and unknown-session (silent no-op).
 	Describe("MarkEndedFromEvent", func() {
 		It("flips an active session's status to completed", func() {
 			mgr := session.NewManager(&mockStreamer{})
@@ -2591,14 +2786,14 @@ var _ = Describe("Manager", func() {
 					"session is already in the terminal completed state")
 		})
 
-		It("does NOT downgrade a failed session to completed", func() {
-			// RestoreSessions only inserts new IDs (it skips existing
-			// entries) so we seed the failed session via that path
-			// directly rather than CreateSession + Restore-overwrite.
-			// failed is the terminal/most-specific status; an ended
-			// event arriving later (which fires for both clean and
-			// error stream closes) must not silently rewrite the
-			// known failure to a successful completion.
+		It("now seals a failed-but-recovered session as completed", func() {
+			// Option A (June 2026): the recovery-demotion path in
+			// appendSessionMessage demotes failed -> active when a
+			// healthy assistant message arrives after a sentinel-
+			// stamped one. Once demoted, MarkEndedFromEvent must
+			// seal the recovered session as completed alongside
+			// every other active session that reaches the end event.
+			// Status precedence: abandoned > completed > active > failed.
 			mgr := session.NewManager(&mockStreamer{})
 			mgr.RestoreSessions([]*session.Session{
 				{ID: "worker-1", AgentID: "worker", Status: string(session.StatusFailed), CreatedAt: time.Now()},
@@ -2608,9 +2803,10 @@ var _ = Describe("Manager", func() {
 
 			got, err := mgr.GetSession("worker-1")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(got.Status).To(Equal(string(session.StatusFailed)),
-				"failed > completed in semantic precedence; ended events "+
-					"must not rewrite a known failure to a clean completion")
+			Expect(got.Status).To(Equal(string(session.StatusCompleted)),
+				"a failed-but-recovered session must be sealable as completed — "+
+					"failed is no longer terminal; the recovery-demotion path restores "+
+					"viable sessions to active, and the end event seals them as completed")
 		})
 
 		It("silently ignores unknown session IDs", func() {

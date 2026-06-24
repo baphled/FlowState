@@ -301,4 +301,56 @@ var _ = Describe("Engine todo-completion continuation", func() {
 				"no retry logic fires when todoStore is nil")
 		})
 	})
+
+	Context("when TodoStore is wired through Config (as createDelegateEngine does)", func() {
+		It("retries when todos are incomplete using the Config-wired store", func() {
+			configStore := todo.NewMemoryStore()
+			configStore.Set(sessionID, []todo.Item{
+				{Content: "finish step one", Status: "pending", Priority: "high"},
+			})
+
+			prov := &scriptedTodoProvider{
+				name: "config-store-prov",
+				script: []todoProviderTurn{
+					{content: "Starting..."},
+					{content: "Still working..."},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{},
+				TodoStore:    configStore,
+			})
+			// Deliberately do NOT call SetTodoStoreForTest —
+			// the store must come from Config, exactly as
+			// createDelegateEngine does.
+
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
+			chunks, err := eng.Stream(ctx, sessionID, "Go")
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
+				BeNumerically(">=", 6),
+				"engine must retry past the old limit when TodoStore comes from Config",
+			)
+
+			cancel()
+
+			_, closed := drain(chunks)
+			Expect(closed).To(BeTrue(),
+				"channel must close after context cancellation")
+
+			// Verify the store in Config was actually used: the
+			// todos must still be present (engine never completed them)
+			items := configStore.Get(sessionID)
+			Expect(items).To(HaveLen(1),
+				"incomplete todo must remain in the store")
+			Expect(items[0].Status).To(Equal("pending"),
+				"todo must still be pending after retries exhausted")
+		})
+	})
 })

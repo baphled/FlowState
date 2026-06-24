@@ -409,7 +409,9 @@ func (m *BackgroundTaskManager) executeTask(
 //
 // Expected:
 //   - task contains the final task state after execution.
-//   - err reflects the outcome returned by the task function.
+//   - err reflects the outcome returned by the task function; terminal
+//     event selection uses task.Status so cancellations are routed to
+//     background.task.cancelled rather than background.task.failed.
 //   - completedAt is the time at which execution finished.
 //
 // Side effects:
@@ -438,9 +440,12 @@ func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ str
 		m.notifyCompletionSubscriber(notification)
 	}
 
-	if err != nil {
+	switch task.Status.Load() {
+	case "cancelled":
+		m.emitTaskCancelled(task)
+	case "failed":
 		m.emitTaskFailed(task)
-	} else {
+	default:
 		m.emitTaskCompleted(task)
 	}
 }
@@ -591,7 +596,6 @@ func (m *BackgroundTaskManager) Cancel(id string) error {
 	task.cancel()
 	m.mu.Unlock()
 
-	m.emitTaskCancelled(task)
 	return nil
 }
 
@@ -606,22 +610,15 @@ func (m *BackgroundTaskManager) CancelAll() []string {
 	m.mu.Lock()
 
 	cancelledIDs := make([]string, 0)
-	var cancelledTasks []*BackgroundTask
-
 	for id, task := range m.tasks {
 		status := task.Status.Load()
 		if status == "pending" || status == "running" {
 			task.cancel()
 			cancelledIDs = append(cancelledIDs, id)
-			cancelledTasks = append(cancelledTasks, task)
 		}
 	}
 
 	m.mu.Unlock()
-
-	for _, task := range cancelledTasks {
-		m.emitTaskCancelled(task)
-	}
 
 	return cancelledIDs
 }
@@ -762,6 +759,33 @@ func (m *BackgroundTaskManager) ActiveCountForSession(sessionID string) int {
 	}
 
 	return count
+}
+
+// CancelAllForSession cancels all pending or running tasks for a specific session.
+//
+// Parameters:
+//   - sessionID: The session identifier whose tasks should be cancelled.
+//
+// Returns:
+//   - A slice of task IDs that were successfully cancelled (empty slice if none cancelled).
+//
+// Side effects:
+//   - Calls the context cancel function for each matching task.
+func (m *BackgroundTaskManager) CancelAllForSession(sessionID string) []string {
+	m.mu.Lock()
+
+	cancelledIDs := make([]string, 0)
+	for id, task := range m.tasks {
+		status := task.Status.Load()
+		if task.ParentSessionID == sessionID && (status == "pending" || status == "running") {
+			task.cancel()
+			cancelledIDs = append(cancelledIDs, id)
+		}
+	}
+
+	m.mu.Unlock()
+
+	return cancelledIDs
 }
 
 var (

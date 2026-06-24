@@ -563,6 +563,17 @@ func configureApplicationAfterBuild(
 			app.API.SetCompletionOrchestrator(app.completionOrchestrator)
 		}
 	}
+	// Wire stream cancellation to cancel background tasks for the session.
+	// When the user cancels their prompt the engine's streaming loop exits
+	// via ctx.Done() and fires onStreamCancel with the active sessionID;
+	// this handler tells the BackgroundTaskManager to cancel every
+	// pending or running task that belongs to that session.
+	if app.backgroundManager != nil {
+		eng.SetOnStreamCancel(func(sessionID string) {
+			app.backgroundManager.CancelAllForSession(sessionID)
+		})
+	}
+
 	wireSessionStatusSync(eng.EventBus(), app.sessionManager)
 	startCorePluginSubscriptions(rt, eng, buildDistiller(cfg, runtime.defaultProvider, app.ollamaProvider), runtime.mcpManager)
 	startSessionRecorder(runtime.sessionRecorder, eng)
@@ -2455,11 +2466,21 @@ func (a *App) createDelegateEngine(
 		ToolTimeout:               a.Config.ParsedToolTimeout(),
 		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
 		TodoStrictMode:            a.Config.TodoStrictModeEnabled(),
+		TodoStore:                 a.TodoStore,
 		CompactionConfig:          a.delegateCompactionConfig(),
 		CompactionStoreDir:        a.delegateCompactionStoreDir(),
 		KnownSkillsFunc:           delegateKnownSkillsFunc,
 		PermissionPrompter:        delegatePrompter,
 	})
+	// Wire stream cancellation for the delegate engine so background
+	// tasks spawned during delegation are cancelled when the delegate's
+	// stream exits via ctx.Done().
+	if a.backgroundManager != nil {
+		eng.SetOnStreamCancel(func(sessionID string) {
+			a.backgroundManager.CancelAllForSession(sessionID)
+		})
+	}
+
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
 		// Reuse the same store the member's coordination_store tool was

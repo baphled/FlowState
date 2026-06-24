@@ -9,6 +9,8 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/eventbus"
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -563,6 +565,102 @@ var _ = Describe("BackgroundTaskManager", func() {
 		})
 	})
 
+	Describe("CancelAllForSession", func() {
+		Context("when no tasks exist", func() {
+			It("returns empty slice", func() {
+				result := manager.CancelAllForSession("session-a")
+				Expect(result).To(BeEmpty())
+			})
+		})
+
+		Context("when tasks belong to different sessions", func() {
+			It("cancels only tasks for the specified session", func() {
+				blockCh := make(chan struct{})
+
+				ctxA := context.WithValue(context.Background(), session.IDKey{}, "session-a")
+				ctxB := context.WithValue(context.Background(), session.IDKey{}, "session-b")
+
+				manager.Launch(ctxA, "a-task-1", "agent-1", "session A task 1", func(ctx context.Context) (string, error) {
+					select {
+					case <-ctx.Done():
+						return "", ctx.Err()
+					case <-blockCh:
+						return "done", nil
+					}
+				})
+				manager.Launch(ctxA, "a-task-2", "agent-1", "session A task 2", func(ctx context.Context) (string, error) {
+					select {
+					case <-ctx.Done():
+						return "", ctx.Err()
+					case <-blockCh:
+						return "done", nil
+					}
+				})
+				manager.Launch(ctxB, "b-task-1", "agent-1", "session B task 1", func(ctx context.Context) (string, error) {
+					select {
+					case <-ctx.Done():
+						return "", ctx.Err()
+					case <-blockCh:
+						return "done", nil
+					}
+				})
+
+				Eventually(func() int {
+					return manager.ActiveCount()
+				}, "2s", "50ms").Should(Equal(3))
+
+				result := manager.CancelAllForSession("session-a")
+				Expect(result).To(ConsistOf("a-task-1", "a-task-2"))
+
+				Eventually(func() string {
+					t, _ := manager.Get("a-task-1")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("cancelled"))
+
+				Eventually(func() string {
+					t, _ := manager.Get("a-task-2")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("cancelled"))
+
+				t, found := manager.Get("b-task-1")
+				Expect(found).To(BeTrue())
+				Expect(t.Status.Load()).To(Equal("running"))
+
+				close(blockCh)
+			})
+		})
+
+		Context("when session ID is unknown", func() {
+			It("returns empty slice", func() {
+				blockCh := make(chan struct{})
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "session-c")
+				manager.Launch(ctx, "c-task-1", "agent-1", "known session task", func(ctx context.Context) (string, error) {
+					select {
+					case <-ctx.Done():
+						return "", ctx.Err()
+					case <-blockCh:
+						return "done", nil
+					}
+				})
+
+				Eventually(func() string {
+					t, _ := manager.Get("c-task-1")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("running"))
+
+				result := manager.CancelAllForSession("unknown-session")
+				Expect(result).To(BeEmpty())
+
+				t, found := manager.Get("c-task-1")
+				Expect(found).To(BeTrue())
+				Expect(t.Status.Load()).To(Equal("running"))
+
+				close(blockCh)
+			})
+		})
+	})
+
 	Describe("Per-Key Concurrency Limiting", func() {
 		Context("when tasks have the same concurrency key", func() {
 			It("limits concurrent running tasks to MaxPerKey", func() {
@@ -697,6 +795,77 @@ var _ = Describe("BackgroundTaskManager", func() {
 
 				Expect(task.ConcurrencyKey).To(Equal("my-agent"))
 			})
+		})
+	})
+
+	Describe("abort/failure lifecycle harness", func() {
+		It("emits the cancellation event handler path when a running task is cancelled", func() {
+			bus := eventbus.NewEventBus()
+			manager.SetEventBus(bus)
+			cancelledEvents := make(chan events.BackgroundTaskEventData, 1)
+			bus.Subscribe(events.EventBackgroundTaskCancelled, func(event any) {
+				cancelled, ok := event.(*events.BackgroundTaskCancelledEvent)
+				if !ok {
+					cancelledEvents <- events.BackgroundTaskEventData{Status: "unexpected-event-type"}
+					return
+				}
+				cancelledEvents <- cancelled.Data
+			})
+
+			ctx := context.Background()
+			manager.Launch(ctx, "abort-harness-task", "agent-abort", "abort scenario", func(ctx context.Context) (string, error) {
+				<-ctx.Done()
+				return "", ctx.Err()
+			})
+
+			Eventually(func() string {
+				t, _ := manager.Get("abort-harness-task")
+				return t.Status.Load()
+			}, "2s", "25ms").Should(Equal("running"))
+
+			Expect(manager.Cancel("abort-harness-task")).To(Succeed())
+
+			Eventually(cancelledEvents, "2s", "25ms").Should(Receive(SatisfyAll(
+				HaveField("TaskID", "abort-harness-task"),
+				HaveField("Name", "abort scenario"),
+				HaveField("Status", "cancelled"),
+			)))
+
+			Eventually(func() string {
+				t, _ := manager.Get("abort-harness-task")
+				return t.Status.Load()
+			}, "2s", "25ms").Should(Equal("cancelled"))
+		})
+
+		It("emits the failure event handler path when a task returns an error", func() {
+			bus := eventbus.NewEventBus()
+			manager.SetEventBus(bus)
+			failedEvents := make(chan events.BackgroundTaskEventData, 1)
+			bus.Subscribe(events.EventBackgroundTaskFailed, func(event any) {
+				failed, ok := event.(*events.BackgroundTaskFailedEvent)
+				if !ok {
+					failedEvents <- events.BackgroundTaskEventData{Status: "unexpected-event-type"}
+					return
+				}
+				failedEvents <- failed.Data
+			})
+
+			expectedErr := errors.New("injected adapter failure")
+			manager.Launch(context.Background(), "failure-harness-task", "agent-fail", "failure scenario", func(ctx context.Context) (string, error) {
+				return "", expectedErr
+			})
+
+			Eventually(failedEvents, "2s", "25ms").Should(Receive(SatisfyAll(
+				HaveField("TaskID", "failure-harness-task"),
+				HaveField("Name", "failure scenario"),
+				HaveField("Status", "failed"),
+				HaveField("Error", expectedErr.Error()),
+			)))
+
+			task, found := manager.Get("failure-harness-task")
+			Expect(found).To(BeTrue())
+			Expect(task.Status.Load()).To(Equal("failed"))
+			Expect(task.Error).To(MatchError(expectedErr))
 		})
 	})
 
