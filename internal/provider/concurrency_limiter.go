@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"log/slog"
+	"sync/atomic"
 )
 
 var _ Provider = (*ConcurrencyLimitedProvider)(nil)
@@ -21,8 +23,11 @@ var _ Provider = (*ConcurrencyLimitedProvider)(nil)
 // Embeddings and Models are pass-throughs: embeddings target a different
 // backend (ollama) and must not contend for the chat semaphore.
 type ConcurrencyLimitedProvider struct {
-	inner Provider
-	sem   chan struct{}
+	inner      Provider
+	name       string // cached from inner.Name() for logging/labelling
+	sem        chan struct{}
+	inFlight   atomic.Int64 // current number of acquired slots
+	queueDepth atomic.Int64 // current number of callers waiting to acquire
 }
 
 // NewConcurrencyLimitedProvider returns a ConcurrencyLimitedProvider that
@@ -43,6 +48,7 @@ type ConcurrencyLimitedProvider struct {
 func NewConcurrencyLimitedProvider(inner Provider, maxConcurrent int) *ConcurrencyLimitedProvider {
 	return &ConcurrencyLimitedProvider{
 		inner: inner,
+		name:  inner.Name(),
 		sem:   make(chan struct{}, maxConcurrent),
 	}
 }
@@ -64,17 +70,89 @@ func (c *ConcurrencyLimitedProvider) Name() string { return c.inner.Name() }
 // Returns:
 //   - nil once a slot has been acquired (the caller MUST later release it).
 //   - ctx.Err() if ctx is cancelled while queued (no slot is held).
+//
+// Side effects:
+//   - Updates in-flight and queue-depth atomic counters.
+//   - Emits slog.Debug on acquire or cancellation.
 func (c *ConcurrencyLimitedProvider) acquire(ctx context.Context) error {
+	c.queueDepth.Add(1)
 	select {
 	case c.sem <- struct{}{}:
+		c.queueDepth.Add(-1)
+		c.inFlight.Add(1)
+		slog.Debug("concurrency slot acquired",
+			"provider", c.name,
+			"in_flight", c.inFlight.Load(),
+			"queue_depth", c.queueDepth.Load(),
+		)
 		return nil
 	case <-ctx.Done():
+		c.queueDepth.Add(-1)
+		slog.Debug("concurrency slot cancelled while queued",
+			"provider", c.name,
+			"queue_depth", c.queueDepth.Load(),
+			"error", ctx.Err(),
+		)
 		return ctx.Err()
 	}
 }
 
 // release frees a previously acquired semaphore slot.
-func (c *ConcurrencyLimitedProvider) release() { <-c.sem }
+//
+// Side effects:
+//   - Decrements the in-flight atomic counter.
+//   - Emits slog.Debug after release.
+func (c *ConcurrencyLimitedProvider) release() {
+	<-c.sem
+	c.inFlight.Add(-1)
+	slog.Debug("concurrency slot released",
+		"provider", c.name,
+		"in_flight", c.inFlight.Load(),
+	)
+}
+
+// InFlight returns the current number of in-flight requests (acquired slots).
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The current in-flight count as an int.
+//
+// Side effects:
+//   - None.
+func (c *ConcurrencyLimitedProvider) InFlight() int {
+	return int(c.inFlight.Load())
+}
+
+// QueueDepth returns the current number of callers waiting to acquire a slot.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The current queue depth as an int.
+//
+// Side effects:
+//   - None.
+func (c *ConcurrencyLimitedProvider) QueueDepth() int {
+	return int(c.queueDepth.Load())
+}
+
+// MaxConcurrent returns the maximum number of concurrent in-flight calls
+// allowed by this limiter (the semaphore buffer size).
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - The maximum concurrent call cap as an int.
+//
+// Side effects:
+//   - None.
+func (c *ConcurrencyLimitedProvider) MaxConcurrent() int {
+	return cap(c.sem)
+}
 
 // Stream acquires a concurrency slot, opens the inner stream, and releases the
 // slot only once the returned channel is fully drained and closed — so the slot

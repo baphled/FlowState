@@ -622,9 +622,10 @@ var _ = Describe("BackgroundTaskManager", func() {
 					return t.Status.Load()
 				}, "2s", "50ms").Should(Equal("cancelled"))
 
-				t, found := manager.Get("b-task-1")
-				Expect(found).To(BeTrue())
-				Expect(t.Status.Load()).To(Equal("running"))
+				Eventually(func() string {
+					t, _ := manager.Get("b-task-1")
+					return t.Status.Load()
+				}, "2s", "50ms").Should(Equal("running"))
 
 				close(blockCh)
 			})

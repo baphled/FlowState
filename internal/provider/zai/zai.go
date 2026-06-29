@@ -331,6 +331,7 @@ func (p *Provider) fetchModels() ([]provider.Model, error) {
 //   - None.
 func fallbackModels() []provider.Model {
 	return []provider.Model{
+		{ID: "glm-5.2", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-5", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-4.7", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
 		{ID: "glm-4.7-flash", Provider: providerName, ContextLength: defaultContextLength, OutputLimit: defaultOutputLimit},
@@ -339,7 +340,8 @@ func fallbackModels() []provider.Model {
 }
 
 // classifyZAIError refines the classification of a Z.AI error by inspecting the provider-specific
-// error code. Z.AI reuses HTTP 429 for billing, quota, and overload errors that are NOT rate limits.
+// error code. Z.AI reuses HTTP 429 for billing, quota, and overload errors that are NOT rate limits,
+// and also for code 1302 (concurrency-limit) which IS a rate limit.
 //
 // The reconstructed error preserves baseErr.RateLimit so any
 // `retry-after` / `x-ratelimit-*` metadata captured by
@@ -347,6 +349,13 @@ func fallbackModels() []provider.Model {
 // Z.AI emits `retry-after` on the 1001 rate-limit code path and
 // dropping it here would force failover back onto the per-error-type
 // cooldown table.
+//
+// Error code 1302 is Z.AI's concurrency-limit signal. Z.AI restricts concurrent
+// connections per project (Lite = 1, Pro/Max = 1-2+). When the server already
+// has an active connection on this project, any additional simultaneous attempt
+// is rejected with HTTP 429 and code 1302. This is transient — the failover
+// hook should back off and retry once the existing stream completes. Mapping it
+// to ErrorTypeRateLimit ensures the failover hook applies appropriate cooldown.
 //
 // Expected:
 //   - baseErr may be nil.
@@ -375,6 +384,12 @@ func classifyZAIError(baseErr *provider.Error) *provider.Error {
 			Provider: providerName, Message: baseErr.Message, IsRetriable: true, RawError: baseErr.RawError,
 			RateLimit: baseErr.RateLimit,
 		}
+	case "1302":
+		return &provider.Error{
+			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1302", ErrorType: provider.ErrorTypeRateLimit,
+			Provider: providerName, Message: baseErr.Message, IsRetriable: true, RawError: baseErr.RawError,
+			RateLimit: baseErr.RateLimit,
+		}
 	case "1112":
 		return &provider.Error{
 			HTTPStatus: baseErr.HTTPStatus, ErrorCode: "1112", ErrorType: provider.ErrorTypeQuota,
@@ -394,6 +409,11 @@ func classifyZAIError(baseErr *provider.Error) *provider.Error {
 
 // classifyStreamErrors wraps a raw stream channel and applies Z.AI-specific error classification.
 //
+// The openaicompat.wrapStreamError already returns a *provider.Error for stream-level
+// failures, so ParseProviderError cannot unwrap it a second time (errors.As checks for
+// *openaiAPI.Error, not *provider.Error). This function detects the already-wrapped form
+// and classifies directly; for raw SDK errors it parses first.
+//
 // Expected:
 //   - ctx is a valid context for cancellation.
 //   - rawCh yields provider.StreamChunk values and may be closed.
@@ -409,8 +429,11 @@ func classifyStreamErrors(ctx context.Context, rawCh <-chan provider.StreamChunk
 		defer close(ch)
 		for chunk := range rawCh {
 			if chunk.Error != nil {
-				if provErr := openaicompat.ParseProviderError(providerName, chunk.Error); provErr != nil {
+				var provErr *provider.Error
+				if errors.As(chunk.Error, &provErr) {
 					chunk.Error = classifyZAIError(provErr)
+				} else if parsed := openaicompat.ParseProviderError(providerName, chunk.Error); parsed != nil {
+					chunk.Error = classifyZAIError(parsed)
 				}
 			}
 			shared.SendChunk(ctx, ch, chunk)

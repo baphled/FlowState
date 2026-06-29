@@ -4364,6 +4364,8 @@ func (e *Engine) streamWithToolLoop(
 	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
 	overflowRetries := 0
+	const maxTodoContinuations = 20
+	todoContinuationCount := 0
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
 		if result.done {
@@ -4452,6 +4454,15 @@ func (e *Engine) streamWithToolLoop(
 				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				if todoContinuationCount >= maxTodoContinuations {
+					slog.Warn("todo continuation budget exhausted after turn end",
+						"session", sessionID,
+						"max_continuations", maxTodoContinuations,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				todoContinuationCount++
 				slog.Info("incomplete todos after turn end, injecting continuation",
 					"session", sessionID,
 					"incomplete_count", len(incompletes),
@@ -4491,6 +4502,15 @@ func (e *Engine) streamWithToolLoop(
 
 		if len(result.toolCalls) == 0 {
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				if todoContinuationCount >= maxTodoContinuations {
+					slog.Warn("todo continuation budget exhausted after stream truncation",
+						"session", sessionID,
+						"max_continuations", maxTodoContinuations,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				todoContinuationCount++
 				slog.Info("incomplete todos after stream truncation, injecting continuation",
 					"session", sessionID,
 					"incomplete_count", len(incompletes),
@@ -4714,6 +4734,21 @@ func (e *Engine) streamWithToolLoop(
 				"max_identical", e.maxIdenticalToolCalls,
 			)
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				if todoContinuationCount >= maxTodoContinuations {
+					slog.Warn("todo continuation budget exhausted after tool loop cap",
+						"session", sessionID,
+						"trip", reason,
+						"max_continuations", maxTodoContinuations,
+					)
+					outChan <- provider.StreamChunk{
+						Done:       true,
+						StopReason: session.StopReasonToolLoopExceeded,
+						ModelID:    e.LastModel(),
+						ProviderID: e.LastProvider(),
+					}
+					return
+				}
+				todoContinuationCount++
 				slog.Info("tool loop capped but incomplete todos remain, injecting continuation",
 					"session", sessionID,
 					"trip", reason,
@@ -6323,20 +6358,94 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// is what isolates concurrent sessions at the model boundary. See
 	// session_integration_test.go cross-session isolation spec.
 	//
-	// We intentionally bypass the WindowBuilder (and its
-	// micro-compaction / recall hooks) on this path: those features
-	// operate on the shared store and so cannot be safely activated for
-	// a session whose history we are explicitly NOT sourcing from the
-	// store. Re-enabling them is future work that requires per-session
-	// stores upstream.
+	// Per-session source-of-truth path: when the caller (session.Manager
+	// in serve mode) attaches the session's prior messages to ctx, build
+	// the model request payload from those directly. The shared
+	// e.store path below reads from a process-wide store that mixes
+	// every session's history together — using ctx-scoped messages here
+	// is what isolates concurrent sessions at the model boundary. See
+	// session_integration_test.go cross-session isolation spec.
+	//
+	// All compression layers that operate on the in-flight message slice
+	// (L2 auto-compaction, RLM Phase A micro-compaction, Phase B fact
+	// recall, and auto-compactor rehydration) are wired here. Only the
+	// WindowBuilder and StoreSessionMemory remain store-bound and are
+	// not activated on this path.
 	if priorMsgs, ok := session.PriorMessagesFromContext(ctx); ok {
 		systemPrompt := e.BuildSystemPromptCtx(ctx)
-		messages := make([]provider.Message, 0, len(priorMsgs)+3)
-		messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
-		messages = e.appendTodoContext(messages, sessionID)
-		messages = append(messages, priorMsgs...)
-		messages = append(messages, provider.Message{Role: "user", Content: userMessage})
-		slog.Info("engine context window", "source", "session-scoped", "messages", len(messages))
+		tokenBudget := e.ModelContextLimit()
+
+		// Resolve manifest and tool schemas inside lock.
+		e.mu.RLock()
+		manifestCopy, mOk := manifestFromContext(ctx)
+		if !mOk {
+			manifestCopy = e.manifest
+		}
+		manifestCopy.Instructions.SystemPrompt = systemPrompt
+		tools := e.assembleToolSchemasLocked(context.Background())
+		e.mu.RUnlock()
+
+		// Determine trigger for L2 auto-compaction: gate-proximity
+		// takes precedence over the ratio threshold.
+		forceTrigger := ""
+		if e.shouldCompactExplicitForGate(&manifestCopy, userMessage, tokenBudget, tools, priorMsgs) {
+			forceTrigger = "gate_proximity"
+		} else if threshold, ok := e.autoCompactionThreshold(&manifestCopy, tokenBudget); ok {
+			fullWindowTokens := e.estimateRequestTokens(&provider.ChatRequest{
+				Messages: priorMsgs,
+				Tools:    tools,
+			})
+			ratio := float64(fullWindowTokens) / float64(tokenBudget)
+			if ratio > threshold {
+				forceTrigger = "ratio"
+			}
+		}
+
+		var compactedSummary string
+		if forceTrigger != "" {
+			compactedSummary = e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, forceTrigger, priorMsgs)
+		}
+
+		var messages []provider.Message
+
+		if compactedSummary != "" {
+			// Build window with compacted summary + hot tail (sliding
+			// window of the most recent prior messages).
+			slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
+			if slidingWindowSize <= 0 {
+				slidingWindowSize = 50
+			}
+			hotTail := priorMsgs
+			if len(hotTail) > slidingWindowSize {
+				hotTail = hotTail[len(hotTail)-slidingWindowSize:]
+			}
+			messages = make([]provider.Message, 0, len(hotTail)+4)
+			messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
+			messages = e.appendTodoContext(messages, sessionID)
+			messages = append(messages, provider.Message{Role: "assistant", Content: compactedSummary})
+			messages = append(messages, hotTail...)
+			messages = append(messages, provider.Message{Role: "user", Content: userMessage})
+		} else {
+			// No compaction triggered — use raw prior messages.
+			messages = make([]provider.Message, 0, len(priorMsgs)+3)
+			messages = append(messages, provider.Message{Role: "system", Content: systemPrompt})
+			messages = e.appendTodoContext(messages, sessionID)
+			messages = append(messages, priorMsgs...)
+			messages = append(messages, provider.Message{Role: "user", Content: userMessage})
+		}
+
+		// Post-processing pipeline — same order as the store path:
+		// rehydration, fact recall, then micro-compaction. Each
+		// operates on the in-flight message slice and falls back to
+		// the original slice when its feature is disabled or nil.
+		messages = e.maybeRehydrate(sessionID, messages)
+		messages = e.applyFactRecall(ctx, sessionID, userMessage, messages)
+		messages = e.applyMicroCompaction(ctx, sessionID, messages)
+
+		slog.Info("engine context window",
+			"source", "session-scoped",
+			"compacted", compactedSummary != "",
+			"messages", len(messages))
 		return messages
 	}
 
@@ -7588,6 +7697,68 @@ func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage
 	return e.shouldAutoCompactForGate(estimated, tokenBudget, reserve)
 }
 
+// shouldCompactExplicitForGate mirrors gateProximityForceCompact but
+// operates on an explicit message slice instead of reading from the
+// shared e.store. This allows the session-scoped path in
+// buildContextWindow (which sources prior messages from context, not
+// the engine's process-wide store) to detect when the next request
+// would land within 5% of the proactive saturation gate's refusal
+// boundary.
+//
+// The estimate builds a synthetic ChatRequest from the explicit
+// messages plus the user turn, then delegates to the same
+// shouldAutoCompactForGate helper that gateProximityForceCompact uses.
+// The reserve resolves through outputReserveFor with no MaxTokens
+// override — matching the production seam where Stream() callers
+// seldom set MaxTokens explicitly.
+//
+// Pre-conditions and no-op cases mirror gateProximityForceCompact:
+//   - tokenBudget <= 0 (degenerate model resolution).
+//   - tokenCounter is nil (cannot estimate).
+//   - explicitMessages is empty (nothing to compact).
+//
+// Expected:
+//   - manifest carries provider/model preferences (PreferredModels)
+//     used to resolve the output reserve.
+//   - userMessage is the in-flight user turn — counted into the
+//     estimate so a single turn that pushes through the boundary
+//     also forces the trigger.
+//   - tokenBudget is the resolved per-model context limit.
+//   - tools are the assembled tool schemas for token estimation.
+//   - explicitMessages are the session-scoped prior messages
+//     extracted from context.
+//
+// Returns:
+//   - true when the gate-proximity boundary would be crossed.
+//   - false when the request fits comfortably OR pre-conditions are
+//     unmet.
+//
+// Side effects:
+//   - None.
+func (e *Engine) shouldCompactExplicitForGate(manifest *agent.Manifest, userMessage string, tokenBudget int, tools []provider.Tool, explicitMessages []provider.Message) bool {
+	if e == nil || tokenBudget <= 0 || e.tokenCounter == nil {
+		return false
+	}
+	if len(explicitMessages) == 0 {
+		return false
+	}
+	prefProvider, prefModel := preferredProviderModel(manifest)
+	candidate := make([]provider.Message, 0, len(explicitMessages)+1)
+	candidate = append(candidate, explicitMessages...)
+	if userMessage != "" {
+		candidate = append(candidate, provider.Message{Role: "user", Content: userMessage})
+	}
+	syntheticReq := &provider.ChatRequest{
+		Provider: prefProvider,
+		Model:    prefModel,
+		Messages: candidate,
+		Tools:    tools,
+	}
+	estimated := e.estimateRequestTokens(syntheticReq)
+	reserve := e.outputReserveFor(syntheticReq)
+	return e.shouldAutoCompactForGate(estimated, tokenBudget, reserve)
+}
+
 // emitMidToolLoopRefresh runs the Phase-5 Slice γ post-tool-batch
 // affordances: emits a fresh context_usage chunk so the chip ticks
 // up to reflect the just-extended persisted store, AND consults
@@ -7834,26 +8005,66 @@ func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context,
 //   - Publishes a pluginevents.ContextCompactedEvent with
 //     Trigger="model_switch" on the engine bus on a successful fire.
 func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvider, newModel string) string {
-	if e == nil || sessionID == "" || e.tokenCounter == nil || e.store == nil {
+	if e == nil || sessionID == "" || e.tokenCounter == nil {
 		return ""
 	}
 
-	// Resolve the new model's window through the same pipeline the
-	// gate consults. ResolveContextLength returns the registry's
-	// ContextLength when the failover manager knows the pair; falls
-	// back to e.systemPromptBudget otherwise. A non-positive value
-	// means "no budget signal" — refuse to compact against garbage.
-	newLimit := e.ResolveContextLength(newProvider, newModel)
-	if newLimit <= 0 {
+	// Resolve session-scoped messages when a SessionLookup is wired
+	// (production path). Without this, e.store.AllMessages() reads
+	// from the process-wide shared store that mixes every session's
+	// history together — the same isolation bug that CompactNow had
+	// before its May 2026 fix (see SnapshotForCompaction).
+	e.mu.RLock()
+	lookup := e.sessionLookup
+	e.mu.RUnlock()
+
+	var explicitMessages []provider.Message
+	manifest := e.Manifest()
+	tokenBudget := 0
+
+	if lookup != nil {
+		messages, agentID, providerID, modelID, ok := lookup.SnapshotForCompaction(sessionID)
+		if !ok || len(messages) == 0 {
+			return ""
+		}
+		explicitMessages = messages
+
+		// Resolve per-session manifest so the summariser sees the
+		// session's agent — not whatever happens to live on
+		// e.manifest at the moment a concurrent SetManifest fires.
+		if agentID != "" && e.agentRegistry != nil {
+			if resolved, found := e.agentRegistry.Get(agentID); found && resolved != nil {
+				manifest = *resolved
+			}
+		}
+
+		// Resolve token budget: prefer the destination model's
+		// window; fall back to the session's current provider/model.
+		tokenBudget = e.ResolveContextLength(newProvider, newModel)
+		if tokenBudget <= 0 && providerID != "" && modelID != "" {
+			tokenBudget = e.ResolveContextLength(providerID, modelID)
+		}
+	} else {
+		// Legacy / unit-test path: no SessionLookup wired. Fall
+		// back to the shared store so existing tests that seed the
+		// store directly continue to pass unchanged.
+		if e.store == nil {
+			return ""
+		}
+		tokenBudget = e.ResolveContextLength(newProvider, newModel)
+	}
+
+	if tokenBudget <= 0 {
 		return ""
 	}
 
-	// Build the candidate request: every persisted message in the
-	// store, no in-flight user turn (the switch is between turns).
-	// The reserve flows through outputReserveFor against
-	// (newProvider, newModel) so we measure against the destination
-	// model's response budget, not the active model's.
-	allMessages := e.store.AllMessages()
+	// Build the candidate request for the gate-proximity check.
+	// Uses either the session-scoped explicit messages (production)
+	// or the shared store (legacy).
+	allMessages := explicitMessages
+	if allMessages == nil {
+		allMessages = e.store.AllMessages()
+	}
 	syntheticReq := &provider.ChatRequest{
 		Provider: newProvider,
 		Model:    newModel,
@@ -7864,24 +8075,19 @@ func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvide
 
 	// Same boundary the gate-proximity tier uses: fire when the
 	// estimate would land within the proactive overflow gate's
-	// 5% safety margin of refusal on the new window. Without the
-	// safety margin we'd only fire when there is no room left for
-	// the summary itself, defeating the point.
-	if !e.shouldAutoCompactForGate(estimated, newLimit, reserve) {
+	// 5% safety margin of refusal on the new window.
+	if !e.shouldAutoCompactForGate(estimated, tokenBudget, reserve) {
 		return ""
 	}
 
-	manifest := e.Manifest()
-
-	// Mirror CompactNow's session-model fallback so a model-switch
-	// trigger lands on the destination model rather than an
-	// unresolved abstract descriptor when category routing for the
-	// summariser tier has no concrete mapping. See WithSessionModel
-	// for the May 2026 /compact regression this closes; the
-	// model-switch path inherits the same surface area.
+	// Attach the destination model so the summariser routes against
+	// the correct provider (mirrors CompactNow's WithSessionModel).
 	ctx = WithSessionModel(ctx, newProvider, newModel)
 
-	return e.maybeAutoCompact(ctx, sessionID, &manifest, newLimit, "model_switch")
+	if explicitMessages != nil {
+		return e.maybeAutoCompactExplicit(ctx, sessionID, &manifest, tokenBudget, "model_switch", explicitMessages)
+	}
+	return e.maybeAutoCompact(ctx, sessionID, &manifest, tokenBudget, "model_switch")
 }
 
 // CompactNow is the engine seam the /compress slash command and the

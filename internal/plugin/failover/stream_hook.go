@@ -391,6 +391,7 @@ type retryState struct {
 // Side effects:
 //   - Sets req.Provider / req.Model per attempt.
 //   - Updates state.lastErr / state.previousFailed.
+//   - Publishes a provider.error event for each failed attempt via publishFailoverError.
 func (sh *StreamHook) runCandidateRound(
 	ctx context.Context,
 	next hook.HandlerFunc,

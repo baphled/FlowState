@@ -221,4 +221,80 @@ var _ = Describe("ConcurrencyLimitedProvider", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Describe("Stats accessors", func() {
+		It("returns MaxConcurrent from the constructor argument", func() {
+			inner := newGatedProvider("zai")
+			limited := provider.NewConcurrencyLimitedProvider(inner, 3)
+			Expect(limited.MaxConcurrent()).To(Equal(3))
+		})
+
+		It("returns zero InFlight when no calls are active", func() {
+			inner := newGatedProvider("zai")
+			limited := provider.NewConcurrencyLimitedProvider(inner, 2)
+			Expect(limited.InFlight()).To(Equal(0))
+		})
+
+		It("returns zero QueueDepth when no callers are waiting", func() {
+			inner := newGatedProvider("zai")
+			limited := provider.NewConcurrencyLimitedProvider(inner, 2)
+			Expect(limited.QueueDepth()).To(Equal(0))
+		})
+
+		It("reports correct InFlight during concurrent Stream calls", func() {
+			inner := newGatedProvider("zai")
+			limited := provider.NewConcurrencyLimitedProvider(inner, 2)
+			ctx := context.Background()
+
+			ch1, err := limited.Stream(ctx, provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+			ch2, err := limited.Stream(ctx, provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+			_ = ch1
+			_ = ch2
+
+			// Both slots acquired.
+			Expect(limited.InFlight()).To(Equal(2))
+
+			// Close one stream — in-flight drops to 1.
+			inner.closeOldest()
+			Eventually(limited.InFlight).Should(Equal(1))
+
+			// Close the other — in-flight drops to 0.
+			inner.closeOldest()
+			Eventually(limited.InFlight).Should(Equal(0))
+		})
+
+		It("reports QueueDepth while a caller waits for a slot", func() {
+			inner := newGatedProvider("zai")
+			limited := provider.NewConcurrencyLimitedProvider(inner, 1)
+			ctx := context.Background()
+
+			// Occupy the only slot.
+			ch1, err := limited.Stream(ctx, provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred())
+			_ = ch1
+
+			// Launch a second call that must queue.
+			var secondReturned atomic.Bool
+			go func() {
+				defer GinkgoRecover()
+				_, err := limited.Stream(ctx, provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				secondReturned.Store(true)
+			}()
+
+			// The second caller is queued.
+			Eventually(limited.QueueDepth).Should(Equal(1))
+			Expect(limited.InFlight()).To(Equal(1))
+
+			// Release the slot by closing the stream.
+			inner.closeOldest()
+			Eventually(secondReturned.Load).Should(BeTrue())
+
+			// Queue drains and in-flight stays at 1 (the former waiter now holds the slot).
+			Eventually(limited.QueueDepth).Should(Equal(0))
+			Expect(limited.InFlight()).To(Equal(1))
+		})
+	})
 })

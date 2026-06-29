@@ -589,13 +589,15 @@ type ProviderConfig struct {
 	MaxConcurrentRequests int `json:"max_concurrent_requests,omitempty" yaml:"max_concurrent_requests,omitempty"`
 }
 
-// DefaultZAIMaxConcurrent is the placeholder default cap on simultaneous
-// in-flight chat calls to the z.ai provider when MaxConcurrentRequests is
-// unset. z.ai enforces a per-account concurrent-request limit; exceeding it
-// surfaces as HTTP 429 and fails swarm members. The exact documented cap is
-// being researched separately; 2 is a conservative placeholder that can be
-// overridden via providers.zai.max_concurrent_requests in config.
-const DefaultZAIMaxConcurrent = 2
+// DefaultZAIMaxConcurrent is the default cap on simultaneous in-flight chat
+// calls to the z.ai provider when MaxConcurrentRequests is unset. Z.A.I
+// enforces a per-account concurrent-request limit of 1 for Lite plans and
+// 1-2+ for Pro/Max (see https://docs.z.ai/devpack/usage-policy). Exceeding
+// the server-side limit surfaces as HTTP 429 with error code 1302, which
+// causes cascading failover churn across swarm members. Setting the default
+// to 1 matches the most restrictive plan tier and avoids the error entirely;
+// Pro/Max operators can raise it via providers.zai.max_concurrent_requests.
+const DefaultZAIMaxConcurrent = 1
 
 // EffectiveMaxConcurrent returns the concurrency cap to apply to in-flight
 // chat calls for the provider identified by name.

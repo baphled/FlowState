@@ -21,10 +21,10 @@ var _ = Describe("ProviderConfig.EffectiveMaxConcurrent", func() {
 	})
 
 	Context("when MaxConcurrentRequests is unset (zero)", func() {
-		It("returns the zai placeholder default of 2 for zai", func() {
+		It("returns the zai placeholder default of 1 for zai", func() {
 			pc := config.ProviderConfig{}
 			Expect(pc.EffectiveMaxConcurrent("zai")).To(Equal(config.DefaultZAIMaxConcurrent))
-			Expect(pc.EffectiveMaxConcurrent("zai")).To(Equal(2))
+			Expect(pc.EffectiveMaxConcurrent("zai")).To(Equal(1))
 		})
 
 		It("returns 0 (unlimited) for any provider without a configured default", func() {

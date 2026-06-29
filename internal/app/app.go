@@ -879,6 +879,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	if err != nil {
 		return nil, err
 	}
+	registerProviderConcurrencyGauges(traced.metrics, params.providerRegistry)
 	tp := buildToolPipeline(params.cfg)
 	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
@@ -4159,6 +4160,53 @@ func wireSessionStatusSync(bus *eventbus.EventBus, sessionMgr *session.Manager) 
 		}
 		sessionMgr.MarkEndedFromEvent(ev.Data.SessionID)
 	})
+}
+
+// registerProviderConcurrencyGauges iterates the provider registry and
+// registers Prometheus GaugeFunc collectors for each provider wrapped in a
+// ConcurrencyLimitedProvider. Operators can then observe current in-flight
+// request counts and queue depths per provider via the /metrics endpoint.
+//
+// Expected:
+//   - reg is a non-nil prometheus.Registerer.
+//   - providerRegistry is a non-nil provider.Registry with registered providers.
+//
+// Side effects:
+//   - Registers up to 2 * N Prometheus collectors with reg, where N is the
+//     number of ConcurrencyLimitedProvider-wrapped providers in the registry.
+func registerProviderConcurrencyGauges(
+	reg prometheus.Registerer,
+	providerRegistry *provider.Registry,
+) {
+	for _, name := range providerRegistry.List() {
+		p, err := providerRegistry.Get(name)
+		if err != nil {
+			continue
+		}
+		clp, ok := p.(*provider.ConcurrencyLimitedProvider)
+		if !ok {
+			continue
+		}
+		labels := prometheus.Labels{"provider": name}
+
+		reg.MustRegister(prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name:        "flowstate_provider_in_flight",
+				Help:        "Current number of in-flight requests for this provider.",
+				ConstLabels: labels,
+			},
+			func() float64 { return float64(clp.InFlight()) },
+		))
+
+		reg.MustRegister(prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name:        "flowstate_provider_queue_depth",
+				Help:        "Current number of requests queued awaiting a concurrency slot.",
+				ConstLabels: labels,
+			},
+			func() float64 { return float64(clp.QueueDepth()) },
+		))
+	}
 }
 
 // tracedBundle groups the tracing pieces produced by buildTracedProvider.
