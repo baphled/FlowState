@@ -353,11 +353,11 @@ var _ = Describe("Engine tool-loop cap", func() {
 			Expect(tripped).To(BeTrue(), "the duration backstop must stamp tool_loop_exceeded")
 			// The loop must NOT run unbounded. With disabled iteration and
 			// identical-call guards and only a 1ms duration budget, the loop
-			// should trip well below the production 25-iteration ceiling.
-			// 47 iterations was observed within 1ms; we assert < 100 to
-			// confirm it fires far below the old 50-iteration default.
+			// should trip well below the production 50-iteration or 300s
+			// ceilings. 47 iterations was observed within 1ms; we assert
+			// < 100 to confirm it fires far below both defaults.
 			Expect(prov.callCount()).To(BeNumerically("<", 100),
-				"the duration backstop must trip well below the production 25-iteration ceiling (1ms budget)")
+				"the duration backstop must trip well below the production 50-iteration ceiling (1ms budget)")
 		})
 	})
 

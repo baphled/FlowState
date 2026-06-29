@@ -1057,7 +1057,7 @@ const engineStreamIdleTimeout = 60 * time.Second
 // SetMaxToolLoopIterationsForTest; zero/negative disables the backstop
 // (defence-in-depth gate, mirroring engineStreamIdleTimeout's disable-when-
 // unset semantics).
-const engineMaxToolLoopIterations = 25
+const engineMaxToolLoopIterations = 50
 
 // engineMaxToolLoopDuration is the cumulative wall-clock ceiling for a
 // single turn's tool-loop continuations in streamWithToolLoop. When the
@@ -1066,12 +1066,15 @@ const engineMaxToolLoopIterations = 25
 // count. This prevents long-running tool loops that are making slow but
 // varied progress from blocking the session indefinitely.
 //
-// Set to 120s so that a typical multi-tool task (5-8 iterations at
-// 5-10s per provider round-trip = 40-80s) completes comfortably while a
-// genuinely stuck or slow loop is killed within 2 minutes. Overridable
-// via SetMaxToolLoopDurationForTest; zero/negative disables the time
+// Set to 300s so that complex multi-tool tasks (reading files,
+// synthesising evidence, writing plans) can complete without hitting
+// the wall-clock backstop mid-work. The iteration ceiling (50) and
+// repeat-call detector (3 consecutive identical batches) provide the
+// primary defence against runaway loops; the duration backstop is an
+// insurance layer, not the first line of defence. Overridable via
+// SetMaxToolLoopDurationForTest; zero/negative disables the time
 // budget backstop.
-const engineMaxToolLoopDuration = 120 * time.Second
+const engineMaxToolLoopDuration = 300 * time.Second
 
 // engineMaxIdenticalToolCalls is the primary trip threshold: when the SAME
 // tool batch fingerprint (tool name + canonicalised arguments) recurs this
