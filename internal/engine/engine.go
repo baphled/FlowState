@@ -4477,6 +4477,8 @@ func (e *Engine) streamWithToolLoop(
 					return
 				}
 				attempt++
+				iterations = 0
+				loopStart = time.Now()
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -4514,6 +4516,8 @@ func (e *Engine) streamWithToolLoop(
 					return
 				}
 				attempt++
+				iterations = 0
+				loopStart = time.Now()
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -4537,10 +4541,7 @@ func (e *Engine) streamWithToolLoop(
 			}
 		}
 
-		// Execute all tool calls. When the batch has more than one call we fan
-		// out into goroutines so the engine's concurrent dispatch path fires.
-		// Single-call batches use the same path for uniformity.
-		execResults := e.executeToolCallBatch(ctx, sessionID, result.toolCalls, outChan)
+		execResults := e.executeDeduplicatedToolCalls(ctx, sessionID, result.toolCalls, outChan)
 
 		// When a tool execution returns a hard error (not a tool-level Result.Error)
 		// persist a synthetic tool_result so the session history has a complete
@@ -4732,6 +4733,7 @@ func (e *Engine) streamWithToolLoop(
 				iterations = 0
 				identicalRun = 0
 				lastFingerprint = ""
+				loopStart = time.Now() // reset wall-clock budget for continuation
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -4802,11 +4804,99 @@ func fingerprintToolBatch(toolCalls []*provider.ToolCall) string {
 	return b.String()
 }
 
+// deduplicateToolCalls collapses identical tool calls (same name + canonical
+// arguments) within a single batch so that the engine executes only the first
+// occurrence of each unique call and replicates the result to all duplicates.
+//
+// Background: Z.AI glm-5.2 has been observed (session c5c93b09, June 2026)
+// generating 9 identical todo_update calls (all with input {}) in a single
+// turn. Without deduplication the engine fan-outs all 9 goroutines, executes
+// the same tool 9 times, and wastes ~15 KB of token space on identical results
+// plus ~200 ms per execution. This is distinct from fingerprintToolBatch,
+// which detects the same batch recurring across DIFFERENT tool-loop turns.
+//
+// Returns:
+//   - unique: the deduplicated list (first occurrence of each unique call kept)
+//   - mapping: for each index in the original list, the index in unique to
+//     replicate its result from. Callers use: result[i] = result[unique[mapping[i]]]
+//
+// An empty input returns empty slices. Input with no duplicates returns unique
+// as a copy of the input and mapping as [0, 1, 2, ..., n-1].
+func deduplicateToolCalls(toolCalls []*provider.ToolCall) (unique []*provider.ToolCall, mapping []int) {
+	if len(toolCalls) == 0 {
+		return nil, nil
+	}
+
+	type key struct {
+		name string
+		args string // canonical JSON
+	}
+	seen := make(map[key]int) // first occurrence index in unique
+	unique = make([]*provider.ToolCall, 0, len(toolCalls))
+	mapping = make([]int, len(toolCalls))
+
+	for i, tc := range toolCalls {
+		if tc == nil {
+			// Nil entries are treated as unique (should not occur in practice).
+			mapping[i] = len(unique)
+			unique = append(unique, nil)
+			continue
+		}
+		args, err := json.Marshal(tc.Arguments)
+		if err != nil {
+			// Un-marshalable args: treat as unique on the string rendering.
+			args = []byte(fmt.Sprintf("%#v", tc.Arguments))
+		}
+		k := key{name: tc.Name, args: string(args)}
+		if idx, ok := seen[k]; ok {
+			mapping[i] = idx
+		} else {
+			idx = len(unique)
+			seen[k] = idx
+			mapping[i] = idx
+			unique = append(unique, tc)
+		}
+	}
+	return unique, mapping
+}
+
 // toolCallExecResult holds the outcome of a single tool call execution.
 type toolCallExecResult struct {
 	toolCall   *provider.ToolCall
 	toolResult tool.Result
 	err        error
+}
+
+// executeDeduplicatedToolCalls deduplicates identical tool calls within a
+// batch, executes the unique set, and replicates results back to every
+// original index so downstream consumers see one result per original tool
+// call with its correct ID. This prevents wasted executions when a provider
+// emits multiple identical tool calls in a single turn (observed with Z.AI
+// glm-5.2 generating 9 identical todo_update calls).
+func (e *Engine) executeDeduplicatedToolCalls(
+	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
+) []toolCallExecResult {
+	uniqCalls, dedupMapping := deduplicateToolCalls(toolCalls)
+	if len(uniqCalls) < len(toolCalls) {
+		slog.Warn("deduplicated identical tool calls before execution",
+			"session", sessionID,
+			"total", len(toolCalls),
+			"unique", len(uniqCalls),
+		)
+	}
+	execResults := e.executeToolCallBatch(ctx, sessionID, uniqCalls, outChan)
+	if len(uniqCalls) == len(toolCalls) {
+		return execResults
+	}
+	fullResults := make([]toolCallExecResult, len(toolCalls))
+	for i, repIdx := range dedupMapping {
+		fullResults[i] = toolCallExecResult{
+			toolCall:   toolCalls[i],
+			toolResult: execResults[repIdx].toolResult,
+			err:        execResults[repIdx].err,
+		}
+	}
+	return fullResults
 }
 
 // executeToolCallBatch runs all tool calls concurrently and returns results in

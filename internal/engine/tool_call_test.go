@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,6 +25,7 @@ type executableMockTool struct {
 	execResult  tool.Result
 	execErr     error
 	execCalled  bool
+	execCount   int
 	lastInput   tool.Input
 }
 
@@ -31,6 +33,7 @@ func (t *executableMockTool) Name() string        { return t.name }
 func (t *executableMockTool) Description() string { return t.description }
 func (t *executableMockTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
 	t.execCalled = true
+	t.execCount++
 	t.lastInput = input
 	return t.execResult, t.execErr
 }
@@ -2029,6 +2032,210 @@ var _ = Describe("suggestTool", func() {
 		Entry("empty available returns empty", []string{}, "anything", ""),
 		Entry("very different name returns empty", []string{"delegate", "bash", "skill_load"}, "zzzzzzzz", ""),
 	)
+})
+
+var _ = Describe("tool call deduplication in stream", func() {
+	var (
+		chatProvider *streamSequenceProvider
+		manifest     agent.Manifest
+		testTool     *executableMockTool
+		registry     *tool.Registry
+	)
+
+	BeforeEach(func() {
+		manifest = agent.Manifest{
+			ID:   "test-agent",
+			Name: "Test Agent",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are a helpful assistant.",
+			},
+			ContextManagement: agent.DefaultContextManagement(),
+			Capabilities:      agent.Capabilities{Tools: []string{"test_tool"}},
+		}
+
+		testTool = &executableMockTool{
+			name:        "test_tool",
+			description: "A test tool",
+			execResult:  tool.Result{Output: "ok"},
+		}
+
+		registry = tool.NewRegistry()
+		registry.Register(testTool)
+		registry.SetPermission("test_tool", tool.Allow)
+	})
+
+	It("deduplicates identical tool calls within a single turn", func() {
+		chatProvider = &streamSequenceProvider{
+			name: "test-chat-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_a", Name: "test_tool", Arguments: map[string]any{"key": "v"}}},
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_b", Name: "test_tool", Arguments: map[string]any{"key": "v"}}},
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_c", Name: "test_tool", Arguments: map[string]any{"key": "v"}}},
+					{Done: true, StopReason: "tool_use"},
+				},
+				{
+					{Content: "Done after dedup", Done: true, StopReason: "end_turn"},
+				},
+			},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+		})
+
+		ctx := context.Background()
+		chunks, err := eng.Stream(ctx, "test-agent", "Run the tool three times")
+		Expect(err).NotTo(HaveOccurred())
+
+		var toolResults int
+		var doneChunks []provider.StreamChunk
+		var collected string
+		for chunk := range chunks {
+			if chunk.EventType == "tool_result" {
+				toolResults++
+			}
+			if chunk.Done {
+				doneChunks = append(doneChunks, chunk)
+			}
+			collected += chunk.Content
+		}
+
+		Expect(testTool.execCount).To(Equal(1),
+			"identical tool calls must be deduplicated to a single execution")
+		Expect(toolResults).To(Equal(3),
+			"all three tool calls must emit tool_result chunks with correct IDs")
+		Expect(doneChunks).To(HaveLen(1))
+		Expect(collected).To(ContainSubstring("Done after dedup"))
+	})
+
+	It("does not deduplicate distinct tool calls", func() {
+		chatProvider = &streamSequenceProvider{
+			name: "test-chat-provider",
+			sequences: [][]provider.StreamChunk{
+				{
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_a", Name: "test_tool", Arguments: map[string]any{"key": "a"}}},
+					{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_b", Name: "test_tool", Arguments: map[string]any{"key": "b"}}},
+					{Done: true, StopReason: "tool_use"},
+				},
+				{
+					{Content: "Distinct results", Done: true, StopReason: "end_turn"},
+				},
+			},
+		}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: chatProvider,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{testTool},
+		})
+
+		ctx := context.Background()
+		chunks, err := eng.Stream(ctx, "test-agent", "Run two different calls")
+		Expect(err).NotTo(HaveOccurred())
+
+		var toolResults int
+		var collected string
+		for chunk := range chunks {
+			if chunk.EventType == "tool_result" {
+				toolResults++
+			}
+			collected += chunk.Content
+		}
+
+		Expect(testTool.execCount).To(Equal(2),
+			"distinct tool calls must each execute separately")
+		Expect(toolResults).To(Equal(2),
+			"each tool call must emit its own tool_result")
+	})
+})
+
+var _ = Describe("deduplicateToolCalls", func() {
+	DescribeTable("deduplicates identical tool calls",
+		func(toolCalls []*provider.ToolCall, wantUnique int, wantMapping []int) {
+			uniq, mapping := engine.DeduplicateToolCallsForTest(toolCalls)
+			Expect(uniq).To(HaveLen(wantUnique))
+			if wantMapping != nil {
+				Expect(mapping).To(Equal(wantMapping))
+			}
+		},
+		Entry("empty input returns nil slices", []*provider.ToolCall{}, 0, nil),
+		Entry("single call is unchanged",
+			[]*provider.ToolCall{{ID: "call_001", Name: "todo_update", Arguments: map[string]any{}}},
+			1, []int{0},
+		),
+		Entry("two identical calls collapse to one",
+			[]*provider.ToolCall{
+				{ID: "call_001", Name: "todo_update", Arguments: map[string]any{}},
+				{ID: "call_002", Name: "todo_update", Arguments: map[string]any{}},
+			},
+			1, []int{0, 0},
+		),
+		Entry("two different calls stay distinct",
+			[]*provider.ToolCall{
+				{ID: "call_001", Name: "todo_update", Arguments: map[string]any{"task": "foo"}},
+				{ID: "call_002", Name: "todo_update", Arguments: map[string]any{"task": "bar"}},
+			},
+			2, []int{0, 1},
+		),
+		Entry("nine identical calls collapse to one",
+			func() []*provider.ToolCall {
+				calls := make([]*provider.ToolCall, 9)
+				for i := 0; i < 9; i++ {
+					calls[i] = &provider.ToolCall{
+						ID:        fmt.Sprintf("call_%03d", i+1),
+						Name:      "todo_update",
+						Arguments: map[string]any{},
+					}
+				}
+				return calls
+			}(),
+			1, []int{0, 0, 0, 0, 0, 0, 0, 0, 0},
+		),
+		Entry("mixed duplicates and unique calls",
+			[]*provider.ToolCall{
+				{ID: "call_a", Name: "read", Arguments: map[string]any{"path": "/a"}},
+				{ID: "call_b", Name: "todo_update", Arguments: map[string]any{}},
+				{ID: "call_c", Name: "read", Arguments: map[string]any{"path": "/a"}},
+				{ID: "call_d", Name: "bash", Arguments: map[string]any{"cmd": "ls"}},
+				{ID: "call_e", Name: "todo_update", Arguments: map[string]any{}},
+			},
+			3, []int{0, 1, 0, 2, 1},
+		),
+		Entry("different tool names with same args are not duplicates",
+			[]*provider.ToolCall{
+				{ID: "call_001", Name: "read", Arguments: map[string]any{"path": "/x"}},
+				{ID: "call_002", Name: "write", Arguments: map[string]any{"path": "/x"}},
+			},
+			2, []int{0, 1},
+		),
+	)
+
+	It("preserves the first occurrence when deduplicating", func() {
+		calls := []*provider.ToolCall{
+			{ID: "call_001", Name: "todo_update", Arguments: map[string]any{"task": "foo"}},
+			{ID: "call_002", Name: "todo_update", Arguments: map[string]any{"task": "bar"}},
+			{ID: "call_003", Name: "todo_update", Arguments: map[string]any{"task": "foo"}},
+		}
+		uniq, mapping := engine.DeduplicateToolCallsForTest(calls)
+		Expect(uniq).To(HaveLen(2))
+		Expect(uniq[0].ID).To(Equal("call_001"))
+		Expect(uniq[1].ID).To(Equal("call_002"))
+		Expect(mapping).To(Equal([]int{0, 1, 0}))
+	})
+
+	It("handles nil tool calls in the batch without interfering with dedup", func() {
+		calls := []*provider.ToolCall{
+			{ID: "call_001", Name: "read", Arguments: map[string]any{"path": "/a"}},
+			nil,
+			{ID: "call_002", Name: "read", Arguments: map[string]any{"path": "/a"}},
+		}
+		uniq, mapping := engine.DeduplicateToolCallsForTest(calls)
+		Expect(uniq).To(HaveLen(2))
+		Expect(mapping).To(Equal([]int{0, 1, 0}))
+	})
 })
 
 var _ = Describe("levenshtein", func() {

@@ -429,3 +429,11 @@ func (r DelegationResultForTest) ToolCallCount() int { return r.toolCalls }
 func (e *Engine) SetTodoStoreForTest(s todo.Store) {
 	e.todoStore = s
 }
+
+// DeduplicateToolCallsForTest exposes deduplicateToolCalls to external
+// tests (package engine_test) for unit-level verification. The function
+// collapses identical tool calls (same name + canonical arguments) into
+// a single representative and returns a mapping to replicate results.
+func DeduplicateToolCallsForTest(toolCalls []*provider.ToolCall) (unique []*provider.ToolCall, mapping []int) {
+	return deduplicateToolCalls(toolCalls)
+}
