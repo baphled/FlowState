@@ -3017,6 +3017,7 @@ func (a *App) restorePersistedSessions() {
 		return
 	}
 	a.sessionManager.RestoreSessions(restored)
+	a.sessionManager.ReapOrphanDelegations()
 }
 
 // ConfigPath returns the path to the configuration file.

@@ -2018,6 +2018,89 @@ func (m *Manager) CancelInflight(sessionID string) bool {
 	return true
 }
 
+// ReapOrphanDelegations scans every session for delegation_started messages
+// that never received a terminal delegation (completed/failed) status.
+// Each such message is updated in place to a terminal delegation with
+// status "abandoned" and the session is persisted to disk.
+//
+// Call this after RestoreSessions during boot-time recovery to close the
+// lifecycle of delegations that were in-flight when the process exited.
+// Without this, the parent session carries a delegation_started message
+// forever — the orphaned tool_call is harmless (providers silently drop
+// unknown roles) but the stale delegation_started is visible in the UI
+// and prevents proper lifecycle observability.
+//
+// Expected:
+//   - The manager's sessions map is fully populated (e.g. after RestoreSessions).
+//
+// Returns:
+//   - None.
+//
+// Side effects:
+//   - Mutates delegation_started messages to delegation in affected sessions.
+//   - Persists each modified session's .meta.json sidecar via persistLocked.
+func (m *Manager) ReapOrphanDelegations() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, sess := range m.sessions {
+		m.reapOrphanDelegationsLocked(sess)
+	}
+}
+
+// reapOrphanDelegationsLocked scans a single session for orphaned
+// delegation_started messages and flips them to terminal delegation.
+// Caller MUST hold m.mu (write).
+//
+// Expected:
+//   - sess may be nil or have zero messages (both are no-ops).
+//
+// Side effects:
+//   - Mutates sess.Messages in place.
+//   - Calls persistLocked when any message was modified.
+func (m *Manager) reapOrphanDelegationsLocked(sess *Session) {
+	if sess == nil || len(sess.Messages) == 0 {
+		return
+	}
+
+	// Collect terminal delegation chain IDs so we can identify
+	// delegation_started messages that never resolved.
+	terminalChains := make(map[string]bool)
+	for _, msg := range sess.Messages {
+		if msg.Role != "delegation" {
+			continue
+		}
+		key := msg.ChainID
+		if key == "" {
+			key = msg.TargetAgent
+		}
+		terminalChains[key] = true
+	}
+
+	modified := false
+	for i, msg := range sess.Messages {
+		if msg.Role != "delegation_started" {
+			continue
+		}
+		key := msg.ChainID
+		if key == "" {
+			key = msg.TargetAgent
+		}
+		if terminalChains[key] {
+			continue
+		}
+		// Found an orphaned delegation_started — flip to terminal status.
+		sess.Messages[i].Role = "delegation"
+		sess.Messages[i].Status = "abandoned"
+		sess.Messages[i].Content = "Delegation terminated (process restart)"
+		modified = true
+	}
+
+	if modified {
+		m.persistLocked(sess)
+	}
+}
+
 // Depth returns the number of parent links between a session and the root.
 // Expected:
 //   - sessions contains the parent chain for the requested session.

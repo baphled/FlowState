@@ -2547,6 +2547,228 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
+	Describe("ReapOrphanDelegations", func() {
+		It("is a no-op when there are no sessions", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.ReapOrphanDelegations()
+			// No panic is the assertion.
+		})
+
+		It("is a no-op when sessions have no messages", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.RestoreSessions([]*session.Session{
+				{ID: "empty-1", AgentID: "a", Status: "active"},
+				{ID: "empty-2", AgentID: "b", Status: "active"},
+			})
+			mgr.ReapOrphanDelegations()
+			// No panic is the assertion.
+		})
+
+		It("is a no-op when there are no delegation_started messages", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			_, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+			mgr.ReapOrphanDelegations()
+			// No-op is the assertion.
+		})
+
+		It("flips an orphaned delegation_started to delegation (abandoned)", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.SetSessionsDir(tmpDir)
+
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Manually inject a delegation_started message (simulating
+			// what the accumulator writes for an in-flight delegation
+			// that never completed).
+			started := session.Message{
+				Role:        "delegation_started",
+				Content:     "Delegating to explorer… (0 tool calls)",
+				AgentID:     "test-agent",
+				TargetAgent: "explorer",
+				ChainID:     "chain-test-1",
+				Status:      "started",
+			}
+			mgr.AppendMessage(sess.ID, started)
+
+			// Verify the delegation_started is there before reaping.
+			got, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Messages).To(HaveLen(1))
+			Expect(got.Messages[0].Role).To(Equal("delegation_started"))
+
+			// Reap orphan delegations.
+			mgr.ReapOrphanDelegations()
+
+			// Verify the message was flipped.
+			got, err = mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Messages).To(HaveLen(1))
+			Expect(got.Messages[0].Role).To(Equal("delegation"))
+			Expect(got.Messages[0].Status).To(Equal("abandoned"))
+			Expect(got.Messages[0].Content).To(Equal("Delegation terminated (process restart)"))
+		})
+
+		It("does NOT flip a delegation_started that has a matching terminal delegation", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Inject a delegation_started.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:        "delegation_started",
+				Content:     "Delegating to explorer…",
+				AgentID:     "test-agent",
+				TargetAgent: "explorer",
+				ChainID:     "chain-test-1",
+				Status:      "started",
+			})
+
+			// Inject a terminal delegation for the SAME chain.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:        "delegation",
+				Content:     "Delegation completed.",
+				AgentID:     "test-agent",
+				TargetAgent: "explorer",
+				ChainID:     "chain-test-1",
+				Status:      "completed",
+			})
+
+			mgr.ReapOrphanDelegations()
+
+			// Verify both messages exist unchanged.
+			got, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Messages).To(HaveLen(2))
+			Expect(got.Messages[0].Role).To(Equal("delegation_started"))
+			Expect(got.Messages[0].Status).To(Equal("started"))
+			Expect(got.Messages[1].Role).To(Equal("delegation"))
+			Expect(got.Messages[1].Status).To(Equal("completed"))
+		})
+
+		It("only flips orphaned delegations when there is a mix of orphaned and completed chains", func() {
+			mgr := session.NewManager(&mockStreamer{})
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Chain 1: completed delegation.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:        "delegation_started",
+				Content:     "Delegating to explorer…",
+				AgentID:     "test-agent",
+				TargetAgent: "explorer",
+				ChainID:     "chain-explorer",
+				Status:      "started",
+			})
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:        "delegation",
+				Content:     "Explorer done.",
+				AgentID:     "test-agent",
+				TargetAgent: "explorer",
+				ChainID:     "chain-explorer",
+				Status:      "completed",
+			})
+
+			// Chain 2: orphaned delegation.
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:        "delegation_started",
+				Content:     "Delegating to librarian…",
+				AgentID:     "test-agent",
+				TargetAgent: "librarian",
+				ChainID:     "chain-librarian",
+				Status:      "started",
+			})
+
+			mgr.ReapOrphanDelegations()
+
+			got, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Messages).To(HaveLen(3))
+
+			// Chain 1 explorer: unchanged.
+			Expect(got.Messages[0].Role).To(Equal("delegation_started"))
+			Expect(got.Messages[1].Role).To(Equal("delegation"))
+			Expect(got.Messages[1].Status).To(Equal("completed"))
+
+			// Chain 2 librarian: flipped.
+			Expect(got.Messages[2].Role).To(Equal("delegation"))
+			Expect(got.Messages[2].Status).To(Equal("abandoned"))
+		})
+
+		It("handles multiple sessions independently", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.SetSessionsDir(tmpDir)
+
+			parent, err := mgr.CreateSession("coordinator")
+			Expect(err).NotTo(HaveOccurred())
+
+			child, err := mgr.CreateSession("explorer")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Parent has orphaned delegation.
+			mgr.AppendMessage(parent.ID, session.Message{
+				Role:        "delegation_started",
+				Content:     "Delegating…",
+				AgentID:     "coordinator",
+				TargetAgent: "explorer",
+				ChainID:     "chain-1",
+				Status:      "started",
+			})
+
+			// Child is fine (no delegation messages).
+			mgr.AppendMessage(child.ID, session.Message{
+				Role:    "user",
+				Content: "Hello",
+				AgentID: "explorer",
+			})
+
+			mgr.ReapOrphanDelegations()
+
+			// Parent delegation flipped.
+			got, err := mgr.GetSession(parent.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Messages[0].Role).To(Equal("delegation"))
+			Expect(got.Messages[0].Status).To(Equal("abandoned"))
+
+			// Child untouched.
+			got, err = mgr.GetSession(child.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.Messages[0].Role).To(Equal("user"))
+			Expect(got.Messages[0].Content).To(Equal("Hello"))
+		})
+
+		It("persists the flipped delegation to disk when sessionsDir is configured", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr := session.NewManager(&mockStreamer{})
+			mgr.SetSessionsDir(tmpDir)
+
+			sess, err := mgr.CreateSession("test-agent")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:        "delegation_started",
+				Content:     "Delegating…",
+				AgentID:     "test-agent",
+				TargetAgent: "explorer",
+				ChainID:     "chain-persist",
+				Status:      "started",
+			})
+
+			mgr.ReapOrphanDelegations()
+
+			// Re-load from disk and verify the flip persisted.
+			loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.Messages).To(HaveLen(1))
+			Expect(loaded.Messages[0].Role).To(Equal("delegation"))
+			Expect(loaded.Messages[0].Status).To(Equal("abandoned"))
+		})
+	})
+
 	Describe("TruncateMessages", func() {
 		var (
 			ctx  context.Context
