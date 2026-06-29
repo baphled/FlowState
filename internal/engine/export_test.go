@@ -197,6 +197,15 @@ func (e *Engine) SetMaxIdenticalToolCallsForTest(n int) {
 	e.maxIdenticalToolCalls = n
 }
 
+// SetMaxToolLoopDurationForTest overrides the engine's default wall-clock
+// ceiling for tool-loop continuations (engineMaxToolLoopDuration) so specs
+// can drive the time-budget scenario at millisecond timescales without
+// sleeping for 120s. Setting zero/negative disables the time budget
+// backstop entirely.
+func (e *Engine) SetMaxToolLoopDurationForTest(d time.Duration) {
+	e.maxToolLoopDuration = d
+}
+
 // PublishStreamingHeartbeatForTest exposes the heartbeat publish helper
 // so specs can pin the bus payload shape without standing up a full
 // Stream goroutine + ticker. Mirrors the production publishStreamingHeartbeat

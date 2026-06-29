@@ -675,6 +675,10 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 					"delegate engine must have todowrite when TodoStore is configured")
 				Expect(delegateEngine.HasTool("todo_update")).To(BeTrue(),
 					"delegate engine must have todo_update when TodoStore is configured")
+				Expect(delegateEngine.HasTool("todo_append")).To(BeTrue(),
+					"delegate engine must have todo_append when TodoStore is configured")
+				Expect(delegateEngine.HasTool("todo_insert")).To(BeTrue(),
+					"delegate engine must have todo_insert when TodoStore is configured")
 			})
 		})
 

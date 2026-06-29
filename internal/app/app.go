@@ -2637,7 +2637,12 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 	}
 
 	if a.TodoStore != nil {
-		tools = append(tools, todotool.New(a.TodoStore), todotool.NewUpdate(a.TodoStore))
+		tools = append(tools,
+			todotool.New(a.TodoStore),
+			todotool.NewUpdate(a.TodoStore),
+			todotool.NewAppend(a.TodoStore),
+			todotool.NewInsert(a.TodoStore),
+		)
 	}
 
 	if a.hasCoordinationTool(manifest.Capabilities.Tools) {

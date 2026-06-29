@@ -314,6 +314,53 @@ var _ = Describe("Engine tool-loop cap", func() {
 		})
 	})
 
+	Context("duration backstop", func() {
+		It("trips the loop when wall-clock exceeds maxToolLoopDuration even with no other guard active", func() {
+			prov := &repeatingToolProvider{
+				name: "slow-loop",
+				call: &provider.ToolCall{
+					ID:        "call_slow",
+					Name:      "missing_tool",
+					Arguments: map[string]any{"x": 1},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{},
+			})
+			// Disable the other two guards so ONLY the duration backstop
+			// can trip the loop.
+			eng.SetMaxToolLoopIterationsForTest(0)
+			eng.SetMaxIdenticalToolCallsForTest(0)
+			// Set an extremely short duration so the backstop fires after
+			// the first tool-loop iteration.
+			eng.SetMaxToolLoopDurationForTest(time.Millisecond)
+
+			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue(), "the duration backstop must terminate the turn")
+
+			var tripped bool
+			for _, c := range received {
+				if c.Done && c.StopReason == session.StopReasonToolLoopExceeded {
+					tripped = true
+				}
+			}
+			Expect(tripped).To(BeTrue(), "the duration backstop must stamp tool_loop_exceeded")
+			// The loop must NOT run unbounded. With disabled iteration and
+			// identical-call guards and only a 1ms duration budget, the loop
+			// should trip well below the production 25-iteration ceiling.
+			// 47 iterations was observed within 1ms; we assert < 100 to
+			// confirm it fires far below the old 50-iteration default.
+			Expect(prov.callCount()).To(BeNumerically("<", 100),
+				"the duration backstop must trip well below the production 25-iteration ceiling (1ms budget)")
+		})
+	})
+
 	Context("when the cap trips but the session has incomplete todos", func() {
 		It("injects todo continuations and keeps retrying until the context is cancelled", func() {
 			prov := &repeatingToolProvider{

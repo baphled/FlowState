@@ -169,6 +169,8 @@ type validatorManifestProbe struct {
 var defaultBaseTools = []string{
 	"todowrite",
 	"todo_update",
+	"todo_append",
+	"todo_insert",
 	"skill_load",
 }
 
@@ -337,7 +339,7 @@ func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
 	return []Violation{{
 		Manifest: name,
 		Rule:     "tools-empty",
-		Detail:   "capabilities.tools is empty — under D1 the agent inherits only the default base toolset (todowrite, todo_update, skill_load); if more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical fail-closed regression this rule originally caught)",
+		Detail:   "capabilities.tools is empty — under D1 the agent inherits only the default base toolset (todowrite, todo_update, todo_append, todo_insert, skill_load); if more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical fail-closed regression this rule originally caught)",
 	}}
 }
 

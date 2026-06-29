@@ -369,6 +369,13 @@ type Engine struct {
 	// detection.
 	maxIdenticalToolCalls int
 
+	// maxToolLoopDuration is the cumulative wall-clock ceiling for a
+	// single turn's tool-loop continuations in streamWithToolLoop.
+	// Defaults to engineMaxToolLoopDuration via Engine.New; overridable
+	// via SetMaxToolLoopDurationForTest. Zero/negative disables the
+	// time budget backstop.
+	maxToolLoopDuration time.Duration
+
 	// microCompactor is the RLM Phase A Layer 1 compactor. It applies the
 	// hot/cold tool-result split to the in-flight provider message slice
 	// produced by buildContextWindow. Nil disables Phase A regardless of
@@ -1017,6 +1024,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		heartbeatInterval:              defaultStreamingHeartbeatInterval,
 		streamIdleTimeout:              engineStreamIdleTimeout,
 		maxToolLoopIterations:          engineMaxToolLoopIterations,
+		maxToolLoopDuration:            engineMaxToolLoopDuration,
 		maxIdenticalToolCalls:          engineMaxIdenticalToolCalls,
 	}
 }
@@ -1049,7 +1057,21 @@ const engineStreamIdleTimeout = 60 * time.Second
 // SetMaxToolLoopIterationsForTest; zero/negative disables the backstop
 // (defence-in-depth gate, mirroring engineStreamIdleTimeout's disable-when-
 // unset semantics).
-const engineMaxToolLoopIterations = 50
+const engineMaxToolLoopIterations = 25
+
+// engineMaxToolLoopDuration is the cumulative wall-clock ceiling for a
+// single turn's tool-loop continuations in streamWithToolLoop. When the
+// loop has been running longer than this threshold, the turn is
+// terminated with StopReasonToolLoopExceeded regardless of iteration
+// count. This prevents long-running tool loops that are making slow but
+// varied progress from blocking the session indefinitely.
+//
+// Set to 120s so that a typical multi-tool task (5-8 iterations at
+// 5-10s per provider round-trip = 40-80s) completes comfortably while a
+// genuinely stuck or slow loop is killed within 2 minutes. Overridable
+// via SetMaxToolLoopDurationForTest; zero/negative disables the time
+// budget backstop.
+const engineMaxToolLoopDuration = 120 * time.Second
 
 // engineMaxIdenticalToolCalls is the primary trip threshold: when the SAME
 // tool batch fingerprint (tool name + canonicalised arguments) recurs this
@@ -4321,6 +4343,10 @@ func (e *Engine) streamWithToolLoop(
 	defer e.evictCompletedBackgroundTasks()
 
 	attempt := 0
+	// loopStart records the wall clock when the tool loop began. Compared
+	// against maxToolLoopDuration in the cap check below to provide a
+	// cumulative time budget backstop alongside the iteration ceiling.
+	loopStart := time.Now()
 	// Turn-local tool-loop guard state. Declared here (never on the Engine)
 	// so concurrent turns can never share it. iterations counts continuations
 	// (about-to-re-request passes); lastFingerprint / identicalRun track the
@@ -4639,14 +4665,18 @@ func (e *Engine) streamWithToolLoop(
 		// or len(toolCalls)==0 early-exits above. So tripping a cap here can
 		// only fire on the re-request path, never on a clean completion.
 		//
-		// Layered guards (both active):
+		// Layered guards (all active):
 		//   1. Repeat detection (primary): fingerprint this batch as
 		//      (tool name + canonicalised args); if the SAME fingerprint
 		//      recurs maxIdenticalToolCalls consecutive iterations, trip.
 		//   2. Fixed-N backstop: an absolute ceiling of maxToolLoopIterations
 		//      total continuations, trip regardless of fingerprint. Covers
 		//      stuck loops the fingerprint can't catch (e.g. cycling args).
-		// Zero/negative on either field disables that respective check.
+		//   3. Duration backstop: a cumulative wall-clock ceiling of
+		//      maxToolLoopDuration since loopStart, independent of iteration
+		//      count. Catches slow-but-varied loops that never repeat and
+		//      never hit the iteration ceiling. Added June 2026.
+		// Zero/negative on any field disables its respective check.
 		iterations++
 		fingerprint := fingerprintToolBatch(result.toolCalls)
 		if e.maxIdenticalToolCalls > 0 {
@@ -4658,19 +4688,25 @@ func (e *Engine) streamWithToolLoop(
 			lastFingerprint = fingerprint
 		}
 
+		elapsed := time.Since(loopStart)
 		repeatTripped := e.maxIdenticalToolCalls > 0 && identicalRun >= e.maxIdenticalToolCalls
 		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
-		if repeatTripped || backstopTripped {
+		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
+		if repeatTripped || backstopTripped || durationTripped {
 			reason := "iteration_backstop"
 			if repeatTripped {
 				reason = "identical_call_repeat"
+			} else if durationTripped {
+				reason = "duration_backstop"
 			}
 			slog.Warn("engine tool loop capped",
 				"session", sessionID,
 				"trip", reason,
 				"iterations", iterations,
 				"identical_run", identicalRun,
+				"elapsed", elapsed,
 				"max_iterations", e.maxToolLoopIterations,
+				"max_duration", e.maxToolLoopDuration,
 				"max_identical", e.maxIdenticalToolCalls,
 			)
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {

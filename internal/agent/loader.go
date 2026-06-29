@@ -25,7 +25,7 @@ func warnIfNoTools(m *Manifest, path string) {
 		return
 	}
 	slog.Warn(
-		"agent manifest has no capabilities.tools; agent will inherit only the default base toolset (todowrite, todo_update, skill_load)",
+		"agent manifest has no capabilities.tools; agent will inherit only the default base toolset (todowrite, todo_update, todo_append, todo_insert, skill_load)",
 		"path", path,
 		"agent_id", m.ID,
 	)

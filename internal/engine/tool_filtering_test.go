@@ -83,7 +83,7 @@ var _ = Describe("Tool schema filtering", Label("integration"), func() {
 
 				names := toolNames(chatProvider.capturedRequest.Tools)
 				// D1 (Agent Runtime Quality plan, May 2026): every
-				// manifest inherits {todowrite, todo_update, skill_load}.
+				// manifest inherits {todowrite, todo_update, todo_append, todo_insert, skill_load}.
 				// Of those, only todowrite + skill_load are registered
 				// on this fixture's `allTools` slice — todo_update is
 				// not — so the intersection adds those two.
