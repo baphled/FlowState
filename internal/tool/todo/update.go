@@ -61,7 +61,7 @@ func (t *UpdateTool) Name() string {
 // Side effects:
 //   - None.
 func (t *UpdateTool) Description() string {
-	return "Patch a single todo entry (status, content, or priority) by 0-based index. Use this for every per-task status transition; reserve `todowrite` for initial list creation only."
+	return "Patch a single todo entry (status, content, or priority) by 0-based index. Use this for every per-task status transition; reserve `todowrite` for initial list creation only. Tasks MUST be worked through sequentially: when you mark the current item `completed`, the next pending item auto-advances to `in_progress`. At most one item can be `in_progress` at a time."
 }
 
 // Schema returns the input schema for the todo_update tool.
@@ -82,7 +82,7 @@ func (t *UpdateTool) Schema() tool.Schema {
 			},
 			"status": {
 				Type:        "string",
-				Description: "New status for the todo: pending, in_progress, completed, or cancelled",
+				Description: "New status for the todo: pending, in_progress, completed, or cancelled. When set to `completed`, the next pending item auto-advances to `in_progress`. When set to `in_progress`, any other in_progress item is automatically moved back to `pending` (sequential discipline: at most one task at a time).",
 			},
 			"content": {
 				Type:        "string",
@@ -101,6 +101,11 @@ func (t *UpdateTool) Schema() tool.Schema {
 // updated list as JSON so the UI surface (and the model) sees the same shape
 // as a todowrite response.
 //
+// Sequential discipline (D9): when the patch marks an item `completed`, the
+// next `pending` item auto-advances to `in_progress`. When the patch marks an
+// item `in_progress`, any other item that was `in_progress` is moved back to
+// `pending`. This enforces one-at-a-time task progression through the list.
+//
 // Expected:
 //   - ctx contains a session.IDKey value identifying the current session.
 //   - input.Arguments["index"] is a JSON number (decoded as float64) in
@@ -116,6 +121,7 @@ func (t *UpdateTool) Schema() tool.Schema {
 //
 // Side effects:
 //   - Mutates the stored todo list for the session.
+//   - May auto-advance the next pending item or demote other in_progress items.
 func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	sessionID, ok := ctx.Value(session.IDKey{}).(string)
 	if !ok || sessionID == "" {
@@ -139,6 +145,10 @@ func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 		updated := make([]Item, len(current))
 		copy(updated, current)
 		applyPatch(&updated[idx], patch)
+
+		// Sequential discipline: enforce one-in-progress and auto-advance on complete.
+		enforceSequential(updated, idx, patch)
+
 		return updated, nil
 	})
 	if err != nil {
@@ -150,6 +160,57 @@ func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 		return tool.Result{}, fmt.Errorf("serialising todos: %w", err)
 	}
 	return tool.Result{Output: string(out)}, nil
+}
+
+// enforceSequential applies the sequential discipline on a mutated todo list.
+//
+// When the patched item was set to `completed`, the next `pending` item (after
+// idx, wrapping forward) is auto-advanced to `in_progress`. When the patched
+// item was set to `in_progress`, any other item that was `in_progress` is
+// demoted back to `pending` (at most one item can be in-progress at a time).
+//
+// Expected:
+//   - updated is the current state of the todo list after the requested patch
+//     has been applied (the caller has already mutated updated[idx]).
+//   - idx is the 0-based index that was patched.
+//   - patch carries the patch fields that were applied. Only the status field
+//     triggers sequential adjustments.
+//
+// Side effects:
+//   - Mutates items in updated in place.
+func enforceSequential(updated []Item, idx int, patch itemPatch) {
+	if patch.status == "" {
+		return
+	}
+
+	switch patch.status {
+	case "completed":
+		// Auto-advance: find the next pending item after idx and set it
+		// to in_progress. If no pending item exists after idx, wrap to
+		// the start — this handles mid-list completion when prior items
+		// were skipped.
+		for i := idx + 1; i < len(updated); i++ {
+			if updated[i].Status == "pending" {
+				updated[i].Status = "in_progress"
+				return
+			}
+		}
+		// No pending item after idx; check from start to idx.
+		for i := 0; i <= idx; i++ {
+			if updated[i].Status == "pending" {
+				updated[i].Status = "in_progress"
+				return
+			}
+		}
+
+	case "in_progress":
+		// Demote any other in_progress item back to pending.
+		for i := range updated {
+			if i != idx && updated[i].Status == "in_progress" {
+				updated[i].Status = "pending"
+			}
+		}
+	}
 }
 
 // itemPatch carries optional patch fields for a single todo. Empty strings
