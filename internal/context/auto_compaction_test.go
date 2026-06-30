@@ -314,6 +314,103 @@ var _ = Describe("AutoCompactor.Compact", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	Describe("CompactExtend — anchored iterative summarisation", func() {
+		It("happy path: extends a prior summary with new messages", func() {
+			priorSummary := contextpkg.CompactionSummary{
+				Intent:       "implement user authentication",
+				KeyDecisions: []string{"use JWT tokens"},
+				NextSteps:    []string{"add password hashing"},
+			}
+			summariser := &fakeSummariser{response: sampleSummaryJSON(nil)}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			summary, err := compactor.CompactExtend(context.Background(), priorSummary, sampleMessages())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(summary.Intent).NotTo(BeEmpty())
+			Expect(summary.NextSteps).NotTo(BeEmpty())
+			Expect(summariser.calls).To(Equal(1))
+		})
+
+		It("threads SummaryPromptSystem and RenderExtendSummaryPrompt output to the summariser verbatim", func() {
+			priorSummary := contextpkg.CompactionSummary{
+				Intent:       "implement user authentication",
+				KeyDecisions: []string{"use JWT tokens"},
+				NextSteps:    []string{"add password hashing"},
+			}
+			summariser := &fakeSummariser{response: sampleSummaryJSON(nil)}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			msgs := sampleMessages()
+			_, err := compactor.CompactExtend(context.Background(), priorSummary, msgs)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(summariser.recordedSystem).To(Equal(contextpkg.SummaryPromptSystem),
+				"system drift detected")
+
+			wantUser, err := contextpkg.RenderExtendSummaryPrompt(priorSummary, msgs)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(summariser.recordedUser).To(Equal(wantUser),
+				"extend user prompt drift")
+		})
+
+		It("returns ErrEmptySummaryInput on empty input without calling the summariser", func() {
+			priorSummary := contextpkg.CompactionSummary{
+				Intent: "existing intent",
+			}
+			summariser := &fakeSummariser{}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			_, err := compactor.CompactExtend(context.Background(), priorSummary, nil)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, contextpkg.ErrEmptySummaryInput)).To(BeTrue(),
+				"err = %v; want ErrEmptySummaryInput", err)
+			Expect(summariser.calls).To(Equal(0))
+		})
+
+		It("propagates a wrapped summariser error and does not retry", func() {
+			priorSummary := contextpkg.CompactionSummary{
+				Intent: "existing intent",
+			}
+			upstream := errors.New("summariser: simulated provider outage")
+			summariser := &fakeSummariser{err: upstream}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			_, err := compactor.CompactExtend(context.Background(), priorSummary, sampleMessages())
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, upstream)).To(BeTrue())
+			Expect(summariser.calls).To(Equal(1),
+				"summariser must be called exactly once (no retries)")
+		})
+
+		It("returns ErrNilSummariser when constructed with a nil summariser", func() {
+			priorSummary := contextpkg.CompactionSummary{
+				Intent: "existing intent",
+			}
+			compactor := contextpkg.NewAutoCompactor(nil)
+
+			_, err := compactor.CompactExtend(context.Background(), priorSummary, sampleMessages())
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, contextpkg.ErrNilSummariser)).To(BeTrue())
+		})
+
+		It("applies the same validation as Compact (rejects empty Intent)", func() {
+			priorSummary := contextpkg.CompactionSummary{
+				Intent: "existing intent",
+			}
+			summariser := &fakeSummariser{
+				response: sampleSummaryJSON(func(s *contextpkg.CompactionSummary) {
+					s.Intent = ""
+				}),
+			}
+			compactor := contextpkg.NewAutoCompactor(summariser)
+
+			_, err := compactor.CompactExtend(context.Background(), priorSummary, sampleMessages())
+			Expect(err).To(HaveOccurred())
+			Expect(errors.Is(err, contextpkg.ErrInvalidSummary)).To(BeTrue())
+			Expect(err.Error()).To(ContainSubstring("intent"))
+		})
+	})
+
 	It("inspects every string-bearing field, not just Intent (rejects forbidden id in Errors)", func() {
 		summariser := &fakeSummariser{
 			response: sampleSummaryJSON(func(s *contextpkg.CompactionSummary) {

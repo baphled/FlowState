@@ -2,6 +2,7 @@ package context
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -232,4 +233,139 @@ func renderMessagesForSummary(msgs []provider.Message) string {
 	}
 
 	return b.String()
+}
+
+// extendSummaryPromptLines assembles the extend-variant user-prompt template
+// from short fragments so each source line stays under the 140-character
+// linter cap. This variant is used by CompactExtend: instead of asking the
+// model to summarise messages from scratch, it provides the prior summary as
+// context and asks the model to extend it with the new messages.
+//
+// The template embeds:
+//   - the full schema contract for CompactionSummary (same as the full
+//     summary prompt, so the output JSON shape is identical),
+//   - the forbidding-ids directive,
+//   - the {{.PriorSummaryJSON}}, {{.MessageCount}}, and {{.Messages}}
+//     interpolations supplied by the extendSummaryPromptData struct.
+var extendSummaryPromptLines = []string{
+	"You are extending a prior transcript summary with new conversation messages.",
+	"",
+	"Below is the prior CompactionSummary that was produced from an earlier",
+	"segment of this conversation. Your task is to produce an UPDATED",
+	"CompactionSummary that incorporates the new messages listed after it.",
+	"",
+	"## Prior summary",
+	"",
+	"{{.PriorSummaryJSON}}",
+	"",
+	"## Output contract",
+	"",
+	"Output exactly one JSON object matching the CompactionSummary schema",
+	"described below. No preamble. No trailing commentary. No markdown code",
+	"fences.",
+	"",
+	"## Forbidden content",
+	"",
+	"Do NOT include any tool_use_id or tool_call_id values (strings starting",
+	"with `toolu_` or `call_`) anywhere in the output.",
+	"Refer to tool calls by name and purpose only.",
+	"",
+	"## Schema",
+	"",
+	"The CompactionSummary object has these fields:",
+	"",
+	"- `intent` (string): one or two sentences describing what the agent was",
+	"  trying to accomplish across the FULL transcript (both prior and new).",
+	"- `key_decisions` (array of strings): architectural or design decisions",
+	"  made, each phrased as a standalone statement. Empty array if none.",
+	"- `errors` (array of strings): errors encountered and how they were",
+	"  resolved (or left open). Empty array if none.",
+	"- `next_steps` (array of strings): outstanding work implied by the FULL",
+	"  transcript. Empty array if the slice concludes cleanly.",
+	"- `files_to_restore` (array of strings): relative paths of files that",
+	"  the agent read or modified which a future turn is likely to need",
+	"  re-loaded. Use forward slashes. Relative to the repository root.",
+	"  Empty array if no files were touched.",
+	"- `original_token_count` (integer): leave as 0 — the caller will",
+	"  overwrite this field.",
+	"- `summary_token_count` (integer): leave as 0 — the caller will",
+	"  overwrite this field.",
+	"",
+	"Emit ONLY the fields listed above. Any other field will be rejected as a",
+	"parse failure. Compaction wall-clock time is stamped server-side and must",
+	"not be included in your output.",
+	"",
+	"## New messages to incorporate",
+	"",
+	"The following are the new message(s) that were added since the prior",
+	"summary was produced. There are {{.MessageCount}} message(s). Read them",
+	"and produce the UPDATED CompactionSummary JSON described above.",
+	"",
+	"---",
+	"{{.Messages}}",
+	"---",
+	"",
+	"Produce only the JSON object.",
+}
+
+// extendSummaryPromptTemplate is the joined extend template text rendered by
+// RenderExtendSummaryPrompt.
+var extendSummaryPromptTemplate = strings.Join(extendSummaryPromptLines, "\n")
+
+// extendSummaryPromptData is the template data structure rendered into
+// extendSummaryPromptTemplate by RenderExtendSummaryPrompt.
+type extendSummaryPromptData struct {
+	PriorSummaryJSON string
+	MessageCount     int
+	Messages         string
+}
+
+// parsedExtendSummaryPrompt is the pre-parsed extend summary template.
+var parsedExtendSummaryPrompt = template.Must(template.New("extend_summary_prompt").Parse(extendSummaryPromptTemplate))
+
+// RenderExtendSummaryPrompt produces the user-facing prompt text for the
+// anchored iterative (extend) variant of L2 auto-compaction. Unlike
+// RenderSummaryPrompt which asks the model to summarise messages from
+// scratch, this variant provides the prior summary as JSON context and asks
+// the model to produce an updated CompactionSummary that incorporates the
+// new messages.
+//
+// Expected:
+//   - priorSummary is the CompactionSummary from the most recent compaction
+//     of this session. It is rendered as JSON in the prompt so the model
+//     can reference and extend it.
+//   - msgs is the slice of provider.Message values representing the new
+//     conversation content since the prior summary was produced. Messages
+//     are rendered verbatim into the prompt.
+//
+// Returns:
+//   - The rendered prompt text on success.
+//   - ErrEmptySummaryInput when msgs is empty.
+//   - A wrapped error when the prior summary cannot be marshalled to JSON.
+//   - A wrapped template execution error if the template itself fails.
+//
+// Side effects:
+//   - None. Pure function over inputs.
+func RenderExtendSummaryPrompt(priorSummary CompactionSummary, msgs []provider.Message) (string, error) {
+	if len(msgs) == 0 {
+		return "", ErrEmptySummaryInput
+	}
+
+	priorJSON, err := json.Marshal(priorSummary)
+	if err != nil {
+		return "", fmt.Errorf("context: marshal prior summary: %w", err)
+	}
+
+	data := extendSummaryPromptData{
+		PriorSummaryJSON: string(priorJSON),
+		MessageCount:     len(msgs),
+		Messages:         renderMessagesForSummary(msgs),
+	}
+
+	var buf bytes.Buffer
+	if err := parsedExtendSummaryPrompt.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("context: execute extend summary prompt template: %w", err)
+	}
+
+	return buf.String(), nil
 }

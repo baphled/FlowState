@@ -31,6 +31,17 @@ func ExportedWriteJob(storagePath string, kind UnitKind, msgs []provider.Message
 	return writeJob(job)
 }
 
+// ExportedSwapExtendSummaryPromptTemplate replaces the pre-parsed extend
+// summary prompt template with one whose Execute must fail (by referencing a
+// non-existent field). Returns a restore function the test must defer. This
+// exposes the otherwise unreachable Execute error branch in
+// RenderExtendSummaryPrompt to coverage tooling.
+func ExportedSwapExtendSummaryPromptTemplate() func() {
+	original := parsedExtendSummaryPrompt
+	parsedExtendSummaryPrompt = templateMustBroken()
+	return func() { parsedExtendSummaryPrompt = original }
+}
+
 // ExportedSwapSummaryPromptTemplate replaces the pre-parsed summary prompt
 // template with one whose Execute must fail (by referencing a non-existent
 // field). Returns a restore function the test must defer. This exposes the

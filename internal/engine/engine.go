@@ -6705,8 +6705,28 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		return reused
 	}
 
+	// Anchored iterative summarisation (Feature 1): when a prior summary
+	// exists for this session, use CompactExtend instead of Compact to
+	// avoid re-summarising the full cold range from scratch. The prior
+	// summary was cached from the most recent compaction turn; CompactExtend
+	// passes it to the summariser as context alongside the current messages,
+	// so the model only needs to extend rather than regenerate.
 	start := time.Now()
-	summary, err := e.autoCompactor.Compact(ctx, recent)
+	priorSummary := e.getPriorCompactionSummary(sessionID)
+	var summary ctxstore.CompactionSummary
+	var err error
+	if priorSummary != nil {
+		slog.Debug("engine auto-compaction: using anchored iterative extend",
+			"sessionID", sessionID,
+			"priorIntent", priorSummary.Intent,
+		)
+		summary, err = e.autoCompactor.CompactExtend(ctx, *priorSummary, recent)
+	} else {
+		slog.Debug("engine auto-compaction: using full summarisation (no prior summary)",
+			"sessionID", sessionID,
+		)
+		summary, err = e.autoCompactor.Compact(ctx, recent)
+	}
 	if err != nil {
 		slog.Warn("engine auto-compaction failed; falling back to uncompacted window",
 			"error", err,
@@ -6848,8 +6868,24 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 		return reused
 	}
 
+	// Anchored iterative summarisation: use CompactExtend when a prior
+	// summary exists for this session to avoid re-summarising from scratch.
 	start := time.Now()
-	summary, err := e.autoCompactor.Compact(ctx, recent)
+	priorSummary := e.getPriorCompactionSummary(sessionID)
+	var summary ctxstore.CompactionSummary
+	var err error
+	if priorSummary != nil {
+		slog.Debug("engine manual compaction: using anchored iterative extend",
+			"sessionID", sessionID,
+			"priorIntent", priorSummary.Intent,
+		)
+		summary, err = e.autoCompactor.CompactExtend(ctx, *priorSummary, recent)
+	} else {
+		slog.Debug("engine manual compaction: using full summarisation (no prior summary)",
+			"sessionID", sessionID,
+		)
+		summary, err = e.autoCompactor.Compact(ctx, recent)
+	}
 	if err != nil {
 		slog.Warn("engine manual compaction failed; returning no-fire to caller",
 			"error", err,
@@ -6951,6 +6987,33 @@ func (e *Engine) reuseMemoisedSummary(sessionID string, currentHash [32]byte, re
 	e.lastCompactionSummary = cached.summary
 	e.buildStateMu.Unlock()
 	return "[auto-compacted summary]: " + string(summaryJSON), true
+}
+
+// getPriorCompactionSummary retrieves the most recent successful compaction
+// summary for the given session from the per-session memoisation cache.
+// Returns nil when no prior summary exists (first compaction for this
+// session, or memo was evicted on session end).
+//
+// The returned summary is safe to use for anchored iterative compaction
+// (CompactExtend) — it represents the summariser's last view of this
+// session's conversation before the current message burst.
+//
+// Expected:
+//   - sessionID identifies the active session.
+//
+// Returns:
+//   - A pointer to the prior CompactionSummary, or nil if none exists.
+//
+// Side effects:
+//   - None. Read-only access under buildStateMu.RLock.
+func (e *Engine) getPriorCompactionSummary(sessionID string) *ctxstore.CompactionSummary {
+	e.buildStateMu.Lock()
+	cached, hit := e.sessionCompactionMemo[sessionID]
+	e.buildStateMu.Unlock()
+	if !hit || cached.summary == nil {
+		return nil
+	}
+	return cached.summary
 }
 
 // maybeRehydrate resolves the FilesToRestore listed on the session's
@@ -8006,8 +8069,20 @@ func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context,
 //     Trigger="model_switch" on the engine bus on a successful fire.
 func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvider, newModel string) string {
 	if e == nil || sessionID == "" || e.tokenCounter == nil {
+		slog.Debug("engine MaybeCompactForModel: precondition not met",
+			"sessionID", sessionID,
+			"newProvider", newProvider,
+			"newModel", newModel,
+			"reason", "engine nil, sessionID empty, or tokenCounter nil",
+		)
 		return ""
 	}
+
+	slog.Debug("engine MaybeCompactForModel: entry",
+		"sessionID", sessionID,
+		"newProvider", newProvider,
+		"newModel", newModel,
+	)
 
 	// Resolve session-scoped messages when a SessionLookup is wired
 	// (production path). Without this, e.store.AllMessages() reads
@@ -8025,6 +8100,11 @@ func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvide
 	if lookup != nil {
 		messages, agentID, providerID, modelID, ok := lookup.SnapshotForCompaction(sessionID)
 		if !ok || len(messages) == 0 {
+			slog.Debug("engine MaybeCompactForModel: no-op, no session messages",
+				"sessionID", sessionID,
+				"newProvider", newProvider,
+				"newModel", newModel,
+			)
 			return ""
 		}
 		explicitMessages = messages
@@ -8049,12 +8129,22 @@ func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvide
 		// back to the shared store so existing tests that seed the
 		// store directly continue to pass unchanged.
 		if e.store == nil {
+			slog.Debug("engine MaybeCompactForModel: no-op, no store wired",
+				"sessionID", sessionID,
+				"newProvider", newProvider,
+				"newModel", newModel,
+			)
 			return ""
 		}
 		tokenBudget = e.ResolveContextLength(newProvider, newModel)
 	}
 
 	if tokenBudget <= 0 {
+		slog.Debug("engine MaybeCompactForModel: no-op, tokenBudget <= 0",
+			"sessionID", sessionID,
+			"newProvider", newProvider,
+			"newModel", newModel,
+		)
 		return ""
 	}
 
@@ -8077,8 +8167,25 @@ func (e *Engine) MaybeCompactForModel(ctx context.Context, sessionID, newProvide
 	// estimate would land within the proactive overflow gate's
 	// 5% safety margin of refusal on the new window.
 	if !e.shouldAutoCompactForGate(estimated, tokenBudget, reserve) {
+		slog.Debug("engine MaybeCompactForModel: no-op, within gate safety margin",
+			"sessionID", sessionID,
+			"newProvider", newProvider,
+			"newModel", newModel,
+			"estimatedTokens", estimated,
+			"tokenBudget", tokenBudget,
+			"outputReserve", reserve,
+		)
 		return ""
 	}
+
+	slog.Info("engine MaybeCompactForModel: firing compaction on model switch",
+		"sessionID", sessionID,
+		"newProvider", newProvider,
+		"newModel", newModel,
+		"estimatedTokens", estimated,
+		"tokenBudget", tokenBudget,
+		"outputReserve", reserve,
+	)
 
 	// Attach the destination model so the summariser routes against
 	// the correct provider (mirrors CompactNow's WithSessionModel).

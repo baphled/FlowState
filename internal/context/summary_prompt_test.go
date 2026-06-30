@@ -262,6 +262,166 @@ var _ = Describe("RenderSummaryPrompt template execution failure", func() {
 	})
 })
 
+var _ = Describe("RenderExtendSummaryPrompt — anchored iterative variant", func() {
+	Describe("empty input", func() {
+		It("returns ErrEmptySummaryInput when msgs is nil", func() {
+			prior := flowctx.CompactionSummary{Intent: "existing"}
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, nil)
+
+			Expect(out).To(BeEmpty())
+			Expect(errors.Is(err, flowctx.ErrEmptySummaryInput)).To(BeTrue())
+		})
+
+		It("returns ErrEmptySummaryInput when msgs is an empty slice", func() {
+			prior := flowctx.CompactionSummary{Intent: "existing"}
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, []provider.Message{})
+
+			Expect(out).To(BeEmpty())
+			Expect(errors.Is(err, flowctx.ErrEmptySummaryInput)).To(BeTrue())
+		})
+	})
+
+	Describe("happy-path rendering", func() {
+		var (
+			prior flowctx.CompactionSummary
+			msgs  []provider.Message
+		)
+
+		BeforeEach(func() {
+			prior = flowctx.CompactionSummary{
+				Intent:       "implement user authentication",
+				KeyDecisions: []string{"use JWT tokens", "bcrypt for passwords"},
+				NextSteps:    []string{"add password hashing"},
+				Errors:       []string{"none"},
+			}
+			msgs = []provider.Message{
+				{Role: "user", Content: "Add rate limiting to the auth endpoints."},
+				{Role: "assistant", Content: "Plan: add rate limiter middleware."},
+			}
+		})
+
+		It("produces a non-empty prompt string without error", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).NotTo(BeEmpty())
+		})
+
+		It("embeds the prior summary as JSON in the prompt", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring(`"intent":"implement user authentication"`))
+			Expect(out).To(ContainSubstring(`"use JWT tokens"`))
+			Expect(out).To(ContainSubstring(`"add password hashing"`))
+		})
+
+		It("contains the forbidding-ids directive verbatim", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring("Do NOT include any tool_use_id or tool_call_id values"))
+			Expect(out).To(ContainSubstring("toolu_"))
+			Expect(out).To(ContainSubstring("call_"))
+			Expect(out).To(ContainSubstring("Refer to tool calls by name and purpose only"))
+		})
+
+		It("references every LLM-authored CompactionSummary field by name", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			for _, field := range []string{
+				"intent",
+				"key_decisions",
+				"errors",
+				"next_steps",
+				"files_to_restore",
+				"original_token_count",
+				"summary_token_count",
+			} {
+				Expect(out).To(ContainSubstring("`" + field + "`"))
+			}
+		})
+
+		It("does not mention `compacted_at` or the legacy placeholder", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).NotTo(ContainSubstring("compacted_at"))
+			Expect(out).NotTo(ContainSubstring("PLACEHOLDER_COMPACTED_AT"))
+		})
+
+		It("instructs JSON-only output with no preamble or fences", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring("No preamble"))
+			Expect(out).To(ContainSubstring("No trailing commentary"))
+			Expect(out).To(ContainSubstring("No markdown code"))
+			Expect(out).To(ContainSubstring("fences."))
+		})
+
+		It("renders the message count into the prompt", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring("2 message(s)"))
+		})
+
+		It("embeds the user's message content into the transcript block", func() {
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(out).To(ContainSubstring("Add rate limiting to the auth endpoints."))
+			Expect(out).To(ContainSubstring("Plan: add rate limiter middleware."))
+		})
+	})
+
+	Describe("stability", func() {
+		It("is deterministic across repeated calls with the same input", func() {
+			prior := flowctx.CompactionSummary{Intent: "existing"}
+			msgs := []provider.Message{
+				{Role: "user", Content: "question"},
+				{Role: "assistant", Content: "answer"},
+			}
+
+			first, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+			Expect(err).NotTo(HaveOccurred())
+
+			second, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(first).To(Equal(second))
+		})
+
+		It("ends with an instruction to produce only the JSON object", func() {
+			prior := flowctx.CompactionSummary{Intent: "existing"}
+			msgs := []provider.Message{{Role: "user", Content: "x"}}
+
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, msgs)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.TrimSpace(out)).To(HaveSuffix("Produce only the JSON object."))
+		})
+	})
+
+	Describe("template execution failure", func() {
+		It("wraps template execution errors with a package-scoped prefix", func() {
+			restore := flowctx.ExportedSwapExtendSummaryPromptTemplate()
+			defer restore()
+
+			prior := flowctx.CompactionSummary{Intent: "existing"}
+			out, err := flowctx.RenderExtendSummaryPrompt(prior, []provider.Message{
+				{Role: "user", Content: "forcing an execute failure"},
+			})
+
+			Expect(out).To(BeEmpty())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("context: execute extend summary prompt template"))
+		})
+	})
+})
+
 var _ = Describe("SummaryPromptSystem", func() {
 	It("reinforces the JSON-only contract", func() {
 		Expect(flowctx.SummaryPromptSystem).To(ContainSubstring("JSON"))

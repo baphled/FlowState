@@ -197,6 +197,68 @@ func (a *AutoCompactor) Compact(ctx context.Context, msgs []provider.Message) (C
 	return summary, nil
 }
 
+// CompactExtend is the anchored iterative variant of Compact. Unlike Compact
+// which asks the summariser to summarise messages from scratch, CompactExtend
+// provides a prior summary as context and asks the summariser to produce an
+// updated CompactionSummary that incorporates the new messages. This reduces
+// token consumption on repeated compaction cycles because the model does not
+// need to re-derive context that was already captured in the prior summary.
+//
+// Expected:
+//   - ctx is a valid context; cancellation is honoured by the underlying
+//     Summariser implementation.
+//   - priorSummary is the CompactionSummary from the most recent compaction
+//     of this session. It is rendered as JSON in the extend prompt so the
+//     model can extend it rather than re-summarising from scratch.
+//   - msgs is the slice of new messages to incorporate. An empty slice is
+//     rejected with ErrEmptySummaryInput.
+//
+// Returns:
+//   - A populated CompactionSummary on success. The returned summary
+//     reflects the FULL context (prior summary + new messages).
+//   - ErrEmptySummaryInput when msgs is empty.
+//   - ErrNilSummariser when the compactor was constructed without one.
+//   - A wrapped parse error when the summariser response is not valid JSON.
+//   - ErrInvalidSummary when the parsed summary is missing Intent or
+//     NextSteps.
+//   - Any summariser error wrapped with context for diagnostics.
+//
+// Side effects:
+//   - One call to Summariser.Summarise. No retries; no persistence.
+func (a *AutoCompactor) CompactExtend(ctx context.Context, priorSummary CompactionSummary, msgs []provider.Message) (CompactionSummary, error) {
+	if a.summariser == nil {
+		return CompactionSummary{}, ErrNilSummariser
+	}
+	if len(msgs) == 0 {
+		return CompactionSummary{}, ErrEmptySummaryInput
+	}
+
+	userPrompt, err := RenderExtendSummaryPrompt(priorSummary, msgs)
+	if err != nil {
+		return CompactionSummary{}, fmt.Errorf("auto-compactor: render extend prompt: %w", err)
+	}
+
+	raw, err := a.summariser.Summarise(ctx, SummaryPromptSystem, userPrompt, msgs)
+	if err != nil {
+		return CompactionSummary{}, fmt.Errorf("auto-compactor: summariser failed: %w", err)
+	}
+
+	cleaned := stripJSONFences(raw)
+
+	var summary CompactionSummary
+	if err := json.Unmarshal([]byte(cleaned), &summary); err != nil {
+		return CompactionSummary{}, fmt.Errorf("auto-compactor: parse extension summary JSON: %w", err)
+	}
+
+	if err := validateSummary(summary); err != nil {
+		return CompactionSummary{}, err
+	}
+
+	summary.CompactedAt = time.Now().UTC()
+
+	return summary, nil
+}
+
 // stripJSONFences removes a surrounding Markdown code fence if the model
 // produced one. The T8 prompt forbids fences, but defensive parsing keeps
 // us robust against minor model drift. Only outer fences are stripped;
