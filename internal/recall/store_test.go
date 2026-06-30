@@ -352,3 +352,127 @@ var _ = Describe("EmptyContextStore", func() {
 		})
 	})
 })
+
+var _ = Describe("PinMessage / UnpinMessage", func() {
+	var (
+		store   *recall.FileContextStore
+		tempDir string
+		path    string
+	)
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "pin-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		path = filepath.Join(tempDir, "store.json")
+		store, err = recall.NewFileContextStore(path, "test-model")
+		Expect(err).NotTo(HaveOccurred())
+
+		store.Append(provider.Message{Role: "user", Content: "first"})
+		store.Append(provider.Message{Role: "assistant", Content: "second"})
+		store.Append(provider.Message{Role: "user", Content: "third"})
+	})
+
+	AfterEach(func() {
+		store.Close()
+		os.RemoveAll(tempDir)
+	})
+
+	Describe("PinMessage", func() {
+		It("returns true and pins a valid index", func() {
+			ok := store.PinMessage(0)
+			Expect(ok).To(BeTrue())
+			all := store.AllMessages()
+			Expect(all).To(HaveLen(3))
+		})
+
+		It("returns false for negative index", func() {
+			ok := store.PinMessage(-1)
+			Expect(ok).To(BeFalse())
+		})
+
+		It("returns false for index beyond bounds", func() {
+			ok := store.PinMessage(10)
+			Expect(ok).To(BeFalse())
+		})
+	})
+
+	Describe("UnpinMessage", func() {
+		It("returns true and unpins a valid index", func() {
+			store.PinMessage(1)
+			ok := store.UnpinMessage(1)
+			Expect(ok).To(BeTrue())
+		})
+
+		It("returns false for negative index", func() {
+			ok := store.UnpinMessage(-1)
+			Expect(ok).To(BeFalse())
+		})
+
+		It("returns false for index beyond bounds", func() {
+			ok := store.UnpinMessage(10)
+			Expect(ok).To(BeFalse())
+		})
+	})
+})
+
+var _ = Describe("TruncateToTokens", func() {
+	var (
+		store   *recall.FileContextStore
+		tempDir string
+		path    string
+	)
+
+	BeforeEach(func() {
+		var err error
+		tempDir, err = os.MkdirTemp("", "truncate-test-*")
+		Expect(err).NotTo(HaveOccurred())
+		path = filepath.Join(tempDir, "store.json")
+		store, err = recall.NewFileContextStore(path, "test-model")
+		Expect(err).NotTo(HaveOccurred())
+
+		store.Append(provider.Message{Role: "user", Content: "short"})
+		store.Append(provider.Message{Role: "assistant", Content: "a bit longer message here"})
+		store.Append(provider.Message{Role: "user", Content: "this is a longer message with more content for testing"})
+	})
+
+	AfterEach(func() {
+		store.Close()
+		os.RemoveAll(tempDir)
+	})
+
+	It("returns zero when store is already within limit", func() {
+		removed := store.TruncateToTokens(99999)
+		Expect(removed).To(Equal(0))
+		Expect(store.Count()).To(Equal(3))
+	})
+
+	It("removes oldest messages when over limit", func() {
+		removed := store.TruncateToTokens(1)
+		Expect(removed).To(BeNumerically(">", 0))
+		Expect(store.Count()).To(BeNumerically("<", 3))
+	})
+
+	It("returns zero for empty store", func() {
+		empty := recall.NewEmptyContextStore("test-model")
+		removed := empty.TruncateToTokens(100)
+		Expect(removed).To(Equal(0))
+	})
+
+	It("preserves pinned messages during truncation", func() {
+		store.PinMessage(0) // pin the oldest message
+		removed := store.TruncateToTokens(1)
+		Expect(removed).To(BeNumerically(">", 0))
+		Expect(store.Count()).To(Equal(1)) // only the pinned message remains
+	})
+
+	It("does not remove pinned messages even when over limit", func() {
+		store.PinMessage(0)
+		store.PinMessage(1)
+		store.PinMessage(2)
+		count := store.Count()
+		removed := store.TruncateToTokens(1)
+		Expect(removed).To(Equal(0))
+		Expect(store.Count()).To(Equal(count))
+	})
+})

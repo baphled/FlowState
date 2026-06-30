@@ -266,6 +266,186 @@ func (t *GetMessagesTool) Execute(_ context.Context, input tool.Input) (tool.Res
 	return tool.Result{Output: formatMessages(messages)}, nil
 }
 
+// TruncateContextTool truncates the oldest unpinned messages to stay within a token budget.
+type TruncateContextTool struct {
+	store *FileContextStore
+}
+
+// NewTruncateContextTool creates a new TruncateContextTool with the given store.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//
+// Returns:
+//   - A pointer to an initialised TruncateContextTool.
+//
+// Side effects:
+//   - None.
+func NewTruncateContextTool(store *FileContextStore) *TruncateContextTool {
+	return &TruncateContextTool{store: store}
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "truncate_context".
+//
+// Side effects:
+//   - None.
+func (t *TruncateContextTool) Name() string {
+	return "truncate_context"
+}
+
+// Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
+func (t *TruncateContextTool) Description() string {
+	return "Truncate oldest unpinned messages until token budget is met"
+}
+
+// Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
+func (t *TruncateContextTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"limit": {Type: "integer", Description: "Token limit to truncate to"},
+		},
+		Required: []string{"limit"},
+	}
+}
+
+// Execute runs the truncate context tool.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input contains a "limit" integer argument.
+//
+// Returns:
+//   - A Result indicating how many tokens were removed.
+//   - nil error (this tool does not fail).
+//
+// Side effects:
+//   - Removes oldest unpinned messages from the store.
+func (t *TruncateContextTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	limit := extractInt(input.Arguments, "limit", 0)
+	if limit <= 0 {
+		return tool.Result{Output: "limit must be positive"}, nil
+	}
+
+	removed := t.store.TruncateToTokens(limit)
+	return tool.Result{
+		Output: fmt.Sprintf("Truncated %d estimated tokens", removed),
+	}, nil
+}
+
+// PinMessageTool pins or unpins a message by index to protect it from truncation.
+type PinMessageTool struct {
+	store *FileContextStore
+}
+
+// NewPinMessageTool creates a new PinMessageTool with the given store.
+//
+// Expected:
+//   - store is a valid, non-nil FileContextStore.
+//
+// Returns:
+//   - A pointer to an initialised PinMessageTool.
+//
+// Side effects:
+//   - None.
+func NewPinMessageTool(store *FileContextStore) *PinMessageTool {
+	return &PinMessageTool{store: store}
+}
+
+// Name returns the tool name.
+//
+// Returns:
+//   - The string "pin_message".
+//
+// Side effects:
+//   - None.
+func (t *PinMessageTool) Name() string {
+	return "pin_message"
+}
+
+// Description returns a description of what the tool does.
+//
+// Returns:
+//   - A human-readable description of the tool's purpose.
+//
+// Side effects:
+//   - None.
+func (t *PinMessageTool) Description() string {
+	return "Pin or unpin a message by index to protect from truncation"
+}
+
+// Schema returns the tool's input schema.
+//
+// Returns:
+//   - A Schema describing the expected input format.
+//
+// Side effects:
+//   - None.
+func (t *PinMessageTool) Schema() tool.Schema {
+	return tool.Schema{
+		Type: "object",
+		Properties: map[string]tool.Property{
+			"index": {Type: "integer", Description: "Message index to pin or unpin"},
+			"pin":   {Type: "boolean", Description: "True to pin, false to unpin"},
+		},
+		Required: []string{"index", "pin"},
+	}
+}
+
+// Execute runs the pin message tool.
+//
+// Expected:
+//   - ctx is a valid context.
+//   - input contains "index" integer and "pin" boolean arguments.
+//
+// Returns:
+//   - A Result indicating success or failure.
+//   - nil error (this tool does not fail).
+//
+// Side effects:
+//   - Toggles the Pinned flag on the target message in the store.
+func (t *PinMessageTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
+	index := extractInt(input.Arguments, "index", -1)
+	pin, ok := input.Arguments["pin"].(bool)
+	if !ok || index < 0 {
+		return tool.Result{Output: "invalid arguments: index must be non-negative and pin must be a boolean"}, nil
+	}
+
+	var success bool
+	if pin {
+		success = t.store.PinMessage(index)
+	} else {
+		success = t.store.UnpinMessage(index)
+	}
+
+	if !success {
+		return tool.Result{Output: fmt.Sprintf("Message at index %d not found", index)}, nil
+	}
+
+	action := "pinned"
+	if !pin {
+		action = "unpinned"
+	}
+	return tool.Result{
+		Output: fmt.Sprintf("Message at index %d %s", index, action),
+	}, nil
+}
+
 // extractInt retrieves an integer value from a map of arguments, converting from float64 if necessary.
 //
 // Expected:

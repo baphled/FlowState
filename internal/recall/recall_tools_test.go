@@ -15,7 +15,7 @@ import (
 )
 
 var _ = Describe("RecallToolFactory", func() {
-	It("registers all recall tools (search_context, get_messages, summarize_context)", func() {
+	It("registers all recall tools (search_context, get_messages, summarize_context, truncate_context, pin_message)", func() {
 		cfg := &engine.Config{}
 		cfg.Store = recall.NewEmptyContextStore("test-model")
 		cfg.EmbeddingProvider = stubProvider{}
@@ -28,6 +28,8 @@ var _ = Describe("RecallToolFactory", func() {
 			"search_context",
 			"get_messages",
 			"summarize_context",
+			"truncate_context",
+			"pin_message",
 		}
 
 		Expect(registered).To(HaveLen(len(expectedTools)))

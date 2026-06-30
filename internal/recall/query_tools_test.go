@@ -259,6 +259,129 @@ var _ = Describe("ContextTools", func() {
 		})
 	})
 
+	Describe("TruncateContextTool", func() {
+		var truncateTool *recall.TruncateContextTool
+
+		BeforeEach(func() {
+			truncateTool = recall.NewTruncateContextTool(store)
+		})
+
+		It("returns correct name", func() {
+			Expect(truncateTool.Name()).To(Equal("truncate_context"))
+		})
+
+		It("returns correct description", func() {
+			Expect(truncateTool.Description()).To(Equal("Truncate oldest unpinned messages until token budget is met"))
+		})
+
+		Context("when store has messages", func() {
+			BeforeEach(func() {
+				store.Append(provider.Message{Role: "user", Content: "message one"})
+				store.Append(provider.Message{Role: "assistant", Content: "message two"})
+			})
+
+			It("removes messages when limit is reached", func() {
+				startCount := store.Count()
+				result, err := truncateTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"limit": float64(1)},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("Truncated"))
+				Expect(store.Count()).To(BeNumerically("<", startCount))
+			})
+
+			It("returns message when limit is zero", func() {
+				result, err := truncateTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"limit": float64(0)},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("limit must be positive"))
+			})
+
+			It("returns message when limit is negative", func() {
+				result, err := truncateTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"limit": float64(-1)},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("limit must be positive"))
+			})
+		})
+
+		Context("when store is empty", func() {
+			It("returns truncated 0 message", func() {
+				result, err := truncateTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"limit": float64(100)},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("Truncated 0"))
+			})
+		})
+	})
+
+	Describe("PinMessageTool", func() {
+		var pinTool *recall.PinMessageTool
+
+		BeforeEach(func() {
+			pinTool = recall.NewPinMessageTool(store)
+		})
+
+		It("returns correct name", func() {
+			Expect(pinTool.Name()).To(Equal("pin_message"))
+		})
+
+		It("returns correct description", func() {
+			Expect(pinTool.Description()).To(Equal("Pin or unpin a message by index to protect from truncation"))
+		})
+
+		Context("when store has messages", func() {
+			BeforeEach(func() {
+				store.Append(provider.Message{Role: "user", Content: "test content"})
+			})
+
+			It("pins a message successfully", func() {
+				result, err := pinTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"index": float64(0), "pin": true},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("pinned"))
+			})
+
+			It("unpins a message successfully", func() {
+				result, err := pinTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"index": float64(0), "pin": false},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("unpinned"))
+			})
+
+			It("returns not found for invalid index", func() {
+				result, err := pinTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"index": float64(99), "pin": true},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("not found"))
+			})
+		})
+
+		Context("with invalid arguments", func() {
+			It("returns error for missing pin", func() {
+				result, err := pinTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"index": float64(0)},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("invalid arguments"))
+			})
+
+			It("returns error for negative index", func() {
+				result, err := pinTool.Execute(context.Background(), tool.Input{
+					Arguments: map[string]interface{}{"index": float64(-1), "pin": true},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("invalid arguments"))
+			})
+		})
+	})
+
 	// Bug Hunt #63 (May 11 2026): retire dead-surface-area
 	// high-frequency events. recall.searched fired on every
 	// SearchContextTool.Execute but had zero non-test subscribers —

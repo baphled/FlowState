@@ -59,6 +59,8 @@ func (f *ToolFactory) Tools() []tool.Tool {
 		NewSearchContextTool(f.store, f.embedder, f.topK, f.bus),
 		NewGetMessagesTool(f.store),
 		summarize,
+		NewTruncateContextTool(f.store),
+		NewPinMessageTool(f.store),
 	}
 }
 

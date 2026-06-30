@@ -49,6 +49,7 @@ type StoredMessage struct {
 	ID       string           `json:"id"`
 	Message  provider.Message `json:"message"`
 	Embedded bool             `json:"embedded"`
+	Pinned   bool             `json:"pinned"`
 }
 
 // EmbeddingEntry represents an embedding vector with its metadata.
@@ -459,6 +460,151 @@ func (s *FileContextStore) GetMessageID(index int) string {
 		return ""
 	}
 	return s.messages[index].ID
+}
+
+// TruncateToTokens removes the oldest unpinned messages until the total token
+// estimate falls at or below the given limit, using a simple heuristic of
+// 1 token ≈ 4 characters.
+//
+// Expected:
+//   - limit is a non-negative integer token ceiling.
+//
+// Returns:
+//   - The estimated number of tokens removed.
+//   - Zero when the store is already within limit or empty.
+//
+// Side effects:
+//   - Removes messages from the store in oldest-first order.
+//   - Pinned messages are never removed.
+//   - Persists the updated store to disk when a file path is configured.
+func (s *FileContextStore) TruncateToTokens(limit int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.messages) == 0 {
+		return 0
+	}
+
+	before := s.totalTokensLocked()
+	if before <= limit {
+		return 0
+	}
+
+	// Mark which messages to remove: oldest non-pinned first until within limit.
+	remove := make([]bool, len(s.messages))
+	remaining := before
+	for i, sm := range s.messages {
+		if remaining <= limit {
+			break
+		}
+		if !sm.Pinned {
+			remove[i] = true
+			remaining -= messageTokens(sm)
+		}
+	}
+
+	// Build new slice excluding removed messages.
+	kept := make([]StoredMessage, 0, len(s.messages))
+	for i, sm := range s.messages {
+		if !remove[i] {
+			kept = append(kept, sm)
+		}
+	}
+	s.messages = kept
+
+	tokensRemoved := before - remaining
+
+	if s.path != "" {
+		if err := s.persist(); err != nil {
+			log.Printf("warning: truncation persist: %v", err)
+		}
+	}
+
+	return tokensRemoved
+}
+
+// PinMessage sets the Pinned flag on the message at the given index.
+//
+// Expected:
+//   - index is a zero-based position within the stored messages.
+//
+// Returns:
+//   - True when the message was pinned successfully.
+//   - False when the index is out of bounds.
+//
+// Side effects:
+//   - Persists the updated store to disk when a file path is configured.
+func (s *FileContextStore) PinMessage(index int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if index < 0 || index >= len(s.messages) {
+		return false
+	}
+	s.messages[index].Pinned = true
+	if s.path != "" {
+		if err := s.persist(); err != nil {
+			log.Printf("warning: pin persist: %v", err)
+		}
+	}
+	return true
+}
+
+// UnpinMessage clears the Pinned flag on the message at the given index.
+//
+// Expected:
+//   - index is a zero-based position within the stored messages.
+//
+// Returns:
+//   - True when the message was unpinned successfully.
+//   - False when the index is out of bounds.
+//
+// Side effects:
+//   - Persists the updated store to disk when a file path is configured.
+func (s *FileContextStore) UnpinMessage(index int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if index < 0 || index >= len(s.messages) {
+		return false
+	}
+	s.messages[index].Pinned = false
+	if s.path != "" {
+		if err := s.persist(); err != nil {
+			log.Printf("warning: unpin persist: %v", err)
+		}
+	}
+	return true
+}
+
+// messageTokens estimates the number of tokens in a stored message.
+//
+// Returns:
+//   - An integer token estimate using a 1 token ≈ 4 character heuristic,
+//     including overhead for message structure.
+//
+// Side effects:
+//   - None.
+func messageTokens(sm StoredMessage) int {
+	contentLen := len(sm.Message.Content)
+	roleLen := len(sm.Message.Role)
+	return (contentLen + roleLen + 50) / 4
+}
+
+// totalTokensLocked estimates the total tokens across all stored messages.
+// The caller must hold s.mu.RLock or s.mu.Lock.
+//
+// Returns:
+//   - The estimated total token count.
+//
+// Side effects:
+//   - None.
+func (s *FileContextStore) totalTokensLocked() int {
+	total := 0
+	for _, sm := range s.messages {
+		total += messageTokens(sm)
+	}
+	return total
 }
 
 // StoreEmbedding stores an embedding vector for the specified message.
