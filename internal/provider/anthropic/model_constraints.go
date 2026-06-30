@@ -106,6 +106,19 @@ const output128kBetaHeader = "output-128k-2025-02-19"
 // strictly greater forces the opt-in.
 const output128kThreshold int64 = 64000
 
+// compactBetaHeader is the anthropic-beta value that opts a request
+// into Anthropic's server-side context compaction
+// (`compact-2026-01-12`). When sent, the API may transparently
+// compact the conversation prefix before processing the request,
+// reducing the token count visible to the model without the caller
+// having to do an explicit summarisation round-trip.
+//
+// Supported on Claude 4.x family (Opus 4+, Sonnet 4+, Haiku 4.5+).
+// Older models (Sonnet 3.7, 3.5, 3.0) do not honour this beta.
+// The header is harmless on models that support it — the API decides
+// whether compaction is beneficial based on the request size.
+const compactBetaHeader = "compact-2026-01-12"
+
 // modelDefaults captures the per-model knobs that vary across the
 // Claude family. A caller's request is overlaid on top of these
 // defaults; only fields the caller did not set are filled in from here.
@@ -153,6 +166,12 @@ type modelDefaults struct {
 	// max_tokens above the post-beta threshold (64k); below that the
 	// header is unnecessary so we omit it.
 	supportsOutput128kBeta bool
+	// supportsCompactionBeta reports that the model honours the
+	// `compact-2026-01-12` anthropic-beta header for server-side
+	// context compaction. Claude 4.x family does; older models do not.
+	// The header is emitted only when the caller explicitly opts in
+	// via the compaction-enabled request flag.
+	supportsCompactionBeta bool
 	// betas are anthropic-beta header values to add unconditionally
 	// when the caller is on this model. Currently empty for every
 	// supported model — the conditional Sonnet 3.7 betas are gated by
@@ -239,6 +258,7 @@ func resolveModelDefaults(model string) modelDefaults {
 			supportsThinking:             true,
 			supportsAdaptiveThinking:     true,
 			rejectsAssistantPrefill:      true,
+			supportsCompactionBeta:       true,
 		}
 	case strings.HasPrefix(id, "claude-opus-4-6"):
 		return modelDefaults{
@@ -246,6 +266,7 @@ func resolveModelDefaults(model string) modelDefaults {
 			supportsThinking:         true,
 			supportsAdaptiveThinking: true,
 			rejectsAssistantPrefill:  true,
+			supportsCompactionBeta:   true,
 		}
 	case strings.HasPrefix(id, "claude-sonnet-4-6"):
 		return modelDefaults{
@@ -253,12 +274,14 @@ func resolveModelDefaults(model string) modelDefaults {
 			supportsThinking:         true,
 			supportsAdaptiveThinking: true,
 			rejectsAssistantPrefill:  true,
+			supportsCompactionBeta:   true,
 		}
 	case strings.HasPrefix(id, "claude-haiku-4-5"):
 		return modelDefaults{
 			maxTokens:                         64000,
 			supportsThinking:                  true,
 			requiresInterleavedThinkingHeader: true,
+			supportsCompactionBeta:            true,
 		}
 	case strings.HasPrefix(id, "claude-sonnet-4-5"),
 		strings.HasPrefix(id, "claude-sonnet-4"):
@@ -266,6 +289,7 @@ func resolveModelDefaults(model string) modelDefaults {
 			maxTokens:                         64000,
 			supportsThinking:                  true,
 			requiresInterleavedThinkingHeader: true,
+			supportsCompactionBeta:            true,
 		}
 	case strings.HasPrefix(id, "claude-opus-4-5"),
 		strings.HasPrefix(id, "claude-opus-4-1"),
@@ -274,6 +298,7 @@ func resolveModelDefaults(model string) modelDefaults {
 			maxTokens:                         32000,
 			supportsThinking:                  true,
 			requiresInterleavedThinkingHeader: true,
+			supportsCompactionBeta:            true,
 		}
 	case strings.HasPrefix(id, "claude-3-7-sonnet"):
 		return modelDefaults{

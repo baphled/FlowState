@@ -131,6 +131,19 @@ type Provider struct {
 	// fix; the load-bearing fix is the engine's idle-stream watchdog
 	// (internal/engine/engine.go: engineStreamIdleTimeout = 60s).
 	streamRequestTimeout time.Duration
+
+	// compactionBetaEnabled controls whether the provider sends the
+	// `compact-2026-01-12` anthropic-beta header on outgoing requests.
+	// When true AND the target model supports the compaction beta
+	// (Claude 4.x family), the header is appended to every request so
+	// the API may transparently compact the conversation prefix.
+	// When false (default), no compaction header is sent and the
+	// engine falls back to in-process compaction.
+	//
+	// Set via SetCompactionBetaEnabled. Thread-safe for write-once
+	// at startup; concurrent reads during request building and a
+	// single write at boot are safe under Go's memory model.
+	compactionBetaEnabled bool
 }
 
 // SetResponseObserver registers a callback the Provider invokes on
@@ -157,6 +170,34 @@ func (p *Provider) notifyResponseObserver(raw *http.Response) {
 		return
 	}
 	p.responseObserver(raw.Header)
+}
+
+// SetCompactionBetaEnabled controls whether the provider sends the
+// `compact-2026-01-12` anthropic-beta header on outgoing requests.
+// When enabled AND the target model supports server-side compaction,
+// the header is appended so the API may transparently compact the
+// conversation prefix.
+//
+// Expected:
+//   - enabled is true to enable compaction beta, false to disable.
+//
+// Side effects:
+//   - Subsequent Chat/stream requests may carry the compaction beta
+//     header when the target model supports it.
+func (p *Provider) SetCompactionBetaEnabled(enabled bool) {
+	p.compactionBetaEnabled = enabled
+}
+
+// CompactionBetaEnabled reports whether the provider's compaction
+// beta header is currently enabled.
+//
+// Returns:
+//   - true if compaction beta has been enabled via SetCompactionBetaEnabled.
+//
+// Side effects:
+//   - None.
+func (p *Provider) CompactionBetaEnabled() bool {
+	return p.compactionBetaEnabled
 }
 
 // New creates a new Anthropic provider with the given API key.
@@ -1765,6 +1806,16 @@ func (p *Provider) buildRequestParams(
 	betas := defs.betaHeaders(
 		isThinkingActive(&params), len(tools) > 0, params.MaxTokens,
 	)
+
+	// Append the compaction beta header when the provider has been
+	// configured to use it AND the target model supports server-side
+	// compaction. This lets the API transparently compact the
+	// conversation prefix, reducing token consumption without an
+	// explicit summarisation round-trip.
+	if p.compactionBetaEnabled && defs.supportsCompactionBeta {
+		betas = append(betas, compactBetaHeader)
+	}
+
 	opts := buildBetaHeaderOptions(betas)
 
 	return params, opts, nil

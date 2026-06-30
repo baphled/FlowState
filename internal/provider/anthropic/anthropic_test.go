@@ -1891,6 +1891,166 @@ var _ = Describe("Sonnet 3.7 beta headers", func() {
 	})
 })
 
+// Compaction beta header — provider-native context compaction.
+//
+// The `compact-2026-01-12` anthropic-beta header opts requests into
+// Anthropic's server-side context compaction. Unlike the other betas
+// (interleaved-thinking, token-efficient-tools, output-128k) which the
+// classifier auto-injects based on request properties, the compaction
+// beta is opt-in: the caller must enable it via
+// SetCompactionBetaEnabled. The classifier gates by model support only
+// (Claude 4.x family), and the wiring layer ANDs the two conditions.
+var _ = Describe("compaction beta header", func() {
+	var p *Provider
+
+	BeforeEach(func() {
+		var err error
+		p, err = New("test-key")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("wire spelling matches the published Anthropic beta name", func() {
+		Expect(compactBetaHeader).To(Equal("compact-2026-01-12"))
+	})
+
+	Describe("SetCompactionBetaEnabled / CompactionBetaEnabled", func() {
+		It("defaults to false", func() {
+			Expect(p.CompactionBetaEnabled()).To(BeFalse())
+		})
+
+		It("round-trips true after SetCompactionBetaEnabled(true)", func() {
+			p.SetCompactionBetaEnabled(true)
+			Expect(p.CompactionBetaEnabled()).To(BeTrue())
+		})
+
+		It("round-trips false after SetCompactionBetaEnabled(false)", func() {
+			p.SetCompactionBetaEnabled(true)
+			p.SetCompactionBetaEnabled(false)
+			Expect(p.CompactionBetaEnabled()).To(BeFalse())
+		})
+	})
+
+	Describe("classifier — modelDefaults.supportsCompactionBeta", func() {
+		It("Opus 4.7 supports compaction beta", func() {
+			defs := resolveModelDefaults("claude-opus-4-7-20251201")
+			Expect(defs.supportsCompactionBeta).To(BeTrue())
+		})
+
+		It("Opus 4.6 supports compaction beta", func() {
+			defs := resolveModelDefaults("claude-opus-4-6-20251020")
+			Expect(defs.supportsCompactionBeta).To(BeTrue())
+		})
+
+		It("Sonnet 4.6 supports compaction beta", func() {
+			defs := resolveModelDefaults("claude-sonnet-4-6-20251020")
+			Expect(defs.supportsCompactionBeta).To(BeTrue())
+		})
+
+		It("Sonnet 4.5 supports compaction beta", func() {
+			defs := resolveModelDefaults("claude-sonnet-4-5-20251020")
+			Expect(defs.supportsCompactionBeta).To(BeTrue())
+		})
+
+		It("Opus 4 supports compaction beta", func() {
+			defs := resolveModelDefaults("claude-opus-4-20250514")
+			Expect(defs.supportsCompactionBeta).To(BeTrue())
+		})
+
+		It("Haiku 4.5 supports compaction beta", func() {
+			defs := resolveModelDefaults("claude-haiku-4-5-20251020")
+			Expect(defs.supportsCompactionBeta).To(BeTrue())
+		})
+
+		It("Sonnet 3.7 does NOT support compaction beta", func() {
+			defs := resolveModelDefaults("claude-3-7-sonnet-20250219")
+			Expect(defs.supportsCompactionBeta).To(BeFalse())
+		})
+
+		It("unknown model does NOT support compaction beta", func() {
+			defs := resolveModelDefaults("claude-unknown-model-vXXX")
+			Expect(defs.supportsCompactionBeta).To(BeFalse())
+		})
+	})
+
+	Describe("wiring — buildRequestParams", func() {
+		tool := provider.Tool{Name: "echo", Description: "echo input"}
+
+		It("includes compaction beta when enabled AND model supports it (Sonnet 4.5)", func() {
+			p.SetCompactionBetaEnabled(true)
+
+			req := provider.ChatRequest{
+				Model:    "claude-sonnet-4-5-20251020",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			}
+			_, opts, err := p.buildRequestParams(req)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).ToNot(BeEmpty())
+			// buildBetaHeaderOptions produces one option per header value.
+			// Compaction is the only beta on this request (no thinking+tools
+			// interleaving gate), so we expect exactly 1 option.
+			Expect(opts).To(HaveLen(1))
+		})
+
+		It("includes compaction beta alongside interleaved-thinking when both fire", func() {
+			p.SetCompactionBetaEnabled(true)
+
+			req := provider.ChatRequest{
+				Model:        "claude-sonnet-4-5-20251020",
+				Messages:     []provider.Message{{Role: "user", Content: "hi"}},
+				Tools:        []provider.Tool{tool},
+				ThinkingMode: "adaptive",
+			}
+			_, opts, err := p.buildRequestParams(req)
+
+			Expect(err).NotTo(HaveOccurred())
+			// Compaction (1) + interleaved-thinking (1) = 2 options
+			Expect(opts).To(HaveLen(2))
+		})
+
+		It("excludes compaction beta when NOT enabled (even if model supports it)", func() {
+			// compactionBetaEnabled defaults to false
+			req := provider.ChatRequest{
+				Model:    "claude-sonnet-4-5-20251020",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			}
+			_, opts, err := p.buildRequestParams(req)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"compaction beta must not be sent unless explicitly enabled")
+		})
+
+		It("excludes compaction beta when model does NOT support it (Sonnet 3.7)", func() {
+			p.SetCompactionBetaEnabled(true)
+
+			req := provider.ChatRequest{
+				Model:    "claude-3-7-sonnet-20250219",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			}
+			_, opts, err := p.buildRequestParams(req)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"compaction beta must not be sent for Sonnet 3.7 even when enabled")
+		})
+
+		It("excludes compaction beta for unknown model even when enabled", func() {
+			p.SetCompactionBetaEnabled(true)
+
+			req := provider.ChatRequest{
+				Model:    "claude-unknown-model-vXXX",
+				Messages: []provider.Message{{Role: "user", Content: "hi"}},
+			}
+			_, opts, err := p.buildRequestParams(req)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(opts).To(BeEmpty(),
+				"compaction beta must not be sent for unknown models")
+		})
+	})
+})
+
 // OAuth wire headers — wire-level assertions.
 //
 // The Claude CLI mimics four headers on every request to route OAuth
