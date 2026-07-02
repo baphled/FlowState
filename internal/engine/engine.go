@@ -4453,6 +4453,21 @@ func (e *Engine) streamWithToolLoop(
 				e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 				return
 			}
+			if result.responseContent == "" && len(result.toolCalls) == 0 {
+				provider := e.LastProvider()
+				model := e.LastModel()
+				slog.Warn("model returned empty response, completing turn and marking provider unhealthy",
+					"session", sessionID,
+					"stop_reason", result.stopReason,
+					"provider", provider,
+					"model", model,
+				)
+				if provider != "" && model != "" && e.failoverManager != nil {
+					e.failoverManager.Health().MarkRateLimited(provider, model, time.Now().Add(5*time.Minute))
+				}
+				e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+				return
+			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after turn end",
@@ -7742,7 +7757,10 @@ func (e *Engine) gateProximityForceCompact(manifest *agent.Manifest, userMessage
 	if e == nil || tokenBudget <= 0 || e.tokenCounter == nil || e.store == nil {
 		return false
 	}
-	prefProvider, prefModel := preferredProviderModel(manifest)
+	prefProvider, prefModel := e.LastProvider(), e.LastModel()
+	if prefProvider == "" || prefModel == "" {
+		prefProvider, prefModel = preferredProviderModel(manifest)
+	}
 	allMessages := e.store.AllMessages()
 	candidate := make([]provider.Message, 0, len(allMessages)+1)
 	candidate = append(candidate, allMessages...)
@@ -7805,7 +7823,10 @@ func (e *Engine) shouldCompactExplicitForGate(manifest *agent.Manifest, userMess
 	if len(explicitMessages) == 0 {
 		return false
 	}
-	prefProvider, prefModel := preferredProviderModel(manifest)
+	prefProvider, prefModel := e.LastProvider(), e.LastModel()
+	if prefProvider == "" || prefModel == "" {
+		prefProvider, prefModel = preferredProviderModel(manifest)
+	}
 	candidate := make([]provider.Message, 0, len(explicitMessages)+1)
 	candidate = append(candidate, explicitMessages...)
 	if userMessage != "" {
