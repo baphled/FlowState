@@ -15,12 +15,14 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
-    - bash
     - read
     - write
     - edit
     - grep
     - glob
+    - coordination_store
+    - multiedit
+    - apply_patch
   skills:
     - memory-keeper
     - obsidian-structure
