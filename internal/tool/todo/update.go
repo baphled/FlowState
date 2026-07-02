@@ -61,7 +61,7 @@ func (t *UpdateTool) Name() string {
 // Side effects:
 //   - None.
 func (t *UpdateTool) Description() string {
-	return "Patch a single todo entry (status, content, or priority) by 0-based index. Use this for every per-task status transition; reserve `todowrite` for initial list creation only. Tasks MUST be worked through sequentially: when you mark the current item `completed`, the next pending item auto-advances to `in_progress`. At most one item can be `in_progress` at a time."
+	return "Patch a single todo entry by 0-based index; status transitions are forward-only and only one item may be in_progress at a time."
 }
 
 // Schema returns the input schema for the todo_update tool.
@@ -82,7 +82,7 @@ func (t *UpdateTool) Schema() tool.Schema {
 			},
 			"status": {
 				Type:        "string",
-				Description: "New status for the todo: pending, in_progress, completed, or cancelled. When set to `completed`, the next pending item auto-advances to `in_progress`. When set to `in_progress`, any other in_progress item is automatically moved back to `pending` (sequential discipline: at most one task at a time).",
+				Description: "New status: pending, in_progress, completed, or cancelled (forward-only; terminal states cannot revert).",
 			},
 			"content": {
 				Type:        "string",
@@ -101,10 +101,14 @@ func (t *UpdateTool) Schema() tool.Schema {
 // updated list as JSON so the UI surface (and the model) sees the same shape
 // as a todowrite response.
 //
-// Sequential discipline (D9): when the patch marks an item `completed`, the
-// next `pending` item auto-advances to `in_progress`. When the patch marks an
-// item `in_progress`, any other item that was `in_progress` is moved back to
-// `pending`. This enforces one-at-a-time task progression through the list.
+// Monotonic state machine: status transitions are forward-only. A pending
+// item may advance to in_progress, completed, or cancelled. An in_progress
+// item may advance only to completed or cancelled. Terminal states
+// (completed, cancelled) and the in_progress→pending demote are rejected, so
+// finished work cannot be silently reverted. Completing or cancelling the
+// active item auto-advances the next pending item to in_progress, and at
+// most one item may be in_progress at a time — starting a second one is
+// rejected.
 //
 // Expected:
 //   - ctx contains a session.IDKey value identifying the current session.
@@ -117,11 +121,13 @@ func (t *UpdateTool) Schema() tool.Schema {
 // Returns:
 //   - A tool.Result whose Output is the JSON-encoded patched list.
 //   - An error when session ID is missing, the index is invalid, no patch
-//     fields are supplied, or the store rejects the write.
+//     fields are supplied, a transition is rejected, or the store rejects
+//     the write.
 //
 // Side effects:
 //   - Mutates the stored todo list for the session.
-//   - May auto-advance the next pending item or demote other in_progress items.
+//   - May auto-advance the next pending item when the active item is
+//     completed or cancelled.
 func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	sessionID, ok := ctx.Value(session.IDKey{}).(string)
 	if !ok || sessionID == "" {
@@ -142,13 +148,13 @@ func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 		if idx < 0 || idx >= len(current) {
 			return nil, fmt.Errorf("index %d out of range: stored list has %d entries", idx, len(current))
 		}
+		if err := validateStatusPatch(current, idx, patch); err != nil {
+			return nil, err
+		}
 		updated := make([]Item, len(current))
 		copy(updated, current)
 		applyPatch(&updated[idx], patch)
-
-		// Sequential discipline: enforce one-in-progress and auto-advance on complete.
 		enforceSequential(updated, idx, patch)
-
 		return updated, nil
 	})
 	if err != nil {
@@ -162,19 +168,95 @@ func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 	return tool.Result{Output: string(out)}, nil
 }
 
-// enforceSequential applies the sequential discipline on a mutated todo list.
+// validateStatusPatch enforces the monotonic-state guards for a status patch
+// against the pre-patch list state. It allows the patch through when no status
+// is being changed, when the transition is forward-only, and when starting an
+// in_progress item would not collide with another already-active item.
 //
-// When the patched item was set to `completed`, the next `pending` item (after
-// idx, wrapping forward) is auto-advanced to `in_progress`. When the patched
-// item was set to `in_progress`, any other item that was `in_progress` is
-// demoted back to `pending` (at most one item can be in-progress at a time).
+// Expected:
+//   - current is the list state before the patch is applied.
+//   - idx is the 0-based index targeted by the patch.
+//   - patch carries the requested patch fields; only the status field is
+//     inspected.
+//
+// Returns:
+//   - nil when the patch is safe to apply.
+//   - An error when the transition reverts a state or starts a second active
+//     item. Returning the error from the Apply callback leaves the store
+//     unchanged.
+//
+// Side effects:
+//   - None.
+func validateStatusPatch(current []Item, idx int, patch itemPatch) error {
+	if patch.status == "" {
+		return nil
+	}
+	if err := validateTransition(current[idx].Status, patch.status); err != nil {
+		return err
+	}
+	if patch.status == "in_progress" {
+		for i := range current {
+			if i != idx && current[i].Status == "in_progress" {
+				return fmt.Errorf("another todo is already in_progress; complete or cancel it before starting index %d", idx)
+			}
+		}
+	}
+	return nil
+}
+
+// validateTransition enforces the forward-only monotonic state machine that
+// governs status transitions. A transition is allowed when the next status
+// equals the current one (no-op) or advances forward: pending may move to
+// in_progress, completed, or cancelled; in_progress may move only to
+// completed or cancelled. Any move out of a terminal state (completed,
+// cancelled) is rejected as a revert, and the in_progress→pending demote is
+// rejected as a backward move.
+//
+// Expected:
+//   - current is the item's existing status string.
+//   - next is the requested new status string.
+//
+// Returns:
+//   - nil when the transition is allowed.
+//   - An error describing the rejection otherwise.
+//
+// Side effects:
+//   - None.
+func validateTransition(current, next string) error {
+	if next == current {
+		return nil
+	}
+	switch current {
+	case "completed", "cancelled":
+		return fmt.Errorf("todo is in terminal state %q and cannot be reverted", current)
+	case "pending":
+		switch next {
+		case "in_progress", "completed", "cancelled":
+			return nil
+		}
+	case "in_progress":
+		switch next {
+		case "completed", "cancelled":
+			return nil
+		}
+	}
+	return fmt.Errorf("cannot move to %q from %q", next, current)
+}
+
+// enforceSequential applies the auto-advance discipline on a mutated todo
+// list. When the patched item was set to a terminal state (completed or
+// cancelled), the next pending item (after idx, wrapping forward) is
+// auto-advanced to in_progress so work continues without an explicit start
+// call. The demote-on-second-in_progress behaviour was removed: starting a
+// second in_progress item is now rejected upstream by Execute rather than
+// silently demoting the active one.
 //
 // Expected:
 //   - updated is the current state of the todo list after the requested patch
 //     has been applied (the caller has already mutated updated[idx]).
 //   - idx is the 0-based index that was patched.
 //   - patch carries the patch fields that were applied. Only the status field
-//     triggers sequential adjustments.
+//     triggers auto-advance adjustments.
 //
 // Side effects:
 //   - Mutates items in updated in place.
@@ -184,30 +266,17 @@ func enforceSequential(updated []Item, idx int, patch itemPatch) {
 	}
 
 	switch patch.status {
-	case "completed":
-		// Auto-advance: find the next pending item after idx and set it
-		// to in_progress. If no pending item exists after idx, wrap to
-		// the start — this handles mid-list completion when prior items
-		// were skipped.
+	case "completed", "cancelled":
 		for i := idx + 1; i < len(updated); i++ {
 			if updated[i].Status == "pending" {
 				updated[i].Status = "in_progress"
 				return
 			}
 		}
-		// No pending item after idx; check from start to idx.
 		for i := 0; i <= idx; i++ {
 			if updated[i].Status == "pending" {
 				updated[i].Status = "in_progress"
 				return
-			}
-		}
-
-	case "in_progress":
-		// Demote any other in_progress item back to pending.
-		for i := range updated {
-			if i != idx && updated[i].Status == "in_progress" {
-				updated[i].Status = "pending"
 			}
 		}
 	}
