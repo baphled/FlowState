@@ -5197,7 +5197,15 @@ func (d *DelegateTool) correctiveRetryModel(target delegationTarget) (string, st
 	return d.ownerEngine.LastProvider(), d.ownerEngine.LastModel()
 }
 
-// closeSessionIfManaged closes the named session via the session manager when one is configured.
+// closeSessionIfManaged closes the named session via the session manager when one is configured,
+// then runs a deliverable check that warns when a delegated session completes without having
+// written any keys to the coordination_store.
+//
+// The deliverable check is purely observational: it logs a slog.Warn when a session carrying both
+// a non-empty ParentID and ChainID (the signature of a delegated session with coordination
+// expectations) leaves zero keys under its chain prefix in the coordination_store. This surfaces
+// the synthesis-hang failure mode where an agent announces work it never performed — the session
+// is still sealed as "completed", but the operator and downstream coordinator now have a signal.
 //
 // Expected:
 //   - sessionID identifies the session to close.
@@ -5205,12 +5213,57 @@ func (d *DelegateTool) correctiveRetryModel(target delegationTarget) (string, st
 // Side effects:
 //   - Closes the session in the session manager if one is set.
 //   - Suppresses ErrSessionNotFound; other errors are silently discarded.
+//   - Emits a slog.Warn when a delegated session wrote zero coordination_store keys or when the
+//     store check itself fails. The close ALWAYS proceeds regardless of the check outcome.
 func (d *DelegateTool) closeSessionIfManaged(sessionID string) {
 	if d.sessionManager == nil {
 		return
 	}
 	if err := d.sessionManager.CloseSession(sessionID); err != nil && !errors.Is(err, session.ErrSessionNotFound) {
 		_ = err
+	}
+	d.warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID)
+}
+
+// warnIfDelegatedSessionLeftNoCoordinationKeys logs a warning when a delegated session (one with
+// both a ParentID and a ChainID) completed without writing any keys to the coordination_store under
+// its chain prefix. The check is observational only — it never blocks the session close and always
+// runs after CloseSession so the seal is never delayed.
+//
+// Expected:
+//   - sessionID identifies the just-closed session to inspect.
+//
+// Side effects:
+//   - Emits slog.Warn entries; mutates no session or store state.
+func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID string) {
+	if d.coordinationStore == nil {
+		return
+	}
+	sess, err := d.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return
+	}
+	if sess.ParentID == "" || sess.ChainID == "" {
+		return
+	}
+	keys, listErr := d.coordinationStore.List(sess.ChainID + "/")
+	if listErr != nil {
+		slog.Warn("delegated session coordination_store check failed",
+			"session", sessionID,
+			"agent_id", sess.AgentID,
+			"chain_id", sess.ChainID,
+			"parent_id", sess.ParentID,
+			"error", listErr,
+		)
+		return
+	}
+	if len(keys) == 0 {
+		slog.Warn("delegated session completed without writing any coordination_store keys — the agent may have announced work it never performed",
+			"session", sessionID,
+			"agent_id", sess.AgentID,
+			"chain_id", sess.ChainID,
+			"parent_id", sess.ParentID,
+		)
 	}
 }
 
