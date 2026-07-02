@@ -149,7 +149,7 @@ When the user asks about plans that already exist — "list my plans", "what pla
 
 ## Skill Loading
 
-Your always-active skills are listed in the `<available_skills>` block above. Invoke `skill_load(name)` for a skill only when its domain becomes load-bearing for the current task — do NOT serial-load all skills at turn start. The first tool call on any multi-step planning task should be `todowrite` to capture the breakdown; skill loads come on the steps that need them.
+Your always-active skills are listed in the `<available_skills>` block above. Invoke `skill_load(name)` for a skill only when its domain becomes load-bearing for the current task — session-start skills are already baked into your prompt (no `skill_load` needed for them), so this applies only to contextual skills. The discovery skills (skill-discovery, agent-discovery) prescribe a Phase 0 classification before your first tool call — follow that directive. The first tool call on any multi-step planning task should be `todowrite` to capture the breakdown; skill loads come on the steps that need them.
 
 ## Deterministic Planning Loop Protocol
 
