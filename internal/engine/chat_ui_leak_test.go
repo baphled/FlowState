@@ -168,31 +168,68 @@ var _ = Describe("Chat-UI leak: harness EventType chunks must not contaminate pe
 			delegation = agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"plan-writer"}}
 		})
 
-		It("does not write harness EventType Content into the parent stream's inline `**[agent]**` block", func() {
-			parentOut := make(chan provider.StreamChunk, 64)
-			ctx := engine.WithStreamOutput(context.Background(), parentOut)
+		Context("when TeeChildContent is false (default)", func() {
+			// Since the July 2026 content-leak fix, the tee is gated
+			// off by default. Child content stays in the child session
+			// and surfaces to the parent only via the delegation
+			// tool_result — matching the consensus pattern across
+			// Claude Code, OpenCode, and other harnesses.
+			It("does not write any child content into the parent stream", func() {
+				parentOut := make(chan provider.StreamChunk, 64)
+				ctx := engine.WithStreamOutput(context.Background(), parentOut)
 
-			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
-			_, err := delegateTool.Execute(ctx, tool.Input{
-				Name: "delegate",
-				Arguments: map[string]interface{}{
-					"subagent_type": "plan-writer",
-					"message":       "Plan it",
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				_, err := delegateTool.Execute(ctx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "plan-writer",
+						"message":       "Plan it",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
 
-			close(parentOut)
-			var teedText strings.Builder
-			for chunk := range parentOut {
-				if chunk.EventType == "" && chunk.Content != "" {
-					teedText.WriteString(chunk.Content)
+				close(parentOut)
+				var teedText strings.Builder
+				for chunk := range parentOut {
+					if chunk.EventType == "" && chunk.Content != "" {
+						teedText.WriteString(chunk.Content)
+					}
 				}
-			}
-			Expect(teedText.String()).NotTo(ContainSubstring(`{"attempt":`),
-				"teeToParentStream must filter out-of-band EventType Content — see session 2d8dc0ac msg 169/180/185/190")
-			Expect(teedText.String()).To(ContainSubstring("Now I have all the context"),
-				"genuine sub-agent text must still surface in the parent stream")
+				Expect(teedText.String()).NotTo(ContainSubstring("Now I have all the context"),
+					"when TeeChildContent is false (default), child content must not surface in the parent stream — see Delegation Content Leak (July 2026)")
+				Expect(teedText.String()).NotTo(ContainSubstring(`{"attempt":`),
+					"harness EventType Content must not surface regardless of gate state")
+			})
+		})
+
+		Context("when TeeChildContent is true (legacy)", func() {
+			It("filters harness EventType Content but surfaces genuine child text", func() {
+				parentOut := make(chan provider.StreamChunk, 64)
+				ctx := engine.WithStreamOutput(context.Background(), parentOut)
+
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+					WithTeeChildContent(true)
+				_, err := delegateTool.Execute(ctx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "plan-writer",
+						"message":       "Plan it",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				close(parentOut)
+				var teedText strings.Builder
+				for chunk := range parentOut {
+					if chunk.EventType == "" && chunk.Content != "" {
+						teedText.WriteString(chunk.Content)
+					}
+				}
+				Expect(teedText.String()).NotTo(ContainSubstring(`{"attempt":`),
+					"teeToParentStream must filter out-of-band EventType Content — see session 2d8dc0ac msg 169/180/185/190")
+				Expect(teedText.String()).To(ContainSubstring("Now I have all the context"),
+					"genuine sub-agent text must still surface in the parent stream when TeeChildContent is true (legacy mode)")
+			})
 		})
 	})
 })

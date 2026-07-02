@@ -160,7 +160,8 @@ var _ = Describe("DelegationProgress", func() {
 				CanDelegate:         true,
 				DelegationAllowlist: []string{"child-agent"},
 			}
-			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithTeeChildContent(true)
 
 			_, err := delegateTool.Execute(ctx, tool.Input{
 				Name: "delegate",
@@ -246,7 +247,8 @@ var _ = Describe("DelegationProgress", func() {
 				CanDelegate:         true,
 				DelegationAllowlist: []string{"child-agent"},
 			}
-			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+			delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+				WithTeeChildContent(true)
 
 			done := make(chan struct{})
 			go func() {

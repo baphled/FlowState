@@ -154,6 +154,13 @@ type DelegateTool struct {
 	// the synthesis-hang cannot stop the plan from reaching Obsidian.
 	planOutputDir string
 
+	// teeChildContent gates whether child-stream content is mirrored
+	// into the parent's user-visible stream via teeToParentStream.
+	// Defaults to false (zero value) — the child session plus tool_result
+	// is the canonical surface. Set via WithTeeChildContent from
+	// AppConfig.Delegation.
+	teeChildContent bool
+
 	// ownerEngine is the engine this DelegateTool is installed on —
 	// the LEAD's engine in a swarm dispatch. activeSwarmContext reads
 	// the swarm context from here directly because the lead is by
@@ -598,8 +605,45 @@ func (d *DelegateTool) publishDelegationEvent(status string, data events.Delegat
 		d.eventBus.Publish(events.EventDelegationStarted, events.NewDelegationStartedEvent(data))
 	case "completed":
 		d.eventBus.Publish(events.EventDelegationCompleted, events.NewDelegationCompletedEvent(data))
+	case "progress":
+		d.eventBus.Publish(events.EventDelegationProgress, events.NewDelegationProgressEvent(data))
 	default:
 		d.eventBus.Publish(events.EventDelegationFailed, events.NewDelegationFailedEvent(data))
+	}
+}
+
+// emitProgressHeartbeat periodically publishes delegation.progress events
+// while the child stream runs. Restores parent-side visibility during long
+// delegations without forwarding child content — the July 2026 tee gate
+// removed the live content mirror that previously served this purpose.
+//
+// The goroutine exits when ctx is cancelled (caller-driven via defer
+// cancel in executeSync).
+//
+// Expected:
+//   - ctx is cancelled by the caller when the delegation completes,
+//     fails, or the parent stream is torn down.
+//   - baseInfo, parentSessionID, childSessionID, and loadSkills carry
+//     the same values used for the delegation.started event.
+//
+// Side effects:
+//   - Publishes a delegation.progress event every 30s onto the bus.
+func (d *DelegateTool) emitProgressHeartbeat(
+	ctx context.Context,
+	baseInfo provider.DelegationInfo,
+	parentSessionID, childSessionID string,
+	loadSkills []string,
+) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.publishDelegationEvent("progress",
+				buildDelegationEventData(baseInfo, parentSessionID, childSessionID, "", loadSkills))
+		}
 	}
 }
 
@@ -742,6 +786,25 @@ func (d *DelegateTool) WithGateRunner(runner swarm.GateRunner) *DelegateTool {
 //   - Replaces the previously stored plan output dir.
 func (d *DelegateTool) WithPlanOutputDir(dir string) *DelegateTool {
 	d.planOutputDir = dir
+	return d
+}
+
+// WithTeeChildContent controls whether delegate chain-of-thought text is
+// mirrored into the parent's user-visible content stream. When false (the
+// default), child output stays in the child session and surfaces to the
+// parent only via the delegation tool_result — matching the consensus
+// pattern across Claude Code, OpenCode, and other harnesses.
+//
+// Expected:
+//   - enabled is the value from AppConfig.Delegation.TeeChildContent.
+//
+// Returns:
+//   - The receiver for method chaining.
+//
+// Side effects:
+//   - Replaces the previously stored value.
+func (d *DelegateTool) WithTeeChildContent(enabled bool) *DelegateTool {
+	d.teeChildContent = enabled
 	return d
 }
 
@@ -2546,6 +2609,13 @@ func (d *DelegateTool) executeSync(
 	// to SSE (May 2026) §"Why publish after resolve, not at chunk
 	// emission time" for the ordering rationale.
 	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, "", target.loadSkills))
+
+	// Start the progress heartbeat — emits delegation.progress events
+	// every 30s while the child runs. Cancelled when executeSync returns.
+	progressCtx, progressCancel := context.WithCancel(ctx)
+	defer progressCancel()
+	go d.emitProgressHeartbeat(progressCtx, baseInfo, parentSessionID, delegateSessionID, target.loadSkills)
+
 	closeStore := d.attachSessionStore(target.engine, delegateSessionID)
 	defer closeStore()
 
@@ -2586,6 +2656,7 @@ func (d *DelegateTool) executeSync(
 	}
 
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
+	delegateCtx = swarm.WithScope(delegateCtx, nil)
 	// Cascade contract for child sessions: UI > manifest > global.
 	//
 	// The parent session's override (UI tier) must NOT propagate into the
@@ -3120,7 +3191,9 @@ func (d *DelegateTool) runStreamWithLegacyBreaker(delegateCtx context.Context, t
 		d.circuitBreaker.RecordFailure()
 		return fmt.Errorf("delegation failed: %w", err)
 	}
-	chunks = teeToParentStream(delegateCtx, target.agentID, chunks)
+	if d.teeChildContent {
+		chunks = teeToParentStream(delegateCtx, target.agentID, chunks)
+	}
 	chunks = d.withHarnessEvents(delegateCtx, target, chunks, nil, false)
 	chunks = d.wrapWithAccumulator(delegateCtx, chunks, sessionIDFromContext(delegateCtx), target.agentID)
 	res, collectErr := d.collectWithProgress(delegateCtx, chunks, time.Now())
@@ -3173,7 +3246,9 @@ func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTa
 	if err != nil {
 		return err
 	}
-	chunks = teeToParentStream(ctx, target.agentID, chunks)
+	if d.teeChildContent {
+		chunks = teeToParentStream(ctx, target.agentID, chunks)
+	}
 	chunks = d.withHarnessEvents(ctx, target, chunks, nil, false)
 	chunks = d.wrapWithAccumulator(ctx, chunks, sessionIDFromContext(ctx), target.agentID)
 	res, collectErr := d.collectWithProgress(ctx, chunks, time.Now())
@@ -4678,6 +4753,7 @@ func (d *DelegateTool) executeAsync(
 	bgChain := d.resolveChildModelChain(target)
 	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
+		delegateCtx = swarm.WithScope(delegateCtx, nil)
 		// Same cascade contract as the synchronous delegate path — child
 		// manifest's PreferredModels[0] wins; empty falls through to the
 		// engine's global default. See resolveChildModelOverride.
@@ -5304,7 +5380,11 @@ func (d *DelegateTool) collectDelegationResult(chunks <-chan provider.StreamChun
 		if truncated {
 			continue
 		}
-		response.WriteString(chunk.Content)
+		if chunk.Content != "" {
+			response.WriteString(chunk.Content)
+		} else if chunk.ToolResult != nil && chunk.ToolResult.IsError {
+			response.WriteString(chunk.ToolResult.Content)
+		}
 		if response.Len() > maxDelegationResultBytes {
 			truncated = true
 		}
@@ -5691,7 +5771,11 @@ func (d *DelegateTool) collectWithProgress(
 			if streaming.IsControlEvent(chunk.EventType) {
 				continue
 			}
-			response.WriteString(chunk.Content)
+			if chunk.Content != "" {
+				response.WriteString(chunk.Content)
+			} else if chunk.ToolResult != nil && chunk.ToolResult.IsError {
+				response.WriteString(chunk.ToolResult.Content)
+			}
 			if toolCalls%progressInterval == 0 {
 				d.deliverProgressEvent(ctx, toolCalls, lastTool, startedAt)
 			}

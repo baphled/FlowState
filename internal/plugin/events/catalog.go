@@ -225,6 +225,21 @@ var Catalog = []EventCatalogEntry{
 		Delivery:    "fire-and-forget",
 	},
 	{
+		Topic:       EventDelegationProgress,
+		Constant:    "EventDelegationProgress",
+		EventType:   "delegation.progress",
+		Struct:      "DelegationProgressEvent",
+		Publishers:  []string{"engine/delegation.go"},
+		Subscribers: []string{"api.handleSwarmEvents", "tui/intents/chat/intent"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published by the progress heartbeat goroutine in" +
+			" DelegateTool.executeSync every 30s while the child stream" +
+			" runs. Restores parent-side visibility during long delegations" +
+			" without forwarding child content.",
+	},
+	{
 		Topic:       EventGateEvaluating,
 		Constant:    "EventGateEvaluating",
 		EventType:   "gate.evaluating",

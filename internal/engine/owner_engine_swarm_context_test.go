@@ -17,6 +17,8 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
+type testSessionCtxKey struct{}
+
 var _ = Describe("DelegateTool.WithOwnerEngine swarm-context lookup", func() {
 	var (
 		leadEng      *engine.Engine
@@ -486,6 +488,140 @@ var _ = Describe("Swarm lead member delegation is forced synchronous", func() {
 				"a standalone background delegation has no active swarm context, so the force-sync rule must not fire — it stays async and returns a task handle")
 			Expect(result.Output).To(ContainSubstring("running"),
 				"standalone background delegation reports the async 'running' status")
+		})
+	})
+})
+
+// Delegate-Tool Swarm-Scope Leak (July 2026, aa4f507b / 44a9e14f).
+//
+// When a coordinator runs inside a swarm context, every turn carries the
+// swarm scope attached by the dispatcher. The delegate tool derives a child
+// context from the parent (executeSync at delegation.go:2588, executeAsync
+// at delegation.go:4680) via context.WithValue, which inherits every parent
+// context value INCLUDING the swarm scope.
+//
+// The delegate engine's capToolsetAtSwarmLeadLocked reads the scope from
+// ctx. When the delegate agent is not a declared swarm member, the cap
+// intersects the delegate's tools with the lead manifest's tools. If the
+// lead does not declare bash/write/read/edit, the delegate loses them even
+// though its own manifest declares all four — reproducing the aa4f507b
+// "tool not found: bash" failure.
+//
+// These specs verify that swarm.WithScope(ctx, nil) — the fix applied in
+// both executeSync and executeAsync — marks the delegate context as
+// "standalone" so the cap is skipped regardless of what the parent context
+// carries.
+var _ = Describe("Delegate context inheriting swarm scope", func() {
+	var (
+		eng      *engine.Engine
+		registry *agent.Registry
+		leadID   = "coordinator"
+	)
+
+	BeforeEach(func() {
+		providerReg := provider.NewRegistry()
+		providerReg.Register(&mockProvider{name: "spy"})
+
+		registry = agent.NewRegistry()
+		// The swarm lead grants ONLY coordination tools — no bash/write.
+		registry.Register(&agent.Manifest{
+			ID:   leadID,
+			Name: "Coordinator",
+			Capabilities: agent.Capabilities{
+				Tools: []string{"delegate", "coordination_store", "skill_load"},
+			},
+		})
+		executor := agent.Manifest{
+			ID:   "executor",
+			Name: "Executor",
+			Capabilities: agent.Capabilities{
+				Tools: []string{"bash", "write", "read", "edit", "grep", "glob"},
+			},
+		}
+		registry.Register(&executor)
+
+		eng = engine.New(engine.Config{
+			Manifest:      executor,
+			AgentRegistry: registry,
+			Registry:      providerReg,
+			ChatProvider:  &mockProvider{name: "spy"},
+		})
+	})
+
+	When("the delegate context inherits a swarm scope from the parent and is explicitly marked standalone with WithScope(ctx, nil)", func() {
+		It("keeps the delegate's tools intact — the standalone marker prevents the cap", func() {
+			parentScope := &swarm.Context{
+				SwarmID:   "planning-loop",
+				LeadAgent: leadID,
+				Members:   []string{"analyst", "writer"},
+			}
+			// Simulate the coordinator's context with a swarm scope.
+			parentCtx := swarm.WithScope(context.Background(), parentScope)
+			// Simulate delegation: derive delegateCtx from parentCtx
+			// (inheriting the swarm scope), then apply THE FIX.
+			delegateCtx := context.WithValue(parentCtx, testSessionCtxKey{}, "session-key")
+			delegateCtx = swarm.WithScope(delegateCtx, nil)
+
+			allowed := eng.EffectiveAllowedToolsForTest(delegateCtx)
+
+			Expect(allowed["bash"]).To(BeTrue(),
+				"the standalone marker overrides the inherited scope — the executor keeps its declared bash tool")
+			Expect(allowed["write"]).To(BeTrue(),
+				"write survives the standalone marker — it is not capped to the lead's toolset")
+			Expect(allowed["read"]).To(BeTrue(),
+				"read survives the standalone marker")
+			Expect(allowed["edit"]).To(BeTrue(),
+				"edit survives the standalone marker")
+			Expect(allowed["grep"]).To(BeTrue(),
+				"grep survives the standalone marker")
+			Expect(allowed["glob"]).To(BeTrue(),
+				"glob survives the standalone marker")
+		})
+	})
+
+	When("the delegate context inherits a swarm scope WITHOUT the standalone marker", func() {
+		It("caps tools at the lead manifest — proving the inherited scope WOULD cap without the fix", func() {
+			parentScope := &swarm.Context{
+				SwarmID:   "planning-loop",
+				LeadAgent: leadID,
+				Members:   []string{"analyst", "writer"},
+			}
+			parentCtx := swarm.WithScope(context.Background(), parentScope)
+			// Derive a delegate context WITHOUT the standalone marker —
+			// this is the pre-fix behaviour that caused aa4f507b.
+			delegateCtx := context.WithValue(parentCtx, testSessionCtxKey{}, "session-key")
+
+			allowed := eng.EffectiveAllowedToolsForTest(delegateCtx)
+
+			Expect(allowed["bash"]).To(BeFalse(),
+				"without the standalone marker, the inherited swarm scope caps at the lead manifest — bash is stripped")
+			Expect(allowed["write"]).To(BeFalse(),
+				"write is stripped by the inherited scope cap")
+			Expect(allowed["read"]).To(BeFalse(),
+				"read is stripped by the inherited scope cap")
+			Expect(allowed["edit"]).To(BeFalse(),
+				"edit is stripped by the inherited scope cap")
+			Expect(allowed["grep"]).To(BeFalse(),
+				"grep is stripped — the coordinator lead does not declare it")
+			Expect(allowed["glob"]).To(BeFalse(),
+				"glob is stripped — the coordinator lead does not declare it")
+			Expect(allowed["delegate"]).To(BeFalse(),
+				"delegate is not in the executor's manifest at all — it is not in the effective toolset regardless of cap")
+			Expect(allowed["coordination_store"]).To(BeFalse(),
+				"coordination_store is not in the executor's manifest at all")
+		})
+	})
+
+	When("the delegate context is standalone (no parent swarm scope at all)", func() {
+		It("keeps all tools — the baseline non-swarm path is unaffected", func() {
+			allowed := eng.EffectiveAllowedToolsForTest(context.Background())
+
+			Expect(allowed["bash"]).To(BeTrue(),
+				"non-swarm context keeps the delegate's tools — baseline unchanged")
+			Expect(allowed["write"]).To(BeTrue(),
+				"non-swarm context keeps write")
+			Expect(allowed["read"]).To(BeTrue(),
+				"non-swarm context keeps read")
 		})
 	})
 })

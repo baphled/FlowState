@@ -785,6 +785,40 @@ func NewDelegationFailedEvent(data DelegationEventData, ts ...time.Time) *Delega
 	}
 }
 
+// DelegationProgressEvent represents a periodic delegation progress
+// heartbeat, published while the child stream is executing. Restores
+// parent-side visibility during long delegations without forwarding
+// child content (which the tee gate suppresses by default since the
+// July 2026 content-leak fix).
+type DelegationProgressEvent struct {
+	BaseEvent
+	Data DelegationEventData
+}
+
+// NewDelegationProgressEvent creates a new delegation progress heartbeat
+// event.
+//
+// Expected:
+//   - data carries the delegation metadata. StartedAt lets consumers
+//     compute elapsed time.
+//   - ts is optional and, when provided, uses the first non-zero timestamp.
+//
+// Returns:
+//   - A DelegationProgressEvent configured with the supplied data.
+//
+// Side effects:
+//   - Uses the current time when no timestamp override is supplied.
+func NewDelegationProgressEvent(data DelegationEventData, ts ...time.Time) *DelegationProgressEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &DelegationProgressEvent{
+		BaseEvent: BaseEvent{eventType: EventDelegationProgress, timestamp: t},
+		Data:      data,
+	}
+}
+
 // GateEventData holds data for swarm gate lifecycle events emitted by
 // the engine's DelegateTool at the seam where gate batches dispatch.
 //
