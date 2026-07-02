@@ -3508,9 +3508,6 @@ var _ = Describe("Manager", func() {
 			})
 
 			It("preserves an already-canonical tool message with IsError stamp untouched", func() {
-				// Forward-compat: a future writer that already persists Role:"tool"
-				// + an IsError signal (or any session row whose Role is "tool")
-				// keeps its existing shape and is not double-flipped.
 				restored := &session.Session{
 					ID:      "sess-tool-canonical",
 					AgentID: "planner",
@@ -3538,6 +3535,189 @@ var _ = Describe("Manager", func() {
 					"a Role:'tool' row without an explicit error marker stays "+
 						"non-error; the canonicalisation only fires on 'tool_error'")
 				Expect(toolMsg.Content).To(Equal("ok: 42"))
+			})
+		})
+
+		Context("role canonicalisation: tool_result, tool_call, thinking, delegation", func() {
+			It("canonicalises tool_result to tool", func() {
+				restored := &session.Session{
+					ID:      "sess-tool-result",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Run the tool.", AgentID: "planner"},
+						{
+							ID:       "m2",
+							Role:     "tool_result",
+							Content:  "found 42 results",
+							ToolName: "search",
+							AgentID:  "planner",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-tool-result", "Continue.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				Expect(seederMock.seededMessages[0].Role).To(Equal("user"))
+
+				toolMsg := seederMock.seededMessages[1]
+				Expect(toolMsg.Role).To(Equal("tool"),
+					"tool_result must canonicalise to Role:'tool'")
+				Expect(toolMsg.IsError).To(BeFalse(),
+					"a successful tool_result must not have IsError set")
+				Expect(toolMsg.Content).To(Equal("found 42 results"))
+			})
+
+			It("canonicalises tool_call to assistant with descriptive content", func() {
+				restored := &session.Session{
+					ID:      "sess-tool-call",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Search for X.", AgentID: "planner"},
+						{
+							ID:        "m2",
+							Role:      "tool_call",
+							Content:   "search",
+							ToolName:  "search",
+							ToolInput: `{"q":"X"}`,
+							AgentID:   "planner",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-tool-call", "Continue.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				Expect(seederMock.seededMessages[0].Role).To(Equal("user"))
+
+				callMsg := seederMock.seededMessages[1]
+				Expect(callMsg.Role).To(Equal("assistant"),
+					"tool_call must canonicalise to Role:'assistant'")
+				Expect(callMsg.Content).To(Equal("[search with input: {\"q\":\"X\"}]"),
+					"tool_call content must wrap the tool name and input in brackets")
+			})
+
+			It("canonicalises tool_call to assistant even when ToolInput is empty", func() {
+				restored := &session.Session{
+					ID:      "sess-tool-call-empty",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Do it.", AgentID: "planner"},
+						{
+							ID:       "m2",
+							Role:     "tool_call",
+							Content:  "compute",
+							ToolName: "compute",
+							AgentID:  "planner",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-tool-call-empty", "Continue.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				callMsg := seederMock.seededMessages[1]
+				Expect(callMsg.Role).To(Equal("assistant"))
+				Expect(callMsg.Content).To(Equal("[compute]"),
+					"tool_call without ToolInput must wrap just the tool name")
+			})
+
+			It("canonicalises thinking to assistant with content preserved", func() {
+				restored := &session.Session{
+					ID:      "sess-thinking",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Plan the approach.", AgentID: "planner"},
+						{
+							ID:      "m2",
+							Role:    "thinking",
+							Content: "I need to break this down into steps.",
+							AgentID: "planner",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-thinking", "Continue.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				thinkingMsg := seederMock.seededMessages[1]
+				Expect(thinkingMsg.Role).To(Equal("assistant"),
+					"thinking must canonicalise to Role:'assistant'")
+				Expect(thinkingMsg.Content).To(Equal("I need to break this down into steps."),
+					"thinking content must round-trip verbatim")
+			})
+
+			It("canonicalises delegation to assistant with summary content preserved", func() {
+				restored := &session.Session{
+					ID:      "sess-delegation",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Research this topic.", AgentID: "planner"},
+						{
+							ID:        "m2",
+							Role:      "delegation",
+							Content:   "→ Delegated to researcher (completed in 5s, 3 tool calls)",
+							AgentID:   "planner",
+							ChainID:   "chain-1",
+							ToolCalls: 3,
+							LastTool:  "search",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-delegation", "Continue.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				delMsg := seederMock.seededMessages[1]
+				Expect(delMsg.Role).To(Equal("assistant"),
+					"delegation must canonicalise to Role:'assistant'")
+				Expect(delMsg.Content).To(Equal("→ Delegated to researcher (completed in 5s, 3 tool calls)"),
+					"delegation content (the formatted summary) must round-trip verbatim")
+			})
+
+			It("canonicalises delegation_started to assistant with summary content preserved", func() {
+				restored := &session.Session{
+					ID:      "sess-delegation-started",
+					AgentID: "planner",
+					Messages: []session.Message{
+						{ID: "m1", Role: "user", Content: "Research this topic.", AgentID: "planner"},
+						{
+							ID:        "m2",
+							Role:      "delegation_started",
+							Content:   "→ Delegated to researcher (in progress, model: claude-sonnet-4)",
+							AgentID:   "planner",
+							ChainID:   "chain-1",
+							ModelName: "claude-sonnet-4",
+						},
+					},
+				}
+				seedManager.RestoreSessions([]*session.Session{restored})
+
+				seederMock.addChunk(provider.StreamChunk{Done: true})
+				_, err := seedManager.SendMessage(ctx, "sess-delegation-started", "Continue.")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(seederMock.seededMessages).To(HaveLen(2))
+				delMsg := seederMock.seededMessages[1]
+				Expect(delMsg.Role).To(Equal("assistant"),
+					"delegation_started must canonicalise to Role:'assistant'")
+				Expect(delMsg.Content).To(Equal("→ Delegated to researcher (in progress, model: claude-sonnet-4)"),
+					"delegation_started content must round-trip verbatim")
 			})
 		})
 	})

@@ -1404,6 +1404,25 @@ func (m *Manager) SendMessageWithAttachments(
 	return ch, nil
 }
 
+// SendMessage appends a user message to the session and returns a channel
+// of streaming response chunks.
+//
+// Prior messages are projected through a role-canonicalisation step before
+// they reach the provider adapter. The session accumulator persists messages
+// with roles outside the provider-adapter switch set of {user, assistant,
+// system, tool}: tool_error, tool_result, tool_call, thinking, delegation,
+// and delegation_started. Both the OpenAI-compat and Anthropic provider
+// adapters silently drop unrecognised roles (see openaicompat.go:74 and
+// anthropic.go:1628). The projection seam maps each persisted role to a
+// standard role so no message is silently dropped from the model request
+// payload on reload:
+//
+//	tool_error         -> tool   + IsError:true
+//	tool_result        -> tool
+//	tool_call          -> assistant  (content describes the call)
+//	thinking           -> assistant
+//	delegation         -> assistant
+//	delegation_started -> assistant
 func (m *Manager) SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error) {
 	m.mu.Lock()
 	sess, ok := m.sessions[sessionID]
@@ -1459,41 +1478,37 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	m.persistLocked(sess)
 	m.mu.Unlock()
 
-	// Build provider-shaped prior messages once so we can both seed the
-	// engine's process-wide store (for the legacy CLI path that still
-	// reads from it) and attach them to the per-call context (for the
-	// serve path, where the engine uses ctx-scoped history as the
-	// authoritative source for the model request payload).
-	//
-	// ThinkingBlocks and StopReason MUST round-trip onto the projected
-	// provider.Message so subsequent turns replay the encrypted thinking
-	// signature verbatim. Without this propagation, Anthropic silently
-	// disables extended-thinking continuity from turn 2 onward — the
-	// session accumulator persists the structured blocks on
-	// session.Message.ThinkingBlocks, but the wire payload sent to the
-	// model is built from the slice projected here. Empty inputs project
-	// to empty (nil) outputs, preserving the no-thinking fall-through.
-	//
-	// Bug M4-adjacent (May 2026): session.Message persists tool-result
-	// errors with Role:"tool_error" (see accumulator.applyToolResult).
-	// The Anthropic provider's buildMessages switch only matches
-	// Role:"tool" — a raw "tool_error" falls through and the message is
-	// silently dropped from the model request payload on reload. The
-	// projection seam canonicalises here to Role:"tool" + IsError:true so
-	// the wire shape is uniform with the live-stream path stamped by the
-	// M4 engine seam. Already-canonical Role:"tool" rows are forwarded
-	// unchanged so a future writer that persists IsError directly is not
-	// double-flipped.
 	var providerMsgs []provider.Message
 	if len(priorMessages) > 0 {
 		providerMsgs = make([]provider.Message, 0, len(priorMessages))
 		for _, msg := range priorMessages {
 			role := msg.Role
 			isError := false
-			if role == "tool_error" {
+
+			switch role {
+			case "tool_error":
 				role = "tool"
 				isError = true
+			case "tool_result":
+				role = "tool"
+			case "tool_call":
+				var content string
+				if msg.ToolInput != "" {
+					content = "[" + msg.Content + " with input: " + msg.ToolInput + "]"
+				} else {
+					content = "[" + msg.Content + "]"
+				}
+				providerMsgs = append(providerMsgs, provider.Message{
+					Role:    "assistant",
+					Content: content,
+				})
+				continue
+			case "thinking":
+				role = "assistant"
+			case "delegation", "delegation_started":
+				role = "assistant"
 			}
+
 			providerMsgs = append(providerMsgs, provider.Message{
 				Role:           role,
 				Content:        msg.Content,
