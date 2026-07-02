@@ -369,6 +369,16 @@ type Engine struct {
 	// detection.
 	maxIdenticalToolCalls int
 
+	// maxEmptyTextToolCalls is the consecutive-empty-text-with-tool-calls
+	// threshold for the silent-spin detector in streamWithToolLoop.
+	// Defaults to engineMaxEmptyTextToolCalls via Engine.New; overridable
+	// via SetMaxEmptyTextToolCallsForTest. Zero/negative disables the
+	// detector. Covers the failure where a provider returns empty (or
+	// whitespace-only) assistant text but still carries tool calls with
+	// varied arguments, so neither the repeat-call fingerprint nor the
+	// iteration backstop catches it before the session stalls.
+	maxEmptyTextToolCalls int
+
 	// maxToolLoopDuration is the cumulative wall-clock ceiling for a
 	// single turn's tool-loop continuations in streamWithToolLoop.
 	// Defaults to engineMaxToolLoopDuration via Engine.New; overridable
@@ -1026,6 +1036,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		maxToolLoopIterations:          engineMaxToolLoopIterations,
 		maxToolLoopDuration:            engineMaxToolLoopDuration,
 		maxIdenticalToolCalls:          engineMaxIdenticalToolCalls,
+		maxEmptyTextToolCalls:          engineMaxEmptyTextToolCalls,
 	}
 }
 
@@ -1083,6 +1094,20 @@ const engineMaxToolLoopDuration = 300 * time.Second
 // pass while a genuinely stuck re-request trips quickly. Overridable via
 // SetMaxIdenticalToolCallsForTest; zero/negative disables repeat detection.
 const engineMaxIdenticalToolCalls = 3
+
+// engineMaxEmptyTextToolCalls is the trip threshold for the silent-spin
+// detector: when the model returns empty (or whitespace-only) assistant text
+// that still carries tool calls for this many CONSECUTIVE tool-loop
+// continuations, the loop is considered stuck and terminated. This guards the
+// real-world failure observed with z.ai/glm-5.2, which produced a long run of
+// empty-text assistant messages each carrying a single todo_update call with an
+// incrementing index — varied enough to dodge the repeat-call fingerprint and
+// sparse enough (3-4 occurrences) to stay well under the 50-iteration backstop,
+// yet the session spun for 30 minutes without producing any reasoning text.
+// Set to 3 so two legitimate empty-text tool-call turns still pass while a
+// genuine silent stall trips quickly. Overridable via
+// SetMaxEmptyTextToolCallsForTest; zero/negative disables the detector.
+const engineMaxEmptyTextToolCalls = 3
 
 // resolveFactService returns the RLM Phase B service the engine should
 // attach. Nil when the feature is disabled in CompactionConfig — the
@@ -4354,12 +4379,17 @@ func (e *Engine) streamWithToolLoop(
 	// so concurrent turns can never share it. iterations counts continuations
 	// (about-to-re-request passes); lastFingerprint / identicalRun track the
 	// primary repeat-call detector — when the same canonicalised tool batch
-	// recurs maxIdenticalToolCalls consecutive times the loop is stuck. Both
-	// guards trip the turn with StopReasonToolLoopExceeded. See
-	// engineMaxToolLoopIterations / engineMaxIdenticalToolCalls.
+	// recurs maxIdenticalToolCalls consecutive times the loop is stuck.
+	// emptyTextToolCallsRun counts consecutive continuations whose assistant
+	// text is empty/whitespace-only yet still carries tool calls; when it
+	// reaches maxEmptyTextToolCalls the loop is a silent stall and is
+	// tripped. All guards trip the turn with StopReasonToolLoopExceeded. See
+	// engineMaxToolLoopIterations / engineMaxIdenticalToolCalls /
+	// engineMaxEmptyTextToolCalls.
 	iterations := 0
 	lastFingerprint := ""
 	identicalRun := 0
+	emptyTextToolCallsRun := 0
 	const maxToolUseNoCallsRetries = 3
 	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
@@ -4715,6 +4745,11 @@ func (e *Engine) streamWithToolLoop(
 		//      maxToolLoopDuration since loopStart, independent of iteration
 		//      count. Catches slow-but-varied loops that never repeat and
 		//      never hit the iteration ceiling. Added June 2026.
+		//   4. Empty-text-with-tool-calls detector: counts consecutive
+		//      continuations whose assistant text is empty/whitespace-only
+		//      yet still carries tool calls; trips at maxEmptyTextToolCalls.
+		//      Catches silent stalls where varied tool args dodge the
+		//      fingerprint and the low count dodges the iteration backstop.
 		// Zero/negative on any field disables its respective check.
 		iterations++
 		fingerprint := fingerprintToolBatch(result.toolCalls)
@@ -4727,26 +4762,39 @@ func (e *Engine) streamWithToolLoop(
 			lastFingerprint = fingerprint
 		}
 
+		if e.maxEmptyTextToolCalls > 0 {
+			if strings.TrimSpace(result.responseContent) == "" && len(result.toolCalls) > 0 {
+				emptyTextToolCallsRun++
+			} else {
+				emptyTextToolCallsRun = 0
+			}
+		}
+
 		elapsed := time.Since(loopStart)
 		repeatTripped := e.maxIdenticalToolCalls > 0 && identicalRun >= e.maxIdenticalToolCalls
 		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
 		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
-		if repeatTripped || backstopTripped || durationTripped {
+		emptyTextTripped := e.maxEmptyTextToolCalls > 0 && emptyTextToolCallsRun >= e.maxEmptyTextToolCalls
+		if repeatTripped || backstopTripped || durationTripped || emptyTextTripped {
 			reason := "iteration_backstop"
 			if repeatTripped {
 				reason = "identical_call_repeat"
 			} else if durationTripped {
 				reason = "duration_backstop"
+			} else if emptyTextTripped {
+				reason = "empty_text_tool_calls"
 			}
 			slog.Warn("engine tool loop capped",
 				"session", sessionID,
 				"trip", reason,
 				"iterations", iterations,
 				"identical_run", identicalRun,
+				"empty_text_run", emptyTextToolCallsRun,
 				"elapsed", elapsed,
 				"max_iterations", e.maxToolLoopIterations,
 				"max_duration", e.maxToolLoopDuration,
 				"max_identical", e.maxIdenticalToolCalls,
+				"max_empty_text_tool_calls", e.maxEmptyTextToolCalls,
 			)
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
 				if todoContinuationCount >= maxTodoContinuations {
@@ -4786,6 +4834,7 @@ func (e *Engine) streamWithToolLoop(
 				iterations = 0
 				identicalRun = 0
 				lastFingerprint = ""
+				emptyTextToolCallsRun = 0
 				loopStart = time.Now() // reset wall-clock budget for continuation
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
