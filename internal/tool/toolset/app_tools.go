@@ -31,13 +31,15 @@ import (
 const DefaultVaultCollection = "flowstate-vault"
 
 // BuildAppTools returns the base tool slice the FlowState engine starts
-// with: bash, read, write, web, the skill loader, the todowrite + todo_update
-// pair, and the plan_list/plan_read/plan_write plan tools bound to plansDir.
-// The slice is the canonical seed for an engine's tool registry; callers
-// compose conditional tools on top of it via the Append* helpers below.
+// with: bash, read, write, web, the skill loader, the five todo tools
+// (todowrite, todo_update, todo_append, todo_insert, todo_clear), and the
+// plan_list/plan_read/plan_write plan tools bound to plansDir. The slice is
+// the canonical seed for an engine's tool registry; callers compose
+// conditional tools on top of it via the Append* helpers below.
 //
-// Both todo tools share a single todoStore so todo_update patches the same
-// per-session list that todowrite creates.
+// All five todo tools share a single todoStore so per-item patches, appends,
+// inserts, and clears all mutate the same per-session list that todowrite
+// creates.
 //
 // When guard is non-nil, the three mutating-filesystem tools in this
 // base slice (bash, read, write) are constructed via NewWithGuard so
@@ -57,7 +59,7 @@ const DefaultVaultCollection = "flowstate-vault"
 //
 // Expected:
 //   - skillLoader is the FileSkillLoader used by the skill_load tool.
-//   - todoStore backs both the todowrite and todo_update tools.
+//   - todoStore backs all five todo tools.
 //   - plansDir is the resolved plan directory; an empty string is
 //     permitted for tests that do not exercise the plan tools.
 //   - guard, when non-nil, is wired into bash/read/write so
@@ -94,6 +96,7 @@ func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store,
 		todotool.NewUpdate(todoStore),
 		todotool.NewAppend(todoStore),
 		todotool.NewInsert(todoStore),
+		todotool.NewClear(todoStore),
 		plan.NewList(plansDir),
 		plan.NewRead(plansDir),
 		plan.NewWrite(plansDir),

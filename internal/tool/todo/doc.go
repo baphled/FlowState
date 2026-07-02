@@ -1,8 +1,14 @@
 // Package todo provides session-scoped tools for managing todo lists.
 //
-// This package implements four todo tools for FlowState, which allow agents
+// This package implements five todo tools for FlowState, which allow agents
 // to maintain and evolve a per-session task list during a conversation.
-// Responsibilities include:
+// Status transitions are governed by a forward-only monotonic state machine:
+// pending may advance to in_progress, completed, or cancelled; in_progress may
+// advance only to completed or cancelled. Terminal states (completed,
+// cancelled) can never revert, and an in_progress item can never move back to
+// pending — this prevents an agent from silently undoing finished work. When a
+// list is finished it is retired wholesale via todo_clear rather than edited
+// back. Responsibilities include:
 //   - Defining the Item data model with content, status, and priority fields
 //   - Providing a Store interface for reading and writing per-session item lists
 //   - MemoryStore: an in-process, volatile implementation used in tests and as a fallback
@@ -10,7 +16,9 @@
 //     each session's list is written atomically via a tmp-file rename to
 //     <dataDir>/todos/<sessionID>.json
 //   - Implementing the todowrite tool (whole-list creation, blocked once a list exists)
-//   - Implementing the todo_update tool (single-item patch by index)
+//   - Implementing the todo_update tool (single-item patch by index, forward-only)
 //   - Implementing the todo_append tool (add item to end of list)
 //   - Implementing the todo_insert tool (insert item at a specific index)
+//   - Implementing the todo_clear tool (retire a finished list so a fresh
+//     todowrite can create a new one)
 package todo

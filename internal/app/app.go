@@ -2645,6 +2645,7 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 			todotool.NewUpdate(a.TodoStore),
 			todotool.NewAppend(a.TodoStore),
 			todotool.NewInsert(a.TodoStore),
+			todotool.NewClear(a.TodoStore),
 		)
 	}
 
