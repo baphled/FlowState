@@ -114,13 +114,14 @@ var _ = Describe("OpenAI Compat", func() {
 			Expect(result).To(HaveLen(2))
 		})
 
-		// M4-adjacent hardening (May 2026): the manager seam canonicalises
-		// every provider.Message.Role to one of {user, assistant, system,
-		// tool} before it reaches BuildMessages. The wire layer continues to
-		// silently skip anything else (intentional, preserves existing
-		// behaviour) but MUST log a Warn naming the role so any future
-		// canonicalisation regression is visible at runtime instead of
-		// vanishing into the void.
+		// Role-canonicalisation safety net (June 2026): the manager seam at
+		// session/manager.go now canonicalises every persisted role before
+		// it reaches BuildMessages. The wire layer still silently skips
+		// anything outside {user, assistant, system, tool} as a regression
+		// backstop. This test uses a truly unknown role to verify the
+		// Warn is emitted — tool_error, tool_result, tool_call, thinking,
+		// delegation, and delegation_started are all canonicalised before
+		// they reach this point.
 		It("logs a Warn naming the unknown role when one slips past the manager seam", func() {
 			prev := slog.Default()
 			DeferCleanup(func() { slog.SetDefault(prev) })
@@ -131,7 +132,7 @@ var _ = Describe("OpenAI Compat", func() {
 
 			msgs := []provider.Message{
 				{Role: "user", Content: "hello"},
-				{Role: "tool_error", Content: "uncanonicalised legacy"},
+				{Role: "bogus_role", Content: "uncanonicalised legacy"},
 			}
 			result := openaicompat.BuildMessages(msgs)
 			Expect(result).To(HaveLen(1),
@@ -142,7 +143,7 @@ var _ = Describe("OpenAI Compat", func() {
 				"log must name the package so operators can grep by provider — log was: %s", out)
 			Expect(out).To(ContainSubstring("unknown role"),
 				"log must declare the condition with a single greppable phrase — log was: %s", out)
-			Expect(out).To(ContainSubstring("role=tool_error"),
+			Expect(out).To(ContainSubstring("role=bogus_role"),
 				"log must name the rogue role string so the regression site is identifiable — log was: %s", out)
 		})
 
@@ -962,15 +963,15 @@ var _ = Describe("RunStream", func() {
 	// unchanged. Providers that never emit reasoning_content (openai,
 	// ollama, github-copilot text streams) are unaffected — the extraction
 	// is a no-op when the field is absent.
-	It("emits Thinking chunks when delta carries reasoning_content (glm-4.6 / DeepSeek-R1 shape)", func() {
+	It("routes reasoning_content to visible Content when provider is zai (glm-4.6 shape)", func() {
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
 			// Real-shape glm-4.6 chunk: reasoning_content arrives in deltas
 			// with empty content. After several reasoning chunks the model
-			// switches to content. The dispatcher must emit thinking chunks
-			// for the reasoning phase and content chunks for the reply.
+			// switches to content. Under the zai provider ALL reasoning is
+			// routed to visible Content (matching OpenClaw's compat approach).
 			chunks := []string{
 				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me think about this. "},"finish_reason":null}]}`,
 				`{"id":"chatcmpl-r1","object":"chat.completion.chunk","model":"glm-4.6","choices":[{"index":0,"delta":{"reasoning_content":"The user is asking..."},"finish_reason":null}]}`,
@@ -1008,24 +1009,16 @@ var _ = Describe("RunStream", func() {
 			}
 		}
 
-		Expect(thinkingChunks).To(HaveLen(2),
-			"each reasoning_content delta MUST emit one thinking chunk; "+
-				"got %d thinking chunks across collected=%v", len(thinkingChunks), collected)
-		Expect(thinkingChunks[0].Thinking).To(Equal("Let me think about this. "))
-		Expect(thinkingChunks[1].Thinking).To(Equal("The user is asking..."))
-
-		// reasoning_content MUST NOT be conflated with Content — the chat
-		// store renders Content as the visible reply and Thinking as
-		// out-of-band reasoning. Conflating them would re-introduce the
-		// JSON-leak class of bugs.
-		for _, t := range thinkingChunks {
-			Expect(t.Content).To(BeEmpty(),
-				"thinking chunks MUST have empty Content; conflating reasoning with reply would leak private reasoning into the chat: %+v", t)
-		}
-
-		Expect(contentChunks).To(HaveLen(1),
-			"the visible reply MUST be a single content chunk separate from reasoning")
-		Expect(contentChunks[0].Content).To(Equal("The answer is 42."))
+		// With providerName=="zai", ALL reasoning_content routes to Content
+		// (matching OpenClaw's compat.thinkingFormat === "zai" behaviour).
+		Expect(thinkingChunks).To(BeEmpty(),
+			"zai provider MUST NOT emit thinking chunks; reasoning goes to visible Content")
+		Expect(contentChunks).To(HaveLen(3),
+			"zai provider routes reasoning + final content to content chunks; "+
+				"got %d content chunks across collected=%v", len(contentChunks), collected)
+		Expect(contentChunks[0].Content).To(Equal("Let me think about this. "))
+		Expect(contentChunks[1].Content).To(Equal("The user is asking..."))
+		Expect(contentChunks[2].Content).To(Equal("The answer is 42."))
 	})
 
 	It("does not emit Thinking chunks for plain OpenAI providers (no reasoning_content field)", func() {
@@ -1334,18 +1327,18 @@ var _ = Describe("RunStream", func() {
 				collected = append(collected, chunk)
 			}
 			var toolCallChunks []provider.StreamChunk
-			var thinkingText strings.Builder
+			var contentText strings.Builder
 			for _, c := range collected {
 				if c.ToolCall != nil {
 					toolCallChunks = append(toolCallChunks, c)
 				}
-				if c.Thinking != "" {
-					thinkingText.WriteString(c.Thinking)
+				if c.Content != "" {
+					contentText.WriteString(c.Content)
 				}
 			}
 			Expect(toolCallChunks).To(BeEmpty(),
 				"plain reasoning text MUST NOT produce spurious tool calls")
-			Expect(thinkingText.String()).To(Equal("Let me think about how to answer this. The user wants the weather."),
+			Expect(contentText.String()).To(Equal("Let me think about how to answer this. The user wants the weather.It is sunny."),
 				"plain reasoning text MUST flow downstream unchanged byte-for-byte")
 		})
 

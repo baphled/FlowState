@@ -194,6 +194,18 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 		return nil, err
 	}
 	params := openaicompat.BuildParams(req)
+	// Z.AI GLM-5.x family routes ALL response text through the
+	// reasoning_content channel while leaving content="" — this causes
+	// content-starvation when the model produces a structured tool call:
+	// the visible text never arrives as delta.Content and the stream
+	// appears to stall. Sending thinking: { type: "disabled" } tells the
+	// Z.AI API to use the standard content field instead, so visible
+	// text and tool_calls deltas flow through the normal OpenAI-compat
+	// path. The reasoning→content routing at openaicompat.RunStream is
+	// retained as a fallback for models that ignore this parameter.
+	params.SetExtraFields(map[string]any{
+		"thinking": map[string]any{"type": "disabled"},
+	})
 	// PR3 success-path lift — observer is nil-safe; classifyStreamErrors
 	// still wraps the channel for Z.AI's error-code-1001/1112 refinement.
 	rawCh := openaicompat.RunStreamWithObserver(ctx, p.client, params, p.Name(), p.responseObserver)
@@ -218,6 +230,12 @@ func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider
 		return provider.ChatResponse{}, err
 	}
 	params := openaicompat.BuildParams(req)
+	// Mirror the Stream path — disable thinking to prevent GLM-5.x's
+	// reasoning_content-only output from starving content during tool
+	// calls in the non-streaming path.
+	params.SetExtraFields(map[string]any{
+		"thinking": map[string]any{"type": "disabled"},
+	})
 
 	// PR3 success-path lift — see openai.Provider.Chat.
 	var rawResp *http.Response

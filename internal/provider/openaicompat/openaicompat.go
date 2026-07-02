@@ -539,8 +539,20 @@ func RunStreamWithObserver(
 				// queued for end-of-stream emission.
 				if reasoning := extractReasoningContent(delta); reasoning != "" {
 					result := inlineExtractor.Feed(reasoning)
-					if result.Thinking != "" {
-						shared.SendChunk(ctx, ch, provider.StreamChunk{Thinking: result.Thinking})
+					// ZAI provider (glm-5.x) routes ALL response text
+					// through reasoning_content while leaving content="".
+					// Treat reasoning as visible text in that case.
+					// Other providers (OpenAI, OpenZen, etc.) keep
+					// traditional content+reasoning separation — reasoning
+					// goes to hidden Thinking as before.
+					if delta.Content == "" && providerName == "zai" {
+						if txt := result.Thinking; txt != "" {
+							shared.SendChunk(ctx, ch, provider.StreamChunk{Content: txt})
+						}
+					} else {
+						if result.Thinking != "" {
+							shared.SendChunk(ctx, ch, provider.StreamChunk{Thinking: result.Thinking})
+						}
 					}
 					recoveredCalls = append(recoveredCalls, result.ToolCalls...)
 				}
