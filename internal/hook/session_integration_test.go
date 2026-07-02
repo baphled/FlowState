@@ -66,8 +66,8 @@ var _ = Describe("SkillAutoLoaderHook session integration", Label("integration")
 			captured, called := runSessionHook(context.Background(), req)
 
 			Expect(called).To(BeTrue())
-			Expect(captured.Messages[0].Content).To(ContainSubstring(`<skill name="golang" tier="contextual"`))
-			Expect(captured.Messages[0].Content).To(ContainSubstring(`<skill name="testing" tier="contextual"`))
+			Expect(captured.Messages[0].Content).To(ContainSubstring(`<skill name="golang" />`))
+			Expect(captured.Messages[0].Content).To(ContainSubstring(`<skill name="testing" />`))
 		})
 	})
 
@@ -163,7 +163,7 @@ var _ = Describe("SkillAutoLoaderHook session resumption", Label("integration"),
 		It("does not double-inject", func() {
 			req := &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "<system-reminder>\n<available_skills>\n  <skill name=\"golang\" tier=\"contextual\" />\n</available_skills>\nCall skill_load(name=\"<exact-name>\") to invoke.\n</system-reminder>\n\nYou are helpful."},
+					{Role: "system", Content: "<system-reminder>\n<available_skills>\n<contextual>\n  <skill name=\"golang\" />\n</contextual>\n</available_skills>\nFor contextual skills: Call skill_load(name=\"<exact-name>\") to invoke.\n</system-reminder>\n\nYou are helpful."},
 					{Role: "user", Content: "Continue working"},
 				},
 			}

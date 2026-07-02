@@ -74,7 +74,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).To(ContainSubstring("<available_skills>"))
 			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action"`))
 			Expect(systemContent).To(ContainSubstring(`<skill name="memory-keeper"`))
-			Expect(systemContent).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
+			Expect(systemContent).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke`))
 			Expect(systemContent).To(ContainSubstring("Never guess or invent a skill name from training data"))
 			Expect(systemContent).To(ContainSubstring("You are a helpful assistant."))
 			// Behaviour-Pinned: the old prose format MUST NOT survive.
@@ -152,7 +152,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(capturedRequest.Messages[0].Role).To(Equal("system"))
 			Expect(capturedRequest.Messages[0].Content).To(HavePrefix("<system-reminder>"))
 			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring("<available_skills>"))
-			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
+			Expect(capturedRequest.Messages[0].Content).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke`))
 		})
 	})
 
@@ -213,7 +213,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(ContainSubstring("<system-reminder>"))
 			Expect(systemContent).To(ContainSubstring("<available_skills>"))
-			Expect(systemContent).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
+			Expect(systemContent).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke`))
 			for _, skillName := range config.BaselineSkills {
 				Expect(systemContent).To(ContainSubstring(fmt.Sprintf(`<skill name=%q`, skillName)))
 			}
@@ -225,7 +225,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 		BeforeEach(func() {
 			request = &provider.ChatRequest{
 				Messages: []provider.Message{
-					{Role: "system", Content: "<system-reminder>\n<available_skills>\n  <skill name=\"pre-action\" tier=\"session-start\" />\n</available_skills>\nCall skill_load(name=\"<exact-name>\") to invoke.\n</system-reminder>\n\nYou are a helpful assistant."},
+					{Role: "system", Content: "<system-reminder>\n<available_skills>\n<session_start>\n  <skill name=\"pre-action\" />\n</session_start>\n</available_skills>\nFor contextual skills: Call skill_load(name=\"<exact-name>\") to invoke.\n</system-reminder>\n\nYou are a helpful assistant."},
 					{Role: "user", Content: "follow-up after tool call"},
 				},
 			}
@@ -456,7 +456,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(ContainSubstring("<available_skills>"))
 			for _, skillName := range config.BaselineSkills {
-				Expect(systemContent).To(ContainSubstring(fmt.Sprintf(`<skill name=%q tier="session-start"`, skillName)))
+				Expect(systemContent).To(ContainSubstring(fmt.Sprintf(`<skill name=%q />`, skillName)))
 			}
 			Expect(systemContent).NotTo(ContainSubstring("golang-testing"))
 			Expect(systemContent).NotTo(ContainSubstring("pragmatic-problem-solving"))
@@ -551,12 +551,12 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 
 			systemContent := capturedRequest.Messages[0].Content
 			Expect(systemContent).To(ContainSubstring("<available_skills>"))
-			// The lean fallback emits structured <skill name="..." tier="..." />
-			// entries inside <available_skills>; the cache-driven content
-			// path emits free-standing <skill name="..."> blocks with content
-			// bodies. The two are distinguishable by the trailing `/>` of the
-			// self-closing form.
-			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a" tier=`))
+			// The lean fallback emits self-closing `<skill name="..." />`
+			// entries grouped under <session_start>/<contextual> subsections;
+			// the cache-driven content path emits free-standing
+			// `<skill name="...">` blocks with content bodies. The two are
+			// distinguishable by the trailing `/>` of the self-closing form.
+			Expect(systemContent).To(ContainSubstring(`<skill name="skill-a" />`))
 		})
 	})
 
@@ -613,12 +613,14 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			// D1/Item 2 (Agent Runtime Quality plan, May 2026): the lean
-			// header now emits `<skill name="X" tier="..." />` entries for
-			// every selected skill BEFORE the cache content blocks, so a
-			// naive `<skill name=` count would double-count. Cache content
-			// blocks use `<skill name="X">` (no `tier=` attribute, immediate
-			// `>` after the closing quote); we count those specifically.
+			// The lean header emits `<skill name="X" />` self-closing
+			// entries for every selected skill grouped under
+			// <session_start>/<contextual> subsections, BEFORE the cache
+			// content blocks. Cache content blocks use `<skill name="X">`
+			// (immediate `>` after the closing quote, followed by a newline
+			// and the content body); we count those specifically by matching
+			// the `">` + newline pattern that only the content-block form
+			// produces.
 			contentBlockCount := strings.Count(systemContent, `">`+"\n")
 			Expect(contentBlockCount).To(Equal(3))
 		})
@@ -778,10 +780,10 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			Expect(systemContent).To(ContainSubstring(`tier="session-start"`))
-			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" tier="session-start"`))
-			Expect(systemContent).To(ContainSubstring(`<skill name="memory-keeper" tier="session-start"`))
-			Expect(systemContent).NotTo(ContainSubstring(`tier="contextual"`))
+			Expect(systemContent).To(ContainSubstring("<session_start>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" />`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="memory-keeper" />`))
+			Expect(systemContent).NotTo(ContainSubstring("<contextual>"))
 		})
 	})
 
@@ -820,11 +822,13 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			systemContent := capturedRequest.Messages[0].Content
-			// Baseline skills always appear with tier="session-start" even when baked
-			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" tier="session-start"`))
-			Expect(systemContent).To(ContainSubstring(`<skill name="token-cost-estimation" tier="session-start"`))
-			// Contextual (keyword-matched) skill still injected under contextual tier
-			Expect(systemContent).To(ContainSubstring(`<skill name="golang-testing" tier="contextual"`))
+			// Baseline skills always appear under <session_start> even when baked
+			Expect(systemContent).To(ContainSubstring("<session_start>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" />`))
+			Expect(systemContent).To(ContainSubstring(`<skill name="token-cost-estimation" />`))
+			// Contextual (keyword-matched) skill still injected under <contextual>
+			Expect(systemContent).To(ContainSubstring("<contextual>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="golang-testing" />`))
 		})
 	})
 
@@ -889,7 +893,7 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			}
 		})
 
-		It("emits the expected <system-reminder> + <available_skills> shape with tier attributes", func() {
+		It("emits the expected <system-reminder> + <available_skills> shape with session_start/contextual subsections", func() {
 			autoloader := hook.SkillAutoLoaderHook(config, func() agent.Manifest { return manifest }, nil, nil)
 			wrapped := autoloader(passthrough)
 
@@ -903,11 +907,19 @@ var _ = Describe("SkillAutoLoaderHook", func() {
 			Expect(systemContent).To(ContainSubstring("</available_skills>"))
 			Expect(systemContent).To(ContainSubstring("</system-reminder>"))
 
-			// Tier attribute pins
-			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" tier="session-start" />`))
-			Expect(systemContent).To(ContainSubstring(`<skill name="clean-code" tier="contextual" />`))
+			// Session-start / contextual subsection pins
+			Expect(systemContent).To(ContainSubstring("<session_start>"))
+			Expect(systemContent).To(ContainSubstring("</session_start>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="pre-action" />`))
+			Expect(systemContent).To(ContainSubstring("<contextual>"))
+			Expect(systemContent).To(ContainSubstring("</contextual>"))
+			Expect(systemContent).To(ContainSubstring(`<skill name="clean-code" />`))
 
-			// Anti-hallucination clause pin (verbatim Claude Code text)
+			// Session-start directive pin
+			Expect(systemContent).To(ContainSubstring("their content is active NOW"))
+			Expect(systemContent).To(ContainSubstring("before your first tool call"))
+
+			// Anti-hallucination clause pin (scoped to contextual tier)
 			Expect(systemContent).To(ContainSubstring("Names are case-sensitive and must match exactly."))
 			Expect(systemContent).To(ContainSubstring("Skills are NOT tools — do not attempt to call them directly."))
 			Expect(systemContent).To(ContainSubstring("Only invoke a skill that appears in the <available_skills> list"))

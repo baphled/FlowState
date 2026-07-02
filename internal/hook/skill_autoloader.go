@@ -274,11 +274,19 @@ const availableSkillsBlockMarker = "<available_skills>"
 // the verbatim anti-hallucination clause refers to ("Available skills
 // are listed in system-reminder messages").
 //
-// sessionStartSkills carry the "must invoke before first response"
-// semantic; contextualSkills carry the "load when relevant" semantic.
-// Both tiers are surfaced inside the same <available_skills> element
-// to keep the block compact, with the always-active marker carried as
-// an inline attribute on each skill entry.
+// The block splits skills into two labelled subsections so the model
+// can distinguish eager-action skills from on-demand skills:
+//
+//   - <session_start>: baseline (always-active) skills whose full
+//     content is ALREADY baked into the system prompt above by
+//     BuildSystemPrompt. The lean entry is a signpost, not a
+//     load-and-forget pointer — the model MUST act on these skills'
+//     instructions (e.g. a discovery skill's Phase 0 classification)
+//     before its first tool call. No skill_load call is required.
+//   - <contextual>: agent-default or keyword-matched skills that are
+//     NOT yet baked. The anti-hallucination clause and the
+//     "otherwise do not call this tool" restriction apply ONLY to
+//     this tier.
 //
 // Expected:
 //   - sessionStartSkills is the baseline (always-active) skill list; may be empty.
@@ -298,16 +306,28 @@ func buildLeanInjection(sessionStartSkills, contextualSkills []string) string {
 	}
 	var sb strings.Builder
 	sb.WriteString("<system-reminder>\n")
-	sb.WriteString("The following skills are available for use with the skill_load tool:\n\n")
-	sb.WriteString("<available_skills>\n")
-	for _, name := range sessionStartSkills {
-		fmt.Fprintf(&sb, "  <skill name=%q tier=\"session-start\" />\n", name)
+	if len(sessionStartSkills) > 0 {
+		sb.WriteString("The following skills are available. Session-start skills are already loaded into your system prompt above — their content is active NOW. Act on their instructions (e.g. any Phase 0 classification a discovery skill prescribes) before your first tool call.\n\n")
+	} else {
+		sb.WriteString("The following skills are available.\n\n")
 	}
-	for _, name := range contextualSkills {
-		fmt.Fprintf(&sb, "  <skill name=%q tier=\"contextual\" />\n", name)
+	sb.WriteString("<available_skills>\n")
+	if len(sessionStartSkills) > 0 {
+		sb.WriteString("<session_start>\n")
+		for _, name := range sessionStartSkills {
+			fmt.Fprintf(&sb, "  <skill name=%q />\n", name)
+		}
+		sb.WriteString("</session_start>\n")
+	}
+	if len(contextualSkills) > 0 {
+		sb.WriteString("<contextual>\n")
+		for _, name := range contextualSkills {
+			fmt.Fprintf(&sb, "  <skill name=%q />\n", name)
+		}
+		sb.WriteString("</contextual>\n")
 	}
 	sb.WriteString("</available_skills>\n\n")
-	sb.WriteString("Call skill_load(name=\"<exact-name>\") to invoke. Names are case-sensitive and must match exactly. Skills are NOT tools — do not attempt to call them directly. Only invoke a skill that appears in the <available_skills> list, or one the user explicitly typed as `/<name>` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool.\n")
+	sb.WriteString("For contextual skills: Call skill_load(name=\"<exact-name>\") to invoke when the task domain matches. Names are case-sensitive and must match exactly. Skills are NOT tools — do not attempt to call them directly. Only invoke a skill that appears in the <available_skills> list, or one the user explicitly typed as `/<name>` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool.\n")
 	sb.WriteString("</system-reminder>")
 	return sb.String()
 }

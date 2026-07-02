@@ -79,7 +79,7 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 			req := runHook("Hello")
 			Expect(req.Messages[0].Content).To(ContainSubstring("<system-reminder>"))
 			Expect(req.Messages[0].Content).To(ContainSubstring("<available_skills>"))
-			Expect(req.Messages[0].Content).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke.`))
+			Expect(req.Messages[0].Content).To(ContainSubstring(`Call skill_load(name="<exact-name>") to invoke`))
 		})
 	})
 
@@ -100,11 +100,15 @@ var _ = Describe("SkillAutoLoaderHook E2E", Label("integration"), func() {
 			req := runHook("golang database testing")
 			content := req.Messages[0].Content
 
-			// Non-baseline skills appear in the <available_skills> block
-			// with tier="contextual" (D1/Item 2 Agent Runtime Quality plan,
-			// May 2026). Count distinct contextual skill entries.
-			const contextualMarker = `tier="contextual"`
-			nonBaselineCount := strings.Count(content, contextualMarker)
+			// Contextual skills are grouped under <contextual>; count
+			// skill entries within that subsection (D1/Item 2 Agent
+			// Runtime Quality plan, May 2026).
+			contextualStart := strings.Index(content, "<contextual>")
+			contextualEnd := strings.Index(content, "</contextual>")
+			Expect(contextualStart).To(BeNumerically(">=", 0),
+				"<contextual> subsection must be present when non-baseline skills are selected")
+			contextualSection := content[contextualStart:contextualEnd]
+			nonBaselineCount := strings.Count(contextualSection, "<skill name=")
 			Expect(nonBaselineCount).To(BeNumerically("<=", cfg.MaxAutoSkills))
 		})
 	})
