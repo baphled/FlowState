@@ -435,8 +435,7 @@ var _ = Describe("TodoUpdateTool", func() {
 		})
 
 		Context("sequential discipline: at most one in_progress", func() {
-			It("demotes a previous in_progress item when a different item is set to in_progress", func() {
-				// Set item 0 to in_progress.
+			It("rejects starting a second in_progress item while another is already active", func() {
 				_, err := u.Execute(sessionCtx(), tool.Input{
 					Name: "todo_update",
 					Arguments: map[string]interface{}{
@@ -446,7 +445,6 @@ var _ = Describe("TodoUpdateTool", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 
-				// Set item 1 to in_progress — item 0 should demote to pending.
 				_, err = u.Execute(sessionCtx(), tool.Input{
 					Name: "todo_update",
 					Arguments: map[string]interface{}{
@@ -454,12 +452,12 @@ var _ = Describe("TodoUpdateTool", func() {
 						"status": "in_progress",
 					},
 				})
-				Expect(err).NotTo(HaveOccurred())
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("already in_progress"))
 
 				stored := store.Get("sess-123")
-				Expect(stored[0].Status).To(Equal("pending"))
-				Expect(stored[1].Status).To(Equal("in_progress"))
-				Expect(stored[2].Status).To(Equal("pending"))
+				Expect(stored[0].Status).To(Equal("in_progress"))
+				Expect(stored[1].Status).To(Equal("pending"))
 			})
 
 			It("keeps only one in_progress when the same item is updated again", func() {
@@ -486,6 +484,97 @@ var _ = Describe("TodoUpdateTool", func() {
 				Expect(stored[0].Status).To(Equal("pending"))
 				Expect(stored[1].Status).To(Equal("in_progress"))
 				Expect(stored[1].Content).To(Equal("Second task (working)"))
+			})
+		})
+
+		Context("monotonic state machine", func() {
+			It("rejects reverting a completed item to pending", func() {
+				Expect(store.Set("sess-123", []todotool.Item{
+					{Content: "finished", Status: "completed", Priority: "high"},
+					{Content: "next", Status: "pending", Priority: "medium"},
+				})).To(Succeed())
+
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "pending",
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("terminal state"))
+
+				stored := store.Get("sess-123")
+				Expect(stored[0].Status).To(Equal("completed"))
+			})
+
+			It("rejects reverting a cancelled item to in_progress", func() {
+				Expect(store.Set("sess-123", []todotool.Item{
+					{Content: "dropped", Status: "cancelled", Priority: "low"},
+					{Content: "next", Status: "pending", Priority: "medium"},
+				})).To(Succeed())
+
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "in_progress",
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("terminal state"))
+			})
+
+			It("rejects moving an in_progress item back to pending", func() {
+				Expect(store.Set("sess-123", []todotool.Item{
+					{Content: "active", Status: "in_progress", Priority: "high"},
+					{Content: "queued", Status: "pending", Priority: "medium"},
+				})).To(Succeed())
+
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "pending",
+					},
+				})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("cannot move"))
+			})
+
+			It("allows a pending item to jump directly to completed", func() {
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "completed",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				stored := store.Get("sess-123")
+				Expect(stored[0].Status).To(Equal("completed"))
+				Expect(stored[1].Status).To(Equal("in_progress"))
+			})
+
+			It("auto-advances the next pending item when the active item is cancelled", func() {
+				Expect(store.Set("sess-123", []todotool.Item{
+					{Content: "active", Status: "in_progress", Priority: "high"},
+					{Content: "queued", Status: "pending", Priority: "medium"},
+				})).To(Succeed())
+
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "cancelled",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				stored := store.Get("sess-123")
+				Expect(stored[0].Status).To(Equal("cancelled"))
+				Expect(stored[1].Status).To(Equal("in_progress"))
 			})
 		})
 

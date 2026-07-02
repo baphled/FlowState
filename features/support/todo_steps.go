@@ -6,6 +6,8 @@ package support
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/cucumber/godog"
 
@@ -21,6 +23,7 @@ type todoSteps struct {
 	store     *todotool.MemoryStore
 	writeTool tool.Tool
 	sessionID string
+	seed      []todotool.Item
 	lastErr   error
 }
 
@@ -48,6 +51,7 @@ func (s *todoSteps) todoToolsAreEnabled() error {
 	s.store = nil
 	s.writeTool = nil
 	s.sessionID = ""
+	s.seed = nil
 	s.lastErr = nil
 	return nil
 }
@@ -77,7 +81,11 @@ func (s *todoSteps) sessionHasTodoList(table *godog.Table) error {
 		Name:      "todowrite",
 		Arguments: map[string]interface{}{"todos": items},
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	s.seed = s.store.Get(s.sessionID)
+	return nil
 }
 
 func (s *todoSteps) agentClearsTodoList() error {
@@ -92,7 +100,17 @@ func (s *todoSteps) agentClearsTodoList() error {
 }
 
 func (s *todoSteps) agentUpdatesTodoStatus(idx int, status string) error {
-	return godog.ErrPending
+	updateTool := todotool.NewUpdate(s.store)
+	ctx := context.WithValue(context.Background(), session.IDKey{}, s.sessionID)
+	_, err := updateTool.Execute(ctx, tool.Input{
+		Name: "todo_update",
+		Arguments: map[string]interface{}{
+			"index":  float64(idx),
+			"status": status,
+		},
+	})
+	s.lastErr = err
+	return nil
 }
 
 func (s *todoSteps) storedTodoListShouldBeEmpty() error {
@@ -121,13 +139,29 @@ func (s *todoSteps) aFreshTodowriteShouldCreateANewList() error {
 }
 
 func (s *todoSteps) theUpdateShouldBeRejectedWith(substr string) error {
-	return godog.ErrPending
+	if s.lastErr == nil {
+		return fmt.Errorf("expected the todo update to be rejected, but it succeeded")
+	}
+	if !strings.Contains(s.lastErr.Error(), substr) {
+		return fmt.Errorf("expected rejection message to contain %q, got %q", substr, s.lastErr.Error())
+	}
+	return nil
 }
 
 func (s *todoSteps) theTodoListShouldBeUnchanged() error {
-	return godog.ErrPending
+	if got := s.store.Get(s.sessionID); !reflect.DeepEqual(got, s.seed) {
+		return fmt.Errorf("expected the todo list to be unchanged from the seed, got %v", got)
+	}
+	return nil
 }
 
 func (s *todoSteps) todoAtIndexShouldHaveStatus(idx int, status string) error {
-	return godog.ErrPending
+	items := s.store.Get(s.sessionID)
+	if idx < 0 || idx >= len(items) {
+		return fmt.Errorf("index %d out of range: list has %d items", idx, len(items))
+	}
+	if items[idx].Status != status {
+		return fmt.Errorf("expected todo at index %d to have status %q, got %q", idx, status, items[idx].Status)
+	}
+	return nil
 }
