@@ -7,10 +7,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+
+	"golang.org/x/net/html"
 
 	"github.com/baphled/flowstate/internal/tool"
 )
+
+// minExtractedText is the minimum length of extracted text required before the
+// tool treats extraction as successful. Shorter results fall back to the raw
+// body so callers always receive something usable.
+const minExtractedText = 50
 
 const (
 	timeout     = 10 * time.Second
@@ -68,7 +76,7 @@ func (t *Tool) Name() string {
 // Side effects:
 //   - None.
 func (t *Tool) Description() string {
-	return "Fetch content from a URL via HTTP GET, truncated to 10KB"
+	return "Fetch content from a URL via HTTP GET, returning extracted text for HTML pages. Truncated to 10KB."
 }
 
 // Schema returns the input schema for the web tool.
@@ -125,5 +133,106 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		return tool.Result{Error: fmt.Errorf("read body failed: %w", err)}, nil
 	}
 
-	return tool.Result{Output: string(body)}, nil
+	raw := string(body)
+	if !isHTML(resp.Header.Get("Content-Type"), raw) {
+		return tool.Result{Output: raw}, nil
+	}
+
+	extracted := extractTextFromHTML(raw)
+	if len(extracted) < minExtractedText {
+		return tool.Result{Output: raw}, nil
+	}
+	if len(extracted) > maxBodySize {
+		extracted = extracted[:maxBodySize]
+	}
+	return tool.Result{Output: extracted}, nil
+}
+
+// isHTML reports whether a response should be treated as HTML for text
+// extraction. It returns true when the Content-Type header names text/html or
+// the body opens with an HTML document marker, matching case-insensitively.
+func isHTML(contentType, body string) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/html") {
+		return true
+	}
+	trimmed := strings.TrimLeft(strings.ToLower(body), " \t\r\n")
+	return strings.HasPrefix(trimmed, "<!doctype") || strings.HasPrefix(trimmed, "<html")
+}
+
+// extractTextFromHTML strips HTML markup from raw, returning only visible text
+// content. Script, style, and noscript elements are dropped along with the
+// head section other than the title; HTML comments and all remaining tags are
+// removed. Excessive whitespace is collapsed so consecutive blank lines become
+// a single blank line and each line is trimmed.
+func extractTextFromHTML(raw string) string {
+	tokenizer := html.NewTokenizer(strings.NewReader(raw))
+	var buf strings.Builder
+	var inScriptStyle, inHead, inTitle bool
+
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+
+		switch tt {
+		case html.StartTagToken:
+			tag := strings.ToLower(string(tagName(tokenizer)))
+			switch tag {
+			case "script", "style", "noscript":
+				inScriptStyle = true
+			case "head":
+				inHead = true
+			case "title":
+				inTitle = true
+			}
+		case html.EndTagToken:
+			tag := strings.ToLower(string(tagName(tokenizer)))
+			switch tag {
+			case "script", "style", "noscript":
+				inScriptStyle = false
+			case "head":
+				inHead = false
+			case "title":
+				inTitle = false
+			}
+		case html.TextToken:
+			if inScriptStyle || (inHead && !inTitle) {
+				continue
+			}
+			buf.Write(tokenizer.Text())
+		}
+	}
+
+	return collapseWhitespace(buf.String())
+}
+
+// tagName returns the name of the current tag token.
+func tagName(t *html.Tokenizer) []byte {
+	name, _ := t.TagName()
+	return name
+}
+
+// collapseWhitespace trims each line and reduces runs of blank lines to a
+// single blank line, removing leading and trailing blank lines entirely.
+func collapseWhitespace(s string) string {
+	lines := strings.Split(s, "\n")
+	var out []string
+	prevBlank := true
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if !prevBlank {
+				out = append(out, "")
+				prevBlank = true
+			}
+			continue
+		}
+		out = append(out, trimmed)
+		prevBlank = false
+	}
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
 }
