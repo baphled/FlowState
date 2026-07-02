@@ -1715,6 +1715,7 @@ type turnResponse struct {
 	Status      string            `json:"status"`
 	StartedAt   time.Time         `json:"started_at"`
 	CompletedAt *time.Time        `json:"completed_at"`
+	DurationMs  int64             `json:"duration_ms,omitempty"`
 	Model       turn.ModelInfo    `json:"model"`
 	Error       string            `json:"error,omitempty"`
 	Messages    []session.Message `json:"messages"`
@@ -1927,6 +1928,7 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 			Status:             string(t.Status),
 			StartedAt:          t.StartedAt,
 			CompletedAt:        t.CompletedAt,
+			DurationMs:         t.DurationMs,
 			Model:              t.Model,
 			Error:              t.Error,
 			Messages:           msgs,
@@ -1963,6 +1965,7 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		Status:             string(t.Status),
 		StartedAt:          t.StartedAt,
 		CompletedAt:        t.CompletedAt,
+		DurationMs:         t.DurationMs,
 		Model:              t.Model,
 		Error:              t.Error,
 		Messages:           msgs,
@@ -2319,6 +2322,7 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 		"delegation.started":        forward,
 		"delegation.completed":      forward,
 		"delegation.failed":         forward,
+		"delegation.progress":       forward,
 		// Swarm Gate SSE Observability (May 2026): bridge the gate
 		// lifecycle onto the one reachable diagnostic stream so a captured
 		// /api/swarm/events?session_id=X shows gate failures (and the

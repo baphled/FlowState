@@ -299,6 +299,7 @@ type Turn struct {
 	Status        Status            `json:"status"`
 	StartedAt     time.Time         `json:"started_at"`
 	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
+	DurationMs    int64             `json:"duration_ms,omitempty"`
 	Model         ModelInfo         `json:"model"`
 	Error         string            `json:"error,omitempty"`
 	MessagesAdded []session.Message `json:"messages_added"`
@@ -843,6 +844,7 @@ func (r *Registry) Complete(turnID string, info ModelInfo) error {
 	now := r.clock()
 	t.Status = StatusCompleted
 	t.CompletedAt = &now
+	t.DurationMs = now.Sub(t.StartedAt).Milliseconds()
 	t.Model = info
 	if active, found := r.byActiveSession[t.SessionID]; found && active == turnID {
 		delete(r.byActiveSession, t.SessionID)
@@ -889,6 +891,7 @@ func (r *Registry) Fail(turnID string, cause error) error {
 	now := r.clock()
 	t.Status = StatusFailed
 	t.CompletedAt = &now
+	t.DurationMs = now.Sub(t.StartedAt).Milliseconds()
 	if cause != nil {
 		t.Error = cause.Error()
 	}
@@ -969,6 +972,7 @@ func (r *Registry) StartOrReuse(sessionID string) (string, error) {
 			now := r.clock()
 			existing.Status = StatusCompleted
 			existing.CompletedAt = &now
+			existing.DurationMs = now.Sub(existing.StartedAt).Milliseconds()
 			// ModelInfo deliberately left empty — the delegation site
 			// does not surface model metadata at the auto-complete
 			// boundary; the parent-side Turn carries the (provider,
