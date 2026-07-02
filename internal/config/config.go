@@ -21,6 +21,16 @@ import (
 // Config aliases AppConfig for callers that use the shorter configuration name.
 type Config = AppConfig
 
+// DelegationConfig controls the delegation engine's content-streaming
+// behaviour. TeeChildContent gates whether delegate chain-of-thought is
+// mirrored into the parent's user-visible stream via teeToParentStream.
+// Defaults to false — the child session plus tool_result is the canonical
+// surface for delegate output, matching the consensus pattern across
+// Claude Code, OpenCode, and other harnesses.
+type DelegationConfig struct {
+	TeeChildContent bool `json:"tee_child_content" yaml:"tee_child_content"`
+}
+
 // AppConfig holds the complete application configuration.
 type AppConfig struct {
 	Providers ProvidersConfig `json:"providers" yaml:"providers"`
@@ -71,7 +81,8 @@ type AppConfig struct {
 	// Compression controls the three-layer context compression system
 	// (micro-compaction, auto-compaction, session-memory). All layers
 	// default to disabled; see internal/context.DefaultCompressionConfig.
-	Compression contextpkg.CompressionConfig `json:"compression" yaml:"compression"`
+	Compression      contextpkg.CompressionConfig  `json:"compression" yaml:"compression"`
+	ProviderFallback engine.ProviderFallbackConfig `json:"provider_fallback" yaml:"provider_fallback"`
 	// Compaction controls the RLM Phase A Layer 1 micro-compaction —
 	// the hot-tail/cold-store split for compactable tool results. It
 	// defaults to ENABLED with a 3-result hot-tail floor and an 8000-
@@ -80,6 +91,10 @@ type AppConfig struct {
 	// L1 implementation) so the two can be enabled or disabled
 	// independently while Phase A is rolled out.
 	Compaction compactionpkg.Config `json:"compaction" yaml:"compaction"`
+
+	// Delegation controls the delegation engine's content-streaming
+	// behaviour. See DelegationConfig for the field-level contract.
+	Delegation DelegationConfig `json:"delegation" yaml:"delegation"`
 
 	// Auth controls the FlowState API Auth Track (May 2026). PR5/C10
 	// flips Enabled to true by default; existing deployments upgrading
@@ -1322,6 +1337,8 @@ func DefaultConfig() *AppConfig {
 		AgentOverrides:      make(map[string]AgentOverrideConfig),
 		Compression:         contextpkg.DefaultCompressionConfig(),
 		Compaction:          compactionpkg.DefaultConfig(),
+		Delegation:          DefaultDelegationConfig(),
+		ProviderFallback:    engine.DefaultProviderFallback(),
 		Auth:                DefaultAuthConfig(),
 		Quota:               DefaultQuotaConfig(),
 		ToolCapableModels:   defaultToolCapableModels(),
@@ -1351,6 +1368,15 @@ func DefaultConfig() *AppConfig {
 			// opt in via config.yaml.
 			PermissionGrantMCPEnabled: false,
 		},
+	}
+}
+
+// DefaultDelegationConfig returns the default delegation configuration
+// with TeeChildContent disabled. The child session plus tool_result
+// remains the canonical surface for delegate output.
+func DefaultDelegationConfig() DelegationConfig {
+	return DelegationConfig{
+		TeeChildContent: false,
 	}
 }
 

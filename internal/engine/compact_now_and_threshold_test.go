@@ -267,7 +267,7 @@ var _ = Describe("CompactNow session-model fallback (May 2026 'Unknown Model' re
 			}(),
 		}
 
-		adapter := engine.NewProviderSummariser(chat, summariserResolver, "").
+		adapter := engine.NewProviderSummariser(chat, summariserResolver, "", engine.ProviderFallbackConfig{}).
 			WithManifest(&sessionAgent)
 
 		lookup := &stubSessionLookup{
@@ -290,18 +290,25 @@ var _ = Describe("CompactNow session-model fallback (May 2026 'Unknown Model' re
 				"the unresolved 'fast' descriptor and the summariser "+
 				"returned an error, propagating as fired=false")
 		Expect(summary).NotTo(BeEmpty())
-		Expect(chat.received.Model).To(Equal("glm-4.6"),
-			"ProviderSummariser.resolveRoute must fall back to the session's "+
-				"current model when category routing yields an unresolved "+
-				"abstract descriptor — pre-fix it shipped 'fast' verbatim, "+
-				"which z.ai rejects as 'Unknown Model'")
+		Expect(chat.received.Model).To(Equal(""),
+			"ProviderSummariser.resolveRoute no longer uses the session's "+
+				"model (Tier 2 removed). The session model was routing the "+
+				"summariser Chat call to zai/openai — the T8 summary-only "+
+				"prompt was sent to a cloud provider that rejected the model "+
+				"name, returned malformed JSON, or hit rate limits, causing "+
+				"260+ observed compaction failures in production. The "+
+				"summariser now delegates to the provider fallback matrix "+
+				"(Tier 2 in old numbering; Tier 3 previously), which defaults "+
+				"to Ollama/llama3.2. In this test the fallback model is empty, "+
+				"so the chat request arrives with Model=\"\".")
 		Expect(chat.received.Model).NotTo(Equal("fast"),
 			"the abstract descriptor must NOT reach the provider — this is "+
 				"the load-bearing regression pin for the May 2026 /compact bug")
-		Expect(chat.received.Provider).To(Equal("zai"),
-			"the session's provider hint flows alongside the model so the "+
-				"chat provider routes the summariser call against the same "+
-				"backend the chat itself uses")
+		Expect(chat.received.Provider).To(Equal(""),
+			"the summariser no longer routes through the session's provider. "+
+				"The session model hint is still used for gate estimation "+
+				"(gateProximityForceCompact), but the summariser always "+
+				"delegates to the provider fallback matrix.")
 	})
 
 	It("prefers the category-routed concrete model over the session hint when routing is fully resolved", func() {
@@ -328,7 +335,7 @@ var _ = Describe("CompactNow session-model fallback (May 2026 'Unknown Model' re
 			}(),
 		}
 
-		adapter := engine.NewProviderSummariser(chat, summariserResolver, "").
+		adapter := engine.NewProviderSummariser(chat, summariserResolver, "", engine.ProviderFallbackConfig{}).
 			WithManifest(&sessionAgent)
 
 		lookup := &stubSessionLookup{
@@ -380,7 +387,7 @@ var _ = Describe("CompactNow session-model fallback (May 2026 'Unknown Model' re
 			}(),
 		}
 
-		adapter := engine.NewProviderSummariser(chat, summariserResolver, "").
+		adapter := engine.NewProviderSummariser(chat, summariserResolver, "", engine.ProviderFallbackConfig{}).
 			WithManifest(&sessionAgent)
 
 		lookup := &stubSessionLookup{
@@ -399,9 +406,14 @@ var _ = Describe("CompactNow session-model fallback (May 2026 'Unknown Model' re
 		_, fired := eng.CompactNow(context.Background(), "sess-unknown-tier")
 
 		Expect(fired).To(BeTrue())
-		Expect(chat.received.Model).To(Equal("glm-4.6"),
-			"a resolver miss must fall through to the session model — "+
-				"an empty static fallback would otherwise ship an empty "+
-				"Model field which most providers reject")
+		Expect(chat.received.Model).To(Equal(""),
+			"Tier 2 (session model hint) has been removed from "+
+				"resolveRoute — routing the summariser through the "+
+				"session's cloud provider caused 260+ observed compaction "+
+				"failures (zai 'Unknown Model', openai quota exhaustion, "+
+				"malformed JSON). The summariser now delegates to the "+
+				"provider fallback matrix which defaults to Ollama/llama3.2. "+
+				"In this test the fallback model is empty, so the chat "+
+				"request arrives with Model=\"\".")
 	})
 })

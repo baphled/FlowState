@@ -53,7 +53,7 @@ func (s *stubChatProvider) Models() ([]provider.Model, error) { return nil, nil 
 //   - provider errors are wrapped (errors.Is finds the sentinel).
 var _ = Describe("ProviderSummariser.Summarise", func() {
 	It("returns ErrNilProvider when constructed with a nil provider", func() {
-		adapter := engine.NewProviderSummariser(nil, nil, "fallback-model")
+		adapter := engine.NewProviderSummariser(nil, nil, "fallback-model", engine.ProviderFallbackConfig{})
 		_, err := adapter.Summarise(context.Background(), "sys", "user", nil)
 		Expect(errors.Is(err, engine.ErrNilProvider)).To(BeTrue(),
 			"err = %v; want ErrNilProvider", err)
@@ -61,7 +61,7 @@ var _ = Describe("ProviderSummariser.Summarise", func() {
 
 	It("uses the fallback model and forwards system+user messages when no resolver is wired", func() {
 		chat := &stubChatProvider{response: `{"intent":"x","next_steps":["y"]}`}
-		adapter := engine.NewProviderSummariser(chat, nil, "fallback-llm")
+		adapter := engine.NewProviderSummariser(chat, nil, "fallback-llm", engine.ProviderFallbackConfig{})
 
 		out, err := adapter.Summarise(context.Background(), "sys prompt", "user prompt", nil)
 		Expect(err).NotTo(HaveOccurred())
@@ -82,7 +82,7 @@ var _ = Describe("ProviderSummariser.Summarise", func() {
 
 		chat := &stubChatProvider{response: `{"intent":"i","next_steps":["n"]}`}
 		manifest := &agent.Manifest{ID: "agent-a"}
-		adapter := engine.NewProviderSummariser(chat, resolver, "fallback").WithManifest(manifest)
+		adapter := engine.NewProviderSummariser(chat, resolver, "fallback", engine.ProviderFallbackConfig{}).WithManifest(manifest)
 
 		_, err := adapter.Summarise(context.Background(), "sys", "user", nil)
 		Expect(err).NotTo(HaveOccurred())
@@ -104,7 +104,7 @@ var _ = Describe("ProviderSummariser.Summarise", func() {
 			},
 		}
 
-		adapter := engine.NewProviderSummariser(chat, resolver, "safety-net").WithManifest(manifest)
+		adapter := engine.NewProviderSummariser(chat, resolver, "safety-net", engine.ProviderFallbackConfig{}).WithManifest(manifest)
 
 		_, err := adapter.Summarise(context.Background(), "sys", "user", nil)
 		Expect(err).NotTo(HaveOccurred())
@@ -114,7 +114,7 @@ var _ = Describe("ProviderSummariser.Summarise", func() {
 	It("wraps the provider's Chat error so errors.Is recovers the sentinel", func() {
 		sentinel := errors.New("simulated provider outage")
 		chat := &stubChatProvider{err: sentinel}
-		adapter := engine.NewProviderSummariser(chat, nil, "m")
+		adapter := engine.NewProviderSummariser(chat, nil, "m", engine.ProviderFallbackConfig{})
 
 		_, err := adapter.Summarise(context.Background(), "sys", "user", nil)
 		Expect(err).To(HaveOccurred())

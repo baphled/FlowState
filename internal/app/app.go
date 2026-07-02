@@ -885,7 +885,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	contextStore := createContextStore(params.cfg)
 	chainStore := createChainStore(params.cfg)
 	broker := buildRecallBrokerFromSetup(params, traced.provider, tp.mcpManager, contextStore, chainStore)
-	compression := buildCompressionComponents(params.cfg, params.agentRegistry, traced.provider, traced.recorder)
+	compression := buildCompressionComponents(params.cfg, params.agentRegistry, traced.provider, params.providerRegistry, traced.recorder)
 	// PR5 of the Provider Quota and Spend Visibility plan (May 2026)
 	// — construct the quota Tracker + per-provider account/cap maps
 	// from cfg.Quota. Returns zero wiring when the feature is off
@@ -2110,6 +2110,7 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 		dt.WithStoreFactory(newDelegateStoreFactory(a.SessionsDir()))
 		dt.WithSessionsDir(a.SessionsDir())
 		dt.WithToolCapability(a.Config.ToolCapableModels, a.Config.ToolIncapableModels)
+		dt.WithTeeChildContent(a.Config.Delegation.TeeChildContent)
 	}
 
 	if a.SwarmRegistry != nil {
@@ -2571,7 +2572,8 @@ func (a *App) buildDelegateCompression(manifest agent.Manifest) compressionCompo
 	categoryResolver := engine.NewCategoryResolver(a.Config.CategoryRouting)
 	summariserResolver := engine.NewSummariserResolver(categoryResolver)
 	fallbackModel := a.Config.Providers.Ollama.Model
-	adapter := engine.NewProviderSummariser(a.defaultProvider, summariserResolver, fallbackModel).
+	adapter := engine.NewProviderSummariser(a.defaultProvider, summariserResolver, fallbackModel, a.Config.ProviderFallback).
+		WithProviderRegistry(a.providerRegistry).
 		WithManifest(&manifest)
 	out.summariserAdapter = adapter
 	out.autoCompactor = ctxstore.NewAutoCompactor(adapter)
@@ -4284,6 +4286,7 @@ func buildCompressionComponents(
 	cfg *config.AppConfig,
 	_ *agent.Registry,
 	chatProvider provider.Provider,
+	providerRegistry *provider.Registry,
 	recorder tracer.Recorder,
 ) compressionComponents {
 	out := compressionComponents{
@@ -4296,7 +4299,8 @@ func buildCompressionComponents(
 		categoryResolver := engine.NewCategoryResolver(cfg.CategoryRouting)
 		summariserResolver := engine.NewSummariserResolver(categoryResolver)
 		fallbackModel := cfg.Providers.Ollama.Model
-		adapter := engine.NewProviderSummariser(chatProvider, summariserResolver, fallbackModel)
+		adapter := engine.NewProviderSummariser(chatProvider, summariserResolver, fallbackModel, cfg.ProviderFallback).
+			WithProviderRegistry(providerRegistry)
 		out.summariserAdapter = adapter
 		out.autoCompactor = ctxstore.NewAutoCompactor(adapter)
 	}

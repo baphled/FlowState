@@ -125,7 +125,7 @@ func runWiringScenario() wiringScenario {
 	metricsReg := prometheus.NewRegistry()
 	recorder := tracer.NewPrometheusRecorder(metricsReg)
 	fake := &compressionFakeProvider{summaryJSON: buildCompressionSummaryJSON()}
-	compression := buildCompressionComponents(cfg, nil, fake, recorder)
+	compression := buildCompressionComponents(cfg, nil, fake, nil, recorder)
 
 	// Explicitly inherit the global AutoCompaction.Threshold (0.60 in
 	// cfg above) by zeroing the per-agent override. The H3 precedence
@@ -336,7 +336,7 @@ var _ = Describe("Compression wiring zero-value bundle", func() {
 		recorder := tracer.NewPrometheusRecorder(metricsReg)
 		fake := &compressionFakeProvider{summaryJSON: "{}"}
 
-		compression := buildCompressionComponents(cfg, nil, fake, recorder)
+		compression := buildCompressionComponents(cfg, nil, fake, nil, recorder)
 
 		Expect(compression.autoCompactor).To(BeNil(),
 			"autoCompactor must be nil when AutoCompaction.Enabled=false")

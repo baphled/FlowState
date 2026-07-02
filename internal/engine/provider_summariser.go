@@ -63,29 +63,6 @@ func WithSessionModel(parent context.Context, providerID, modelID string) contex
 	})
 }
 
-// sessionModelFromContext returns the session model hint attached to
-// ctx by WithSessionModel, or a zero hint when none is present. The
-// zero value signals "no hint" — callers MUST treat empty modelID as
-// "fall through to the next layer of fallback".
-//
-// Expected:
-//   - ctx may be nil; a nil ctx returns a zero hint without panicking.
-//
-// Returns:
-//   - The attached hint, or zero value when none is present.
-//
-// Side effects:
-//   - None.
-func sessionModelFromContext(ctx context.Context) sessionModelHint {
-	if ctx == nil {
-		return sessionModelHint{}
-	}
-	if hint, ok := ctx.Value(sessionModelCtxKey{}).(sessionModelHint); ok {
-		return hint
-	}
-	return sessionModelHint{}
-}
-
 // ProviderSummariser adapts a provider.Provider and a SummariserResolver
 // to the ctxstore.Summariser interface expected by the L2 AutoCompactor.
 //
@@ -99,11 +76,24 @@ func sessionModelFromContext(ctx context.Context) sessionModelHint {
 // functional for bootstraps that have not yet threaded a manifest through
 // the hot path while still honouring the category routing contract when
 // an explicit manifest is later wired via WithManifest.
+//
+// Provider dispatch: when resolveRoute returns a non-empty providerName,
+// Summarise looks up the provider from providerRegistry and issues the
+// Chat call against that provider. Without a wired registry the default
+// chatProvider is used unconditionally — this keeps the adapter functional
+// in test and bootstrap paths that do not supply one.
+//
+// Tier 3 fallback routing is driven by ProviderFallbackConfig, which is
+// the centralised, config-defined matrix of fallback entries. The default
+// entry (ollama + llama3.2) is defined in DefaultProviderFallback and
+// overridable via the provider_fallback YAML config block.
 type ProviderSummariser struct {
-	chatProvider  provider.Provider
-	resolver      SummariserResolver
-	manifest      *agent.Manifest
-	fallbackModel string
+	chatProvider     provider.Provider
+	resolver         SummariserResolver
+	manifest         *agent.Manifest
+	fallbackModel    string
+	fallbackConfig   ProviderFallbackConfig
+	providerRegistry *provider.Registry
 }
 
 // NewProviderSummariser constructs an adapter. The chatProvider is
@@ -120,18 +110,42 @@ type ProviderSummariser struct {
 //   - fallbackModel is the model identifier used when the resolver yields
 //     no model (empty string or nil resolver). An empty fallbackModel is
 //     accepted; the provider may reject the request downstream.
+//   - fallbackConfig is the ProviderFallbackConfig that defines the
+//     ordered fallback matrix. The summariser walks
+//     fallbackConfig.Summariser entries in order for Tier 3 fallback.
+//     DefaultProviderFallback() provides the built-in defaults.
 //
 // Returns:
 //   - A ProviderSummariser. Never nil.
 //
 // Side effects:
 //   - None.
-func NewProviderSummariser(chatProvider provider.Provider, resolver SummariserResolver, fallbackModel string) *ProviderSummariser {
+func NewProviderSummariser(chatProvider provider.Provider, resolver SummariserResolver, fallbackModel string, fallbackConfig ProviderFallbackConfig) *ProviderSummariser {
 	return &ProviderSummariser{
-		chatProvider:  chatProvider,
-		resolver:      resolver,
-		fallbackModel: fallbackModel,
+		chatProvider:   chatProvider,
+		resolver:       resolver,
+		fallbackModel:  fallbackModel,
+		fallbackConfig: fallbackConfig,
 	}
+}
+
+// WithProviderRegistry binds a provider registry so Summarise can
+// dispatch Chat calls to the correct provider backend when resolveRoute
+// returns a non-empty provider name. Without this, all summariser Chat
+// calls go through the default chatProvider regardless of routing.
+//
+// Expected:
+//   - r may be nil; a nil registry is a no-op and the default chatProvider
+//     is used for every request.
+//
+// Returns:
+//   - The receiver for chaining. Never nil.
+//
+// Side effects:
+//   - Mutates the receiver's providerRegistry field.
+func (p *ProviderSummariser) WithProviderRegistry(r *provider.Registry) *ProviderSummariser {
+	p.providerRegistry = r
+	return p
 }
 
 // WithManifest binds the agent manifest used for category resolution.
@@ -181,7 +195,14 @@ func (p *ProviderSummariser) Summarise(
 
 	model, providerName := p.resolveRoute(ctx)
 
-	resp, err := p.chatProvider.Chat(ctx, provider.ChatRequest{
+	cp := p.chatProvider
+	if providerName != "" && p.providerRegistry != nil {
+		if rp, err := p.providerRegistry.Get(providerName); err == nil {
+			cp = rp
+		}
+	}
+
+	resp, err := cp.Chat(ctx, provider.ChatRequest{
 		Provider: providerName,
 		Model:    model,
 		Messages: []provider.Message{
@@ -196,7 +217,7 @@ func (p *ProviderSummariser) Summarise(
 }
 
 // resolveRoute returns the (model, provider) pair the summariser should
-// call. The route is decided in three tiers, evaluated in order:
+// call. The route is decided in two tiers, evaluated in order:
 //
 //  1. Category routing: when both a manifest and a SummariserResolver
 //     are wired AND the resolved CategoryConfig yields a concrete model
@@ -205,24 +226,33 @@ func (p *ProviderSummariser) Summarise(
 //     ADR-Agent-Model-Contract route when the deployment has wired a
 //     ModelLister or supplied concrete category overrides.
 //
-//  2. Session model hint: when a session model is attached to ctx via
-//     WithSessionModel (set by Engine.CompactNow per session), use it
-//     as the route. This is the fallback the May 2026 /compact bug
-//     needs: the resolver yields "fast"/"reasoning" without a
-//     ModelLister, the per-deployment Ollama fallback is empty for
-//     non-Ollama deployments, and the provider would reject the
-//     abstract descriptor as "Unknown Model". Sending the session's
-//     current model (e.g. "glm-4.6") guarantees a valid request.
+//  2. Provider fallback matrix (Tier 3 in prior iterations): the
+//     fallbackModel string supplied at construction paired with the
+//     first entry in p.fallbackConfig.Summariser. The matrix is
+//     defined in DefaultProviderFallback and overridable via the
+//     provider_fallback YAML config block — this is the single
+//     centralised place where "ollama" as the ultimate fallback
+//     provider is defined, not scattered across app.go wiring.
+//     Empty fallbackModel returns an empty model — the chat provider
+//     will reject the request loudly rather than silently substituting.
 //
-//  3. Static fallback: the fallbackModel string supplied at
-//     construction (typically cfg.Providers.Ollama.Model). Empty
-//     fallbackModel returns an empty model — the chat provider will
-//     reject the request loudly rather than silently substituting.
+// The former Tier 2 (session model hint via WithSessionModel) is
+// intentionally removed. It was added for the May 2026 /compact bug
+// when the fallback model could be empty, but routing the summariser
+// Chat call through the session's provider caused 260+ production
+// compaction failures: the T8 summary-only prompt was sent to cloud
+// providers (zai, openai) that rejected the model name, returned
+// malformed JSON, or hit rate limits. The session model hint is still
+// used for gate estimation (gateProximityForceCompact), but the
+// summariser always delegates to the provider fallback matrix, which
+// defaults to Ollama/llama3.2 — a local host that never rejects the
+// summary prompt and never hits rate limits.
 //
 // Expected:
 //   - The receiver's manifest and resolver may be nil. Neither is a
 //     fatal condition; the method walks the tiers above.
-//   - ctx may carry a session model hint via WithSessionModel.
+//   - ctx is accepted for API compatibility but the session model
+//     hint is no longer consulted.
 //
 // Returns:
 //   - model is the model identifier to use in ChatRequest.Model.
@@ -238,24 +268,18 @@ func (p *ProviderSummariser) resolveRoute(ctx context.Context) (model, providerN
 			if cfg.Model != "" && !IsAbstractModelDescriptor(cfg.Model) {
 				return cfg.Model, cfg.Provider
 			}
-			// Category routing yielded an unresolved abstract
-			// descriptor (e.g. "fast" with no ModelLister wired) or
-			// an empty model. Fall through to the session hint —
-			// keeping cfg.Provider would pin the request to a
-			// provider that may not host the session's model, so
-			// drop it together with the model.
 		}
 	}
 
-	// Tier 2: session model hint. Honoured even when the resolver was
-	// not wired — gives bootstrap paths a deterministic fallback.
-	if hint := sessionModelFromContext(ctx); hint.modelID != "" {
-		return hint.modelID, hint.providerID
+	// Tier 2: provider fallback matrix.
+	if len(p.fallbackConfig.Summariser) > 0 {
+		entry := p.fallbackConfig.Summariser[0]
+		model := entry.Model
+		if model == "" {
+			model = p.fallbackModel
+		}
+		return model, entry.Provider
 	}
-
-	// Tier 3: static fallback. Empty fallbackModel will be rejected by
-	// the chat provider; that is preferable to silently picking a
-	// surprise default.
 	return p.fallbackModel, ""
 }
 
