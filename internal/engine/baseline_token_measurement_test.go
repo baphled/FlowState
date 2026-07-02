@@ -58,20 +58,23 @@ var _ = Describe("WriteBaselineTokenMeasurementEvidence", func() {
 		systemPromptTokens := counter.Count(systemPrompt)
 
 		autoloadCfg := hook.DefaultSkillAutoLoaderConfig()
-		// D1/Item 2 (Agent Runtime Quality plan, May 2026): the lean
-		// injection now ships a <system-reminder><available_skills>
-		// XML block plus the verbatim Claude Code anti-hallucination
-		// clause. The token count is captured for the same baseline
+		// The lean injection ships a <system-reminder><available_skills>
+		// XML block with <session_start>/<contextual> subsections plus
+		// the verbatim anti-hallucination clause scoped to contextual
+		// skills. The token count is captured for the same baseline
 		// purpose as before — proxy a representative session-start
 		// injection — but with a shape that matches what runtime
 		// actually emits.
 		var leanHeaderBuilder strings.Builder
-		leanHeaderBuilder.WriteString("<system-reminder>\nThe following skills are available for use with the skill_load tool:\n\n<available_skills>\n")
+		leanHeaderBuilder.WriteString("<system-reminder>\n")
+		leanHeaderBuilder.WriteString("The following skills are available. Session-start skills are already loaded into your system prompt above — their content is active NOW. Act on their instructions (e.g. any Phase 0 classification a discovery skill prescribes) before your first tool call.\n\n")
+		leanHeaderBuilder.WriteString("<available_skills>\n<session_start>\n")
 		for _, name := range autoloadCfg.BaselineSkills {
-			leanHeaderBuilder.WriteString(`  <skill name="` + name + `" tier="session-start" />` + "\n")
+			leanHeaderBuilder.WriteString(`  <skill name="` + name + `" />` + "\n")
 		}
-		leanHeaderBuilder.WriteString(`</available_skills>` + "\n\n")
-		leanHeaderBuilder.WriteString(`Call skill_load(name="<exact-name>") to invoke. Names are case-sensitive and must match exactly. Skills are NOT tools — do not attempt to call them directly. Only invoke a skill that appears in the <available_skills> list, or one the user explicitly typed as ` + "`/<name>`" + ` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool.` + "\n")
+		leanHeaderBuilder.WriteString("</session_start>\n")
+		leanHeaderBuilder.WriteString("</available_skills>\n\n")
+		leanHeaderBuilder.WriteString(`For contextual skills: Call skill_load(name="<exact-name>") to invoke when the task domain matches. Names are case-sensitive and must match exactly. Skills are NOT tools — do not attempt to call them directly. Only invoke a skill that appears in the <available_skills> list, or one the user explicitly typed as ` + "`/<name>`" + ` in their message. Never guess or invent a skill name from training data; otherwise do not call this tool.` + "\n")
 		leanHeaderBuilder.WriteString("</system-reminder>")
 		leanHeader := leanHeaderBuilder.String()
 		skillHeaderTokens := counter.Count(leanHeader)
