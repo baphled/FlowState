@@ -275,13 +275,13 @@ var _ = Describe("buildMessages", func() {
 				"provider.Message.IsError stamped at the reload projection seam")
 	})
 
-	// M4-adjacent hardening (May 2026): the manager seam canonicalises
-	// every provider.Message.Role to one of {user, assistant, tool} (system
-	// messages are extracted by extractSystemPrompt before they reach this
-	// switch). The wire layer continues to silently skip anything else
-	// (intentional, preserves existing behaviour) but MUST log a Warn
-	// naming the role so any future canonicalisation regression is visible
-	// at runtime instead of vanishing into the void.
+	// Role-canonicalisation safety net (June 2026): the manager seam at
+	// session/manager.go now canonicalises every persisted role before it
+	// reaches buildMessages. The wire layer still silently skips anything
+	// outside {user, assistant, tool} as a regression backstop. This test
+	// uses a truly unknown role to verify the Warn is emitted — tool_error,
+	// tool_result, tool_call, thinking, delegation, and delegation_started
+	// are all canonicalised before they reach this point.
 	It("logs a Warn naming the unknown role when one slips past the manager seam", func() {
 		prev := slog.Default()
 		DeferCleanup(func() { slog.SetDefault(prev) })
@@ -292,7 +292,7 @@ var _ = Describe("buildMessages", func() {
 
 		msgs := []provider.Message{
 			{Role: "user", Content: "hello"},
-			{Role: "tool_error", Content: "uncanonicalised legacy"},
+			{Role: "bogus_role", Content: "uncanonicalised legacy"},
 		}
 		result := buildMessages(msgs)
 		Expect(result).To(HaveLen(1),
@@ -303,7 +303,7 @@ var _ = Describe("buildMessages", func() {
 			"log must name the package so operators can grep by provider — log was: %s", out)
 		Expect(out).To(ContainSubstring("unknown role"),
 			"log must declare the condition with a single greppable phrase — log was: %s", out)
-		Expect(out).To(ContainSubstring("role=tool_error"),
+		Expect(out).To(ContainSubstring("role=bogus_role"),
 			"log must name the rogue role string so the regression site is identifiable — log was: %s", out)
 	})
 })

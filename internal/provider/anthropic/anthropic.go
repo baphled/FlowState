@@ -1626,12 +1626,14 @@ func buildMessages(
 				messages = append(messages, *msg)
 			}
 		default:
-			// M4-adjacent observability (May 2026): the manager seam
-			// canonicalises every Role to {user, assistant, tool} (system
-			// is pulled out by extractSystemPrompt before reaching here).
-			// Silent-drop behaviour is preserved — adding a Warn surfaces
-			// any future canonicalisation regression at runtime instead of
-			// vanishing into the void.
+			// Role-canonicalisation safety net (June 2026): the manager
+			// seam at session/manager.go canonicalises every persisted
+			// role to {user, assistant, system, tool} before it reaches
+			// buildMessages — see SendMessage GoDoc. (system messages
+			// are extracted by extractSystemPrompt before reaching here.)
+			// Silent-drop is preserved as a regression backstop; the
+			// Warn surfaces any future canonicalisation gap at runtime
+			// instead of vanishing into the void.
 			slog.Warn("anthropic: dropped message with unknown role",
 				"role", m.Role,
 			)
