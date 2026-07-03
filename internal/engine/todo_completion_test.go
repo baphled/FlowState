@@ -121,7 +121,7 @@ var _ = Describe("Engine todo-completion continuation", func() {
 	})
 
 	Context("when the model ends a turn cleanly with pending todos", func() {
-		It("injects a continuation prompt and retries indefinitely", func() {
+		It("stops after three no-progress continuations", func() {
 			prov := &scriptedTodoProvider{
 				name: "todo-prov",
 				script: []todoProviderTurn{
@@ -148,15 +148,13 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
-				BeNumerically(">=", 6),
-				"engine must retry past the old retry limit when todos remain incomplete",
+				Equal(4),
+				"engine must stop after three no-progress continuations",
 			)
-
-			cancel()
 
 			received, closed := drain(chunks)
 			Expect(closed).To(BeTrue(),
-				"channel must close after context cancellation")
+				"channel must close after the no-progress gate trips")
 
 			var hasCompletionContent bool
 			for _, c := range received {
@@ -235,7 +233,7 @@ var _ = Describe("Engine todo-completion continuation", func() {
 	})
 
 	Context("when the model never completes its todos", func() {
-		It("keeps retrying indefinitely until the context is cancelled", func() {
+		It("stops after three no-progress continuations", func() {
 			prov := &scriptedTodoProvider{
 				name: "stubborn-prov",
 				script: []todoProviderTurn{
@@ -265,15 +263,13 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
-				BeNumerically(">=", 6),
-				"engine must keep retrying indefinitely, not stop at the old retry limit",
+				Equal(4),
+				"engine must stop after three no-progress continuations",
 			)
-
-			cancel()
 
 			_, closed := drain(chunks)
 			Expect(closed).To(BeTrue(),
-				"channel must close after context cancellation")
+				"channel must close after the no-progress gate trips")
 		})
 	})
 
@@ -303,7 +299,7 @@ var _ = Describe("Engine todo-completion continuation", func() {
 	})
 
 	Context("when TodoStore is wired through Config (as createDelegateEngine does)", func() {
-		It("retries when todos are incomplete using the Config-wired store", func() {
+		It("stops after three no-progress continuations using the Config-wired store", func() {
 			configStore := todo.NewMemoryStore()
 			configStore.Set(sessionID, []todo.Item{
 				{Content: "finish step one", Status: "pending", Priority: "high"},
@@ -334,15 +330,13 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
-				BeNumerically(">=", 6),
-				"engine must retry past the old limit when TodoStore comes from Config",
+				Equal(4),
+				"engine must stop after three no-progress continuations",
 			)
-
-			cancel()
 
 			_, closed := drain(chunks)
 			Expect(closed).To(BeTrue(),
-				"channel must close after context cancellation")
+				"channel must close after the no-progress gate trips")
 
 			// Verify the store in Config was actually used: the
 			// todos must still be present (engine never completed them)

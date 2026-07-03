@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1916,6 +1917,35 @@ func (e *Engine) SkipAgentFiles() bool {
 //   - None.
 func (e *Engine) FailoverManager() *failover.Manager {
 	return e.failoverManager
+}
+
+// SoonestProviderRetry returns the earliest provider cooldown when every configured provider/model pair is rate-limited.
+func (e *Engine) SoonestProviderRetry() (time.Time, bool) {
+	if e.failoverManager == nil {
+		return time.Time{}, false
+	}
+	prefs := e.failoverManager.Preferences()
+	if len(prefs) == 0 {
+		return time.Time{}, false
+	}
+	health := e.failoverManager.Health()
+	if health == nil {
+		return time.Time{}, false
+	}
+	soonest := time.Time{}
+	for _, pref := range prefs {
+		if !health.IsRateLimited(pref.Provider, pref.Model) {
+			return time.Time{}, false
+		}
+		retryAt, ok := health.RateLimitedUntil(pref.Provider, pref.Model)
+		if !ok {
+			return time.Time{}, false
+		}
+		if soonest.IsZero() || retryAt.Before(soonest) {
+			soonest = retryAt
+		}
+	}
+	return soonest, true
 }
 
 // ReseedFailoverBasePreferences re-seeds the failover manager's base
@@ -4395,7 +4425,51 @@ func (e *Engine) streamWithToolLoop(
 	var toolUseNoCallsAttempts int
 	overflowRetries := 0
 	const maxTodoContinuations = 20
+	const maxNoProgressContinuations = 3
+	const maxProviderRetryWait = 5 * time.Minute
 	todoContinuationCount := 0
+	noProgressContinuations := 0
+	lastTodoContinuationSnapshot := []todo.Item(nil)
+	updateTodoContinuationProgress := func(current []todo.Item) {
+		if slices.Equal(lastTodoContinuationSnapshot, current) {
+			noProgressContinuations++
+		} else {
+			noProgressContinuations = 0
+		}
+		lastTodoContinuationSnapshot = append([]todo.Item(nil), current...)
+	}
+	waitForProviderRetry := func(retryAt time.Time) (bool, bool) {
+		wait := time.Until(retryAt)
+		if wait > maxProviderRetryWait {
+			slog.Warn("todo continuation stopped: all providers rate-limited, retry too far out",
+				"session", sessionID,
+				"retry_at", retryAt,
+				"wait", wait,
+			)
+			outChan <- provider.StreamChunk{
+				Content:   fmt.Sprintf("All providers unavailable until %s. Please retry later.", retryAt.Format(time.RFC1123)),
+				EventType: "provider_retry_too_far",
+			}
+			return false, true
+		}
+		slog.Info("todo continuation paused: all providers rate-limited, scheduling retry",
+			"session", sessionID,
+			"retry_at", retryAt,
+			"wait", wait,
+		)
+		outChan <- provider.StreamChunk{
+			Content:   fmt.Sprintf("All providers unavailable. Retrying in %s (at %s).", wait.Round(time.Second), retryAt.Format("15:04:05")),
+			EventType: "provider_retry_scheduled",
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return true, false
+		case <-ctx.Done():
+			return false, true
+		}
+	}
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
 		if result.done {
@@ -4470,8 +4544,25 @@ func (e *Engine) streamWithToolLoop(
 							"error", retryErr,
 						)
 					} else {
-						slog.Warn("context overflow: compaction did not fire",
+						slog.Warn("context overflow: compaction did not fire, applying naive truncation",
 							"session", sessionID,
+							"messages_before", len(messages),
+						)
+						messages = e.NaiveTruncateMessages(messages, 50)
+						slog.Info("context overflow: truncated messages",
+							"session", sessionID,
+							"messages_after", len(messages),
+						)
+						var retryErr error
+						providerChunks, retryErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+						if retryErr == nil {
+							attempt++
+							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+							continue
+						}
+						slog.Error("context overflow retry stream failed after truncation",
+							"session", sessionID,
+							"error", retryErr,
 						)
 					}
 				} else {
@@ -4499,6 +4590,38 @@ func (e *Engine) streamWithToolLoop(
 				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				updateTodoContinuationProgress(incompletes)
+				if noProgressContinuations >= maxNoProgressContinuations {
+					if retryAt, ok := e.SoonestProviderRetry(); ok {
+						if retry, stop := waitForProviderRetry(retryAt); retry {
+							noProgressContinuations = 0
+							var streamErr error
+							providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+							if streamErr != nil {
+								slog.Error("todo continuation retry stream failed after cooldown",
+									"session", sessionID,
+									"error", streamErr,
+								)
+								e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+								return
+							}
+							attempt++
+							iterations = 0
+							loopStart = time.Now()
+							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+							continue
+						} else if stop {
+							e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+							return
+						}
+					}
+					slog.Warn("todo continuation stopped: no progress with healthy providers",
+						"session", sessionID,
+						"no_progress_continuations", noProgressContinuations,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after turn end",
 						"session", sessionID,
@@ -4547,6 +4670,38 @@ func (e *Engine) streamWithToolLoop(
 
 		if len(result.toolCalls) == 0 {
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				updateTodoContinuationProgress(incompletes)
+				if noProgressContinuations >= maxNoProgressContinuations {
+					if retryAt, ok := e.SoonestProviderRetry(); ok {
+						if retry, stop := waitForProviderRetry(retryAt); retry {
+							noProgressContinuations = 0
+							var streamErr error
+							providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+							if streamErr != nil {
+								slog.Error("todo continuation retry stream failed after cooldown",
+									"session", sessionID,
+									"error", streamErr,
+								)
+								e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+								return
+							}
+							attempt++
+							iterations = 0
+							loopStart = time.Now()
+							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+							continue
+						} else if stop {
+							e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+							return
+						}
+					}
+					slog.Warn("todo continuation stopped: no progress with healthy providers",
+						"session", sessionID,
+						"no_progress_continuations", noProgressContinuations,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after stream truncation",
 						"session", sessionID,
@@ -4797,6 +4952,56 @@ func (e *Engine) streamWithToolLoop(
 				"max_empty_text_tool_calls", e.maxEmptyTextToolCalls,
 			)
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				updateTodoContinuationProgress(incompletes)
+				if noProgressContinuations >= maxNoProgressContinuations {
+					if retryAt, ok := e.SoonestProviderRetry(); ok {
+						if retry, stop := waitForProviderRetry(retryAt); retry {
+							noProgressContinuations = 0
+							var streamErr error
+							providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+							if streamErr != nil {
+								slog.Error("todo continuation retry stream failed after cooldown",
+									"session", sessionID,
+									"error", streamErr,
+								)
+								outChan <- provider.StreamChunk{
+									Done:       true,
+									StopReason: session.StopReasonToolLoopExceeded,
+									ModelID:    e.LastModel(),
+									ProviderID: e.LastProvider(),
+								}
+								return
+							}
+							attempt++
+							iterations = 0
+							identicalRun = 0
+							lastFingerprint = ""
+							emptyTextToolCallsRun = 0
+							loopStart = time.Now()
+							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+							continue
+						} else if stop {
+							outChan <- provider.StreamChunk{
+								Done:       true,
+								StopReason: session.StopReasonToolLoopExceeded,
+								ModelID:    e.LastModel(),
+								ProviderID: e.LastProvider(),
+							}
+							return
+						}
+					}
+					slog.Warn("todo continuation stopped: no progress with healthy providers",
+						"session", sessionID,
+						"no_progress_continuations", noProgressContinuations,
+					)
+					outChan <- provider.StreamChunk{
+						Done:       true,
+						StopReason: session.StopReasonToolLoopExceeded,
+						ModelID:    e.LastModel(),
+						ProviderID: e.LastProvider(),
+					}
+					return
+				}
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after tool loop cap",
 						"session", sessionID,
@@ -6792,13 +6997,13 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		summary, err = e.autoCompactor.Compact(ctx, recent)
 	}
 	if err != nil {
-		slog.Warn("engine auto-compaction failed; falling back to uncompacted window",
+		slog.Warn("engine auto-compaction failed; applying naive truncation fallback",
 			"error", err,
 			"recentTokens", recentTokens,
 			"tokenBudget", tokenBudget,
 			"threshold", threshold,
 		)
-		return ""
+		return "[truncation fallback: the conversation summariser was unavailable so older messages were dropped. Use recall_search or re-read files if you need earlier context.]"
 	}
 	latency := time.Since(start)
 
@@ -6831,6 +7036,29 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		ratioOrForceTrigger(forceTrigger),
 		prunedToolOutputs, true)
 	return summaryText
+}
+
+// NaiveTruncateMessages keeps the system prompt and the most recent keep messages,
+// replacing the dropped middle with a single placeholder message.
+func (e *Engine) NaiveTruncateMessages(messages []provider.Message, keep int) []provider.Message {
+	if len(messages) == 0 || len(messages) <= keep+1 {
+		return messages
+	}
+	if keep < 0 {
+		keep = 0
+	}
+	start := len(messages) - keep
+	if start < 1 {
+		start = 1
+	}
+	truncated := make([]provider.Message, 0, keep+2)
+	truncated = append(truncated, messages[0])
+	truncated = append(truncated, provider.Message{
+		Role:    "assistant",
+		Content: "[... earlier messages truncated — summariser unavailable ...]",
+	})
+	truncated = append(truncated, messages[start:]...)
+	return truncated
 }
 
 // maybeAutoCompactExplicit is the explicit-messages variant of
@@ -6951,13 +7179,13 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 		summary, err = e.autoCompactor.Compact(ctx, recent)
 	}
 	if err != nil {
-		slog.Warn("engine manual compaction failed; returning no-fire to caller",
+		slog.Warn("engine manual compaction failed; applying naive truncation fallback",
 			"error", err,
 			"sessionID", sessionID,
 			"recentTokens", recentTokens,
 			"tokenBudget", tokenBudget,
 		)
-		return ""
+		return "[truncation fallback: the conversation summariser was unavailable so older messages were dropped. Use recall_search or re-read files if you need earlier context.]"
 	}
 	latency := time.Since(start)
 
