@@ -2173,6 +2173,19 @@ var _ = Describe("ParseProviderError", func() {
 			Expect(result.RawError).To(Equal(err))
 		})
 
+		It("classifies 429 insufficient_quota as billing and not retriable", func() {
+			err := newOpenAIError(`{"message":"You exceeded your current quota","type":"rate_limit_error","code":"insufficient_quota"}`, http.StatusTooManyRequests)
+			result := openaicompat.ParseProviderError(testProvider, err)
+			Expect(result).To(HaveOccurred())
+			Expect(result.HTTPStatus).To(Equal(http.StatusTooManyRequests))
+			Expect(result.ErrorType).To(Equal(provider.ErrorTypeBilling))
+			Expect(result.IsRetriable).To(BeFalse())
+			Expect(result.Provider).To(Equal(testProvider))
+			Expect(result.ErrorCode).To(Equal("insufficient_quota"))
+			Expect(result.Message).To(Equal("You exceeded your current quota"))
+			Expect(result.RawError).To(Equal(err))
+		})
+
 		It("classifies 401 as auth failure and not retriable", func() {
 			err := newOpenAIError(`{"message":"invalid key","type":"auth","code":"invalid_api_key"}`, http.StatusUnauthorized)
 			result := openaicompat.ParseProviderError(testProvider, err)

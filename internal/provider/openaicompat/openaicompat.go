@@ -976,6 +976,10 @@ func ParseProviderError(providerName string, err error) *provider.Error {
 			errType = provider.ErrorTypeContextWindowExceeded
 			retriable = false
 		}
+		if openaiErr.StatusCode == http.StatusTooManyRequests && isInsufficientQuotaError(openaiErr.Code, openaiErr.Message) {
+			errType = provider.ErrorTypeBilling
+			retriable = false
+		}
 		return &provider.Error{
 			HTTPStatus:  openaiErr.StatusCode,
 			ErrorCode:   openaiErr.Code,
@@ -1327,6 +1331,29 @@ func isContextWindowError(code, message string) bool {
 		strings.Contains(lower, "context window") ||
 		strings.Contains(lower, "context length") ||
 		strings.Contains(lower, "prompt is too long")
+}
+
+// isInsufficientQuotaError reports whether the given OpenAI-compatible error code
+// or message indicates an exhausted billing quota. It returns true because
+// insufficient quota is a terminal billing condition, so retrying cannot succeed
+// until the operator restores account credit or pays for additional usage.
+//
+// Expected:
+//   - code is the error code from the provider response body (may be empty).
+//   - message is the human-readable error message (may be empty).
+//
+// Returns:
+//   - true when the error is an exhausted billing quota.
+//
+// Side effects:
+//   - None.
+func isInsufficientQuotaError(code, message string) bool {
+	if code == "insufficient_quota" {
+		return true
+	}
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "insufficient_quota") ||
+		strings.Contains(lower, "exceeded your current quota")
 }
 
 // WrapChatError wraps a Chat() or Stream() error as a *provider.Error when possible.
