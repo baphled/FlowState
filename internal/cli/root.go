@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/baphled/flowstate/internal/app"
@@ -103,6 +104,9 @@ func NewRootCmd(application *app.App) *cobra.Command {
 			// runner's app pointer stays in sync.
 			appPtr.SetAutoresearchRunner(NewAutoresearchAppRunner(appPtr))
 			appPtr.SetAutoresearchPruner(NewAutoresearchPruneAppRunner(appPtr))
+			if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+				app.ConfigureLogging("debug", os.Stderr)
+			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -115,6 +119,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 	flags.String("agents-dir", application.AgentsDir(), "Path to the agents directory")
 	flags.String("skills-dir", application.SkillsDir(), "Path to the skills directory")
 	flags.String("sessions-dir", application.SessionsDir(), "Path to the sessions directory")
+	flags.BoolP("verbose", "v", false, "Enable debug-level logging to stderr")
 
 	getApp := func() *app.App { return appPtr }
 
