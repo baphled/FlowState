@@ -245,6 +245,11 @@ type DelegationInfo struct {
 	ModelName    string     `json:"model_name"`
 	ProviderName string     `json:"provider_name"`
 	Description  string     `json:"description"`
+	// TargetSessionID is the child session identifier. Populated
+	// after createChildSession/resolveOrCreateSession resolves the
+	// child session ID, so the accumulator can stamp it on the
+	// persisted delegation_started/delegation message.
+	TargetSessionID string
 }
 
 // UsageDelta carries per-turn token-accounting deltas reported by the

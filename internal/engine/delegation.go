@@ -2561,7 +2561,6 @@ func (d *DelegateTool) executeSync(
 	outChan chan<- provider.StreamChunk,
 	hasOutput bool,
 ) (tool.Result, error) {
-	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 	if hasOutput {
 		label := "\n*Delegating to **" + target.agentID + "**…*\n"
 		select {
@@ -2602,12 +2601,13 @@ func (d *DelegateTool) executeSync(
 	// (target.message) is lost — see Bug Fixes/Delegation Brief
 	// Persistence (May 2026) for the original symptom.
 	d.persistChildBrief(delegateSessionID, target.agentID, target.message)
-	// Bus-side `delegation.started` fires post-resolve so the payload
-	// carries the populated ChildSessionID. The chunk-side `started`
-	// at line 1837 is preserved verbatim for transcript rendering and
-	// fires *before* this — see Plans/Delegation Bus Bridge — Engine
-	// to SSE (May 2026) §"Why publish after resolve, not at chunk
-	// emission time" for the ordering rationale.
+	// Chunk-side started event fires post-resolve so the stream
+	// chunk carries the populated TargetSessionID for the accumulator
+	// to stamp on the persisted delegation_started message.
+	baseInfo.TargetSessionID = delegateSessionID
+	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
+	// Bus-side `delegation.started` also fires post-resolve with the
+	// populated ChildSessionID. Both chunk and bus now carry the id.
 	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, "", target.loadSkills))
 
 	// Start the progress heartbeat — emits delegation.progress events
@@ -4744,6 +4744,7 @@ func (d *DelegateTool) executeAsync(
 		taskID = fmt.Sprintf("task-%s-%d", target.agentID, time.Now().UTC().UnixNano())
 	}
 
+	baseInfo.TargetSessionID = taskID
 	d.emitDelegationEvent(outChan, hasOutput, baseInfo, "started")
 	// Bus-side `delegation.started` fires post-resolve so the payload
 	// carries the populated ChildSessionID (== taskID for the async path).

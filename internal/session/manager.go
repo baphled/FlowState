@@ -72,6 +72,13 @@ type Message struct {
 	Status       string `json:"status,omitempty"`
 	ModelName    string `json:"modelName,omitempty"`
 	ProviderName string `json:"providerName,omitempty"`
+	// TargetSessionID is the child session identifier for a delegation
+	// message. Stamped by the engine at message persist time so the
+	// frontend's loadSessionForDelegation can route to the correct child
+	// session on cold reload when the chainSessions map is empty.
+	// Empty for non-delegation messages and for delegation messages that
+	// predate this field.
+	TargetSessionID string `json:"targetSessionId,omitempty"`
 	// ThinkingBlocks carries the per-block thinking content produced
 	// by Anthropic extended thinking (signed and redacted variants).
 	// Persisted on assistant messages so that a session reload can

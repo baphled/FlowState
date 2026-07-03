@@ -765,10 +765,11 @@ func applyDelegation(appender MessageAppender, s *streamAccumState, info *provid
 		}
 		s.seenStartedChains[key] = struct{}{}
 		msg := Message{
-			Role:    "delegation_started",
-			Content: formatDelegationSummary(info),
-			AgentID: s.agentID,
-			ChainID: key,
+			Role:             "delegation_started",
+			Content:          formatDelegationSummary(info),
+			AgentID:          s.agentID,
+			ChainID:          key,
+			TargetSessionID:  info.TargetSessionID,
 		}
 		applyDelegationFields(&msg, info)
 		appender.AppendMessage(s.sessionID, msg)
@@ -788,10 +789,11 @@ func applyDelegation(appender MessageAppender, s *streamAccumState, info *provid
 			}
 		}
 		msg := Message{
-			Role:    "delegation",
-			Content: formatDelegationSummary(info),
-			AgentID: s.agentID,
-			ChainID: key,
+			Role:             "delegation",
+			Content:          formatDelegationSummary(info),
+			AgentID:          s.agentID,
+			ChainID:          key,
+			TargetSessionID:  info.TargetSessionID,
 		}
 		applyDelegationFields(&msg, info)
 		appender.AppendMessage(s.sessionID, msg)
@@ -802,6 +804,7 @@ func applyDelegation(appender MessageAppender, s *streamAccumState, info *provid
 // refreshes the human-readable Content summary.
 func applyDelegationFields(m *Message, info *provider.DelegationInfo) {
 	m.TargetAgent = info.TargetAgent
+	m.TargetSessionID = info.TargetSessionID
 	m.Status = info.Status
 	m.ModelName = info.ModelName
 	m.ToolCalls = info.ToolCalls
