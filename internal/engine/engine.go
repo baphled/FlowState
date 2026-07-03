@@ -5872,9 +5872,50 @@ func (e *Engine) resetContinuationState(sessionID string) {
 
 // buildTodoContinuationMessage constructs the user-role continuation prompt
 // injected into the message history when the engine detects incomplete todos
-// after a model turn ends without tool calls. The message enumerates each
-// outstanding item so the model can resume exactly where it left off.
+// after a model turn ends without tool calls. When any item has in_progress
+// status the message names the active task and demands the agent complete or
+// cancel it before proceeding; when all items are pending the existing generic
+// message is returned verbatim.
 func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
+	hasActive := false
+	for _, it := range incomplete {
+		if it.Status == "in_progress" {
+			hasActive = true
+			break
+		}
+	}
+
+	if hasActive {
+		var sb strings.Builder
+		sb.WriteString("You have an active task that must be completed before you can proceed:\n\n")
+
+		for _, it := range incomplete {
+			if it.Status == "in_progress" {
+				sb.WriteString(fmt.Sprintf("  ▶ \"%s\" (%s priority)\n", it.Content, it.Priority))
+			}
+		}
+
+		hasPending := false
+		for _, it := range incomplete {
+			if it.Status == "pending" {
+				hasPending = true
+				break
+			}
+		}
+
+		if hasPending {
+			sb.WriteString("\nAdditional queued tasks:\n")
+			for _, it := range incomplete {
+				if it.Status == "pending" {
+					sb.WriteString(fmt.Sprintf("  ○ \"%s\" (%s priority)\n", it.Content, it.Priority))
+				}
+			}
+		}
+
+		sb.WriteString("\nYou must complete or cancel the active task now — you are not allowed to skip it or start unrelated work.\n")
+		return provider.Message{Role: "user", Content: sb.String()}
+	}
+
 	var sb strings.Builder
 	sb.WriteString("You have incomplete tasks that still need to be completed. Please continue working until all tasks are done:\n")
 	for _, it := range incomplete {
