@@ -120,7 +120,11 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 
 	existing := t.store.Get(sessionID)
 	if len(existing) > 0 {
-		return tool.Result{}, errors.New("session already has a todo list; use todo_update for per-item updates instead of todowrite — todowrite is for initial list creation only")
+		out, err := json.MarshalIndent(existing, "", "  ")
+		if err != nil {
+			return tool.Result{}, fmt.Errorf("serialising existing todos: %w", err)
+		}
+		return tool.Result{Output: fmt.Sprintf("A todo list already exists for this session — do NOT create a new one. Use todo_update to modify individual items. Current list:\n%s", string(out))}, nil
 	}
 
 	if err := t.store.Set(sessionID, todos); err != nil {
