@@ -85,7 +85,10 @@ type Message struct {
 	// `refusal` and `model_context_window_exceeded` values (Claude 4+
 	// additions) flow through here so consumers can distinguish them
 	// from a normal `end_turn`.
-	StopReason string    `json:"stopReason,omitempty"`
+	StopReason string `json:"stopReason,omitempty"`
+	// DurationMs is the streaming duration from accumulator creation to
+	// message flush, in milliseconds. Stamped on assistant messages.
+	DurationMs int64     `json:"durationMs,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
 }
 

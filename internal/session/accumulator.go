@@ -331,6 +331,9 @@ type streamAccumState struct {
 	// delegation_started / delegation message; that artefact is the
 	// turn's deliverable.
 	turnHadDelegation bool
+	// startedAt records when the accumulator was created. Used to compute
+	// DurationMs on the persisted assistant message at flush time.
+	startedAt time.Time
 	// turnSawDone records whether a terminal chunk.Done arrived this
 	// turn. The stream-truncation detector (Bug F) must fire ONLY on the
 	// close-without-Done path: a cleanly-Done turn that simply carried no
@@ -491,7 +494,7 @@ func AccumulateStream(
 	accumCh := make(chan provider.StreamChunk, 64)
 	go func() {
 		defer close(accumCh)
-		s := &streamAccumState{sessionID: sessionID, agentID: agentID}
+		s := &streamAccumState{sessionID: sessionID, agentID: agentID, startedAt: time.Now()}
 		// P1/D2: ctx-aware select so a cancelled streaming turn does not
 		// park the accumulator goroutine forever on a rawCh whose
 		// producer has already abandoned the stream. Mirrors the D1 fix
@@ -885,6 +888,7 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 		AgentID:      s.agentID,
 		ModelName:    s.lastModelID,
 		ProviderName: s.lastProviderID,
+		DurationMs:   time.Since(s.startedAt).Milliseconds(),
 		StopReason:   s.turnStopReason,
 	}
 	if len(s.thinkingBlocks) > 0 {
@@ -1402,6 +1406,7 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 				AgentID:      s.agentID,
 				ModelName:    s.lastModelID,
 				ProviderName: s.lastProviderID,
+				DurationMs:   time.Since(s.startedAt).Milliseconds(),
 				StopReason:   StopReasonEmptyTurn,
 			})
 			s.turnStopReason = ""
@@ -1463,6 +1468,7 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 		AgentID:        s.agentID,
 		ModelName:      s.lastModelID,
 		ProviderName:   s.lastProviderID,
+		DurationMs:     time.Since(s.startedAt).Milliseconds(),
 		StopReason:     stopReason,
 		ThinkingBlocks: blocks,
 	})
