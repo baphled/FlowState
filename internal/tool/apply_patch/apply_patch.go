@@ -90,6 +90,10 @@ func (t *Tool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because apply_patch reads and writes
+// files on the filesystem.
+func (t *Tool) IsStateModifying() bool { return true }
+
 // Execute applies a patch.
 //
 // Expected:

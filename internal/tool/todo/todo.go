@@ -90,6 +90,10 @@ func (t *Tool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because todowrite replaces the stored
+// todo list for the session.
+func (t *Tool) IsStateModifying() bool { return true }
+
 // Execute stores the provided todo list for the current session and returns it as JSON.
 //
 // Expected:

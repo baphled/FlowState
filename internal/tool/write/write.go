@@ -72,6 +72,10 @@ func (t *Tool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because write creates or overwrites a
+// file on the filesystem.
+func (t *Tool) IsStateModifying() bool { return true }
+
 // Execute performs the file write operation specified in input.
 //
 // Expected:

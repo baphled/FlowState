@@ -90,6 +90,10 @@ func (t *Tool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because multiedit reads and writes a
+// file on the filesystem.
+func (t *Tool) IsStateModifying() bool { return true }
+
 // Execute applies the configured edits to the target file.
 //
 // Expected:

@@ -39,6 +39,24 @@ func (t *executableMockTool) Execute(_ context.Context, input tool.Input) (tool.
 }
 func (t *executableMockTool) Schema() tool.Schema { return tool.Schema{} }
 
+type delayedExecutableMockTool struct {
+	name        string
+	description string
+	delay       time.Duration
+	execResult  tool.Result
+	execErr     error
+	execCalled  bool
+}
+
+func (t *delayedExecutableMockTool) Name() string        { return t.name }
+func (t *delayedExecutableMockTool) Description() string { return t.description }
+func (t *delayedExecutableMockTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
+	time.Sleep(t.delay)
+	t.execCalled = true
+	return t.execResult, t.execErr
+}
+func (t *delayedExecutableMockTool) Schema() tool.Schema { return tool.Schema{} }
+
 // resultOnlyErrorTool is the (Result{Error: ...}, nil) failure shape used by
 // real tools (read, bash failure path, edit, multiedit, apply_patch, invalid).
 // The Go-level error return is nil; the failure is encoded in Result.Error

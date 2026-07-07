@@ -545,6 +545,10 @@ func (t *WriteTool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because plan_write persists a plan file
+// to the filesystem.
+func (t *WriteTool) IsStateModifying() bool { return true }
+
 // Execute parses the supplied markdown into a plan.File and persists it via
 // plan.Store. Returns the on-disk path on success.
 //

@@ -98,6 +98,10 @@ func (t *Tool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because edit modifies a file on the
+// filesystem.
+func (t *Tool) IsStateModifying() bool { return true }
+
 // Execute performs the edit operation.
 //
 // Expected:

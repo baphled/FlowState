@@ -96,6 +96,10 @@ func (t *Tool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because coordination_store can write
+// to or delete from the shared coordination key-value store.
+func (t *Tool) IsStateModifying() bool { return true }
+
 // Execute runs the specified coordination store operation.
 //
 // Expected:

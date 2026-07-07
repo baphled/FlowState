@@ -470,6 +470,51 @@ var _ = Describe("Engine tool-loop cap", func() {
 			Expect(prov.callCount()).To(BeNumerically("<", 300),
 				"the duration backstop must trip well below the production 50-iteration ceiling (1ms budget)")
 		})
+
+		It("does NOT count tool execution time against the duration budget", func() {
+			slow := &delayedExecutableMockTool{
+				name:       "alpha",
+				delay:      100 * time.Millisecond,
+				execResult: tool.Result{Output: "slow"},
+			}
+
+			registry := tool.NewRegistry()
+			registry.Register(slow)
+			registry.SetPermission(slow.Name(), tool.Allow)
+
+			prov := &scriptedChunkProvider{
+				name: "tool-time-excluded",
+				script: []scriptedBatch{
+					{toolCalls: []*provider.ToolCall{{ID: "c1", Name: "alpha", Arguments: map[string]any{}}}},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{slow},
+				ToolRegistry: registry,
+			})
+			eng.SetMaxToolLoopIterationsForTest(0)
+			eng.SetMaxIdenticalToolCallsForTest(0)
+			eng.SetMaxEmptyTextToolCallsForTest(0)
+			eng.SetMaxToolLoopDurationForTest(time.Millisecond)
+
+			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue())
+
+			var tripped bool
+			for _, c := range received {
+				if c.Done && c.StopReason == session.StopReasonToolLoopExceeded {
+					tripped = true
+				}
+			}
+			Expect(tripped).To(BeFalse(), "tool execution time must not consume the loop duration budget")
+			Expect(slow.execCalled).To(BeTrue())
+		})
 	})
 
 	Context("when the cap trips but the session has incomplete todos", func() {
@@ -595,6 +640,49 @@ var _ = Describe("Engine tool-loop cap", func() {
 			for _, c := range received {
 				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),
 					"2 consecutive empty-text turns must NOT trip the detector")
+			}
+		})
+
+		It("does NOT trip when empty-text turns carry varied tool calls", func() {
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
+			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
+			gamma := &executableMockTool{name: "gamma", execResult: tool.Result{Output: "c"}}
+
+			registry := tool.NewRegistry()
+			for _, t := range []tool.Tool{alpha, beta, gamma} {
+				registry.Register(t)
+				registry.SetPermission(t.Name(), tool.Allow)
+			}
+
+			prov := &scriptedChunkProvider{
+				name: "varied-empty-text",
+				script: []scriptedBatch{
+					{toolCalls: []*provider.ToolCall{{ID: "c1", Name: "alpha", Arguments: map[string]any{"i": 0}}}},
+					{toolCalls: []*provider.ToolCall{{ID: "c2", Name: "beta", Arguments: map[string]any{"i": 1}}}},
+					{toolCalls: []*provider.ToolCall{{ID: "c3", Name: "gamma", Arguments: map[string]any{"i": 2}}}},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{alpha, beta, gamma},
+				ToolRegistry: registry,
+			})
+			eng.SetMaxIdenticalToolCallsForTest(0)
+			eng.SetMaxToolLoopIterationsForTest(0)
+			eng.SetMaxToolLoopDurationForTest(0)
+			eng.SetMaxEmptyTextToolCallsForTest(3)
+
+			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue())
+
+			for _, c := range received {
+				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),
+					"varied empty-text tool-call turns must NOT trip the detector")
 			}
 		})
 

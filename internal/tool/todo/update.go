@@ -97,6 +97,10 @@ func (t *UpdateTool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because todo_update patches the stored
+// todo list for the session.
+func (t *UpdateTool) IsStateModifying() bool { return true }
+
 // Execute patches a single todo in the stored list and returns the full
 // updated list as JSON so the UI surface (and the model) sees the same shape
 // as a todowrite response.

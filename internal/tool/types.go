@@ -49,6 +49,24 @@ type Property struct {
 	Items map[string]interface{}
 }
 
+// StateModifier is an optional interface that tools may implement to declare
+// whether they modify persistent state. The engine uses this to decide
+// batch execution strategy: when any tool call in a batch modifies state,
+// all calls execute sequentially (in array order) to prevent race
+// conditions between concurrent state mutations; when all tools are
+// read-only, they execute concurrently for throughput.
+//
+// This follows the Conditional Parallel Tool Execution pattern established
+// across Anthropic, OpenAI, LangChain, and Agentic Patterns.
+type StateModifier interface {
+	// IsStateModifying returns true if executing this tool has persistent
+	// side effects. Tools that modify files, databases, todo lists,
+	// coordination stores, or any other shared state should return true.
+	// Tools that only read state or perform stateless computation should
+	// return false (the default when this interface is not implemented).
+	IsStateModifying() bool
+}
+
 // PermissionRequest describes a tool invocation awaiting user approval.
 type PermissionRequest struct {
 	ToolName  string

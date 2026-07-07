@@ -38,6 +38,15 @@ func (t *blockingMockTool) Execute(_ context.Context, _ tool.Input) (tool.Result
 	return t.result, nil
 }
 
+// stateModifyingMockTool wraps blockingMockTool and implements
+// StateModifier so the engine treats it as a state-modifying tool
+// for conditional batch execution tests.
+type stateModifyingMockTool struct {
+	blockingMockTool
+}
+
+func (t *stateModifyingMockTool) IsStateModifying() bool { return true }
+
 var _ = Describe("Engine parallel tool dispatch", func() {
 	var (
 		registry *tool.Registry
@@ -245,6 +254,122 @@ var _ = Describe("Engine parallel tool dispatch", func() {
 			}
 
 			Expect(toolA.execCalled.Load()).To(BeTrue())
+		})
+	})
+
+	Context("conditional batch execution (state-modifying tools)", func() {
+		It("runs state-modifying tools sequentially, not concurrently", func() {
+			const delay = 80 * time.Millisecond
+
+			toolA := &stateModifyingMockTool{
+				blockingMockTool: blockingMockTool{
+					name:   "tool_a",
+					delay:  delay,
+					result: tool.Result{Output: "a"},
+				},
+			}
+			toolB := &blockingMockTool{
+				name:   "tool_b",
+				delay:  delay,
+				result: tool.Result{Output: "b"},
+			}
+
+			registry.Register(toolA)
+			registry.Register(toolB)
+			registry.SetPermission("tool_a", tool.Allow)
+			registry.SetPermission("tool_b", tool.Allow)
+
+			chatProvider := &streamSequenceProvider{
+				name: "sequential-dispatch",
+				sequences: [][]provider.StreamChunk{
+					{
+						{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_a", Name: "tool_a", Arguments: map[string]any{}}},
+						{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_b", Name: "tool_b", Arguments: map[string]any{}}},
+						{Done: true},
+					},
+					{
+						{Content: "Done.", Done: true},
+					},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{toolA, toolB},
+				ToolRegistry: registry,
+			})
+
+			start := time.Now()
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "seq-batch-session", "Use state-modifying tools")
+			Expect(err).NotTo(HaveOccurred())
+			for range chunks {
+			}
+			elapsed := time.Since(start)
+
+			Expect(toolA.execCalled.Load()).To(BeTrue())
+			Expect(toolB.execCalled.Load()).To(BeTrue())
+			// Sequential takes >= 2*delay; parallel takes >= delay.
+			Expect(elapsed).To(BeNumerically(">=", 2*delay-10*time.Millisecond),
+				"state-modifying batch must execute sequentially (~2*delay)")
+		})
+
+		It("runs a mixed batch (read-only + state-modifying) sequentially", func() {
+			const delay = 80 * time.Millisecond
+
+			toolA := &stateModifyingMockTool{
+				blockingMockTool: blockingMockTool{
+					name:   "tool_a",
+					delay:  delay,
+					result: tool.Result{Output: "a"},
+				},
+			}
+			toolB := &blockingMockTool{
+				name:   "tool_b",
+				delay:  delay,
+				result: tool.Result{Output: "b"},
+			}
+
+			registry.Register(toolA)
+			registry.Register(toolB)
+			registry.SetPermission("tool_a", tool.Allow)
+			registry.SetPermission("tool_b", tool.Allow)
+
+			chatProvider := &streamSequenceProvider{
+				name: "mixed-dispatch",
+				sequences: [][]provider.StreamChunk{
+					{
+						{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_a", Name: "tool_a", Arguments: map[string]any{}}},
+						{EventType: "tool_call", ToolCall: &provider.ToolCall{ID: "call_b", Name: "tool_b", Arguments: map[string]any{}}},
+						{Done: true},
+					},
+					{
+						{Content: "Done.", Done: true},
+					},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+				Tools:        []tool.Tool{toolA, toolB},
+				ToolRegistry: registry,
+			})
+
+			start := time.Now()
+			ctx := context.Background()
+			chunks, err := eng.Stream(ctx, "mixed-batch-session", "Use mixed tools")
+			Expect(err).NotTo(HaveOccurred())
+			for range chunks {
+			}
+			elapsed := time.Since(start)
+
+			Expect(toolA.execCalled.Load()).To(BeTrue())
+			Expect(toolB.execCalled.Load()).To(BeTrue())
+			// Mixed batch must be sequential because toolA modifies state.
+			Expect(elapsed).To(BeNumerically(">=", 2*delay-10*time.Millisecond),
+				"mixed batch (read-only + state-modifying) must execute sequentially")
 		})
 	})
 })

@@ -88,6 +88,10 @@ func (t *InsertTool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because todo_insert inserts an item into
+// the stored todo list for the session.
+func (t *InsertTool) IsStateModifying() bool { return true }
+
 // Execute inserts a single todo item at the specified index in the stored
 // list and returns the full updated list as JSON.
 //

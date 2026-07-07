@@ -85,6 +85,10 @@ func (t *AppendTool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because todo_append appends an item to
+// the stored todo list for the session.
+func (t *AppendTool) IsStateModifying() bool { return true }
+
 // Execute appends a single todo item to the stored list and returns the
 // full updated list as JSON so the model sees the same shape as a
 // todowrite or todo_update response.

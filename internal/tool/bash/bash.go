@@ -80,6 +80,10 @@ func (t *Tool) Schema() tool.Schema {
 	}
 }
 
+// IsStateModifying returns true because bash executes arbitrary
+// commands that may have persistent side effects on the system.
+func (t *Tool) IsStateModifying() bool { return true }
+
 // Execute runs the specified bash command and returns its output.
 //
 // Expected:
