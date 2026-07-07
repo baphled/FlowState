@@ -4430,6 +4430,7 @@ func (e *Engine) streamWithToolLoop(
 	todoContinuationCount := 0
 	noProgressContinuations := 0
 	lastTodoContinuationSnapshot := []todo.Item(nil)
+	consecutiveEmptyTextContinuations := 0
 	updateTodoContinuationProgress := func(current []todo.Item) {
 		if slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
@@ -4631,6 +4632,7 @@ func (e *Engine) streamWithToolLoop(
 					return
 				}
 				todoContinuationCount++
+				consecutiveEmptyTextContinuations = 0
 				slog.Info("incomplete todos after turn end, injecting continuation",
 					"session", sessionID,
 					"incomplete_count", len(incompletes),
@@ -5001,6 +5003,27 @@ func (e *Engine) streamWithToolLoop(
 						ProviderID: e.LastProvider(),
 					}
 					return
+				}
+				// Guard: consecutive empty-text-tool-calls caps across continuation
+				// boundaries means the model is stuck producing empty text + tool calls.
+				// One recovery is allowed; a second consecutive cap is a pattern — stop.
+				if reason == "empty_text_tool_calls" {
+					consecutiveEmptyTextContinuations++
+					if consecutiveEmptyTextContinuations >= 2 {
+						slog.Warn("consecutive empty-text-tool-calls caps, stopping",
+							"session", sessionID,
+							"consecutive", consecutiveEmptyTextContinuations,
+						)
+						outChan <- provider.StreamChunk{
+							Done:       true,
+							StopReason: session.StopReasonToolLoopExceeded,
+							ModelID:    e.LastModel(),
+							ProviderID: e.LastProvider(),
+						}
+						return
+					}
+				} else {
+					consecutiveEmptyTextContinuations = 0
 				}
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after tool loop cap",
