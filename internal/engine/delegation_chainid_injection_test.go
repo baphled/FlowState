@@ -125,6 +125,12 @@ var _ = Describe("DelegateTool chainID auto-injection", func() {
 				expectedKey := "coordination_store key=plan-x-2026/" + expectedSuffix
 				Expect(body).To(ContainSubstring(expectedKey),
 					"the role-specific coord-store key must be present in the preamble for "+agentID)
+				Expect(body).To(ContainSubstring(
+					"Perform the coordination_store write — do not narrate your reasoning, analysis, or process; just write the output under that key."),
+					"first-attempt coord-store specialists must be told to write directly rather than narrate")
+				Expect(body).To(ContainSubstring(
+					"If the key is empty or predecessor data is unavailable, proceed with your available context — do not wait, retry, or loop."),
+					"first-attempt coord-store specialists must not spin when predecessor data is missing")
 			},
 			Entry("explorer", "explorer", "codebase-findings"),
 			Entry("librarian", "librarian", "external-refs"),
@@ -393,12 +399,50 @@ var _ = Describe("DelegateTool swarm-aware preamble injection", func() {
 				"member must know which swarm it belongs to")
 			Expect(body).To(ContainSubstring("dev-feature/explorer/codebase-findings"),
 				"member must know the exact coord-store key it must write")
+			Expect(body).To(ContainSubstring(
+				"Perform the write — do not narrate your process, analysis, or reasoning; just write the output."),
+				"swarm members must be instructed on the first attempt to write directly, not narrate")
+			Expect(body).To(ContainSubstring(
+				"If predecessor data is unavailable under the expected keys, proceed with what you have — do not loop waiting for keys."),
+				"swarm members must be told to continue when predecessor coord-store data is missing")
 			Expect(body).To(MatchRegexp(`(?i)prose or Markdown|as text`),
 				"a prose-tolerant member must be asked for prose/Markdown, not a JSON schema")
+			Expect(body).To(ContainSubstring("Do not narrate your process — write only the findings."),
+				"prose-bundle members must be told to write only findings")
 			Expect(body).NotTo(ContainSubstring("JSON schema"),
 				"a prose-tolerant member must NOT be told to conform to a JSON schema")
 			Expect(body).To(ContainSubstring("Survey the codebase."),
 				"original message must be preserved after the preamble")
+		})
+
+		It("adds the non-narration clause for plan documents without changing the Markdown contract", func() {
+			gates := []swarm.GateSpec{
+				{
+					Name:      "post-plan-writer-plan",
+					Kind:      "builtin:result-schema",
+					When:      swarm.LifecyclePostMember,
+					Target:    "plan-writer",
+					OutputKey: "plan",
+					SchemaRef: swarm.PlanDocumentV1Name,
+				},
+			}
+			dt, mp := swarmPreambleFixture("plan-writer", gates)
+
+			_, err := dt.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "plan-writer",
+					"chainID":       "dev-feature",
+					"message":       "Write the rollout plan.",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			body := lastUserMsg(mp)
+			Expect(body).To(ContainSubstring("Write a complete Markdown plan document under that key"),
+				"plan-document members must keep the Markdown contract")
+			Expect(body).To(ContainSubstring("Do not narrate your planning process — write only the plan document."),
+				"plan-document members must be told not to narrate their planning process")
 		})
 
 		It("uses the swarm chain_prefix in the coord-store key, not the swarm ID", func() {

@@ -1218,7 +1218,7 @@ var _ = Describe("Session manager wiring", Label("integration"), func() {
 			Expect(turn2Req).NotTo(BeNil(), "no provider.request captured for turn 2")
 
 			var replayedAssistant *provider.Message
-			for i := range turn2Req.Messages {
+			for i := len(turn2Req.Messages) - 1; i >= 0; i-- {
 				if turn2Req.Messages[i].Role == "assistant" {
 					replayedAssistant = &turn2Req.Messages[i]
 					break
@@ -1355,7 +1355,7 @@ var _ = Describe("Session manager wiring", Label("integration"), func() {
 			Expect(turn2Req).NotTo(BeNil(), "no provider.request captured for turn 2")
 
 			var replayedAssistant *provider.Message
-			for i := range turn2Req.Messages {
+			for i := len(turn2Req.Messages) - 1; i >= 0; i-- {
 				if turn2Req.Messages[i].Role == "assistant" {
 					replayedAssistant = &turn2Req.Messages[i]
 					break

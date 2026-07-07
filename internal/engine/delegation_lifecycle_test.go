@@ -262,6 +262,28 @@ var _ = Describe("DelegateTool lifecycle", func() {
 		})
 
 		Describe("executeSync returns enriched Result", func() {
+			It("replaces narrated output with a coordination chain marker when chainID is present", func() {
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+
+				ctx := context.Background()
+				input := tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "qa-agent",
+						"chainID":       "plan-auth-2026",
+						"message":       "Run all the tests",
+					},
+				}
+
+				result, err := delegateTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(ContainSubstring("[coordination_chain] plan-auth-2026"))
+				Expect(result.Output).To(ContainSubstring("The delegated agent may have written structured findings to the coordination store"))
+				Expect(result.Output).To(ContainSubstring("prefix \"plan-auth-2026/\""))
+				Expect(result.Output).To(ContainSubstring("lifecycle response"),
+					"the coordination marker is appended but until bg_519d9269 narration stripping is complete the original response remains")
+			})
+
 			It("returns Title set to the delegation message", func() {
 				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
 
@@ -1196,7 +1218,7 @@ var _ = Describe("DelegateTool surfaces the child manifest's full preferred_mode
 			"a chain-less agent must fall through so session.WithPreferredModels no-ops and the prior cascade-to-global-default behaviour is preserved")
 	})
 
-	It("returns only the category-routed pair when category routing resolved one", func() {
+	It("prepends the category-routed pair to the manifest chain, deduped", func() {
 		manifest := agent.Manifest{
 			ID:   "analyst",
 			Name: "Analyst",
@@ -1205,8 +1227,33 @@ var _ = Describe("DelegateTool surfaces the child manifest's full preferred_mode
 			},
 		}
 		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "openai", "gpt-5")
+		Expect(chain).To(Equal([]provider.ModelPreference{
+			{Provider: "openai", Model: "gpt-5"},
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+		}), "an explicit per-call category selection outranks the manifest at the HEAD, but the manifest tiers are retained as fallback so the failover layer is not left with a single-element chain")
+	})
+
+	It("dedupes the category-routed pair when it already heads the manifest chain", func() {
+		manifest := agent.Manifest{
+			ID:   "analyst",
+			Name: "Analyst",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "openai", Model: "gpt-5"},
+				{Provider: "anthropic", Model: "claude-opus-4-6"},
+			},
+		}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "openai", "gpt-5")
+		Expect(chain).To(Equal([]provider.ModelPreference{
+			{Provider: "openai", Model: "gpt-5"},
+			{Provider: "anthropic", Model: "claude-opus-4-6"},
+		}), "the category pair must not appear twice when it already heads the manifest chain")
+	})
+
+	It("returns only the category pair when the manifest declares no preferred_models", func() {
+		manifest := agent.Manifest{ID: "analyst", Name: "Analyst"}
+		chain := newDelegateTool(&manifest).ResolveChildModelChainForTest("analyst", "openai", "gpt-5")
 		Expect(chain).To(Equal([]provider.ModelPreference{{Provider: "openai", Model: "gpt-5"}}),
-			"an explicit per-call category selection outranks the manifest and has no declared secondary tier")
+			"with no manifest tiers to fall back on the chain is the category pair alone")
 	})
 })
 
