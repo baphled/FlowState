@@ -4405,6 +4405,12 @@ func (e *Engine) streamWithToolLoop(
 	// against maxToolLoopDuration in the cap check below to provide a
 	// cumulative time budget backstop alongside the iteration ceiling.
 	loopStart := time.Now()
+	// toolExecDuration accumulates time spent executing tools across
+	// iterations within the current budget window. It is subtracted from
+	// the wall-clock elapsed when checking maxToolLoopDuration so that
+	// slow tools do not consume the duration budget meant to cap
+	// provider round-trips and retry logic.
+	var toolExecDuration time.Duration
 	// Turn-local tool-loop guard state. Declared here (never on the Engine)
 	// so concurrent turns can never share it. iterations counts continuations
 	// (about-to-re-request passes); lastFingerprint / identicalRun track the
@@ -4413,13 +4419,18 @@ func (e *Engine) streamWithToolLoop(
 	// emptyTextToolCallsRun counts consecutive continuations whose assistant
 	// text is empty/whitespace-only yet still carries tool calls; when it
 	// reaches maxEmptyTextToolCalls the loop is a silent stall and is
-	// tripped. All guards trip the turn with StopReasonToolLoopExceeded. See
+	// tripped. lastEmptyTextToolNames holds the sorted, joined tool-call
+	// names from the previous empty-text iteration so the detector only
+	// counts runs where the SAME tool pattern repeats; varied tool names
+	// indicate the model is making progress and must not trip. All guards
+	// trip the turn with StopReasonToolLoopExceeded. See
 	// engineMaxToolLoopIterations / engineMaxIdenticalToolCalls /
 	// engineMaxEmptyTextToolCalls.
 	iterations := 0
 	lastFingerprint := ""
 	identicalRun := 0
 	emptyTextToolCallsRun := 0
+	lastEmptyTextToolNames := ""
 	const maxToolUseNoCallsRetries = 3
 	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
@@ -4609,6 +4620,7 @@ func (e *Engine) streamWithToolLoop(
 							attempt++
 							iterations = 0
 							loopStart = time.Now()
+							toolExecDuration = 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -4663,6 +4675,7 @@ func (e *Engine) streamWithToolLoop(
 				attempt++
 				iterations = 0
 				loopStart = time.Now()
+				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -4690,6 +4703,7 @@ func (e *Engine) streamWithToolLoop(
 							attempt++
 							iterations = 0
 							loopStart = time.Now()
+							toolExecDuration = 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -4743,6 +4757,7 @@ func (e *Engine) streamWithToolLoop(
 				attempt++
 				iterations = 0
 				loopStart = time.Now()
+				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -4766,7 +4781,9 @@ func (e *Engine) streamWithToolLoop(
 			}
 		}
 
+		toolExecStart := time.Now()
 		execResults := e.executeDeduplicatedToolCalls(ctx, sessionID, result.toolCalls, outChan)
+		toolExecDuration += time.Since(toolExecStart)
 
 		// When a tool execution returns a hard error (not a tool-level Result.Error)
 		// persist a synthetic tool_result so the session history has a complete
@@ -4921,13 +4938,25 @@ func (e *Engine) streamWithToolLoop(
 
 		if e.maxEmptyTextToolCalls > 0 {
 			if strings.TrimSpace(result.responseContent) == "" && len(result.toolCalls) > 0 {
-				emptyTextToolCallsRun++
+				names := make([]string, len(result.toolCalls))
+				for i, tc := range result.toolCalls {
+					names[i] = tc.Name
+				}
+				sort.Strings(names)
+				currentNames := strings.Join(names, ",")
+				if currentNames == lastEmptyTextToolNames {
+					emptyTextToolCallsRun++
+				} else {
+					emptyTextToolCallsRun = 1
+				}
+				lastEmptyTextToolNames = currentNames
 			} else {
 				emptyTextToolCallsRun = 0
+				lastEmptyTextToolNames = ""
 			}
 		}
 
-		elapsed := time.Since(loopStart)
+		elapsed := time.Since(loopStart) - toolExecDuration
 		repeatTripped := e.maxIdenticalToolCalls > 0 && identicalRun >= e.maxIdenticalToolCalls
 		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
 		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
@@ -4979,7 +5008,9 @@ func (e *Engine) streamWithToolLoop(
 							identicalRun = 0
 							lastFingerprint = ""
 							emptyTextToolCallsRun = 0
+							lastEmptyTextToolNames = ""
 							loopStart = time.Now()
+							toolExecDuration = 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
@@ -5063,7 +5094,9 @@ func (e *Engine) streamWithToolLoop(
 				identicalRun = 0
 				lastFingerprint = ""
 				emptyTextToolCallsRun = 0
+				lastEmptyTextToolNames = ""
 				loopStart = time.Now() // reset wall-clock budget for continuation
+				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
@@ -5243,6 +5276,14 @@ func (e *Engine) executeToolCallBatch(
 		return results
 	}
 
+	if batchHasStateModifier(e.tools, toolCalls) {
+		for i, tc := range toolCalls {
+			tr, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, tc)
+			results[i] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
+		}
+		return results
+	}
+
 	var wg sync.WaitGroup
 	for i, tc := range toolCalls {
 		wg.Add(1)
@@ -5254,6 +5295,25 @@ func (e *Engine) executeToolCallBatch(
 	}
 	wg.Wait()
 	return results
+}
+
+// batchHasStateModifier reports whether any tool call in the batch targets a
+// tool that implements tool.StateModifier with IsStateModifying returning true.
+// When this returns true the caller must execute the batch sequentially to
+// prevent race conditions between concurrent state mutations.
+func batchHasStateModifier(tools []tool.Tool, toolCalls []*provider.ToolCall) bool {
+	for _, tc := range toolCalls {
+		for _, t := range tools {
+			if t.Name() != tc.Name {
+				continue
+			}
+			if sm, ok := t.(tool.StateModifier); ok && sm.IsStateModifying() {
+				return true
+			}
+			break
+		}
+	}
+	return false
 }
 
 // evictCompletedBackgroundTasks calls EvictCompleted on the delegate tool's background manager
