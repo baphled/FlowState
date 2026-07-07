@@ -373,7 +373,20 @@ var _ = Describe("streamEventHandler", func() {
 				Expect(chunk.StopReason).To(Equal("end_turn"))
 			})
 
-			It("captures stop_reason tool_use", func() {
+			It("passes through stop_reason tool_use after tool_use content_block_start", func() {
+				// Simulate a tool_use content block being streamed first,
+				// which is the normal Anthropic API contract.
+				cbsEvent := anthropicAPI.MessageStreamEventUnion{
+					Type:  "content_block_start",
+					Index: 0,
+					ContentBlock: anthropicAPI.ContentBlockStartEventContentBlockUnion{
+						Type: "tool_use",
+						ID:   "toolu_abc123",
+						Name: "my_tool",
+					},
+				}
+				handler.handleEvent(cbsEvent)
+
 				event := anthropicAPI.MessageStreamEventUnion{
 					Type: "message_delta",
 					Delta: anthropicAPI.MessageStreamEventUnionDelta{
@@ -384,6 +397,24 @@ var _ = Describe("streamEventHandler", func() {
 				chunk, _ := handler.handleEvent(event)
 
 				Expect(chunk.StopReason).To(Equal("tool_use"))
+			})
+
+			It("normalises stop_reason tool_use to end_turn when no tool_use block was streamed", func() {
+				// The Anthropic API contract guarantees that content_block_stop
+				// for every tool_use block arrives before message_delta. If
+				// stop_reason is tool_use but no tool_use content block was ever
+				// started, the provider violated its contract — normalise so the
+				// engine does not wait for tool calls that will never arrive.
+				event := anthropicAPI.MessageStreamEventUnion{
+					Type: "message_delta",
+					Delta: anthropicAPI.MessageStreamEventUnionDelta{
+						StopReason: anthropicAPI.StopReasonToolUse,
+					},
+				}
+
+				chunk, _ := handler.handleEvent(event)
+
+				Expect(chunk.StopReason).To(Equal("end_turn"))
 			})
 
 			It("captures stop_reason max_tokens", func() {

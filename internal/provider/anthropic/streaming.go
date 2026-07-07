@@ -52,6 +52,13 @@ type streamEventHandler struct {
 	// redacted) is open at each index, so content_block_stop knows
 	// which payload to emit.
 	blockKinds map[int64]string
+
+	// sawToolUseBlock tracks whether at least one tool_use
+	// content_block_start event was processed on this stream.
+	// Used in handleMessageDelta to detect a provider contract
+	// violation where stop_reason is "tool_use" but no tool_use
+	// blocks were streamed.
+	sawToolUseBlock bool
 }
 
 // newStreamEventHandler creates a handler for processing Anthropic streaming events.
@@ -172,9 +179,20 @@ func (h *streamEventHandler) handleMessageDelta(
 		CacheCreationInputTokens: event.Usage.CacheCreationInputTokens,
 		CacheReadInputTokens:     event.Usage.CacheReadInputTokens,
 	}
+	stopReason := string(event.Delta.StopReason)
+	// Normalise: the Anthropic API contract guarantees that all
+	// content_block_stop events arrive before message_delta. When
+	// stop_reason is "tool_use", the tool_use content blocks must
+	// have been fully streamed. If we never saw a tool_use block,
+	// the provider has violated its contract — normalise to
+	// "end_turn" so the engine does not wait for tool calls that
+	// will never arrive.
+	if stopReason == "tool_use" && !h.sawToolUseBlock {
+		stopReason = "end_turn"
+	}
 	chunk := provider.StreamChunk{
 		EventType:    "stop_reason",
-		StopReason:   string(event.Delta.StopReason),
+		StopReason:   stopReason,
 		StopSequence: event.Delta.StopSequence,
 		Usage:        usage,
 	}
@@ -222,6 +240,7 @@ func (h *streamEventHandler) handleContentBlockStart(
 ) (provider.StreamChunk, bool) {
 	switch event.ContentBlock.Type {
 	case "tool_use":
+		h.sawToolUseBlock = true
 		h.pendingToolCalls[event.Index] = &provider.ToolCall{
 			ID:   event.ContentBlock.ID,
 			Name: event.ContentBlock.Name,
