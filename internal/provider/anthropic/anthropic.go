@@ -1355,18 +1355,16 @@ func buildAssistantWithTools(
 //
 // Side effects:
 //   - None.
-func buildUserMessage(m provider.Message) anthropicAPI.MessageParam {
+func buildUserMessage(m provider.Message) *anthropicAPI.MessageParam {
 	blocks := attachmentsToBlocks(m.Attachments)
 	if m.Content != "" {
 		blocks = append(blocks, anthropicAPI.NewTextBlock(m.Content))
 	}
 	if len(blocks) == 0 {
-		// Defensive: a user turn with empty content and no attachments
-		// is unusual but Anthropic accepts an empty text block. Emit
-		// one so the request payload stays well-formed.
-		blocks = append(blocks, anthropicAPI.NewTextBlock(""))
+		return nil
 	}
-	return anthropicAPI.NewUserMessage(blocks...)
+	msg := anthropicAPI.NewUserMessage(blocks...)
+	return &msg
 }
 
 // attachmentsToBlocks lifts a provider.Attachment slice into the
@@ -1616,7 +1614,9 @@ func buildMessages(
 	for _, m := range sanitized {
 		switch m.Role {
 		case "user":
-			messages = append(messages, buildUserMessage(m))
+			if msg := buildUserMessage(m); msg != nil {
+				messages = append(messages, *msg)
+			}
 		case "assistant":
 			if msg := buildAssistantMessage(m); msg != nil {
 				messages = append(messages, *msg)

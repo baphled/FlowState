@@ -2732,6 +2732,7 @@ var _ = Describe("attachmentsToBlocks and buildUserMessage", func() {
 			},
 		}
 		out := buildUserMessage(msg)
+		Expect(out).ToNot(BeNil())
 		Expect(out.Content).To(HaveLen(2))
 		// Image block first.
 		Expect(out.Content[0].OfImage).NotTo(BeNil())
@@ -2750,6 +2751,7 @@ var _ = Describe("attachmentsToBlocks and buildUserMessage", func() {
 			},
 		}
 		out := buildUserMessage(msg)
+		Expect(out).ToNot(BeNil())
 		Expect(out.Content).To(HaveLen(3))
 		Expect(out.Content[0].OfImage).NotTo(BeNil())
 		Expect(string(out.Content[0].OfImage.Source.OfBase64.MediaType)).To(Equal("image/png"))
@@ -2760,14 +2762,14 @@ var _ = Describe("attachmentsToBlocks and buildUserMessage", func() {
 
 	It("buildUserMessage with no attachments produces a single text block (unchanged from pre-fix behaviour)", func() {
 		out := buildUserMessage(provider.Message{Role: "user", Content: "hello"})
+		Expect(out).ToNot(BeNil())
 		Expect(out.Content).To(HaveLen(1))
 		Expect(out.Content[0].OfText.Text).To(Equal("hello"))
 	})
 
-	It("buildUserMessage with empty content and no attachments emits a single empty text block", func() {
+	It("buildUserMessage with empty content and no attachments returns nil", func() {
 		out := buildUserMessage(provider.Message{Role: "user"})
-		Expect(out.Content).To(HaveLen(1))
-		Expect(out.Content[0].OfText).NotTo(BeNil())
+		Expect(out).To(BeNil())
 	})
 
 	It("buildMessages routes user-role messages through buildUserMessage", func() {
@@ -2841,6 +2843,7 @@ var _ = Describe("attachmentsToBlocks and buildUserMessage", func() {
 				},
 			}
 			out := buildUserMessage(msg)
+			Expect(out).ToNot(BeNil())
 			// image, document, text
 			Expect(out.Content).To(HaveLen(3))
 			Expect(out.Content[0].OfImage).NotTo(BeNil())
@@ -2860,6 +2863,7 @@ var _ = Describe("attachmentsToBlocks and buildUserMessage", func() {
 				},
 			}
 			out := buildUserMessage(msg)
+			Expect(out).ToNot(BeNil())
 			Expect(out.Content).To(HaveLen(3))
 			Expect(out.Content[0].OfDocument).NotTo(BeNil())
 			Expect(out.Content[1].OfImage).NotTo(BeNil())
