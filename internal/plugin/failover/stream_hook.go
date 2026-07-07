@@ -191,7 +191,10 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		// is the chain's tier-0 pair, so promotePinned simply re-affirms
 		// the head it already produced (a no-op reorder). The pin path
 		// stays load-bearing for the in-turn retry case where no chain
-		// is present.
+		// is present. promotePinned only REORDERS existing candidates;
+		// it never inserts an absent pair — prependAgentChain already
+		// health-filtered the chain, and re-inserting a rate-limited
+		// pair would loop forever (the "agent looping and bailing" bug).
 		candidates = promotePinned(candidates, req.Provider, req.Model)
 
 		// Honour a parent ctx that is already cancelled or past its
@@ -840,15 +843,18 @@ func (sh *StreamHook) prependAgentChain(ctx context.Context, candidates []provid
 //     unchanged (caller is specifying "any model from this provider"
 //     and the candidates list is authoritative on which models exist).
 //   - non-empty pinnedModel: match by (provider, model) exactly. If a
-//     matching candidate is found, promote it. If NO candidate matches,
-//     INSERT the pinned pair at the head — this is the cascade-honour
-//     branch: the caller has explicitly stamped a pair via the engine's
-//     ctx override (Agent Provider Cascade, May 2026), and the
-//     failover pool must respect the caller's intent rather than
-//     silently overwriting req.Provider/Model from its base
-//     preferences. The remaining candidates stay in place as the
-//     fallback pool for the case where the pinned pair fails health-
-//     check during attempt.
+//     matching candidate is found, promote it to the head. If NO
+//     candidate matches, return the input UNCHANGED — never insert.
+//
+// Why absent pairs are never inserted: both call sites (Execute and
+// nextRoundCandidates) run prependAgentChain BEFORE promotePinned.
+// prependAgentChain health-filters the chain and drops rate-limited
+// pairs. Re-inserting an absent pinned pair here would defeat that
+// filtering, recreating the infinite-loop bug where a rate-limited
+// category-routed pair is re-promoted on every retry round, fails, gets
+// re-rate-limited, and loops forever. The candidates list returned by
+// prependAgentChain is authoritative; promotePinned only reorders
+// existing entries, it never adds new ones.
 //
 // The matched entry is kept in its ModelPreference form so downstream
 // logic (health-marking, last-set) sees the exact pairing.
@@ -858,15 +864,14 @@ func (sh *StreamHook) prependAgentChain(ctx context.Context, candidates []provid
 //   - pinnedProvider may be empty (no-op).
 //
 // Returns:
-//   - A slice with the matched (or inserted) pinned pair first,
-//     followed by the remaining candidates in their original relative
-//     order; or the input slice unchanged when no promotion or
-//     insertion applies.
+//   - A slice with the matched pinned pair moved to the head, followed
+//     by the remaining candidates in their original relative order; or
+//     the input slice unchanged when no promotion applies.
 //
 // Side effects:
-//   - None (returns a new slice when promotion or insertion happens;
-//     returns the input slice directly when no change is needed, so
-//     callers must not mutate it in place regardless).
+//   - None (returns a new slice when promotion happens; returns the
+//     input slice directly when no change is needed, so callers must
+//     not mutate it in place regardless).
 func promotePinned(candidates []provider.ModelPreference, pinnedProvider, pinnedModel string) []provider.ModelPreference {
 	if pinnedProvider == "" {
 		return candidates
@@ -883,21 +888,7 @@ func promotePinned(candidates []provider.ModelPreference, pinnedProvider, pinned
 		break
 	}
 	if idx == -1 {
-		// No exact match. When the caller pinned both provider AND
-		// model the cascade-honour branch inserts the pair at the
-		// head; the failover pool follows as the fallback. Provider-
-		// only pins fall through to the input slice unchanged — the
-		// caller did not specify a model so the pool's existing entry
-		// for that provider (if any) was sufficient and we must not
-		// synthesise a fake (provider, "") row.
-		if pinnedModel == "" {
-			return candidates
-		}
-		head := provider.ModelPreference{Provider: pinnedProvider, Model: pinnedModel}
-		reordered := make([]provider.ModelPreference, 0, len(candidates)+1)
-		reordered = append(reordered, head)
-		reordered = append(reordered, candidates...)
-		return reordered
+		return candidates
 	}
 	if idx == 0 {
 		return candidates
