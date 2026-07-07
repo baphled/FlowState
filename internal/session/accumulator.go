@@ -344,6 +344,12 @@ type streamAccumState struct {
 	// fresh-turn signal so a Done in an earlier round of a multi-round
 	// stream does not suppress truncation detection on a later round.
 	turnSawDone bool
+	// contentFlushed records whether flushContent has already written
+	// the assistant message for this turn. Used by
+	// synthesizePlaceholderAssistant to avoid creating a duplicate
+	// placeholder when flushContent already persisted the turn's
+	// content and ThinkingBlocks.
+	contentFlushed bool
 }
 
 // providerProducesUnifiedAssistant reports whether the named provider's
@@ -765,11 +771,11 @@ func applyDelegation(appender MessageAppender, s *streamAccumState, info *provid
 		}
 		s.seenStartedChains[key] = struct{}{}
 		msg := Message{
-			Role:             "delegation_started",
-			Content:          formatDelegationSummary(info),
-			AgentID:          s.agentID,
-			ChainID:          key,
-			TargetSessionID:  info.TargetSessionID,
+			Role:            "delegation_started",
+			Content:         formatDelegationSummary(info),
+			AgentID:         s.agentID,
+			ChainID:         key,
+			TargetSessionID: info.TargetSessionID,
 		}
 		applyDelegationFields(&msg, info)
 		appender.AppendMessage(s.sessionID, msg)
@@ -789,11 +795,11 @@ func applyDelegation(appender MessageAppender, s *streamAccumState, info *provid
 			}
 		}
 		msg := Message{
-			Role:             "delegation",
-			Content:          formatDelegationSummary(info),
-			AgentID:          s.agentID,
-			ChainID:          key,
-			TargetSessionID:  info.TargetSessionID,
+			Role:            "delegation",
+			Content:         formatDelegationSummary(info),
+			AgentID:         s.agentID,
+			ChainID:         key,
+			TargetSessionID: info.TargetSessionID,
 		}
 		applyDelegationFields(&msg, info)
 		appender.AppendMessage(s.sessionID, msg)
@@ -846,17 +852,16 @@ func flushThinking(appender MessageAppender, s *streamAccumState) {
 		return
 	}
 	signature := s.pendingThinkingSignature
-	appender.AppendMessage(s.sessionID, Message{
-		Role:    "thinking",
-		Content: thinking,
-		AgentID: s.agentID,
-	})
-	// Capture the signed thinking block for replay on the next turn.
-	// Without round-tripping the signature, Anthropic disables thinking
-	// continuity silently — see provider.Message.ThinkingBlocks.
-	s.thinkingBlocks = append(s.thinkingBlocks, provider.ThinkingBlock{
+	block := provider.ThinkingBlock{
 		Thinking:  thinking,
 		Signature: signature,
+	}
+	s.thinkingBlocks = append(s.thinkingBlocks, block)
+	appender.AppendMessage(s.sessionID, Message{
+		Role:           "thinking",
+		Content:        thinking,
+		AgentID:        s.agentID,
+		ThinkingBlocks: []provider.ThinkingBlock{block},
 	})
 	s.thinkingBuf.Reset()
 	s.pendingThinkingSignature = ""
@@ -1065,6 +1070,7 @@ func flushContent(appender MessageAppender, s *streamAccumState) {
 	// no-op rather than emitting an empty-turn placeholder beside the
 	// just-flushed content.
 	s.turnPlaceholderEmitted = true
+	s.contentFlushed = true
 }
 
 // StopReasonThinkingOnly is the synthetic stop reason stamped on a
@@ -1379,6 +1385,9 @@ func synthesizePlaceholderAssistant(appender MessageAppender, s *streamAccumStat
 	// chunk.Done and channel-close call this synthesizer; emit at most
 	// once per turn.
 	if s.turnPlaceholderEmitted {
+		return
+	}
+	if s.contentFlushed {
 		return
 	}
 	// Streaming Coherence Slice C (May 2026) — true-empty-turn fall-through.
