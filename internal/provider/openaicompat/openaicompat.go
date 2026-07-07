@@ -20,6 +20,14 @@ import (
 	"github.com/openai/openai-go/packages/param"
 )
 
+// defaultMaxTokens is the fallback output token budget for
+// OpenAI-compatible providers when the caller leaves MaxTokens at
+// zero. Set high enough (8192) to accommodate large tool-call
+// arguments (e.g. write/edit with full file contents) that the
+// server-side default (typically 2048-4096) would truncate
+// mid-generation, producing malformed tool calls.
+const defaultMaxTokens = 8192
+
 // BuildMessages converts a slice of provider.Message to OpenAI-compatible message parameters.
 //
 // Expected:
@@ -287,6 +295,11 @@ func BuildParams(req provider.ChatRequest) openaiAPI.ChatCompletionNewParams {
 		Model:    req.Model,
 		Messages: BuildMessages(req.Messages),
 	}
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = defaultMaxTokens
+	}
+	params.MaxTokens = openaiAPI.Int(int64(maxTokens))
 	if tools := BuildTools(req.Tools); len(tools) > 0 {
 		params.Tools = tools
 	}

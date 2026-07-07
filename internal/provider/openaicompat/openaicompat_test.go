@@ -513,6 +513,16 @@ var _ = Describe("OpenAI Compat", func() {
 			Expect(params.Messages).To(HaveLen(1))
 		})
 
+		It("sets MaxTokens to the fallback when omitted", func() {
+			req := provider.ChatRequest{
+				Model:    "gpt-4o",
+				Messages: []provider.Message{{Role: "user", Content: "hello"}},
+			}
+			params := openaicompat.BuildParams(req)
+			Expect(params.MaxTokens).NotTo(BeNil())
+			Expect(params.MaxTokens.Value).To(Equal(int64(8192)))
+		})
+
 		It("includes tools when present", func() {
 			req := provider.ChatRequest{
 				Model: "gpt-4o",
