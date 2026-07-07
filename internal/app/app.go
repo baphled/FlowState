@@ -3830,24 +3830,30 @@ func handleToolExecuteResult(msg any, learningHk *learning.Hook, distiller learn
 	if !ok {
 		return
 	}
-	result := &learning.ToolCallResult{
-		Outcome: fmt.Sprintf("%s:%s", toolEvt.Data.ToolName, toolEvt.Data.Result),
-	}
-	if err := learningHk.Handle(context.Background(), result); err != nil {
-		slog.Warn("learning hook error", "error", err)
-	}
-	if distiller == nil {
-		return
-	}
-	entry := learning.Entry{
-		Timestamp: toolEvt.Timestamp(),
-		AgentID:   toolEvt.Data.SessionID,
-		ToolsUsed: []string{toolEvt.Data.ToolName},
-		Outcome:   fmt.Sprintf("%v", toolEvt.Data.Result),
-	}
-	if _, _, err := distiller.Distill(entry); err != nil {
-		slog.Warn("distiller error", "error", err)
-	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		result := &learning.ToolCallResult{
+			Outcome: fmt.Sprintf("%s:%s", toolEvt.Data.ToolName, toolEvt.Data.Result),
+		}
+		if err := learningHk.Handle(ctx, result); err != nil {
+			slog.Warn("learning hook error", "error", err)
+		}
+		if distiller == nil {
+			return
+		}
+		entry := learning.Entry{
+			Timestamp: toolEvt.Timestamp(),
+			AgentID:   toolEvt.Data.SessionID,
+			ToolsUsed: []string{toolEvt.Data.ToolName},
+			Outcome:   fmt.Sprintf("%v", toolEvt.Data.Result),
+		}
+		if _, _, err := distiller.Distill(entry); err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("distiller error", "error", err)
+			}
+		}
+	}()
 }
 
 // subscribeRateLimitLogger subscribes to "provider.rate_limited" events and logs
