@@ -6123,7 +6123,7 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 // them to complete.
 func buildBackgroundTaskContinuationMessage(activeTasks int) provider.Message {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("You have %d background task(s) still running:\n", activeTasks))
+	fmt.Fprintf(&sb, "You have %d background task(s) still running:\n", activeTasks)
 	sb.WriteString("\nWait for these tasks to complete before proceeding. The system will notify you when they finish.")
 	return provider.Message{Role: "user", Content: sb.String()}
 }

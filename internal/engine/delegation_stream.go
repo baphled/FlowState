@@ -461,6 +461,7 @@ func (d *DelegateTool) executeSync(
 
 	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
 	delegateCtx = swarm.WithScope(delegateCtx, nil)
+	delegateCtx = session.WithPriorMessages(delegateCtx, nil)
 	// Cascade contract for child sessions: UI > manifest > global.
 	//
 	// The parent session's override (UI tier) must NOT propagate into the
@@ -931,6 +932,7 @@ func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTa
 			Cause:    err,
 		}
 	}
+	ctx = session.WithPriorMessages(ctx, nil)
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
 	if err != nil {
 		return err
@@ -1051,6 +1053,7 @@ func (d *DelegateTool) executeBackgroundTask(
 	d.persistChildBrief(taskID, target.agentID, target.message)
 	closeStore := d.attachSessionStore(target.engine, taskID)
 
+	ctx = session.WithPriorMessages(ctx, nil)
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
 	if err != nil {
 		closeStore()
