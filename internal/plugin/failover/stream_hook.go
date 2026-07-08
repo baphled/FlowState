@@ -408,6 +408,8 @@ func (sh *StreamHook) runCandidateRound(
 		req.Model = candidate.Model
 		outcome.pairs = append(outcome.pairs, candidate)
 
+		req.Messages = stripAssistantTail(req.Messages)
+
 		replayCh, err := sh.attemptCandidate(ctx, next, req, candidate)
 		if err != nil {
 			state.lastErr = err
@@ -427,6 +429,24 @@ func (sh *StreamHook) runCandidateRound(
 		return replayCh, outcome, true
 	}
 	return nil, outcome, false
+}
+
+// stripAssistantTail removes trailing assistant messages that have no tool calls
+// from the message list. Some providers (notably Anthropic) reject conversations
+// that end with an assistant turn — stripping the silent tail ensures structurally
+// valid input for every failover candidate.
+func stripAssistantTail(msgs []provider.Message) []provider.Message {
+	cut := len(msgs)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != "assistant" || len(msgs[i].ToolCalls) > 0 {
+			break
+		}
+		cut = i
+	}
+	if cut >= len(msgs) {
+		return msgs
+	}
+	return msgs[:cut]
 }
 
 // isTransientFailoverError reports whether err is a TRANSIENT provider failure
