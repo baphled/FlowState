@@ -4442,6 +4442,7 @@ func (e *Engine) streamWithToolLoop(
 	noProgressContinuations := 0
 	lastTodoContinuationSnapshot := []todo.Item(nil)
 	consecutiveEmptyTextContinuations := 0
+	delegationGraceUsed := false
 	updateTodoContinuationProgress := func(current []todo.Item) {
 		if slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
@@ -4982,6 +4983,41 @@ func (e *Engine) streamWithToolLoop(
 				"max_identical", e.maxIdenticalToolCalls,
 				"max_empty_text_tool_calls", e.maxEmptyTextToolCalls,
 			)
+			todosAllComplete := false
+			if e.todoStore != nil {
+				if hasMore, _ := e.hasIncompleteTodos(sessionID); !hasMore {
+					todosAllComplete = true
+				}
+			}
+			if !delegationGraceUsed && !durationTripped && (batchContainsDelegate(result.toolCalls) || (todosAllComplete && !e.hasActiveBackgroundTasks(sessionID))) {
+				delegationGraceUsed = true
+				slog.Info("delegation grace round: model delegated work with no incomplete todos",
+					"session", sessionID,
+					"trip", reason,
+				)
+				contMsg := buildGraceRoundMessage()
+				messages = append(messages, contMsg)
+				var streamErr error
+				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				if streamErr != nil {
+					slog.Error("grace round stream failed after tool loop cap",
+						"session", sessionID,
+						"error", streamErr,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				attempt++
+				iterations = 0
+				identicalRun = 0
+				lastFingerprint = ""
+				emptyTextToolCallsRun = 0
+				lastEmptyTextToolNames = ""
+				loopStart = time.Now()
+				toolExecDuration = 0
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				continue
+			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
 				updateTodoContinuationProgress(incompletes)
 				if noProgressContinuations >= maxNoProgressContinuations {
@@ -5099,14 +5135,43 @@ func (e *Engine) streamWithToolLoop(
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
+			} else if activeTasks := e.activeBackgroundTaskCount(sessionID); activeTasks > 0 {
+				slog.Info("background tasks still active, continuing",
+					"session", sessionID,
+					"active_tasks", activeTasks,
+				)
+				contMsg := buildBackgroundTaskContinuationMessage(activeTasks)
+				messages = append(messages, contMsg)
+				e.resetContinuationState(sessionID)
+				var streamErr error
+				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				if streamErr != nil {
+					slog.Error("background task continuation stream failed",
+						"session", sessionID,
+						"error", streamErr,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				attempt++
+				iterations = 0
+				identicalRun = 0
+				lastFingerprint = ""
+				emptyTextToolCallsRun = 0
+				lastEmptyTextToolNames = ""
+				loopStart = time.Now()
+				toolExecDuration = 0
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				continue
+			} else {
+				outChan <- provider.StreamChunk{
+					Done:       true,
+					StopReason: session.StopReasonToolLoopExceeded,
+					ModelID:    e.LastModel(),
+					ProviderID: e.LastProvider(),
+				}
+				return
 			}
-			outChan <- provider.StreamChunk{
-				Done:       true,
-				StopReason: session.StopReasonToolLoopExceeded,
-				ModelID:    e.LastModel(),
-				ProviderID: e.LastProvider(),
-			}
-			return
 		}
 
 		var streamErr error
@@ -5165,6 +5230,29 @@ func fingerprintToolBatch(toolCalls []*provider.ToolCall) string {
 		}
 	}
 	return b.String()
+}
+
+// batchContainsDelegate returns true if any of the provided tool calls is a
+// "delegate" call. Used by the grace round to detect whether the model
+// delegated work in its last turn and should be given another round to
+// receive the results.
+func batchContainsDelegate(toolCalls []*provider.ToolCall) bool {
+	for _, tc := range toolCalls {
+		if tc != nil && tc.Name == "delegate" {
+			return true
+		}
+	}
+	return false
+}
+
+// buildGraceRoundMessage renders a user-role message telling the model that
+// the tool loop budget is exhausted but a delegation grace round has been
+// granted so it can check back on delegated work.
+func buildGraceRoundMessage() provider.Message {
+	return provider.Message{
+		Role:    "user",
+		Content: "Your tool loop budget is exhausted but you delegated work. A grace round has been granted so you can receive the results. Check back on your delegated tasks now.",
+	}
 }
 
 // deduplicateToolCalls collapses identical tool calls (same name + canonical
@@ -5913,6 +6001,28 @@ func (e *Engine) hasIncompleteTodos(sessionID string) (bool, []todo.Item) {
 	return len(incomplete) > 0, incomplete
 }
 
+// hasActiveBackgroundTasks reports whether any background (delegated) tasks
+// are still running for the given session. A background task is a subagent
+// spawned by a delegate tool call that has not yet completed.
+func (e *Engine) hasActiveBackgroundTasks(sessionID string) bool {
+	dt, ok := e.GetDelegateTool()
+	if !ok {
+		return false
+	}
+	return dt.BackgroundManager().ActiveCountForSession(sessionID) > 0
+}
+
+// activeBackgroundTaskCount returns the number of background tasks still
+// running for the given session. Callers use this to decide between a
+// background-task continuation and a hard stop.
+func (e *Engine) activeBackgroundTaskCount(sessionID string) int {
+	dt, ok := e.GetDelegateTool()
+	if !ok {
+		return 0
+	}
+	return dt.BackgroundManager().ActiveCountForSession(sessionID)
+}
+
 // isContinuationStale reports whether the session has a stale continuation:
 // a continuation was injected (todoContinuationFired) but the model made
 // zero non-todowrite/non-todo_update tool calls since. When true, the
@@ -6005,6 +6115,16 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 		sb.WriteString(fmt.Sprintf("- [%s] %s (%s priority)\n", it.Status, it.Content, it.Priority))
 	}
 	sb.WriteString("\nResume working on these tasks now.")
+	return provider.Message{Role: "user", Content: sb.String()}
+}
+
+// buildBackgroundTaskContinuationMessage renders a user-role message telling
+// the model that background tasks are still running and it should wait for
+// them to complete.
+func buildBackgroundTaskContinuationMessage(activeTasks int) provider.Message {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("You have %d background task(s) still running:\n", activeTasks))
+	sb.WriteString("\nWait for these tasks to complete before proceeding. The system will notify you when they finish.")
 	return provider.Message{Role: "user", Content: sb.String()}
 }
 
