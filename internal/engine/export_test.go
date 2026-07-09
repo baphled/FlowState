@@ -197,14 +197,14 @@ func (e *Engine) SetMaxIdenticalToolCallsForTest(n int) {
 	e.maxIdenticalToolCalls = n
 }
 
-// SetMaxEmptyTextToolCallsForTest overrides the engine's default
-// consecutive-empty-text-with-tool-calls silent-spin threshold
-// (engineMaxEmptyTextToolCalls) so specs can drive the silent-stall
-// scenario at small counts without waiting for the production ceiling.
-// Setting zero/negative disables the detector entirely, matching the
-// disabled-when-unset production gate semantics.
-func (e *Engine) SetMaxEmptyTextToolCallsForTest(n int) {
-	e.maxEmptyTextToolCalls = n
+// SetMaxSameToolPatternCallsForTest overrides the engine's default
+// consecutive-same-tool-name-pattern threshold
+// (engineMaxSameToolPatternCalls) so specs can drive the tool-pattern
+// stall scenario at small counts without waiting for the production
+// ceiling. Setting zero/negative disables the detector entirely,
+// matching the disabled-when-unset production gate semantics.
+func (e *Engine) SetMaxSameToolPatternCallsForTest(n int) {
+	e.maxSameToolPatternCalls = n
 }
 
 // SetMaxToolLoopDurationForTest overrides the engine's default wall-clock

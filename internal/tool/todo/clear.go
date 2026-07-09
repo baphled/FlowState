@@ -80,12 +80,18 @@ func (t *ClearTool) IsStateModifying() bool { return true }
 // Execute wipes the stored todo list for the session and returns an empty
 // JSON array so the model observes the cleared state directly.
 //
+// A completion guard runs before the write: every item in the current list
+// must be in a terminal state (completed or cancelled). When any item is
+// still pending or in_progress the call is rejected so an agent cannot
+// discard unfinished work. An empty list passes the guard trivially.
+//
 // Expected:
 //   - ctx contains a session.IDKey value identifying the current session.
 //
 // Returns:
 //   - A tool.Result whose Output is the JSON-encoded empty list ("[]").
-//   - An error when the session ID is missing or the store rejects the write.
+//   - An error when the session ID is missing, any item is not in a
+//     terminal state, or the store rejects the write.
 //
 // Side effects:
 //   - Replaces the stored todo list for the session with an empty slice,
@@ -94,6 +100,10 @@ func (t *ClearTool) Execute(ctx context.Context, _ tool.Input) (tool.Result, err
 	sessionID, ok := ctx.Value(session.IDKey{}).(string)
 	if !ok || sessionID == "" {
 		return tool.Result{}, errors.New("session ID missing from context")
+	}
+
+	if err := assertAllTerminal(t.store.Get(sessionID)); err != nil {
+		return tool.Result{}, err
 	}
 
 	if err := t.store.Set(sessionID, []Item{}); err != nil {
@@ -105,4 +115,27 @@ func (t *ClearTool) Execute(ctx context.Context, _ tool.Input) (tool.Result, err
 		return tool.Result{}, fmt.Errorf("serialising todos: %w", err)
 	}
 	return tool.Result{Output: string(out)}, nil
+}
+
+// assertAllTerminal rejects a list that still contains non-terminal items.
+// Every item must have status completed or cancelled; the first item that is
+// still pending or in_progress produces an error naming it so the caller can
+// surface which entry is blocking the clear. An empty list always passes.
+//
+// Expected:
+//   - items is the current stored todo list for a session.
+//
+// Returns:
+//   - nil when every item is in a terminal state or the list is empty.
+//   - An error describing the first non-terminal item otherwise.
+//
+// Side effects:
+//   - None.
+func assertAllTerminal(items []Item) error {
+	for i, it := range items {
+		if it.Status != "completed" && it.Status != "cancelled" {
+			return fmt.Errorf("cannot clear todo list: item %q (index %d) is still %q", it.Content, i, it.Status)
+		}
+	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -87,6 +88,33 @@ var _ = Describe("Engine caching", func() {
 
 			second := eng.BuildSystemPrompt()
 			Expect(second).To(ContainSubstring("extra override"))
+		})
+
+		It("does not let a bound-manifest prompt pollute the cached unbound prompt", func() {
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				Manifest:     manifest,
+			})
+
+			cached := eng.BuildSystemPrompt()
+			Expect(cached).To(ContainSubstring("You are a helpful assistant."))
+
+			boundManifest := agent.Manifest{
+				ID:   "bound-agent",
+				Name: "Bound Agent",
+				Instructions: agent.Instructions{
+					SystemPrompt: "You are a bound manifest.",
+				},
+			}
+
+			boundPrompt := eng.BuildSystemPromptCtx(engine.WithBoundManifest(context.Background(), boundManifest))
+			Expect(boundPrompt).To(ContainSubstring("You are a bound manifest."))
+			Expect(boundPrompt).NotTo(ContainSubstring("You are a helpful assistant."))
+
+			after := eng.BuildSystemPrompt()
+			Expect(after).To(Equal(cached))
+			Expect(after).To(ContainSubstring("You are a helpful assistant."))
+			Expect(after).NotTo(ContainSubstring("You are a bound manifest."))
 		})
 	})
 

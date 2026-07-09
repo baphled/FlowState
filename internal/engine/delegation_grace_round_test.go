@@ -153,7 +153,7 @@ var _ = Describe("Engine delegation grace round", func() {
 		eng.SetMaxToolLoopIterationsForTest(5)
 		eng.SetMaxIdenticalToolCallsForTest(0)
 		eng.SetMaxToolLoopDurationForTest(0)
-		eng.SetMaxEmptyTextToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
 
 		chunks, err := eng.Stream(context.Background(), "grace-agent", "Delegate then summarise")
 		Expect(err).NotTo(HaveOccurred())
@@ -205,7 +205,7 @@ var _ = Describe("Engine delegation grace round", func() {
 		eng.SetMaxToolLoopIterationsForTest(5)
 		eng.SetMaxIdenticalToolCallsForTest(0)
 		eng.SetMaxToolLoopDurationForTest(0)
-		eng.SetMaxEmptyTextToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
 
 		chunks, err := eng.Stream(context.Background(), "grace-agent", "Read several files")
 		Expect(err).NotTo(HaveOccurred())
@@ -242,7 +242,7 @@ var _ = Describe("Engine delegation grace round", func() {
 		eng.SetMaxToolLoopIterationsForTest(5)
 		eng.SetMaxIdenticalToolCallsForTest(0)
 		eng.SetMaxToolLoopDurationForTest(0)
-		eng.SetMaxEmptyTextToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
 
 		chunks, err := eng.Stream(context.Background(), "grace-agent", "Keep delegating")
 		Expect(err).NotTo(HaveOccurred())
@@ -276,7 +276,7 @@ var _ = Describe("Engine delegation grace round", func() {
 		eng.SetMaxToolLoopIterationsForTest(0)
 		eng.SetMaxIdenticalToolCallsForTest(0)
 		eng.SetMaxToolLoopDurationForTest(time.Millisecond)
-		eng.SetMaxEmptyTextToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
 
 		chunks, err := eng.Stream(context.Background(), "grace-agent", "Long delegation loop")
 		Expect(err).NotTo(HaveOccurred())
@@ -329,7 +329,7 @@ var _ = Describe("Engine delegation grace round", func() {
 		eng.SetMaxToolLoopIterationsForTest(5)
 		eng.SetMaxIdenticalToolCallsForTest(0)
 		eng.SetMaxToolLoopDurationForTest(0)
-		eng.SetMaxEmptyTextToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
 		eng.SetTodoStoreForTest(todoStore)
 
 		chunks, err := eng.Stream(ctx, "grace-agent", "Read files and summarise")
@@ -390,7 +390,7 @@ var _ = Describe("Engine delegation grace round", func() {
 		eng.SetMaxToolLoopIterationsForTest(5)
 		eng.SetMaxIdenticalToolCallsForTest(0)
 		eng.SetMaxToolLoopDurationForTest(0)
-		eng.SetMaxEmptyTextToolCallsForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
 		eng.SetTodoStoreForTest(todoStore)
 
 		chunks, err := eng.Stream(ctx, "grace-agent", "Read files")

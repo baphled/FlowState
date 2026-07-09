@@ -114,14 +114,15 @@ func (p *scriptedToolProvider) Embed(_ context.Context, _ provider.EmbedRequest)
 
 func (p *scriptedToolProvider) Models() ([]provider.Model, error) { return nil, nil }
 
-// emptyTextToolProvider emits a tool_call with an incrementing index argument
-// and NO assistant text content on every stream. It models the pathological
-// shape captured in production with z.ai/glm-5.2: a provider that spins,
-// emitting only todo_update calls with incrementing index and zero reasoning
-// text. The varying argument dodges the repeat-call fingerprint; the low call
-// count dodges the iteration backstop; the empty text dodges the truly-empty
-// guard. Only the empty-text-with-tool-calls detector catches it.
-type emptyTextToolProvider struct {
+// sameToolPatternProvider emits a tool_call with an incrementing index
+// argument and EMPTY assistant text on every stream. It models the
+// pathological shape captured in production with z.ai/glm-5.2: a provider
+// that spins, emitting only todo_update calls with incrementing index and
+// no response text. The varying argument dodges the repeat-call fingerprint;
+// the low call count dodges the iteration backstop. Only the same-tool-
+// pattern detector catches it, proving the detector trips when assistant
+// text is empty.
+type sameToolPatternProvider struct {
 	name     string
 	toolName string
 
@@ -129,9 +130,9 @@ type emptyTextToolProvider struct {
 	calls int
 }
 
-func (p *emptyTextToolProvider) Name() string { return p.name }
+func (p *sameToolPatternProvider) Name() string { return p.name }
 
-func (p *emptyTextToolProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+func (p *sameToolPatternProvider) Stream(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	p.mu.Lock()
 	idx := p.calls
 	p.calls++
@@ -142,24 +143,25 @@ func (p *emptyTextToolProvider) Stream(_ context.Context, _ provider.ChatRequest
 		Name:      p.toolName,
 		Arguments: map[string]any{"index": idx},
 	}
-	ch := make(chan provider.StreamChunk, 2)
+	ch := make(chan provider.StreamChunk, 3)
 	go func() {
 		defer close(ch)
+		ch <- provider.StreamChunk{Content: ""}
 		ch <- provider.StreamChunk{EventType: "tool_call", ToolCall: &tc}
 		ch <- provider.StreamChunk{Done: true}
 	}()
 	return ch, nil
 }
 
-func (p *emptyTextToolProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
+func (p *sameToolPatternProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
 	return provider.ChatResponse{}, nil
 }
 
-func (p *emptyTextToolProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
+func (p *sameToolPatternProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
 	return []float64{0.1, 0.2, 0.3}, nil
 }
 
-func (p *emptyTextToolProvider) Models() ([]provider.Model, error) { return nil, nil }
+func (p *sameToolPatternProvider) Models() ([]provider.Model, error) { return nil, nil }
 
 // scriptedBatch is one entry in a scriptedChunkProvider script: the assistant
 // text content (may be empty) and the tool calls emitted on that stream.
@@ -171,8 +173,8 @@ type scriptedBatch struct {
 // scriptedChunkProvider drives an explicit list of (content, toolCalls)
 // batches across successive streams, then a clean text Done once the script
 // is exhausted. Unlike scriptedToolProvider it allows per-batch control over
-// the assistant text content so specs can exercise the empty-text-with-tool-
-// calls detector and its reset semantics.
+// the assistant text content and tool-call names so specs can exercise the
+// same-tool-pattern detector and its reset semantics.
 type scriptedChunkProvider struct {
 	name   string
 	script []scriptedBatch
@@ -322,9 +324,10 @@ var _ = Describe("Engine tool-loop cap", func() {
 			})
 			// Default 50-iteration backstop is comfortably above 5 distinct
 			// calls; leave it at the production default. Disable the
-			// empty-text guard since scriptedToolProvider emits no assistant
-			// text alongside its tool calls.
-			eng.SetMaxEmptyTextToolCallsForTest(0)
+			// same-tool-pattern guard for isolation — the distinct tool
+			// names would not trip it anyway, but disabling keeps the
+			// test focused on the iteration backstop only.
+			eng.SetMaxSameToolPatternCallsForTest(0)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Use everything")
 			Expect(err).NotTo(HaveOccurred())
@@ -409,7 +412,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 				ToolRegistry: registry,
 			})
 			eng.SetMaxIdenticalToolCallsForTest(3)
-			eng.SetMaxEmptyTextToolCallsForTest(0)
+			eng.SetMaxSameToolPatternCallsForTest(0)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
 			Expect(err).NotTo(HaveOccurred())
@@ -497,7 +500,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			})
 			eng.SetMaxToolLoopIterationsForTest(0)
 			eng.SetMaxIdenticalToolCallsForTest(0)
-			eng.SetMaxEmptyTextToolCallsForTest(0)
+			eng.SetMaxSameToolPatternCallsForTest(0)
 			eng.SetMaxToolLoopDurationForTest(time.Millisecond)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
@@ -561,16 +564,16 @@ var _ = Describe("Engine tool-loop cap", func() {
 		})
 	})
 
-	Context("empty-text-with-tool-calls detector", func() {
-		It("trips after 3 consecutive empty-text responses that still carry tool calls", func() {
+	Context("same-tool-pattern detector", func() {
+		It("trips after 3 consecutive empty-text same-tool responses", func() {
 			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
 
 			registry := tool.NewRegistry()
 			registry.Register(alpha)
 			registry.SetPermission(alpha.Name(), tool.Allow)
 
-			prov := &emptyTextToolProvider{
-				name:     "silent-spin",
+			prov := &sameToolPatternProvider{
+				name:     "same-tool-spin",
 				toolName: "alpha",
 			}
 
@@ -583,14 +586,14 @@ var _ = Describe("Engine tool-loop cap", func() {
 			eng.SetMaxIdenticalToolCallsForTest(0)
 			eng.SetMaxToolLoopIterationsForTest(0)
 			eng.SetMaxToolLoopDurationForTest(0)
-			eng.SetMaxEmptyTextToolCallsForTest(3)
+			eng.SetMaxSameToolPatternCallsForTest(3)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
 			Expect(err).NotTo(HaveOccurred())
 
 			received, closed := drain(chunks)
 			Expect(closed).To(BeTrue(),
-				"the silent-spin detector must terminate the turn")
+				"the same-tool-pattern detector must terminate the turn")
 
 			var tripped bool
 			for _, c := range received {
@@ -599,10 +602,10 @@ var _ = Describe("Engine tool-loop cap", func() {
 				}
 			}
 			Expect(tripped).To(BeTrue(),
-				"3 consecutive empty-text-with-tool-calls turns must trip the detector")
+				"3 consecutive empty-text same-tool-name turns must trip the detector")
 		})
 
-		It("does NOT trip on 2 consecutive empty-text turns", func() {
+		It("does NOT trip on 2 consecutive varied-tool turns", func() {
 			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
 			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
 
@@ -613,7 +616,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			}
 
 			prov := &scriptedChunkProvider{
-				name: "two-empty-then-done",
+				name: "two-varied-then-done",
 				script: []scriptedBatch{
 					{toolCalls: []*provider.ToolCall{{ID: "c1", Name: "alpha", Arguments: map[string]any{"i": 0}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c2", Name: "beta", Arguments: map[string]any{"i": 1}}}},
@@ -629,7 +632,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			eng.SetMaxIdenticalToolCallsForTest(0)
 			eng.SetMaxToolLoopIterationsForTest(0)
 			eng.SetMaxToolLoopDurationForTest(0)
-			eng.SetMaxEmptyTextToolCallsForTest(3)
+			eng.SetMaxSameToolPatternCallsForTest(3)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
 			Expect(err).NotTo(HaveOccurred())
@@ -639,11 +642,11 @@ var _ = Describe("Engine tool-loop cap", func() {
 
 			for _, c := range received {
 				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),
-					"2 consecutive empty-text turns must NOT trip the detector")
+					"2 consecutive varied-tool turns must NOT trip the detector")
 			}
 		})
 
-		It("does NOT trip when empty-text turns carry varied tool calls", func() {
+		It("does NOT trip when turns carry varied tool calls", func() {
 			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
 			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
 			gamma := &executableMockTool{name: "gamma", execResult: tool.Result{Output: "c"}}
@@ -655,7 +658,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			}
 
 			prov := &scriptedChunkProvider{
-				name: "varied-empty-text",
+				name: "varied-tools",
 				script: []scriptedBatch{
 					{toolCalls: []*provider.ToolCall{{ID: "c1", Name: "alpha", Arguments: map[string]any{"i": 0}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c2", Name: "beta", Arguments: map[string]any{"i": 1}}}},
@@ -672,7 +675,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			eng.SetMaxIdenticalToolCallsForTest(0)
 			eng.SetMaxToolLoopIterationsForTest(0)
 			eng.SetMaxToolLoopDurationForTest(0)
-			eng.SetMaxEmptyTextToolCallsForTest(3)
+			eng.SetMaxSameToolPatternCallsForTest(3)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
 			Expect(err).NotTo(HaveOccurred())
@@ -682,23 +685,26 @@ var _ = Describe("Engine tool-loop cap", func() {
 
 			for _, c := range received {
 				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded),
-					"varied empty-text tool-call turns must NOT trip the detector")
+					"varied tool-call turns must NOT trip the detector")
 			}
 		})
 
-		It("resets the counter when a non-empty text response arrives", func() {
+		It("resets when tool pattern changes", func() {
 			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
+			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
 
 			registry := tool.NewRegistry()
-			registry.Register(alpha)
-			registry.SetPermission(alpha.Name(), tool.Allow)
+			for _, t := range []tool.Tool{alpha, beta} {
+				registry.Register(t)
+				registry.SetPermission(t.Name(), tool.Allow)
+			}
 
 			prov := &scriptedChunkProvider{
-				name: "reset-on-text",
+				name: "reset-on-pattern-change",
 				script: []scriptedBatch{
 					{toolCalls: []*provider.ToolCall{{ID: "c1", Name: "alpha", Arguments: map[string]any{"i": 0}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c2", Name: "alpha", Arguments: map[string]any{"i": 1}}}},
-					{content: "reasoning text", toolCalls: []*provider.ToolCall{{ID: "c3", Name: "alpha", Arguments: map[string]any{"i": 2}}}},
+					{toolCalls: []*provider.ToolCall{{ID: "c3", Name: "beta", Arguments: map[string]any{"i": 2}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c4", Name: "alpha", Arguments: map[string]any{"i": 3}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c5", Name: "alpha", Arguments: map[string]any{"i": 4}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c6", Name: "alpha", Arguments: map[string]any{"i": 5}}}},
@@ -708,13 +714,13 @@ var _ = Describe("Engine tool-loop cap", func() {
 			eng := engine.New(engine.Config{
 				ChatProvider: prov,
 				Manifest:     manifest,
-				Tools:        []tool.Tool{alpha},
+				Tools:        []tool.Tool{alpha, beta},
 				ToolRegistry: registry,
 			})
 			eng.SetMaxIdenticalToolCallsForTest(0)
 			eng.SetMaxToolLoopIterationsForTest(0)
 			eng.SetMaxToolLoopDurationForTest(0)
-			eng.SetMaxEmptyTextToolCallsForTest(3)
+			eng.SetMaxSameToolPatternCallsForTest(3)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
 			Expect(err).NotTo(HaveOccurred())
@@ -729,9 +735,9 @@ var _ = Describe("Engine tool-loop cap", func() {
 				}
 			}
 			Expect(tripped).To(BeTrue(),
-				"after 2 empty, 1 non-empty (reset to 0), then 3 empty, the counter must reach 3 and trip")
+				"after 2 alpha, 1 beta (reset), then 3 alpha, the counter must reach 3 and trip")
 			Expect(prov.calls).To(BeNumerically("==", 6),
-				"the non-empty batch must reset the run; without reset the trip would fire at call 3, not 6")
+				"the pattern-change batch must reset the run; without reset the trip would fire at call 3, not 6")
 		})
 
 		It("stamps the tool_loop_exceeded StopReason on the terminal chunk", func() {
@@ -741,7 +747,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			registry.Register(alpha)
 			registry.SetPermission(alpha.Name(), tool.Allow)
 
-			prov := &emptyTextToolProvider{
+			prov := &sameToolPatternProvider{
 				name:     "stop-reason-pin",
 				toolName: "alpha",
 			}
@@ -755,7 +761,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			eng.SetMaxIdenticalToolCallsForTest(0)
 			eng.SetMaxToolLoopIterationsForTest(0)
 			eng.SetMaxToolLoopDurationForTest(0)
-			eng.SetMaxEmptyTextToolCallsForTest(3)
+			eng.SetMaxSameToolPatternCallsForTest(3)
 
 			chunks, err := eng.Stream(context.Background(), "loop-cap-agent", "Go")
 			Expect(err).NotTo(HaveOccurred())
@@ -771,7 +777,7 @@ var _ = Describe("Engine tool-loop cap", func() {
 			}
 			Expect(terminal).NotTo(BeNil(), "expected a terminal Done chunk")
 			Expect(terminal.StopReason).To(Equal(session.StopReasonToolLoopExceeded),
-				"the empty-text trip must stamp tool_loop_exceeded so the UI renders a soft error")
+				"the same-tool-pattern trip must stamp tool_loop_exceeded so the UI renders a soft error")
 		})
 	})
 })

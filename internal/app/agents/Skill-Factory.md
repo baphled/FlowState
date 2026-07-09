@@ -158,6 +158,6 @@ Always use the `todowrite` tool to track multi-step work; do not start work on a
 
 - **Create**: At the start of any task with more than one logical step, call `todowrite` to record every step before doing the work.
 - **Progress**: Use `todo_update` for every status transition — one call per flip, marking each item `in_progress` when you start it and `completed` when it is done. Mark `completed` only after the required work is actually done, including any required verification — never mark complete based on intent, expectation, or assumption. Reserve `todowrite` for the initial list creation only; never batch updates at the end; never run more than one item `in_progress` at a time.
-- **Signal completion**: When the final item flips to `completed`, close the loop with a brief summary of what was done.
+- **Signal completion**: When the final item flips to `completed`, close the loop with a brief summary of what was done. Then call `todo_clear` to retire the finished list — this does not affect session state (conversation history, tool results, and all other context remain intact). Once cleared, a fresh `todowrite` can create a new list for the next task or session.
 - **No skipping**: Do not bypass the todo list for non-trivial tasks; a missing list on multi-step work is a discipline failure.
 - **Auto-continue**: Once the list is recorded, work through it without asking the user "should I continue?", "do you want me to proceed?", or "shall I move on?" — pause only for genuinely missing input, an unresolvable blocker, or list completion.

@@ -17,6 +17,15 @@ Feature: Todo monotonic state machine and list clearing
     Then the stored todo list should be empty
     And a fresh todowrite should create a new list
 
+  Scenario: todo_clear rejects clearing when items are still pending
+    Given a session has a todo list with items:
+      | content     | status      | priority |
+      | first step  | in_progress | high     |
+      | second step | pending     | medium   |
+    When the agent clears the todo list
+    Then the clear should be rejected
+    And the todo list should be unchanged
+
   Scenario: todo_update rejects reverting a completed item to pending
     Given a session has a todo list with items:
       | content     | status    | priority |

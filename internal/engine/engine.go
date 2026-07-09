@@ -38,6 +38,8 @@ import (
 	"github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/tool/truncate"
 	"github.com/baphled/flowstate/internal/tracer"
+
+	"github.com/baphled/flowstate/internal/engine/lifecycle"
 )
 
 const (
@@ -221,6 +223,11 @@ type Engine struct {
 	// continuation injection and on turn-end acceptance. Protected by e.mu.
 	workToolCallsSinceContinuation map[string]int
 
+	// skillLoadCalled tracks per-session whether skill_load has been invoked.
+	// Used by the skills-first gate in executeToolCall to enforce that always-active
+	// skills are loaded before any other tool call.
+	skillLoadCalled map[string]bool
+
 	// sessionComplexity stores the estimated TaskComplexity for each
 	// session, set from the first user message via EstimateComplexity.
 	// The strict gate consults this map: only ComplexityComplex sessions
@@ -370,15 +377,18 @@ type Engine struct {
 	// detection.
 	maxIdenticalToolCalls int
 
-	// maxEmptyTextToolCalls is the consecutive-empty-text-with-tool-calls
-	// threshold for the silent-spin detector in streamWithToolLoop.
-	// Defaults to engineMaxEmptyTextToolCalls via Engine.New; overridable
-	// via SetMaxEmptyTextToolCallsForTest. Zero/negative disables the
-	// detector. Covers the failure where a provider returns empty (or
-	// whitespace-only) assistant text but still carries tool calls with
-	// varied arguments, so neither the repeat-call fingerprint nor the
-	// iteration backstop catches it before the session stalls.
-	maxEmptyTextToolCalls int
+	// maxSameToolPatternCalls is the consecutive-same-tool-name-pattern
+	// threshold for the tool-pattern spin detector in streamWithToolLoop.
+	// Defaults to engineMaxSameToolPatternCalls via Engine.New; overridable
+	// via SetMaxSameToolPatternCallsForTest. Zero/negative disables the
+	// detector. Trips when the SAME set of tool-call names (sorted,
+	// comma-joined) recurs for this many consecutive tool-loop iterations,
+	// regardless of whether the assistant response text is empty or not.
+	// Covers the failure where a provider returns non-empty text but keeps
+	// calling the same tool with varied arguments, so neither the
+	// repeat-call fingerprint nor the iteration backstop catches it before
+	// the session stalls.
+	maxSameToolPatternCalls int
 
 	// maxToolLoopDuration is the cumulative wall-clock ceiling for a
 	// single turn's tool-loop continuations in streamWithToolLoop.
@@ -469,6 +479,12 @@ type Engine struct {
 	lastProviderQuotaPayloadMu sync.Mutex
 
 	mu sync.RWMutex
+
+	// lifecycle holds the agent turn lifecycle stages. Stage execution order
+	// is defined by the TurnLifecycle struct field order, not by this engine.
+	// Slice 1 establishes the lifecycle scaffold and extracts ToolExec; future
+	// slices move additional stages into the lifecycle.
+	lifecycle lifecycle.TurnLifecycle
 }
 
 // Config holds the configuration for creating a new Engine.
@@ -1017,6 +1033,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		todoStore:                      cfg.TodoStore,
 		todoContinuationFired:          make(map[string]bool),
 		workToolCallsSinceContinuation: make(map[string]int),
+		skillLoadCalled:                make(map[string]bool),
 		sessionComplexity:              make(map[string]TaskComplexity),
 		knownSkillsFunc:                cfg.KnownSkillsFunc,
 		lastUsagePayload:               make(map[string]string),
@@ -1037,7 +1054,8 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		maxToolLoopIterations:          engineMaxToolLoopIterations,
 		maxToolLoopDuration:            engineMaxToolLoopDuration,
 		maxIdenticalToolCalls:          engineMaxIdenticalToolCalls,
-		maxEmptyTextToolCalls:          engineMaxEmptyTextToolCalls,
+		maxSameToolPatternCalls:        engineMaxSameToolPatternCalls,
+		lifecycle:                      lifecycle.DefaultTurnLifecycle(),
 	}
 }
 
@@ -1096,19 +1114,21 @@ const engineMaxToolLoopDuration = 300 * time.Second
 // SetMaxIdenticalToolCallsForTest; zero/negative disables repeat detection.
 const engineMaxIdenticalToolCalls = 3
 
-// engineMaxEmptyTextToolCalls is the trip threshold for the silent-spin
-// detector: when the model returns empty (or whitespace-only) assistant text
-// that still carries tool calls for this many CONSECUTIVE tool-loop
-// continuations, the loop is considered stuck and terminated. This guards the
-// real-world failure observed with z.ai/glm-5.2, which produced a long run of
-// empty-text assistant messages each carrying a single todo_update call with an
-// incrementing index — varied enough to dodge the repeat-call fingerprint and
-// sparse enough (3-4 occurrences) to stay well under the 50-iteration backstop,
-// yet the session spun for 30 minutes without producing any reasoning text.
-// Set to 3 so two legitimate empty-text tool-call turns still pass while a
-// genuine silent stall trips quickly. Overridable via
-// SetMaxEmptyTextToolCallsForTest; zero/negative disables the detector.
-const engineMaxEmptyTextToolCalls = 3
+// engineMaxSameToolPatternCalls is the trip threshold for the tool-pattern
+// detector: when the SAME set of tool-call names (sorted, comma-joined)
+// recurs for this many CONSECUTIVE tool-loop continuations, regardless of
+// the assistant response text content, the loop is considered stuck and
+// terminated. This guards the real-world failure observed with z.ai/glm-5.2,
+// which produced a long run of assistant messages each carrying a single
+// todo_update call with an incrementing index — varied enough to dodge the
+// repeat-call fingerprint and sparse enough (3-4 occurrences) to stay well
+// under the 50-iteration backstop, yet the session spun for 30 minutes
+// without making real progress. The earlier empty-text-only detector was
+// insufficient because the provider could emit non-empty text while still
+// repeating the same tool. Set to 3 so two legitimate same-tool turns still
+// pass while a genuine stall trips quickly. Overridable via
+// SetMaxSameToolPatternCallsForTest; zero/negative disables the detector.
+const engineMaxSameToolPatternCalls = 3
 
 // resolveFactService returns the RLM Phase B service the engine should
 // attach. Nil when the feature is disabled in CompactionConfig — the
@@ -2393,334 +2413,7 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 // Side effects:
 //   - Caches the built prompt and loaded agent files for subsequent calls
 //     when no per-context manifest binding is active.
-func (e *Engine) BuildSystemPrompt() string {
-	return e.BuildSystemPromptCtx(context.Background())
-}
-
-// BuildSystemPromptCtx is the manifest-binding-aware variant of
-// BuildSystemPrompt. When ctx carries a bound manifest (via
-// WithBoundManifest), the prompt is composed from that manifest
-// directly and the engine's prompt cache is bypassed — concurrent
-// streams pinned to different manifests cannot share or invalidate
-// each other's cached prompt.
 //
-// When ctx carries no bound manifest the call is identical to
-// BuildSystemPrompt's historical behaviour, including cache use.
-//
-// Expected:
-//   - ctx is a valid context; nil is treated as an unbound ctx.
-//
-// Returns:
-//   - The concatenated system prompt string for the ctx-bound manifest
-//     when present, otherwise for the engine's active manifest.
-//
-// Side effects:
-//   - Caches the result against the engine's active manifest only.
-//   - Loads agent files once and caches them on the engine; the cached
-//     files are shared across manifests because they are project-level,
-//     not manifest-level.
-func (e *Engine) BuildSystemPromptCtx(ctx context.Context) string {
-	if bound, ok := manifestFromContext(ctx); ok {
-		return e.buildSystemPromptFor(bound)
-	}
-
-	e.mu.RLock()
-	if !e.systemPromptDirty {
-		cached := e.cachedSystemPrompt
-		e.mu.RUnlock()
-		return cached
-	}
-	e.mu.RUnlock()
-
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if !e.systemPromptDirty {
-		return e.cachedSystemPrompt
-	}
-
-	base := e.assembleSystemPromptLocked(e.manifest, e.skills)
-
-	e.cachedSystemPrompt = base
-	e.systemPromptDirty = false
-
-	return base
-}
-
-// buildSystemPromptFor composes a system prompt for the supplied
-// manifest, fully isolated from the engine's cached prompt state.
-// Used by the ctx-bound path so concurrent streams pinned to
-// different manifests each receive a freshly-built prompt that
-// reflects only their own manifest, skills, and delegation
-// allowlist.
-//
-// Skills resolution falls back to the engine's stored skills slice
-// when no per-manifest resolver is wired — this matches historical
-// single-session behaviour and keeps tests that pre-load skills
-// without a resolver working unchanged.
-//
-// Expected:
-//   - manifest is the manifest the caller wants this prompt to
-//     describe; ID and Instructions.SystemPrompt are populated.
-//
-// Returns:
-//   - The composed system prompt string.
-//
-// Side effects:
-//   - Loads agent files once via the engine's loader (cached on
-//     the engine — agent files are project-level, not
-//     manifest-level, so the cache is safe to share).
-func (e *Engine) buildSystemPromptFor(manifest agent.Manifest) string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	skills := e.skills
-	if e.skillsResolver != nil {
-		skills = e.skillsResolver(manifest)
-	}
-	return e.assembleSystemPromptLocked(manifest, skills)
-}
-
-// assembleSystemPromptLocked is the pure composition routine
-// shared by the engine-state and ctx-bound build paths. The caller
-// must hold e.mu (write lock — agent file loading needs to mutate
-// the engine's cached-files state on first access).
-//
-// Expected:
-//   - e.mu is held for write.
-//   - manifest is the manifest to render against.
-//   - skills are the skills to inject into the prompt body in the
-//     order they should appear.
-//
-// Returns:
-//   - The composed system prompt string.
-//
-// Side effects:
-//   - Populates e.cachedAgentFiles on first access.
-func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []skill.Skill) string {
-	base := manifest.Instructions.SystemPrompt
-
-	base = base + "\n\n" + buildTemporalSection(e.nowFunc)
-
-	if e.agentsFileLoader != nil && !e.skipAgentFiles {
-		if !e.agentFilesCached {
-			e.cachedAgentFiles = e.agentsFileLoader.LoadFiles()
-			e.agentFilesCached = true
-		}
-		for _, f := range e.cachedAgentFiles {
-			base = base + "\n\nInstructions from: " + f.Path + "\n" + f.Content
-		}
-	}
-
-	for i := range skills {
-		base = base + "\n\n# Skill: " + skills[i].Name + "\n\n" + skills[i].Content
-	}
-
-	if manifest.Delegation.CanDelegate {
-		base = e.appendDelegationSectionsFor(base, manifest)
-	}
-
-	base = e.appendSwarmLeadSectionFor(base, manifest)
-
-	if e.agentOverrides != nil {
-		if appendText, ok := e.agentOverrides[manifest.ID]; ok && appendText != "" {
-			base = base + "\n\n" + appendText
-		}
-	}
-
-	return base
-}
-
-// appendSwarmLeadSectionFor renders the swarm-lead block using the
-// supplied manifest as the lead-identity source. Used by the
-// ctx-bound build path so concurrent streams pinned to different
-// manifests render their own swarm headers.
-//
-// Expected:
-//   - base is the current system prompt string.
-//   - manifest is the manifest the prompt is being built for.
-//
-// Returns:
-//   - The base string with the swarm-lead block appended when the
-//     engine carries a swarm context whose LeadAgent matches
-//     manifest.ID; otherwise base is returned unchanged.
-//
-// Side effects:
-//   - None.
-func (e *Engine) appendSwarmLeadSectionFor(base string, manifest agent.Manifest) string {
-	swarmCtx := e.swarmContext
-	if swarmCtx == nil {
-		return base
-	}
-	if swarmCtx.LeadAgent == "" || swarmCtx.LeadAgent != manifest.ID {
-		return base
-	}
-
-	var b strings.Builder
-	b.WriteString(base)
-	b.WriteString("\n\n# Swarm Leadership\n\n")
-	b.WriteString("You are leading swarm `")
-	b.WriteString(swarmCtx.SwarmID)
-	b.WriteString("`. The user's request is owned by this swarm; you coordinate the members below rather than answering alone.\n\n")
-	b.WriteString("You have already been dispatched as the lead — the user does NOT need to confirm anything. Do not write \"Action Required: confirm dispatch\", \"Proceed?\", \"Should I continue?\" or any other prompt that asks the user to approve starting the swarm. Begin by delegating to a member immediately. If the user's scope is too vague to act on, delegate the scoping work itself (e.g. to an explorer or analyst member) rather than blocking on the user. Only return to the user with the synthesised final report.\n\n")
-	b.WriteString("Do NOT call `suggest_delegate` for this swarm or its members; the dispatch is already in flight, and the tool will refuse a self-dispatch suggestion. Use `delegate` for member calls.\n\n")
-
-	b.WriteString("## Members\n\n")
-	if len(swarmCtx.Members) == 0 {
-		b.WriteString("- (no members declared)\n")
-	}
-	for _, memberID := range swarmCtx.Members {
-		b.WriteString("- `")
-		b.WriteString(memberID)
-		b.WriteString("`")
-		if name, role, ok := e.resolveSwarmMemberDetails(memberID); ok {
-			if name != "" {
-				b.WriteString(" — ")
-				b.WriteString(name)
-			}
-			if role != "" {
-				b.WriteString(" (")
-				b.WriteString(role)
-				b.WriteString(")")
-			}
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString("\n## Delegation\n\n")
-	b.WriteString("Dispatch **independent** members in a **single message** by emitting multiple `delegate` tool calls simultaneously — do NOT wait for one independent member to finish before dispatching the next independent member. The engine runs concurrent tool calls in parallel; sequential dispatch of independent work wastes wall-clock time and burns unnecessary tokens on wait overhead.\n\n")
-	b.WriteString("If some members depend on the output of earlier members (e.g. a codebase explorer that writes findings the review members will read), use sequential waves: dispatch the upstream members first, wait for their results, then dispatch the downstream members together in a single parallel message. After all member results are returned, synthesise their findings into a final report for the user.\n")
-
-	chainPrefix := swarmCtx.ChainPrefix
-	if chainPrefix == "" {
-		chainPrefix = swarmCtx.SwarmID
-	}
-	b.WriteString("\n## Coordination namespace\n\n")
-	b.WriteString("Write outputs to the coordination store under `")
-	b.WriteString(chainPrefix)
-	b.WriteString("/")
-	b.WriteString(manifest.ID)
-	b.WriteString("/...` so the swarm's members agree on where to read and write.\n")
-
-	if swarmCtx.ChainIDAssigned {
-		// Engine-owned chainID: the value is assigned by the engine at swarm
-		// start (AssignRunChainID), NOT chosen by the model. Surface it
-		// verbatim so the lead references THIS exact value in its delegate
-		// messages instead of inventing a free-form one. The recurring
-		// planning-loop doom-loop was the lead free-forming a chainID (often
-		// with a slash) that diverged from the value the wave validator,
-		// gates and publisher resolved. The engine ignores any chainID the
-		// model supplies for an engine-owned run, so the only correct value
-		// to write is this one.
-		b.WriteString("\nThe coordination chainID for this run is **engine-assigned**: `")
-		b.WriteString(chainPrefix)
-		b.WriteString("`. Use this EXACT value as the `chainID` in every `delegate` message — do NOT invent your own. The engine owns this namespace; a chainID you supply is ignored in favour of it.\n")
-	}
-
-	return b.String()
-}
-
-// resolveSwarmMemberDetails looks up a swarm member id and returns its
-// display Name and role text. The lookup honours the same precedence
-// as swarm.Resolve: the agent registry wins, then the swarm registry.
-// For agent members, returns (Name, Metadata.Role, true). For swarm
-// members (meta-swarm's sub-swarms — `a-team`, `dev-swarm`,
-// `planning-loop`, `board-room`), returns (Description, "swarm",
-// true) so the lead-block renderer can append "(swarm)" as the kind
-// marker and the model can tell at a glance that delegating to this
-// member dispatches a whole sub-swarm rather than a single agent.
-//
-// The found flag is false only when the member resolves to neither
-// registry, in which case the caller falls back to printing only the
-// bare id.
-//
-// Expected:
-//   - memberID is the swarm member's id; non-empty in normal use.
-//
-// Returns:
-//   - name, role, true when either registry resolved the id. Role is
-//     `"swarm"` literal for swarm-id matches so the renderer's parens-
-//     suffix path picks up the kind marker.
-//   - "", "", false otherwise.
-//
-// Side effects:
-//   - None.
-func (e *Engine) resolveSwarmMemberDetails(memberID string) (string, string, bool) {
-	if memberID == "" {
-		return "", "", false
-	}
-	if e.agentRegistry != nil {
-		if manifest, ok := e.agentRegistry.Get(memberID); ok && manifest != nil {
-			return manifest.Name, manifest.Metadata.Role, true
-		}
-		if manifest, ok := e.agentRegistry.GetByNameOrAlias(memberID); ok && manifest != nil {
-			return manifest.Name, manifest.Metadata.Role, true
-		}
-	}
-	// Sub-swarm member (meta-swarm pattern). The description is the
-	// swarm manifest's human-readable blurb; the "swarm" kind marker
-	// disambiguates the kind for the model so it knows delegate(memberID)
-	// dispatches a whole sub-swarm, not an agent.
-	if e.swarmRegistry != nil {
-		if manifest, ok := e.swarmRegistry.Get(memberID); ok && manifest != nil {
-			return manifest.Description, "swarm", true
-		}
-	}
-	return "", "", false
-}
-
-// appendDelegationSectionsFor builds and appends delegation
-// sections using the supplied manifest's allowlist. The ctx-bound
-// build path calls this so each concurrent stream's prompt
-// reflects its own manifest's delegation envelope.
-//
-// Expected:
-//   - base is the current system prompt string.
-//   - manifest is the manifest whose Delegation.DelegationAllowlist
-//     drives the agent filtering.
-//
-// Returns:
-//   - The base string with appended delegation sections.
-//
-// Side effects:
-//   - None.
-func (e *Engine) appendDelegationSectionsFor(base string, manifest agent.Manifest) string {
-	if e.agentRegistry == nil {
-		return base
-	}
-
-	agents := e.agentRegistry.List()
-
-	allowlist := manifest.Delegation.DelegationAllowlist
-	if len(allowlist) > 0 {
-		agents = filterByAllowlist(agents, allowlist)
-	}
-
-	keyTriggers := buildKeyTriggersSection(agents)
-	if keyTriggers != "" {
-		base = base + "\n\n" + keyTriggers
-	}
-
-	toolSelection := buildToolSelectionSection(agents)
-	if toolSelection != "" {
-		base = base + "\n\n" + toolSelection
-	}
-
-	delegation := buildDelegationSection(agents)
-	if delegation != "" {
-		base = base + "\n\n" + delegation
-	}
-
-	if e.swarmRegistry != nil {
-		swarmSection := buildSwarmSection(e.swarmRegistry)
-		if swarmSection != "" {
-			base = base + "\n\n" + swarmSection
-		}
-	}
-
-	return base
-}
-
 // buildAllowedToolSetFor returns the set of tool names allowed by
 // the supplied manifest. The ctx-bound build path calls this so
 // each concurrent stream's tool schemas are derived from its own
@@ -3479,6 +3172,14 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 
 	messages := e.buildContextWindow(streamCtx, sessionID, message)
 
+	if _, err := e.lifecycle.ContextAssembly.Execute(lifecycle.ContextAssemblyCtx{
+		Messages:    messages,
+		TokenBudget: e.ModelContextLimit(),
+		Manifest:    &streamManifest,
+	}); err != nil {
+		slog.Warn("context_assembly stage rejected", "error", err)
+	}
+
 	// Thread per-turn attachments onto the final user message in the
 	// request payload. Plan "Chat Attachments Backend (May 2026)" §6
 	// task-04 — attachments arrive via session.AttachmentsFromContext
@@ -3565,6 +3266,15 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	postTurnQuotaEm := e.makePostTurnQuotaEmitter(&req)
 	_ = postTurnQuotaEm // used inside the goroutine below; explicit so future maintainers see the binding
 
+	if _, err := e.lifecycle.PreStream.Execute(lifecycle.PreStreamCtx{
+		Messages:    req.Messages,
+		TokenBudget: e.ModelContextLimit(),
+		Manifest:    &streamManifest,
+	}); err != nil {
+		slog.Warn("pre_stream stage rejected turn", "error", err)
+		return nil, err
+	}
+
 	providerChunks, err := e.streamFromProvider(streamCtx, &req)
 	e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
 	if err != nil {
@@ -3620,6 +3330,10 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		if postTurnQuotaEm != nil {
 			postTurnQuotaEm(streamCtx, outChan)
 		}
+		e.lifecycle.PostProcess.Execute(lifecycle.PostProcessCtx{
+			SessionID: sessionID,
+			Messages:  messages,
+		}) //nolint:errcheck
 		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
 		e.dispatchKnowledgeExtraction(sessionID, messages)
 	}()
@@ -4416,21 +4130,21 @@ func (e *Engine) streamWithToolLoop(
 	// (about-to-re-request passes); lastFingerprint / identicalRun track the
 	// primary repeat-call detector — when the same canonicalised tool batch
 	// recurs maxIdenticalToolCalls consecutive times the loop is stuck.
-	// emptyTextToolCallsRun counts consecutive continuations whose assistant
-	// text is empty/whitespace-only yet still carries tool calls; when it
-	// reaches maxEmptyTextToolCalls the loop is a silent stall and is
-	// tripped. lastEmptyTextToolNames holds the sorted, joined tool-call
-	// names from the previous empty-text iteration so the detector only
+	// sameToolPatternRun counts consecutive continuations where the SAME set
+	// of tool-call names (sorted, comma-joined) recurs, regardless of
+	// response text content; when it reaches maxSameToolPatternCalls the loop
+	// is stuck and is tripped. lastToolNames holds the sorted, joined
+	// tool-call names from the previous iteration so the detector only
 	// counts runs where the SAME tool pattern repeats; varied tool names
 	// indicate the model is making progress and must not trip. All guards
 	// trip the turn with StopReasonToolLoopExceeded. See
 	// engineMaxToolLoopIterations / engineMaxIdenticalToolCalls /
-	// engineMaxEmptyTextToolCalls.
+	// engineMaxSameToolPatternCalls.
 	iterations := 0
 	lastFingerprint := ""
 	identicalRun := 0
-	emptyTextToolCallsRun := 0
-	lastEmptyTextToolNames := ""
+	sameToolPatternRun := 0
+	lastToolNames := ""
 	const maxToolUseNoCallsRetries = 3
 	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
@@ -4441,7 +4155,7 @@ func (e *Engine) streamWithToolLoop(
 	todoContinuationCount := 0
 	noProgressContinuations := 0
 	lastTodoContinuationSnapshot := []todo.Item(nil)
-	consecutiveEmptyTextContinuations := 0
+	consecutiveSameToolContinuations := 0
 	delegationGraceUsed := false
 	updateTodoContinuationProgress := func(current []todo.Item) {
 		if slices.Equal(lastTodoContinuationSnapshot, current) {
@@ -4645,7 +4359,7 @@ func (e *Engine) streamWithToolLoop(
 					return
 				}
 				todoContinuationCount++
-				consecutiveEmptyTextContinuations = 0
+				consecutiveSameToolContinuations = 0
 				slog.Info("incomplete todos after turn end, injecting continuation",
 					"session", sessionID,
 					"incomplete_count", len(incompletes),
@@ -4920,11 +4634,12 @@ func (e *Engine) streamWithToolLoop(
 		//      maxToolLoopDuration since loopStart, independent of iteration
 		//      count. Catches slow-but-varied loops that never repeat and
 		//      never hit the iteration ceiling. Added June 2026.
-		//   4. Empty-text-with-tool-calls detector: counts consecutive
-		//      continuations whose assistant text is empty/whitespace-only
-		//      yet still carries tool calls; trips at maxEmptyTextToolCalls.
-		//      Catches silent stalls where varied tool args dodge the
-		//      fingerprint and the low count dodges the iteration backstop.
+		//   4. Same-tool-pattern detector: counts consecutive
+		//      continuations where the SAME set of tool-call names
+		//      recurs when the assistant text is empty/whitespace;
+		//      trips at maxSameToolPatternCalls. Catches stalls where varied
+		//      tool args dodge the fingerprint and the low count
+		//      dodges the iteration backstop.
 		// Zero/negative on any field disables its respective check.
 		iterations++
 		fingerprint := fingerprintToolBatch(result.toolCalls)
@@ -4937,7 +4652,7 @@ func (e *Engine) streamWithToolLoop(
 			lastFingerprint = fingerprint
 		}
 
-		if e.maxEmptyTextToolCalls > 0 {
+		if e.maxSameToolPatternCalls > 0 {
 			if strings.TrimSpace(result.responseContent) == "" && len(result.toolCalls) > 0 {
 				names := make([]string, len(result.toolCalls))
 				for i, tc := range result.toolCalls {
@@ -4945,15 +4660,15 @@ func (e *Engine) streamWithToolLoop(
 				}
 				sort.Strings(names)
 				currentNames := strings.Join(names, ",")
-				if currentNames == lastEmptyTextToolNames {
-					emptyTextToolCallsRun++
+				if currentNames == lastToolNames {
+					sameToolPatternRun++
 				} else {
-					emptyTextToolCallsRun = 1
+					sameToolPatternRun = 1
 				}
-				lastEmptyTextToolNames = currentNames
+				lastToolNames = currentNames
 			} else {
-				emptyTextToolCallsRun = 0
-				lastEmptyTextToolNames = ""
+				sameToolPatternRun = 0
+				lastToolNames = ""
 			}
 		}
 
@@ -4961,27 +4676,27 @@ func (e *Engine) streamWithToolLoop(
 		repeatTripped := e.maxIdenticalToolCalls > 0 && identicalRun >= e.maxIdenticalToolCalls
 		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
 		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
-		emptyTextTripped := e.maxEmptyTextToolCalls > 0 && emptyTextToolCallsRun >= e.maxEmptyTextToolCalls
-		if repeatTripped || backstopTripped || durationTripped || emptyTextTripped {
+		sameToolTripped := e.maxSameToolPatternCalls > 0 && sameToolPatternRun >= e.maxSameToolPatternCalls
+		if repeatTripped || backstopTripped || durationTripped || sameToolTripped {
 			reason := "iteration_backstop"
 			if repeatTripped {
 				reason = "identical_call_repeat"
 			} else if durationTripped {
 				reason = "duration_backstop"
-			} else if emptyTextTripped {
-				reason = "empty_text_tool_calls"
+			} else if sameToolTripped {
+				reason = "same_tool_pattern"
 			}
 			slog.Warn("engine tool loop capped",
 				"session", sessionID,
 				"trip", reason,
 				"iterations", iterations,
 				"identical_run", identicalRun,
-				"empty_text_run", emptyTextToolCallsRun,
+				"same_tool_run", sameToolPatternRun,
 				"elapsed", elapsed,
 				"max_iterations", e.maxToolLoopIterations,
 				"max_duration", e.maxToolLoopDuration,
 				"max_identical", e.maxIdenticalToolCalls,
-				"max_empty_text_tool_calls", e.maxEmptyTextToolCalls,
+				"max_same_tool", e.maxSameToolPatternCalls,
 			)
 			todosAllComplete := false
 			if e.todoStore != nil {
@@ -5011,8 +4726,8 @@ func (e *Engine) streamWithToolLoop(
 				iterations = 0
 				identicalRun = 0
 				lastFingerprint = ""
-				emptyTextToolCallsRun = 0
-				lastEmptyTextToolNames = ""
+				sameToolPatternRun = 0
+				lastToolNames = ""
 				loopStart = time.Now()
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
@@ -5043,8 +4758,8 @@ func (e *Engine) streamWithToolLoop(
 							iterations = 0
 							identicalRun = 0
 							lastFingerprint = ""
-							emptyTextToolCallsRun = 0
-							lastEmptyTextToolNames = ""
+							sameToolPatternRun = 0
+							lastToolNames = ""
 							loopStart = time.Now()
 							toolExecDuration = 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
@@ -5071,15 +4786,15 @@ func (e *Engine) streamWithToolLoop(
 					}
 					return
 				}
-				// Guard: consecutive empty-text-tool-calls caps across continuation
-				// boundaries means the model is stuck producing empty text + tool calls.
+				// Guard: consecutive same-tool-pattern caps across continuation
+				// boundaries means the model is stuck repeating the same tool.
 				// One recovery is allowed; a second consecutive cap is a pattern — stop.
-				if reason == "empty_text_tool_calls" {
-					consecutiveEmptyTextContinuations++
-					if consecutiveEmptyTextContinuations >= 2 {
-						slog.Warn("consecutive empty-text-tool-calls caps, stopping",
+				if reason == "same_tool_pattern" {
+					consecutiveSameToolContinuations++
+					if consecutiveSameToolContinuations >= 2 {
+						slog.Warn("consecutive same-tool-pattern caps, stopping",
 							"session", sessionID,
-							"consecutive", consecutiveEmptyTextContinuations,
+							"consecutive", consecutiveSameToolContinuations,
 						)
 						outChan <- provider.StreamChunk{
 							Done:       true,
@@ -5090,7 +4805,7 @@ func (e *Engine) streamWithToolLoop(
 						return
 					}
 				} else {
-					consecutiveEmptyTextContinuations = 0
+					consecutiveSameToolContinuations = 0
 				}
 				if todoContinuationCount >= maxTodoContinuations {
 					slog.Warn("todo continuation budget exhausted after tool loop cap",
@@ -5129,8 +4844,8 @@ func (e *Engine) streamWithToolLoop(
 				iterations = 0
 				identicalRun = 0
 				lastFingerprint = ""
-				emptyTextToolCallsRun = 0
-				lastEmptyTextToolNames = ""
+				sameToolPatternRun = 0
+				lastToolNames = ""
 				loopStart = time.Now() // reset wall-clock budget for continuation
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
@@ -5157,8 +4872,8 @@ func (e *Engine) streamWithToolLoop(
 				iterations = 0
 				identicalRun = 0
 				lastFingerprint = ""
-				emptyTextToolCallsRun = 0
-				lastEmptyTextToolNames = ""
+				sameToolPatternRun = 0
+				lastToolNames = ""
 				loopStart = time.Now()
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
@@ -5359,14 +5074,14 @@ func (e *Engine) executeToolCallBatch(
 	results := make([]toolCallExecResult, len(toolCalls))
 	if len(toolCalls) == 1 {
 		tc := toolCalls[0]
-		tr, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, tc)
+		tr, err := e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
 		results[0] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
 		return results
 	}
 
 	if batchHasStateModifier(e.tools, toolCalls) {
 		for i, tc := range toolCalls {
-			tr, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, tc)
+			tr, err := e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
 			results[i] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
 		}
 		return results
@@ -5377,7 +5092,7 @@ func (e *Engine) executeToolCallBatch(
 		wg.Add(1)
 		go func(i int, tc *provider.ToolCall) {
 			defer wg.Done()
-			tr, err := e.executeToolCall(WithStreamOutput(ctx, outChan), sessionID, tc)
+			tr, err := e.executeToolExecStage(WithStreamOutput(ctx, outChan), sessionID, tc)
 			results[i] = toolCallExecResult{toolCall: tc, toolResult: tr, err: err}
 		}(i, tc)
 	}
@@ -6223,6 +5938,50 @@ func (e *Engine) appendTodoContext(messages []provider.Message, sessionID string
 //   - When TodoStrictMode is enabled (D9), maintains a per-session
 //     counter of non-todowrite tool calls and rejects calls that
 //     cross the >3 threshold with a structured tool_result error.
+//
+// skillsLoadRequired returns true when the agent configuration includes
+// always-active skills that must be loaded via skill_load before any
+// other tool call can proceed.
+func (e *Engine) skillsLoadRequired() bool {
+	if e.knownSkillsFunc == nil {
+		return false
+	}
+	return len(e.knownSkillsFunc()) > 0
+}
+
+// skillLoadCompleted returns true if skill_load has been called at
+// least once for the given session, indicating the skills-first gate
+// should be bypassed for subsequent tool calls.
+func (e *Engine) skillLoadCompleted(sessionID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.skillLoadCalled[sessionID]
+}
+
+// markSkillLoadCalled records that skill_load has been invoked for the
+// session, allowing subsequent non-skill_load tool calls to proceed
+// through the skills-first gate.
+func (e *Engine) markSkillLoadCalled(sessionID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.skillLoadCalled[sessionID] = true
+}
+
+// executeToolExecStage bridges a single tool call through the ToolExec lifecycle
+// stage. It wraps executeToolCall, running lifecycle hooks before and after the
+// actual tool execution.
+//
+// Slice 1: the stage handler delegates directly to executeToolCall, preserving
+// existing behaviour. When hooks are registered (future slices) they wrap this
+// call.
+func (e *Engine) executeToolExecStage(
+	baseCtx context.Context,
+	sessionID string,
+	toolCall *provider.ToolCall,
+) (tool.Result, error) {
+	return e.executeToolCall(baseCtx, sessionID, toolCall)
+}
+
 func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall *provider.ToolCall) (tool.Result, error) {
 	if gate, blocked := e.todoStrictGate(sessionID, toolCall.Name); blocked {
 		return gate, nil
@@ -6351,6 +6110,20 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			}, nil
 		}
 	dispatchPermitted:
+		// Skills-first gate (July 2026). Agents with always_active_skills
+		// MUST call skill_load before making any other tool call. Placed
+		// after the PR7 runtime gate so the model sees either "tool not
+		// available to agent" (PR7) or "load skills first" (this gate),
+		// never both.
+		if toolCall.Name != "skill_load" && e.skillsLoadRequired() {
+			if !e.skillLoadCompleted(sessionID) {
+				return tool.Result{
+					Output:  "You must load your always-active skills via `skill_load(name=...)` before making any other tool call. Call `skill_load` for each of your always-active skills first.",
+					IsError: true,
+					Error:   fmt.Errorf("skills must be loaded before other tool calls"),
+				}, nil
+			}
+		}
 		slog.Info("engine tool call", "tool", toolCall.Name)
 		// Plans/Tool Execute Bus Bridge — Engine to SSE (May 2026) §"Engine wiring".
 		// Resolve the FlowState-internal correlation id from the engine's
@@ -6419,6 +6192,10 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		if err != nil {
 			result.Error = err
 		}
+		// Mark skill_load as called after successful execution.
+		if toolCall.Name == "skill_load" && err == nil && result.Error == nil {
+			e.markSkillLoadCalled(sessionID)
+		}
 		// publishToolAfterEvent receives the effective error so observability
 		// bus events tag failures regardless of which shape the tool used.
 		effectiveErr := err
@@ -6441,7 +6218,11 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		// timeout doesn't take the whole conversation down.
 		var gateErr *swarm.GateError
 		if errors.As(err, &gateErr) {
-			return result, gateErr
+			result.IsError = true
+			if result.Output == "" {
+				result.Output = "Error: " + gateErr.Error()
+			}
+			return result, nil
 		}
 		return result, nil
 	}

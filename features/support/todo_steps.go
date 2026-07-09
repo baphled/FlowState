@@ -41,6 +41,7 @@ func RegisterTodoSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the stored todo list should be empty$`, s.storedTodoListShouldBeEmpty)
 	ctx.Step(`^a fresh todowrite should create a new list$`, s.aFreshTodowriteShouldCreateANewList)
 	ctx.Step(`^the update should be rejected with "([^"]*)"$`, s.theUpdateShouldBeRejectedWith)
+	ctx.Step(`^the clear should be rejected$`, s.theClearShouldBeRejected)
 	ctx.Step(`^the todo list should be unchanged$`, s.theTodoListShouldBeUnchanged)
 	ctx.Step(`^todo at index (\d+) should have status "([^"]*)"$`, s.todoAtIndexShouldHaveStatus)
 }
@@ -96,7 +97,7 @@ func (s *todoSteps) agentClearsTodoList() error {
 		Arguments: map[string]interface{}{},
 	})
 	s.lastErr = err
-	return err
+	return nil
 }
 
 func (s *todoSteps) agentUpdatesTodoStatus(idx int, status string) error {
@@ -144,6 +145,13 @@ func (s *todoSteps) theUpdateShouldBeRejectedWith(substr string) error {
 	}
 	if !strings.Contains(s.lastErr.Error(), substr) {
 		return fmt.Errorf("expected rejection message to contain %q, got %q", substr, s.lastErr.Error())
+	}
+	return nil
+}
+
+func (s *todoSteps) theClearShouldBeRejected() error {
+	if s.lastErr == nil {
+		return fmt.Errorf("expected the todo clear to be rejected, but it succeeded")
 	}
 	return nil
 }

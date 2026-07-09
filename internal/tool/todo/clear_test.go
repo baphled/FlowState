@@ -79,6 +79,77 @@ var _ = Describe("TodoClearTool", func() {
 				Expect(err.Error()).To(ContainSubstring("session ID"))
 			})
 		})
+
+		Context("when any item is still pending or in_progress", func() {
+			BeforeEach(func() {
+				Expect(store.Set("sess-123", []todotool.Item{
+					{Content: "first step", Status: "in_progress", Priority: "high"},
+					{Content: "second step", Status: "pending", Priority: "medium"},
+					{Content: "done step", Status: "completed", Priority: "low"},
+				})).To(Succeed())
+			})
+
+			It("rejects the clear and leaves the list intact", func() {
+				_, err := ct.Execute(sessionCtx(), tool.Input{
+					Name:      "todo_clear",
+					Arguments: map[string]interface{}{},
+				})
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("cannot clear todo list"))
+				Expect(err.Error()).To(ContainSubstring("still"))
+
+				Expect(store.Get("sess-123")).To(HaveLen(3))
+			})
+
+			It("names the first non-terminal item in the error", func() {
+				_, err := ct.Execute(sessionCtx(), tool.Input{
+					Name:      "todo_clear",
+					Arguments: map[string]interface{}{},
+				})
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("first step"))
+				Expect(err.Error()).To(ContainSubstring("in_progress"))
+			})
+		})
+
+		Context("when every item is in a terminal state", func() {
+			BeforeEach(func() {
+				Expect(store.Set("sess-123", []todotool.Item{
+					{Content: "finished", Status: "completed", Priority: "high"},
+					{Content: "dropped", Status: "cancelled", Priority: "low"},
+				})).To(Succeed())
+			})
+
+			It("clears the list and returns an empty JSON array", func() {
+				result, err := ct.Execute(sessionCtx(), tool.Input{
+					Name:      "todo_clear",
+					Arguments: map[string]interface{}{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(Equal("[]"))
+				Expect(store.Get("sess-123")).To(BeEmpty())
+			})
+		})
+
+		Context("when the list is already empty", func() {
+			BeforeEach(func() {
+				Expect(store.Set("sess-123", []todotool.Item{})).To(Succeed())
+			})
+
+			It("succeeds and leaves the list empty", func() {
+				result, err := ct.Execute(sessionCtx(), tool.Input{
+					Name:      "todo_clear",
+					Arguments: map[string]interface{}{},
+				})
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Output).To(Equal("[]"))
+				Expect(store.Get("sess-123")).To(BeEmpty())
+			})
+		})
 	})
 })
 

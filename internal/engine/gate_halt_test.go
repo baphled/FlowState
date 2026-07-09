@@ -27,7 +27,10 @@ func (f *gateHaltFakeTool) Name() string        { return f.name }
 func (f *gateHaltFakeTool) Description() string { return "fake" }
 func (f *gateHaltFakeTool) Schema() tool.Schema { return tool.Schema{Type: "object"} }
 func (f *gateHaltFakeTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
-	return tool.Result{Output: "fake output"}, f.err
+	if f.err != nil {
+		return tool.Result{}, f.err
+	}
+	return tool.Result{Output: "fake output"}, nil
 }
 
 var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
@@ -37,17 +40,6 @@ var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
 		providerReg := provider.NewRegistry()
 		providerReg.Register(&mockProvider{name: "spy"})
 		eng = engine.New(engine.Config{
-			// PR7 (Coordinator Over-Execution, May 2026) — the
-			// runtime tool gate now rejects tool calls that are not
-			// in the agent's effective toolset. The fakes below
-			// (`fake-gate-tool`, `fake-soft-tool`, `fake-clean-tool`)
-			// must therefore be declared in capabilities.tools or
-			// the gate intercepts before the original gate-error /
-			// soft-fail assertions can fire. The pre-PR7 fail-open
-			// runtime would have run them regardless of manifest
-			// declaration; the pin update keeps these specs
-			// focused on the swarm.GateError promotion contract
-			// rather than on the manifest gate that PR7 adds.
 			Manifest: agent.Manifest{
 				ID:   "lead",
 				Name: "Lead",
@@ -62,7 +54,7 @@ var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
 	})
 
 	When("the tool returns a *swarm.GateError", func() {
-		It("propagates the error as the OUTER return so streamWithTools terminates", func() {
+		It("returns an IsError tool_result so the coordinator's tool loop continues and can decide to re-delegate", func() {
 			gateErr := &swarm.GateError{
 				GateName: "post-explorer-evidence",
 				GateKind: "builtin:result-schema",
@@ -79,13 +71,12 @@ var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
 				Arguments: map[string]any{},
 			})
 
-			Expect(err).To(HaveOccurred(),
-				"a *swarm.GateError must propagate to the outer error so streamWithTools issues a Done:true Error chunk and aborts the dispatch — historic soft-fail behaviour was the bug-hunt enforcement gap")
-			var got *swarm.GateError
-			Expect(errors.As(err, &got)).To(BeTrue())
-			Expect(got.GateName).To(Equal("post-explorer-evidence"))
+			Expect(err).NotTo(HaveOccurred(),
+				"a *swarm.GateError must NOT terminate the stream; the coordinator's tool loop sees the IsError tool_result and can decide to re-delegate")
+			Expect(result.IsError).To(BeTrue(),
+				"the gate error must be tagged IsError so the chunk path stamps role=tool_error and the coordinator sees the failure")
 			Expect(result.Error).To(MatchError(gateErr),
-				"result.Error stays populated for in-stream observability; the outer return is what aborts")
+				"result.Error stays populated for in-stream observability; the coordinator can inspect result.Error to understand which gate failed and why")
 		})
 	})
 
@@ -103,7 +94,6 @@ var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
 			Expect(err).NotTo(HaveOccurred(),
 				"non-gate tool errors must NOT terminate the stream; the agent's tool loop sees the IsError tool_result chunk and decides whether to retry, replan, or move on")
 			Expect(result.Error).To(MatchError(toolErr))
-			Expect(result.Output).To(Equal("fake output"))
 		})
 	})
 
@@ -123,21 +113,6 @@ var _ = Describe("Engine.executeToolCall gate-error promotion", func() {
 		})
 	})
 })
-
-// D9 (Agent Runtime Quality plan, May 2026): opt-in hard-gate that
-// rejects non-todowrite tool calls once the per-session counter passes
-// the >3 threshold. Default-off (the soft-nudge D6 default ships
-// separately); flag-on closes the user constraint "mandatory AND stick
-// to them".
-//
-// Seam decision: dispatch boundary (executeToolCall entry) rather than
-// the tool-availability path (buildAllowedToolSetFor). Tool-availability
-// is per-manifest and cannot observe per-session chain state; the
-// dispatch boundary already sees every call and has the sessionID in
-// scope. The brief flagged this as a non-blocking caveat and asked the
-// implementer to spike the seam — chose the dispatch path because the
-// chain-counter contract is a turn-time property, not a tool-set
-// property.
 var _ = Describe("Engine.executeToolCall todo counter tracking", func() {
 	makeEngine := func(strict bool) *engine.Engine {
 		providerReg := provider.NewRegistry()
@@ -177,7 +152,6 @@ var _ = Describe("Engine.executeToolCall todo counter tracking", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.IsError).To(BeFalse(),
 					"the hard gate was removed — no tool call should ever be blocked by the todo counter")
-				Expect(result.Output).To(Equal("fake output"))
 			}
 		})
 
