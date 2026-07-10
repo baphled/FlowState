@@ -79,6 +79,10 @@ type SwarmEvent struct {
 	// for forward compatibility. Kept omitempty so legacy round-trips (no
 	// stamped version) do not regress.
 	SchemaVersion int `json:"schema_version,omitempty"`
+	// SessionID identifies the session that produced this event.
+	// Kept omitempty so existing persisted events without a session_id
+	// continue round-tripping without regression.
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // SwarmEventStore is a thread-safe append-only store for SwarmEvent entries

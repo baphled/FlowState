@@ -2456,6 +2456,7 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 			Timestamp:     time.Now(),
 			SchemaVersion: streaming.CurrentSchemaVersion,
 			Metadata:      metadata,
+			SessionID:     e.Data.SessionID,
 		}
 	case *events.ToolExecuteErrorEvent:
 		id := e.Data.InternalToolCallID
@@ -2482,6 +2483,7 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 			Timestamp:     time.Now(),
 			SchemaVersion: streaming.CurrentSchemaVersion,
 			Metadata:      metadata,
+			SessionID:     e.Data.SessionID,
 		}
 	case *events.ToolEvent:
 		id := e.Data.InternalToolCallID
@@ -2502,6 +2504,7 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 			Timestamp:     time.Now(),
 			SchemaVersion: streaming.CurrentSchemaVersion,
 			Metadata:      metadata,
+			SessionID:     e.Data.SessionID,
 		}
 	case *events.BackgroundTaskStartedEvent:
 		return streaming.SwarmEvent{
@@ -2513,6 +2516,7 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 			Metadata: map[string]interface{}{
 				"name": e.Data.Name,
 			},
+			SessionID: e.Data.SessionID,
 		}
 	case *events.BackgroundTaskCompletedEvent:
 		return streaming.SwarmEvent{
@@ -2524,6 +2528,7 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 			Metadata: map[string]interface{}{
 				"name": e.Data.Name,
 			},
+			SessionID: e.Data.SessionID,
 		}
 	case *events.BackgroundTaskFailedEvent:
 		return streaming.SwarmEvent{
@@ -2536,6 +2541,7 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 				"name":  e.Data.Name,
 				"error": e.Data.Error,
 			},
+			SessionID: e.Data.SessionID,
 		}
 	case *events.DelegationStartedEvent:
 		return projectDelegationEvent(e.Data, "started", e.Timestamp())
@@ -2626,6 +2632,7 @@ func projectGateEvent(data events.GateEventData, status string, ts time.Time) st
 		Timestamp:     ts,
 		SchemaVersion: streaming.CurrentSchemaVersion,
 		Metadata:      metadata,
+		SessionID:     data.SessionID,
 	}
 }
 
@@ -2685,6 +2692,7 @@ func projectDelegationEvent(data events.DelegationEventData, status string, ts t
 		Timestamp:     ts,
 		SchemaVersion: streaming.CurrentSchemaVersion,
 		Metadata:      metadata,
+		SessionID:     data.ParentSessionID,
 	}
 }
 

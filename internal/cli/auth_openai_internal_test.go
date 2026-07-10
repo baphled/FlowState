@@ -5,10 +5,10 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("isValidOpenAIKey", func() {
+var _ = Describe("isValidOpenAICredential", func() {
 	DescribeTable("validates credential formats",
 		func(key string, expected bool) {
-			Expect(isValidOpenAIKey(key)).To(Equal(expected))
+			Expect(isValidOpenAICredential(key)).To(Equal(expected))
 		},
 		Entry("valid sk- key", "sk-abcdefghijklmnopqrstuvwxyz", true),
 		Entry("valid sk-proj- key", "sk-proj-abcdefghijklmnop", true),
