@@ -174,8 +174,14 @@ type Metadata struct {
 // unmarshals as the zero-valued nil slice, which EffectiveTools treats as
 // "no denials".
 type Capabilities struct {
-	Tools                 []string `json:"tools" yaml:"tools"`
-	ToolsDeny             []string `json:"tools_deny,omitempty" yaml:"tools_deny,omitempty"`
+	Tools     []string `json:"tools" yaml:"tools"`
+	ToolsDeny []string `json:"tools_deny,omitempty" yaml:"tools_deny,omitempty"`
+	// DeliveryTools names tools that the agent MUST call before its session
+	// can complete. When the agent's final turn returns prose with zero
+	// tool calls and none of these tools were called during the session,
+	// the engine retries with a corrective message before failing closed.
+	// Empty slice (the default) means no delivery enforcement.
+	DeliveryTools         []string `json:"delivery_tools,omitempty" yaml:"delivery_tools,omitempty"`
 	Skills                []string `json:"skills" yaml:"skills"`
 	AlwaysActiveSkills    []string `json:"always_active_skills" yaml:"always_active_skills"`
 	MCPServers            []string `json:"mcp_servers" yaml:"mcp_servers"`

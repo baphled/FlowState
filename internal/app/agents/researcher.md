@@ -15,6 +15,8 @@ capabilities:
     - web
     - bash
     - file
+  delivery_tools:
+    - coordination_store
   skills:
     - memory-keeper
     - research

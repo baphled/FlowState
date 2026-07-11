@@ -20,6 +20,8 @@ capabilities:
     - todowrite
     - multiedit
     - apply_patch
+  delivery_tools:
+    - coordination_store
   skills:
     - memory-keeper
     - documentation-writing
