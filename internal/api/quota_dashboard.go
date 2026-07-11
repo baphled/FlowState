@@ -27,6 +27,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/baphled/flowstate/internal/provider/quota"
 )
@@ -53,6 +54,15 @@ type quotaDashboardEntry struct {
 	RateLimit     *dashboardProviderQuotaRateLimit  `json:"rate_limit,omitempty"`
 	TokenSpend    *dashboardProviderQuotaTokenSpend `json:"token_spend,omitempty"`
 	NotConfigured *dashboardProviderQuotaNotConfig  `json:"not_configured,omitempty"`
+
+	// RateLimitedUntil is the failover cooldown expiry, serialised as
+	// RFC 3339. Omitted (empty string) when not rate-limited. ADR 001.
+	RateLimitedUntil string `json:"rate_limited_until,omitempty"`
+
+	// Status is a synthesised health indicator. One of:
+	// "rate_limited", "exhausted", "spent", "healthy".
+	// ADR 002.
+	Status string `json:"status,omitempty"`
 }
 
 // dashboardProviderQuotaRateLimit is the rate-limit variant of a
@@ -281,7 +291,38 @@ func snapshotToDashboardEntry(snap quota.Snapshot) (quotaDashboardEntry, bool) {
 		row.Variant = "not_configured"
 		row.NotConfigured = &dashboardProviderQuotaNotConfig{Reason: snap.NotConfigured.Reason}
 	}
+
+	// RateLimitedUntil and Status — stamped by the engine caller
+	// (Engine.QuotaSnapshots) from the failover HealthManager.
+	// ADR 001 / ADR 002.
+	if !snap.RateLimitedUntil.IsZero() {
+		row.RateLimitedUntil = snap.RateLimitedUntil.UTC().Format(timeRFC3339)
+	}
+	row.Status = synthesiseStatus(snap)
+
 	return row, true
+}
+
+// synthesiseStatus derives the unified health indicator from a
+// quota.Snapshot. ADR 002.
+//
+// Priority (first match wins):
+//  1. "rate_limited" — RateLimitedUntil is set and still in the future.
+//  2. "exhausted"    — rate-limit variant with tightest_percent_remaining == 0.
+//  3. "spent"        — token-spend variant where Spent >= Cap (cap set).
+//  4. "healthy"      — none of the above.
+func synthesiseStatus(snap quota.Snapshot) string {
+	if !snap.RateLimitedUntil.IsZero() && snap.RateLimitedUntil.After(time.Now()) {
+		return "rate_limited"
+	}
+	if snap.RateLimit != nil && snap.RateLimit.TightestPercentRemaining == 0 {
+		return "exhausted"
+	}
+	if snap.TokenSpend != nil && snap.TokenSpend.Cap.Amount > 0 &&
+		snap.TokenSpend.Spent.Amount >= snap.TokenSpend.Cap.Amount {
+		return "spent"
+	}
+	return "healthy"
 }
 
 func dashboardWindow(w quota.Window) dashboardQuotaWindow {

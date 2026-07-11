@@ -35,6 +35,24 @@ type providerQuotaPayload struct {
 	RateLimit     *providerQuotaRateLimitPayload  `json:"rate_limit,omitempty"`
 	TokenSpend    *providerQuotaTokenSpendPayload `json:"token_spend,omitempty"`
 	NotConfigured *providerQuotaNotConfigPayload  `json:"not_configured,omitempty"`
+
+	// RateLimitedUntil is the failover cooldown expiry, serialised as
+	// RFC 3339. Omitted (empty string) when the provider/model is not
+	// currently rate-limited by the failover system. ADR 001.
+	RateLimitedUntil string `json:"rate_limited_until,omitempty"`
+
+	// Status is a synthesised health indicator that merges the failover
+	// cooldown, rate-limit window exhaustion, and cap attainment into
+	// a single value. One of:
+	//   - "rate_limited" — RateLimitedUntil is set and in the future
+	//   - "exhausted"    — tightest_percent_remaining == 0 on the
+	//                      rate-limit variant (window exhausted but
+	//                      no failover cooldown)
+	//   - "spent"        — token_spend variant with Spent >= Cap
+	//   - "healthy"      — none of the above
+	// Omitted on the not_configured variant.
+	// ADR 002: Unified Rate-Limit Visibility.
+	Status string `json:"status,omitempty"`
 }
 
 type providerQuotaRateLimitPayload struct {
@@ -101,7 +119,43 @@ func snapshotToPayload(snap quota.Snapshot) (providerQuotaPayload, bool) {
 		out.Variant = "not_configured"
 		out.NotConfigured = &providerQuotaNotConfigPayload{Reason: snap.NotConfigured.Reason}
 	}
+
+	// RateLimitedUntil: stamp from the Snapshot field that the engine
+	// caller (buildProviderQuotaChunk / QuotaSnapshots) may have already
+	// populated from the failover HealthManager. ADR 001.
+	if !snap.RateLimitedUntil.IsZero() {
+		out.RateLimitedUntil = snap.RateLimitedUntil.UTC().Format(time.RFC3339)
+	}
+
+	// Status: synthesise a single health indicator from the variant data
+	// and the failover cooldown. ADR 002.
+	out.Status = synthesiseQuotaStatus(snap)
+
 	return out, true
+}
+
+// synthesiseQuotaStatus computes the single-status field described
+// in ADR 002 from the variant data and the failover cooldown already
+// stamped on the Snapshot.
+//
+// Priority (first match wins):
+//  1. "rate_limited" — RateLimitedUntil is set and still in the future.
+//  2. "exhausted"    — rate-limit variant with tightest_percent_remaining == 0
+//                      (the window is bone-dry but no failover cooldown).
+//  3. "spent"        — token-spend variant where Spent >= Cap (cap is set).
+//  4. "healthy"      — none of the above.
+func synthesiseQuotaStatus(snap quota.Snapshot) string {
+	if !snap.RateLimitedUntil.IsZero() && snap.RateLimitedUntil.After(time.Now()) {
+		return "rate_limited"
+	}
+	if snap.RateLimit != nil && snap.RateLimit.TightestPercentRemaining == 0 {
+		return "exhausted"
+	}
+	if snap.TokenSpend != nil && snap.TokenSpend.Cap.Amount > 0 &&
+		snap.TokenSpend.Spent.Amount >= snap.TokenSpend.Cap.Amount {
+		return "spent"
+	}
+	return "healthy"
 }
 
 func rateLimitToPayload(rl *quota.RateLimitVariant) *providerQuotaRateLimitPayload {
@@ -178,6 +232,11 @@ func (e *Engine) buildProviderQuotaChunk(ctx context.Context, req *provider.Chat
 			return provider.StreamChunk{}, false
 		}
 	}
+	// Stamp the failover cooldown from the HealthManager so the
+	// payload carries both the quota-window state and the rate-limit
+	// back-off expiry. ADR 001.
+	stampRateLimitedUntil(&snap, e, req.Provider, req.Model)
+
 	payload, ok := snapshotToPayload(snap)
 	if !ok {
 		return provider.StreamChunk{}, false
@@ -250,6 +309,8 @@ func (e *Engine) buildProviderQuotaChunkExplicit(ctx context.Context, providerID
 			return provider.StreamChunk{}, false
 		}
 	}
+	stampRateLimitedUntil(&snap, e, providerID, modelID)
+
 	payload, ok := snapshotToPayload(snap)
 	if !ok {
 		return provider.StreamChunk{}, false
@@ -330,11 +391,13 @@ func (e *Engine) QuotaSnapshots(ctx context.Context) []QuotaAggregatorRow {
 	}
 	out := make([]QuotaAggregatorRow, 0, len(entries))
 	for _, entry := range entries {
+		snap := entry.Snapshot
+		stampRateLimitedUntil(&snap, e, entry.Key.ProviderID, entry.Key.ModelID)
 		out = append(out, QuotaAggregatorRow{
 			Provider:    entry.Key.ProviderID,
 			AccountHash: entry.Key.AccountHash,
 			Model:       entry.Key.ModelID,
-			Snapshot:    entry.Snapshot,
+			Snapshot:    snap,
 		})
 	}
 	return out
@@ -352,6 +415,23 @@ func (e *Engine) ResetQuotaSpend(ctx context.Context, providerID, accountHash, m
 		return false, nil
 	}
 	return e.quotaTracker.ResetSpend(ctx, providerID, accountHash, modelID)
+}
+
+// stampRateLimitedUntil queries the engine's failover HealthManager
+// for the given provider/model pair and stamps the cooldown expiry
+// onto the snapshot. No-op when the engine has no failover manager
+// wired or when the HealthManager reports no active rate-limit.
+//
+// ADR 001: Converge Failover Health State with Quota Tracker.
+func stampRateLimitedUntil(snap *quota.Snapshot, e *Engine, provider, model string) {
+	if e == nil || e.failoverManager == nil {
+		return
+	}
+	health := e.failoverManager.Health()
+	expiry, ok := health.RateLimitedUntil(provider, model)
+	if ok {
+		snap.RateLimitedUntil = expiry
+	}
 }
 
 // tryEmitProviderQuotaInline writes the inline provider_quota chunk

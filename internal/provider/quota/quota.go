@@ -105,6 +105,16 @@ type Snapshot struct {
 	// observe. The Reason field carries the operator-visible
 	// explanation. Mutually exclusive with RateLimit and TokenSpend.
 	NotConfigured *NotConfiguredVariant
+
+	// RateLimitedUntil is the wall-clock time at which the failover
+	// HealthManager's rate-limit cooldown expires. Zero when the
+	// provider/model is not currently rate-limited by the failover
+	// system. Stamped by the engine from
+	// failover.Manager.Health().RateLimitedUntil() — the quota
+	// package itself never writes this field.
+	//
+	// ADR 001: Converge Failover Health State with Quota Tracker.
+	RateLimitedUntil time.Time
 }
 
 // IsValid reports whether the Snapshot's discriminant invariant holds:

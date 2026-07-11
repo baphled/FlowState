@@ -139,6 +139,16 @@ type ProviderQuotaSnapshot struct {
 	RateLimit     *ProviderQuotaRateLimit  `json:"rate_limit,omitempty"`
 	TokenSpend    *ProviderQuotaTokenSpend `json:"token_spend,omitempty"`
 	NotConfigured *ProviderQuotaNotConfig  `json:"not_configured,omitempty"`
+
+	// RateLimitedUntil is the failover cooldown expiry, serialised as
+	// RFC 3339. Omitted (empty string) when the provider/model is not
+	// currently rate-limited by the failover system. ADR 001.
+	RateLimitedUntil string `json:"rate_limited_until,omitempty"`
+
+	// Status is a synthesised health indicator. One of:
+	// "rate_limited", "exhausted", "spent", "healthy".
+	// ADR 002: Unified Rate-Limit Visibility.
+	Status string `json:"status,omitempty"`
 }
 
 // ProviderQuotaRateLimit mirrors sseProviderQuotaRateLimit at
@@ -1568,7 +1578,9 @@ func providerQuotaEqual(a, b ProviderQuotaSnapshot) bool {
 		a.Stale != b.Stale ||
 		a.StoreBackend != b.StoreBackend ||
 		a.PricingSource != b.PricingSource ||
-		a.Variant != b.Variant {
+		a.Variant != b.Variant ||
+		a.RateLimitedUntil != b.RateLimitedUntil ||
+		a.Status != b.Status {
 		return false
 	}
 	if (a.RateLimit == nil) != (b.RateLimit == nil) {
