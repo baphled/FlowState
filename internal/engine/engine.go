@@ -6213,7 +6213,11 @@ func (e *Engine) deliveryToolCompleted(sessionID string) bool {
 // given session. The toolName must match one of the manifest's
 // DeliveryTools entries; calls for non-delivery tools are ignored.
 // Resolves the delivery tool list from the bound manifest when available.
-func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string, toolName string) {
+//
+// The args parameter is inspected for tool-specific delivery semantics:
+//   - coordination_store: only counts as delivery when operation=set (write).
+//     Calls for get/list/delete are not delivery actions.
+func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string, toolName string, args map[string]any) {
 	var deliveryTools []string
 	if m, ok := manifestFromContext(ctx); ok {
 		deliveryTools = m.Capabilities.DeliveryTools
@@ -6226,7 +6230,7 @@ func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string
 		return
 	}
 	for _, dt := range deliveryTools {
-		if dt == toolName {
+		if dt == toolName && e.isDeliveryCall(toolName, args) {
 			e.mu.Lock()
 			if e.deliveryToolCalled == nil {
 				e.deliveryToolCalled = make(map[string]bool)
@@ -6235,6 +6239,20 @@ func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string
 			e.mu.Unlock()
 			return
 		}
+	}
+}
+
+// isDeliveryCall checks whether a tool call qualifies as a delivery action
+// based on its arguments. For tools where any call is a delivery (e.g.,
+// write, edit), this returns true unconditionally. For tools with read/write
+// semantics (e.g., coordination_store), only write operations count.
+func (e *Engine) isDeliveryCall(toolName string, args map[string]any) bool {
+	switch toolName {
+	case "coordination_store":
+		op, _ := args["operation"].(string)
+		return op == "set"
+	default:
+		return true
 	}
 }
 
@@ -6498,7 +6516,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 			e.markSkillLoadCalled(sessionID)
 		}
 		if err == nil && result.Error == nil {
-			e.markDeliveryToolCalledCtx(ctx, sessionID, toolCall.Name)
+			e.markDeliveryToolCalledCtx(ctx, sessionID, toolCall.Name, toolCall.Arguments)
 		}
 		// publishToolAfterEvent receives the effective error so observability
 		// bus events tag failures regardless of which shape the tool used.

@@ -90,7 +90,7 @@ var _ = Describe("DeliveryToolGate", func() {
 		})
 	})
 
-	Context("retries when delivery tool not called", func() {
+		Context("retries when delivery tool not called", func() {
 		BeforeEach(func() {
 			chatProvider.sequences = [][]provider.StreamChunk{
 				{{Content: "Now writing to the coordination store.", Done: true, StopReason: "end_turn"}},
@@ -100,7 +100,19 @@ var _ = Describe("DeliveryToolGate", func() {
 						ToolCall: &provider.ToolCall{
 							ID:        "call_1",
 							Name:      "coordination_store",
-							Arguments: map[string]interface{}{"key": "value"},
+							Arguments: map[string]interface{}{"operation": "get", "key": "value"},
+						},
+					},
+					{Done: true, StopReason: "tool_use"},
+				},
+				{{Content: "Still narrating without tools", Done: true, StopReason: "end_turn"}},
+				{
+					{
+						EventType: "tool_call",
+						ToolCall: &provider.ToolCall{
+							ID:        "call_2",
+							Name:      "coordination_store",
+							Arguments: map[string]interface{}{"operation": "set", "key": "output", "value": "report"},
 						},
 					},
 					{Done: true, StopReason: "tool_use"},
@@ -109,7 +121,7 @@ var _ = Describe("DeliveryToolGate", func() {
 			}
 		})
 
-		It("injects a corrective message and retries with a tool call", func() {
+		It("injects corrective messages and retries until delivery tool is called with a write operation", func() {
 			bus := eventbus.NewEventBus()
 			retryCount := 0
 			bus.Subscribe(events.EventProviderRequestRetry, func(msg any) {
@@ -134,17 +146,17 @@ var _ = Describe("DeliveryToolGate", func() {
 				collectedContent += chunk.Content
 			}
 
-			Expect(chatProvider.callIndex).To(Equal(3),
-				"provider called three times: initial narration + retry with tool call + final response")
-			Expect(retryCount).To(BeNumerically(">=", 1),
-				"at least one retry event must fire when the delivery tool was not called")
+			Expect(chatProvider.callIndex).To(Equal(5),
+				"provider called five times: initial narration + retry with get (not counted as delivery) + retry narration + retry with set (counted) + final response")
+			Expect(retryCount).To(Equal(4),
+				"four retry events fire: delivery-gate retry (seq 0), tool-loop continuation after get (seq 1), delivery-gate retry (seq 2), tool-loop continuation after set (seq 3) — set operation finally counts as delivery in seq 4")
 			Expect(coordinationStore.execCalled).To(BeTrue(),
-				"delivery tool must be executed after the retry corrective message")
+				"delivery tool must be executed after the corrective messages")
 			Expect(collectedContent).To(ContainSubstring("Done after tool execution"))
 		})
 	})
 
-	Context("completes when delivery tool is called", func() {
+	Context("completes when delivery tool is called with a write operation", func() {
 		BeforeEach(func() {
 			chatProvider.sequences = [][]provider.StreamChunk{
 				{
@@ -153,7 +165,7 @@ var _ = Describe("DeliveryToolGate", func() {
 						ToolCall: &provider.ToolCall{
 							ID:        "call_1",
 							Name:      "coordination_store",
-							Arguments: map[string]interface{}{"key": "value"},
+							Arguments: map[string]interface{}{"operation": "set", "key": "output", "value": "report"},
 						},
 					},
 					{Done: true, StopReason: "tool_use"},
