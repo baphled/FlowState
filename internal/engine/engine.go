@@ -223,10 +223,32 @@ type Engine struct {
 	// continuation injection and on turn-end acceptance. Protected by e.mu.
 	workToolCallsSinceContinuation map[string]int
 
+	// sessionTodoNoProgress tracks consecutive no-progress continuation
+	// attempts per session, persisting across Stream() calls. This prevents
+	// session-spanning infinite loops when the provider times out during a
+	// todo continuation and something re-triggers the stream externally.
+	sessionTodoNoProgress map[string]int
+
+	// sessionTodoContinuationCount tracks total continuation injections per
+	// session, persisting across Stream() calls. Provides a hard upper bound
+	// even when streamWithToolLoop is re-entered from a new Stream() call.
+	sessionTodoContinuationCount map[string]int
+
+	// sessionTodoLastSnapshot stores the last seen todo snapshot per session
+	// so no-progress detection works across Stream() call boundaries.
+	sessionTodoLastSnapshot map[string][]todo.Item
+
 	// skillLoadCalled tracks per-session whether skill_load has been invoked.
 	// Used by the skills-first gate in executeToolCall to enforce that always-active
 	// skills are loaded before any other tool call.
 	skillLoadCalled map[string]bool
+
+	// deliveryToolCalled tracks per-session whether any manifest-declared
+	// delivery tool has been successfully invoked. Used by the delivery
+	// tool enforcement gate in streamWithToolLoop to catch the
+	// narration-over-action failure pattern where an agent returns prose
+	// describing a tool call without actually making one.
+	deliveryToolCalled map[string]bool
 
 	// sessionComplexity stores the estimated TaskComplexity for each
 	// session, set from the first user message via EstimateComplexity.
@@ -478,6 +500,15 @@ type Engine struct {
 	lastProviderQuotaPayload   map[string]string
 	lastProviderQuotaPayloadMu sync.Mutex
 
+	// providerStatusMap tracks the last-seen status per
+	// `<provider>:<model>` key so the engine can detect transitions
+	// and publish provider.status_changed bus events. Guarded by
+	// providerStatusMu. Initialised lazily on first access; nil when
+	// no status has been observed (first observation always fires a
+	// status_changed event with PreviousStatus="").
+	providerStatusMap map[string]string
+	providerStatusMu  sync.Mutex
+
 	mu sync.RWMutex
 
 	// lifecycle holds the agent turn lifecycle stages. Stage execution order
@@ -611,6 +642,12 @@ type Config struct {
 	// run before the engine cancels it. Zero falls back to the default
 	// of 2 minutes.
 	ToolTimeout time.Duration
+
+	// MaxToolLoopDuration overrides the cumulative wall-clock ceiling
+	// for a single turn's tool-loop continuations. When the loop runs
+	// longer than this, the turn terminates regardless of iteration
+	// count. Zero falls back to the compiled-in default (10m).
+	MaxToolLoopDuration time.Duration
 
 	// CategoryResolver, when non-nil, is consulted at Stream time to
 	// source caller-controlled chat parameters (Temperature, MaxTokens,
@@ -970,6 +1007,24 @@ func resolveToolTimeout(cfg Config) time.Duration {
 	return defaultToolTimeout
 }
 
+// resolveMaxToolLoopDuration returns the configured max tool-loop
+// duration or the compiled-in constant when zero.
+//
+// Expected:
+//   - cfg is a valid Config struct.
+//
+// Returns:
+//   - The configured MaxToolLoopDuration, or engineMaxToolLoopDuration when zero.
+//
+// Side effects:
+//   - None.
+func resolveMaxToolLoopDuration(cfg Config) time.Duration {
+	if cfg.MaxToolLoopDuration > 0 {
+		return cfg.MaxToolLoopDuration
+	}
+	return engineMaxToolLoopDuration
+}
+
 // assembleEngine builds the Engine struct literal from the resolved
 // components. Separated from New so the constructor's branching is
 // isolated from the field wiring and both stay under the funlen gate.
@@ -1033,7 +1088,11 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		todoStore:                      cfg.TodoStore,
 		todoContinuationFired:          make(map[string]bool),
 		workToolCallsSinceContinuation: make(map[string]int),
+		sessionTodoNoProgress:          make(map[string]int),
+		sessionTodoContinuationCount:   make(map[string]int),
+		sessionTodoLastSnapshot:        make(map[string][]todo.Item),
 		skillLoadCalled:                make(map[string]bool),
+		deliveryToolCalled:             make(map[string]bool),
 		sessionComplexity:              make(map[string]TaskComplexity),
 		knownSkillsFunc:                cfg.KnownSkillsFunc,
 		lastUsagePayload:               make(map[string]string),
@@ -1052,7 +1111,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		heartbeatInterval:              defaultStreamingHeartbeatInterval,
 		streamIdleTimeout:              engineStreamIdleTimeout,
 		maxToolLoopIterations:          engineMaxToolLoopIterations,
-		maxToolLoopDuration:            engineMaxToolLoopDuration,
+		maxToolLoopDuration:            resolveMaxToolLoopDuration(cfg),
 		maxIdenticalToolCalls:          engineMaxIdenticalToolCalls,
 		maxSameToolPatternCalls:        engineMaxSameToolPatternCalls,
 		lifecycle:                      lifecycle.DefaultTurnLifecycle(),
@@ -1096,15 +1155,15 @@ const engineMaxToolLoopIterations = 50
 // count. This prevents long-running tool loops that are making slow but
 // varied progress from blocking the session indefinitely.
 //
-// Set to 300s so that complex multi-tool tasks (reading files,
-// synthesising evidence, writing plans) can complete without hitting
-// the wall-clock backstop mid-work. The iteration ceiling (50) and
-// repeat-call detector (3 consecutive identical batches) provide the
-// primary defence against runaway loops; the duration backstop is an
-// insurance layer, not the first line of defence. Overridable via
-// SetMaxToolLoopDurationForTest; zero/negative disables the time
-// budget backstop.
-const engineMaxToolLoopDuration = 300 * time.Second
+// Set to 600s so that complex multi-agent tasks with background
+// delegations (which may take several minutes of provider inference
+// each) can complete without hitting the wall-clock backstop mid-work.
+// The iteration ceiling (50) and repeat-call detector (3 consecutive
+// identical batches) provide the primary defence against runaway
+// loops; the duration backstop is an insurance layer, not the first
+// line of defence. Overridable via SetMaxToolLoopDurationForTest;
+// zero/negative disables the time budget backstop.
+const engineMaxToolLoopDuration = 600 * time.Second
 
 // engineMaxIdenticalToolCalls is the primary trip threshold: when the SAME
 // tool batch fingerprint (tool name + canonicalised arguments) recurs this
@@ -2180,6 +2239,28 @@ func (e *Engine) LastModel() string {
 	return ""
 }
 
+// lastProviderCtx resolves the provider for the in-flight stream,
+// checking the ctx-bound pair first (set by Stream() after
+// reseedFailoverBasePreferences) before falling back to the shared
+// LastProvider(). This seals the cross-session provider bleed where a
+// concurrent Stream() calling SetManifest overwrites
+// e.preferredProvider mid-flight.
+func (e *Engine) lastProviderCtx(ctx context.Context) string {
+	if prov, _, ok := providerModelFromContext(ctx); ok && prov != "" {
+		return prov
+	}
+	return e.LastProvider()
+}
+
+// lastModelCtx resolves the model for the in-flight stream, checking
+// the ctx-bound pair first before falling back to LastModel().
+func (e *Engine) lastModelCtx(ctx context.Context) string {
+	if _, model, ok := providerModelFromContext(ctx); ok && model != "" {
+		return model
+	}
+	return e.LastModel()
+}
+
 // SetModelPreference updates the engine's model preference to prioritise the given provider and model.
 //
 // Expected:
@@ -3170,6 +3251,8 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	// agent cannot overwrite the in-flight manifest mid-call.
 	streamCtx := WithBoundManifest(ctx, streamManifest)
 
+	streamCtx = WithBoundProviderModel(streamCtx, e.LastProvider(), e.LastModel())
+
 	messages := e.buildContextWindow(streamCtx, sessionID, message)
 
 	if _, err := e.lifecycle.ContextAssembly.Execute(lifecycle.ContextAssemblyCtx{
@@ -3202,8 +3285,8 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	}
 
 	req := provider.ChatRequest{
-		Provider: e.LastProvider(),
-		Model:    e.LastModel(),
+		Provider: e.lastProviderCtx(streamCtx),
+		Model:    e.lastModelCtx(streamCtx),
 		Messages: messages,
 		Tools:    e.buildToolSchemasCtx(streamCtx),
 	}
@@ -3220,8 +3303,8 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 			"provider_override", req.Provider,
 			"model_override", req.Model,
 		)
-		req.Provider = e.LastProvider()
-		req.Model = e.LastModel()
+		req.Provider = e.lastProviderCtx(streamCtx)
+		req.Model = e.lastModelCtx(streamCtx)
 	}
 	// Per-turn forced tool_choice. The synthesis-hang corrective retry
 	// (delegation.go post-member gate loop) forces the gated member to
@@ -3671,7 +3754,7 @@ func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatReque
 	if ctx.Err() != nil {
 		return nil, fmt.Errorf("stream from provider: %w", ctx.Err())
 	}
-	slog.Info("engine stream request", "provider", e.LastProvider(), "model", e.LastModel(), "messages", len(req.Messages))
+	slog.Info("engine stream request", "provider", req.Provider, "model", req.Model, "messages", len(req.Messages))
 	if pErr := e.checkContextWindowOverflow(req); pErr != nil {
 		slog.Warn("engine refused over-budget request",
 			"provider", req.Provider, "model", req.Model, "estimated_input_tokens", pErr.EstimatedInputTokens, "limit", pErr.ContextLimit)
@@ -4113,6 +4196,27 @@ func (e *Engine) streamWithToolLoop(
 	postTurnUsage postTurnUsageEmitter,
 ) {
 	defer e.evictCompletedBackgroundTasks()
+	var todoContinuationCount int
+	var noProgressContinuations int
+	var lastTodoContinuationSnapshot []todo.Item
+	// Persist local continuation counters to session-scoped maps on every
+	// exit so they survive across Stream() re-invocations. Without this the
+	// local variables reset on each streamWithToolLoop entry, defeating the
+	// no-progress and max-continuation guards when the provider times out
+	// mid-continuation and something re-triggers the stream externally.
+	defer func() {
+		e.mu.Lock()
+		if noProgressContinuations > e.sessionTodoNoProgress[sessionID] {
+			e.sessionTodoNoProgress[sessionID] = noProgressContinuations
+		}
+		if todoContinuationCount > e.sessionTodoContinuationCount[sessionID] {
+			e.sessionTodoContinuationCount[sessionID] = todoContinuationCount
+		}
+		if lastTodoContinuationSnapshot != nil {
+			e.sessionTodoLastSnapshot[sessionID] = append([]todo.Item(nil), lastTodoContinuationSnapshot...)
+		}
+		e.mu.Unlock()
+	}()
 
 	attempt := 0
 	// loopStart records the wall clock when the tool loop began. Compared
@@ -4149,14 +4253,17 @@ func (e *Engine) streamWithToolLoop(
 	const maxOverflowRetries = 3
 	var toolUseNoCallsAttempts int
 	overflowRetries := 0
+	const maxDeliveryRetries = 3
+	var deliveryRetries int
 	const maxTodoContinuations = 20
 	const maxNoProgressContinuations = 3
 	const maxProviderRetryWait = 5 * time.Minute
-	todoContinuationCount := 0
-	noProgressContinuations := 0
-	lastTodoContinuationSnapshot := []todo.Item(nil)
+	todoContinuationCount = 0
+	noProgressContinuations = 0
+	lastTodoContinuationSnapshot = []todo.Item(nil)
 	consecutiveSameToolContinuations := 0
 	delegationGraceUsed := false
+	finalResponseGraceUsed := false
 	updateTodoContinuationProgress := func(current []todo.Item) {
 		if slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
@@ -4213,8 +4320,8 @@ func (e *Engine) streamWithToolLoop(
 					"max_attempts", maxToolUseNoCallsRetries,
 				)
 				retryReq := provider.ChatRequest{
-					Provider: e.LastProvider(),
-					Model:    e.LastModel(),
+					Provider: e.lastProviderCtx(ctx),
+					Model:    e.lastModelCtx(ctx),
 					Messages: messages,
 					Tools:    e.buildToolSchemasCtx(ctx),
 				}
@@ -4238,8 +4345,8 @@ func (e *Engine) streamWithToolLoop(
 				e.bus.Publish(events.EventProviderRequestRetry, events.NewProviderRequestRetryEvent(events.ProviderRequestRetryEventData{
 					SessionID:    sessionID,
 					AgentID:      e.activeAgentID(ctx),
-					ProviderName: e.LastProvider(),
-					ModelName:    e.LastModel(),
+					ProviderName: e.lastProviderCtx(ctx),
+					ModelName:    e.lastModelCtx(ctx),
 					Reason:       "tool_use_no_calls",
 					Attempt:      toolUseNoCallsAttempts,
 				}))
@@ -4302,8 +4409,8 @@ func (e *Engine) streamWithToolLoop(
 				return
 			}
 			if result.responseContent == "" && len(result.toolCalls) == 0 {
-				provider := e.LastProvider()
-				model := e.LastModel()
+				provider := e.lastProviderCtx(ctx)
+				model := e.lastModelCtx(ctx)
 				slog.Warn("model returned empty response, completing turn and marking provider unhealthy",
 					"session", sessionID,
 					"stop_reason", result.stopReason,
@@ -4334,6 +4441,10 @@ func (e *Engine) streamWithToolLoop(
 							}
 							attempt++
 							iterations = 0
+							identicalRun = 0
+							lastFingerprint = ""
+							sameToolPatternRun = 0
+							lastToolNames = ""
 							loopStart = time.Now()
 							toolExecDuration = 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
@@ -4389,10 +4500,42 @@ func (e *Engine) streamWithToolLoop(
 				}
 				attempt++
 				iterations = 0
+				identicalRun = 0
+				lastFingerprint = ""
+				sameToolPatternRun = 0
+				lastToolNames = ""
 				loopStart = time.Now()
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
+			}
+			if len(result.toolCalls) == 0 && e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
+				if deliveryRetries < maxDeliveryRetries {
+					deliveryRetries++
+					slog.Warn("delivery tool not called, retrying with corrective message",
+						"session", sessionID,
+						"attempt", deliveryRetries,
+						"max_attempts", maxDeliveryRetries,
+					)
+					messages = append(messages, provider.Message{
+						Role:    "user",
+						Content: "Your previous response narrated an intent to call a tool but did not actually call it. You MUST call one of the delivery tools now to persist your results. Do not respond with prose — call the tool.",
+					})
+					var streamErr error
+					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+					if streamErr != nil {
+						slog.Error("delivery tool retry stream failed", "session", sessionID, "error", streamErr)
+						e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+						return
+					}
+					attempt++
+					e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+					continue
+				}
+				slog.Warn("delivery tool not called after max retries, completing with warning",
+					"session", sessionID,
+					"delivery_retries", deliveryRetries,
+				)
 			}
 			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
@@ -4417,6 +4560,10 @@ func (e *Engine) streamWithToolLoop(
 							}
 							attempt++
 							iterations = 0
+							identicalRun = 0
+							lastFingerprint = ""
+							sameToolPatternRun = 0
+							lastToolNames = ""
 							loopStart = time.Now()
 							toolExecDuration = 0
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
@@ -4471,6 +4618,10 @@ func (e *Engine) streamWithToolLoop(
 				}
 				attempt++
 				iterations = 0
+				identicalRun = 0
+				lastFingerprint = ""
+				sameToolPatternRun = 0
+				lastToolNames = ""
 				loopStart = time.Now()
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
@@ -4746,11 +4897,12 @@ func (e *Engine) streamWithToolLoop(
 									"session", sessionID,
 									"error", streamErr,
 								)
+								e.warnDeliveryToolBypassCtx(ctx, sessionID)
 								outChan <- provider.StreamChunk{
 									Done:       true,
 									StopReason: session.StopReasonToolLoopExceeded,
-									ModelID:    e.LastModel(),
-									ProviderID: e.LastProvider(),
+									ModelID:    e.lastModelCtx(ctx),
+									ProviderID: e.lastProviderCtx(ctx),
 								}
 								return
 							}
@@ -4765,11 +4917,12 @@ func (e *Engine) streamWithToolLoop(
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
+							e.warnDeliveryToolBypassCtx(ctx, sessionID)
 							outChan <- provider.StreamChunk{
 								Done:       true,
 								StopReason: session.StopReasonToolLoopExceeded,
-								ModelID:    e.LastModel(),
-								ProviderID: e.LastProvider(),
+								ModelID:    e.lastModelCtx(ctx),
+								ProviderID: e.lastProviderCtx(ctx),
 							}
 							return
 						}
@@ -4778,11 +4931,12 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"no_progress_continuations", noProgressContinuations,
 					)
+					e.warnDeliveryToolBypassCtx(ctx, sessionID)
 					outChan <- provider.StreamChunk{
 						Done:       true,
 						StopReason: session.StopReasonToolLoopExceeded,
-						ModelID:    e.LastModel(),
-						ProviderID: e.LastProvider(),
+						ModelID:    e.lastModelCtx(ctx),
+						ProviderID: e.lastProviderCtx(ctx),
 					}
 					return
 				}
@@ -4796,11 +4950,12 @@ func (e *Engine) streamWithToolLoop(
 							"session", sessionID,
 							"consecutive", consecutiveSameToolContinuations,
 						)
+						e.warnDeliveryToolBypassCtx(ctx, sessionID)
 						outChan <- provider.StreamChunk{
 							Done:       true,
 							StopReason: session.StopReasonToolLoopExceeded,
-							ModelID:    e.LastModel(),
-							ProviderID: e.LastProvider(),
+							ModelID:    e.lastModelCtx(ctx),
+							ProviderID: e.lastProviderCtx(ctx),
 						}
 						return
 					}
@@ -4813,11 +4968,12 @@ func (e *Engine) streamWithToolLoop(
 						"trip", reason,
 						"max_continuations", maxTodoContinuations,
 					)
+					e.warnDeliveryToolBypassCtx(ctx, sessionID)
 					outChan <- provider.StreamChunk{
 						Done:       true,
 						StopReason: session.StopReasonToolLoopExceeded,
-						ModelID:    e.LastModel(),
-						ProviderID: e.LastProvider(),
+						ModelID:    e.lastModelCtx(ctx),
+						ProviderID: e.lastProviderCtx(ctx),
 					}
 					return
 				}
@@ -4878,12 +5034,43 @@ func (e *Engine) streamWithToolLoop(
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
+			} else if !finalResponseGraceUsed && !durationTripped && delegationGraceUsed &&
+				!batchContainsDelegate(result.toolCalls) &&
+				strings.TrimSpace(result.responseContent) == "" {
+				finalResponseGraceUsed = true
+				slog.Info("final-response grace round: post-delegation synthesis budget exhausted",
+					"session", sessionID,
+					"trip", reason,
+				)
+				contMsg := buildFinalResponseMessage()
+				messages = append(messages, contMsg)
+				var streamErr error
+				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				if streamErr != nil {
+					slog.Error("final-response grace round stream failed",
+						"session", sessionID,
+						"error", streamErr,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				attempt++
+				iterations = 0
+				identicalRun = 0
+				lastFingerprint = ""
+				sameToolPatternRun = 0
+				lastToolNames = ""
+				loopStart = time.Now()
+				toolExecDuration = 0
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				continue
 			} else {
+				e.warnDeliveryToolBypassCtx(ctx, sessionID)
 				outChan <- provider.StreamChunk{
 					Done:       true,
 					StopReason: session.StopReasonToolLoopExceeded,
-					ModelID:    e.LastModel(),
-					ProviderID: e.LastProvider(),
+					ModelID:    e.lastModelCtx(ctx),
+					ProviderID: e.lastProviderCtx(ctx),
 				}
 				return
 			}
@@ -4967,6 +5154,18 @@ func buildGraceRoundMessage() provider.Message {
 	return provider.Message{
 		Role:    "user",
 		Content: "Your tool loop budget is exhausted but you delegated work. A grace round has been granted so you can receive the results. Check back on your delegated tasks now.",
+	}
+}
+
+// buildFinalResponseMessage constructs a message that prompts the model
+// to produce a final summary when the tool loop budget is exhausted and
+// the model has been making tool calls without producing user-visible
+// response text. This gives the model one last turn to synthesise what
+// it accomplished before the session terminates.
+func buildFinalResponseMessage() provider.Message {
+	return provider.Message{
+		Role:    "user",
+		Content: "Your tool loop budget is exhausted. Please provide a final summary of what you've accomplished — the results of each tool call are still visible in the conversation above.",
 	}
 }
 
@@ -5157,14 +5356,14 @@ func (e *Engine) retryStreamForToolResult(
 	e.bus.Publish(events.EventProviderRequestRetry, events.NewProviderRequestRetryEvent(events.ProviderRequestRetryEventData{
 		SessionID:    sessionID,
 		AgentID:      e.activeAgentID(ctx),
-		ProviderName: e.LastProvider(),
-		ModelName:    e.LastModel(),
+		ProviderName: e.lastProviderCtx(ctx),
+		ModelName:    e.lastModelCtx(ctx),
 		Reason:       "tool_loop_retry",
 		Attempt:      attempt,
 	}))
 	toolReq := provider.ChatRequest{
-		Provider: e.LastProvider(),
-		Model:    e.LastModel(),
+		Provider: e.lastProviderCtx(ctx),
+		Model:    e.lastModelCtx(ctx),
 		Messages: messages,
 		// ctx carries the per-stream manifest binding established
 		// in Stream(). On retry the tool envelope must still match
@@ -5784,6 +5983,12 @@ func (e *Engine) resetContinuationState(sessionID string) {
 // status the message names the active task and demands the agent complete or
 // cancel it before proceeding; when all items are pending the existing generic
 // message is returned verbatim.
+//
+// The continuation message explicitly demands tool calls and warns against
+// narration to prevent the agent from describing what it will do instead of
+// actually doing it. This is a known failure mode where models produce prose
+// like "I will now do X" without calling tools, causing stale-continuation
+// loops.
 func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 	hasActive := false
 	for _, it := range incomplete {
@@ -5820,16 +6025,20 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 			}
 		}
 
-		sb.WriteString("\nYou must complete or cancel the active task now — you are not allowed to skip it or start unrelated work.\n")
+		sb.WriteString("\nYou must complete or cancel the active task now by calling the appropriate tools to do the actual work. ")
+		sb.WriteString("Do NOT respond with prose describing what you will do — that is NOT completing the task. ")
+		sb.WriteString("Call tools to make progress. You are not allowed to skip it or start unrelated work.\n")
 		return provider.Message{Role: "user", Content: sb.String()}
 	}
 
 	var sb strings.Builder
-	sb.WriteString("You have incomplete tasks that still need to be completed. Please continue working until all tasks are done:\n")
+	sb.WriteString("You have incomplete tasks that still need to be completed:\n\n")
 	for _, it := range incomplete {
 		sb.WriteString(fmt.Sprintf("- [%s] %s (%s priority)\n", it.Status, it.Content, it.Priority))
 	}
-	sb.WriteString("\nResume working on these tasks now.")
+	sb.WriteString("\nResume working on these tasks now by calling tools to do the actual work. ")
+	sb.WriteString("Do NOT respond with prose describing what you will do — that is NOT making progress. ")
+	sb.WriteString("Call tools to complete these tasks.\n")
 	return provider.Message{Role: "user", Content: sb.String()}
 }
 
@@ -5965,6 +6174,89 @@ func (e *Engine) markSkillLoadCalled(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.skillLoadCalled[sessionID] = true
+}
+
+// requiresDeliveryTool reports whether the active manifest declares any
+// delivery tools that must be called before session completion.
+func (e *Engine) requiresDeliveryTool() bool {
+	return len(e.manifest.Capabilities.DeliveryTools) > 0
+}
+
+// requiresDeliveryToolCtx is the ctx-aware variant. It checks the
+// bound manifest first, falling back to e.manifest when no binding
+// is present.
+func (e *Engine) requiresDeliveryToolCtx(ctx context.Context) bool {
+	if m, ok := manifestFromContext(ctx); ok {
+		return len(m.Capabilities.DeliveryTools) > 0
+	}
+	return e.requiresDeliveryTool()
+}
+
+// deliveryToolCompleted reports whether a delivery tool was successfully
+// called during the session identified by sessionID.
+func (e *Engine) deliveryToolCompleted(sessionID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.deliveryToolCalled[sessionID]
+}
+
+// markDeliveryToolCalledCtx records that a delivery tool was called for the
+// given session. The toolName must match one of the manifest's
+// DeliveryTools entries; calls for non-delivery tools are ignored.
+// Resolves the delivery tool list from the bound manifest when available.
+func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string, toolName string) {
+	var deliveryTools []string
+	if m, ok := manifestFromContext(ctx); ok {
+		deliveryTools = m.Capabilities.DeliveryTools
+	} else {
+		e.mu.RLock()
+		deliveryTools = e.manifest.Capabilities.DeliveryTools
+		e.mu.RUnlock()
+	}
+	if len(deliveryTools) == 0 {
+		return
+	}
+	for _, dt := range deliveryTools {
+		if dt == toolName {
+			e.mu.Lock()
+			if e.deliveryToolCalled == nil {
+				e.deliveryToolCalled = make(map[string]bool)
+			}
+			e.deliveryToolCalled[sessionID] = true
+			e.mu.Unlock()
+			return
+		}
+	}
+}
+
+// warnDeliveryToolBypassCtx logs a prominent warning when a session is about to
+// complete without having called any of its declared delivery tools.
+// Resolves the manifest from the ctx binding to prevent cross-session bleed.
+func (e *Engine) warnDeliveryToolBypassCtx(ctx context.Context, sessionID string) {
+	var agentID string
+	var deliveryTools []string
+
+	if m, ok := manifestFromContext(ctx); ok {
+		deliveryTools = m.Capabilities.DeliveryTools
+		agentID = m.ID
+	} else {
+		e.mu.RLock()
+		deliveryTools = e.manifest.Capabilities.DeliveryTools
+		agentID = e.manifest.ID
+		e.mu.RUnlock()
+	}
+
+	if len(deliveryTools) == 0 {
+		return
+	}
+	if e.deliveryToolCompleted(sessionID) {
+		return
+	}
+	slog.Warn("delivery tool gate bypassed: session completing without calling delivery tools",
+		"session", sessionID,
+		"agent", agentID,
+		"delivery_tools", deliveryTools,
+	)
 }
 
 // executeToolExecStage bridges a single tool call through the ToolExec lifecycle
@@ -6195,6 +6487,9 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		// Mark skill_load as called after successful execution.
 		if toolCall.Name == "skill_load" && err == nil && result.Error == nil {
 			e.markSkillLoadCalled(sessionID)
+		}
+		if err == nil && result.Error == nil {
+			e.markDeliveryToolCalledCtx(ctx, sessionID, toolCall.Name)
 		}
 		// publishToolAfterEvent receives the effective error so observability
 		// bus events tag failures regardless of which shape the tool used.
@@ -7665,12 +7960,11 @@ const toolOutputPruneTailGuard = 1
 // surface — this name set then becomes the default for tools that
 // did not opt in.
 var protectedCompactionToolNames = map[string]struct{}{
-	"plan_write":         {},
-	"coordination_store": {},
-	"recall_search":      {},
-	"question_request":   {},
-	"delegate":           {},
-	"bash":               {},
+	"plan_write":       {},
+	"recall_search":    {},
+	"question_request": {},
+	"delegate":         {},
+	"bash":             {},
 }
 
 // pruneOldToolOutputs runs the Stage-1 prune pass over the cold-range
@@ -9284,6 +9578,7 @@ func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 //   - Stores the response via storeResponse.
 //   - Publishes a provider.response event on the engine bus.
 func (e *Engine) completeResponse(ctx context.Context, sessionID string, content, thinking string) {
+	e.warnDeliveryToolBypassCtx(ctx, sessionID)
 	e.storeResponse(ctx, content, thinking)
 	e.publishProviderResponseEventCtx(ctx, sessionID, content)
 }
