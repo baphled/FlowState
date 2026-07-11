@@ -4670,6 +4670,9 @@ func (e *Engine) streamWithToolLoop(
 						IsError: true,
 					},
 				}
+				if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
+					e.warnDeliveryToolBypassCtx(ctx, sessionID)
+				}
 				outChan <- provider.StreamChunk{Error: er.err, Done: true}
 				return
 			}
@@ -5079,6 +5082,9 @@ func (e *Engine) streamWithToolLoop(
 		var streamErr error
 		providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 		if streamErr != nil {
+			if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
+				e.warnDeliveryToolBypassCtx(ctx, sessionID)
+			}
 			outChan <- provider.StreamChunk{Error: streamErr, Done: true}
 			return
 		}
@@ -5527,6 +5533,9 @@ func (e *Engine) processStreamChunks(
 		select {
 		case <-ctx.Done():
 			emitPostTurn()
+			if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
+				e.warnDeliveryToolBypassCtx(ctx, sessionID)
+			}
 			if e.onStreamCancel != nil {
 				e.onStreamCancel(sessionID)
 			}
