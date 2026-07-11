@@ -4509,7 +4509,7 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
-			if len(result.toolCalls) == 0 && e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
+			if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
 				if deliveryRetries < maxDeliveryRetries {
 					deliveryRetries++
 					slog.Warn("delivery tool not called, retrying with corrective message",
