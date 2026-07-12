@@ -4291,6 +4291,7 @@ func (e *Engine) streamWithToolLoop(
 	consecutiveSameToolContinuations := 0
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
+	forcedSummaryUsed := false
 	updateTodoContinuationProgress := func(current []todo.Item) {
 		if slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
@@ -5132,6 +5133,27 @@ func (e *Engine) streamWithToolLoop(
 				toolExecDuration = 0
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
+			} else if !forcedSummaryUsed {
+				forcedSummaryUsed = true
+				slog.Info("forced summary round: tool budget exhausted, stripping tools",
+					"session", sessionID,
+					"trip", reason,
+				)
+				contMsg := buildFinalResponseMessage()
+				messages = append(messages, contMsg)
+				var streamErr error
+				providerChunks, streamErr = e.retryStreamForToolResultNoSchemas(ctx, sessionID, messages, attempt)
+				if streamErr != nil {
+					slog.Error("forced summary round stream failed",
+						"session", sessionID,
+						"error", streamErr,
+					)
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					return
+				}
+				attempt++
+				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+				continue
 			} else {
 				e.warnDeliveryToolBypassCtx(ctx, sessionID)
 				outChan <- provider.StreamChunk{
@@ -5421,8 +5443,12 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 //
 // Side effects:
 //   - Publishes provider.request.retry and provider.request events on the bus.
-func (e *Engine) retryStreamForToolResult(
-	ctx context.Context, sessionID string, messages []provider.Message, attempt int,
+// retryStreamForToolResultWithTools is the internal implementation
+// shared by retryStreamForToolResult and retryStreamForToolResultNoSchemas.
+// The caller supplies the tool schemas directly; passing nil or an empty
+// slice produces a text-only retry with no tools advertised.
+func (e *Engine) retryStreamForToolResultWithTools(
+	ctx context.Context, sessionID string, messages []provider.Message, attempt int, tools []provider.Tool,
 ) (<-chan provider.StreamChunk, error) {
 	e.bus.Publish(events.EventProviderRequestRetry, events.NewProviderRequestRetryEvent(events.ProviderRequestRetryEventData{
 		SessionID:    sessionID,
@@ -5436,12 +5462,11 @@ func (e *Engine) retryStreamForToolResult(
 		Provider: e.lastProviderCtx(ctx),
 		Model:    e.lastModelCtx(ctx),
 		Messages: messages,
-		// ctx carries the per-stream manifest binding established
-		// in Stream(). On retry the tool envelope must still match
-		// the manifest the in-flight call was dispatched with —
-		// not whatever lives on e.manifest after a concurrent
-		// SetManifest swap.
-		Tools: e.buildToolSchemasCtx(ctx),
+		// When tools is nil the caller (retryStreamForToolResult) wants the
+		// full schema from the manifest. When non-nil (including empty slice),
+		// the caller has explicitly chosen what to advertise — used by the
+		// forced-summary path to strip all tools and force a text-only response.
+		Tools: tools,
 	}
 	// Re-apply the per-stream provider/model override on every tool-loop
 	// continuation. Stream() stamps the override (Stream's gate at the
@@ -5471,6 +5496,25 @@ func (e *Engine) retryStreamForToolResult(
 		return nil, streamErr
 	}
 	return chunks, nil
+}
+
+// retryStreamForToolResult retries the provider stream with the full tool
+// schema from the active manifest. This is the standard retry path used by
+// all tool-loop continuation call sites.
+func (e *Engine) retryStreamForToolResult(
+	ctx context.Context, sessionID string, messages []provider.Message, attempt int,
+) (<-chan provider.StreamChunk, error) {
+	return e.retryStreamForToolResultWithTools(ctx, sessionID, messages, attempt, e.buildToolSchemasCtx(ctx))
+}
+
+// retryStreamForToolResultNoSchemas retries the provider stream with no tool
+// schemas advertised. The model can only produce text, making this suitable
+// for the forced-summary step that fires when the tool-loop budget is exhausted
+// and all other grace paths have been tried.
+func (e *Engine) retryStreamForToolResultNoSchemas(
+	ctx context.Context, sessionID string, messages []provider.Message, attempt int,
+) (<-chan provider.StreamChunk, error) {
+	return e.retryStreamForToolResultWithTools(ctx, sessionID, messages, attempt, nil)
 }
 
 // postTurnUsageEmitter is the optional pre-Done hook the goroutine in

@@ -184,7 +184,7 @@ var _ = Describe("Engine delegation grace round", func() {
 	})
 
 	It("does NOT grant a grace round when the backstop trips on a non-delegation batch", func() {
-		script := make([]scriptedBatch, 0, 5)
+		script := make([]scriptedBatch, 0, 6)
 		for i := 0; i < 5; i++ {
 			script = append(script, scriptedBatch{
 				toolCalls: []*provider.ToolCall{{
@@ -194,6 +194,15 @@ var _ = Describe("Engine delegation grace round", func() {
 				}},
 			})
 		}
+		// 6th batch: forced summary retry returns a tool call, so the
+		// second cap check terminates with StopReasonToolLoopExceeded.
+		script = append(script, scriptedBatch{
+			toolCalls: []*provider.ToolCall{{
+				ID:   "read_5",
+				Name: "read",
+				Arguments: map[string]any{"path": "/tmp/5.txt"},
+			}},
+		})
 
 		prov := &capturingScriptedProvider{name: "no-grace-read", script: script}
 
@@ -214,21 +223,23 @@ var _ = Describe("Engine delegation grace round", func() {
 		Expect(closed).To(BeTrue(),
 			"a non-delegation loop must terminate without a grace round")
 
-		Expect(prov.callCount()).To(Equal(5),
-			"no grace round means no extra round-trip beyond the 5 trips to the backstop")
+		// 5 trips → forced summary (call 5 returns batch 5) → tool execution
+		// pushes iterations past cap → second cap trip → terminate
+		Expect(prov.callCount()).To(Equal(6),
+			"no grace round, but the forced summary fires once and the retry batch triggers a second cap trip")
 
 		reason, gotTerminal := terminalStopReason(received)
 		Expect(gotTerminal).To(BeTrue(), "expected a terminal Done chunk")
 		Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
-			"a non-delegation loop must end immediately with tool_loop_exceeded")
+			"the forced summary retry returns tools → second cap trip → tool_loop_exceeded")
 
-		Expect(prov.sawMessageContaining("tool loop budget is exhausted")).To(BeFalse(),
-			"the grace message must never be injected for a non-delegation loop")
+		Expect(prov.sawMessageContaining("tool loop budget is exhausted")).To(BeTrue(),
+			"the forced summary injects the completion message for any backstop trip")
 	})
 
 	It("grants the grace round at most once even if the model keeps calling delegate", func() {
-		script := make([]scriptedBatch, 0, 10)
-		for i := 0; i < 10; i++ {
+		script := make([]scriptedBatch, 0, 11)
+		for i := 0; i < 11; i++ {
 			script = append(script, scriptedBatch{toolCalls: delegateBatch(i)})
 		}
 
@@ -251,13 +262,16 @@ var _ = Describe("Engine delegation grace round", func() {
 		Expect(closed).To(BeTrue(),
 			"the second backstop trip must terminate the turn after a single grace round")
 
-		Expect(prov.callCount()).To(Equal(10),
-			"5 trips → grace (call 5) → 5 more trips → terminate; no second grace round")
+		// 5 trips → grace (call 5) → 5 more trips → second cap trip → forced
+		// summary (call 10 returns batch 10) → tool execution → third cap
+		// trip → terminate. No second grace round.
+		Expect(prov.callCount()).To(Equal(11),
+			"5 trips, delegation grace, 5 more trips, then forced summary fires and the retry tool call triggers termination")
 
 		reason, gotTerminal := terminalStopReason(received)
 		Expect(gotTerminal).To(BeTrue(), "expected a terminal Done chunk")
 		Expect(reason).To(Equal(session.StopReasonToolLoopExceeded),
-			"the second backstop trip must terminate with tool_loop_exceeded, not a third chance")
+			"the third backstop trip must terminate with tool_loop_exceeded, not a third chance")
 	})
 
 	It("does NOT grant a grace round when the duration backstop trips even if the last call was delegate", func() {
@@ -293,8 +307,8 @@ var _ = Describe("Engine delegation grace round", func() {
 		Expect(prov.callCount()).To(BeNumerically("<", 300),
 			"the duration backstop must trip well below the script length")
 
-		Expect(prov.sawMessageContaining("tool loop budget is exhausted")).To(BeFalse(),
-			"the grace round must be suppressed when the duration backstop has tripped")
+		Expect(prov.sawMessageContaining("tool loop budget is exhausted")).To(BeTrue(),
+			"the delegation grace round is suppressed when the duration backstop trips, but the forced summary fires instead")
 	})
 
 	It("grants a grace round when all todos are complete even without a delegate call", func() {

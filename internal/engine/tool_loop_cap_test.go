@@ -708,6 +708,9 @@ var _ = Describe("Engine tool-loop cap", func() {
 					{toolCalls: []*provider.ToolCall{{ID: "c4", Name: "alpha", Arguments: map[string]any{"i": 3}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c5", Name: "alpha", Arguments: map[string]any{"i": 4}}}},
 					{toolCalls: []*provider.ToolCall{{ID: "c6", Name: "alpha", Arguments: map[string]any{"i": 5}}}},
+					// 7th batch: forced summary retry returns a tool call so the
+					// second cap check terminates with StopReasonToolLoopExceeded.
+					{toolCalls: []*provider.ToolCall{{ID: "c7", Name: "alpha", Arguments: map[string]any{"i": 6}}}},
 				},
 			}
 
@@ -736,8 +739,8 @@ var _ = Describe("Engine tool-loop cap", func() {
 			}
 			Expect(tripped).To(BeTrue(),
 				"after 2 alpha, 1 beta (reset), then 3 alpha, the counter must reach 3 and trip")
-			Expect(prov.calls).To(BeNumerically("==", 6),
-				"the pattern-change batch must reset the run; without reset the trip would fire at call 3, not 6")
+			Expect(prov.calls).To(BeNumerically("==", 7),
+				"the pattern-change batch must reset the run; without reset the trip would fire earlier; forced summary adds 1 extra call")
 		})
 
 		It("stamps the tool_loop_exceeded StopReason on the terminal chunk", func() {
