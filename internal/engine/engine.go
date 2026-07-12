@@ -4529,6 +4529,18 @@ func (e *Engine) streamWithToolLoop(
 						if retryAt, ok := e.SoonestProviderRetry(); ok {
 							slog.Info("delivery retry: providers rate-limited, waiting for cooldown",
 								"session", sessionID, "retry_at", retryAt, "wait", time.Until(retryAt))
+
+							e.bus.Publish(events.EventProviderRequestRetry,
+								events.NewProviderRequestRetryEvent(
+									events.ProviderRequestRetryEventData{
+										SessionID:    sessionID,
+										AgentID:      e.activeAgentID(ctx),
+										ProviderName: e.lastProviderCtx(ctx),
+										ModelName:    e.lastModelCtx(ctx),
+										Reason:       "delivery_cooldown_wait",
+										Attempt:      deliveryRetries,
+									}))
+
 							if retry, stop := waitForProviderRetry(retryAt); retry {
 								deliveryRetries++
 								slog.Warn("delivery tool not called, retrying after provider cooldown",
