@@ -790,6 +790,14 @@ type engineParams struct {
 	// budget on the background_output tool. Zero means inherit the
 	// compiled-in default (120s).
 	backgroundOutputTimeout time.Duration
+	// toolLoopDuration overrides the cumulative wall-clock ceiling for
+	// a single turn's tool-loop continuations. Zero inherits the
+	// engine's compiled-in default (30m).
+	toolLoopDuration time.Duration
+	// toolLoopIterations overrides the absolute iteration ceiling for
+	// a single turn's tool-loop continuations. Zero inherits the
+	// engine's compiled-in default (200).
+	toolLoopIterations int
 	// systemPromptBudget mirrors cfg.ResolvedSystemPromptBudget(). Zero
 	// inherits the engine's compiled-in default
 	// (ctxstore.DefaultModelContextFallback, 16K). Forwarded to
@@ -1098,6 +1106,8 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		streamTimeout:           in.setup.cfg.ParsedStreamTimeout(),
 		toolTimeout:             in.setup.cfg.ParsedToolTimeout(),
 		backgroundOutputTimeout: in.setup.cfg.ParsedBackgroundOutputTimeout(),
+		toolLoopDuration:        in.setup.cfg.ParsedToolLoopDuration(),
+		toolLoopIterations:      in.setup.cfg.ParsedToolLoopIterations(),
 		systemPromptBudget:      in.setup.cfg.ResolvedSystemPromptBudget(),
 		todoStrictMode:          in.setup.cfg.Features.TodoStrictMode,
 		todoStore:               in.tools.todoStore,
@@ -1587,6 +1597,8 @@ func createEngine(params engineParams) (*engine.Engine, func(func(agent.Manifest
 		KnowledgeExtractorFactory: params.compression.knowledgeExtractorFactory,
 		StreamTimeout:             params.streamTimeout,
 		ToolTimeout:               params.toolTimeout,
+		MaxToolLoopDuration:       params.toolLoopDuration,
+		MaxToolLoopIterations:     params.toolLoopIterations,
 		SystemPromptBudget:        params.systemPromptBudget,
 		TodoStrictMode:            params.todoStrictMode,
 		TodoStore:                 params.todoStore,
@@ -2466,6 +2478,8 @@ func (a *App) createDelegateEngine(
 		KnowledgeExtractorFactory: delegateCompression.knowledgeExtractorFactory,
 		StreamTimeout:             a.Config.ParsedStreamTimeout(),
 		ToolTimeout:               a.Config.ParsedToolTimeout(),
+		MaxToolLoopDuration:       a.Config.ParsedToolLoopDuration(),
+		MaxToolLoopIterations:     a.Config.ParsedToolLoopIterations(),
 		SystemPromptBudget:        a.Config.ResolvedSystemPromptBudget(),
 		TodoStrictMode:            a.Config.TodoStrictModeEnabled(),
 		TodoStore:                 a.TodoStore,

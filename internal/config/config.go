@@ -135,6 +135,19 @@ type AppConfig struct {
 	// an explicit `timeout` argument. Empty means inherit the compiled-in
 	// default (120s).
 	BackgroundOutputTimeout string `json:"background_output_timeout,omitempty" yaml:"background_output_timeout,omitempty"`
+	// ToolLoopDuration overrides the cumulative wall-clock ceiling for a
+	// single turn's tool-loop continuations (the duration backstop that
+	// terminates a turn regardless of iteration count). Empty means
+	// inherit the compiled-in default (30m). Long multi-agent tasks with
+	// background delegations are the typical reason to raise this.
+	// Format: a Go duration string ("15m", "600s").
+	ToolLoopDuration string `json:"tool_loop_duration,omitempty" yaml:"tool_loop_duration,omitempty"`
+	// ToolLoopIterations overrides the absolute ceiling on tool-loop
+	// continuations for a single turn (the iteration backstop that
+	// terminates a turn regardless of wall-clock duration). Zero means
+	// inherit the compiled-in default (200). Complex multi-wave swarm
+	// sessions are the typical reason to raise this.
+	ToolLoopIterations int `json:"tool_loop_iterations,omitempty" yaml:"tool_loop_iterations,omitempty"`
 
 	// PlanLocation overrides the directory FlowState reads/writes plan
 	// markdown files from. Resolution rules (see ResolvedPlanLocation):
@@ -283,6 +296,37 @@ func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 		return 0
 	}
 	return parseDurationField(c.BackgroundOutputTimeout, "background_output_timeout")
+}
+
+// ParsedToolLoopDuration returns the parsed value of ToolLoopDuration
+// (see ParsedStreamTimeout for semantics, including nil-receiver behaviour).
+//
+// Returns:
+//   - The parsed ToolLoopDuration duration, or 0 when unset/invalid/nil receiver.
+//
+// Side effects:
+//   - Logs a WARN once when the configured value fails to parse.
+func (c *AppConfig) ParsedToolLoopDuration() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return parseDurationField(c.ToolLoopDuration, "tool_loop_duration")
+}
+
+// ParsedToolLoopIterations returns the configured max tool-loop iteration
+// ceiling, with nil-receiver safety. Zero inherits the engine's compiled-in
+// default (200).
+//
+// Returns:
+//   - The configured ToolLoopIterations, or 0 when nil receiver.
+//
+// Side effects:
+//   - None.
+func (c *AppConfig) ParsedToolLoopIterations() int {
+	if c == nil {
+		return 0
+	}
+	return c.ToolLoopIterations
 }
 
 // TodoStrictModeEnabled reports whether the D9 hard-gate todo_strict_mode
@@ -488,6 +532,8 @@ func (c *AppConfig) DefaultProviderModel() string {
 		return c.Providers.ZAI.Model
 	case "openzen":
 		return c.Providers.OpenZen.Model
+	case "opencode-go":
+		return c.Providers.OpenCodeGo.Model
 	default:
 		return ""
 	}
@@ -557,6 +603,7 @@ type ProvidersConfig struct {
 	GitHub      ProviderConfig `json:"github" yaml:"github"`
 	Ollama      ProviderConfig `json:"ollama" yaml:"ollama"`
 	OllamaCloud ProviderConfig `json:"ollamacloud" yaml:"ollamacloud"`
+	OpenCodeGo  ProviderConfig `json:"opencode-go" yaml:"opencode-go"`
 	OpenAI      ProviderConfig `json:"openai" yaml:"openai"`
 	OpenZen     ProviderConfig `json:"openzen" yaml:"openzen"`
 	ZAI         ProviderConfig `json:"zai" yaml:"zai"`
@@ -1421,6 +1468,9 @@ func defaultToolCapableModels() []string {
 		"devstral:latest",
 		"llama3.1:latest",
 		"llama3.3:latest",
+		"Kimi*",
+		"Qwen*",
+		"DeepSeek*",
 	}
 }
 
@@ -1459,6 +1509,9 @@ func defaultToolCapableModels() []string {
 //     prose-only on the same test. The deny pattern uses
 //     the suffix glob so future *-mini releases are
 //     captured automatically.
+//   - gpt-*-nano       — same reasoning as *-mini: nano-tier models trade
+//     tool-call reliability for latency/cost. Preventive
+//     deny so future *-nano releases are captured.
 func defaultToolIncapableModels() []string {
 	return []string{
 		"llama3.2*",
@@ -1469,6 +1522,7 @@ func defaultToolIncapableModels() []string {
 		"deepseek-r1:*",
 		"claude-haiku*",
 		"gpt-*-mini",
+		"gpt-*-nano",
 	}
 }
 

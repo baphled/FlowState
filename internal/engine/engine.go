@@ -646,8 +646,14 @@ type Config struct {
 	// MaxToolLoopDuration overrides the cumulative wall-clock ceiling
 	// for a single turn's tool-loop continuations. When the loop runs
 	// longer than this, the turn terminates regardless of iteration
-	// count. Zero falls back to the compiled-in default (10m).
+	// count. Zero falls back to the compiled-in default (30m).
 	MaxToolLoopDuration time.Duration
+
+	// MaxToolLoopIterations overrides the absolute ceiling on tool-loop
+	// continuations for a single turn. When the loop reaches this many
+	// iterations, the turn terminates regardless of wall-clock duration.
+	// Zero falls back to the compiled-in default (200).
+	MaxToolLoopIterations int
 
 	// CategoryResolver, when non-nil, is consulted at Stream time to
 	// source caller-controlled chat parameters (Temperature, MaxTokens,
@@ -1025,6 +1031,24 @@ func resolveMaxToolLoopDuration(cfg Config) time.Duration {
 	return engineMaxToolLoopDuration
 }
 
+// resolveMaxToolLoopIterations returns the configured max tool-loop
+// iteration ceiling or the compiled-in constant when zero.
+//
+// Expected:
+//   - cfg is a valid Config struct.
+//
+// Returns:
+//   - The configured MaxToolLoopIterations, or engineMaxToolLoopIterations when zero.
+//
+// Side effects:
+//   - None.
+func resolveMaxToolLoopIterations(cfg Config) int {
+	if cfg.MaxToolLoopIterations > 0 {
+		return cfg.MaxToolLoopIterations
+	}
+	return engineMaxToolLoopIterations
+}
+
 // assembleEngine builds the Engine struct literal from the resolved
 // components. Separated from New so the constructor's branching is
 // isolated from the field wiring and both stay under the funlen gate.
@@ -1110,7 +1134,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		onStreamCancel:                 cfg.OnStreamCancel,
 		heartbeatInterval:              defaultStreamingHeartbeatInterval,
 		streamIdleTimeout:              engineStreamIdleTimeout,
-		maxToolLoopIterations:          engineMaxToolLoopIterations,
+		maxToolLoopIterations:          resolveMaxToolLoopIterations(cfg),
 		maxToolLoopDuration:            resolveMaxToolLoopDuration(cfg),
 		maxIdenticalToolCalls:          engineMaxIdenticalToolCalls,
 		maxSameToolPatternCalls:        engineMaxSameToolPatternCalls,
@@ -1142,11 +1166,13 @@ const engineStreamIdleTimeout = 60 * time.Second
 // tool.Result{Error: ErrToolNotFound} that falls through and re-requests,
 // so a provider re-emitting the same call loops forever (15,404 iterations
 // observed). This fixed ceiling guarantees termination even when the
-// repeat-call detector cannot fingerprint the batch. Overridable via
-// SetMaxToolLoopIterationsForTest; zero/negative disables the backstop
-// (defence-in-depth gate, mirroring engineStreamIdleTimeout's disable-when-
-// unset semantics).
-const engineMaxToolLoopIterations = 50
+// repeat-call detector cannot fingerprint the batch. Raised from 50 to 200
+// (July 2026) after real-world swarm sessions hit the ceiling during
+// complex multi-wave analysis work. Overridable via
+// SetMaxToolLoopIterationsForTest or config.yaml tool_loop_iterations;
+// zero/negative disables the backstop (defence-in-depth gate, mirroring
+// engineStreamIdleTimeout's disable-when-unset semantics).
+const engineMaxToolLoopIterations = 200
 
 // engineMaxToolLoopDuration is the cumulative wall-clock ceiling for a
 // single turn's tool-loop continuations in streamWithToolLoop. When the
@@ -1155,15 +1181,16 @@ const engineMaxToolLoopIterations = 50
 // count. This prevents long-running tool loops that are making slow but
 // varied progress from blocking the session indefinitely.
 //
-// Set to 600s so that complex multi-agent tasks with background
-// delegations (which may take several minutes of provider inference
-// each) can complete without hitting the wall-clock backstop mid-work.
-// The iteration ceiling (50) and repeat-call detector (3 consecutive
+// Raised from 600s to 1800s (July 2026) alongside the iteration budget
+// increase: real-world swarm sessions with multi-wave analysis and
+// background delegations regularly exceeded the old 10m limit. The
+// iteration ceiling (200) and repeat-call detector (3 consecutive
 // identical batches) provide the primary defence against runaway
 // loops; the duration backstop is an insurance layer, not the first
-// line of defence. Overridable via SetMaxToolLoopDurationForTest;
-// zero/negative disables the time budget backstop.
-const engineMaxToolLoopDuration = 600 * time.Second
+// line of defence. Overridable via SetMaxToolLoopDurationForTest or
+// config.yaml tool_loop_duration; zero/negative disables the time
+// budget backstop.
+const engineMaxToolLoopDuration = 1800 * time.Second
 
 // engineMaxIdenticalToolCalls is the primary trip threshold: when the SAME
 // tool batch fingerprint (tool name + canonicalised arguments) recurs this
