@@ -4525,6 +4525,32 @@ func (e *Engine) streamWithToolLoop(
 					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
 					if streamErr != nil {
 						slog.Error("delivery tool retry stream failed", "session", sessionID, "error", streamErr)
+
+						if retryAt, ok := e.SoonestProviderRetry(); ok {
+							slog.Info("delivery retry: providers rate-limited, waiting for cooldown",
+								"session", sessionID, "retry_at", retryAt, "wait", time.Until(retryAt))
+							if retry, stop := waitForProviderRetry(retryAt); retry {
+								deliveryRetries++
+								slog.Warn("delivery tool not called, retrying after provider cooldown",
+									"session", sessionID, "attempt", deliveryRetries)
+								providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt+1)
+								if streamErr != nil {
+									slog.Error("delivery tool retry stream failed after provider cooldown",
+										"session", sessionID, "error", streamErr)
+									e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+									return
+								}
+								attempt++
+								e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+								continue
+							} else if stop {
+								slog.Error("delivery retry cancelled during cooldown wait",
+									"session", sessionID)
+								e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+								return
+							}
+						}
+
 						e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 						return
 					}
