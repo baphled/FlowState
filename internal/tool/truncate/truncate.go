@@ -15,10 +15,12 @@ import (
 	"time"
 )
 
-// Default budgets. Match OpenCode's tool/truncation.ts.
+// Default budgets. These limits prevent large contexts from growing
+// during tool loops, reducing timeout-based failures and improving
+// retry success rates when providers are strained.
 const (
-	DefaultMaxLines = 2000
-	DefaultMaxBytes = 50 * 1024
+	DefaultMaxLines = 500
+	DefaultMaxBytes = 20 * 1024
 )
 
 // Direction selects which slice of an oversized payload survives.
@@ -186,9 +188,9 @@ func bytesForLines(lines []string) int {
 func buildHint(removed int, unit string, hitBytes bool, outputPath string) string {
 	var head string
 	if hitBytes {
-		head = fmt.Sprintf("...%d %s truncated (50KB cap)...", removed, unit)
+		head = fmt.Sprintf("...%d %s truncated (20KB cap)...", removed, unit)
 	} else {
-		head = fmt.Sprintf("...%d %s truncated (2000-line cap)...", removed, unit)
+		head = fmt.Sprintf("...%d %s truncated (500-line cap)...", removed, unit)
 	}
 	if outputPath == "" {
 		return head + "\n" +

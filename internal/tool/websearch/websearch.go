@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
 const (
@@ -158,7 +160,20 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		return tool.Result{Error: err}, nil
 	}
 
+	output = capOutput(ctx, output)
 	return tool.Result{Output: output}, nil
+}
+
+// capOutput applies truncation to prevent websearch results from blowing
+// up the model context. Each result can contain substantial text content,
+// so we cap at the same limits used by other tools.
+func capOutput(ctx context.Context, output string) string {
+	sessionID, _ := ctx.Value(session.IDKey{}).(string)
+	r := truncate.Apply(output, truncate.Options{
+		SessionID: sessionID,
+		ToolName:  "websearch",
+	})
+	return r.Content
 }
 
 // formatResults serialises search results for output.

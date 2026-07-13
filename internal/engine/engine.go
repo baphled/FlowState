@@ -2214,14 +2214,11 @@ func (e *Engine) EventBus() *eventbus.EventBus {
 // Side effects:
 //   - None.
 func (e *Engine) LastProvider() string {
-	e.mu.RLock()
-	if e.preferredProvider != "" {
-		providerName := e.preferredProvider
-		e.mu.RUnlock()
-		return providerName
-	}
-	e.mu.RUnlock()
-
+	// Check the failover manager's last-used provider first — this reflects
+	// the actual winner after a failover cascade (e.g. Z.AI after Anthropic
+	// hit a billing 400), rather than the manifest-configured head. Without
+	// this, every subsequent Stream() call pins the dead provider to the
+	// context and forces the failover hook to re-cascade on every turn.
 	if e.failoverManager != nil {
 		if p := e.failoverManager.LastProvider(); p != "" {
 			return p
@@ -2230,6 +2227,12 @@ func (e *Engine) LastProvider() string {
 		if len(prefs) > 0 {
 			return prefs[0].Provider
 		}
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.preferredProvider != "" {
+		return e.preferredProvider
 	}
 	if e.chatProvider != nil {
 		return e.chatProvider.Name()
@@ -2246,14 +2249,9 @@ func (e *Engine) LastProvider() string {
 // Side effects:
 //   - None.
 func (e *Engine) LastModel() string {
-	e.mu.RLock()
-	if e.preferredModel != "" {
-		modelName := e.preferredModel
-		e.mu.RUnlock()
-		return modelName
-	}
-	e.mu.RUnlock()
-
+	// Check the failover manager's last-used model first — mirrors
+	// LastProvider() so the model always reflects the actual winner
+	// after a failover cascade, not the manifest-configured head.
 	if e.failoverManager != nil {
 		if m := e.failoverManager.LastModel(); m != "" {
 			return m
@@ -2262,6 +2260,12 @@ func (e *Engine) LastModel() string {
 		if len(prefs) > 0 {
 			return prefs[0].Model
 		}
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.preferredModel != "" {
+		return e.preferredModel
 	}
 	return ""
 }
@@ -2809,6 +2813,18 @@ func (e *Engine) effectiveAllowedToolsForCtxLocked(ctx context.Context) map[stri
 	// see effectiveAllowedToolsForCtx, which now RLocks even the bound
 	// path for this read.
 	allowed = e.capToolsetAtSwarmLeadLocked(ctx, allowed, turnManifestID)
+
+	if override := session.ToolsAllowlistOverrideFromContext(ctx); len(override) > 0 {
+		overrideSet := make(map[string]bool, len(override))
+		for _, name := range override {
+			overrideSet[name] = true
+		}
+		for name := range allowed {
+			if !overrideSet[name] {
+				delete(allowed, name)
+			}
+		}
+	}
 
 	if permissionmode.FromContext(ctx) != permissionmode.ModePlan {
 		return allowed
@@ -3388,7 +3404,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 	providerChunks, err := e.streamFromProvider(streamCtx, &req)
 	e.publishProviderRequestEventCtx(streamCtx, sessionID, req)
 	if err != nil {
-		e.publishProviderErrorEventCtx(streamCtx, sessionID, "stream_init", err)
+		e.publishProviderErrorEventCtx(streamCtx, sessionID, "stream_init", &req, err)
 		return nil, err
 	}
 
@@ -4332,6 +4348,122 @@ func (e *Engine) streamWithToolLoop(
 			return false, true
 		}
 	}
+	type deliveryRetryAction int
+	const (
+		deliveryRetryNone deliveryRetryAction = iota
+		deliveryRetryContinue
+		deliveryRetryStop
+	)
+	// maybeCompactForRetry compacts the session if the context is large before retrying.
+	// This prevents timeout-based failures when retrying with large contexts.
+	maybeCompactForRetry := func() {
+		if e == nil || e.store == nil || e.tokenCounter == nil {
+			return
+		}
+		// Estimate context size - use message count as a proxy for token pressure
+		// When provider failures cascade through all backends, we need to
+		// reduce context size before retry to avoid repeated timeouts.
+		messageCount := len(messages)
+		if messageCount > 50 {
+			slog.Info("delivery retry: context large, triggering compaction before retry",
+				"session", sessionID, "message_count", messageCount)
+			summary, fired := e.CompactNow(ctx, sessionID)
+			if fired {
+				slog.Info("delivery retry: compaction succeeded, rebuilding context window",
+					"session", sessionID, "summary_length", len(summary))
+				// Rebuild messages from compacted session
+				rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID)
+				if len(rebuilt) > 0 {
+					// Preserve the corrective message we just added
+					if len(messages) > 0 {
+						rebuilt = append(rebuilt, messages[len(messages)-1])
+					}
+					messages = rebuilt
+				}
+			} else {
+				slog.Warn("delivery retry: compaction failed or skipped, retrying with original context",
+					"session", sessionID, "message_count", messageCount)
+			}
+		}
+	}
+
+	maybeRetryDelivery := func(onStop func()) deliveryRetryAction {
+		if !e.requiresDeliveryToolCtx(ctx) || e.deliveryToolCompleted(sessionID) {
+			return deliveryRetryNone
+		}
+		if deliveryRetries >= maxDeliveryRetries {
+			slog.Warn("delivery tool not called after max retries, completing with warning",
+				"session", sessionID,
+				"delivery_retries", deliveryRetries,
+			)
+			onStop()
+			return deliveryRetryStop
+		}
+		deliveryRetries++
+		slog.Warn("delivery tool not called, retrying with corrective message",
+			"session", sessionID,
+			"attempt", deliveryRetries,
+			"max_attempts", maxDeliveryRetries,
+		)
+		messages = append(messages, provider.Message{
+			Role:    "user",
+			Content: "Your previous response narrated an intent to call a tool but did not actually call it. You MUST call one of the delivery tools now to persist your results. Do not respond with prose — call the tool.",
+		})
+		var streamErr error
+		retryCtx := ctx
+		if deliveryTools := e.deliveryToolsForCtx(ctx); len(deliveryTools) > 0 {
+			retryCtx = session.WithToolsAllowlistOverride(retryCtx, deliveryTools)
+		}
+		maybeCompactForRetry()
+		providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
+		if streamErr != nil {
+			slog.Error("delivery tool retry stream failed", "session", sessionID, "error", streamErr)
+
+			if retryAt, ok := e.SoonestProviderRetry(); ok {
+				slog.Info("delivery retry: providers rate-limited, waiting for cooldown",
+					"session", sessionID, "retry_at", retryAt, "wait", time.Until(retryAt))
+
+				e.bus.Publish(events.EventProviderRequestRetry,
+					events.NewProviderRequestRetryEvent(
+						events.ProviderRequestRetryEventData{
+							SessionID:    sessionID,
+							AgentID:      e.activeAgentID(ctx),
+							ProviderName: e.lastProviderCtx(ctx),
+							ModelName:    e.lastModelCtx(ctx),
+							Reason:       "delivery_cooldown_wait",
+							Attempt:      deliveryRetries,
+						}))
+
+				if retry, stop := waitForProviderRetry(retryAt); retry {
+					deliveryRetries++
+					slog.Warn("delivery tool not called, retrying after provider cooldown",
+						"session", sessionID, "attempt", deliveryRetries)
+					maybeCompactForRetry()
+					providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt+1)
+					if streamErr != nil {
+						slog.Error("delivery tool retry stream failed after provider cooldown",
+							"session", sessionID, "error", streamErr)
+						onStop()
+						return deliveryRetryStop
+					}
+					attempt++
+					e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+					return deliveryRetryContinue
+				} else if stop {
+					slog.Error("delivery retry cancelled during cooldown wait",
+						"session", sessionID)
+					onStop()
+					return deliveryRetryStop
+				}
+			}
+
+			onStop()
+			return deliveryRetryStop
+		}
+		attempt++
+		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+		return deliveryRetryContinue
+	}
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
 		if result.done {
@@ -4452,6 +4584,14 @@ func (e *Engine) streamWithToolLoop(
 				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				switch maybeRetryDelivery(func() {
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+				}) {
+				case deliveryRetryContinue:
+					continue
+				case deliveryRetryStop:
+					return
+				}
 				updateTodoContinuationProgress(incompletes)
 				if noProgressContinuations >= maxNoProgressContinuations {
 					if retryAt, ok := e.SoonestProviderRetry(); ok {
@@ -4537,71 +4677,13 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
-			if e.requiresDeliveryToolCtx(ctx) && !e.deliveryToolCompleted(sessionID) {
-				if deliveryRetries < maxDeliveryRetries {
-					deliveryRetries++
-					slog.Warn("delivery tool not called, retrying with corrective message",
-						"session", sessionID,
-						"attempt", deliveryRetries,
-						"max_attempts", maxDeliveryRetries,
-					)
-					messages = append(messages, provider.Message{
-						Role:    "user",
-						Content: "Your previous response narrated an intent to call a tool but did not actually call it. You MUST call one of the delivery tools now to persist your results. Do not respond with prose — call the tool.",
-					})
-					var streamErr error
-					providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
-					if streamErr != nil {
-						slog.Error("delivery tool retry stream failed", "session", sessionID, "error", streamErr)
-
-						if retryAt, ok := e.SoonestProviderRetry(); ok {
-							slog.Info("delivery retry: providers rate-limited, waiting for cooldown",
-								"session", sessionID, "retry_at", retryAt, "wait", time.Until(retryAt))
-
-							e.bus.Publish(events.EventProviderRequestRetry,
-								events.NewProviderRequestRetryEvent(
-									events.ProviderRequestRetryEventData{
-										SessionID:    sessionID,
-										AgentID:      e.activeAgentID(ctx),
-										ProviderName: e.lastProviderCtx(ctx),
-										ModelName:    e.lastModelCtx(ctx),
-										Reason:       "delivery_cooldown_wait",
-										Attempt:      deliveryRetries,
-									}))
-
-							if retry, stop := waitForProviderRetry(retryAt); retry {
-								deliveryRetries++
-								slog.Warn("delivery tool not called, retrying after provider cooldown",
-									"session", sessionID, "attempt", deliveryRetries)
-								providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt+1)
-								if streamErr != nil {
-									slog.Error("delivery tool retry stream failed after provider cooldown",
-										"session", sessionID, "error", streamErr)
-									e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
-									return
-								}
-								attempt++
-								e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
-								continue
-							} else if stop {
-								slog.Error("delivery retry cancelled during cooldown wait",
-									"session", sessionID)
-								e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
-								return
-							}
-						}
-
-						e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
-						return
-					}
-					attempt++
-					e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
-					continue
-				}
-				slog.Warn("delivery tool not called after max retries, completing with warning",
-					"session", sessionID,
-					"delivery_retries", deliveryRetries,
-				)
+			switch maybeRetryDelivery(func() {
+				e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+			}) {
+			case deliveryRetryContinue:
+				continue
+			case deliveryRetryStop:
+				return
 			}
 			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
 			return
@@ -4609,6 +4691,14 @@ func (e *Engine) streamWithToolLoop(
 
 		if len(result.toolCalls) == 0 {
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				switch maybeRetryDelivery(func() {
+					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+				}) {
+				case deliveryRetryContinue:
+					continue
+				case deliveryRetryStop:
+					return
+				}
 				updateTodoContinuationProgress(incompletes)
 				if noProgressContinuations >= maxNoProgressContinuations {
 					if retryAt, ok := e.SoonestProviderRetry(); ok {
@@ -4954,6 +5044,20 @@ func (e *Engine) streamWithToolLoop(
 				continue
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				switch maybeRetryDelivery(func() {
+					e.warnDeliveryToolBypassCtx(ctx, sessionID)
+					outChan <- provider.StreamChunk{
+						Done:       true,
+						StopReason: session.StopReasonToolLoopExceeded,
+						ModelID:    e.lastModelCtx(ctx),
+						ProviderID: e.lastProviderCtx(ctx),
+					}
+				}) {
+				case deliveryRetryContinue:
+					continue
+				case deliveryRetryStop:
+					return
+				}
 				updateTodoContinuationProgress(incompletes)
 				if noProgressContinuations >= maxNoProgressContinuations {
 					if retryAt, ok := e.SoonestProviderRetry(); ok {
@@ -5443,6 +5547,7 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 //
 // Side effects:
 //   - Publishes provider.request.retry and provider.request events on the bus.
+//
 // retryStreamForToolResultWithTools is the internal implementation
 // shared by retryStreamForToolResult and retryStreamForToolResultNoSchemas.
 // The caller supplies the tool schemas directly; passing nil or an empty
@@ -5492,7 +5597,7 @@ func (e *Engine) retryStreamForToolResultWithTools(
 	chunks, streamErr := e.streamFromProvider(ctx, &toolReq)
 	e.publishProviderRequestEventCtx(ctx, sessionID, toolReq)
 	if streamErr != nil {
-		e.publishProviderErrorEventCtx(ctx, sessionID, "stream_init", streamErr)
+		e.publishProviderErrorEventCtx(ctx, sessionID, "stream_init", &toolReq, streamErr)
 		return nil, streamErr
 	}
 	return chunks, nil
@@ -6308,6 +6413,17 @@ func (e *Engine) requiresDeliveryToolCtx(ctx context.Context) bool {
 		return len(m.Capabilities.DeliveryTools) > 0
 	}
 	return e.requiresDeliveryTool()
+}
+
+// deliveryToolsForCtx returns the bound manifest's delivery tools when
+// present, falling back to the engine manifest otherwise.
+func (e *Engine) deliveryToolsForCtx(ctx context.Context) []string {
+	if m, ok := manifestFromContext(ctx); ok {
+		return append([]string(nil), m.Capabilities.DeliveryTools...)
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return append([]string(nil), e.manifest.Capabilities.DeliveryTools...)
 }
 
 // deliveryToolCompleted reports whether a delivery tool was successfully
@@ -10192,18 +10308,27 @@ func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args m
 // publishProviderErrorEvent. Uses the in-flight stream's bound
 // manifest (when present) for AgentID stamping so concurrent
 // streams' error events stay correctly attributed.
-func (e *Engine) publishProviderErrorEventCtx(ctx context.Context, sessionID string, phase string, err error) {
-	if e.bus == nil {
-		return
+func (e *Engine) publishProviderErrorEventCtx(ctx context.Context, sessionID string, phase string, req *provider.ChatRequest, err error) {
+	stats := provider.RequestDebugStats{}
+	estimatedTokens := 0
+	if req != nil {
+		stats = provider.RequestStats(*req)
+		if e != nil && e.tokenCounter != nil {
+			estimatedTokens = e.estimateRequestTokens(req)
+		}
 	}
 
 	data := events.ProviderErrorEventData{
-		SessionID:    sessionID,
-		AgentID:      e.activeAgentID(ctx),
-		ProviderName: e.LastProvider(),
-		ModelName:    e.LastModel(),
-		Error:        err,
-		Phase:        phase,
+		SessionID:            sessionID,
+		AgentID:              e.activeAgentID(ctx),
+		ProviderName:         e.LastProvider(),
+		ModelName:            e.LastModel(),
+		Error:                err,
+		Phase:                phase,
+		Stage:                phase,
+		MessageCount:         stats.MessageCount,
+		RequestBytes:         stats.RequestBytes,
+		EstimatedInputTokens: estimatedTokens,
 	}
 
 	var provErr *provider.Error
@@ -10213,7 +10338,40 @@ func (e *Engine) publishProviderErrorEventCtx(ctx context.Context, sessionID str
 		data.HTTPStatus = provErr.HTTPStatus
 		data.IsRetriable = provErr.IsRetriable
 	}
-	e.bus.Publish(events.EventProviderError, events.NewProviderErrorEvent(data))
+	if conc, ok := e.currentProviderConcurrencyStats(data.ProviderName); ok {
+		data.InFlight = conc.InFlight
+		data.QueueDepth = conc.QueueDepth
+		data.MaxConcurrent = conc.MaxConcurrent
+	}
+	slog.Warn("provider request failed",
+		"session_id", data.SessionID,
+		"agent_id", data.AgentID,
+		"provider", data.ProviderName,
+		"model", data.ModelName,
+		"phase", data.Phase,
+		"stage", data.Stage,
+		"message_count", data.MessageCount,
+		"request_bytes", data.RequestBytes,
+		"estimated_input_tokens", data.EstimatedInputTokens,
+		"in_flight", data.InFlight,
+		"queue_depth", data.QueueDepth,
+		"max_concurrent", data.MaxConcurrent,
+		"error", err,
+	)
+	if e.bus != nil {
+		e.bus.Publish(events.EventProviderError, events.NewProviderErrorEvent(data))
+	}
+}
+
+func (e *Engine) currentProviderConcurrencyStats(providerName string) (provider.ConcurrencyDebugStats, bool) {
+	if e == nil || e.providerRegistry == nil || providerName == "" {
+		return provider.ConcurrencyDebugStats{}, false
+	}
+	p, err := e.providerRegistry.Get(providerName)
+	if err != nil {
+		return provider.ConcurrencyDebugStats{}, false
+	}
+	return provider.ConcurrencyStats(p)
 }
 
 // applyCategoryParams overlays sampling and budget hints from the
