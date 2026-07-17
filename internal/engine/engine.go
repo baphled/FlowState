@@ -257,6 +257,12 @@ type Engine struct {
 	// describing a tool call without actually making one.
 	deliveryToolCalled map[string]bool
 
+	// sessionManifests stores the agent manifest for each session.
+	// Required for child sessions (delegation) where ctx carries the
+	// parent's manifest, so we look up the child's manifest directly.
+	// Guarded by e.mu.
+	sessionManifests map[string]*agent.Manifest
+
 	// sessionComplexity stores the estimated TaskComplexity for each
 	// session, set from the first user message via EstimateComplexity.
 	// The strict gate consults this map: only ComplexityComplex sessions
@@ -1125,6 +1131,7 @@ func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 		sessionTodoLastSnapshot:          make(map[string][]todo.Item),
 		skillLoadCalled:                  make(map[string]bool),
 		deliveryToolCalled:               make(map[string]bool),
+		sessionManifests:                 make(map[string]*agent.Manifest),
 		sessionComplexity:                make(map[string]TaskComplexity),
 		knownSkillsFunc:                  cfg.KnownSkillsFunc,
 		lastUsagePayload:                 make(map[string]string),
@@ -2384,6 +2391,14 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.systemPromptDirty = true
 	e.cachedToolSchemas = nil
 	sessionID := e.currentSessionID
+
+	// Store the session-scoped manifest for delivery tool tracking
+	// in child sessions (delegation). This ensures that when a child
+	// agent calls a delivery tool, we use its manifest, not the parent's.
+	if e.sessionManifests == nil {
+		e.sessionManifests = make(map[string]*agent.Manifest)
+	}
+	e.sessionManifests[sessionID] = &manifest
 
 	if e.skillsResolver != nil {
 		e.skills = e.skillsResolver(manifest)
@@ -6608,20 +6623,26 @@ func (e *Engine) deliveryToolCompleted(sessionID string) bool {
 // markDeliveryToolCalledCtx records that a delivery tool was called for the
 // given session. The toolName must match one of the manifest's
 // DeliveryTools entries; calls for non-delivery tools are ignored.
-// Resolves the delivery tool list from the bound manifest when available.
+// Resolves the delivery tool list from the session manifest, prioritising
+// sessionManifests (for child sessions in delegation) over ctx binding.
 //
 // The args parameter is inspected for tool-specific delivery semantics:
 //   - coordination_store: only counts as delivery when operation=set (write).
 //     Calls for get/list/delete are not delivery actions.
 func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string, toolName string, args map[string]any) {
 	var deliveryTools []string
-	if m, ok := manifestFromContext(ctx); ok {
+	// Prioritise session-scoped manifest (child sessions in delegation)
+	// over ctx binding (which carries parent manifest in delegation).
+	e.mu.RLock()
+	if m, ok := e.sessionManifests[sessionID]; ok {
+		deliveryTools = m.Capabilities.DeliveryTools
+	} else if m, ok := manifestFromContext(ctx); ok {
 		deliveryTools = m.Capabilities.DeliveryTools
 	} else {
-		e.mu.RLock()
 		deliveryTools = e.manifest.Capabilities.DeliveryTools
-		e.mu.RUnlock()
 	}
+	e.mu.RUnlock()
+
 	if len(deliveryTools) == 0 {
 		return
 	}
@@ -6659,15 +6680,20 @@ func (e *Engine) warnDeliveryToolBypassCtx(ctx context.Context, sessionID string
 	var agentID string
 	var deliveryTools []string
 
-	if m, ok := manifestFromContext(ctx); ok {
+	// Prioritise session-scoped manifest (child sessions in delegation)
+	// over ctx binding (which carries parent manifest in delegation).
+	e.mu.RLock()
+	if m, ok := e.sessionManifests[sessionID]; ok {
+		deliveryTools = m.Capabilities.DeliveryTools
+		agentID = m.ID
+	} else if m, ok := manifestFromContext(ctx); ok {
 		deliveryTools = m.Capabilities.DeliveryTools
 		agentID = m.ID
 	} else {
-		e.mu.RLock()
 		deliveryTools = e.manifest.Capabilities.DeliveryTools
 		agentID = e.manifest.ID
-		e.mu.RUnlock()
 	}
+	e.mu.RUnlock()
 
 	if len(deliveryTools) == 0 {
 		return
