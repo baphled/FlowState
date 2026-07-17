@@ -829,3 +829,65 @@ func newGateProxEngineWithTools(
 	})
 	return eng, store
 }
+
+// Slice A — mid-tool-loop ratio-tier compaction (serve-mode wiring).
+//
+// buildContextWindow evaluates the configured ratio threshold every
+// turn, but a long tool-loop turn accumulates tool results between
+// batches WITHOUT re-entering buildContextWindow. The only size check
+// such a turn receives is emitMidToolLoopRefresh. Pre-Slice-A that
+// check consulted gate-proximity alone; Slice-A-v1 added the ratio
+// tier but weighed e.store, which serve mode does not populate with
+// the session-scoped window — so the production log showed the turn
+// still growing to 270 messages / 515 KB unchecked. Slice-A-v2 wires
+// the mid-loop decision to the LIVE tool-loop slice via the explicit
+// variants, mirroring buildContextWindow. These specs leave the engine
+// store unseeded and pass the wave as an explicit slice, modelling the
+// serve-mode split that defeated v1.
+func gateProxMessageSlice(n int) []provider.Message {
+	words := make([]string, gateProxWordsPerMessage)
+	for i := range words {
+		words[i] = "w"
+	}
+	content := strings.Join(words, " ")
+	out := make([]provider.Message, n)
+	for i := range n {
+		out[i] = provider.Message{Role: "assistant", Content: content}
+	}
+	return out
+}
+
+var _ = Describe("Engine mid-tool-loop ratio-tier compaction", func() {
+	It("fires compaction at the ratio tier on the live tool-loop slice, not the store", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, _ := newGateProxEngine(summariser, true, 0.75)
+
+		// The store stays EMPTY — serve mode sources the window
+		// session-scoped, so e.store does not carry the wave. The
+		// live slice carries 80_000 tokens: ratio 0.80 > 0.75 (fires)
+		// but under the 90_904 gate-proximity boundary (gate-prox
+		// quiet). v1 read e.store here and saw zero tokens.
+		msgs := gateProxMessageSlice(80)
+
+		fired := eng.EmitMidToolLoopRefreshExplicitForTest(context.Background(), "sess-mid-loop-ratio", msgs)
+
+		Expect(fired).To(BeTrue(),
+			"mid-loop refresh must weigh the live tool-loop slice, not e.store, and fire when the ratio tier is crossed")
+		Expect(summariser.calls.Load()).To(Equal(int32(1)),
+			"the ratio tier must drive a summariser invocation mid-tool-loop")
+	})
+
+	It("stays silent mid-tool-loop when the live slice is under both boundaries", func() {
+		summariser := &recordingSummariser{response: buildSummaryJSON()}
+		eng, _ := newGateProxEngine(summariser, true, 0.75)
+
+		// 50_000 tokens on the live slice: ratio 0.50 < 0.75.
+		msgs := gateProxMessageSlice(50)
+
+		fired := eng.EmitMidToolLoopRefreshExplicitForTest(context.Background(), "sess-mid-loop-quiet", msgs)
+
+		Expect(fired).To(BeFalse(),
+			"mid-loop refresh must not fire when no tier is crossed")
+		Expect(summariser.calls.Load()).To(Equal(int32(0)))
+	})
+})

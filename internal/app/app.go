@@ -727,6 +727,7 @@ func setupPluginRuntime(cfg *config.AppConfig) *pluginRuntime {
 
 	registry := pluginpkg.NewRegistry()
 	healthManager := failover.NewHealthManager()
+	_ = healthManager.LoadState(healthManager.PersistPath()) // load persisted cooldowns across restarts
 	tiers := resolveFailoverTiers(cfg.Plugins.Failover.Tiers)
 	chain := failover.NewFallbackChain(buildFailoverProviders(cfg), tiers)
 	failoverHk := failover.NewHook(chain, healthManager)
@@ -2467,6 +2468,7 @@ func (a *App) createDelegateEngine(
 		Tools:                     a.buildToolsForManifestWithStore(manifest, store),
 		HookChain:                 hookChain,
 		ChainStore:                chainStore,
+		TokenCounter:              a.delegateTokenCounter(),
 		EventBus:                  bus,
 		FailoverManager:           childFailoverMgr,
 		MCPServerTools:            a.mcpServerTools,
@@ -2496,6 +2498,9 @@ func (a *App) createDelegateEngine(
 			a.backgroundManager.CancelAllForSession(sessionID)
 		})
 	}
+	if a.sessionManager != nil {
+		eng.SetSessionLookup(newSessionLookupAdapter(a.sessionManager))
+	}
 
 	var str streaming.Streamer = eng
 	if manifest.HarnessEnabled && a.Config != nil {
@@ -2507,6 +2512,21 @@ func (a *App) createDelegateEngine(
 		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, a.Config.DefaultProviderModel(), store)
 	}
 	return eng, str
+}
+
+func (a *App) delegateTokenCounter() ctxstore.TokenCounter {
+	if a == nil {
+		return nil
+	}
+	if a.Engine != nil {
+		if counter := a.Engine.TokenCounter(); counter != nil {
+			return counter
+		}
+	}
+	if a.plugins != nil && a.plugins.failoverManager != nil && a.Config != nil {
+		return ctxstore.NewTiktokenCounterWithResolver(a.plugins.failoverManager, a.Config.Providers.Default)
+	}
+	return ctxstore.NewTiktokenCounter()
 }
 
 // resolveDelegateSkills returns the skill directory and the resolved
@@ -2648,10 +2668,11 @@ func (a *App) buildToolsForManifestWithStore(manifest agent.Manifest, store coor
 		web.New(),
 	}
 
-	if a.Config != nil {
-		skillLoader := skill.NewFileSkillLoader(a.Config.SkillDir)
-		tools = append(tools, skilltool.New(skillLoader))
+	var skillLoader *skill.FileSkillLoader
+	if a.Config != nil && a.Config.SkillDir != "" {
+		skillLoader = skill.NewFileSkillLoader(a.Config.SkillDir)
 	}
+	tools = append(tools, skilltool.New(skillLoader))
 
 	if a.TodoStore != nil {
 		tools = append(tools,

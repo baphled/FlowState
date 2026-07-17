@@ -1344,22 +1344,43 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 //   - ErrSessionNotFound when no session matches the identifier.
 //   - session.ErrAttachmentNotFound when any id is not present in
 //     the session's attachment index.
-func (m *Manager) SendMessageWithAttachments(
+//
+// PrepareSendWithAttachments resolves attachments, reserves them, appends
+// the user message via PrepareSend, and promotes reservations to permanent
+// references. Returns the prepared context and agent ID for StartStream.
+//
+// When attachmentIDs is empty, delegates directly to PrepareSend.
+//
+// Expected:
+//   - ctx carries per-turn overrides.
+//   - sessionID identifies an existing session.
+//   - message is the raw user text.
+//   - attachmentIDs references previously uploaded attachments.
+//
+// Returns:
+//   - The prepared context (carrying session ID, prior messages, overrides,
+//     permission mode, attachments, and inflight cancel).
+//   - The resolved agent ID for streaming.
+//   - ErrSessionNotFound, attachment resolution errors, or errors from
+//     PrepareSend.
+//
+// Side effects:
+//   - Resolves and reserves attachments.
+//   - Appends user message and persists session.
+//   - Promotes reservations to permanent references.
+func (m *Manager) PrepareSendWithAttachments(
 	ctx context.Context, sessionID, message string, attachmentIDs []string,
-) (<-chan provider.StreamChunk, error) {
+) (context.Context, string, error) {
 	if len(attachmentIDs) == 0 {
-		return m.SendMessage(ctx, sessionID, message)
+		return m.PrepareSend(ctx, sessionID, message)
 	}
 	store := m.AttachmentStore()
 	materialised, err := store.Resolve(sessionID, attachmentIDs)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	atts := make([]provider.Attachment, 0, len(materialised))
 	for _, mat := range materialised {
-		// Plan §6 task-14: thread Kind through to provider.Attachment
-		// so the per-provider translator can discriminate image-vs-
-		// document blocks at request-build time.
 		atts = append(atts, provider.Attachment{
 			ID:               mat.Record.ID,
 			Kind:             mat.Record.Kind,
@@ -1368,50 +1389,51 @@ func (m *Manager) SendMessageWithAttachments(
 			SizeBytes:        mat.Record.SizeBytes,
 			Data:             mat.Data,
 		})
-		// Two-phase reference: reserve BEFORE dispatch so a sweeper
-		// firing mid-flight skips the entry. Released on the failure
-		// path below; promoted to a permanent MarkReferenced on the
-		// success path after we have the new message id.
 		store.MarkReserved(sessionID, mat.Record.ID)
 	}
 
 	ctx = WithAttachments(ctx, atts)
 
-	// Capture the prior message count so we can identify the freshly-
-	// appended user message id after SendMessage returns. SendMessage
-	// appends inside its critical section, so we can snapshot after.
 	priorCount := 0
 	if snap, err := m.SnapshotSession(sessionID); err == nil {
 		priorCount = len(snap.Messages)
 	}
 
-	ch, err := m.SendMessage(ctx, sessionID, message)
-	if err != nil {
+	preparedCtx, agentID, prepErr := m.PrepareSend(ctx, sessionID, message)
+	if prepErr != nil {
 		for _, id := range attachmentIDs {
 			store.ReleaseReservation(sessionID, id)
 		}
-		return nil, err
+		return nil, "", prepErr
 	}
 
-	// Promote reservations to permanent references on the new user
-	// message. The user message is the most recently appended entry.
 	if snap, snapErr := m.SnapshotSession(sessionID); snapErr == nil && len(snap.Messages) > priorCount {
 		msgID := snap.Messages[len(snap.Messages)-1].ID
 		for _, id := range attachmentIDs {
 			store.MarkReferenced(sessionID, id, msgID)
 		}
 	} else {
-		// Fallback: we could not find the new message id; release the
-		// reservations so the sweeper can reclaim. The provider call
-		// is still in flight on the returned channel — the attachment
-		// bytes have already been read into the in-memory slice on
-		// the engine side, so the request payload is safe.
 		for _, id := range attachmentIDs {
 			store.ReleaseReservation(sessionID, id)
 		}
 	}
 
-	return ch, nil
+	return preparedCtx, agentID, nil
+}
+
+// SendMessageWithAttachments resolves attachments, appends the user message,
+// and returns a channel of streaming response chunks.
+//
+// Convenience wrapper around PrepareSendWithAttachments + StartStream for
+// callers that need the synchronous (blocking) shape.
+func (m *Manager) SendMessageWithAttachments(
+	ctx context.Context, sessionID, message string, attachmentIDs []string,
+) (<-chan provider.StreamChunk, error) {
+	preparedCtx, agentID, err := m.PrepareSendWithAttachments(ctx, sessionID, message, attachmentIDs)
+	if err != nil {
+		return nil, err
+	}
+	return m.StartStream(preparedCtx, sessionID, agentID, message)
 }
 
 // SendMessage appends a user message to the session and returns a channel
@@ -1434,35 +1456,52 @@ func (m *Manager) SendMessageWithAttachments(
 //	delegation         -> assistant
 //	delegation_started -> assistant
 func (m *Manager) SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error) {
+	preparedCtx, agentID, err := m.PrepareSend(ctx, sessionID, message)
+	if err != nil {
+		return nil, err
+	}
+	return m.StartStream(preparedCtx, sessionID, agentID, message)
+}
+
+// PrepareSend appends the user message to the session, builds provider
+// messages from prior history, and returns the prepared context plus the
+// resolved agent ID. The returned context carries all per-turn values
+// (prior messages, provider/model overrides, permission mode, session ID,
+// inflight cancel) that StartStream needs to drive the provider call.
+//
+// Split from SendMessage so the dispatcher can append the user message
+// synchronously (making it available in the POST response snapshot) while
+// deferring the provider call to a background goroutine. This eliminates
+// the POST handler's blocking on time-to-first-chunk.
+//
+// Expected:
+//   - ctx carries per-turn overrides (StreamAgentOverrideKey, attachments).
+//   - sessionID identifies an existing session.
+//   - message is the raw user text.
+//
+// Returns:
+//   - A context.Context threaded with session ID, prior messages, model /
+//     provider overrides, permission mode, and an inflight cancel function.
+//   - The agent ID the streamer should drive under (honours override).
+//   - ErrSessionNotFound when the session does not exist.
+//
+// Side effects:
+//   - Appends a user message to the session and persists it.
+//   - Registers an inflight cancel function keyed by sessionID.
+//   - Seeds the engine's history store when prior messages exist.
+func (m *Manager) PrepareSend(ctx context.Context, sessionID string, message string) (context.Context, string, error) {
 	m.mu.Lock()
 	sess, ok := m.sessions[sessionID]
 	if !ok {
 		m.mu.Unlock()
-		return nil, ErrSessionNotFound
+		return nil, "", ErrSessionNotFound
 	}
 
-	// Resolve the agent ID for this turn once and stamp both the user
-	// message and the downstream streaming/accumulator path with the same
-	// value. Previously the user message was pinned to sess.AgentID (the
-	// creation agent) while the streaming path resolved to
-	// CurrentAgentID || AgentID, so a mid-session agent switch left the
-	// user's bubble rendering under the original agent and the assistant
-	// reply under the new one — see Bug Fixes/Agent Stamping Asymmetry.
 	agentID := sess.AgentID
 	if sess.CurrentAgentID != "" {
 		agentID = sess.CurrentAgentID
 	}
-	// userMessageAgent stamps the user message under the session's
-	// persistent agent — even when StreamAgentOverrideKey is set for an
-	// in-content @-mention redirect. The user typed this message inside
-	// the session's persistent agent's context; the redirect only
-	// affects the assistant's reply for this turn (Bug 1 / May 2026 —
-	// Option A per-turn override semantics).
 	userMessageAgent := agentID
-	// streamAgent is the agent that drives the streamer + accumulator
-	// for the assistant turn. The override redirects to a swarm lead
-	// without mutating the session record. Empty override falls through
-	// to the session's resolved agent.
 	if override := StreamAgentOverrideFromContext(ctx); override != "" {
 		agentID = override
 	}
@@ -1476,12 +1515,7 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 	sess.UpdatedAt = time.Now()
 	modelOverride := sess.CurrentModelID
 	providerOverride := sess.CurrentProviderID
-	// Snapshot the per-session permission mode under the lock so a
-	// concurrent UpdatePermissionMode call cannot tear the value
-	// between read and ctx-stamp. Permission Modes plan §4 Slice 1.
 	permMode := sess.PermissionMode
-	// Capture prior messages before releasing the lock so we can pass them
-	// to SeedHistory outside the critical section.
 	priorMessages := make([]Message, len(sess.Messages)-1)
 	copy(priorMessages, sess.Messages[:len(sess.Messages)-1])
 
@@ -1529,54 +1563,56 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		}
 	}
 
-	// Pre-populate the engine's in-memory context store with the session's
-	// historical messages so the agent retains context after a server restart.
-	// Only fires when the streamer implements streaming.HistorySeeder and the
-	// session has prior turns; the engine marks the session seeded after the
-	// first call so subsequent turns are not duplicated.
 	if seeder, ok := m.streamer.(streaming.HistorySeeder); ok && len(providerMsgs) > 0 {
 		seeder.SeedHistory(sessionID, providerMsgs)
 	}
 
-	// Wrap the context with WithCancel so CancelInflight can terminate the turn.
-	// Register the cancel function keyed by sessionID so a concurrent API call
-	// can cancel the in-flight turn. The cancel is deregistered when the turn
-	// completes (AccumulateStream closes its channel).
 	cancelCtx, cancel := context.WithCancel(ctx)
 	m.inflightMu.Lock()
 	m.inflight[sessionID] = cancel
 	m.inflightMu.Unlock()
 
-	// Start a monitor goroutine that deregisters the cancel when the turn is done
-	go func() {
-		// Wait for the turn to complete by checking if the cancel is still registered
-		// and the context is done. A better approach is to use a channel that gets
-		// closed by the turn completion — we'll handle that via a wrapper below.
-	}()
-
-	ctx = context.WithValue(cancelCtx, IDKey{}, sessionID)
-	// Attach the per-session prior history so the engine's
-	// buildContextWindow can source the model request payload from this
-	// session's messages alone, not from the shared FileContextStore that
-	// accumulates every session's turns. Without this, two concurrent
-	// sessions sharing one engine see each other's history in the model
-	// request — see session_integration_test.go cross-session isolation.
-	ctx = WithPriorMessages(ctx, providerMsgs)
+	preparedCtx := context.WithValue(cancelCtx, IDKey{}, sessionID)
+	preparedCtx = WithPriorMessages(preparedCtx, providerMsgs)
 	if providerOverride != "" {
-		ctx = context.WithValue(ctx, ProviderOverrideKey{}, providerOverride)
+		preparedCtx = context.WithValue(preparedCtx, ProviderOverrideKey{}, providerOverride)
 	}
 	if modelOverride != "" {
-		ctx = context.WithValue(ctx, ModelOverrideKey{}, modelOverride)
+		preparedCtx = context.WithValue(preparedCtx, ModelOverrideKey{}, modelOverride)
 	}
-	// Stamp the session's permission mode onto ctx so the engine's
-	// tool-dispatch path can hand it to pathguard. permissionmode.WithMode
-	// short-circuits on empty input — legacy sessions persisted before
-	// the field existed flow through unchanged and FromContext returns
-	// the canonical "default". Permission Modes plan §4 Slice 1.
-	ctx = permissionmode.WithMode(ctx, permMode)
+	preparedCtx = permissionmode.WithMode(preparedCtx, permMode)
+
+	return preparedCtx, agentID, nil
+}
+
+// StartStream drives the provider stream using the context returned by
+// PrepareSend and returns a channel of response chunks. The caller must
+// pass the exact context and agentID returned by PrepareSend.
+//
+// On error the inflight cancel registered by PrepareSend is cleaned up.
+// On success the returned channel is wrapped so that the inflight cancel
+// is deregistered when the channel drains to completion.
+//
+// Expected:
+//   - ctx is the context returned by PrepareSend.
+//   - sessionID matches the session PrepareSend appended to.
+//   - agentID is the resolved agent ID from PrepareSend.
+//   - message is the raw user text (needed by engine.Stream for
+//     buildContextWindow).
+//
+// Returns:
+//   - A buffered channel of streaming chunks. Closed when the stream
+//     completes.
+//   - Any error from the streamer's Stream call.
+//
+// Side effects:
+//   - Calls m.streamer.Stream (the engine), which blocks until the
+//     provider emits its first chunk (failover hook peek).
+//   - Spawns an AccumulateStream goroutine and a recorder-tee goroutine.
+//   - Deregisters the inflight cancel when the channel drains.
+func (m *Manager) StartStream(ctx context.Context, sessionID string, agentID string, message string) (<-chan provider.StreamChunk, error) {
 	rawCh, err := m.streamer.Stream(ctx, agentID, message)
 	if err != nil {
-		// Clean up the registered cancel on stream error
 		m.inflightMu.Lock()
 		delete(m.inflight, sessionID)
 		m.inflightMu.Unlock()
@@ -1585,11 +1621,7 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 
 	accumCh := AccumulateStream(ctx, m, sessionID, agentID, rawCh)
 
-	// Wrap the accumCh to deregister the cancel when the turn completes.
-	// We do this at the outermost layer (before recorder tee, before return)
-	// so the cancel is deregistered only when all consumers have finished.
 	finalCh := make(chan provider.StreamChunk, 64)
-	// Capture sessionID explicitly to avoid race detector issues with closure variable access
 	capturedSessionID := sessionID
 	hasRecorder := m.recorder != nil
 	go func() {
@@ -1601,13 +1633,11 @@ func (m *Manager) SendMessage(ctx context.Context, sessionID string, message str
 		}()
 
 		if hasRecorder {
-			// If we have a recorder, tee the chunks
 			for chunk := range accumCh {
 				m.recorder.RecordChunk(capturedSessionID, chunk)
 				finalCh <- chunk
 			}
 		} else {
-			// Otherwise, just forward
 			for chunk := range accumCh {
 				finalCh <- chunk
 			}

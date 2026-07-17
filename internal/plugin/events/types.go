@@ -154,4 +154,11 @@ const (
 	EventPermissionGranted  = "permission.granted"
 	EventPermissionDenied   = "permission.denied"
 	EventPermissionTimeout  = "permission.timeout"
+	// EventProviderStatusChanged fires when a provider's quota/cooldown
+	// status transitions (e.g. healthy→rate_limited, rate_limited→healthy).
+	// Payload: ProviderStatusChangedEventData. Published by the engine's
+	// stampRateLimitedUntil when it detects a status change. Consumed by
+	// the API layer's SSE fan-out for real-time provider status updates.
+	// ADR 002 — Provider Status SSE Side-Channel (July 2026).
+	EventProviderStatusChanged = "provider.status_changed"
 )

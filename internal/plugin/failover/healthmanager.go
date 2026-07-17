@@ -52,6 +52,19 @@ func (hm *HealthManager) SetPersistPath(path string) {
 	hm.mu.Unlock()
 }
 
+// PersistPath returns the current path used for persisting rate-limit state.
+//
+// Returns:
+//   - The filesystem path where health state is persisted.
+//
+// Side effects:
+//   - None.
+func (hm *HealthManager) PersistPath() string {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	return hm.persistPath
+}
+
 // MarkRateLimited marks a provider/model as rate-limited until retryAfter.
 //
 // Expected: provider and model are non-empty strings, retryAfter is in the future.

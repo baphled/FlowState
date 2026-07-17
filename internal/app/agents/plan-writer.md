@@ -26,6 +26,8 @@ capabilities:
     - skill_load
     - coordination_store
     - plan_write
+  delivery_tools:
+    - coordination_store
   skills:
     - research
     - critical-thinking

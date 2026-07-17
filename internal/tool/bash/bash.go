@@ -57,7 +57,7 @@ func (t *Tool) Name() string {
 // Side effects:
 //   - None.
 func (t *Tool) Description() string {
-	return "Execute bash commands with a 30-second timeout"
+	return "Execute bash commands with a 30-second timeout. For writing file content, use the `write` tool instead — it handles path validation, directory creation, and proper file permissions automatically. Only use bash for commands that genuinely need a shell (build tools, git operations, process management)."
 }
 
 // Schema returns the JSON schema for the bash tool arguments.

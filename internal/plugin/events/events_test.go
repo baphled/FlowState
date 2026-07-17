@@ -275,16 +275,26 @@ var _ = Describe("Events", func() {
 	Describe("ProviderErrorEvent", func() {
 		It("implements Event interface and sets fields", func() {
 			data := events.ProviderErrorEventData{
-				SessionID:    "sess1",
-				AgentID:      "test-agent",
-				ProviderName: "anthropic",
-				ModelName:    "claude-3",
-				Error:        errors.New("auth failed"),
-				Phase:        "stream_init",
-				ErrorType:    string(provider.ErrorTypeAuthFailure),
-				ErrorCode:    "401",
-				HTTPStatus:   401,
-				IsRetriable:  false,
+				SessionID:             "sess1",
+				AgentID:               "test-agent",
+				ProviderName:          "anthropic",
+				ModelName:             "claude-3",
+				Error:                 errors.New("auth failed"),
+				Phase:                 "stream_init",
+				Stage:                 "invoke",
+				ErrorType:             string(provider.ErrorTypeAuthFailure),
+				ErrorCode:             "401",
+				HTTPStatus:            401,
+				IsRetriable:           false,
+				DurationMS:            123,
+				TimeoutMS:             60000,
+				ParentDeadlineClamped: true,
+				MessageCount:          7,
+				RequestBytes:          2048,
+				EstimatedInputTokens:  512,
+				InFlight:              1,
+				QueueDepth:            2,
+				MaxConcurrent:         3,
 			}
 			ts := time.Now().Add(-time.Minute)
 			evt := events.NewProviderErrorEvent(data, ts)
@@ -296,10 +306,20 @@ var _ = Describe("Events", func() {
 			Expect(evt.Data.ModelName).To(Equal("claude-3"))
 			Expect(evt.Data.Error).To(MatchError("auth failed"))
 			Expect(evt.Data.Phase).To(Equal("stream_init"))
+			Expect(evt.Data.Stage).To(Equal("invoke"))
 			Expect(evt.Data.ErrorType).To(Equal(string(provider.ErrorTypeAuthFailure)))
 			Expect(evt.Data.ErrorCode).To(Equal("401"))
 			Expect(evt.Data.HTTPStatus).To(Equal(401))
 			Expect(evt.Data.IsRetriable).To(BeFalse())
+			Expect(evt.Data.DurationMS).To(Equal(int64(123)))
+			Expect(evt.Data.TimeoutMS).To(Equal(int64(60000)))
+			Expect(evt.Data.ParentDeadlineClamped).To(BeTrue())
+			Expect(evt.Data.MessageCount).To(Equal(7))
+			Expect(evt.Data.RequestBytes).To(Equal(2048))
+			Expect(evt.Data.EstimatedInputTokens).To(Equal(512))
+			Expect(evt.Data.InFlight).To(Equal(1))
+			Expect(evt.Data.QueueDepth).To(Equal(2))
+			Expect(evt.Data.MaxConcurrent).To(Equal(3))
 		})
 
 		It("defaults timestamp to now when not provided", func() {
@@ -316,16 +336,26 @@ var _ = Describe("Events", func() {
 
 		It("serialises to JSON with error as string", func() {
 			data := events.ProviderErrorEventData{
-				SessionID:    "sess1",
-				AgentID:      "test-agent",
-				ProviderName: "anthropic",
-				ModelName:    "claude-3",
-				Error:        errors.New("rate limited"),
-				Phase:        "failover",
-				ErrorType:    string(provider.ErrorTypeRateLimit),
-				ErrorCode:    "429",
-				HTTPStatus:   429,
-				IsRetriable:  true,
+				SessionID:             "sess1",
+				AgentID:               "test-agent",
+				ProviderName:          "anthropic",
+				ModelName:             "claude-3",
+				Error:                 errors.New("rate limited"),
+				Phase:                 "failover",
+				Stage:                 "first_byte_timeout",
+				ErrorType:             string(provider.ErrorTypeRateLimit),
+				ErrorCode:             "429",
+				HTTPStatus:            429,
+				IsRetriable:           true,
+				DurationMS:            456,
+				TimeoutMS:             60000,
+				ParentDeadlineClamped: true,
+				MessageCount:          9,
+				RequestBytes:          8192,
+				EstimatedInputTokens:  1024,
+				InFlight:              1,
+				QueueDepth:            4,
+				MaxConcurrent:         2,
 			}
 			raw, err := json.Marshal(data)
 			Expect(err).NotTo(HaveOccurred())
@@ -334,11 +364,21 @@ var _ = Describe("Events", func() {
 			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
 			Expect(parsed["error"]).To(Equal("rate limited"))
 			Expect(parsed["phase"]).To(Equal("failover"))
+			Expect(parsed["stage"]).To(Equal("first_byte_timeout"))
 			Expect(parsed["provider_name"]).To(Equal("anthropic"))
 			Expect(parsed["error_type"]).To(Equal("rate_limit"))
 			Expect(parsed["error_code"]).To(Equal("429"))
 			Expect(parsed["http_status"]).To(Equal(float64(429)))
 			Expect(parsed["is_retriable"]).To(BeTrue())
+			Expect(parsed["duration_ms"]).To(Equal(float64(456)))
+			Expect(parsed["timeout_ms"]).To(Equal(float64(60000)))
+			Expect(parsed["parent_deadline_clamped"]).To(BeTrue())
+			Expect(parsed["message_count"]).To(Equal(float64(9)))
+			Expect(parsed["request_bytes"]).To(Equal(float64(8192)))
+			Expect(parsed["estimated_input_tokens"]).To(Equal(float64(1024)))
+			Expect(parsed["in_flight"]).To(Equal(float64(1)))
+			Expect(parsed["queue_depth"]).To(Equal(float64(4)))
+			Expect(parsed["max_concurrent"]).To(Equal(float64(2)))
 		})
 
 		It("serialises to JSON with empty error when nil", func() {
@@ -352,10 +392,20 @@ var _ = Describe("Events", func() {
 			var parsed map[string]any
 			Expect(json.Unmarshal(raw, &parsed)).To(Succeed())
 			Expect(parsed).NotTo(HaveKey("error"))
+			Expect(parsed).NotTo(HaveKey("stage"))
 			Expect(parsed).NotTo(HaveKey("error_type"))
 			Expect(parsed).NotTo(HaveKey("error_code"))
 			Expect(parsed).NotTo(HaveKey("http_status"))
 			Expect(parsed).NotTo(HaveKey("is_retriable"))
+			Expect(parsed).NotTo(HaveKey("duration_ms"))
+			Expect(parsed).NotTo(HaveKey("timeout_ms"))
+			Expect(parsed).NotTo(HaveKey("parent_deadline_clamped"))
+			Expect(parsed).NotTo(HaveKey("message_count"))
+			Expect(parsed).NotTo(HaveKey("request_bytes"))
+			Expect(parsed).NotTo(HaveKey("estimated_input_tokens"))
+			Expect(parsed).NotTo(HaveKey("in_flight"))
+			Expect(parsed).NotTo(HaveKey("queue_depth"))
+			Expect(parsed).NotTo(HaveKey("max_concurrent"))
 		})
 	})
 

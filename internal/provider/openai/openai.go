@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/openaicompat"
@@ -14,7 +17,16 @@ import (
 	"github.com/openai/openai-go/option"
 )
 
-var errAPIKeyRequired = errors.New("OpenAI API key is required")
+var (
+	errAPIKeyRequired     = errors.New("OpenAI API key is required")
+	errOAuthTokenRequired = errors.New("OpenAI OAuth token is required")
+)
+
+// oauthTokenPrefix is the prefix for OpenAI OAuth access tokens. OpenAI OAuth
+// tokens are JWTs that do not carry a fixed prefix like Anthropic's
+// "sk-ant-oat01-". We detect OAuth by checking the UseOAuth config flag rather
+// than a token prefix.
+const oauthTokenPrefix = "eyJ"
 
 // streamGuardHeaderTimeout is the time-to-first-byte (response-header) ceiling
 // applied to the OpenAI client via shared.StreamGuardHTTPClient. The openai-go
@@ -25,9 +37,125 @@ var errAPIKeyRequired = errors.New("OpenAI API key is required")
 // SetStreamGuardHeaderTimeoutForTest (export_test.go).
 var streamGuardHeaderTimeout = shared.DefaultResponseHeaderTimeout
 
+// TokenManager handles OpenAI OAuth token lifecycle, mirroring the
+// anthropic.TokenManager pattern. It provides EnsureToken() for
+// obtaining a valid access token and supports direct (non-refreshing)
+// and auto-refreshing modes.
+type TokenManager struct {
+	accessToken  string
+	refreshToken string
+	expiresAt    int64
+	refresher    TokenRefresher
+	authFilePath string
+	mu           sync.Mutex
+}
+
+// TokenRefresher defines the interface for refreshing an OAuth token.
+type TokenRefresher interface {
+	Refresh(ctx context.Context, refreshToken string) (RefreshResult, error)
+}
+
+// RefreshResult carries the tokens and expiry returned by a token refresh.
+type RefreshResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    int64
+}
+
+// NewTokenManager creates a TokenManager for OAuth token refresh.
+//
+// Expected:
+//   - accessToken is a non-empty OpenAI OAuth access token.
+//   - refreshToken is a non-empty refresh token (may be empty when refresh is unsupported).
+//   - expiresAt is Unix milliseconds when the access token expires.
+//   - refresher is a valid TokenRefresher implementation (may be nil for direct tokens).
+//   - tokenFilePath is a FlowState-owned JSON file for persisting refreshed credentials.
+//
+// Returns:
+//   - A configured TokenManager.
+//
+// Side effects:
+//   - None.
+func NewTokenManager(
+	accessToken string,
+	refreshToken string,
+	expiresAt int64,
+	refresher TokenRefresher,
+	tokenFilePath string,
+) *TokenManager {
+	return &TokenManager{
+		accessToken:  accessToken,
+		refreshToken: refreshToken,
+		expiresAt:    expiresAt,
+		refresher:    refresher,
+		authFilePath: tokenFilePath,
+	}
+}
+
+// NewDirectTokenManager creates a TokenManager that never refreshes.
+//
+// Expected:
+//   - token is a non-empty OAuth access token.
+//
+// Returns:
+//   - A TokenManager with a far-future expiry.
+//
+// Side effects:
+//   - None.
+func NewDirectTokenManager(token string) *TokenManager {
+	return &TokenManager{
+		accessToken: token,
+		expiresAt:   time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+	}
+}
+
+// EnsureToken returns a valid access token, refreshing if needed.
+//
+// Expected:
+//   - ctx is a valid context for request cancellation.
+//
+// Returns:
+//   - (token, nil) if a valid token exists or refresh succeeds.
+//   - ("", error) if the refresh fails.
+//
+// Side effects:
+//   - Acquires and releases the internal mutex.
+//   - May perform an HTTP token refresh.
+func (tm *TokenManager) EnsureToken(ctx context.Context) (string, error) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if !tm.needsRefresh() {
+		return tm.accessToken, nil
+	}
+
+	if tm.refresher == nil {
+		return tm.accessToken, nil
+	}
+
+	result, err := tm.refresher.Refresh(ctx, tm.refreshToken)
+	if err != nil {
+		return "", fmt.Errorf("refreshing openai token: %w", err)
+	}
+
+	tm.accessToken = result.AccessToken
+	tm.refreshToken = result.RefreshToken
+	tm.expiresAt = result.ExpiresAt
+
+	return tm.accessToken, nil
+}
+
+// needsRefresh reports whether the access token is within 5 minutes of expiry.
+func (tm *TokenManager) needsRefresh() bool {
+	return time.Now().UnixMilli() >= tm.expiresAt-5*60*1000
+}
+
 // Provider implements the provider.Provider interface for OpenAI.
 type Provider struct {
-	client openaiAPI.Client
+	client       openaiAPI.Client
+	isOAuth      bool
+	tokenManager *TokenManager
+	currentToken string
 
 	// responseObserver is called on every 2xx (success-path) response
 	// from Chat or the stream handshake with the response headers.
@@ -115,6 +243,142 @@ func NewWithOptions(apiKey string, opts ...option.RequestOption) (*Provider, err
 	}, nil
 }
 
+// IsOAuthToken reports whether the given token is an OpenAI OAuth token.
+// OpenAI OAuth access tokens are JWTs beginning with "eyJ".
+//
+// Expected:
+//   - token is a string that may be an API key or OAuth token.
+//
+// Returns:
+//   - true if the token looks like a JWT (OAuth bearer token).
+//   - false otherwise.
+//
+// Side effects:
+//   - None.
+func IsOAuthToken(token string) bool {
+	return strings.HasPrefix(token, oauthTokenPrefix)
+}
+
+// NewOAuth creates a new OpenAI provider configured for OAuth bearer authentication.
+//
+// Expected:
+//   - token is a non-empty OpenAI OAuth access token.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - An error if the token is empty.
+//
+// Side effects:
+//   - None.
+func NewOAuth(token string) (*Provider, error) {
+	if token == "" {
+		return nil, errOAuthTokenRequired
+	}
+	return &Provider{
+		client:       newOAuthClient(token),
+		isOAuth:      true,
+		tokenManager: NewDirectTokenManager(token),
+		currentToken: token,
+	}, nil
+}
+
+// NewOAuthWithRefresh creates an OAuth provider with automatic token refresh.
+//
+// Expected:
+//   - tm is a non-nil TokenManager with valid credentials.
+//
+// Returns:
+//   - A configured Provider that refreshes tokens automatically.
+//   - An error if the initial token cannot be obtained.
+//
+// Side effects:
+//   - May perform an HTTP token refresh.
+func NewOAuthWithRefresh(tm *TokenManager) (*Provider, error) {
+	token, err := tm.EnsureToken(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf(
+			"openai OAuth token refresh failed "+
+				"(re-authenticate via `flowstate auth openai`): %w",
+			err,
+		)
+	}
+	return &Provider{
+		client:       newOAuthClient(token),
+		isOAuth:      true,
+		tokenManager: tm,
+		currentToken: token,
+	}, nil
+}
+
+// NewFromConfig creates an OpenAI provider from a configured credential.
+// The credential is treated as an OAuth token when it begins with "eyJ"
+// (JWT prefix), otherwise as an API key.
+//
+// Expected:
+//   - credential is an OpenAI API key or OAuth access token; empty when
+//     no credential is configured.
+//
+// Returns:
+//   - A configured Provider on success.
+//   - errAPIKeyRequired when credential is empty.
+//
+// Side effects:
+//   - None.
+func NewFromConfig(credential string) (*Provider, error) {
+	if credential == "" {
+		return nil, errAPIKeyRequired
+	}
+	if IsOAuthToken(credential) {
+		return NewOAuth(credential)
+	}
+	return New(credential)
+}
+
+// newOAuthClient creates an OpenAI API client configured for OAuth bearer authentication.
+//
+// Expected:
+//   - token is a non-empty OAuth bearer token.
+//
+// Returns:
+//   - A configured OpenAI API client with bearer auth and stream-guard HTTP client.
+//
+// Side effects:
+//   - None.
+func newOAuthClient(token string) openaiAPI.Client {
+	opts := []option.RequestOption{
+		option.WithAPIKey(token),
+		option.WithHTTPClient(shared.StreamGuardHTTPClient(streamGuardHeaderTimeout)),
+	}
+	return openaiAPI.NewClient(opts...)
+}
+
+// refreshClientIfNeeded ensures the OAuth token is current and rebuilds the client on change.
+//
+// Expected:
+//   - ctx is a valid context for potential token refresh.
+//
+// Returns:
+//   - nil if the token is valid or was refreshed successfully.
+//   - An error if token refresh fails.
+//
+// Side effects:
+//   - May perform an HTTP token refresh.
+//   - May replace the internal OpenAI API client.
+func (p *Provider) refreshClientIfNeeded(ctx context.Context) error {
+	if p.tokenManager == nil {
+		return nil
+	}
+	token, err := p.tokenManager.EnsureToken(ctx)
+	if err != nil {
+		return err
+	}
+	if token != p.currentToken {
+		p.client = newOAuthClient(token)
+		p.currentToken = token
+	}
+	return nil
+}
+
 // Name returns the provider name.
 //
 // Returns:
@@ -139,6 +403,9 @@ func (p *Provider) Name() string {
 // Side effects:
 //   - Spawns a goroutine to read from the OpenAI streaming API.
 func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+	if err := p.refreshClientIfNeeded(ctx); err != nil {
+		return nil, err
+	}
 	// Attachment-size pre-flight gate (plan §6 task-11 — shared 25 MB
 	// ceiling at the engine seam, mirroring the Anthropic provider's
 	// gate). Surfaces the typed error to the caller before any
@@ -168,6 +435,9 @@ func (p *Provider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan
 // Side effects:
 //   - Makes an HTTP request to the OpenAI API.
 func (p *Provider) Chat(ctx context.Context, req provider.ChatRequest) (provider.ChatResponse, error) {
+	if err := p.refreshClientIfNeeded(ctx); err != nil {
+		return provider.ChatResponse{}, err
+	}
 	// Attachment-size pre-flight gate (plan §6 task-11) — same shared
 	// ceiling as Stream so multipart-image requests fail loudly before
 	// hitting the wire.

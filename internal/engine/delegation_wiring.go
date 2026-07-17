@@ -564,23 +564,7 @@ func newDelegationChainID() string {
 //
 // Side effects:
 //   - None.
-func coordStoreKeyConvention(agentID string) string {
-	switch agentID {
-	case "explorer":
-		return "codebase-findings"
-	case "librarian":
-		return "external-refs"
-	case "analyst":
-		return "analysis"
-	case "plan-writer":
-		return "plan"
-	case "plan-reviewer":
-		return "review"
-	default:
-		return ""
-	}
-}
-
+//
 // injectPreamble prepends preamble to message, separated by a blank line.
 // When message is empty the preamble is returned as-is.
 func injectPreamble(preamble, message string) string {

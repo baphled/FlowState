@@ -473,6 +473,8 @@ func (t *ReadTool) Execute(_ context.Context, input tool.Input) (tool.Result, er
 	}, nil
 }
 
+const maxPlanMarkdownBytes = 200 * 1024 // 200 KB
+
 // WriteTool persists a plan to the plans directory as a markdown file.
 //
 // Closes the regression where plan-writer agents were storing plans only in
@@ -538,7 +540,8 @@ func (t *WriteTool) Schema() tool.Schema {
 				Type: "string",
 				Description: "Full plan text including YAML frontmatter " +
 					"(`---\\nid: ...\\ntitle: ...\\n---\\n# ...`). " +
-					"The frontmatter's `id` becomes the filename.",
+					"The frontmatter's `id` becomes the filename. " +
+					"Max 200KB per plan. For very large plans, split into multiple plans.",
 			},
 		},
 		Required: []string{"markdown"},
@@ -573,6 +576,17 @@ func (t *WriteTool) Execute(_ context.Context, input tool.Input) (tool.Result, e
 	md, ok := rawMD.(string)
 	if !ok || strings.TrimSpace(md) == "" {
 		return tool.Result{}, fmt.Errorf("plan_write: argument %q must be a non-empty string (plans dir: %s)", "markdown", t.plansDir)
+	}
+
+	if len(md) > maxPlanMarkdownBytes {
+		return tool.Result{
+			IsError: true,
+			Error: fmt.Errorf(
+				"plan markdown too large: %d bytes (max %d). "+
+					"Split the plan into multiple smaller plans with "+
+					"distinct IDs, or reduce the plan content",
+				len(md), maxPlanMarkdownBytes),
+		}, nil
 	}
 
 	parsed, err := planpkg.ParseFile(md)

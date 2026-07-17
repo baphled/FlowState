@@ -42,6 +42,9 @@ func NewTracingProvider(inner provider.Provider, recorder Recorder) *TracingProv
 //   - None.
 func (t *TracingProvider) Name() string { return t.inner.Name() }
 
+// WrappedProvider returns the wrapped provider for recursive diagnostics.
+func (t *TracingProvider) WrappedProvider() provider.Provider { return t.inner }
+
 // Stream delegates to the wrapped provider, recording latency via the Recorder.
 //
 // Expected:

@@ -17,6 +17,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/provider/ollamacloud"
 	"github.com/baphled/flowstate/internal/provider/openai"
+	"github.com/baphled/flowstate/internal/provider/opencodego"
 	"github.com/baphled/flowstate/internal/provider/openzen"
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
@@ -107,6 +108,11 @@ func BuildWithFailures(
 	recordProvider(providerRegistry, failures, "openzen", openzenProvider, openzenErr,
 		cfg.Providers.OpenZen.EffectiveMaxConcurrent("openzen"))
 
+	opencodeGoKey := ResolveProviderKey("OPENCODE_GO_API_KEY", cfg.Providers.OpenCodeGo.APIKey)
+	opencodeGoProvider, opencodeGoErr := opencodego.NewFromConfig(opencodeGoKey)
+	recordProvider(providerRegistry, failures, "opencode-go", opencodeGoProvider, opencodeGoErr,
+		cfg.Providers.OpenCodeGo.EffectiveMaxConcurrent("opencode-go"))
+
 	warnIfOpenCodeAuthPresent(failures)
 
 	return providerRegistry, ollamaProvider, failures
@@ -164,6 +170,7 @@ func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
 		{"zai", cfg.Providers.ZAI.Model},
 		{"copilot", cfg.Providers.GitHub.Model},
 		{"openzen", cfg.Providers.OpenZen.Model},
+		{"opencode-go", cfg.Providers.OpenCodeGo.Model},
 		{"ollamacloud", cfg.Providers.OllamaCloud.Model},
 		{"ollama", cfg.Providers.Ollama.Model},
 	}
@@ -285,7 +292,7 @@ func buildOpenAIProvider(cfg *config.AppConfig) (*openai.Provider, error) {
 	if key == "" {
 		return nil, ErrOpenAINoKey
 	}
-	return openai.New(key)
+	return openai.NewFromConfig(key)
 }
 
 // recordProvider registers a provider on success or records the error

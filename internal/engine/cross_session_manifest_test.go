@@ -115,6 +115,8 @@ type gatingProvider struct {
 type capturedStream struct {
 	systemPrompt string
 	toolNames    []string
+	provider     string
+	model        string
 }
 
 func (g *gatingProvider) Name() string { return "gating-provider" }
@@ -122,7 +124,10 @@ func (g *gatingProvider) Name() string { return "gating-provider" }
 func (g *gatingProvider) Stream(_ context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	g.mu.Lock()
 	idx := len(g.captures)
-	cap := capturedStream{}
+	cap := capturedStream{
+		provider: req.Provider,
+		model:    req.Model,
+	}
 	if len(req.Messages) > 0 && req.Messages[0].Role == "system" {
 		cap.systemPrompt = req.Messages[0].Content
 	}
@@ -687,6 +692,65 @@ var _ = Describe("Cross-session manifest binding", func() {
 			ids := []string{appends[0].agentID, appends[1].agentID}
 			Expect(ids).To(ConsistOf("planner", "tech-lead"),
 				"each stream's chain-store append must carry its own agent ID; pre-fix both stamp whichever manifest most recently won SetManifest")
+		})
+	})
+
+	Describe("provider/model binding under concurrent SetManifest", func() {
+		It("the in-flight stream's ChatRequest retains its spawn-time provider and model", func() {
+			gp := &gatingProvider{}
+
+			alphaManifest := agent.Manifest{
+				ID:                "alpha",
+				Name:              "Alpha",
+				Instructions:      agent.Instructions{SystemPrompt: "ALPHA"},
+				Capabilities:      agent.Capabilities{Tools: []string{"alpha_tool"}},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+			betaManifest := agent.Manifest{
+				ID:                "beta",
+				Name:              "Beta",
+				Instructions:      agent.Instructions{SystemPrompt: "BETA"},
+				Capabilities:      agent.Capabilities{Tools: []string{"beta_tool"}},
+				ContextManagement: agent.DefaultContextManagement(),
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: gp,
+				Manifest:     alphaManifest,
+				Tools: []tool.Tool{
+					&mockTool{name: "alpha_tool", description: "alpha"},
+					&mockTool{name: "beta_tool", description: "beta"},
+				},
+			})
+
+			eng.SetModelPreference("anthropic", "claude-alpha-model")
+
+			gateA := gp.armGate(0)
+			ctxA := context.WithValue(context.Background(), session.IDKey{}, "session-pm-a")
+
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				chunks, err := eng.Stream(ctxA, "", "hello")
+				Expect(err).NotTo(HaveOccurred())
+				for range chunks {
+				}
+			}()
+
+			gp.waitForCaptures(1)
+
+			eng.SetManifest(betaManifest)
+			eng.SetModelPreference("openai", "gpt-beta-model")
+
+			close(gateA)
+			wg.Wait()
+
+			capA := gp.capture(0)
+			Expect(capA.provider).To(Equal("anthropic"),
+				"session-A's ChatRequest must carry the spawn-time provider; got %s", capA.provider)
+			Expect(capA.model).To(Equal("claude-alpha-model"),
+				"session-A's ChatRequest must carry the spawn-time model; got %s", capA.model)
 		})
 	})
 })

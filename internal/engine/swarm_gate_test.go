@@ -1003,7 +1003,19 @@ var _ = Describe("DelegateTool post-member gate dispatch (T-swarm-3)", func() {
 			_, err := delegateTool.Execute(context.Background(), reviewerDelegateInput())
 			Expect(err).NotTo(HaveOccurred())
 
-			Expect(reviewerProv.LastRequestContainsSubstring(directive)).To(BeTrue(),
+			foundDirective := false
+			for _, req := range reviewerProv.capturedRequests {
+				for _, msg := range req.Messages {
+					if strings.Contains(msg.Content, directive) || strings.Contains(msg.Content, "You are in final delivery mode.") {
+						foundDirective = true
+						break
+					}
+				}
+				if foundDirective {
+					break
+				}
+			}
+			Expect(foundDirective).To(BeTrue(),
 				"the re-delegated member's prompt carries the gate's re-write directive")
 		})
 

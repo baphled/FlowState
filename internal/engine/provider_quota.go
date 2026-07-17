@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/baphled/flowstate/internal/plugin/events"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/provider/quota"
 )
@@ -141,7 +142,7 @@ func snapshotToPayload(snap quota.Snapshot) (providerQuotaPayload, bool) {
 // Priority (first match wins):
 //  1. "rate_limited" — RateLimitedUntil is set and still in the future.
 //  2. "exhausted"    — rate-limit variant with tightest_percent_remaining == 0
-//                      (the window is bone-dry but no failover cooldown).
+//     (the window is bone-dry but no failover cooldown).
 //  3. "spent"        — token-spend variant where Spent >= Cap (cap is set).
 //  4. "healthy"      — none of the above.
 func synthesiseQuotaStatus(snap quota.Snapshot) string {
@@ -241,6 +242,11 @@ func (e *Engine) buildProviderQuotaChunk(ctx context.Context, req *provider.Chat
 	if !ok {
 		return provider.StreamChunk{}, false
 	}
+	// Publish provider.status_changed bus event on status transition.
+	// Must happen before the chunk is emitted so SSE subscribers see
+	// the event in flight before the next SSE provider_quota chunk.
+	e.trackAndPublishStatusChange(req.Provider, req.Model, payload.Status, snap.RateLimitedUntil)
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		// Marshalling a struct of primitives cannot realistically fail;
@@ -315,6 +321,8 @@ func (e *Engine) buildProviderQuotaChunkExplicit(ctx context.Context, providerID
 	if !ok {
 		return provider.StreamChunk{}, false
 	}
+	e.trackAndPublishStatusChange(providerID, modelID, payload.Status, snap.RateLimitedUntil)
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return provider.StreamChunk{}, false
@@ -399,6 +407,10 @@ func (e *Engine) QuotaSnapshots(ctx context.Context) []QuotaAggregatorRow {
 			Model:       entry.Key.ModelID,
 			Snapshot:    snap,
 		})
+		// Publish status change for each snapshot so the dashboard
+		// aggregator path also triggers provider.status_changed.
+		status := synthesiseQuotaStatus(snap)
+		e.trackAndPublishStatusChange(entry.Key.ProviderID, entry.Key.ModelID, status, snap.RateLimitedUntil)
 	}
 	return out
 }
@@ -432,6 +444,47 @@ func stampRateLimitedUntil(snap *quota.Snapshot, e *Engine, provider, model stri
 	if ok {
 		snap.RateLimitedUntil = expiry
 	}
+}
+
+// trackAndPublishStatusChange detects provider status transitions and
+// publishes a provider.status_changed bus event when the status differs
+// from the last observed value for the (provider, model) pair.
+//
+// The first observation for a given pair always fires (PreviousStatus
+// is empty string, signalling "no prior state known"). Subsequent calls
+// with the same status are no-ops.
+//
+// No-op when the engine has no bus wired or when the status has not
+// changed from the last tracked value.
+func (e *Engine) trackAndPublishStatusChange(provider, model, status string, rateLimitedUntil time.Time) {
+	if e == nil || e.bus == nil {
+		return
+	}
+	key := provider + ":" + model
+
+	e.providerStatusMu.Lock()
+	if e.providerStatusMap == nil {
+		e.providerStatusMap = make(map[string]string)
+	}
+	prev := e.providerStatusMap[key]
+	if prev == status {
+		e.providerStatusMu.Unlock()
+		return
+	}
+	e.providerStatusMap[key] = status
+	e.providerStatusMu.Unlock()
+
+	e.bus.Publish(
+		events.EventProviderStatusChanged,
+		events.NewProviderStatusChangedEvent(events.ProviderStatusChangedEventData{
+			Provider:         provider,
+			Model:            model,
+			PreviousStatus:   prev,
+			Status:           status,
+			RateLimitedUntil: rateLimitedUntil,
+			ObservedAt:       time.Now(),
+		}),
+	)
 }
 
 // tryEmitProviderQuotaInline writes the inline provider_quota chunk

@@ -198,8 +198,8 @@ var _ = Describe("Engine delegation grace round", func() {
 		// second cap check terminates with StopReasonToolLoopExceeded.
 		script = append(script, scriptedBatch{
 			toolCalls: []*provider.ToolCall{{
-				ID:   "read_5",
-				Name: "read",
+				ID:        "read_5",
+				Name:      "read",
 				Arguments: map[string]any{"path": "/tmp/5.txt"},
 			}},
 		})

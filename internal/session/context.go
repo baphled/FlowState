@@ -105,6 +105,12 @@ func PreferredModelsFromContext(ctx context.Context) []provider.ModelPreference 
 // "any", "none", "tool:NAME". Empty/whitespace means "do not override".
 type ToolChoiceOverrideKey struct{}
 
+// ToolsAllowlistOverrideKey is the context key used to narrow the effective
+// tool allowlist for a single turn. When present, the engine intersects the
+// agent's normal effective toolset with this override so both schema
+// advertisement and the runtime tool gate see the same reduced set.
+type ToolsAllowlistOverrideKey struct{}
+
 // WithToolChoiceOverride returns a derived context carrying a single-turn
 // tool_choice override. An empty/whitespace value short-circuits to the
 // input context unchanged — the override is opt-in and a no-op when the
@@ -121,6 +127,23 @@ func WithToolChoiceOverride(ctx context.Context, choice string) context.Context 
 // case — the model picks its own tool use).
 func ToolChoiceOverrideFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(ToolChoiceOverrideKey{}).(string)
+	return v
+}
+
+// WithToolsAllowlistOverride returns a derived context carrying a per-turn
+// tool allowlist override. Empty input is a no-op.
+func WithToolsAllowlistOverride(ctx context.Context, tools []string) context.Context {
+	if len(tools) == 0 {
+		return ctx
+	}
+	copyTools := append([]string(nil), tools...)
+	return context.WithValue(ctx, ToolsAllowlistOverrideKey{}, copyTools)
+}
+
+// ToolsAllowlistOverrideFromContext extracts the per-turn tool allowlist
+// override. Nil means no override.
+func ToolsAllowlistOverrideFromContext(ctx context.Context) []string {
+	v, _ := ctx.Value(ToolsAllowlistOverrideKey{}).([]string)
 	return v
 }
 

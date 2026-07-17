@@ -73,3 +73,43 @@ func manifestFromContext(ctx context.Context) (agent.Manifest, bool) {
 	}
 	return m, true
 }
+
+// boundProviderModelKey binds the per-stream provider and model that
+// streamWithToolLoop's retry path and terminal-chunk stampers read via
+// lastProviderCtx / lastModelCtx. Stream() snapshots the engine's
+// preferredProvider / preferredModel immediately after SetManifest +
+// reseedFailoverBasePreferences resolves the manifest head, then binds
+// the pair into streamCtx. Without this binding, a concurrent Stream()
+// that calls SetManifest for a different agent overwrites the shared
+// e.preferredProvider / e.preferredModel fields, and the in-flight
+// stream's retry requests silently route to the wrong provider/model.
+type boundProviderModelKey struct{}
+
+type providerModelPair struct {
+	provider string
+	model    string
+}
+
+// WithBoundProviderModel returns a copy of ctx carrying the given
+// provider and model as the per-stream binding. Stream() calls this
+// once at entry, after reseedFailoverBasePreferences has resolved the
+// manifest head onto e.preferredProvider / e.preferredModel.
+func WithBoundProviderModel(ctx context.Context, provider, model string) context.Context {
+	return context.WithValue(ctx, boundProviderModelKey{}, providerModelPair{
+		provider: provider,
+		model:    model,
+	})
+}
+
+// providerModelFromContext extracts the bound provider/model pair from
+// ctx. Returns ok=false when no binding is present.
+func providerModelFromContext(ctx context.Context) (string, string, bool) {
+	if ctx == nil {
+		return "", "", false
+	}
+	pair, ok := ctx.Value(boundProviderModelKey{}).(providerModelPair)
+	if !ok {
+		return "", "", false
+	}
+	return pair.provider, pair.model, true
+}

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -223,6 +224,57 @@ type ToolSchema struct {
 type ChatResponse struct {
 	Message Message
 	Usage   Usage
+}
+
+// RequestDebugStats summarises a chat request for diagnostics without
+// retaining the full payload.
+type RequestDebugStats struct {
+	MessageCount int
+	RequestBytes int
+}
+
+// ConcurrencyDebugStats captures the current state of a provider-side
+// concurrency limiter when one is present.
+type ConcurrencyDebugStats struct {
+	InFlight      int
+	QueueDepth    int
+	MaxConcurrent int
+}
+
+// wrappedProvider is implemented by provider decorators that can expose the
+// provider they wrap for recursive diagnostics.
+type wrappedProvider interface {
+	WrappedProvider() Provider
+}
+
+// RequestStats returns a compact diagnostic summary of req.
+func RequestStats(req ChatRequest) RequestDebugStats {
+	stats := RequestDebugStats{MessageCount: len(req.Messages)}
+	raw, err := json.Marshal(req)
+	if err == nil {
+		stats.RequestBytes = len(raw)
+	}
+	return stats
+}
+
+// ConcurrencyStats returns the active concurrency-limiter snapshot for p when
+// one is present anywhere in the wrapper chain.
+func ConcurrencyStats(p Provider) (ConcurrencyDebugStats, bool) {
+	for p != nil {
+		if limited, ok := p.(*ConcurrencyLimitedProvider); ok {
+			return ConcurrencyDebugStats{
+				InFlight:      limited.InFlight(),
+				QueueDepth:    limited.QueueDepth(),
+				MaxConcurrent: limited.MaxConcurrent(),
+			}, true
+		}
+		wrapped, ok := p.(wrappedProvider)
+		if !ok {
+			break
+		}
+		p = wrapped.WrappedProvider()
+	}
+	return ConcurrencyDebugStats{}, false
 }
 
 // Usage contains token usage statistics for a request.

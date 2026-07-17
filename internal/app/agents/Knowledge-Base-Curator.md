@@ -23,6 +23,8 @@ capabilities:
     - coordination_store
     - multiedit
     - apply_patch
+  delivery_tools:
+    - coordination_store
   skills:
     - memory-keeper
     - obsidian-structure

@@ -1876,7 +1876,9 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 		msgReq := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+sess.ID+"/messages", strings.NewReader(msgBody))
 		srv.Handler().ServeHTTP(httptest.NewRecorder(), msgReq)
 
-		Expect(streamer.capturedAgentID).To(Equal("plan-writer"), "the streamer must be invoked with the agent the user selected, not the original session agent")
+		Eventually(func() string {
+			return streamer.capturedAgentID
+		}, "2s").Should(Equal("plan-writer"), "the streamer must be invoked with the agent the user selected, not the original session agent")
 	})
 
 	It("returns 404 when the session does not exist", func() {

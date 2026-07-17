@@ -160,9 +160,18 @@ func (b *BackgroundOutputTool) Execute(ctx context.Context, input tool.Input) (t
 
 	if block {
 		if err := b.blockUntilComplete(ctx, taskID, timeoutMs); err != nil {
-			return tool.Result{}, err
+			// When the task does not reach a terminal state within
+			// the polling window, surface the last-known state rather
+			// than a bare timeout error. This lets the model see
+			// whether the task is still running or has already failed,
+			// instead of receiving an opaque "task polling timeout
+			// exceeded" that provides no recovery path.
+			if lastKnown, found := b.manager.Get(taskID); found {
+				task = lastKnown
+			}
+		} else {
+			task, _ = b.manager.Get(taskID)
 		}
-		task, _ = b.manager.Get(taskID)
 	}
 
 	result := b.buildResultOutput(&task, fullSession)

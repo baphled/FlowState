@@ -115,6 +115,20 @@ func (m *mockProvider) ToolChoiceForAttempt(n int) string {
 	return m.capturedRequests[n-1].ToolChoice
 }
 
+// ToolNamesForAttempt returns the advertised tool names captured on the n-th
+// Stream dispatch (1-indexed).
+func (m *mockProvider) ToolNamesForAttempt(n int) []string {
+	if n < 1 || n > len(m.capturedRequests) {
+		return nil
+	}
+	req := m.capturedRequests[n-1]
+	names := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		names = append(names, t.Name)
+	}
+	return names
+}
+
 // StreamCallCount reports how many times Stream was dispatched.
 func (m *mockProvider) StreamCallCount() int {
 	return len(m.capturedRequests)
@@ -932,8 +946,12 @@ var _ = Describe("Engine", func() {
 					captured <- providerEvent
 				})
 
+				registry := provider.NewRegistry()
+				registry.Register(provider.NewConcurrencyLimitedProvider(chatProvider, 2))
+
 				eng := engine.New(engine.Config{
 					ChatProvider: chatProvider,
+					Registry:     registry,
 					EventBus:     bus,
 					Manifest:     manifest,
 				})
@@ -945,10 +963,15 @@ var _ = Describe("Engine", func() {
 
 				var event *events.ProviderErrorEvent
 				Eventually(captured).Should(Receive(&event))
+				Expect(event.Data.Stage).To(Equal("stream_init"))
 				Expect(event.Data.ErrorType).To(Equal(string(provider.ErrorTypeBilling)))
 				Expect(event.Data.ErrorCode).To(Equal("1113"))
 				Expect(event.Data.HTTPStatus).To(Equal(429))
 				Expect(event.Data.IsRetriable).To(BeFalse())
+				Expect(event.Data.MessageCount).To(BeNumerically(">", 0))
+				Expect(event.Data.RequestBytes).To(BeNumerically(">", 0))
+				Expect(event.Data.EstimatedInputTokens).To(BeNumerically(">=", 0))
+				Expect(event.Data.MaxConcurrent).To(Equal(2))
 			})
 		})
 

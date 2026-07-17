@@ -355,21 +355,22 @@ func maxInt(a, b int) int {
 // the actual Tool.Name() returns shipped under internal/tool/.
 //
 // The non-compactable counterpart (delegate, skill_load, plan_*,
-// coordination_store, todowrite, todoread, chain_*, batch, question)
+// todowrite, todoread, chain_*, batch, question)
 // is intentionally NOT enumerated here — anything missing from this
 // map is non-compactable by default, which is the safe direction.
 func defaultCompactableTools() map[string]bool {
 	return map[string]bool{
-		"read":        true,
-		"bash":        true,
-		"grep":        true,
-		"glob":        true,
-		"web":         true,
-		"websearch":   true,
-		"edit":        true,
-		"multiedit":   true,
-		"ls":          true,
-		"apply_patch": true,
+		"read":               true,
+		"bash":               true,
+		"coordination_store": true,
+		"grep":               true,
+		"glob":               true,
+		"web":                true,
+		"websearch":          true,
+		"edit":               true,
+		"multiedit":          true,
+		"ls":                 true,
+		"apply_patch":        true,
 	}
 }
 

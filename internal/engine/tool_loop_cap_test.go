@@ -783,4 +783,61 @@ var _ = Describe("Engine tool-loop cap", func() {
 				"the same-tool-pattern trip must stamp tool_loop_exceeded so the UI renders a soft error")
 		})
 	})
+
+	Context("when the model repeatedly calls a tool rejected by the runtime gate", func() {
+		It("stops after 3 consecutive batches where every tool call is rejected", func() {
+			prov := &repeatingToolProvider{
+				name: "gate-rejection-loop",
+				call: &provider.ToolCall{
+					ID:        "call_bash",
+					Name:      "bash",
+					Arguments: map[string]any{"command": "ls"},
+				},
+			}
+
+			bashTool := &executableMockTool{
+				name:        "bash",
+				description: "Bash tool",
+				execResult:  tool.Result{Output: "ok"},
+			}
+
+			gatedManifest := agent.Manifest{
+				ID:   "coordinator-agent",
+				Name: "Coordinator",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"coordination_store", "delegate", "todowrite"},
+				},
+			}
+
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     gatedManifest,
+				Tools:        []tool.Tool{bashTool},
+			})
+			eng.SetMaxIdenticalToolCallsForTest(0)
+			eng.SetMaxToolLoopIterationsForTest(0)
+			eng.SetMaxToolLoopDurationForTest(0)
+			eng.SetMaxSameToolPatternCallsForTest(0)
+
+			chunks, err := eng.Stream(context.Background(), "coordinator-agent", "Do something")
+			Expect(err).NotTo(HaveOccurred())
+
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue(), "the turn must terminate and close the channel")
+
+			var terminal *provider.StreamChunk
+			for i := range received {
+				if received[i].Done {
+					terminal = &received[i]
+				}
+			}
+			Expect(terminal).NotTo(BeNil(), "expected a terminal Done chunk")
+			Expect(terminal.StopReason).To(Equal(session.StopReasonToolLoopExceeded),
+				"a rejected-tool-call loop must stamp tool_loop_exceeded")
+			Expect(prov.callCount()).To(BeNumerically("<=", 4),
+				"the rejected-tool-call detector must trip within 3 consecutive rejections")
+			Expect(bashTool.execCalled).To(BeFalse(),
+				"bash must never execute when the runtime gate rejects it")
+		})
+	})
 })

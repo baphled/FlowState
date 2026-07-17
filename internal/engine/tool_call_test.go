@@ -145,6 +145,18 @@ func (p *streamSequenceProvider) Models() ([]provider.Model, error) {
 	return nil, nil
 }
 
+func (p *streamSequenceProvider) ToolNamesForAttempt(n int) []string {
+	if n < 1 || n > len(p.capturedRequests) {
+		return nil
+	}
+	req := p.capturedRequests[n-1]
+	names := make([]string, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		names = append(names, t.Name)
+	}
+	return names
+}
+
 var _ = Describe("Engine Permission Check", func() {
 	var (
 		chatProvider *streamSequenceProvider

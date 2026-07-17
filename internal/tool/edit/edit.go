@@ -11,6 +11,8 @@ import (
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
+const maxNewStringBytes = 50 * 1024 // 50 KB
+
 // Tool implements exact string replacement in files.
 type Tool struct {
 	guard *pathguard.Guard
@@ -91,7 +93,7 @@ func (t *Tool) Schema() tool.Schema {
 			},
 			"new_string": {
 				Type:        "string",
-				Description: "Replacement string",
+				Description: "Replacement string (max 50KB). For larger replacements, use the write tool to rewrite the entire file.",
 			},
 		},
 		Required: []string{"file", "old_string", "new_string"},
@@ -126,6 +128,17 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	newString, ok := input.Arguments["new_string"].(string)
 	if !ok {
 		return tool.Result{}, errors.New("new_string argument is required")
+	}
+
+	if len(newString) > maxNewStringBytes {
+		return tool.Result{
+			IsError: true,
+			Error: fmt.Errorf(
+				"new_string too large: %d bytes (max %d). "+
+					"For large replacements, use the write tool to rewrite the entire file "+
+					"or split the edit into smaller sections",
+				len(newString), maxNewStringBytes),
+		}, nil
 	}
 
 	cleaned, resolveErr := pathguard.ResolvePath(file)

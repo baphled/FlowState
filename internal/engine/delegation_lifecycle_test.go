@@ -864,6 +864,61 @@ var _ = Describe("DelegateTool pre-flight candidate check", func() {
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	Context("when the current preferred provider is already rate-limited but a healthy fallback exists", func() {
+		It("switches to the first healthy candidate before opening the stream", func() {
+			primary := &mockProvider{
+				name:         "anthropic",
+				streamChunks: []provider.StreamChunk{{Content: "primary should be skipped", Done: true}},
+			}
+			fallback := &mockProvider{
+				name:         "openai",
+				streamChunks: []provider.StreamChunk{{Content: "fallback response", Done: true}},
+			}
+
+			health := failover.NewHealthManager()
+			registry := provider.NewRegistry()
+			registry.Register(primary)
+			registry.Register(fallback)
+			manager := failover.NewManager(registry, health, 5*time.Minute)
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+				{Provider: "openai", Model: "gpt-4o"},
+			})
+			health.MarkRateLimited("anthropic", "claude-sonnet-4-6", time.Now().Add(1*time.Hour))
+
+			targetEngine := engine.New(engine.Config{
+				Registry:        registry,
+				FailoverManager: manager,
+				Manifest: agent.Manifest{
+					ID:                "fallback-agent",
+					Name:              "Fallback Agent",
+					Instructions:      agent.Instructions{SystemPrompt: "Use healthy providers."},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+
+			delegateTool := engine.NewDelegateTool(
+				map[string]*engine.Engine{"fallback-agent": targetEngine},
+				delegation, "orchestrator",
+			)
+
+			_, err := delegateTool.Execute(context.Background(), tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "fallback-agent",
+					"message":       "Do something",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(primary.capturedRequest).To(BeNil(),
+				"the rate-limited primary provider should be skipped before stream start")
+			Expect(fallback.capturedRequest).NotTo(BeNil())
+			Expect(targetEngine.LastProvider()).To(Equal("openai"))
+			Expect(targetEngine.LastModel()).To(Equal("gpt-4o"))
+		})
+	})
 })
 
 var _ = Describe("DelegateTool parent model/provider override isolation", func() {

@@ -2,32 +2,45 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var _ Provider = (*ConcurrencyLimitedProvider)(nil)
 
+// RateLimitCooldowner is implemented by wrappers that can enforce a
+// provider-wide backoff after a rate-limit response, blocking all
+// callers until the cooldown expires. The ConcurrencyLimitedProvider
+// implements this; the failover hook calls SetCooldown after detecting
+// a 429 or rate-limit error so ALL engines are gated, not just the one
+// that triggered it.
+type RateLimitCooldowner interface {
+	SetCooldown(d time.Duration)
+}
+
 // ConcurrencyLimitedProvider wraps a Provider to bound the number of
-// SIMULTANEOUS in-flight chat calls (Stream and Chat) made to it. It exists to
-// respect a provider's per-account concurrent-request cap: the engine can fan
-// a turn's tool calls — including several `delegate` calls from a swarm lead —
-// out as concurrent goroutines, each opening its own provider stream. Without a
-// bound, N concurrent delegates open N concurrent streams and can trip the
-// provider's limit (observed as HTTP 429 against z.ai).
+// SIMULTANEOUS in-flight chat calls (Stream and Chat) made to it, and to
+// enforce a global post-rate-limit cooldown across all callers.
 //
-// The bound is a buffered-channel semaphore of size maxConcurrent. Callers
-// that arrive when all slots are taken QUEUE (block) on acquire rather than
-// being dropped, respecting context cancellation while queued.
-//
-// Embeddings and Models are pass-throughs: embeddings target a different
-// backend (ollama) and must not contend for the chat semaphore.
+// The semaphore prevents overwhelming a provider with parallel streams.
+// The cooldown gate prevents back-to-back hammering after a rate-limit:
+// when any caller receives a retriable error (429, 5xx, network), the
+// cooldown blocks ALL subsequent callers for the provider-specified
+// retry-after duration (or a sensible default). This eliminates the
+// thundering-herd pattern where multiple independent engine instances
+// each retry the same rate-limited provider with zero inter-request delay.
 type ConcurrencyLimitedProvider struct {
 	inner      Provider
 	name       string // cached from inner.Name() for logging/labelling
 	sem        chan struct{}
 	inFlight   atomic.Int64 // current number of acquired slots
 	queueDepth atomic.Int64 // current number of callers waiting to acquire
+
+	cooldownMu    sync.Mutex
+	cooldownUntil time.Time
 }
 
 // NewConcurrencyLimitedProvider returns a ConcurrencyLimitedProvider that
@@ -65,17 +78,27 @@ func NewConcurrencyLimitedProvider(inner Provider, maxConcurrent int) *Concurren
 //   - None.
 func (c *ConcurrencyLimitedProvider) Name() string { return c.inner.Name() }
 
-// acquire blocks until a semaphore slot is free or ctx is cancelled.
+// WrappedProvider returns the wrapped provider for recursive diagnostics.
+func (c *ConcurrencyLimitedProvider) WrappedProvider() Provider { return c.inner }
+
+// acquire blocks until a semaphore slot is free, any active cooldown has
+// expired, and ctx has not been cancelled.
 //
 // Returns:
 //   - nil once a slot has been acquired (the caller MUST later release it).
-//   - ctx.Err() if ctx is cancelled while queued (no slot is held).
+//   - ctx.Err() if ctx is cancelled while queued or waiting for cooldown.
 //
 // Side effects:
 //   - Updates in-flight and queue-depth atomic counters.
-//   - Emits slog.Debug on acquire or cancellation.
+//   - Emits slog.Debug on acquire, cooldown-wait, or cancellation.
 func (c *ConcurrencyLimitedProvider) acquire(ctx context.Context) error {
 	c.queueDepth.Add(1)
+
+	// Gate 1: wait out any active cooldown so we don't hammer a
+	// recently-rate-limited provider with back-to-back requests.
+	c.waitCooldown(ctx)
+
+	// Gate 2: acquire a concurrency semaphore slot.
 	select {
 	case c.sem <- struct{}{}:
 		c.queueDepth.Add(-1)
@@ -94,6 +117,62 @@ func (c *ConcurrencyLimitedProvider) acquire(ctx context.Context) error {
 			"error", ctx.Err(),
 		)
 		return ctx.Err()
+	}
+}
+
+// waitCooldown blocks until any active rate-limit cooldown expires or ctx
+// is cancelled. When no cooldown is set this returns immediately.
+//
+// Side effects:
+//   - Sleeps for the remaining cooldown duration.
+func (c *ConcurrencyLimitedProvider) waitCooldown(ctx context.Context) {
+	c.cooldownMu.Lock()
+	remaining := time.Until(c.cooldownUntil)
+	c.cooldownMu.Unlock()
+
+	if remaining <= 0 {
+		return
+	}
+
+	slog.Debug("concurrency cooldown active",
+		"provider", c.name,
+		"remaining", remaining.Round(time.Second),
+	)
+
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// SetCooldown imposes a provider-wide backoff of d duration, blocking all
+// subsequent callers until the cooldown expires. If a cooldown is already
+// active, the longer of the two durations wins — we never shorten an
+// existing cooldown.
+//
+// Expected:
+//   - d is a positive duration (the provider's retry-after or a sensible
+//     default for the error type).
+//
+// Side effects:
+//   - Updates the cooldown deadline.
+func (c *ConcurrencyLimitedProvider) SetCooldown(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	c.cooldownMu.Lock()
+	defer c.cooldownMu.Unlock()
+
+	expiry := time.Now().Add(d)
+	if expiry.After(c.cooldownUntil) {
+		c.cooldownUntil = expiry
+		slog.Debug("concurrency cooldown set",
+			"provider", c.name,
+			"duration", d.Round(time.Second),
+		)
 	}
 }
 
@@ -179,25 +258,22 @@ func (c *ConcurrencyLimitedProvider) Stream(
 
 	innerCh, err := c.inner.Stream(ctx, req)
 	if err != nil {
-		// No stream to drain — give the slot back immediately.
 		c.release()
+		c.applyCooldownFromError(err)
 		return nil, err
 	}
 
-	// Forward inner chunks to the caller, releasing the slot when the inner
-	// channel closes (i.e. the stream has fully drained). A separate output
-	// channel lets us own the close/release without racing the producer.
 	out := make(chan StreamChunk)
 	go func() {
 		defer close(out)
 		defer c.release()
 		for chunk := range innerCh {
+			if chunk.Error != nil && chunk.Done {
+				c.applyCooldownFromError(chunk.Error)
+			}
 			select {
 			case out <- chunk:
 			case <-ctx.Done():
-				// Caller (or request) is gone. Drain the inner channel so the
-				// upstream producer is not blocked on an unread send, then
-				// release via the deferred call.
 				for range innerCh {
 				}
 				return
@@ -229,7 +305,64 @@ func (c *ConcurrencyLimitedProvider) Chat(
 		return ChatResponse{}, err
 	}
 	defer c.release()
-	return c.inner.Chat(ctx, req)
+
+	resp, err := c.inner.Chat(ctx, req)
+	if err != nil {
+		c.applyCooldownFromError(err)
+	}
+	return resp, err
+}
+
+// applyCooldownFromError checks whether err is a retriable provider error
+// (rate-limit, overload, network, server error) and, if so, imposes a
+// provider-wide cooldown so ALL callers back off — not just the one that
+// triggered it. User-correctable errors (auth, context-window, model-not-found)
+// are deliberately excluded: the cooldown gate is for provider-side
+// availability, not caller-side input mistakes.
+//
+// When the error carries a RateLimit with a non-zero RetryAfter, that
+// duration is used directly (respecting the carrier's retry-after header).
+// Otherwise a sensible default is applied per error type:
+//
+//   - RateLimit → 60s     (was 1h in HealthManager; cooldown is a shorter gate)
+//   - Overload   → 45s
+//   - NetworkError → 20s
+//   - ServerError → 60s
+//   - untyped     → 10s  (conservative: unknown failure, brief backoff)
+//
+// The HealthManager still applies its own longer cooldowns for persistent
+// circuit-breaking; this is the CONCURRENCY gate for the thundering-herd.
+func (c *ConcurrencyLimitedProvider) applyCooldownFromError(err error) {
+	if err == nil {
+		return
+	}
+	var provErr *Error
+	if !errors.As(err, &provErr) {
+		// Non-provider errors (e.g. context cancellation, test mocks
+		// returning raw errors.New) are not rate-limit signals.
+		return
+	}
+
+	switch provErr.ErrorType {
+	case ErrorTypeRateLimit:
+		if provErr.RateLimit != nil && provErr.RateLimit.RetryAfter > 0 {
+			c.SetCooldown(provErr.RateLimit.RetryAfter)
+		} else {
+			c.SetCooldown(60 * time.Second)
+		}
+	case ErrorTypeOverload:
+		c.SetCooldown(45 * time.Second)
+	case ErrorTypeNetworkError:
+		c.SetCooldown(20 * time.Second)
+	case ErrorTypeServerError:
+		c.SetCooldown(60 * time.Second)
+	case ErrorTypeBilling, ErrorTypeQuota:
+		c.SetCooldown(5 * time.Minute)
+	case ErrorTypeAuthFailure, ErrorTypeContextWindowExceeded, ErrorTypeModelNotFound:
+		return
+	default:
+		c.SetCooldown(10 * time.Second)
+	}
 }
 
 // Embed delegates to the wrapped provider WITHOUT acquiring a chat slot.

@@ -703,4 +703,20 @@ var Catalog = []EventCatalogEntry{
 			"suspended tool call with the access-denied path; the UI may " +
 			"render the timeout state distinctly from a manual Deny.",
 	},
+	{
+		Topic:       EventProviderStatusChanged,
+		Constant:    "EventProviderStatusChanged",
+		EventType:   "provider.status_changed",
+		Struct:      "ProviderStatusChangedEvent",
+		Publishers:  []string{"internal/engine/provider_quota.go (stampRateLimitedUntil)"},
+		Subscribers: []string{"(not yet wired)"},
+		Scope:       ScopeInternal,
+		Status:      StatusActive,
+		Delivery:    "fire-and-forget",
+		Notes: "Published when the engine detects a provider status " +
+			"transition (healthy↔rate_limited, healthy↔exhausted, " +
+			"healthy↔spent). The API layer will subscribe to fan out " +
+			"to SSE clients on GET /api/v1/providers/status/stream. " +
+			"ADR 002 — Provider Status SSE Side-Channel (July 2026).",
+	},
 }

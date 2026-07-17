@@ -947,6 +947,9 @@ var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
 			Expect(cfg.ToolCapableModels).To(ContainElement("devstral:latest"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.1:latest"))
 			Expect(cfg.ToolCapableModels).To(ContainElement("llama3.3:latest"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("Kimi*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("Qwen*"))
+			Expect(cfg.ToolCapableModels).To(ContainElement("DeepSeek*"))
 		})
 
 		It("does NOT include gpt-oss in the allow list (Ollama parallel-tool-call bugs)", func() {
@@ -975,6 +978,7 @@ var _ = Describe("AppConfig.ToolCapableModels and ToolIncapableModels", func() {
 			Expect(cfg.ToolIncapableModels).To(ContainElement("deepseek-r1:*"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("claude-haiku*"))
 			Expect(cfg.ToolIncapableModels).To(ContainElement("gpt-*-mini"))
+			Expect(cfg.ToolIncapableModels).To(ContainElement("gpt-*-nano"))
 		})
 	})
 

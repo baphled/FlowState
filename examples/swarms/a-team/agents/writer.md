@@ -9,6 +9,14 @@ capabilities:
   tools:
     - coordination_store
     - skill_load
+    - read
+    - write
+    - edit
+    - grep
+    - glob
+    - todowrite
+    - multiedit
+    - apply_patch
   skills: []
   always_active_skills:
     - pre-action

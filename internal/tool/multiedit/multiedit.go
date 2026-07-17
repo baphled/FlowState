@@ -11,6 +11,8 @@ import (
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
+const maxEditsAggregateBytes = 50 * 1024 // 50 KB aggregate across all edits
+
 // Tool applies multiple exact string replacements to a file.
 type Tool struct {
 	guard *pathguard.Guard
@@ -75,7 +77,7 @@ func (t *Tool) Schema() tool.Schema {
 			"file_path": {Type: "string", Description: "File path to modify"},
 			"edits": {
 				Type:        "array",
-				Description: "Ordered list of exact string replacements",
+				Description: "Ordered list of exact string replacements (aggregate new_string content max 50KB). For large rewrites, use the write tool instead.",
 				Items: map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -123,6 +125,25 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		if err := t.guard.CheckForTool(ctx, "multiedit", cleaned); err != nil {
 			return tool.Result{Error: err}, nil
 		}
+	}
+
+	aggregateSize := 0
+	for _, rawEdit := range rawEdits {
+		if edit, ok := rawEdit.(map[string]any); ok {
+			if ns, ok := edit["new_string"].(string); ok {
+				aggregateSize += len(ns)
+			}
+		}
+	}
+	if aggregateSize > maxEditsAggregateBytes {
+		return tool.Result{
+			IsError: true,
+			Error: fmt.Errorf(
+				"edits aggregate too large: %d bytes (max %d). "+
+					"For large rewrites, use the write tool to rewrite the entire file "+
+					"or reduce the size of your new_string content",
+				aggregateSize, maxEditsAggregateBytes),
+		}, nil
 	}
 
 	data, readErr := os.ReadFile(cleaned)

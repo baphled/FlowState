@@ -131,15 +131,17 @@ type Streamer = streaming.Streamer
 type SessionManager interface {
 	// SnapshotSession projects the persistent session into a value-typed
 	// copy. Used by DispatchSessioned to capture state post-user-message-
-	// append and pre-stream-completion, mirroring the e4bf9632 async-POST
-	// contract.
+	// append and pre-stream-completion.
 	SnapshotSession(id string) (session.Session, error)
-	// SendMessageWithAttachments appends the user message inside its
-	// critical section, then returns a chunks channel driven by the
-	// underlying streamer. ctx threads any per-turn overrides
-	// (session.WithStreamAgentOverride for @-mention redirects). Empty
-	// attachmentIDs falls through to plain SendMessage internally.
-	SendMessageWithAttachments(ctx context.Context, sessionID, message string, attachmentIDs []string) (<-chan provider.StreamChunk, error)
+	// PrepareSendWithAttachments resolves attachments, appends the user
+	// message, and returns the prepared context plus agent ID. Does NOT
+	// start the provider stream — call StartStream to drive the streamer.
+	// Empty attachmentIDs delegates to PrepareSend internally.
+	PrepareSendWithAttachments(ctx context.Context, sessionID, message string, attachmentIDs []string) (context.Context, string, error)
+	// StartStream drives the provider stream using the context returned
+	// by PrepareSendWithAttachments and returns a chunks channel. Blocks
+	// until the provider emits its first chunk (failover hook peek).
+	StartStream(ctx context.Context, sessionID, agentID, message string) (<-chan provider.StreamChunk, error)
 }
 
 // failoverReseeder is the optional per-turn failover-reseed capability
@@ -191,6 +193,17 @@ type Dispatcher struct {
 	// drains the chunks channel. Never nil — New / NewWithTurns
 	// always wire a registry instance.
 	turnRegistry *turn.Registry
+	// engineMu serialises cross-session engine state mutations
+	// (SetSwarmContext, ManifestSnapshot, ReseedFailoverBasePreferences)
+	// with the StartStream call that depends on them. Without this
+	// mutex, a concurrent session's DispatchSessioned goroutine can
+	// overwrite the failover chain or swarm context between session A's
+	// setup and session A's engine.Stream call, causing the turn to
+	// route on the wrong provider/model/manifest. The mutex is held
+	// from ManifestSnapshot through StartStream's first-chunk peek —
+	// after the first chunk arrives the provider is committed and the
+	// engine state can be safely mutated by the next session.
+	engineMu sync.Mutex
 }
 
 // New wires a Dispatcher. All dependencies are nullable for test
@@ -524,7 +537,7 @@ func (d *Dispatcher) runEphemeralStream(
 //     may return / cancel ctx at any point AFTER this method returns;
 //     the engine stream continues until the underlying chunks channel
 //     drains because Dispatcher passes context.WithoutCancel(ctx) to
-//     SendMessageWithAttachments internally.
+//     PrepareSendWithAttachments internally.
 //   - req carries the session anchor, agent fallback, message, optional
 //     attachments, and the ScanMentions flag.
 //   - consumer is accepted for parity with DispatchEphemeral so future
@@ -543,17 +556,21 @@ func (d *Dispatcher) runEphemeralStream(
 //   - An error from the synchronous resolve / append phase (e.g.
 //     ErrSessionNotFound, session.ErrAttachmentNotFound). When non-nil,
 //     SessionedHandle is the zero value and the caller must NOT consume
-//     it.
+//     it. Provider streaming errors are NOT returned here — they surface
+//     asynchronously via turnRegistry.Fail(turnID, err), which the
+//     frontend's long-poll picks up as StatusFailed.
 //
 // Side effects:
-//   - Calls sessionManager.SendMessageWithAttachments (mutates session
+//   - Calls sessionManager.PrepareSendWithAttachments (mutates session
 //     state: appends user message under WLock).
+//   - Spawns a background goroutine that calls StartStream and drives
+//     the provider stream. The goroutine wraps the chunks channel with
+//     turn and swarm lifecycle management, then fans out to SSE / WS
+//     subscribers via the broker.
 //   - When swarm dispatch active: calls dispatchEngine.SetSwarmContext,
-//     ManifestSnapshot once each before driving the streamer; spawns a
-//     goroutine that runs FlushSwarmLifecycle + RestoreManifest when
-//     the chunks channel drains.
-//   - Spawns a broker.Publish goroutine that fans chunks to SSE / WS
-//     subscribers for the session.
+//     ManifestSnapshot once each before driving the streamer; the
+//     background goroutine runs FlushSwarmLifecycle + RestoreManifest
+//     when the chunks channel drains.
 func (d *Dispatcher) DispatchSessioned(
 	ctx context.Context,
 	req DispatchRequest,
@@ -670,10 +687,9 @@ func (d *Dispatcher) DispatchSessioned(
 	// engine present) — partial wiring (test surfaces) falls through to
 	// the plain-agent path with no swarm context installed.
 	var (
-		swarmCtx         *swarm.Context
-		manifestSnapshot any
-		swarmActive      bool
-		leadOverride     string
+		swarmCtx     *swarm.Context
+		swarmActive  bool
+		leadOverride string
 	)
 
 	if d.canDispatchSwarm() {
@@ -686,7 +702,6 @@ func (d *Dispatcher) DispatchSessioned(
 					if mentionErr != nil || mentionedCtx == nil {
 						continue
 					}
-					manifestSnapshot = d.dispatchEngine.ManifestSnapshot()
 					swarmCtx = mentionedCtx
 					swarmActive = true
 					leadOverride = mentionedCtx.LeadAgent
@@ -741,7 +756,6 @@ func (d *Dispatcher) DispatchSessioned(
 			if kind, manifest := swarm.Resolve(req.AgentID, hasAgent, d.swarmRegistry); kind == swarm.KindSwarm && manifest != nil && manifest.Lead != "" {
 				ctx := swarm.NewContext(manifest.ID, manifest)
 				swarmCtx = &ctx
-				manifestSnapshot = d.dispatchEngine.ManifestSnapshot()
 				swarmActive = true
 				// Orchestrator Self-Execution (May 2026): set the lead
 				// override EXACTLY as the @-mention path does (Pass 1 /
@@ -784,129 +798,81 @@ func (d *Dispatcher) DispatchSessioned(
 		// concurrent member closures.
 		swarmCtx.AssignRunChainID(req.SessionID)
 
-		// Install BEFORE SendMessageWithAttachments so the engine sees
-		// the swarm context when it starts streaming the turn. The
-		// per-turn lead override (mention path only) threads through
-		// the ctx so the user-message stamp stays under the session's
-		// persistent agent while the streamer drives under the swarm's
-		// lead. Matches the userMessageAgent vs streamAgent split in
-		// session/manager.go:1227-1234.
-		d.dispatchEngine.SetSwarmContext(swarmCtx)
 		if leadOverride != "" {
 			streamCtx = session.WithStreamAgentOverride(streamCtx, leadOverride)
 		}
 	}
-	// Attach the per-turn swarm scope to streamCtx for EVERY turn,
-	// not just swarmActive turns. The delegate gate consults the
-	// ctx-scoped value via swarm.ScopeFromContext as the authoritative
-	// source — this is immune to mid-turn writes to the SHARED
-	// dispatchEngine.swarmContext field (cross-session race). On
-	// no-swarm turns (swarmActive=false) the attached scope is nil,
-	// which the gate interprets as "this turn is standalone, ignore
-	// engine state". Pre-fix, planner session
-	// 39de3ab5-6173-4baf-9e20-7514a326bd3c hit the leak: a concurrent
-	// session's meta-swarm context bled onto the engine mid-turn and
-	// the planner's gate rejected plan-writer despite the dispatcher
-	// having correctly installed planning-loop at turn start.
 	streamCtx = swarm.WithScope(streamCtx, swarmCtx)
 
-	// Per-turn failover reseed. The dispatch engine is the App's SINGLE
-	// shared primary engine; its failover chain is seeded purely from
-	// config (applyFailoverPreferences → providers.BuildConfigPreferences)
-	// at app startup, and neither SetManifest nor SetSwarmContext touches
-	// the failover manager. Without this reseed every sessioned turn —
-	// swarm lead or plain agent — routes on the config global-default head
-	// (zai/glm-4.6) regardless of the turn's agent manifest preferred_models.
-	//
-	// Reseed from the agent the engine will actually run as this turn:
-	//   - swarm active  → the swarm lead (swarmCtx.LeadAgent)
-	//   - plain session → the session's agent (req.AgentID)
-	// The engine rebuilds "manifest head + config tail (deduped)"; an agent
-	// with no preferred_models restores the config chain verbatim, so this
-	// is a no-op for the historical config-only behaviour.
 	reseedAgentID := req.AgentID
 	if swarmActive && swarmCtx != nil && swarmCtx.LeadAgent != "" {
 		reseedAgentID = swarmCtx.LeadAgent
 	}
-	d.reseedDispatchFailover(reseedAgentID)
 
-	chunks, err := d.sessionManager.SendMessageWithAttachments(
+	preparedCtx, agentID, prepErr := d.sessionManager.PrepareSendWithAttachments(
 		streamCtx, req.SessionID, req.Content, req.AttachmentIDs,
 	)
-	if err != nil {
-		if swarmActive {
-			// Stream never started — restore the manifest immediately
-			// so a failed handler doesn't leave the engine re-
-			// identified as the swarm lead for subsequent turns.
-			d.dispatchEngine.RestoreManifest(manifestSnapshot)
-		}
-		// Stream never started — gateTransferred stays false, so the
-		// safety-net defer releases the baton synchronously after we
-		// return. Next call for this sessionID is unblocked.
-		// turnOwnedByWrap stays false — Fail the turn now so the
-		// per-session conflict gate clears synchronously.
-		failTurnIfOwned(err)
-		return SessionedHandle{}, err
+	if prepErr != nil {
+		failTurnIfOwned(prepErr)
+		return SessionedHandle{}, prepErr
 	}
 
-	// Snapshot AFTER the user message append (inside SendMessage's
-	// critical section) so the returned Snapshot carries the new user
-	// row. The Snapshot path is value-typed — no *Session escapes the
-	// manager's lock boundary (see vault note "Session Messages Data
-	// Race in SSE Fast-Path (May 2026)" § "Sibling races").
 	snap, snapErr := d.sessionManager.SnapshotSession(req.SessionID)
 	if snapErr != nil {
-		if swarmActive {
-			d.dispatchEngine.RestoreManifest(manifestSnapshot)
-		}
 		failTurnIfOwned(snapErr)
 		return SessionedHandle{}, snapErr
 	}
 
-	if chunks != nil {
-		// Hand baton ownership to the wrap goroutine — the safety-net
-		// defer at function exit will skip the release. The wrap's
-		// inner defers run flush → restore → release in LIFO order,
-		// so the gate ONLY drops after the engine is fully restored.
-		gateTransferred = true
-		// Hand Turn ownership to the wrap goroutine too — Complete
-		// fires after the chunks channel drains cleanly, Fail fires
-		// if the terminal chunk carries an Error. The wrap goroutine
-		// MUST call exactly one of {Complete, Fail} so the per-session
-		// conflict gate clears.
-		turnOwnedByWrap = true
-		chunks = d.wrapWithTurnLifecycle(chunks, turnID)
-		chunks = d.wrapWithSwarmLifecycle(
-			streamCtx, chunks, manifestSnapshot, swarmActive, releaseGateSync,
+	gateTransferred = true
+	turnOwnedByWrap = true
+
+	go func() {
+		var engineSnap any
+		engineLocked := false
+		if d.dispatchEngine != nil {
+			d.engineMu.Lock()
+			engineLocked = true
+			engineSnap = d.dispatchEngine.ManifestSnapshot()
+			if swarmActive {
+				d.dispatchEngine.SetSwarmContext(swarmCtx)
+			}
+			d.reseedDispatchFailover(reseedAgentID)
+		}
+
+		chunks, streamErr := d.sessionManager.StartStream(
+			preparedCtx, req.SessionID, agentID, req.Content,
 		)
-		// Phase 4 — Dispatcher Service Unification (May 2026) S1 closure.
-		//
-		// When a consumer is wired (handleSessionWebSocket, Phase 4),
-		// tee chunks to BOTH the broker (live SSE subscribers, if any)
-		// AND the consumer (the WS handler's frame-writer pump). Pre-
-		// Phase-4 the consumer arg was discarded; the WS handler took
-		// chunks directly from sessionManager.SendMessage which kept
-		// r.Context() coupled to the engine. Routing through the
-		// consumer here lets the WS handler keep its existing
-		// out-channel + quit-signal pattern while the streamer's
-		// lifetime is decoupled via context.WithoutCancel inside this
-		// method (load-bearing for S1).
-		d.fanOutSessionedChunks(req.SessionID, chunks, consumer)
-	} else if swarmActive {
-		// Nil chunks channel + swarm active — manager returned cleanly
-		// without driving the streamer. Restore the manifest
-		// synchronously so engine state doesn't leak.
-		d.dispatchEngine.RestoreManifest(manifestSnapshot)
-		// gateTransferred remains false — the safety-net defer
-		// releases the baton. Complete the turn synchronously since
-		// no chunks will ever drain; an empty MessagesAdded turn is
-		// a valid "completed with no engine output" terminal state.
-		_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{})
-	} else {
-		// Nil chunks + no swarm — same Complete-synchronously path so
-		// the conflict gate clears.
-		_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{})
-	}
+
+		if streamErr != nil {
+			if swarmActive && d.dispatchEngine != nil {
+				d.dispatchEngine.RestoreManifest(engineSnap)
+			}
+			if engineLocked {
+				d.engineMu.Unlock()
+			}
+			releaseGateSync()
+			_ = d.turnRegistry.Fail(turnID, streamErr)
+			return
+		}
+
+		if engineLocked {
+			d.engineMu.Unlock()
+		}
+
+		if chunks != nil {
+			chunks = d.wrapWithTurnLifecycle(chunks, turnID)
+			chunks = d.wrapWithSwarmLifecycle(
+				streamCtx, chunks, engineSnap, swarmActive, releaseGateSync,
+			)
+			d.fanOutSessionedChunks(req.SessionID, chunks, consumer)
+		} else {
+			if swarmActive && d.dispatchEngine != nil {
+				d.dispatchEngine.RestoreManifest(engineSnap)
+			}
+			releaseGateSync()
+			_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{})
+		}
+	}()
 
 	return SessionedHandle{Snapshot: snap, TurnID: turnID}, nil
 }

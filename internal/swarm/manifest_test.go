@@ -1,6 +1,8 @@
 package swarm_test
 
 import (
+	"os"
+	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -157,6 +159,38 @@ var _ = Describe("Manifest.Validate", func() {
 
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("name"))
+		})
+
+		It("accepts inline swarm prompt appends", func() {
+			m := validBase()
+			m.Prompt.LeadAppend = "Lead-only instructions"
+			m.Prompt.MemberAppends = map[string]swarm.PromptAppendConfig{
+				"explorer": {Append: "Member-only instructions"},
+			}
+
+			Expect(m.Validate(nil)).To(Succeed())
+		})
+
+		It("rejects a relative prompt file when the manifest has no source dir", func() {
+			m := validBase()
+			m.Prompt.LeadAppendFile = "lead.md"
+
+			err := m.Validate(nil)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("relative prompt file"))
+		})
+
+		It("accepts a relative prompt file when it exists under the manifest source dir", func() {
+			dir := GinkgoT().TempDir()
+			path := filepath.Join(dir, "lead.md")
+			Expect(os.WriteFile(path, []byte("Lead prompt"), 0o600)).To(Succeed())
+
+			m := validBase()
+			m.SourceDir = dir
+			m.Prompt.LeadAppendFile = "lead.md"
+
+			Expect(m.Validate(nil)).To(Succeed())
 		})
 	})
 

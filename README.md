@@ -154,6 +154,22 @@ Compaction honours two ADRs:
 - **View-Only Context Compaction** — artefacts are parallel state, never rewrites of the canonical transcript.
 - **Tool-Call Atomicity in Context Compaction** — compaction operates on tool-use/tool-result pairs as atomic units, and summary output is scrubbed for raw provider identifiers (`toolu_…`, `call_…`) before injection.
 
+### Delegation
+
+The delegation engine supports the `delegation.tee_child_content` key to control whether child-agent reasoning text is mirrored into the parent's chat bubble.
+
+```yaml
+delegation:
+  # When false (default), child-agent reasoning text stays in the child
+  # session and surfaces to the parent only via the tool_result. This
+  # matches the industry consensus (Claude Code, OpenCode, etc.) and
+  # prevents "chat leak" where reasoning like "Let me verify the
+  # resolving wiki-links…" appears inline in the coordinator's bubble.
+  # When true, the legacy behaviour is preserved and child text appears
+  # inline in the parent bubble alongside the actual answer.
+  tee_child_content: false
+```
+
 ### Example configuration
 
 ```yaml

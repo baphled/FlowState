@@ -2,10 +2,13 @@ package engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/skill"
+	"github.com/baphled/flowstate/internal/swarm"
 )
 
 // BuildSystemPrompt returns the system prompt for the engine's active manifest.
@@ -37,7 +40,13 @@ func (e *Engine) BuildSystemPrompt() string {
 //     not manifest-level.
 func (e *Engine) BuildSystemPromptCtx(ctx context.Context) string {
 	if bound, ok := manifestFromContext(ctx); ok {
-		return e.buildSystemPromptFor(bound)
+		return e.buildSystemPromptFor(ctx, bound)
+	}
+	if _, present := swarm.ScopeFromContext(ctx); present {
+		swarmPromptAppend := e.resolveSwarmPromptAppendFor(ctx, e.manifest)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.assembleSystemPromptLocked(e.manifest, e.skills, swarmPromptAppend)
 	}
 
 	e.mu.RLock()
@@ -55,7 +64,8 @@ func (e *Engine) BuildSystemPromptCtx(ctx context.Context) string {
 		return e.cachedSystemPrompt
 	}
 
-	base := e.assembleSystemPromptLocked(e.manifest, e.skills)
+	swarmPromptAppend := e.resolveSwarmPromptAppendFor(ctx, e.manifest)
+	base := e.assembleSystemPromptLocked(e.manifest, e.skills, swarmPromptAppend)
 
 	e.cachedSystemPrompt = base
 	e.systemPromptDirty = false
@@ -86,7 +96,8 @@ func (e *Engine) BuildSystemPromptCtx(ctx context.Context) string {
 //   - Loads agent files once via the engine's loader (cached on
 //     the engine — agent files are project-level, not
 //     manifest-level, so the cache is safe to share).
-func (e *Engine) buildSystemPromptFor(manifest agent.Manifest) string {
+func (e *Engine) buildSystemPromptFor(ctx context.Context, manifest agent.Manifest) string {
+	swarmPromptAppend := e.resolveSwarmPromptAppendFor(ctx, manifest)
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -94,7 +105,7 @@ func (e *Engine) buildSystemPromptFor(manifest agent.Manifest) string {
 	if e.skillsResolver != nil {
 		skills = e.skillsResolver(manifest)
 	}
-	return e.assembleSystemPromptLocked(manifest, skills)
+	return e.assembleSystemPromptLocked(manifest, skills, swarmPromptAppend)
 }
 
 // assembleSystemPromptLocked is the pure composition routine
@@ -113,7 +124,7 @@ func (e *Engine) buildSystemPromptFor(manifest agent.Manifest) string {
 //
 // Side effects:
 //   - Populates e.cachedAgentFiles on first access.
-func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []skill.Skill) string {
+func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []skill.Skill, swarmPromptAppend string) string {
 	base := manifest.Instructions.SystemPrompt
 
 	base = base + "\n\n" + buildTemporalSection(e.nowFunc)
@@ -137,6 +148,9 @@ func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []sk
 	}
 
 	base = e.appendSwarmLeadSectionFor(base, manifest)
+	if swarmPromptAppend != "" {
+		base = base + swarmPromptAppend
+	}
 
 	if e.agentOverrides != nil {
 		if appendText, ok := e.agentOverrides[manifest.ID]; ok && appendText != "" {
@@ -147,6 +161,62 @@ func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []sk
 	base += buildToolUsageRequirement(manifest)
 
 	return base
+}
+
+func (e *Engine) resolveSwarmPromptAppendFor(ctx context.Context, manifest agent.Manifest) string {
+	swarmManifest, swarmCtx, ok := e.activeSwarmManifestForPrompt(ctx)
+	if !ok {
+		return ""
+	}
+	appends := make([]string, 0, 2)
+	if swarmCtx.LeadAgent == manifest.ID {
+		if text := resolveSwarmPromptAppend(swarmManifest.SourceDir, swarmManifest.Prompt.LeadAppend, swarmManifest.Prompt.LeadAppendFile); text != "" {
+			appends = append(appends, text)
+		}
+	}
+	if cfg, ok := swarmManifest.Prompt.MemberAppends[manifest.ID]; ok {
+		if text := resolveSwarmPromptAppend(swarmManifest.SourceDir, cfg.Append, cfg.File); text != "" {
+			appends = append(appends, text)
+		}
+	}
+	if len(appends) == 0 {
+		return ""
+	}
+	return "\n\n# Swarm Prompt Injection\n\n" + strings.Join(appends, "\n\n")
+}
+
+func (e *Engine) activeSwarmManifestForPrompt(ctx context.Context) (*swarm.Manifest, *swarm.Context, bool) {
+	swarmCtx := e.swarmContext
+	if scoped, present := swarm.ScopeFromContext(ctx); present {
+		swarmCtx = scoped
+	}
+	if swarmCtx == nil || swarmCtx.SwarmID == "" || e.swarmRegistry == nil {
+		return nil, nil, false
+	}
+	manifest, ok := e.swarmRegistry.Get(swarmCtx.SwarmID)
+	if !ok || manifest == nil {
+		return nil, nil, false
+	}
+	return manifest, swarmCtx, true
+}
+
+func resolveSwarmPromptAppend(sourceDir string, inline string, file string) string {
+	parts := make([]string, 0, 2)
+	if trimmed := strings.TrimSpace(inline); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	if trimmed := strings.TrimSpace(file); trimmed != "" {
+		path := trimmed
+		if !filepath.IsAbs(path) && strings.TrimSpace(sourceDir) != "" {
+			path = filepath.Join(sourceDir, path)
+		}
+		if body, err := os.ReadFile(path); err == nil {
+			if text := strings.TrimSpace(string(body)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func buildToolUsageRequirement(manifest agent.Manifest) string {

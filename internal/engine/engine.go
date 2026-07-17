@@ -223,6 +223,13 @@ type Engine struct {
 	// continuation injection and on turn-end acceptance. Protected by e.mu.
 	workToolCallsSinceContinuation map[string]int
 
+	// workCallsSinceLastTodoCompletion tracks non-todo tool calls since
+	// the last todo_update that completed an item. Prevents agents from
+	// rapidly cycling through todos without doing any work between
+	// completions. When the model tries to complete an item and this
+	// counter is 0, the completion is rejected. Protected by e.mu.
+	workCallsSinceLastTodoCompletion map[string]int
+
 	// sessionTodoNoProgress tracks consecutive no-progress continuation
 	// attempts per session, persisting across Stream() calls. This prevents
 	// session-spanning infinite loops when the provider times out during a
@@ -1066,79 +1073,80 @@ func resolveMaxToolLoopIterations(cfg Config) int {
 //     the caller after assembly.
 func assembleEngine(cfg Config, deps resolvedEngineDeps) *Engine {
 	return &Engine{
-		chatProvider:                   cfg.ChatProvider,
-		embeddingProvider:              cfg.EmbeddingProvider,
-		failoverManager:                cfg.FailoverManager,
-		manifest:                       cfg.Manifest,
-		tools:                          cfg.Tools,
-		skills:                         cfg.Skills,
-		skillsResolver:                 cfg.SkillsResolver,
-		store:                          cfg.Store,
-		chainStore:                     cfg.ChainStore,
-		windowBuilder:                  deps.windowBuilder,
-		recallBroker:                   cfg.RecallBroker,
-		contextAssemblyHooks:           deps.assemblyHooks,
-		tokenCounter:                   cfg.TokenCounter,
-		systemPromptBudget:             cfg.SystemPromptBudget,
-		streamTimeout:                  deps.streamTimeout,
-		hookChain:                      deps.chain,
-		toolRegistry:                   cfg.ToolRegistry,
-		permissionHandler:              cfg.PermissionHandler,
-		providerRegistry:               cfg.Registry,
-		agentRegistry:                  cfg.AgentRegistry,
-		swarmRegistry:                  cfg.SwarmRegistry,
-		agentsFileLoader:               cfg.AgentsFileLoader,
-		agentOverrides:                 make(map[string]string),
-		bus:                            deps.bus,
-		systemPromptDirty:              true,
-		mcpServerTools:                 cfg.MCPServerTools,
-		toolTimeout:                    resolveToolTimeout(cfg),
-		categoryResolver:               cfg.CategoryResolver,
-		autoCompactor:                  cfg.AutoCompactor,
-		compressionConfig:              cfg.CompressionConfig,
-		compressionMetrics:             cfg.CompressionMetrics,
-		recorder:                       cfg.Recorder,
-		knowledgeExtractor:             cfg.KnowledgeExtractor,
-		knowledgeExtractorFactory:      cfg.KnowledgeExtractorFactory,
-		sessionSplitters:               make(map[string]*sessionSplitterEntry),
-		sessionCompressionMetrics:      make(map[string]*ctxstore.CompressionMetrics),
-		sessionCompactionMemo:          make(map[string]sessionCompactionMemoEntry),
-		sessionRehydrated:              make(map[string]struct{}),
-		seededSessions:                 make(map[string]struct{}),
-		sessionLookup:                  cfg.SessionLookup,
-		permissionPrompter:             cfg.PermissionPrompter,
-		todoStrictMode:                 cfg.TodoStrictMode,
-		todoNonTodowriteToolCalls:      make(map[string]int),
-		todoStore:                      cfg.TodoStore,
-		todoContinuationFired:          make(map[string]bool),
-		workToolCallsSinceContinuation: make(map[string]int),
-		sessionTodoNoProgress:          make(map[string]int),
-		sessionTodoContinuationCount:   make(map[string]int),
-		sessionTodoLastSnapshot:        make(map[string][]todo.Item),
-		skillLoadCalled:                make(map[string]bool),
-		deliveryToolCalled:             make(map[string]bool),
-		sessionComplexity:              make(map[string]TaskComplexity),
-		knownSkillsFunc:                cfg.KnownSkillsFunc,
-		lastUsagePayload:               make(map[string]string),
-		sessionOutputTokens:            make(map[string]int64),
-		quotaTracker:                   cfg.QuotaTracker,
-		quotaAccountHashes:             cfg.QuotaAccountHashes,
-		quotaCaps:                      cfg.QuotaCaps,
-		lastProviderQuotaPayload:       make(map[string]string),
-		toolCallCorrelator:             resolveToolCallCorrelator(cfg),
-		swarmContext:                   cfg.SwarmContext,
-		microCompactor:                 resolveMicroCompactor(cfg),
-		compactionConfig:               cfg.CompactionConfig,
-		factService:                    resolveFactService(cfg),
-		nowFunc:                        resolveNowFunc(cfg),
-		onStreamCancel:                 cfg.OnStreamCancel,
-		heartbeatInterval:              defaultStreamingHeartbeatInterval,
-		streamIdleTimeout:              engineStreamIdleTimeout,
-		maxToolLoopIterations:          resolveMaxToolLoopIterations(cfg),
-		maxToolLoopDuration:            resolveMaxToolLoopDuration(cfg),
-		maxIdenticalToolCalls:          engineMaxIdenticalToolCalls,
-		maxSameToolPatternCalls:        engineMaxSameToolPatternCalls,
-		lifecycle:                      lifecycle.DefaultTurnLifecycle(),
+		chatProvider:                     cfg.ChatProvider,
+		embeddingProvider:                cfg.EmbeddingProvider,
+		failoverManager:                  cfg.FailoverManager,
+		manifest:                         cfg.Manifest,
+		tools:                            cfg.Tools,
+		skills:                           cfg.Skills,
+		skillsResolver:                   cfg.SkillsResolver,
+		store:                            cfg.Store,
+		chainStore:                       cfg.ChainStore,
+		windowBuilder:                    deps.windowBuilder,
+		recallBroker:                     cfg.RecallBroker,
+		contextAssemblyHooks:             deps.assemblyHooks,
+		tokenCounter:                     cfg.TokenCounter,
+		systemPromptBudget:               cfg.SystemPromptBudget,
+		streamTimeout:                    deps.streamTimeout,
+		hookChain:                        deps.chain,
+		toolRegistry:                     cfg.ToolRegistry,
+		permissionHandler:                cfg.PermissionHandler,
+		providerRegistry:                 cfg.Registry,
+		agentRegistry:                    cfg.AgentRegistry,
+		swarmRegistry:                    cfg.SwarmRegistry,
+		agentsFileLoader:                 cfg.AgentsFileLoader,
+		agentOverrides:                   make(map[string]string),
+		bus:                              deps.bus,
+		systemPromptDirty:                true,
+		mcpServerTools:                   cfg.MCPServerTools,
+		toolTimeout:                      resolveToolTimeout(cfg),
+		categoryResolver:                 cfg.CategoryResolver,
+		autoCompactor:                    cfg.AutoCompactor,
+		compressionConfig:                cfg.CompressionConfig,
+		compressionMetrics:               cfg.CompressionMetrics,
+		recorder:                         cfg.Recorder,
+		knowledgeExtractor:               cfg.KnowledgeExtractor,
+		knowledgeExtractorFactory:        cfg.KnowledgeExtractorFactory,
+		sessionSplitters:                 make(map[string]*sessionSplitterEntry),
+		sessionCompressionMetrics:        make(map[string]*ctxstore.CompressionMetrics),
+		sessionCompactionMemo:            make(map[string]sessionCompactionMemoEntry),
+		sessionRehydrated:                make(map[string]struct{}),
+		seededSessions:                   make(map[string]struct{}),
+		sessionLookup:                    cfg.SessionLookup,
+		permissionPrompter:               cfg.PermissionPrompter,
+		todoStrictMode:                   cfg.TodoStrictMode,
+		todoNonTodowriteToolCalls:        make(map[string]int),
+		todoStore:                        cfg.TodoStore,
+		todoContinuationFired:            make(map[string]bool),
+		workToolCallsSinceContinuation:   make(map[string]int),
+		workCallsSinceLastTodoCompletion: make(map[string]int),
+		sessionTodoNoProgress:            make(map[string]int),
+		sessionTodoContinuationCount:     make(map[string]int),
+		sessionTodoLastSnapshot:          make(map[string][]todo.Item),
+		skillLoadCalled:                  make(map[string]bool),
+		deliveryToolCalled:               make(map[string]bool),
+		sessionComplexity:                make(map[string]TaskComplexity),
+		knownSkillsFunc:                  cfg.KnownSkillsFunc,
+		lastUsagePayload:                 make(map[string]string),
+		sessionOutputTokens:              make(map[string]int64),
+		quotaTracker:                     cfg.QuotaTracker,
+		quotaAccountHashes:               cfg.QuotaAccountHashes,
+		quotaCaps:                        cfg.QuotaCaps,
+		lastProviderQuotaPayload:         make(map[string]string),
+		toolCallCorrelator:               resolveToolCallCorrelator(cfg),
+		swarmContext:                     cfg.SwarmContext,
+		microCompactor:                   resolveMicroCompactor(cfg),
+		compactionConfig:                 cfg.CompactionConfig,
+		factService:                      resolveFactService(cfg),
+		nowFunc:                          resolveNowFunc(cfg),
+		onStreamCancel:                   cfg.OnStreamCancel,
+		heartbeatInterval:                defaultStreamingHeartbeatInterval,
+		streamIdleTimeout:                engineStreamIdleTimeout,
+		maxToolLoopIterations:            resolveMaxToolLoopIterations(cfg),
+		maxToolLoopDuration:              resolveMaxToolLoopDuration(cfg),
+		maxIdenticalToolCalls:            engineMaxIdenticalToolCalls,
+		maxSameToolPatternCalls:          engineMaxSameToolPatternCalls,
+		lifecycle:                        lifecycle.DefaultTurnLifecycle(),
 	}
 }
 
@@ -2674,6 +2682,12 @@ func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]st
 	for _, denied := range manifest.Capabilities.ToolsDeny {
 		delete(allowed, denied)
 	}
+
+	// Harness guarantee: skill_load is always available to every agent,
+	// even when explicitly listed in ToolsDeny. Skills are foundational
+	// to agent operation (always-active skills discipline, memory,
+	// pre-action, etc.) and must never be excludable.
+	allowed["skill_load"] = true
 
 	// P12: suggest_delegate is a read-only escape hatch. The
 	// corresponding tool is only attached to the engine for
@@ -4305,6 +4319,8 @@ func (e *Engine) streamWithToolLoop(
 	noProgressContinuations = 0
 	lastTodoContinuationSnapshot = []todo.Item(nil)
 	consecutiveSameToolContinuations := 0
+	const maxRejectedToolCalls = 3
+	consecutiveRejectedToolCalls := 0
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
 	forcedSummaryUsed := false
@@ -4418,6 +4434,7 @@ func (e *Engine) streamWithToolLoop(
 		providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 		if streamErr != nil {
 			slog.Error("delivery tool retry stream failed", "session", sessionID, "error", streamErr)
+			e.persistDeliveryFailureFallback(retryCtx, sessionID, messages, streamErr)
 
 			if retryAt, ok := e.SoonestProviderRetry(); ok {
 				slog.Info("delivery retry: providers rate-limited, waiting for cooldown",
@@ -4443,6 +4460,7 @@ func (e *Engine) streamWithToolLoop(
 					if streamErr != nil {
 						slog.Error("delivery tool retry stream failed after provider cooldown",
 							"session", sessionID, "error", streamErr)
+						e.persistDeliveryFailureFallback(retryCtx, sessionID, messages, streamErr)
 						onStop()
 						return deliveryRetryStop
 					}
@@ -4521,7 +4539,7 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retry", overflowRetries,
 						"max_overflow_retries", maxOverflowRetries,
 					)
-					compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+					compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
 					if compacted {
 						if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID); rebuilt != nil {
 							messages = rebuilt
@@ -4898,8 +4916,19 @@ func (e *Engine) streamWithToolLoop(
 		}
 
 		toolResults := make([]tool.Result, len(execResults))
+		batchAllRejected := len(execResults) > 0
 		for i, er := range execResults {
 			toolResults[i] = er.toolResult
+			if !er.toolResult.IsError && er.toolResult.Error == nil {
+				batchAllRejected = false
+			} else if !strings.Contains(er.toolResult.Output, "not available to agent") {
+				batchAllRejected = false
+			}
+		}
+		if batchAllRejected {
+			consecutiveRejectedToolCalls++
+		} else {
+			consecutiveRejectedToolCalls = 0
 		}
 		messages = e.appendToolResultsBatchToMessages(messages, result.toolCalls, toolResults)
 
@@ -4918,7 +4947,7 @@ func (e *Engine) streamWithToolLoop(
 		// than the swollen pre-compaction prefix. The no-fire branch
 		// returns false and we skip the reload — buildContextWindow
 		// is not free.
-		compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+		compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
 		if compacted {
 			if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID); rebuilt != nil {
 				messages = rebuilt
@@ -4987,7 +5016,8 @@ func (e *Engine) streamWithToolLoop(
 		backstopTripped := e.maxToolLoopIterations > 0 && iterations >= e.maxToolLoopIterations
 		durationTripped := e.maxToolLoopDuration > 0 && elapsed >= e.maxToolLoopDuration
 		sameToolTripped := e.maxSameToolPatternCalls > 0 && sameToolPatternRun >= e.maxSameToolPatternCalls
-		if repeatTripped || backstopTripped || durationTripped || sameToolTripped {
+		rejectionTripped := consecutiveRejectedToolCalls >= maxRejectedToolCalls
+		if repeatTripped || backstopTripped || durationTripped || sameToolTripped || rejectionTripped {
 			reason := "iteration_backstop"
 			if repeatTripped {
 				reason = "identical_call_repeat"
@@ -4995,6 +5025,8 @@ func (e *Engine) streamWithToolLoop(
 				reason = "duration_backstop"
 			} else if sameToolTripped {
 				reason = "same_tool_pattern"
+			} else if rejectionTripped {
+				reason = "consecutive_tool_rejection"
 			}
 			slog.Warn("engine tool loop capped",
 				"session", sessionID,
@@ -5290,6 +5322,145 @@ func (e *Engine) streamWithToolLoop(
 		// last emission for this session.
 		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 	}
+}
+
+type deliveryFailureEnvelope struct {
+	Status                  string   `json:"status"`
+	SessionID               string   `json:"session_id"`
+	AgentID                 string   `json:"agent_id"`
+	ChainID                 string   `json:"chain_id,omitempty"`
+	RequiredDeliveryTools   []string `json:"required_delivery_tools,omitempty"`
+	ExpectedCoordinationKey string   `json:"expected_coordination_key,omitempty"`
+	FailureSummary          string   `json:"failure_summary"`
+	MessageCount            int      `json:"message_count"`
+	RequestBytes            int      `json:"request_bytes"`
+	LastAssistantText       string   `json:"last_assistant_text,omitempty"`
+	Timestamp               string   `json:"timestamp"`
+}
+
+func (e *Engine) persistDeliveryFailureFallback(ctx context.Context, sessionID string, messages []provider.Message, cause error) {
+	if e == nil || cause == nil || !isTerminalDeliveryProviderFailure(cause) {
+		return
+	}
+	if !e.requiresDeliveryToolCtx(ctx) || e.deliveryToolCompleted(sessionID) {
+		return
+	}
+	agentID, deliveryTools := e.deliveryFallbackContext(ctx)
+	if !slices.Contains(deliveryTools, "coordination_store") {
+		return
+	}
+	coordTool := e.lookupTool("coordination_store")
+	if coordTool == nil {
+		return
+	}
+	scope := swarm.MemberCoordChainID(ctx)
+	if scope == "" {
+		scope = sessionID
+	}
+	if scope == "" {
+		return
+	}
+	reservedKey := scope + "/_engine_fallback/" + agentID + "/delivery_failure"
+	envelope := deliveryFailureEnvelope{
+		Status:                  "delivery_failed_engine_fallback",
+		SessionID:               sessionID,
+		AgentID:                 agentID,
+		ChainID:                 swarm.MemberCoordChainID(ctx),
+		RequiredDeliveryTools:   append([]string(nil), deliveryTools...),
+		ExpectedCoordinationKey: expectedCoordinationKey(agentID, swarm.MemberCoordChainID(ctx)),
+		FailureSummary:          cause.Error(),
+		MessageCount:            len(messages),
+		RequestBytes:            estimateMessageBytes(messages),
+		LastAssistantText:       lastAssistantText(messages),
+		Timestamp:               time.Now().UTC().Format(time.RFC3339),
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		slog.Warn("delivery fallback persist skipped: marshal failed", "session", sessionID, "error", err)
+		return
+	}
+	result, execErr := coordTool.Execute(ctx, tool.Input{
+		Name: "coordination_store",
+		Arguments: map[string]interface{}{
+			"operation": "set",
+			"key":       reservedKey,
+			"value":     string(payload),
+		},
+	})
+	if execErr != nil || result.Error != nil || result.IsError {
+		slog.Warn("delivery fallback persist failed",
+			"session", sessionID,
+			"agent", agentID,
+			"key", reservedKey,
+			"error", coalesceToolError(execErr, result))
+		return
+	}
+	slog.Warn("delivery fallback persisted",
+		"session", sessionID,
+		"agent", agentID,
+		"key", reservedKey)
+}
+
+func (e *Engine) deliveryFallbackContext(ctx context.Context) (string, []string) {
+	if m, ok := manifestFromContext(ctx); ok {
+		return m.ID, append([]string(nil), m.Capabilities.DeliveryTools...)
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.manifest.ID, append([]string(nil), e.manifest.Capabilities.DeliveryTools...)
+}
+
+func (e *Engine) lookupTool(name string) tool.Tool {
+	for _, t := range e.tools {
+		if t.Name() == name {
+			return t
+		}
+	}
+	return nil
+}
+
+func isTerminalDeliveryProviderFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "all providers failed") || strings.Contains(msg, "no healthy providers available")
+}
+
+func estimateMessageBytes(messages []provider.Message) int {
+	total := 0
+	for _, msg := range messages {
+		total += len(msg.Role) + len(msg.Content)
+		for _, tc := range msg.ToolCalls {
+			total += len(tc.ID) + len(tc.Name)
+			if args, err := json.Marshal(tc.Arguments); err == nil {
+				total += len(args)
+			}
+		}
+	}
+	return total
+}
+
+func lastAssistantText(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" && strings.TrimSpace(messages[i].Content) != "" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+func coalesceToolError(execErr error, result tool.Result) error {
+	if execErr != nil {
+		return execErr
+	}
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.IsError {
+		return errors.New("tool returned IsError=true")
+	}
+	return errors.New("coordination fallback persist failed")
 }
 
 // fingerprintToolBatch produces a deterministic signature for a batch of
@@ -6710,7 +6881,31 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		if !isTodoTool(toolCall.Name) {
 			e.mu.Lock()
 			e.workToolCallsSinceContinuation[sessionID]++
+			e.workCallsSinceLastTodoCompletion[sessionID]++
 			e.mu.Unlock()
+		}
+		// Guard: prevent rapid todo completion without any work between items.
+		// When the model tries to complete a todo item but has done zero
+		// non-todo work since the last completion, reject it and tell the
+		// model to do actual work first.
+		if toolCall.Name == "todo_update" {
+			if status, ok := input.Arguments["status"].(string); ok && status == "completed" {
+				e.mu.RLock()
+				workDone := e.workCallsSinceLastTodoCompletion[sessionID]
+				e.mu.RUnlock()
+				if workDone == 0 {
+					e.mu.Lock()
+					_, seen := e.workCallsSinceLastTodoCompletion[sessionID]
+					e.mu.Unlock()
+					if seen {
+						return tool.Result{
+							Output:  "You cannot complete this todo item without doing any work since the last one. Call a non-todo tool (bash, read, write, search_nodes, coordination_store, etc.) to accomplish the task before marking it complete.",
+							IsError: true,
+							Error:   fmt.Errorf("todo completion rejected: no work done since last completion"),
+						}, nil
+					}
+				}
+			}
 		}
 
 		toolCtx, cancel := e.deriveToolCtx(ctx, t)
@@ -6739,6 +6934,15 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		// Mark skill_load as called after successful execution.
 		if toolCall.Name == "skill_load" && err == nil && result.Error == nil {
 			e.markSkillLoadCalled(sessionID)
+		}
+		// Reset work-call counter after a successful todo completion so the
+		// next item also requires work before it can be completed.
+		if toolCall.Name == "todo_update" && err == nil && result.Error == nil {
+			if status, ok := input.Arguments["status"].(string); ok && status == "completed" {
+				e.mu.Lock()
+				e.workCallsSinceLastTodoCompletion[sessionID] = 0
+				e.mu.Unlock()
+			}
 		}
 		if err == nil && result.Error == nil {
 			e.markDeliveryToolCalledCtx(ctx, sessionID, toolCall.Name, toolCall.Arguments)
@@ -8738,36 +8942,88 @@ func (e *Engine) shouldCompactExplicitForGate(manifest *agent.Manifest, userMess
 //   - On a positive gate-proximity verdict, fires maybeAutoCompact
 //     which can issue one summariser LLM call and publish one
 //     ContextCompactedEvent with Trigger="tool_result_wave".
-func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) bool {
+func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk, liveMessages []provider.Message) bool {
 	if e == nil || e.store == nil || sessionID == "" {
 		return false
 	}
 	providerID := e.LastProvider()
 	modelID := e.LastModel()
+	manifestCopy := e.Manifest()
+	tokenBudget := e.ModelContextLimit()
+	tools := e.ToolSchemas()
 
-	// Chip refresh — emit a fresh context_usage chunk reflecting the
-	// just-extended persisted store. Tool results were appended to
-	// e.store via storeToolResult before this hook runs, so
-	// AllMessages() carries the swollen wave. Tools schema flows in
-	// so the figure matches the request the provider sees (Bug #36 —
-	// the previous nil-tools call under-counted the request size).
+	if liveMessages != nil {
+		return e.emitMidToolLoopRefreshExplicit(ctx, sessionID, outChan, providerID, modelID, &manifestCopy, tokenBudget, tools, liveMessages)
+	}
+
+	// Legacy store-based path. The export_test wrappers pass a nil
+	// liveMessages to preserve the store-driven chip + gate-proximity
+	// contract the Phase-5 Slice γ cadence specs pin. Production now
+	// routes through the explicit path above: serve mode sources the
+	// session window session-scoped, so e.store does not carry the
+	// swollen tool-loop wave the compaction decision must weigh.
 	if outChan != nil {
-		tools := e.ToolSchemas()
 		if body, ok := e.buildContextUsagePayload(providerID, modelID, e.store.AllMessages(), tools, 0); ok {
 			e.tryEmitContextUsage(sessionID, body, outChan)
 		}
 	}
+	forceTrigger := ""
+	if e.gateProximityForceCompact(&manifestCopy, "", tokenBudget, tools) {
+		forceTrigger = "tool_result_wave"
+	}
+	summary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, forceTrigger)
+	return summary != ""
+}
 
-	// Compaction trigger — consult gateProximityForceCompact on the
-	// active manifest's persisted history. The userMessage argument
-	// is empty: we are between batches in a single user turn, no
-	// in-flight user turn to anticipate.
-	manifestCopy := e.Manifest()
-	tokenBudget := e.ModelContextLimit()
-	if !e.gateProximityForceCompact(&manifestCopy, "", tokenBudget, e.ToolSchemas()) {
+// emitMidToolLoopRefreshExplicit is the serve-mode compaction decision
+// for the tool loop. It mirrors buildContextWindow's explicit-message
+// trigger resolution but operates on the live tool-loop slice the
+// provider is about to receive. Serve mode sources the session window
+// session-scoped, so e.store.AllMessages() does not reflect the wave of
+// tool results appended between batches — weighing e.store (the
+// pre-Slice-A-v2 shape) left the ratio tier reading a stale, tiny set
+// and never firing, so the turn grew until the provider refused the
+// oversized request.
+//
+// maybeAutoCompactExplicit is force-fire only, so the ratio tier is
+// evaluated inline here (exactly as buildContextWindow does) rather
+// than delegated.
+func (e *Engine) emitMidToolLoopRefreshExplicit(
+	ctx context.Context,
+	sessionID string,
+	outChan chan<- provider.StreamChunk,
+	providerID, modelID string,
+	manifestCopy *agent.Manifest,
+	tokenBudget int,
+	tools []provider.Tool,
+	liveMessages []provider.Message,
+) bool {
+	if outChan != nil {
+		if body, ok := e.buildContextUsagePayload(providerID, modelID, liveMessages, tools, 0); ok {
+			e.tryEmitContextUsage(sessionID, body, outChan)
+		}
+	}
+	if tokenBudget <= 0 {
 		return false
 	}
-	summary := e.maybeAutoCompact(ctx, sessionID, &manifestCopy, tokenBudget, "tool_result_wave")
+	forceTrigger := ""
+	if e.shouldCompactExplicitForGate(manifestCopy, "", tokenBudget, tools, liveMessages) {
+		forceTrigger = "tool_result_wave"
+	} else if threshold, ok := e.autoCompactionThreshold(manifestCopy, tokenBudget); ok {
+		estimated := e.estimateRequestTokens(&provider.ChatRequest{
+			Provider: providerID,
+			Model:    modelID,
+			Messages: liveMessages,
+			Tools:    tools,
+		})
+		if float64(estimated)/float64(tokenBudget) > threshold {
+			forceTrigger = "ratio"
+		}
+	}
+	if forceTrigger == "" {
+		return false
+	}
+	summary := e.maybeAutoCompactExplicit(ctx, sessionID, manifestCopy, tokenBudget, forceTrigger, liveMessages)
 	return summary != ""
 }
 
@@ -9901,6 +10157,14 @@ func (e *Engine) ContextStore() *recall.FileContextStore {
 //   - None.
 func (e *Engine) ChainStore() recall.ChainContextStore {
 	return e.chainStore
+}
+
+// TokenCounter returns the engine's configured token counter.
+func (e *Engine) TokenCounter() ctxstore.TokenCounter {
+	if e == nil {
+		return nil
+	}
+	return e.tokenCounter
 }
 
 // LoadedSkills returns the skills stored when the engine was created.

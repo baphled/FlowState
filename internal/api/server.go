@@ -1076,6 +1076,10 @@ func (s *Server) setupRoutes() {
 	// PR3/C7 wraps it in the auth chain so the session_id filter becomes
 	// defence-in-depth rather than the sole check.
 	s.registerProtected("GET /api/swarm/events", s.handleSwarmEvents)
+	// Provider Status SSE stream — dedicated endpoint for real-time
+	// provider quota/cooldown status transitions. Requires ?session_id=
+	// for cross-tenant isolation (same pattern as swarm/events).
+	s.registerProtected("GET /api/v1/providers/status/stream", s.handleProviderStatusStream)
 
 	// Deliverable 2 / 3 of the May 2026 context-accuracy bundle —
 	// runtime-tunable compression threshold + manual /compact
@@ -2557,6 +2561,134 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 		return projectGateEvent(e.Data, "failed", e.Timestamp())
 	}
 	return streaming.SwarmEvent{}
+}
+
+// handleProviderStatusStream streams provider quota/cooldown status
+// transitions as SSE events. Clients connect via
+// GET /api/v1/providers/status/stream?session_id=<id> and receive
+// a JSON event on every status transition (healthy→rate_limited,
+// rate_limited→healthy, etc.).
+//
+// The endpoint subscribes to EventProviderStatusChanged bus events and
+// forwards them verbatim as SSE data lines. Requires ?session_id= for
+// cross-tenant isolation (same pattern as handleSwarmEvents).
+//
+// ADR 002 — Provider Status SSE Side-Channel (July 2026).
+func (s *Server) handleProviderStatusStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session_id query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusNotImplemented)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	if len(s.originPatterns) > 0 {
+		w.Header().Set("Access-Control-Allow-Origin", s.originPatterns[0])
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
+
+	if s.eventBus == nil {
+		writeSSE(w, flusher, `{"error":"event bus not configured"}`)
+		flusher.Flush()
+		return
+	}
+
+	eventCh := make(chan any, 64)
+	stopCh := make(chan struct{})
+
+	// Non-blocking forwarder mirrors the pattern in handleSwarmEvents.
+	// Provider status events are global (not session-scoped) but we
+	// still apply the session_id filter for consistency and defence
+	// in depth.
+	forward := func(msg any) {
+		if !eventBelongsToSession(msg, sessionID) {
+			return
+		}
+		select {
+		case eventCh <- msg:
+		case <-stopCh:
+		default:
+		}
+	}
+
+	type busHandler struct {
+		topic   string
+		handler eventbus.EventHandler
+	}
+	var handlers []busHandler
+	sub := func(topic string, handler eventbus.EventHandler) {
+		handlers = append(handlers, busHandler{topic: topic, handler: handler})
+		s.eventBus.Subscribe(topic, handler)
+	}
+	sub(events.EventProviderStatusChanged, forward)
+
+	defer func() {
+		close(stopCh)
+		for _, h := range handlers {
+			s.eventBus.Unsubscribe(h.topic, h.handler)
+		}
+	}()
+
+	writeSSE(w, flusher, `{"type":"connected"}`)
+	flusher.Flush()
+
+	type statusChangedPayload struct {
+		Type             string `json:"type"`
+		Provider         string `json:"provider"`
+		Model            string `json:"model"`
+		PreviousStatus   string `json:"previous_status"`
+		Status           string `json:"status"`
+		RateLimitedUntil string `json:"rate_limited_until,omitempty"`
+		ObservedAt       string `json:"observed_at"`
+	}
+
+	for {
+		select {
+		case <-stopCh:
+			writeSSE(w, flusher, `{"type":"done"}`)
+			flusher.Flush()
+			return
+		case ev := <-eventCh:
+			e, ok := ev.(*events.ProviderStatusChangedEvent)
+			if !ok {
+				continue
+			}
+			rlu := ""
+			if !e.Data.RateLimitedUntil.IsZero() {
+				rlu = e.Data.RateLimitedUntil.UTC().Format(time.RFC3339)
+			}
+			payload := statusChangedPayload{
+				Type:             "provider.status_changed",
+				Provider:         e.Data.Provider,
+				Model:            e.Data.Model,
+				PreviousStatus:   e.Data.PreviousStatus,
+				Status:           e.Data.Status,
+				RateLimitedUntil: rlu,
+				ObservedAt:       e.Data.ObservedAt.UTC().Format(time.RFC3339),
+			}
+			jsonData, err := json.Marshal(payload)
+			if err != nil {
+				continue
+			}
+			writeSSE(w, flusher, string(jsonData))
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 // projectGateEvent converts a GateEventData payload into the on-the-wire

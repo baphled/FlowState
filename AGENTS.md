@@ -252,6 +252,10 @@ Events are persisted in JSONL format (one JSON object per line, RFC3339
 timestamps, `omitempty` on metadata). See `docs/design/swarm_event_model.md`
 for the full schema and persistence contract.
 
+### Child Content TEE Gate
+
+The delegation engine gates child-content mirroring via the `delegation.tee_child_content` config key (Go field: `TeeChildContent bool`). When `false` (the default), child-agent reasoning text stays in the child session and surfaces to the parent only via the `tool_result`. This matches the industry consensus (Claude Code, OpenCode, etc.) and prevents "chat leak" where reasoning such as "Let me verify the resolving wiki-links…" appears inline in the coordinator's chat bubble alongside the actual answer. When `true`, the legacy behaviour is preserved and child text appears inline in the parent bubble.
+
 ## Code Style and Documentation
 
 ### Imports

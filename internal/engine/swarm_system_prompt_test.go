@@ -1,6 +1,9 @@
 package engine_test
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -22,6 +25,21 @@ func newSwarmLeadEngine(leadID string, registry *agent.Registry) *engine.Engine 
 			},
 		},
 		AgentRegistry: registry,
+	})
+}
+
+func newSwarmLeadEngineWithSwarmRegistry(leadID string, registry *agent.Registry, swarmReg *swarm.Registry) *engine.Engine {
+	return engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "swarm-lead-test"},
+		Manifest: agent.Manifest{
+			ID:   leadID,
+			Name: "Senior Engineer",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are the senior engineer.",
+			},
+		},
+		AgentRegistry: registry,
+		SwarmRegistry: swarmReg,
 	})
 }
 
@@ -188,6 +206,26 @@ var _ = Describe("Engine swarm-lead system prompt", func() {
 			Expect(prompt).To(ContainSubstring("Codebase Explorer"))
 			Expect(prompt).To(ContainSubstring("Quality Gate"))
 		})
+
+		It("appends swarm-owned lead prompt text from the swarm manifest", func() {
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "bug-hunt",
+				Lead:    "senior-engineer",
+				Members: []string{"explorer", "Code-Reviewer"},
+				Context: swarm.ContextConfig{ChainPrefix: "bug-hunt"},
+				Prompt:  swarm.PromptConfig{LeadAppend: "Lead-specific workflow instructions."},
+			})
+			eng := newSwarmLeadEngineWithSwarmRegistry("senior-engineer", newSwarmTestRegistry(), swarmReg)
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(prompt).To(ContainSubstring("Swarm Prompt Injection"))
+			Expect(prompt).To(ContainSubstring("Lead-specific workflow instructions."))
+		})
 	})
 
 	Describe("cache invalidation", func() {
@@ -229,6 +267,49 @@ var _ = Describe("Engine swarm-lead system prompt", func() {
 
 			Expect(strings.ToLower(prompt)).NotTo(ContainSubstring("leading swarm"))
 			Expect(prompt).NotTo(ContainSubstring("Swarm Leadership"))
+		})
+
+		It("appends swarm-owned member prompt text when the swarm scope targets that member", func() {
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "bug-hunt",
+				Lead:    "senior-engineer",
+				Members: []string{"explorer", "Code-Reviewer"},
+				Prompt: swarm.PromptConfig{MemberAppends: map[string]swarm.PromptAppendConfig{
+					"explorer": {Append: "Member-specific workflow instructions."},
+				}},
+			})
+			eng := newSwarmLeadEngineWithSwarmRegistry("explorer", newSwarmTestRegistry(), swarmReg)
+			ctx := newBugHuntContext()
+
+			prompt := eng.BuildSystemPromptCtx(swarm.WithScope(context.Background(), &ctx))
+
+			Expect(prompt).NotTo(ContainSubstring("Swarm Leadership"))
+			Expect(prompt).To(ContainSubstring("Swarm Prompt Injection"))
+			Expect(prompt).To(ContainSubstring("Member-specific workflow instructions."))
+		})
+
+		It("loads member prompt text from a swarm-owned file", func() {
+			dir := GinkgoT().TempDir()
+			appendPath := filepath.Join(dir, "explorer.md")
+			Expect(os.WriteFile(appendPath, []byte("File-backed member instructions."), 0o600)).To(Succeed())
+
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:        "bug-hunt",
+				Lead:      "senior-engineer",
+				Members:   []string{"explorer", "Code-Reviewer"},
+				SourceDir: dir,
+				Prompt: swarm.PromptConfig{MemberAppends: map[string]swarm.PromptAppendConfig{
+					"explorer": {File: "explorer.md"},
+				}},
+			})
+			eng := newSwarmLeadEngineWithSwarmRegistry("explorer", newSwarmTestRegistry(), swarmReg)
+			ctx := newBugHuntContext()
+
+			prompt := eng.BuildSystemPromptCtx(swarm.WithScope(context.Background(), &ctx))
+
+			Expect(prompt).To(ContainSubstring("File-backed member instructions."))
 		})
 	})
 

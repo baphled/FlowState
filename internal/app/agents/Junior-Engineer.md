@@ -64,7 +64,7 @@ harness_enabled: false
 model_policy: "strict"
 preferred_models:
   - provider: anthropic
-    model: claude-haiku-4-7
+    model: claude-sonnet-4-6
   - provider: anthropic
     model: claude-sonnet-4-7
 instructions:

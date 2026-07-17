@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"log/slog"
 
@@ -77,6 +78,118 @@ var _ = Describe("closeSessionIfManaged deliverable check", func() {
 		Expect(output).To(ContainSubstring(child.ID))
 		Expect(output).To(ContainSubstring("health-researcher"))
 		Expect(output).To(ContainSubstring("chain-abc"))
+	})
+
+	It("warns when a delegated session wrote under the chain prefix but missed the exact required coordination_store key", func() {
+		mgr := session.NewManager(nil)
+		mgr.RegisterSession("parent-1", "orchestrator")
+		child, err := mgr.CreateWithParentAndChain("parent-1", "Writer", "chain-abc")
+		Expect(err).NotTo(HaveOccurred())
+		child.Messages = append(child.Messages, session.Message{
+			Role:    "user",
+			Content: "chainID=chain-abc. Write your result to coordination_store key=**chain-abc/final-output**.",
+		})
+
+		store := coordination.NewMemoryStore()
+		Expect(store.Set("chain-abc/other-output", []byte("wrong key"))).To(Succeed())
+
+		d := &DelegateTool{sessionManager: mgr, coordinationStore: store}
+		d.closeSessionIfManaged(child.ID)
+
+		output := buf.String()
+		Expect(output).To(ContainSubstring("without writing its required coordination_store key"))
+		Expect(output).To(ContainSubstring("chain-abc/final-output"))
+		Expect(output).NotTo(ContainSubstring("without writing any coordination_store keys"))
+	})
+
+	It("logs the engine fallback warning instead of the generic missing-key warning when a fallback envelope exists", func() {
+		mgr := session.NewManager(nil)
+		mgr.RegisterSession("parent-1", "orchestrator")
+		child, err := mgr.CreateWithParentAndChain("parent-1", "explorer", "chain-abc")
+		Expect(err).NotTo(HaveOccurred())
+		child.Messages = append(child.Messages, session.Message{
+			Role:    "user",
+			Content: "chainID=chain-abc. Write your result to coordination_store key=chain-abc/codebase-findings.",
+		})
+
+		store := coordination.NewMemoryStore()
+		payload, err := json.Marshal(deliveryFailureEnvelope{
+			Status:         "delivery_failed_engine_fallback",
+			SessionID:      child.ID,
+			AgentID:        "explorer",
+			ChainID:        "chain-abc",
+			FailureSummary: "all providers failed",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(store.Set("chain-abc/_engine_fallback/explorer/delivery_failure", payload)).To(Succeed())
+
+		d := &DelegateTool{sessionManager: mgr, coordinationStore: store}
+		d.closeSessionIfManaged(child.ID)
+
+		output := buf.String()
+		Expect(output).To(ContainSubstring("engine-persisted delivery failure fallback"))
+		Expect(output).To(ContainSubstring("all providers failed"))
+		Expect(output).NotTo(ContainSubstring("without writing its required coordination_store key"))
+	})
+
+	It("consumes a session-scoped fallback envelope when the chain-scoped key is absent", func() {
+		mgr := session.NewManager(nil)
+		mgr.RegisterSession("parent-1", "orchestrator")
+		child, err := mgr.CreateWithParentAndChain("parent-1", "explorer", "chain-abc")
+		Expect(err).NotTo(HaveOccurred())
+		child.Messages = append(child.Messages, session.Message{
+			Role:    "user",
+			Content: "chainID=chain-abc. Write your result to coordination_store key=chain-abc/codebase-findings.",
+		})
+
+		store := coordination.NewMemoryStore()
+		payload, err := json.Marshal(deliveryFailureEnvelope{
+			Status:         "delivery_failed_engine_fallback",
+			SessionID:      child.ID,
+			AgentID:        "explorer",
+			ChainID:        "chain-abc",
+			FailureSummary: "all providers failed",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(store.Set(child.ID+"/_engine_fallback/explorer/delivery_failure", payload)).To(Succeed())
+
+		d := &DelegateTool{sessionManager: mgr, coordinationStore: store}
+		d.closeSessionIfManaged(child.ID)
+
+		output := buf.String()
+		Expect(output).To(ContainSubstring("engine-persisted delivery failure fallback"))
+		Expect(output).To(ContainSubstring(child.ID + "/_engine_fallback/explorer/delivery_failure"))
+		Expect(output).NotTo(ContainSubstring("without writing its required coordination_store key"))
+	})
+
+	It("prefers the real coordination key over a fallback envelope", func() {
+		mgr := session.NewManager(nil)
+		mgr.RegisterSession("parent-1", "orchestrator")
+		child, err := mgr.CreateWithParentAndChain("parent-1", "explorer", "chain-abc")
+		Expect(err).NotTo(HaveOccurred())
+		child.Messages = append(child.Messages, session.Message{
+			Role:    "user",
+			Content: "chainID=chain-abc. Write your result to coordination_store key=chain-abc/codebase-findings.",
+		})
+
+		store := coordination.NewMemoryStore()
+		Expect(store.Set("chain-abc/codebase-findings", []byte("real result"))).To(Succeed())
+		payload, err := json.Marshal(deliveryFailureEnvelope{
+			Status:         "delivery_failed_engine_fallback",
+			SessionID:      child.ID,
+			AgentID:        "explorer",
+			ChainID:        "chain-abc",
+			FailureSummary: "all providers failed",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(store.Set("chain-abc/_engine_fallback/explorer/delivery_failure", payload)).To(Succeed())
+
+		d := &DelegateTool{sessionManager: mgr, coordinationStore: store}
+		d.closeSessionIfManaged(child.ID)
+
+		output := buf.String()
+		Expect(output).NotTo(ContainSubstring("engine-persisted delivery failure fallback"))
+		Expect(output).NotTo(ContainSubstring("without writing its required coordination_store key"))
 	})
 
 	It("does not warn for a non-delegated session without a parent_id", func() {

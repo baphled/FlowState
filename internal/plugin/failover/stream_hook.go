@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/baphled/flowstate/internal/hook"
@@ -376,6 +377,13 @@ type roundOutcome struct {
 type retryState struct {
 	lastErr        error
 	previousFailed *failedCandidate
+}
+
+type attemptDebugMeta struct {
+	stage                 string
+	duration              time.Duration
+	timeout               time.Duration
+	parentDeadlineClamped bool
 }
 
 // runCandidateRound attempts each candidate once, returning the success replay
@@ -954,18 +962,27 @@ func (sh *StreamHook) attemptCandidate(
 	// function is called.
 	detached := context.WithoutCancel(ctx)
 	attemptTimeout := sh.manager.StreamTimeout()
+	parentDeadlineClamped := false
 	if deadline, ok := ctx.Deadline(); ok {
 		if remaining := time.Until(deadline); remaining < attemptTimeout {
 			attemptTimeout = remaining
+			parentDeadlineClamped = true
 		}
 	}
 	timeoutCtx, cancel := context.WithTimeout(detached, attemptTimeout)
+	requestStats := provider.RequestStats(*req)
+	startedAt := time.Now()
 
 	ch, err := next(timeoutCtx, req)
 	if err != nil {
 		cancel()
 		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, err)
-		sh.publishFailoverError(ctx, candidate, err)
+		sh.publishFailoverError(ctx, candidate, requestStats, err, attemptDebugMeta{
+			stage:                 "invoke",
+			duration:              time.Since(startedAt),
+			timeout:               attemptTimeout,
+			parentDeadlineClamped: parentDeadlineClamped,
+		})
 		return nil, err
 	}
 
@@ -980,7 +997,12 @@ func (sh *StreamHook) attemptCandidate(
 		// keyword-only fallback misses the bare context-deadline error.
 		peekErr = failoverTransportError(candidate.Provider, peekErr)
 		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, peekErr)
-		sh.publishFailoverError(ctx, candidate, peekErr)
+		sh.publishFailoverError(ctx, candidate, requestStats, peekErr, attemptDebugMeta{
+			stage:                 "first_byte_timeout",
+			duration:              time.Since(startedAt),
+			timeout:               attemptTimeout,
+			parentDeadlineClamped: parentDeadlineClamped,
+		})
 		return nil, peekErr
 	}
 	if !ok {
@@ -991,13 +1013,23 @@ func (sh *StreamHook) attemptCandidate(
 		closeErr := failoverTransportError(candidate.Provider,
 			fmt.Errorf("provider %s: stream closed immediately", candidate.Provider))
 		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, closeErr)
-		sh.publishFailoverError(ctx, candidate, closeErr)
+		sh.publishFailoverError(ctx, candidate, requestStats, closeErr, attemptDebugMeta{
+			stage:                 "immediate_close",
+			duration:              time.Since(startedAt),
+			timeout:               attemptTimeout,
+			parentDeadlineClamped: parentDeadlineClamped,
+		})
 		return nil, closeErr
 	}
 	if firstChunk.Error != nil && firstChunk.Done {
 		cancel()
 		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, firstChunk.Error)
-		sh.publishFailoverError(ctx, candidate, firstChunk.Error)
+		sh.publishFailoverError(ctx, candidate, requestStats, firstChunk.Error, attemptDebugMeta{
+			stage:                 "first_chunk_error",
+			duration:              time.Since(startedAt),
+			timeout:               attemptTimeout,
+			parentDeadlineClamped: parentDeadlineClamped,
+		})
 		return nil, firstChunk.Error
 	}
 
@@ -1239,23 +1271,74 @@ func cooldownForProviderError(provErr *provider.Error) time.Duration {
 //
 // Side effects:
 //   - Publishes a provider.error event on the event bus when non-nil.
-func (sh *StreamHook) publishFailoverError(ctx context.Context, candidate provider.ModelPreference, err error) {
-	if sh.eventBus == nil {
-		return
-	}
-
+func (sh *StreamHook) publishFailoverError(
+	ctx context.Context,
+	candidate provider.ModelPreference,
+	request provider.RequestDebugStats,
+	err error,
+	meta attemptDebugMeta,
+) {
 	// Extract session ID from context if available
 	sessionID := ""
 	if id, ok := ctx.Value(session.IDKey{}).(string); ok {
 		sessionID = id
 	}
 
-	sh.eventBus.Publish(events.EventProviderError, events.NewProviderErrorEvent(events.ProviderErrorEventData{
-		SessionID:    sessionID,
-		AgentID:      sh.agentID,
-		ProviderName: candidate.Provider,
-		ModelName:    candidate.Model,
-		Error:        err,
-		Phase:        "failover",
-	}))
+	data := events.ProviderErrorEventData{
+		SessionID:             sessionID,
+		AgentID:               sh.agentID,
+		ProviderName:          candidate.Provider,
+		ModelName:             candidate.Model,
+		Error:                 err,
+		Phase:                 "failover",
+		Stage:                 meta.stage,
+		DurationMS:            meta.duration.Milliseconds(),
+		TimeoutMS:             meta.timeout.Milliseconds(),
+		ParentDeadlineClamped: meta.parentDeadlineClamped,
+		MessageCount:          request.MessageCount,
+		RequestBytes:          request.RequestBytes,
+	}
+	if conc, ok := sh.currentProviderConcurrencyStats(candidate.Provider); ok {
+		data.InFlight = conc.InFlight
+		data.QueueDepth = conc.QueueDepth
+		data.MaxConcurrent = conc.MaxConcurrent
+	}
+	var provErr *provider.Error
+	if errors.As(err, &provErr) {
+		data.ErrorType = string(provErr.ErrorType)
+		data.ErrorCode = provErr.ErrorCode
+		data.HTTPStatus = provErr.HTTPStatus
+		data.IsRetriable = provErr.IsRetriable
+	}
+	slog.Warn("failover candidate failed",
+		"session_id", data.SessionID,
+		"agent_id", data.AgentID,
+		"provider", data.ProviderName,
+		"model", data.ModelName,
+		"phase", data.Phase,
+		"stage", data.Stage,
+		"duration_ms", data.DurationMS,
+		"timeout_ms", data.TimeoutMS,
+		"parent_deadline_clamped", data.ParentDeadlineClamped,
+		"message_count", data.MessageCount,
+		"request_bytes", data.RequestBytes,
+		"in_flight", data.InFlight,
+		"queue_depth", data.QueueDepth,
+		"max_concurrent", data.MaxConcurrent,
+		"error", err,
+	)
+	if sh.eventBus != nil {
+		sh.eventBus.Publish(events.EventProviderError, events.NewProviderErrorEvent(data))
+	}
+}
+
+func (sh *StreamHook) currentProviderConcurrencyStats(providerName string) (provider.ConcurrencyDebugStats, bool) {
+	if sh == nil || sh.manager == nil || sh.manager.registry == nil || providerName == "" {
+		return provider.ConcurrencyDebugStats{}, false
+	}
+	p, err := sh.manager.registry.Get(providerName)
+	if err != nil {
+		return provider.ConcurrencyDebugStats{}, false
+	}
+	return provider.ConcurrencyStats(p)
 }

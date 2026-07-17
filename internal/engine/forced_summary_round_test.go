@@ -166,8 +166,8 @@ var _ = Describe("Engine forced-summary round", func() {
 		}
 		script = append(script, scriptedBatch{
 			toolCalls: []*provider.ToolCall{{
-				ID:   "read_last",
-				Name: "read",
+				ID:        "read_last",
+				Name:      "read",
 				Arguments: map[string]any{"path": "/tmp/last.txt"},
 			}},
 		})

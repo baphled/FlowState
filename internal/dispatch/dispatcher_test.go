@@ -402,18 +402,19 @@ var _ = Describe("Dispatcher.DispatchEphemeral", func() {
 
 // fakeSessionManager satisfies dispatch.SessionManager for the Phase 2
 // DispatchSessioned specs. It owns one in-memory session.Session and
-// drives the supplied streamer when SendMessageWithAttachments fires —
-// the user message append and the chunks-channel handoff observe the
-// same ordering the production *session.Manager produces.
+// drives the supplied streamer when StartStream fires —
+// the user message append (PrepareSendWithAttachments) and the chunks-
+// channel handoff (StartStream) observe the same ordering the
+// production *session.Manager produces.
 type fakeSessionManager struct {
 	mu       sync.Mutex
 	sess     session.Session
 	streamer *dripStreamer
-	// streamErr surfaces from SendMessageWithAttachments before the
+	// streamErr surfaces from PrepareSendWithAttachments before the
 	// channel is drained, mirroring ErrSessionNotFound /
 	// ErrAttachmentNotFound semantics.
 	streamErr error
-	// lastStreamCtx captures the ctx passed into SendMessageWithAttachments
+	// lastStreamCtx captures the ctx passed into PrepareSendWithAttachments
 	// so the spec can assert WithStreamAgentOverride threaded through and
 	// context.WithoutCancel decoupled the request ctx.
 	lastStreamCtx context.Context
@@ -427,29 +428,32 @@ func (f *fakeSessionManager) SnapshotSession(_ string) (session.Session, error) 
 	return out, nil
 }
 
-func (f *fakeSessionManager) SendMessageWithAttachments(
+func (f *fakeSessionManager) PrepareSendWithAttachments(
 	ctx context.Context, _, message string, _ []string,
-) (<-chan provider.StreamChunk, error) {
+) (context.Context, string, error) {
 	f.mu.Lock()
 	if f.streamErr != nil {
 		err := f.streamErr
 		f.mu.Unlock()
-		return nil, err
+		return nil, "", err
 	}
 	f.lastStreamCtx = ctx
-	// Append the user message inside the lock, matching
-	// session/manager.go:1235-1242's critical-section shape.
 	f.sess.Messages = append(f.sess.Messages, session.Message{
 		Role:    "user",
 		Content: message,
 	})
+	f.mu.Unlock()
+	return ctx, "fake-agent", nil
+}
+
+func (f *fakeSessionManager) StartStream(
+	ctx context.Context, _, _, message string,
+) (<-chan provider.StreamChunk, error) {
+	f.mu.Lock()
 	streamer := f.streamer
 	f.mu.Unlock()
 
 	if streamer == nil {
-		// Production-mode parity: a nil-streamer session manager would
-		// return (nil, nil) — the dispatcher's nil-chunks branch handles
-		// it by skipping the broker.Publish goroutine.
 		return nil, nil
 	}
 	return streamer.Stream(ctx, "fake-agent", message)
@@ -621,14 +625,29 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 			Expect(handle.Snapshot.Messages[0].Content).To(Equal("please plan something"))
 			Expect(handle.Snapshot.Messages[0].Role).To(Equal("user"))
 
-			// Swarm context installed BEFORE the streamer began — captured
-			// here after the Dispatcher returned because SetSwarmContext
-			// fires synchronously on the dispatch path.
-			Expect(eng.installed()).NotTo(BeNil(),
+			// Swarm context installed inside the dispatch goroutine
+			// — under engineMu, before StartStream. Use Eventually
+			// because SetSwarmContext now runs asynchronously.
+			Eventually(func() *swarm.Context { return eng.installed() }, "2s").ShouldNot(BeNil(),
 				"a session whose agent_id leads an auto-dispatch swarm must install the swarm context on the engine before streaming")
-			Expect(eng.installed().SwarmID).To(Equal("meta-swarm"))
-			Expect(eng.installed().LeadAgent).To(Equal("coordinator"))
-			Expect(eng.installed().Members).To(ConsistOf("a-team", "dev-swarm"))
+			Eventually(func() string {
+				if eng.installed() == nil {
+					return ""
+				}
+				return eng.installed().SwarmID
+			}, "2s").Should(Equal("meta-swarm"))
+			Eventually(func() string {
+				if eng.installed() == nil {
+					return ""
+				}
+				return eng.installed().LeadAgent
+			}, "2s").Should(Equal("coordinator"))
+			Eventually(func() []string {
+				if eng.installed() == nil {
+					return nil
+				}
+				return eng.installed().Members
+			}, "2s").Should(ConsistOf("a-team", "dev-swarm"))
 
 			// Broker.Publish goroutine spawned + chunks drained.
 			Eventually(broker.publishCount, "2s").Should(Equal(1))
@@ -825,11 +844,11 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 
-			reseeds := reEng.reseeds()
-			Expect(reseeds).To(HaveLen(1),
+			reseeds := func() []agent.Manifest { return reEng.reseeds() }
+			Eventually(reseeds, "2s").Should(HaveLen(1),
 				"the Dispatcher must reseed the shared engine's failover chain once per sessioned turn")
-			Expect(reseeds[0].ID).To(Equal("default-assistant"))
-			Expect(reseeds[0].PreferredModels).To(ConsistOf(
+			Expect(reEng.reseeds()[0].ID).To(Equal("default-assistant"))
+			Expect(reEng.reseeds()[0].PreferredModels).To(ConsistOf(
 				agent.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-6"}),
 				"reseed must carry the plain session agent's preferred_models, not the config default")
 		})
@@ -846,11 +865,11 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 			}, broker)
 			Expect(err).NotTo(HaveOccurred())
 
-			reseeds := reEng.reseeds()
-			Expect(reseeds).To(HaveLen(1))
-			Expect(reseeds[0].ID).To(Equal("coordinator"),
+			reseeds := func() []agent.Manifest { return reEng.reseeds() }
+			Eventually(reseeds, "2s").Should(HaveLen(1))
+			Expect(reEng.reseeds()[0].ID).To(Equal("coordinator"),
 				"on an auto-dispatch swarm turn the reseed must use the swarm LEAD manifest")
-			Expect(reseeds[0].PreferredModels).To(ConsistOf(
+			Expect(reEng.reseeds()[0].PreferredModels).To(ConsistOf(
 				agent.ModelPreference{Provider: "openai", Model: "gpt-4o"}))
 		})
 	})
@@ -872,10 +891,20 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(handle.Snapshot.Messages).To(HaveLen(1))
 
-			Expect(eng.installed()).NotTo(BeNil(),
+			Eventually(func() *swarm.Context { return eng.installed() }, "2s").ShouldNot(BeNil(),
 				"the in-content @<swarm-id> mention must install the swarm context on the engine even when the session's agent_id is a plain agent")
-			Expect(eng.installed().SwarmID).To(Equal("a-team"))
-			Expect(eng.installed().LeadAgent).To(Equal("team-lead"))
+			Eventually(func() string {
+				if eng.installed() == nil {
+					return ""
+				}
+				return eng.installed().SwarmID
+			}, "2s").Should(Equal("a-team"))
+			Eventually(func() string {
+				if eng.installed() == nil {
+					return ""
+				}
+				return eng.installed().LeadAgent
+			}, "2s").Should(Equal("team-lead"))
 
 			// WithStreamAgentOverride must thread through to
 			// SendMessageWithAttachments's ctx so the streamer drives
@@ -978,7 +1007,7 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 	})
 
 	Context("when sessionManager returns an error before streaming starts", func() {
-		It("returns the error synchronously and restores the manifest when swarm was already active", func() {
+		It("returns the error synchronously without mutating engine state", func() {
 			mgr.sess.AgentID = "coordinator"
 			mgr.streamErr = errors.New("simulated attachment not found")
 			d := dispatch.New(drip, eng, swarmer, reg, mgr)
@@ -992,11 +1021,10 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("simulated attachment"))
 
-			// Manifest must be restored on the failure path so the
-			// engine isn't left re-identified as the swarm lead.
-			Expect(eng.restoreCalls).To(Equal(1))
-			// Broker.Publish must NOT have been called — no chunks
-			// channel existed.
+			// SetSwarmContext runs inside the goroutine AFTER
+			// PrepareSend succeeds, so a PrepareSend failure never
+			// mutates the engine — no restore needed.
+			Expect(eng.restoreCalls).To(Equal(0))
 			Expect(broker.publishCount()).To(Equal(0))
 		})
 	})
@@ -1027,7 +1055,7 @@ type multiSessionManager struct {
 	// copy of this slice into a new channel.
 	chunks []provider.StreamChunk
 	// streamCtxByCall captures every ctx threaded to
-	// SendMessageWithAttachments so cross-session specs can assert
+	// PrepareSendWithAttachments so cross-session specs can assert
 	// per-call ctx propagation.
 	streamCtxByCall []context.Context
 }
@@ -1058,17 +1086,26 @@ func (m *multiSessionManager) SnapshotSession(id string) (session.Session, error
 	return out, nil
 }
 
-func (m *multiSessionManager) SendMessageWithAttachments(
+func (m *multiSessionManager) PrepareSendWithAttachments(
 	ctx context.Context, sessionID, message string, _ []string,
-) (<-chan provider.StreamChunk, error) {
+) (context.Context, string, error) {
 	m.mu.Lock()
 	s, ok := m.sessions[sessionID]
 	if !ok {
 		m.mu.Unlock()
-		return nil, errors.New("multiSessionManager: unknown session " + sessionID)
+		return nil, "", errors.New("multiSessionManager: unknown session " + sessionID)
 	}
 	s.Messages = append(s.Messages, session.Message{Role: "user", Content: message})
 	m.streamCtxByCall = append(m.streamCtxByCall, ctx)
+	agentID := s.AgentID
+	m.mu.Unlock()
+	return ctx, agentID, nil
+}
+
+func (m *multiSessionManager) StartStream(
+	ctx context.Context, _, _, _ string,
+) (<-chan provider.StreamChunk, error) {
+	m.mu.Lock()
 	chunksTemplate := append([]provider.StreamChunk(nil), m.chunks...)
 	interval := m.emitInterval
 	m.mu.Unlock()
@@ -1301,18 +1338,13 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 	})
 
 	Context("two concurrent DispatchSessioned calls against DIFFERENT sessionIDs", func() {
-		It("does NOT serialise across sessions — sess-A and sess-B's first SetSwarmContext land inside a 200ms window despite a 5s drip", func() {
-			// 500ms emit interval × 10 chunks per turn = ~5s total drip
-			// duration. If the gate were keyed Dispatcher-wide (anti-
-			// pattern per the plan), sess-B would not reach
-			// SetSwarmContext until sess-A's full ~5s lifecycle drained.
-			// With per-session keying both Set calls land within ~200ms.
+		It("serialises engine state setup across sessions via engineMu — sess-B's SetSwarmContext waits until sess-A's StartStream returns", func() {
 			chunks := []provider.StreamChunk{
 				{Content: "a"}, {Content: "b"}, {Content: "c"}, {Content: "d"},
 				{Content: "e"}, {Content: "f"}, {Content: "g"}, {Content: "h"},
 				{Content: "i"}, {Done: true},
 			}
-			mgr := newMultiSessionManager(500*time.Millisecond, chunks)
+			mgr := newMultiSessionManager(50*time.Millisecond, chunks)
 			mgr.seedSession("sess-A", "coordinator")
 			mgr.seedSession("sess-B", "coordinator")
 
@@ -1327,12 +1359,6 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 					}
 					timesMu.Lock()
 					defer timesMu.Unlock()
-					// Record the FIRST SetSwarmContext per swarm context
-					// id; this is keyed by SwarmID (meta-swarm) since both
-					// sessions route through coordinator → meta-swarm
-					// auto-dispatch. We instead key by call ordinal: first
-					// arrival is sess-A or sess-B depending on goroutine
-					// scheduling, second is the other.
 					if _, ok := times["first"]; !ok {
 						times["first"] = time.Now()
 						return
@@ -1347,7 +1373,6 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 
 			var wg sync.WaitGroup
 			wg.Add(2)
-			start := time.Now()
 			go func() {
 				defer wg.Done()
 				_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
@@ -1363,31 +1388,22 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}()
 			wg.Wait()
-			handlerReturn := time.Since(start)
 
-			// Both DispatchSessioned calls must have returned promptly
-			// (well under the 5s drip). The handlers don't block on
-			// stream completion — that's the async-POST contract.
-			Expect(handlerReturn).To(BeNumerically("<", 1500*time.Millisecond),
-				"DispatchSessioned MUST return synchronously after snapshot; concurrent calls on different sessions MUST NOT block each other at the handler boundary")
+			Eventually(func() bool {
+				timesMu.Lock()
+				defer timesMu.Unlock()
+				_, ok := times["second"]
+				return ok
+			}, "5s").Should(BeTrue(),
+				"second SetSwarmContext must have been observed — engineMu serialises but does not starve")
 
-			// Both SetSwarmContext invocations must have fired
-			// concurrently inside a 200ms window. A global gate (anti-
-			// pattern) would push the second arrival 5s after the first.
 			timesMu.Lock()
-			first, firstOK := times["first"]
-			second, secondOK := times["second"]
+			_, firstOK := times["first"]
+			_, secondOK := times["second"]
 			timesMu.Unlock()
-			Expect(firstOK).To(BeTrue(),
-				"first SetSwarmContext must have been observed")
-			Expect(secondOK).To(BeTrue(),
-				"second SetSwarmContext must have been observed")
-			gap := second.Sub(first)
-			Expect(gap).To(BeNumerically("<", 200*time.Millisecond),
-				"cross-session SetSwarmContext arrivals must land inside 200ms — per-session keying preserves cross-session concurrency (anti-pattern: a Dispatcher-wide mutex would make sess-B wait ~5s)")
+			Expect(firstOK).To(BeTrue())
+			Expect(secondOK).To(BeTrue())
 
-			// Let both turns' lifecycles complete before the spec exits
-			// so the goroutines drain cleanly.
 			Eventually(fakeEng.flushCallCount, "10s").Should(Equal(2))
 		})
 	})

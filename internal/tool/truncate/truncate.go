@@ -15,9 +15,6 @@ import (
 	"time"
 )
 
-// Default budgets. These limits prevent large contexts from growing
-// during tool loops, reducing timeout-based failures and improving
-// retry success rates when providers are strained.
 const (
 	DefaultMaxLines = 500
 	DefaultMaxBytes = 20 * 1024

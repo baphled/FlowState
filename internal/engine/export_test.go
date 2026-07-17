@@ -128,7 +128,16 @@ func SanitiseDelegationMessageForTest(msg string) string {
 // keep their `(ctx, sessionID, outChan)` call shape. Bug #35's new
 // specs use EmitMidToolLoopRefreshReportForTest to read the signal.
 func (e *Engine) EmitMidToolLoopRefreshForTest(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) {
-	_ = e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+	_ = e.emitMidToolLoopRefresh(ctx, sessionID, outChan, nil)
+}
+
+// EmitMidToolLoopRefreshExplicitForTest drives the serve-mode (explicit
+// live-messages) compaction decision the production tool loop now uses.
+// Specs pass the message slice the provider is about to receive and
+// leave the engine store unseeded, modelling the session-scoped serve
+// path where e.store does not carry the tool-loop wave.
+func (e *Engine) EmitMidToolLoopRefreshExplicitForTest(ctx context.Context, sessionID string, messages []provider.Message) bool {
+	return e.emitMidToolLoopRefresh(ctx, sessionID, nil, messages)
 }
 
 // EmitMidToolLoopRefreshReportForTest exposes the same hook with the
@@ -137,7 +146,7 @@ func (e *Engine) EmitMidToolLoopRefreshForTest(ctx context.Context, sessionID st
 // the streamWithToolLoop caller can decide whether to rebuild
 // messages from the post-compaction view.
 func (e *Engine) EmitMidToolLoopRefreshReportForTest(ctx context.Context, sessionID string, outChan chan<- provider.StreamChunk) bool {
-	return e.emitMidToolLoopRefresh(ctx, sessionID, outChan)
+	return e.emitMidToolLoopRefresh(ctx, sessionID, outChan, nil)
 }
 
 // RebuildMessagesAfterCompactionForTest exposes the Bug #35

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	store "github.com/baphled/flowstate/internal/coordination"
 	"github.com/baphled/flowstate/internal/swarm"
@@ -19,6 +20,17 @@ const (
 	operationSet    = "set"
 	operationList   = "list"
 	operationDelete = "delete"
+
+	// maxValueBytes caps a single coordination_store set value at 50 KB.
+	// Coordination values are shared between agents in a delegation chain
+	// and larger payloads should be broken into multiple keys or written
+	// directly via the write tool.
+	maxValueBytes = 50 * 1024
+
+	// toolTimeout gives coordination_store its own execution budget so
+	// large values or slow backends do not hit the engine's shell-tool
+	// default of 2 minutes.
+	toolTimeout = 2 * time.Minute
 )
 
 // Tool provides access to the coordination key-value store for cross-agent
@@ -85,7 +97,7 @@ func (t *Tool) Schema() tool.Schema {
 			},
 			"value": {
 				Type:        "string",
-				Description: "The value to store (required for set)",
+				Description: "The value to store (max 50KB). For larger payloads, break into multiple keys or use the write tool directly.",
 			},
 			"prefix": {
 				Type:        "string",
@@ -94,6 +106,19 @@ func (t *Tool) Schema() tool.Schema {
 		},
 		Required: []string{"operation"},
 	}
+}
+
+// Timeout returns the tool's own execution budget, overriding the engine
+// default. Coordination store operations access a shared key-value store
+// and should not be capped by the shell-tool timeout.
+//
+// Returns:
+//   - 2 minutes, the dedicated budget for coordination_store operations.
+//
+// Side effects:
+//   - None.
+func (t *Tool) Timeout() time.Duration {
+	return toolTimeout
 }
 
 // IsStateModifying returns true because coordination_store can write
@@ -192,6 +217,18 @@ func (t *Tool) executeSet(ctx context.Context, input tool.Input) (tool.Result, e
 	value, ok := input.Arguments["value"].(string)
 	if !ok || value == "" {
 		return tool.Result{}, errors.New("value argument must be a non-empty string for set")
+	}
+
+	if len(value) > maxValueBytes {
+		approxChunks := (len(value) + maxValueBytes - 1) / maxValueBytes
+		return tool.Result{
+			IsError: true,
+			Error: fmt.Errorf(
+				"value too large: %d bytes (max %d). "+
+					"Split this into approximately %d keys of ~%d bytes each, "+
+					"or use the write tool for very large content",
+				len(value), maxValueBytes, approxChunks, maxValueBytes),
+		}, nil
 	}
 
 	key = swarm.NormaliseMemberCoordKey(swarm.MemberCoordChainID(ctx), key)

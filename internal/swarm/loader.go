@@ -61,6 +61,9 @@ func Load(path string) (*Manifest, error) {
 	if err := yaml.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing swarm manifest %q: %w", path, err)
 	}
+	if absPath, err := filepath.Abs(path); err == nil {
+		m.SourceDir = filepath.Dir(absPath)
+	}
 
 	if err := m.Validate(nil); err != nil {
 		return nil, fmt.Errorf("validating swarm manifest %q: %w", path, err)

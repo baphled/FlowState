@@ -6,9 +6,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/baphled/flowstate/internal/tool"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
+)
+
+const (
+	// maxContentBytes caps a single write payload at 100 KB. Larger content
+	// is rejected with a structured error directing the model to split the
+	// write into smaller chunks.
+	maxContentBytes = 100 * 1024
+
+	// toolTimeout gives the write tool its own execution budget so large
+	// writes on slow filesystems do not hit the engine's shell-tool default
+	// of 2 minutes.
+	toolTimeout = 5 * time.Minute
 )
 
 // Tool implements file write operations with path validation.
@@ -40,12 +53,12 @@ func (t *Tool) Name() string {
 // Description returns a human-readable description of the write tool.
 //
 // Returns:
-//   - A string describing the tool's purpose.
+//   - A string describing the tool's purpose and size limit.
 //
 // Side effects:
 //   - None.
 func (t *Tool) Description() string {
-	return "Write content to files with path validation"
+	return "Write content to files with path validation (max 100KB per call)"
 }
 
 // Schema returns the JSON schema for the write tool inputs.
@@ -65,11 +78,25 @@ func (t *Tool) Schema() tool.Schema {
 			},
 			"content": {
 				Type:        "string",
-				Description: "Content to write to the file",
+				Description: "Content to write to the file (max 100KB). For content larger than 100KB, make multiple write calls — the tool will return a clear error directing you to split the content.",
 			},
 		},
 		Required: []string{"path"},
 	}
+}
+
+// Timeout returns the tool's own execution budget, overriding the engine
+// default. Write operations are structurally different from shell tools:
+// they may involve slow filesystems or large payloads that need more than
+// 2 minutes to flush.
+//
+// Returns:
+//   - 5 minutes, the dedicated budget for write tool execution.
+//
+// Side effects:
+//   - None.
+func (t *Tool) Timeout() time.Duration {
+	return toolTimeout
 }
 
 // IsStateModifying returns true because write creates or overwrites a
@@ -107,6 +134,18 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		if err := t.guard.CheckForTool(ctx, "write", cleaned); err != nil {
 			return tool.Result{Error: err}, nil
 		}
+	}
+
+	if len(content) > maxContentBytes {
+		approxChunks := (len(content) + maxContentBytes - 1) / maxContentBytes
+		return tool.Result{
+			IsError: true,
+			Error: fmt.Errorf(
+				"content too large: %d bytes (max %d). "+
+					"Split this into approximately %d write calls of ~%d bytes each. "+
+					"Example: write chunk 1, then write chunk 2, etc",
+				len(content), maxContentBytes, approxChunks, maxContentBytes),
+		}, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cleaned), 0o755); err != nil {

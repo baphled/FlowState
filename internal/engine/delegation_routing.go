@@ -12,17 +12,60 @@ import (
 // This prevents a delegation attempt certain to fail and surfaces a
 // diagnostic before the stream is opened.
 func checkDelegationCandidates(eng *Engine) error {
+	_, _, err := delegationCandidatesStatus(eng)
+	return err
+}
+
+func delegationCandidatesStatus(eng *Engine) ([]provider.ModelPreference, []provider.ModelPreference, error) {
 	if eng == nil {
-		return nil
+		return nil, nil, nil
 	}
 	mgr := eng.FailoverManager()
 	if mgr == nil {
-		return nil
+		return nil, nil, nil
 	}
-	if len(mgr.Preferences()) > 0 && len(mgr.Candidates()) == 0 {
-		return errors.New("no available model candidates: all preferred providers are rate-limited or unavailable")
+	prefs := mgr.Preferences()
+	candidates := mgr.Candidates()
+	if len(prefs) > 0 && len(candidates) == 0 {
+		return prefs, candidates, errors.New("no available model candidates: all preferred providers are rate-limited or unavailable")
 	}
-	return nil
+	return prefs, candidates, nil
+}
+
+func promoteHealthyDelegationCandidate(eng *Engine) {
+	if eng == nil {
+		return
+	}
+	_, candidates, err := delegationCandidatesStatus(eng)
+	if err != nil || len(candidates) == 0 {
+		return
+	}
+	promoteDelegationCandidateIfNeeded(eng, candidates[0])
+}
+
+func promoteDelegationCandidateIfNeeded(eng *Engine, candidate provider.ModelPreference) {
+	if eng == nil {
+		return
+	}
+	currentProvider := eng.LastProvider()
+	currentModel := eng.LastModel()
+	if currentProvider == candidate.Provider && currentModel == candidate.Model {
+		return
+	}
+	if currentProvider == "" || currentModel == "" || delegationCurrentProviderUnavailable(eng, currentProvider, currentModel) {
+		eng.SetModelPreference(candidate.Provider, candidate.Model)
+	}
+}
+
+func delegationCurrentProviderUnavailable(eng *Engine, providerName, modelName string) bool {
+	if eng == nil {
+		return false
+	}
+	mgr := eng.FailoverManager()
+	if mgr == nil || mgr.Health() == nil {
+		return false
+	}
+	return mgr.Health().IsRateLimited(providerName, modelName)
 }
 
 // checkTargetToolCapability rejects delegation when the resolved

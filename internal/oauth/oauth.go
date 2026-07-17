@@ -25,10 +25,11 @@ type DeviceCodeResponse struct {
 
 // TokenResponse contains the OAuth access token and metadata.
 type TokenResponse struct {
-	AccessToken string
-	TokenType   string
-	ExpiresIn   int
-	ExpiresAt   time.Time
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	ExpiresIn    int
+	ExpiresAt    time.Time
 }
 
 // TokenStore defines the interface for storing and retrieving OAuth tokens.

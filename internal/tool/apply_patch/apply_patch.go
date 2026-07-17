@@ -11,6 +11,8 @@ import (
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 )
 
+const maxPatchBytes = 50 * 1024 // 50 KB
+
 // Tool applies unified diffs to files.
 type Tool struct {
 	guard *pathguard.Guard
@@ -83,7 +85,7 @@ func (t *Tool) Schema() tool.Schema {
 		Properties: map[string]tool.Property{
 			"patch": {
 				Type:        "string",
-				Description: "Inline patch text or a path to a patch file",
+				Description: "Inline patch text or a path to a patch file (max 50KB). For large rewrites, use the write tool instead.",
 			},
 		},
 		Required: []string{"patch"},
@@ -113,6 +115,17 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 	patchText, err := loadPatchText(ctx, patchValue, t.guard)
 	if err != nil {
 		return tool.Result{Error: err}, nil
+	}
+
+	if len(patchText) > maxPatchBytes {
+		return tool.Result{
+			IsError: true,
+			Error: fmt.Errorf(
+				"patch too large: %d bytes (max %d). "+
+					"Split the patch into smaller sections, "+
+					"or use the write tool for large file rewrites",
+				len(patchText), maxPatchBytes),
+		}, nil
 	}
 
 	result, err := applyPatchText(ctx, patchText, t.guard)

@@ -235,7 +235,7 @@ var _ = Describe("BackgroundOutputTool", func() {
 		})
 
 		Context("when block=true and timeout is exceeded", func() {
-			It("returns timeout error", func() {
+			It("returns the task's current state rather than a bare timeout error", func() {
 				task := manager.Launch(ctx, "task-4", "agent-4", "test task", func(ctx context.Context) (string, error) {
 					time.Sleep(1 * time.Second)
 					return "result", nil
@@ -250,8 +250,14 @@ var _ = Describe("BackgroundOutputTool", func() {
 					},
 				}
 
-				_, err := botTool.Execute(ctx, input)
-				Expect(err).To(HaveOccurred())
+				result, err := botTool.Execute(ctx, input)
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["task_id"]).To(Equal(task.ID))
+				Expect(output["status"]).To(Equal("running"))
 			})
 		})
 
@@ -283,7 +289,7 @@ var _ = Describe("BackgroundOutputTool", func() {
 		})
 
 		Context("when context is cancelled during blocking poll", func() {
-			It("returns promptly instead of waiting for timeout", func() {
+			It("returns promptly with the task state instead of waiting for timeout", func() {
 				task := manager.Launch(ctx, "poll-cancel-test", "agent-cancel", "cancel test", func(ctx context.Context) (string, error) {
 					time.Sleep(10 * time.Second) // never completes
 					return "done", nil
@@ -305,12 +311,18 @@ var _ = Describe("BackgroundOutputTool", func() {
 					},
 				}
 				start := time.Now()
-				_, err := botTool.Execute(cancelCtx, input)
+				result, err := botTool.Execute(cancelCtx, input)
 				elapsed := time.Since(start)
 
-				// Should return within ~500ms, NOT wait 30 seconds
-				Expect(err).To(HaveOccurred()) // timeout error since task never completes
+				// Should return within ~2s with the task's current state,
+				// not wait 30 seconds or return a bare error.
+				Expect(err).NotTo(HaveOccurred())
 				Expect(elapsed).To(BeNumerically("<", 2*time.Second))
+
+				var output map[string]interface{}
+				err = json.Unmarshal([]byte(result.Output), &output)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(output["status"]).To(Equal("running"))
 			})
 		})
 

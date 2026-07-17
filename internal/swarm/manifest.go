@@ -2,6 +2,8 @@ package swarm
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -155,6 +157,11 @@ type Manifest struct {
 	// renames.
 	Context ContextConfig `json:"context" yaml:"context"`
 
+	// Prompt carries swarm-owned prompt injections for the lead and named
+	// member agents. This keeps shared agent manifests generic while the
+	// swarm still defines workflow- and artefact-specific instructions.
+	Prompt PromptConfig `json:"prompt,omitempty" yaml:"prompt,omitempty"`
+
 	// Retry configures the per-member retry policy applied when a
 	// dispatch returns a CategoryRetryable error. Pointer so the
 	// loader can distinguish "block omitted" (nil; defaults apply)
@@ -186,6 +193,34 @@ type Manifest struct {
 	// to invoke the desired swarm by id). Today no agent leads multiple
 	// swarms so this guard is defensive only — see Registry.AutoDispatchSwarmFor.
 	AutoDispatchOnLead bool `json:"auto_dispatch_on_lead,omitempty" yaml:"auto_dispatch_on_lead,omitempty"`
+
+	// SourceDir is the absolute directory the manifest was loaded from.
+	// It is used to resolve relative prompt-append files.
+	SourceDir string `json:"-" yaml:"-"`
+}
+
+// PromptConfig defines swarm-owned prompt injections.
+type PromptConfig struct {
+	// LeadAppend is inline prompt text appended only for the swarm lead.
+	LeadAppend string `json:"lead_append,omitempty" yaml:"lead_append,omitempty"`
+
+	// LeadAppendFile is a file path whose contents are appended only for
+	// the swarm lead. Relative paths resolve under Manifest.SourceDir.
+	LeadAppendFile string `json:"lead_append_file,omitempty" yaml:"lead_append_file,omitempty"`
+
+	// MemberAppends maps member agent IDs to their swarm-owned prompt
+	// append config.
+	MemberAppends map[string]PromptAppendConfig `json:"member_appends,omitempty" yaml:"member_appends,omitempty"`
+}
+
+// PromptAppendConfig defines one swarm-owned prompt append.
+type PromptAppendConfig struct {
+	// Append is inline prompt text.
+	Append string `json:"append,omitempty" yaml:"append,omitempty"`
+
+	// File is a file path whose contents are appended. Relative paths
+	// resolve under Manifest.SourceDir.
+	File string `json:"file,omitempty" yaml:"file,omitempty"`
 }
 
 // EffectiveRetryPolicy returns the manifest's RetryPolicy with empty
@@ -695,7 +730,51 @@ func (m *Manifest) Validate(v Validator) error {
 		return err
 	}
 
+	if err := m.validatePrompt(); err != nil {
+		return err
+	}
+
 	return m.validateResilience()
+}
+
+func (m *Manifest) validatePrompt() error {
+	if err := validatePromptAppendConfig(m.Prompt.LeadAppend, m.Prompt.LeadAppendFile, m.SourceDir, "prompt.lead_append"); err != nil {
+		return err
+	}
+	for memberID, cfg := range m.Prompt.MemberAppends {
+		if strings.TrimSpace(memberID) == "" {
+			return &ValidationError{Field: "prompt.member_appends", Message: "member_appends keys must be non-empty"}
+		}
+		field := fmt.Sprintf("prompt.member_appends[%q]", memberID)
+		if err := validatePromptAppendConfig(cfg.Append, cfg.File, m.SourceDir, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validatePromptAppendConfig(inline string, file string, sourceDir string, field string) error {
+	if strings.TrimSpace(inline) == "" && strings.TrimSpace(file) == "" {
+		return nil
+	}
+	if strings.TrimSpace(file) == "" {
+		return nil
+	}
+	path := file
+	if !filepath.IsAbs(path) {
+		if strings.TrimSpace(sourceDir) == "" {
+			return &ValidationError{Field: field, Message: fmt.Sprintf("relative prompt file %q requires a manifest source directory", file)}
+		}
+		path = filepath.Join(sourceDir, path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return &ValidationError{Field: field, Message: fmt.Sprintf("prompt file %q is unreadable: %s", path, err.Error())}
+	}
+	if info.IsDir() {
+		return &ValidationError{Field: field, Message: fmt.Sprintf("prompt file %q is a directory", path)}
+	}
+	return nil
 }
 
 // validateHarness enforces the non-gate invariants on the harness

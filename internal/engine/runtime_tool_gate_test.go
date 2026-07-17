@@ -11,6 +11,7 @@ import (
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/permissionmode"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool"
 )
 
@@ -184,6 +185,50 @@ var _ = Describe("Engine.executeToolCall runtime tool gate (PR7)", func() {
 				Expect(result.IsError).To(BeFalse(),
 					"bundle-expanded names must pass the gate; rejecting them would re-introduce the pre-D1 fail-closed semantics the inheritance floor was added to remove")
 			}
+		})
+	})
+
+	When("a per-turn tool allowlist override is present", func() {
+		It("intersects the effective toolset for both schema advertisement and runtime dispatch", func() {
+			manifest := agent.Manifest{
+				ID:   "worker",
+				Name: "Worker",
+				Capabilities: agent.Capabilities{
+					Tools: []string{"coordination_store", "bash", "read"},
+				},
+			}
+			eng := makeEngine(manifest, nil)
+			coord := &executableMockTool{name: "coordination_store", execResult: tool.Result{Output: "ok"}}
+			fakeBash := &executableMockTool{name: "bash", execResult: tool.Result{Output: "should not run"}}
+			fakeRead := &executableMockTool{name: "read", execResult: tool.Result{Output: "should not run"}}
+			eng.AddTool(coord)
+			eng.AddTool(fakeBash)
+			eng.AddTool(fakeRead)
+
+			ctx := session.WithToolsAllowlistOverride(context.Background(), []string{"coordination_store"})
+			allowed := eng.EffectiveAllowedToolsForTest(ctx)
+			Expect(allowed).To(HaveKeyWithValue("coordination_store", true))
+			Expect(allowed).NotTo(HaveKey("bash"))
+			Expect(allowed).NotTo(HaveKey("read"))
+
+			result, err := eng.ExecuteToolCallForTest(ctx, "sess-finisher", &provider.ToolCall{
+				ID:        "call-bash",
+				Name:      "bash",
+				Arguments: map[string]any{},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsError).To(BeTrue())
+			Expect(result.Output).To(ContainSubstring("'bash' not available to agent 'worker'"))
+			Expect(fakeBash.execCalled).To(BeFalse())
+
+			result, err = eng.ExecuteToolCallForTest(ctx, "sess-finisher", &provider.ToolCall{
+				ID:        "call-coord",
+				Name:      "coordination_store",
+				Arguments: map[string]any{"operation": "set", "key": "k", "value": "v"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsError).To(BeFalse())
+			Expect(coord.execCalled).To(BeTrue())
 		})
 	})
 

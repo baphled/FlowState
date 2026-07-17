@@ -15,6 +15,8 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
+  delivery_tools:
+    - coordination_store
   skills:
     - memory-keeper
     - architecture

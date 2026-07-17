@@ -86,12 +86,12 @@ type turnSessionManager struct {
 	sess     session.Session
 	streamer *turnProbeStreamer
 	// streamCtxs captures every ctx threaded into
-	// SendMessageWithAttachments. The propagation spec reads
+	// PrepareSendWithAttachments. The propagation spec reads
 	// streamCtxs[0] to assert turn.TurnIDFromContext succeeds on the
 	// dispatcher-supplied ctx.
 	streamCtxs []context.Context
 	// holdGate is a chan that, when non-nil, blocks
-	// SendMessageWithAttachments after the user message is appended
+	// PrepareSendWithAttachments after the user message is appended
 	// so the conflict spec can pin "first turn is still running"
 	// without racing the drip's emitInterval.
 	holdGate chan struct{}
@@ -105,22 +105,31 @@ func (m *turnSessionManager) SnapshotSession(_ string) (session.Session, error) 
 	return out, nil
 }
 
-func (m *turnSessionManager) SendMessageWithAttachments(
+func (m *turnSessionManager) PrepareSendWithAttachments(
 	ctx context.Context, _, message string, _ []string,
-) (<-chan provider.StreamChunk, error) {
+) (context.Context, string, error) {
 	m.mu.Lock()
 	m.streamCtxs = append(m.streamCtxs, ctx)
 	m.sess.Messages = append(m.sess.Messages, session.Message{
 		Role:    "user",
 		Content: message,
 	})
-	streamer := m.streamer
 	gate := m.holdGate
 	m.mu.Unlock()
 
 	if gate != nil {
 		<-gate
 	}
+	return ctx, "fake-agent", nil
+}
+
+func (m *turnSessionManager) StartStream(
+	ctx context.Context, _, _, message string,
+) (<-chan provider.StreamChunk, error) {
+	m.mu.Lock()
+	streamer := m.streamer
+	m.mu.Unlock()
+
 	if streamer == nil {
 		return nil, nil
 	}
@@ -225,8 +234,14 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				"the turn_id in ctx must match the SessionedHandle.TurnID so the accumulator's Append routes to the correct Turn")
 
 			// And the streamer's own captured ctx (handed down from
-			// SendMessageWithAttachments) must carry the same id —
+			// StartStream) must carry the same id —
 			// this is the seam the accumulator reads off in production.
+			// StartStream runs asynchronously in a background goroutine
+			// (async-dispatch split), so we wait for the streamer ctx
+			// to be populated.
+			Eventually(func() bool {
+				return probe.lastCtx() != nil
+			}, "2s").Should(BeTrue())
 			streamerCtx := probe.lastCtx()
 			Expect(streamerCtx).NotTo(BeNil())
 			streamerID, streamerOK := turn.TurnIDFromContext(streamerCtx)
@@ -627,7 +642,13 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 			Expect(t.CriticalError.Severity).To(Equal("critical"))
 			// The terminal Fail still fires — the chunk.Error capture and
 			// the CriticalError stamp are independent paths.
-			Expect(t.Status).To(Equal(turn.StatusFailed))
+			// The terminal Fail fires asynchronously after
+			// CriticalError — the lifecycle wrapper drains the
+			// error chunk, stamps CriticalError, then calls Fail.
+			Eventually(func() turn.Status {
+				t, _ := turns.Get(handle.TurnID)
+				return t.Status
+			}, "2s", "10ms").Should(Equal(turn.StatusFailed))
 		})
 
 		It("uses the stream_critical_context_exceeded safeMsg for context-window overflow errors", func() {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/engine"
+	"github.com/baphled/flowstate/internal/plugin/failover"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -130,6 +131,70 @@ var _ = Describe("DelegateTool Async Background Pipeline", Label("integration"),
 				}, 2*time.Second, 10*time.Millisecond).Should(BeNumerically(">", 0))
 
 				slow.release()
+			})
+
+			It("waits for provider recovery instead of failing immediately when all candidates are temporarily unhealthy", func() {
+				health := failover.NewHealthManager()
+				reg := provider.NewRegistry()
+				zaiProvider := &asyncDelegatePipelineProvider{
+					name: "zai",
+					chunks: []provider.StreamChunk{
+						{Content: "recovered async delegation result", Done: false},
+						{Content: "", Done: true},
+					},
+				}
+				reg.Register(zaiProvider)
+				manager := failover.NewManager(reg, health, 5*time.Minute)
+				manager.SetBasePreferences([]provider.ModelPreference{{Provider: "zai", Model: "glm-5.2"}})
+				health.MarkRateLimited("zai", "glm-5.2", time.Now().Add(50*time.Millisecond))
+
+				targetEngine = engine.New(engine.Config{
+					ChatProvider:    zaiProvider,
+					Registry:        reg,
+					FailoverManager: manager,
+					Manifest: agent.Manifest{
+						ID:                "target-agent",
+						Name:              "Target Agent",
+						Instructions:      agent.Instructions{SystemPrompt: "You are the target agent."},
+						ContextManagement: agent.DefaultContextManagement(),
+					},
+				})
+
+				backgroundMgr = engine.NewBackgroundTaskManager()
+				delegateTool = engine.NewDelegateToolWithBackground(
+					map[string]*engine.Engine{"target-agent": targetEngine},
+					agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"target-agent"}},
+					"orchestrator",
+					backgroundMgr,
+					nil,
+				)
+				mgr = session.NewManager(&fakeStreamer{})
+				backgroundMgr.WithSessionManager(mgr)
+				mgr.RegisterSession("delegate-pipeline-sess", "orchestrator")
+
+				ctx := context.WithValue(context.Background(), session.IDKey{}, "delegate-pipeline-sess")
+				result, err := delegateTool.Execute(ctx, asyncDelegationInput())
+				Expect(err).NotTo(HaveOccurred())
+
+				var payload map[string]any
+				Expect(json.Unmarshal([]byte(result.Output), &payload)).To(Succeed())
+				taskID := payload["task_id"].(string)
+
+				bot := engine.NewBackgroundOutputTool(backgroundMgr)
+				toolRes, err := bot.Execute(ctx, tool.Input{
+					Name: "background_output",
+					Arguments: map[string]any{
+						"task_id": taskID,
+						"block":   true,
+						"timeout": 5000,
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var output map[string]any
+				Expect(json.Unmarshal([]byte(toolRes.Output), &output)).To(Succeed())
+				Expect(output["status"]).To(Equal("completed"))
+				Expect(output["result"]).To(ContainSubstring("recovered async delegation result"))
 			})
 
 			Context("when parent context is cancelled after launch", func() {

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -115,6 +116,98 @@ func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.
 		}
 	}()
 	return out
+}
+
+type childAttemptState struct {
+	closeStore      func()
+	childCancel     func()
+	childTurnID     string
+	turnOwnedByWrap bool
+	delegateCtx     context.Context
+}
+
+func newChildAttemptState() *childAttemptState {
+	return &childAttemptState{
+		closeStore:  func() {},
+		childCancel: func() {},
+	}
+}
+
+func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, target delegationTarget, sessionID, message string) {
+	s.closeStore()
+	s.childCancel()
+	s.closeStore = d.attachSessionStore(target.engine, sessionID)
+	s.childTurnID = ""
+	if d.turnRegistry != nil {
+		if id, turnErr := d.turnRegistry.StartOrReuse(sessionID); turnErr == nil {
+			s.childTurnID = id
+		}
+	}
+	s.turnOwnedByWrap = false
+	d.persistChildBrief(sessionID, target.agentID, message)
+	delegateCtx := context.WithValue(baseCtx, session.IDKey{}, sessionID)
+	delegateCtx = swarm.WithScope(delegateCtx, nil)
+	delegateCtx = session.WithPriorMessages(delegateCtx, nil)
+	delegateProv, delegateModel := d.resolveChildModelOverride(target)
+	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, delegateProv)
+	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, delegateModel)
+	delegateCtx = session.WithPreferredModels(delegateCtx, d.resolveChildModelChain(target))
+	if d.turnRegistry != nil && s.childTurnID != "" {
+		delegateCtx = turn.WithTurnID(delegateCtx, s.childTurnID)
+		delegateCtx = session.WithAccumulatorTurnID(delegateCtx, s.childTurnID)
+		delegateCtx = session.WithTurnRecorder(delegateCtx, func(id string, msg session.Message) {
+			_ = d.turnRegistry.Append(id, msg)
+		})
+	}
+	if memberTimeout := d.activeMemberTimeout(); memberTimeout > 0 {
+		delegateCtx, s.childCancel = context.WithTimeout(delegateCtx, memberTimeout)
+	} else {
+		s.childCancel = func() {}
+	}
+	s.delegateCtx = delegateCtx
+}
+
+func (s *childAttemptState) startFreshRetry(baseCtx context.Context, d *DelegateTool, target delegationTarget, chainID, message string, baseInfo *provider.DelegationInfo) string {
+	delegateSessionID := d.createChildSession(baseCtx, target.agentID, chainID)
+	baseInfo.TargetSessionID = delegateSessionID
+	s.bind(baseCtx, d, target, delegateSessionID, message)
+	return delegateSessionID
+}
+
+func (s *childAttemptState) attemptContext(forcedToolChoice string, finisherToolsAllowlist []string) context.Context {
+	attemptCtx := session.WithToolChoiceOverride(s.delegateCtx, forcedToolChoice)
+	if len(finisherToolsAllowlist) > 0 {
+		attemptCtx = session.WithToolsAllowlistOverride(attemptCtx, finisherToolsAllowlist)
+	}
+	return attemptCtx
+}
+
+func (s *childAttemptState) failIfOwned(d *DelegateTool, cause error) {
+	if s.turnOwnedByWrap || d.turnRegistry == nil || s.childTurnID == "" {
+		return
+	}
+	_ = d.turnRegistry.Fail(s.childTurnID, cause)
+}
+
+func (s *childAttemptState) complete(d *DelegateTool, providerName, modelName string) {
+	if d.turnRegistry != nil && s.childTurnID != "" {
+		_ = d.turnRegistry.Complete(s.childTurnID, turn.ModelInfo{
+			Provider: providerName,
+			Model:    modelName,
+		})
+		s.turnOwnedByWrap = true
+	}
+}
+
+func (s *childAttemptState) resetForRetry(d *DelegateTool) {
+	if d.turnRegistry != nil && s.childTurnID != "" {
+		_ = d.turnRegistry.ResetForRetry(s.childTurnID)
+	}
+}
+
+func (s *childAttemptState) teardown() {
+	s.closeStore()
+	s.childCancel()
 }
 
 // wrapWithAccumulator wraps the raw chunk stream through session.AccumulateStream
@@ -398,13 +491,6 @@ func (d *DelegateTool) executeSync(
 	// the persisted session list after a hard reload (closes the cold-
 	// reload hole left by a488b858).
 	delegateSessionID := d.resolveOrCreateSession(ctx, target.agentID, target.requestedSession, baseInfo.ChainID)
-	// Persist the parent's brief as a user-role message on the child
-	// session before the stream begins, so the child's session record is
-	// replayable in isolation. Without this the child session contains
-	// only assistant / tool_call / tool_result messages and the brief
-	// (target.message) is lost — see Bug Fixes/Delegation Brief
-	// Persistence (May 2026) for the original symptom.
-	d.persistChildBrief(delegateSessionID, target.agentID, target.message)
 	// Chunk-side started event fires post-resolve so the stream
 	// chunk carries the populated TargetSessionID for the accumulator
 	// to stamp on the persisted delegation_started message.
@@ -420,8 +506,7 @@ func (d *DelegateTool) executeSync(
 	defer progressCancel()
 	go d.emitProgressHeartbeat(progressCtx, baseInfo, parentSessionID, delegateSessionID, target.loadSkills)
 
-	closeStore := d.attachSessionStore(target.engine, delegateSessionID)
-	defer closeStore()
+	childState := newChildAttemptState()
 
 	// Plans/Child Session Turn Registry Plumbing (May 2026) §Item 2b —
 	// mint a child Turn keyed on delegateSessionID immediately after
@@ -431,17 +516,6 @@ func (d *DelegateTool) executeSync(
 	// StartOrReuse auto-completes the stale entry before minting fresh.
 	// A nil registry (legacy test constructors) short-circuits to the
 	// historical "no live channel for children" behaviour.
-	var childTurnID string
-	if d.turnRegistry != nil {
-		if id, turnErr := d.turnRegistry.StartOrReuse(delegateSessionID); turnErr == nil {
-			childTurnID = id
-		}
-		// StartOrReuse's err surface is empty in practice (auto-complete
-		// cannot fail; mint cannot fail without OOM). On the soft-fail
-		// path childTurnID stays "" and every downstream Turn lifecycle
-		// site below short-circuits — delegation still completes, only
-		// the live channel stays dark, matching pre-fix behaviour.
-	}
 	// turnOwnedByWrap is set true the moment executeSync calls Complete
 	// on the happy path below. failChildTurnIfOwned reads it FIRST and
 	// short-circuits before invoking turnRegistry.Fail. This is the
@@ -451,17 +525,10 @@ func (d *DelegateTool) executeSync(
 	// The Fail-side ErrTurnTerminal silent-swallow at turn.go:796-797
 	// is demoted to backstop status, NOT a substitute for caller-side
 	// discipline.
-	turnOwnedByWrap := false
 	failChildTurnIfOwned := func(cause error) {
-		if turnOwnedByWrap || d.turnRegistry == nil || childTurnID == "" {
-			return
-		}
-		_ = d.turnRegistry.Fail(childTurnID, cause)
+		childState.failIfOwned(d, cause)
 	}
 
-	delegateCtx := context.WithValue(ctx, session.IDKey{}, delegateSessionID)
-	delegateCtx = swarm.WithScope(delegateCtx, nil)
-	delegateCtx = session.WithPriorMessages(delegateCtx, nil)
 	// Cascade contract for child sessions: UI > manifest > global.
 	//
 	// The parent session's override (UI tier) must NOT propagate into the
@@ -480,42 +547,10 @@ func (d *DelegateTool) executeSync(
 	// anthropic/claude-sonnet-4-7 but delegated librarian/explorer
 	// children silently dropping to zai/glm-4.6, which then emitted
 	// malformed delegate tool args.
-	delegateProv, delegateModel := d.resolveChildModelOverride(target)
-	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, delegateProv)
-	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, delegateModel)
-	// Thread the child's FULL preferred_models chain so the failover
-	// layer exhausts the agent's own tiers (tier-1, tier-2, …) before
-	// cascading to the global config default. Without this, a tier-0
-	// failure drops straight to the global default and the child's
-	// reliable secondary models are never tried. No-op when the agent
-	// declares no chain.
-	delegateCtx = session.WithPreferredModels(delegateCtx, d.resolveChildModelChain(target))
-	// Inject the child Turn ctx triad — mirrors dispatcher.go:639-643 at
-	// the parent-session layer. The accumulator's turnAwareAppender
-	// reads the recorder closure off ctx and fans every persisted
-	// child-session message (assistant, thinking, tool_call,
-	// tool_result, delegation_started, delegation) onto the registry's
-	// MessagesAdded slice, which the API server projects to the
-	// frontend via FindActiveBySession / handleListV1Sessions.
-	if d.turnRegistry != nil && childTurnID != "" {
-		delegateCtx = turn.WithTurnID(delegateCtx, childTurnID)
-		delegateCtx = session.WithAccumulatorTurnID(delegateCtx, childTurnID)
-		delegateCtx = session.WithTurnRecorder(delegateCtx, func(id string, msg session.Message) {
-			_ = d.turnRegistry.Append(id, msg)
-		})
-	}
-	// HarnessConfig.MemberTimeout caps the delegate-await loop so a
-	// stalled child cannot hang the parent forever. Zero (the default)
-	// preserves the historical no-deadline contract; a positive value
-	// wraps the per-call ctx so DeadlineExceeded flows back through the
-	// existing dispatch-failure branch below (and through
-	// dispatchParallel's first-error cancel cascade in the swarm path).
-	// Symptom: session 3255e2ee — coordinator hung indefinitely on a
-	// silent executor child.
-	if memberTimeout := d.activeMemberTimeout(); memberTimeout > 0 {
-		var cancelMemberTimeout context.CancelFunc
-		delegateCtx, cancelMemberTimeout = context.WithTimeout(delegateCtx, memberTimeout)
-		defer cancelMemberTimeout()
+	childState.bind(ctx, d, target, delegateSessionID, target.message)
+	defer childState.teardown()
+	startFreshChildRetry := func(message string) {
+		delegateSessionID = childState.startFreshRetry(ctx, d, target, baseInfo.ChainID, message, &baseInfo)
 	}
 
 	// Post-member gate retry loop. A post-member result-schema gate that
@@ -542,13 +577,7 @@ func (d *DelegateTool) executeSync(
 	// defence that short-circuits failChildTurnIfOwned so turnRegistry.Fail
 	// is NEVER invoked on a Turn whose stream drained cleanly.
 	completeChildTurn := func(providerName, modelName string) {
-		if d.turnRegistry != nil && childTurnID != "" {
-			_ = d.turnRegistry.Complete(childTurnID, turn.ModelInfo{
-				Provider: providerName,
-				Model:    modelName,
-			})
-			turnOwnedByWrap = true
-		}
+		childState.complete(d, providerName, modelName)
 	}
 
 	// Post-member gate retry loop. A post-member result-schema gate that
@@ -570,6 +599,8 @@ func (d *DelegateTool) executeSync(
 	var result delegationResult
 	var modelName, providerName string
 	var completedAt time.Time
+	expectedOutputKey, expectOutputKey := expectedCoordinationStoreKeyFromMessage(target.message)
+	var finisherToolsAllowlist []string
 	// forcedToolChoice carries the per-attempt tool_choice override the
 	// PREVIOUS iteration's gate failure decided to force on re-delegation.
 	// Empty on the first attempt so multi-step members (explorer/librarian)
@@ -578,19 +609,19 @@ func (d *DelegateTool) executeSync(
 	// the write the gate's directive only asked for in prose.
 	var forcedToolChoice string
 	for attempt := 1; ; attempt++ {
-		if attempt > 1 && d.turnRegistry != nil && childTurnID != "" {
+		if attempt > 1 {
 			// Re-dispatch attempt: clear the prior attempt's partial
 			// messages so the next stream does not pile on stale rows.
 			// ErrTurnTerminal (a concurrent timeout completed the Turn)
 			// falls through — the re-dispatch still runs and the final
 			// completeChildTurn / failChildTurnIfOwned guards short-circuit.
-			_ = d.turnRegistry.ResetForRetry(childTurnID)
+			childState.resetForRetry(d)
 		}
 		// Apply the corrective forced tool_choice for THIS attempt only.
 		// The engine reads it off ctx and stamps it onto the outbound
 		// ChatRequest.ToolChoice; per-turn so the first attempt and any
 		// later attempts that didn't decide to force stay unconstrained.
-		attemptCtx := session.WithToolChoiceOverride(delegateCtx, forcedToolChoice)
+		attemptCtx := childState.attemptContext(forcedToolChoice, finisherToolsAllowlist)
 		// Pair the forced tool_choice with a capable-model override on the
 		// SAME corrective retry. Forcing tool_choice made the marginal model
 		// (zai/glm-4.5) EMIT the coordination_store write — but glm-4.5 cannot
@@ -613,14 +644,16 @@ func (d *DelegateTool) executeSync(
 			if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
 				if prov != "" {
 					attemptCtx = context.WithValue(attemptCtx, session.ProviderOverrideKey{}, prov)
+					childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ProviderOverrideKey{}, prov)
 				}
 				if model != "" {
 					attemptCtx = context.WithValue(attemptCtx, session.ModelOverrideKey{}, model)
+					childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ModelOverrideKey{}, model)
 				}
 			}
 		}
 		result = delegationResult{}
-		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childTurnID)
+		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childState.childTurnID)
 		if dispatchErr != nil {
 			completedAt = time.Now().UTC()
 			baseInfo.ToolCalls = result.toolCalls
@@ -658,6 +691,51 @@ func (d *DelegateTool) executeSync(
 
 		modelName = target.engine.LastModel()
 		providerName = target.engine.LastProvider()
+		if d.gateRunner == nil && d.coordinationStore != nil && expectOutputKey && !d.hasSubstantiveCoordinationValue(expectedOutputKey) {
+			if attempt == PostMemberGateMaxAttempts && hasSubstantiveOutput([]byte(result.response)) {
+				_ = d.coordinationStore.Set(expectedOutputKey, []byte(result.response))
+			}
+			if !d.hasSubstantiveCoordinationValue(expectedOutputKey) {
+				if fallback, fallbackKey, ok := d.engineDeliveryFailureFallback(target.agentID, baseInfo.ChainID, delegateSessionID); ok {
+					completedAt = time.Now().UTC()
+					baseInfo.ToolCalls = result.toolCalls
+					baseInfo.LastTool = result.lastTool
+					baseInfo.CompletedAt = &completedAt
+					hasOutput = false
+					msg := fmt.Sprintf("delegated session failed before writing required coordination_store key %s: %s", expectedOutputKey, fallback.FailureSummary)
+					d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+					d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, msg, target.loadSkills))
+					slog.Warn("delegated session consumed engine-persisted delivery failure fallback",
+						"session", delegateSessionID,
+						"agent_id", target.agentID,
+						"chain_id", baseInfo.ChainID,
+						"expected_key", expectedOutputKey,
+						"fallback_key", fallbackKey,
+					)
+					d.recordChildModelAttribution(delegateSessionID, target.engine.LastProvider(), target.engine.LastModel())
+					d.closeSessionIfManaged(delegateSessionID)
+					return tool.Result{}, fmt.Errorf("delegated session failed before writing required coordination_store key %q: %s", expectedOutputKey, fallback.FailureSummary)
+				}
+				if attempt < PostMemberGateMaxAttempts {
+					target.message = buildFreshDeliveryRetryMessage(expectedOutputKey)
+					startFreshChildRetry(target.message)
+					forcedToolChoice = "tool:" + forcedCoordinationStoreTool
+					finisherToolsAllowlist = []string{"coordination_store"}
+					continue
+				}
+				if d.gateRunner == nil {
+					completedAt = time.Now().UTC()
+					baseInfo.ToolCalls = result.toolCalls
+					baseInfo.LastTool = result.lastTool
+					baseInfo.CompletedAt = &completedAt
+					d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+					d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, delegateSessionID, fmt.Sprintf("delegated session missing required coordination_store key %s", expectedOutputKey), target.loadSkills))
+					d.recordChildModelAttribution(delegateSessionID, target.engine.LastProvider(), target.engine.LastModel())
+					d.closeSessionIfManaged(delegateSessionID)
+					return tool.Result{}, fmt.Errorf("delegated session missing required coordination_store key %q", expectedOutputKey)
+				}
+			}
+		}
 		// FINAL-attempt salvage floor. The member already had its clean
 		// attempt-1 write chance plus the forced-tool-choice corrective
 		// retry above (which escalates a narrate-without-write miss into a
@@ -679,10 +757,10 @@ func (d *DelegateTool) executeSync(
 				if attempt < PostMemberGateMaxAttempts {
 					if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
 						if prov != "" {
-							delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, prov)
+							childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ProviderOverrideKey{}, prov)
 						}
 						if model != "" {
-							delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, model)
+							childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ModelOverrideKey{}, model)
 						}
 					}
 					target.message = appendPlainDirective(target.message)
@@ -714,6 +792,13 @@ func (d *DelegateTool) executeSync(
 			// when the failure is not the narration signature, leaving the
 			// retry unconstrained.
 			forcedToolChoice = forcedToolChoiceForGate(gateErr)
+			if forcedToolChoice != "" {
+				if expectedOutputKey != "" {
+					target.message = buildFreshDeliveryRetryMessage(expectedOutputKey)
+				}
+				startFreshChildRetry(target.message)
+				finisherToolsAllowlist = []string{"coordination_store"}
+			}
 			continue
 		}
 		// Budget exhausted — the GateError is now terminal. Honest-fail
@@ -876,6 +961,7 @@ func (d *DelegateTool) runStreamWithLegacyBreaker(delegateCtx context.Context, t
 		d.circuitBreaker.RecordFailure()
 		return fmt.Errorf("delegation failed: %w", err)
 	}
+	promoteHealthyDelegationCandidate(target.engine)
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(delegateCtx, target.agentID, target.message)
 	if err != nil {
 		d.circuitBreaker.RecordFailure()
@@ -932,6 +1018,7 @@ func (d *DelegateTool) streamAndCollect(ctx context.Context, target delegationTa
 			Cause:    err,
 		}
 	}
+	promoteHealthyDelegationCandidate(target.engine)
 	ctx = session.WithPriorMessages(ctx, nil)
 	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
 	if err != nil {
@@ -1052,41 +1139,51 @@ func (d *DelegateTool) executeBackgroundTask(
 	// before streaming so async delegations stay replayable too.
 	d.persistChildBrief(taskID, target.agentID, target.message)
 	closeStore := d.attachSessionStore(target.engine, taskID)
+	defer closeStore()
 
-	ctx = session.WithPriorMessages(ctx, nil)
-	chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(ctx, target.agentID, target.message)
-	if err != nil {
-		closeStore()
-		d.circuitBreaker.RecordFailure()
-		completedAt := time.Now().UTC()
-		baseInfo.CompletedAt = &completedAt
-		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
-		// Bug fix (May 2026 — Session Seal Persistence Hole): mirror the
-		// sync-dispatcher fix on the async runner. The success branch
-		// (line ~2790) seals the child via closeSessionIfManaged, but the
-		// Stream-error and collect-error paths skipped it.
-		d.closeSessionIfManaged(taskID)
-		return "", fmt.Errorf("delegation failed: %w", err)
-	}
+	var result delegationResult
+	for {
+		attemptCtx := session.WithPriorMessages(ctx, nil)
+		chunks, err := d.resolveStreamer(target.agentID, target.engine).Stream(attemptCtx, target.agentID, target.message)
+		if err != nil {
+			if retryAt, recoverable := d.backgroundRetryAt(target.engine, err); recoverable {
+				if waited, stop := d.waitForBackgroundProviderRetry(ctx, retryAt, taskID); waited {
+					continue
+				} else if stop {
+					return "", context.Canceled
+				}
+			}
+			d.circuitBreaker.RecordFailure()
+			completedAt := time.Now().UTC()
+			baseInfo.CompletedAt = &completedAt
+			d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+			d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
+			d.closeSessionIfManaged(taskID)
+			return "", fmt.Errorf("delegation failed: %w", err)
+		}
 
-	chunks = d.wrapWithAccumulator(ctx, chunks, taskID, target.agentID)
+		chunks = d.wrapWithAccumulator(attemptCtx, chunks, taskID, target.agentID)
 
-	result, err := d.collectDelegationResult(chunks)
-	closeStore()
-	if err != nil {
-		d.circuitBreaker.RecordFailure()
-		completedAt := time.Now().UTC()
-		baseInfo.ToolCalls = result.toolCalls
-		baseInfo.LastTool = result.lastTool
-		baseInfo.CompletedAt = &completedAt
-		d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
-		d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
-		// Bug fix (May 2026 — Session Seal Persistence Hole): see the
-		// twin comment on the Stream-error path above. The async runner's
-		// success branch is the only place that previously sealed.
-		d.closeSessionIfManaged(taskID)
-		return "", err
+		result, err = d.collectDelegationResult(chunks)
+		if err != nil {
+			if retryAt, recoverable := d.backgroundRetryAt(target.engine, err); recoverable {
+				if waited, stop := d.waitForBackgroundProviderRetry(ctx, retryAt, taskID); waited {
+					continue
+				} else if stop {
+					return "", context.Canceled
+				}
+			}
+			d.circuitBreaker.RecordFailure()
+			completedAt := time.Now().UTC()
+			baseInfo.ToolCalls = result.toolCalls
+			baseInfo.LastTool = result.lastTool
+			baseInfo.CompletedAt = &completedAt
+			d.emitDelegationEvent(outChan, hasOutput, baseInfo, "failed")
+			d.publishDelegationEvent("failed", buildDelegationEventData(baseInfo, parentSessionID, taskID, err.Error(), target.loadSkills))
+			d.closeSessionIfManaged(taskID)
+			return "", err
+		}
+		break
 	}
 
 	if result.truncated {
@@ -1106,6 +1203,66 @@ func (d *DelegateTool) executeBackgroundTask(
 	d.closeSessionIfManaged(taskID)
 
 	return result.response, nil
+}
+
+func (d *DelegateTool) backgroundRetryAt(eng *Engine, err error) (time.Time, bool) {
+	if eng == nil || err == nil {
+		return time.Time{}, false
+	}
+	var provErr *provider.Error
+	if errors.As(err, &provErr) {
+		if !provider.IsRetriableErrorType(provErr.ErrorType) {
+			return time.Time{}, false
+		}
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "no healthy providers available") && !strings.Contains(msg, "all providers failed") {
+		if provErr == nil {
+			return time.Time{}, false
+		}
+	}
+	if retryAt, ok := eng.SoonestProviderRetry(); ok {
+		return retryAt, true
+	}
+	if mgr := eng.FailoverManager(); mgr != nil && mgr.Health() != nil {
+		providerName := eng.LastProvider()
+		modelName := eng.LastModel()
+		if providerName != "" {
+			if retryAt, ok := mgr.Health().RateLimitedUntil(providerName, modelName); ok {
+				return retryAt, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func (d *DelegateTool) waitForBackgroundProviderRetry(ctx context.Context, retryAt time.Time, taskID string) (bool, bool) {
+	const maxProviderRetryWait = 5 * time.Minute
+	wait := time.Until(retryAt)
+	if wait <= 0 {
+		return true, false
+	}
+	if wait > maxProviderRetryWait {
+		slog.Warn("background delegation stopped: provider retry too far out",
+			"task_id", taskID,
+			"retry_at", retryAt,
+			"wait", wait,
+		)
+		return false, false
+	}
+	slog.Info("background delegation paused: waiting for provider recovery",
+		"task_id", taskID,
+		"retry_at", retryAt,
+		"wait", wait,
+	)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true, false
+	case <-ctx.Done():
+		return false, true
+	}
 }
 
 // closeSessionIfManaged closes the named session via the session manager when one is configured,
@@ -1157,6 +1314,32 @@ func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID st
 	if sess.ParentID == "" || sess.ChainID == "" {
 		return
 	}
+	expectedKey, hasExpectedKey := d.expectedCoordinationStoreKeyFromSession(sess)
+	if hasExpectedKey {
+		if d.hasSubstantiveCoordinationValue(expectedKey) {
+			return
+		}
+		if fallback, fallbackKey, ok := d.engineDeliveryFailureFallback(sess.AgentID, sess.ChainID, sessionID); ok {
+			slog.Warn("delegated session completed with engine-persisted delivery failure fallback",
+				"session", sessionID,
+				"agent_id", sess.AgentID,
+				"chain_id", sess.ChainID,
+				"parent_id", sess.ParentID,
+				"expected_key", expectedKey,
+				"fallback_key", fallbackKey,
+				"failure_summary", fallback.FailureSummary,
+			)
+			return
+		}
+		slog.Warn("delegated session completed without writing its required coordination_store key — the agent may have announced work it never performed",
+			"session", sessionID,
+			"agent_id", sess.AgentID,
+			"chain_id", sess.ChainID,
+			"parent_id", sess.ParentID,
+			"expected_key", expectedKey,
+		)
+		return
+	}
 	keys, listErr := d.coordinationStore.List(sess.ChainID + "/")
 	if listErr != nil {
 		slog.Warn("delegated session coordination_store check failed",
@@ -1176,6 +1359,61 @@ func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID st
 			"parent_id", sess.ParentID,
 		)
 	}
+}
+
+func (d *DelegateTool) hasSubstantiveCoordinationValue(key string) bool {
+	if d == nil || d.coordinationStore == nil || key == "" {
+		return false
+	}
+	val, err := d.coordinationStore.Get(key)
+	if err != nil {
+		return false
+	}
+	return hasSubstantiveOutput(val)
+}
+
+func (d *DelegateTool) expectedCoordinationStoreKeyFromSession(sess *session.Session) (string, bool) {
+	if sess == nil {
+		return "", false
+	}
+	for i := range sess.Messages {
+		if key, ok := expectedCoordinationStoreKeyFromMessage(sess.Messages[i].Content); ok {
+			return key, true
+		}
+	}
+	return "", false
+}
+
+func (d *DelegateTool) engineDeliveryFailureFallback(agentID, chainID, sessionID string) (*deliveryFailureEnvelope, string, bool) {
+	if d == nil || d.coordinationStore == nil {
+		return nil, "", false
+	}
+	for _, key := range fallbackCoordinationFailureKeys(agentID, chainID, sessionID) {
+		val, err := d.coordinationStore.Get(key)
+		if err != nil || len(val) == 0 {
+			continue
+		}
+		var envelope deliveryFailureEnvelope
+		if err := json.Unmarshal(val, &envelope); err != nil {
+			continue
+		}
+		if envelope.Status != "delivery_failed_engine_fallback" {
+			continue
+		}
+		return &envelope, key, true
+	}
+	return nil, "", false
+}
+
+func fallbackCoordinationFailureKeys(agentID, chainID, sessionID string) []string {
+	keys := make([]string, 0, 2)
+	if key := fallbackCoordinationFailureKey(agentID, chainID); key != "" {
+		keys = append(keys, key)
+	}
+	if key := fallbackCoordinationFailureKey(agentID, sessionID); key != "" && (len(keys) == 0 || keys[0] != key) {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // recordChildModelAttribution stamps the actually-used (provider, model) pair

@@ -1102,6 +1102,7 @@ type ProviderErrorEventData struct {
 	ModelName    string
 	Error        error
 	Phase        string
+	Stage        string
 	// ErrorType is the semantic classification of the error.
 	ErrorType string
 	// ErrorCode is the provider-specific error code.
@@ -1110,6 +1111,27 @@ type ProviderErrorEventData struct {
 	HTTPStatus int
 	// IsRetriable indicates whether the caller should retry with the same provider.
 	IsRetriable bool
+	// DurationMS is how long the failed attempt ran before surfacing the error.
+	DurationMS int64
+	// TimeoutMS is the attempt timeout budget when the failure path was
+	// governed by a timeout.
+	TimeoutMS int64
+	// ParentDeadlineClamped reports whether the attempt timeout was shortened by
+	// an earlier parent context deadline.
+	ParentDeadlineClamped bool
+	// MessageCount is the number of messages present on the failed request.
+	MessageCount int
+	// RequestBytes is the JSON-serialised size of the failed request.
+	RequestBytes int
+	// EstimatedInputTokens is the engine-side estimate of prompt tokens when
+	// available.
+	EstimatedInputTokens int
+	// InFlight is the active concurrency-limiter in-flight count when known.
+	InFlight int
+	// QueueDepth is the active concurrency-limiter queue depth when known.
+	QueueDepth int
+	// MaxConcurrent is the concurrency cap when the provider is locally limited.
+	MaxConcurrent int
 }
 
 // MarshalJSON serialises ProviderErrorEventData while preserving error messages.
@@ -1125,28 +1147,48 @@ type ProviderErrorEventData struct {
 //   - None.
 func (d ProviderErrorEventData) MarshalJSON() ([]byte, error) {
 	type payload struct {
-		SessionID    string `json:"session_id,omitempty"`
-		AgentID      string `json:"agent_id,omitempty"`
-		ProviderName string `json:"provider_name"`
-		ModelName    string `json:"model_name,omitempty"`
-		Error        string `json:"error,omitempty"`
-		Phase        string `json:"phase,omitempty"`
-		ErrorType    string `json:"error_type,omitempty"`
-		ErrorCode    string `json:"error_code,omitempty"`
-		HTTPStatus   int    `json:"http_status,omitempty"`
-		IsRetriable  bool   `json:"is_retriable,omitempty"`
+		SessionID             string `json:"session_id,omitempty"`
+		AgentID               string `json:"agent_id,omitempty"`
+		ProviderName          string `json:"provider_name"`
+		ModelName             string `json:"model_name,omitempty"`
+		Error                 string `json:"error,omitempty"`
+		Phase                 string `json:"phase,omitempty"`
+		Stage                 string `json:"stage,omitempty"`
+		ErrorType             string `json:"error_type,omitempty"`
+		ErrorCode             string `json:"error_code,omitempty"`
+		HTTPStatus            int    `json:"http_status,omitempty"`
+		IsRetriable           bool   `json:"is_retriable,omitempty"`
+		DurationMS            int64  `json:"duration_ms,omitempty"`
+		TimeoutMS             int64  `json:"timeout_ms,omitempty"`
+		ParentDeadlineClamped bool   `json:"parent_deadline_clamped,omitempty"`
+		MessageCount          int    `json:"message_count,omitempty"`
+		RequestBytes          int    `json:"request_bytes,omitempty"`
+		EstimatedInputTokens  int    `json:"estimated_input_tokens,omitempty"`
+		InFlight              int    `json:"in_flight,omitempty"`
+		QueueDepth            int    `json:"queue_depth,omitempty"`
+		MaxConcurrent         int    `json:"max_concurrent,omitempty"`
 	}
 
 	data := payload{
-		SessionID:    d.SessionID,
-		AgentID:      d.AgentID,
-		ProviderName: d.ProviderName,
-		ModelName:    d.ModelName,
-		Phase:        d.Phase,
-		ErrorType:    d.ErrorType,
-		ErrorCode:    d.ErrorCode,
-		HTTPStatus:   d.HTTPStatus,
-		IsRetriable:  d.IsRetriable,
+		SessionID:             d.SessionID,
+		AgentID:               d.AgentID,
+		ProviderName:          d.ProviderName,
+		ModelName:             d.ModelName,
+		Phase:                 d.Phase,
+		Stage:                 d.Stage,
+		ErrorType:             d.ErrorType,
+		ErrorCode:             d.ErrorCode,
+		HTTPStatus:            d.HTTPStatus,
+		IsRetriable:           d.IsRetriable,
+		DurationMS:            d.DurationMS,
+		TimeoutMS:             d.TimeoutMS,
+		ParentDeadlineClamped: d.ParentDeadlineClamped,
+		MessageCount:          d.MessageCount,
+		RequestBytes:          d.RequestBytes,
+		EstimatedInputTokens:  d.EstimatedInputTokens,
+		InFlight:              d.InFlight,
+		QueueDepth:            d.QueueDepth,
+		MaxConcurrent:         d.MaxConcurrent,
 	}
 	if d.Error != nil {
 		data.Error = d.Error.Error()
@@ -1921,6 +1963,54 @@ func NewPermissionDeniedEvent(data PermissionResolutionEventData, ts ...time.Tim
 	}
 	return &PermissionDeniedEvent{
 		BaseEvent: BaseEvent{eventType: EventPermissionDenied, timestamp: t},
+		Data:      data,
+	}
+}
+
+// ProviderStatusChangedEventData holds the payload for a provider
+// status transition event.
+type ProviderStatusChangedEventData struct {
+	// Provider is the provider ID (e.g. "anthropic").
+	Provider string
+
+	// Model is the model ID (e.g. "claude-sonnet-4-20250514").
+	Model string
+
+	// PreviousStatus is the status value before this transition.
+	// Empty string on the first observation (no prior state known).
+	PreviousStatus string
+
+	// Status is the new status value: "healthy", "rate_limited",
+	// "exhausted", or "spent". ADR 002.
+	Status string
+
+	// RateLimitedUntil is the cooldown expiry. Zero when the
+	// provider/model is not currently rate-limited by the failover
+	// system.
+	RateLimitedUntil time.Time
+
+	// ObservedAt is when the transition was detected.
+	ObservedAt time.Time
+}
+
+// ProviderStatusChangedEvent is published when a provider's quota/cooldown
+// status transitions. The API layer subscribes to this and fans it out to
+// SSE clients connected to GET /api/v1/providers/status/stream.
+//
+// ADR 002 — Provider Status SSE Side-Channel (July 2026).
+type ProviderStatusChangedEvent struct {
+	BaseEvent
+	Data ProviderStatusChangedEventData
+}
+
+// NewProviderStatusChangedEvent creates a new ProviderStatusChangedEvent.
+func NewProviderStatusChangedEvent(data ProviderStatusChangedEventData, ts ...time.Time) *ProviderStatusChangedEvent {
+	t := time.Now()
+	if len(ts) > 0 && !ts[0].IsZero() {
+		t = ts[0]
+	}
+	return &ProviderStatusChangedEvent{
+		BaseEvent: BaseEvent{eventType: EventProviderStatusChanged, timestamp: t},
 		Data:      data,
 	}
 }

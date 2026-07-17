@@ -10,6 +10,8 @@ capabilities:
     - coordination_store
     - skill_load
     - todowrite
+  delivery_tools:
+    - coordination_store
   skills: []
   always_active_skills:
     - pre-action
