@@ -114,6 +114,11 @@ func (t *UpdateTool) IsStateModifying() bool { return true }
 // most one item may be in_progress at a time — starting a second one is
 // rejected.
 //
+// Fraud prevention: only an item currently in_progress can be marked
+// completed or cancelled. This forces agents to work on items sequentially
+// (claim → work → complete → claim next) rather than batch completing
+// items without doing the work.
+//
 // Expected:
 //   - ctx contains a session.IDKey value identifying the current session.
 //   - input.Arguments["index"] is a JSON number (decoded as float64) in
@@ -185,9 +190,9 @@ func (t *UpdateTool) Execute(ctx context.Context, input tool.Input) (tool.Result
 //
 // Returns:
 //   - nil when the patch is safe to apply.
-//   - An error when the transition reverts a state or starts a second active
-//     item. Returning the error from the Apply callback leaves the store
-//     unchanged.
+//   - An error when the transition reverts a state, starts a second active
+//     item, or when marking an item complete that isn't in_progress. Returning
+//     the error from the Apply callback leaves the store unchanged.
 //
 // Side effects:
 //   - None.
@@ -197,6 +202,15 @@ func validateStatusPatch(current []Item, idx int, patch itemPatch) error {
 	}
 	if err := validateTransition(current[idx].Status, patch.status); err != nil {
 		return err
+	}
+	// Prevent fraudulent batch completions: only an item currently in_progress
+	// can be marked completed or cancelled. This forces agents to work on items
+	// sequentially (claim → work → complete → claim next) rather than batch
+	// completing items without doing the work.
+	if patch.status == "completed" || patch.status == "cancelled" {
+		if current[idx].Status != "in_progress" {
+			return fmt.Errorf("can only mark an in_progress item as %s; item %d is currently %s", patch.status, idx, current[idx].Status)
+		}
 	}
 	if patch.status == "in_progress" {
 		for i := range current {

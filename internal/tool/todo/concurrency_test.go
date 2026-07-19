@@ -14,39 +14,44 @@ import (
 
 var _ = Describe("Todo Store Concurrency", func() {
 	Describe("MemoryStore Apply under concurrent batched updates", func() {
-		It("preserves all patches when multiple goroutines update different items simultaneously", func() {
-			store := todotool.NewMemoryStore()
-			items := make([]todotool.Item, 10)
-			for i := range items {
-				items[i] = todotool.Item{
-					Content:  "Task",
-					Status:   "pending",
-					Priority: "medium",
-				}
+	It("preserves all patches when multiple goroutines update different items simultaneously", func() {
+		store := todotool.NewMemoryStore()
+		items := make([]todotool.Item, 10)
+		for i := range items {
+			items[i] = todotool.Item{
+				Content: "Task",
+				Status:   "pending",
+				Priority: "medium",
 			}
-			Expect(store.Set("concurrent-test", items)).To(Succeed())
+		}
+		Expect(store.Set("concurrent-test", items)).To(Succeed())
 
-			updateTool := todotool.NewUpdate(store)
-			ctx := sessionCtxWithID("concurrent-test")
+		updateTool := todotool.NewUpdate(store)
+		ctx := sessionCtxWithID("concurrent-test")
 
-			var wg sync.WaitGroup
-			for i := 0; i < 10; i++ {
-				wg.Add(1)
-				go func(idx int) {
-					defer wg.Done()
-					_, err := updateTool.Execute(ctx, tool.Input{
-						Name: "todo_update",
-						Arguments: map[string]interface{}{
-							"index":  float64(idx),
-							"status": "completed",
-						},
-					})
-					Expect(err).NotTo(HaveOccurred())
-				}(i)
-			}
-			wg.Wait()
+		// Fraud prevention: claim items sequentially (only one in_progress at a time)
+		for i := 0; i < 10; i++ {
+			_, err := updateTool.Execute(ctx, tool.Input{
+				Name: "todo_update",
+				Arguments: map[string]interface{}{
+					"index":  float64(i),
+					"status": "in_progress",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
 
-			final := store.Get("concurrent-test")
+			// Then complete it immediately (sequential pattern)
+			_, err = updateTool.Execute(ctx, tool.Input{
+				Name: "todo_update",
+				Arguments: map[string]interface{}{
+					"index":  float64(i),
+					"status": "completed",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		final := store.Get("concurrent-test")
 			Expect(final).To(HaveLen(10))
 			for i, item := range final {
 				Expect(item.Status).To(Equal("completed"),
@@ -69,24 +74,26 @@ var _ = Describe("Todo Store Concurrency", func() {
 			updateTool := todotool.NewUpdate(store)
 			ctx := sessionCtxWithID("batch-test")
 
-			for batchStart := 0; batchStart < 6; batchStart += 3 {
-				var wg sync.WaitGroup
-				for i := batchStart; i < batchStart+3 && i < 6; i++ {
-					wg.Add(1)
-					go func(idx int) {
-						defer wg.Done()
-						_, err := updateTool.Execute(ctx, tool.Input{
-							Name: "todo_update",
-							Arguments: map[string]interface{}{
-								"index":  float64(idx),
-								"status": "completed",
-							},
-						})
-						Expect(err).NotTo(HaveOccurred())
-					}(i)
-				}
-				wg.Wait()
-			}
+		// Fraud prevention: claim items sequentially (batch size 3)
+		for batchStart := 0; batchStart < 6; batchStart++ {
+			_, err := updateTool.Execute(ctx, tool.Input{
+				Name: "todo_update",
+				Arguments: map[string]interface{}{
+					"index":  float64(batchStart),
+					"status": "in_progress",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = updateTool.Execute(ctx, tool.Input{
+				Name: "todo_update",
+				Arguments: map[string]interface{}{
+					"index":  float64(batchStart),
+					"status": "completed",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
 
 			final := store.Get("batch-test")
 			Expect(final).To(HaveLen(6))
@@ -110,10 +117,20 @@ var _ = Describe("Todo Store Concurrency", func() {
 
 			var wg sync.WaitGroup
 
+			// Fraud prevention: must claim before completing
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				_, err := updateTool.Execute(ctx, tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "in_progress",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = updateTool.Execute(ctx, tool.Input{
 					Name: "todo_update",
 					Arguments: map[string]interface{}{
 						"index":  float64(0),

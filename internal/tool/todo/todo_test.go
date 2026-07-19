@@ -317,24 +317,34 @@ var _ = Describe("TodoUpdateTool", func() {
 		})
 
 		Context("when patching multiple fields at once", func() {
-			It("applies every non-empty patch field on the targeted entry and auto-advances the next pending item", func() {
-				_, err := u.Execute(sessionCtx(), tool.Input{
-					Name: "todo_update",
-					Arguments: map[string]interface{}{
-						"index":    float64(0),
-						"status":   "completed",
-						"priority": "low",
-					},
-				})
-
-				Expect(err).NotTo(HaveOccurred())
-				stored := store.Get("sess-123")
-				Expect(stored[0].Status).To(Equal("completed"))
-				Expect(stored[0].Priority).To(Equal("low"))
-				Expect(stored[0].Content).To(Equal("First task"))
-				// Sequential discipline: completing item 0 auto-advances item 1.
-				Expect(stored[1].Status).To(Equal("in_progress"))
+		It("applies every non-empty patch field on the targeted entry and auto-advances the next pending item", func() {
+			// Fraud prevention: must claim item before completing it
+			_, err := u.Execute(sessionCtx(), tool.Input{
+				Name: "todo_update",
+				Arguments: map[string]interface{}{
+					"index":  float64(0),
+					"status": "in_progress",
+				},
 			})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = u.Execute(sessionCtx(), tool.Input{
+				Name: "todo_update",
+				Arguments: map[string]interface{}{
+					"index":    float64(0),
+					"status":   "completed",
+					"priority": "low",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			stored := store.Get("sess-123")
+			Expect(stored[0].Status).To(Equal("completed"))
+			Expect(stored[0].Priority).To(Equal("low"))
+			Expect(stored[0].Content).To(Equal("First task"))
+			// Sequential discipline: completing item 0 auto-advances item 1.
+			Expect(stored[1].Status).To(Equal("in_progress"))
+		})
 		})
 
 		Context("sequential discipline: auto-advance on complete", func() {
@@ -368,7 +378,17 @@ var _ = Describe("TodoUpdateTool", func() {
 			It("does not fail when completing the last item with no pending items after it", func() {
 				// Complete all three items in sequence.
 				for i := 0; i < 3; i++ {
+					// Fraud prevention: must claim item before completing it
 					_, err := u.Execute(sessionCtx(), tool.Input{
+						Name: "todo_update",
+						Arguments: map[string]interface{}{
+							"index":  float64(i),
+							"status": "in_progress",
+						},
+					})
+					Expect(err).NotTo(HaveOccurred())
+
+					_, err = u.Execute(sessionCtx(), tool.Input{
 						Name: "todo_update",
 						Arguments: map[string]interface{}{
 							"index":  float64(i),
@@ -402,11 +422,29 @@ var _ = Describe("TodoUpdateTool", func() {
 
 			It("wraps to find the next pending item when later items are already completed", func() {
 				// Complete items 1 and 2 first, leaving only item 0 pending.
+				// Fraud prevention: must claim item before completing it
 				_, err := u.Execute(sessionCtx(), tool.Input{
 					Name: "todo_update",
 					Arguments: map[string]interface{}{
 						"index":  float64(1),
+						"status": "in_progress",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(1),
 						"status": "completed",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(2),
+						"status": "in_progress",
 					},
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -420,6 +458,14 @@ var _ = Describe("TodoUpdateTool", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				// Completing item 0 should wrap to find no pending items.
+				_, err = u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "in_progress",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
 				_, err = u.Execute(sessionCtx(), tool.Input{
 					Name: "todo_update",
 					Arguments: map[string]interface{}{
@@ -544,7 +590,8 @@ var _ = Describe("TodoUpdateTool", func() {
 				Expect(err.Error()).To(ContainSubstring("cannot move"))
 			})
 
-			It("allows a pending item to jump directly to completed", func() {
+			It("does not allow a pending item to jump directly to completed", func() {
+				// Fraud prevention: must claim item before completing it
 				_, err := u.Execute(sessionCtx(), tool.Input{
 					Name: "todo_update",
 					Arguments: map[string]interface{}{
@@ -552,11 +599,8 @@ var _ = Describe("TodoUpdateTool", func() {
 						"status": "completed",
 					},
 				})
-				Expect(err).NotTo(HaveOccurred())
-
-				stored := store.Get("sess-123")
-				Expect(stored[0].Status).To(Equal("completed"))
-				Expect(stored[1].Status).To(Equal("in_progress"))
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("can only mark an in_progress item as completed"))
 			})
 
 			It("auto-advances the next pending item when the active item is cancelled", func() {
