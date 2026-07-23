@@ -259,7 +259,10 @@ func (v *VectorStoreMemoryClient) OpenNodes(ctx context.Context, names []string)
 // UUID point ID as the entity name, and handling both entity-style payloads
 // (entityType + observations) and learning-record payloads (agent_id + content/response/outcome).
 func entityFromPoint(p ScoredVectorPoint) Entity {
-	name, _ := p.Payload["source_id"].(string)
+	name, ok := p.Payload["source_id"].(string)
+	if !ok {
+		name = ""
+	}
 	if name == "" {
 		name = p.ID
 	}
@@ -273,15 +276,14 @@ func entityFromPoint(p ScoredVectorPoint) Entity {
 	if o, ok := p.Payload["observations"].([]string); ok {
 		obs = o
 	} else {
-		if content, ok := p.Payload["content"].(string); ok && content != "" {
-			obs = append(obs, "Content: "+content)
+		appendObservation := func(key, prefix string) {
+			if value, ok := p.Payload[key].(string); ok && value != "" {
+				obs = append(obs, prefix+value)
+			}
 		}
-		if response, ok := p.Payload["response"].(string); ok && response != "" {
-			obs = append(obs, "Response: "+response)
-		}
-		if outcome, ok := p.Payload["outcome"].(string); ok && outcome != "" {
-			obs = append(obs, "Outcome: "+outcome)
-		}
+		appendObservation("content", "Content: ")
+		appendObservation("response", "Response: ")
+		appendObservation("outcome", "Outcome: ")
 	}
 	return Entity{Name: name, EntityType: entityType, Observations: obs}
 }

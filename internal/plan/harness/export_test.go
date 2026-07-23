@@ -10,7 +10,7 @@ import "context"
 // noToolCall flag is fixed to false here (the legacy validator-contract
 // specs don't model tool-call presence); the directive-feedback path is
 // covered by BuildWaveFeedbackForTest and the stream-level specs.
-func CheckWavesIncompleteForTest(h *Harness, ctx context.Context, agentID string) string {
+func CheckWavesIncompleteForTest(ctx context.Context, h *Harness, agentID string) string {
 	return h.checkWavesIncomplete(ctx, agentID, false)
 }
 

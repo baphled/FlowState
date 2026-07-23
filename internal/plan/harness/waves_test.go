@@ -54,7 +54,7 @@ var _ = Describe("WithWaves + checkWavesIncomplete", func() {
 
 	It("returns the empty string when no validator is wired", func() {
 		h := harness.NewHarness("/tmp")
-		Expect(harness.CheckWavesIncompleteForTest(h, context.Background(), "planner")).To(Equal(""),
+		Expect(harness.CheckWavesIncompleteForTest(context.Background(), h, "planner")).To(Equal(""),
 			"no waves configured = legacy behaviour = no re-prompt")
 	})
 
@@ -67,7 +67,7 @@ var _ = Describe("WithWaves + checkWavesIncomplete", func() {
 		}
 		h := harness.NewHarness("/tmp", harness.WithWaves(stages, v))
 
-		Expect(harness.CheckWavesIncompleteForTest(h, context.Background(), "planner")).To(Equal(""))
+		Expect(harness.CheckWavesIncompleteForTest(context.Background(), h, "planner")).To(Equal(""))
 		Expect(v.calls).To(HaveLen(2),
 			"both waves must be checked when both come back complete")
 		Expect(v.calls[0].wave).To(Equal("evidence"))
@@ -82,7 +82,7 @@ var _ = Describe("WithWaves + checkWavesIncomplete", func() {
 		}
 		h := harness.NewHarness("/tmp", harness.WithWaves(stages, v))
 
-		fb := harness.CheckWavesIncompleteForTest(h, context.Background(), "planner")
+		fb := harness.CheckWavesIncompleteForTest(context.Background(), h, "planner")
 		Expect(fb).NotTo(BeEmpty())
 		Expect(fb).To(ContainSubstring("evidence"),
 			"the feedback must name the stuck wave so the planner knows what to fix")
@@ -100,7 +100,7 @@ var _ = Describe("WithWaves + checkWavesIncomplete", func() {
 		}
 		h := harness.NewHarness("/tmp", harness.WithWaves(stages, v))
 
-		fb := harness.CheckWavesIncompleteForTest(h, context.Background(), "planner")
+		fb := harness.CheckWavesIncompleteForTest(context.Background(), h, "planner")
 		Expect(fb).NotTo(BeEmpty(),
 			"an error MUST stop the planner from yielding past the gate; treat as incomplete")
 		Expect(fb).To(ContainSubstring("coord store unavailable"),
@@ -113,13 +113,13 @@ var _ = Describe("WithWaves + checkWavesIncomplete", func() {
 		}
 		h := harness.NewHarness("/tmp", harness.WithWaves(stages[:1], v))
 
-		_ = harness.CheckWavesIncompleteForTest(h, context.Background(), "specific-agent-id")
+		_ = harness.CheckWavesIncompleteForTest(context.Background(), h, "specific-agent-id")
 		Expect(v.calls[0].agentID).To(Equal("specific-agent-id"))
 	})
 
 	It("treats nil validator as no waves configured", func() {
 		h := harness.NewHarness("/tmp", harness.WithWaves(stages, nil))
-		Expect(harness.CheckWavesIncompleteForTest(h, context.Background(), "planner")).To(Equal(""),
+		Expect(harness.CheckWavesIncompleteForTest(context.Background(), h, "planner")).To(Equal(""),
 			"WithWaves(stages, nil) is a deliberate no-op — preserves legacy behaviour")
 	})
 })

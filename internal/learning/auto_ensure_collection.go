@@ -10,6 +10,7 @@ import (
 // CollectionEnsurer creates a missing collection on demand. The Qdrant
 // client implements this via EnsureCollection.
 type CollectionEnsurer interface {
+	// EnsureCollection creates the named collection with the requested settings.
 	EnsureCollection(ctx context.Context, name string, vectorSize int, distance string) error
 }
 

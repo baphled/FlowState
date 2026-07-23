@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -98,6 +99,7 @@ type permissionsAgentRule struct {
 // feedback_close_latent_surfaces_too — we close the persistence gap
 // here even though Slice 4's primary acceptance is the write atomicity.
 type PermissionsReloader interface {
+	// Reload refreshes the in-memory matcher from disk.
 	Reload() error
 }
 
@@ -310,7 +312,9 @@ func (w *Writer) runLockedMutation(mutate func(*permissionsYAMLSchema) (bool, er
 		// the lock past our process exit, which is a kernel-level
 		// concern, not a writer concern. The lock is released on
 		// process exit regardless.
-		_ = lock.Unlock()
+		if err := lock.Unlock(); err != nil {
+			slog.Warn("permissions writer unlock failed", "err", err)
+		}
 	}()
 
 	// Read current bytes. A missing file is treated as an empty
@@ -399,7 +403,9 @@ func (w *Writer) runLockedMutation(mutate func(*permissionsYAMLSchema) (bool, er
 	// pointing at the old inode. Memory: feedback_atomicity_
 	// awareness_uneven cites this as the convention to mirror.
 	if dirFile, err := os.Open(dir); err == nil {
-		_ = dirFile.Sync()
+		if err := dirFile.Sync(); err != nil {
+			slog.Warn("permissions writer dir sync failed", "err", err)
+		}
 		_ = dirFile.Close()
 	}
 

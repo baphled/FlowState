@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -14,7 +15,6 @@ import (
 	"github.com/baphled/flowstate/internal/recall"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
-	"testing"
 )
 
 func TestOrchestrator(t *testing.T) {
@@ -39,8 +39,8 @@ func (f *fakeOrchestratorStreamer) Stream(_ context.Context, agentID string, mes
 		return nil, f.err
 	}
 	out := make(chan provider.StreamChunk, len(f.chunks)+1)
-	for _, c := range f.chunks {
-		out <- c
+	for i := range f.chunks {
+		out <- f.chunks[i]
 	}
 	out <- provider.StreamChunk{Done: true}
 	close(out)

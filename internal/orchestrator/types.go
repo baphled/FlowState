@@ -33,9 +33,13 @@ import (
 // the proactive overflow gate's refusal with no auto-recovery.
 type Engine interface {
 	swarm.DispatchEngine
+	// SetManifest installs the active manifest snapshot on the engine.
 	SetManifest(agent.Manifest)
+	// SetModelPreference records the provider and model selected for the turn.
 	SetModelPreference(providerName, modelName string)
+	// SetContextStore installs the current session store for later persistence.
 	SetContextStore(store *recall.FileContextStore, sessionID string)
+	// MaybeCompactForModel triggers a model-aware compaction pass when needed.
 	MaybeCompactForModel(ctx context.Context, sessionID, providerName, modelName string) string
 }
 
@@ -46,7 +50,9 @@ type Engine interface {
 // Save and Load match the existing contextpkg.SessionStore signatures
 // verbatim so production wiring is a no-op assignment.
 type SessionStore interface {
+	// Save persists the supplied store and metadata for a session.
 	Save(sessionID string, store *recall.FileContextStore, meta contextpkg.SessionMetadata) error
+	// Load restores the persisted store for a session.
 	Load(sessionID string) (*recall.FileContextStore, error)
 }
 
@@ -56,7 +62,9 @@ type SessionStore interface {
 // runtime boundary) so tests fake it without standing up a full
 // session manager.
 type SessionManager interface {
+	// UpdateSessionAgent records the active agent for a session.
 	UpdateSessionAgent(sessionID, agentID string) error
+	// UpdateSessionModel records the active provider and model for a session.
 	UpdateSessionModel(sessionID, providerName, modelName string) error
 }
 
@@ -67,7 +75,9 @@ type SessionManager interface {
 // satisfy this interface skip the swarm-event side of LoadSession /
 // SaveTurnEnd silently.
 type SwarmEventPersister interface {
+	// SaveEvents persists the swarm-event timeline for a session.
 	SaveEvents(sessionID string, evs []streaming.SwarmEvent) error
+	// LoadEvents restores the swarm-event timeline for a session.
 	LoadEvents(sessionID string) ([]streaming.SwarmEvent, error)
 }
 

@@ -12,6 +12,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -320,6 +321,7 @@ func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provid
 				// then break to the cleanup phase.
 				go func() {
 					for range src {
+						_ = struct{}{}
 					}
 				}()
 				goto cleanup
@@ -327,7 +329,9 @@ func (o *Orchestrator) Stream(ctx context.Context, req UserInput) (<-chan provid
 		}
 	cleanup:
 		if o.dispatchEngine != nil {
-			_ = o.dispatchEngine.FlushSwarmLifecycle(ctx)
+			if err := o.dispatchEngine.FlushSwarmLifecycle(ctx); err != nil {
+				slog.Warn("flush swarm lifecycle failed", "err", err)
+			}
 			o.dispatchEngine.RestoreManifest(snapshot)
 			o.dispatchEngine.SetSkipAgentFiles(prevSkipFiles)
 		}
@@ -407,7 +411,7 @@ func (o *Orchestrator) IsSwarmMention(message string) bool {
 
 // agentLookup returns a swarm.HasAgent closure backed by the
 // orchestrator's agentRegistry, or nil when the registry is unset.
-// nil propagates through swarm.ResolveTarget which treats it as the
+// Nil propagates through swarm.ResolveTarget, which treats it as the
 // historical "bare engine" pass-through case (returns id verbatim
 // with nil swarmCtx).
 //
@@ -648,7 +652,9 @@ func (o *Orchestrator) SaveTurnEnd(_ context.Context, sessionID string, snapshot
 		// Match intent.go:saveSession's intentional swallow — event
 		// persistence is best-effort; a SaveEvents failure must not
 		// fail the caller's turn-end signal.
-		_ = ep.SaveEvents(sessionID, snapshot.SwarmEvents)
+		if err := ep.SaveEvents(sessionID, snapshot.SwarmEvents); err != nil {
+			slog.Warn("save swarm events failed", "err", err, "sessionID", sessionID)
+		}
 	}
 	return nil
 }

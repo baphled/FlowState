@@ -32,6 +32,7 @@ import (
 //   - ("",      false) → matcher has no opinion; caller falls through
 //     to the legacy Check / CheckCommand semantics.
 type PermissionsMatcher interface {
+	// Match reports whether a path should be allowed or denied for a tool.
 	Match(tool, path string) (decision string, matched bool)
 }
 
@@ -105,13 +106,14 @@ type PermissionGrant struct {
 //     MUST return GrantDeny on timeout, NOT a synthetic error — the
 //     caller is the layer that surfaces the denial to the model.
 type PermissionPrompter interface {
+	// RequestPermission escalates a denial to the operator.
 	RequestPermission(ctx context.Context, req PermissionRequest) PermissionGrant
 }
 
 // Guard checks filesystem paths against a deny list, optionally
 // consulting a per-tool PermissionsMatcher first.
 //
-// planOutputDir, when non-empty, scopes Plan-mode file-mutation tools
+// PlanOutputDir, when non-empty, scopes Plan-mode file-mutation tools
 // (write/edit/multiedit/apply_patch) to paths under it. Under Plan
 // mode the operator-supplied allow rules in PermissionsMatcher for
 // those four tools are REPLACED by "path must be under
@@ -168,7 +170,7 @@ func New(denied []string) *Guard {
 
 // NewWithPermissions creates a Guard that consults perms first via the
 // *ForTool methods, then falls through to the legacy denied-roots
-// check when perms has no opinion. perms may be nil, in which case
+// Check when perms has no opinion. perms may be nil, in which case
 // behaviour matches New(denied).
 func NewWithPermissions(denied []string, perms PermissionsMatcher) *Guard {
 	abs := normaliseDenied(denied)
@@ -199,7 +201,7 @@ func NewWithPermissionsAndPlanOutputDir(denied []string, perms PermissionsMatche
 }
 
 // SetPermissionPrompter wires a PermissionPrompter onto an existing
-// Guard. nil unwires the prompter — the Guard reverts to binary deny
+// Guard. Nil unwires the prompter — the Guard reverts to binary deny
 // semantics. Permission Mode ModeAskUser Extension plan (May 2026)
 // Slice 2.
 //
@@ -296,7 +298,10 @@ func (g *Guard) Check(path string) error {
 		return nil
 	}
 
-	cwd, _ := os.Getwd()
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = ""
+	}
 	for _, d := range g.denied {
 		if cwd != "" && strings.HasPrefix(cwd, d+string(filepath.Separator)) {
 			continue
@@ -332,8 +337,14 @@ func (g *Guard) CheckCommand(command string) error {
 		return nil
 	}
 
-	home, _ := os.UserHomeDir()
-	cwd, _ := os.Getwd()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = ""
+	}
 
 	for _, tok := range tokenize(command) {
 		if !looksLikePath(tok) {
@@ -827,7 +838,10 @@ func pathguardSessionID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	v, _ := ctx.Value(session.IDKey{}).(string)
+	v, ok := ctx.Value(session.IDKey{}).(string)
+	if !ok {
+		return ""
+	}
 	return v
 }
 
@@ -860,7 +874,10 @@ func (g *Guard) checkPlanModeCommand(tool, command string) error {
 	if g.planOutputDir == "" {
 		return fmt.Errorf("access denied: Plan mode requires plan_output_dir to be configured (%q tool blocked)", tool)
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
 	for _, tok := range tokenize(command) {
 		if !looksLikePath(tok) {
 			continue

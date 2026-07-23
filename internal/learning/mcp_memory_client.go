@@ -380,57 +380,51 @@ func parseEntities(content []byte, toolName, serverName string) ([]Entity, error
 	var wrapped struct {
 		Entities []Entity `json:"entities"`
 	}
-	empty, err := mcp.DecodeContent(string(content), &wrapped,
-		"tool", toolName, "server", serverName)
-	if err == nil {
-		if empty {
-			return []Entity{}, nil
-		}
-		if wrapped.Entities != nil {
-			return wrapped.Entities, nil
-		}
-		return nil, fmt.Errorf("missing 'entities' field in MCP %q response from server %q", toolName, serverName)
-	}
-	var bare []Entity
-	if bareErr := json.Unmarshal(content, &bare); bareErr == nil {
-		return bare, nil
-	}
-	return nil, fmt.Errorf("decoding entities from MCP %s response: %w", toolName, err)
+	return parseMCPItems(content, toolName, serverName, mcpListDecodeConfig[Entity]{
+		fieldName: "entities",
+		wrapped:   &wrapped,
+		getItems: func() []Entity {
+			return wrapped.Entities
+		},
+	})
 }
 
 // parseRelations decodes a raw MCP content payload into the canonical
 // []Relation shape, mirroring parseEntities for the relation-bearing tools.
-//
-// Expected:
-//   - content is the raw MCP ToolResult.Content payload.
-//   - toolName and serverName are forwarded to slog for empty-response
-//     diagnostics.
-//
-// Returns:
-//   - The parsed relations, never nil (empty slice on empty content).
-//   - A wrapped error when the content is JSON-shaped but matches neither
-//     accepted shape.
-//
-// Side effects:
-//   - Emits a debug-level log on the empty branch.
 func parseRelations(content []byte, toolName, serverName string) ([]Relation, error) {
 	var wrapped struct {
 		Relations []Relation `json:"relations"`
 	}
-	empty, err := mcp.DecodeContent(string(content), &wrapped,
+	return parseMCPItems(content, toolName, serverName, mcpListDecodeConfig[Relation]{
+		fieldName: "relations",
+		wrapped:   &wrapped,
+		getItems: func() []Relation {
+			return wrapped.Relations
+		},
+	})
+}
+
+type mcpListDecodeConfig[T any] struct {
+	fieldName string
+	wrapped   any
+	getItems  func() []T
+}
+
+func parseMCPItems[T any](content []byte, toolName, serverName string, cfg mcpListDecodeConfig[T]) ([]T, error) {
+	empty, err := mcp.DecodeContent(string(content), cfg.wrapped,
 		"tool", toolName, "server", serverName)
 	if err == nil {
 		if empty {
-			return []Relation{}, nil
+			return []T{}, nil
 		}
-		if wrapped.Relations != nil {
-			return wrapped.Relations, nil
+		if items := cfg.getItems(); items != nil {
+			return items, nil
 		}
-		return nil, fmt.Errorf("missing 'relations' field in MCP %q response from server %q", toolName, serverName)
+		return nil, fmt.Errorf("missing %q field in MCP %q response from server %q", cfg.fieldName, toolName, serverName)
 	}
-	var bare []Relation
+	var bare []T
 	if bareErr := json.Unmarshal(content, &bare); bareErr == nil {
 		return bare, nil
 	}
-	return nil, fmt.Errorf("decoding relations from MCP %s response: %w", toolName, err)
+	return nil, fmt.Errorf("decoding %s from MCP %s response: %w", cfg.fieldName, toolName, err)
 }
