@@ -110,6 +110,17 @@ var _ = Describe("Tool error capture in delegation results", func() {
 				"non-error tool result content should not appear in the aggregated response — the sub-assistant's own text already summarises it")
 		})
 
+		It("captures thinking-only wrap-up text before Done", func() {
+			chunks := make(chan provider.StreamChunk, 2)
+			chunks <- provider.StreamChunk{Thinking: "Wrap-up: I have completed the plan."}
+			chunks <- provider.StreamChunk{Done: true}
+			close(chunks)
+
+			result, err := engine.CollectDelegationResultForTest(delegateTool, chunks)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.Response()).To(ContainSubstring("Wrap-up: I have completed the plan."))
+		})
+
 		It("interleaves assistant text and tool errors correctly", func() {
 			chunks := make(chan provider.StreamChunk, 3)
 			chunks <- provider.StreamChunk{Content: "I'll use bash to write the file."}

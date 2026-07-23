@@ -30,6 +30,7 @@ type capturingScriptedProvider struct {
 
 	mu       sync.Mutex
 	calls    int
+	requests []provider.ChatRequest
 	messages []provider.Message
 }
 
@@ -39,6 +40,7 @@ func (p *capturingScriptedProvider) Stream(_ context.Context, req provider.ChatR
 	p.mu.Lock()
 	idx := p.calls
 	p.calls++
+	p.requests = append(p.requests, req)
 	p.messages = append(p.messages, req.Messages...)
 	p.mu.Unlock()
 
@@ -87,6 +89,15 @@ func (p *capturingScriptedProvider) sawMessageContaining(needle string) bool {
 		}
 	}
 	return false
+}
+
+func (p *capturingScriptedProvider) requestAt(index int) (provider.ChatRequest, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if index < 0 || index >= len(p.requests) {
+		return provider.ChatRequest{}, false
+	}
+	return p.requests[index], true
 }
 
 func delegateBatch(i int) []*provider.ToolCall {

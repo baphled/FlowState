@@ -2104,16 +2104,13 @@ func (e *Engine) SoonestProviderRetry() (time.Time, bool) {
 //   - Calls failoverManager.SetBasePreferences.
 //   - Re-points the engine's PRIMARY model preference
 //     (preferredProvider/preferredModel) so the FIRST stream request and
-//     LastProvider()/LastModel() target the manifest head — the failover
-//     base chain alone never changes the first pick because LastProvider/
-//     LastModel short-circuit on preferredProvider/preferredModel.
-//   - Drives the failover OVERRIDE so the effective Preferences()/
-//     Candidates() chain LEADS with the manifest head, replacing the
-//     stale startup override (config default) prepended by the app-startup
-//     SetModelPreference.
+//     LastProvider()/LastModel() target the active head for this turn.
+//   - Preserves an explicit session-selected provider/model when one is
+//     supplied by the dispatcher; otherwise it drives the failover
+//     override to the manifest head and clears any stale startup override.
 //   - Captures the config base chain AND the primary-preference baseline
 //     on first invocation (under mu).
-func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
+func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, providerName, modelName string) {
 	if e.failoverManager == nil {
 		return
 	}
@@ -2141,25 +2138,45 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
 	copy(configBaseline, e.failoverConfigBaseline)
 	baselineProvider := e.preferredBaselineProvider
 	baselineModel := e.preferredBaselineModel
+	selected := provider.ModelPreference{Provider: providerName, Model: modelName}
+	selectedSet := providerName != "" && modelName != ""
 	e.mu.Unlock()
 
+	filterSelected := func(prefs []provider.ModelPreference) []provider.ModelPreference {
+		if !selectedSet {
+			return prefs
+		}
+		filtered := make([]provider.ModelPreference, 0, len(prefs))
+		for _, pref := range prefs {
+			if pref.Provider == selected.Provider && pref.Model == selected.Model {
+				continue
+			}
+			filtered = append(filtered, pref)
+		}
+		return filtered
+	}
+
 	if len(manifest.PreferredModels) == 0 {
-		// No manifest preference — restore the config-derived chain AND the
-		// startup primary preference so a prior reseed for a different
-		// agent does not leak into this turn. The override is restored to
-		// the startup default (or cleared when there was none) so the
-		// effective chain matches the restored primary pick.
-		e.mu.Lock()
-		e.preferredProvider = baselineProvider
-		e.preferredModel = baselineModel
-		e.mu.Unlock()
-		e.failoverManager.SetBasePreferences(configBaseline)
-		if baselineProvider != "" {
-			e.failoverManager.SetOverride(provider.ModelPreference{
-				Provider: baselineProvider, Model: baselineModel,
-			})
+		if selectedSet {
+			e.mu.Lock()
+			e.preferredProvider = providerName
+			e.preferredModel = modelName
+			e.mu.Unlock()
+			e.failoverManager.SetBasePreferences(filterSelected(configBaseline))
+			e.failoverManager.SetOverride(selected)
 		} else {
-			e.failoverManager.ClearOverride()
+			e.mu.Lock()
+			e.preferredProvider = baselineProvider
+			e.preferredModel = baselineModel
+			e.mu.Unlock()
+			e.failoverManager.SetBasePreferences(configBaseline)
+			if baselineProvider != "" {
+				e.failoverManager.SetOverride(provider.ModelPreference{
+					Provider: baselineProvider, Model: baselineModel,
+				})
+			} else {
+				e.failoverManager.ClearOverride()
+			}
 		}
 		return
 	}
@@ -2189,6 +2206,16 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
 	}
 
 	manifestHead := prefs[0]
+
+	if selectedSet {
+		e.mu.Lock()
+		e.preferredProvider = providerName
+		e.preferredModel = modelName
+		e.mu.Unlock()
+		e.failoverManager.SetBasePreferences(filterSelected(prefs))
+		e.failoverManager.SetOverride(selected)
+		return
+	}
 
 	// Re-point the engine's PRIMARY pick at the manifest head. The first
 	// stream request and LastProvider()/LastModel() read these fields
@@ -3827,6 +3854,15 @@ func (e *Engine) streamFromProvider(ctx context.Context, req *provider.ChatReque
 		return nil, fmt.Errorf("stream from provider: %w", ctx.Err())
 	}
 	slog.Info("engine stream request", "provider", req.Provider, "model", req.Model, "messages", len(req.Messages))
+	if session.SkipContextWindowOverflowCheckFromContext(ctx) {
+		slog.Info("engine stream request bypassing proactive overflow gate after compaction",
+			"provider", req.Provider, "model", req.Model, "messages", len(req.Messages))
+		handler := e.baseStreamHandler()
+		if e.hookChain != nil {
+			handler = e.hookChain.Execute(handler)
+		}
+		return handler(ctx, req)
+	}
 	if pErr := e.checkContextWindowOverflow(req); pErr != nil {
 		slog.Warn("engine refused over-budget request",
 			"provider", req.Provider, "model", req.Model, "estimated_input_tokens", pErr.EstimatedInputTokens, "limit", pErr.ContextLimit)
@@ -4271,6 +4307,8 @@ func (e *Engine) streamWithToolLoop(
 	var todoContinuationCount int
 	var noProgressContinuations int
 	var lastTodoContinuationSnapshot []todo.Item
+	const maxTodoContinuations = 20
+	const maxNoProgressContinuations = 3
 	// Persist local continuation counters to session-scoped maps on every
 	// exit so they survive across Stream() re-invocations. Without this the
 	// local variables reset on each streamWithToolLoop entry, defeating the
@@ -4327,8 +4365,6 @@ func (e *Engine) streamWithToolLoop(
 	overflowRetries := 0
 	const maxDeliveryRetries = 3
 	var deliveryRetries int
-	const maxTodoContinuations = 20
-	const maxNoProgressContinuations = 3
 	const maxProviderRetryWait = 5 * time.Minute
 	todoContinuationCount = 0
 	noProgressContinuations = 0
@@ -4346,6 +4382,69 @@ func (e *Engine) streamWithToolLoop(
 			noProgressContinuations = 0
 		}
 		lastTodoContinuationSnapshot = append([]todo.Item(nil), current...)
+	}
+	checkIncompleteTodosBeforeComplete := func(
+		attempt int,
+		noProgressContinuations int,
+		todoContinuationCount int,
+		maxNoProgressContinuations int,
+		maxTodoContinuations int,
+		logReason string,
+	) (bool, provider.Message) {
+		if e.todoStore == nil {
+			return false, provider.Message{}
+		}
+
+		hasMore, incompletes := e.hasIncompleteTodos(sessionID)
+		if !hasMore {
+			slog.Debug("no incomplete todos, completing response",
+				"session", sessionID,
+				"reason", logReason,
+			)
+			return false, provider.Message{}
+		}
+
+		slog.Warn("preventing completion: session has incomplete todos",
+			"session", sessionID,
+			"reason", logReason,
+			"incomplete_count", len(incompletes),
+			"attempt", attempt,
+		)
+
+		if noProgressContinuations >= maxNoProgressContinuations {
+			slog.Warn("todo continuation stopped: no progress with healthy providers",
+				"session", sessionID,
+				"no_progress_continuations", noProgressContinuations,
+				"reason", logReason,
+			)
+			return false, provider.Message{}
+		}
+
+		if todoContinuationCount >= maxTodoContinuations {
+			slog.Warn("todo continuation budget exhausted",
+				"session", sessionID,
+				"max_continuations", maxTodoContinuations,
+				"reason", logReason,
+			)
+			return false, provider.Message{}
+		}
+
+		slog.Info("injecting todo continuation before completion",
+			"session", sessionID,
+			"incomplete_count", len(incompletes),
+			"reason", logReason,
+		)
+
+		continuationMsg := buildTodoContinuationMessage(incompletes)
+		e.resetContinuationState(sessionID)
+
+		if allTodosTerminal(incompletes) {
+			e.mu.Lock()
+			e.todoContinuationFired[sessionID] = false
+			e.mu.Unlock()
+		}
+
+		return true, continuationMsg
 	}
 	waitForProviderRetry := func(retryAt time.Time) (bool, bool) {
 		wait := time.Until(retryAt)
@@ -4385,36 +4484,53 @@ func (e *Engine) streamWithToolLoop(
 		deliveryRetryContinue
 		deliveryRetryStop
 	)
+	retryCtx := ctx
 	// maybeCompactForRetry compacts the session if the context is large before retrying.
 	// This prevents timeout-based failures when retrying with large contexts.
-	maybeCompactForRetry := func() {
+	maybeCompactForRetry := func(reason string) {
 		if e == nil || e.store == nil || e.tokenCounter == nil {
 			return
 		}
-		// Estimate context size - use message count as a proxy for token pressure
-		// When provider failures cascade through all backends, we need to
-		// reduce context size before retry to avoid repeated timeouts.
-		messageCount := len(messages)
-		if messageCount > 50 {
-			slog.Info("delivery retry: context large, triggering compaction before retry",
-				"session", sessionID, "message_count", messageCount)
-			summary, fired := e.CompactNow(ctx, sessionID)
-			if fired {
-				slog.Info("delivery retry: compaction succeeded, rebuilding context window",
-					"session", sessionID, "summary_length", len(summary))
-				// Rebuild messages from compacted session
-				rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID)
-				if len(rebuilt) > 0 {
-					// Preserve the corrective message we just added
-					if len(messages) > 0 {
-						rebuilt = append(rebuilt, messages[len(messages)-1])
-					}
-					messages = rebuilt
-				}
-			} else {
-				slog.Warn("delivery retry: compaction failed or skipped, retrying with original context",
-					"session", sessionID, "message_count", messageCount)
+		retryReq := provider.ChatRequest{
+			Provider: e.lastProviderCtx(ctx),
+			Model:    e.lastModelCtx(ctx),
+			Messages: messages,
+			Tools:    e.buildToolSchemasCtx(ctx),
+		}
+		if provOverride := session.ProviderOverrideFromContext(ctx); provOverride != "" {
+			retryReq.Provider = provOverride
+		}
+		if modelOverride := session.ModelOverrideFromContext(ctx); modelOverride != "" {
+			retryReq.Model = modelOverride
+		}
+		if pErr := e.checkContextWindowOverflow(&retryReq); pErr == nil {
+			return
+		}
+		manifestCopy := e.Manifest()
+		tokenBudget := e.ResolveContextLength(retryReq.Provider, retryReq.Model)
+		if tokenBudget <= 0 {
+			return
+		}
+		slog.Info(reason+": context large, force-compacting before retry",
+			"session", sessionID, "message_count", len(messages))
+		if summary := e.maybeAutoCompactExplicit(ctx, sessionID, &manifestCopy, tokenBudget, "manual", messages); summary != "" {
+			slog.Info(reason+": compaction succeeded, rebuilding context window",
+				"session", sessionID, "summary_length", len(summary))
+			retryCtx = session.WithSkipContextWindowOverflowCheck(retryCtx)
+			slidingWindowSize := manifestCopy.ContextManagement.SlidingWindowSize
+			if slidingWindowSize <= 0 {
+				slidingWindowSize = 50
 			}
+			hotTail := messages
+			if len(hotTail) > slidingWindowSize {
+				hotTail = hotTail[len(hotTail)-slidingWindowSize:]
+			}
+			rebuilt := make([]provider.Message, 0, len(hotTail)+4)
+			rebuilt = append(rebuilt, provider.Message{Role: "system", Content: e.BuildSystemPromptCtx(ctx)})
+			rebuilt = e.appendTodoContext(rebuilt, sessionID)
+			rebuilt = append(rebuilt, provider.Message{Role: "assistant", Content: summary})
+			rebuilt = append(rebuilt, hotTail...)
+			messages = rebuilt
 		}
 	}
 
@@ -4441,11 +4557,10 @@ func (e *Engine) streamWithToolLoop(
 			Content: "Your previous response narrated an intent to call a tool but did not actually call it. You MUST call one of the delivery tools now to persist your results. Do not respond with prose — call the tool.",
 		})
 		var streamErr error
-		retryCtx := ctx
 		if deliveryTools := e.deliveryToolsForCtx(ctx); len(deliveryTools) > 0 {
 			retryCtx = session.WithToolsAllowlistOverride(retryCtx, deliveryTools)
 		}
-		maybeCompactForRetry()
+		maybeCompactForRetry("delivery retry")
 		providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 		if streamErr != nil {
 			slog.Error("delivery tool retry stream failed", "session", sessionID, "error", streamErr)
@@ -4470,7 +4585,7 @@ func (e *Engine) streamWithToolLoop(
 					deliveryRetries++
 					slog.Warn("delivery tool not called, retrying after provider cooldown",
 						"session", sessionID, "attempt", deliveryRetries)
-					maybeCompactForRetry()
+					maybeCompactForRetry("delivery retry")
 					providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt+1)
 					if streamErr != nil {
 						slog.Error("delivery tool retry stream failed after provider cooldown",
@@ -4497,8 +4612,63 @@ func (e *Engine) streamWithToolLoop(
 		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 		return deliveryRetryContinue
 	}
+	var responseContent string
+	var thinkingContent string
+	continueAfterTodoCheck := func(reason string) bool {
+		shouldContinue, contMsg := checkIncompleteTodosBeforeComplete(
+			attempt, noProgressContinuations, todoContinuationCount, maxNoProgressContinuations, maxTodoContinuations, reason,
+		)
+		if !shouldContinue {
+			return false
+		}
+
+		messages = append(messages, contMsg)
+		maybeCompactForRetry("todo continuation retry")
+		var streamErr error
+		providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
+		if streamErr != nil {
+			slog.Error("todo continuation stream failed after completion guard",
+				"session", sessionID,
+				"error", streamErr,
+				"reason", reason,
+			)
+			return false
+		}
+		attempt++
+		iterations = 0
+		identicalRun = 0
+		lastFingerprint = ""
+		sameToolPatternRun = 0
+		lastToolNames = ""
+		loopStart = time.Now()
+		toolExecDuration = 0
+		e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
+		return true
+	}
+	completeAfterTodoCheck := func(reason string) bool {
+		if continueAfterTodoCheck(reason) {
+			return true
+		}
+		e.completeResponse(ctx, sessionID, responseContent, thinkingContent)
+		return false
+	}
+	doneAfterTodoCheck := func(reason string) bool {
+		if continueAfterTodoCheck(reason) {
+			return true
+		}
+		e.warnDeliveryToolBypassCtx(ctx, sessionID)
+		outChan <- provider.StreamChunk{
+			Done:       true,
+			StopReason: session.StopReasonToolLoopExceeded,
+			ModelID:    e.lastModelCtx(ctx),
+			ProviderID: e.lastProviderCtx(ctx),
+		}
+		return false
+	}
 	for {
 		result := e.processStreamChunks(ctx, sessionID, providerChunks, outChan, postTurnUsage)
+		responseContent = result.responseContent
+		thinkingContent = result.thinkingContent
 		if result.done {
 			// tool_use_no_calls: provider announced stop_reason="tool_use"
 			// but emitted zero tool_call blocks. This is a provider-side
@@ -4531,7 +4701,9 @@ func (e *Engine) streamWithToolLoop(
 						"error", streamErr,
 						"attempt", toolUseNoCallsAttempts,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("tool execution error") {
+						continue
+					}
 					return
 				}
 				providerChunks = newChunks
@@ -4556,7 +4728,7 @@ func (e *Engine) streamWithToolLoop(
 					)
 					compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
 					if compacted {
-						if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID); rebuilt != nil {
+						if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
 							messages = rebuilt
 						}
 						var retryErr error
@@ -4598,7 +4770,9 @@ func (e *Engine) streamWithToolLoop(
 						"overflow_retries", overflowRetries,
 					)
 				}
-				e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+				if completeAfterTodoCheck("context overflow retries exhausted") {
+					continue
+				}
 				return
 			}
 			if result.responseContent == "" && len(result.toolCalls) == 0 {
@@ -4613,16 +4787,26 @@ func (e *Engine) streamWithToolLoop(
 				if provider != "" && model != "" && e.failoverManager != nil {
 					e.failoverManager.Health().MarkRateLimited(provider, model, time.Now().Add(5*time.Minute))
 				}
-				e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+				if completeAfterTodoCheck("empty response with no tool calls") {
+					continue
+				}
 				return
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				deliveryStopped := false
 				switch maybeRetryDelivery(func() {
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					deliveryStopped = true
 				}) {
 				case deliveryRetryContinue:
 					continue
 				case deliveryRetryStop:
+					break
+				}
+				if deliveryStopped {
+					noProgressContinuations = 0
+					if completeAfterTodoCheck("delivery retry exhausted after turn end") {
+						continue
+					}
 					return
 				}
 				updateTodoContinuationProgress(incompletes)
@@ -4637,7 +4821,9 @@ func (e *Engine) streamWithToolLoop(
 									"session", sessionID,
 									"error", streamErr,
 								)
-								e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+								if completeAfterTodoCheck("todo continuation retry failed after cooldown") {
+									continue
+								}
 								return
 							}
 							attempt++
@@ -4651,7 +4837,9 @@ func (e *Engine) streamWithToolLoop(
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
-							e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+							if completeAfterTodoCheck("todo continuation cooldown stop after turn end") {
+								continue
+							}
 							return
 						}
 					}
@@ -4659,7 +4847,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"no_progress_continuations", noProgressContinuations,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("todo continuation no progress after turn end") {
+						continue
+					}
 					return
 				}
 				if todoContinuationCount >= maxTodoContinuations {
@@ -4667,7 +4857,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"max_continuations", maxTodoContinuations,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("todo continuation budget exhausted after turn end") {
+						continue
+					}
 					return
 				}
 				todoContinuationCount++
@@ -4678,25 +4870,24 @@ func (e *Engine) streamWithToolLoop(
 				)
 				contMsg := buildTodoContinuationMessage(incompletes)
 				messages = append(messages, contMsg)
+				retryCtx = session.WithSkipContextWindowOverflowCheck(retryCtx)
+				maybeCompactForRetry("todo continuation retry")
 				e.resetContinuationState(sessionID)
-				// Prevent infinite stale-continuation loop: if this retry was
-				// triggered because all items are completed/cancelled (stale
-				// detection), clear the fired flag so it fires at most once
-				// per continuation cycle. The model gets one chance to correct,
-				// but the session completes if it continues only calling todo tools.
 				if allTodosTerminal(incompletes) {
 					e.mu.Lock()
 					e.todoContinuationFired[sessionID] = false
 					e.mu.Unlock()
 				}
 				var streamErr error
-				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 				if streamErr != nil {
 					slog.Error("todo continuation stream failed",
 						"session", sessionID,
 						"error", streamErr,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("todo continuation stream failed") {
+						continue
+					}
 					return
 				}
 				attempt++
@@ -4710,26 +4901,43 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
+			deliveryStopped := false
 			switch maybeRetryDelivery(func() {
-				e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+				deliveryStopped = true
 			}) {
 			case deliveryRetryContinue:
 				continue
 			case deliveryRetryStop:
 				return
 			}
-			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+			if deliveryStopped {
+				if completeAfterTodoCheck("delivery retry exhausted after stream truncation") {
+					continue
+				}
+				return
+			}
+			if completeAfterTodoCheck("turn end without todo continuation") {
+				continue
+			}
 			return
 		}
 
 		if len(result.toolCalls) == 0 {
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				deliveryStopped := false
 				switch maybeRetryDelivery(func() {
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					deliveryStopped = true
 				}) {
 				case deliveryRetryContinue:
 					continue
 				case deliveryRetryStop:
+					break
+				}
+				if deliveryStopped {
+					noProgressContinuations = 0
+					if completeAfterTodoCheck("delivery retry exhausted after stream truncation") {
+						continue
+					}
 					return
 				}
 				updateTodoContinuationProgress(incompletes)
@@ -4744,7 +4952,9 @@ func (e *Engine) streamWithToolLoop(
 									"session", sessionID,
 									"error", streamErr,
 								)
-								e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+								if completeAfterTodoCheck("todo continuation retry failed after cooldown") {
+									continue
+								}
 								return
 							}
 							attempt++
@@ -4758,7 +4968,9 @@ func (e *Engine) streamWithToolLoop(
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
-							e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+							if completeAfterTodoCheck("todo continuation cooldown stop after stream truncation") {
+								continue
+							}
 							return
 						}
 					}
@@ -4766,7 +4978,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"no_progress_continuations", noProgressContinuations,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("todo continuation no progress after stream truncation") {
+						continue
+					}
 					return
 				}
 				if todoContinuationCount >= maxTodoContinuations {
@@ -4774,7 +4988,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"max_continuations", maxTodoContinuations,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("todo continuation budget exhausted after stream truncation") {
+						continue
+					}
 					return
 				}
 				todoContinuationCount++
@@ -4784,25 +5000,24 @@ func (e *Engine) streamWithToolLoop(
 				)
 				contMsg := buildTodoContinuationMessage(incompletes)
 				messages = append(messages, contMsg)
+				retryCtx = session.WithSkipContextWindowOverflowCheck(retryCtx)
+				maybeCompactForRetry("todo continuation retry")
 				e.resetContinuationState(sessionID)
-				// Prevent infinite stale-continuation loop: if this retry was
-				// triggered because all items are completed/cancelled (stale
-				// detection), clear the fired flag so it fires at most once
-				// per continuation cycle. The model gets one chance to correct,
-				// but the session completes if it continues only calling todo tools.
 				if allTodosTerminal(incompletes) {
 					e.mu.Lock()
 					e.todoContinuationFired[sessionID] = false
 					e.mu.Unlock()
 				}
 				var streamErr error
-				providerChunks, streamErr = e.retryStreamForToolResult(ctx, sessionID, messages, attempt)
+				providerChunks, streamErr = e.retryStreamForToolResult(retryCtx, sessionID, messages, attempt)
 				if streamErr != nil {
 					slog.Error("todo continuation stream failed after truncation",
 						"session", sessionID,
 						"error", streamErr,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("todo continuation stream failed after stream truncation") {
+						continue
+					}
 					return
 				}
 				attempt++
@@ -4816,7 +5031,9 @@ func (e *Engine) streamWithToolLoop(
 				e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 				continue
 			}
-			e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+			if completeAfterTodoCheck("tool execution error") {
+				continue
+			}
 			return
 		}
 
@@ -4964,7 +5181,7 @@ func (e *Engine) streamWithToolLoop(
 		// is not free.
 		compacted := e.emitMidToolLoopRefresh(ctx, sessionID, outChan, messages)
 		if compacted {
-			if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID); rebuilt != nil {
+			if rebuilt := e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages); rebuilt != nil {
 				messages = rebuilt
 			}
 		}
@@ -5076,7 +5293,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"error", streamErr,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("grace round stream failed after tool loop cap") {
+						continue
+					}
 					return
 				}
 				attempt++
@@ -5091,18 +5310,20 @@ func (e *Engine) streamWithToolLoop(
 				continue
 			}
 			if hasMore, incompletes := e.hasIncompleteTodos(sessionID); hasMore {
+				deliveryStopped := false
 				switch maybeRetryDelivery(func() {
-					e.warnDeliveryToolBypassCtx(ctx, sessionID)
-					outChan <- provider.StreamChunk{
-						Done:       true,
-						StopReason: session.StopReasonToolLoopExceeded,
-						ModelID:    e.lastModelCtx(ctx),
-						ProviderID: e.lastProviderCtx(ctx),
-					}
+					deliveryStopped = true
 				}) {
 				case deliveryRetryContinue:
 					continue
 				case deliveryRetryStop:
+					break
+				}
+				if deliveryStopped {
+					noProgressContinuations = 0
+					if doneAfterTodoCheck("tool loop cap after incomplete todos") {
+						continue
+					}
 					return
 				}
 				updateTodoContinuationProgress(incompletes)
@@ -5117,12 +5338,8 @@ func (e *Engine) streamWithToolLoop(
 									"session", sessionID,
 									"error", streamErr,
 								)
-								e.warnDeliveryToolBypassCtx(ctx, sessionID)
-								outChan <- provider.StreamChunk{
-									Done:       true,
-									StopReason: session.StopReasonToolLoopExceeded,
-									ModelID:    e.lastModelCtx(ctx),
-									ProviderID: e.lastProviderCtx(ctx),
+								if doneAfterTodoCheck("todo continuation retry failed after cooldown") {
+									continue
 								}
 								return
 							}
@@ -5137,12 +5354,8 @@ func (e *Engine) streamWithToolLoop(
 							e.emitPostRetryContextUsage(ctx, sessionID, messages, outChan)
 							continue
 						} else if stop {
-							e.warnDeliveryToolBypassCtx(ctx, sessionID)
-							outChan <- provider.StreamChunk{
-								Done:       true,
-								StopReason: session.StopReasonToolLoopExceeded,
-								ModelID:    e.lastModelCtx(ctx),
-								ProviderID: e.lastProviderCtx(ctx),
+							if doneAfterTodoCheck("todo continuation cooldown stop after tool loop cap") {
+								continue
 							}
 							return
 						}
@@ -5151,12 +5364,8 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"no_progress_continuations", noProgressContinuations,
 					)
-					e.warnDeliveryToolBypassCtx(ctx, sessionID)
-					outChan <- provider.StreamChunk{
-						Done:       true,
-						StopReason: session.StopReasonToolLoopExceeded,
-						ModelID:    e.lastModelCtx(ctx),
-						ProviderID: e.lastProviderCtx(ctx),
+					if doneAfterTodoCheck("todo continuation no progress after tool loop cap") {
+						continue
 					}
 					return
 				}
@@ -5170,12 +5379,8 @@ func (e *Engine) streamWithToolLoop(
 							"session", sessionID,
 							"consecutive", consecutiveSameToolContinuations,
 						)
-						e.warnDeliveryToolBypassCtx(ctx, sessionID)
-						outChan <- provider.StreamChunk{
-							Done:       true,
-							StopReason: session.StopReasonToolLoopExceeded,
-							ModelID:    e.lastModelCtx(ctx),
-							ProviderID: e.lastProviderCtx(ctx),
+						if doneAfterTodoCheck("consecutive same-tool-pattern caps") {
+							continue
 						}
 						return
 					}
@@ -5188,12 +5393,8 @@ func (e *Engine) streamWithToolLoop(
 						"trip", reason,
 						"max_continuations", maxTodoContinuations,
 					)
-					e.warnDeliveryToolBypassCtx(ctx, sessionID)
-					outChan <- provider.StreamChunk{
-						Done:       true,
-						StopReason: session.StopReasonToolLoopExceeded,
-						ModelID:    e.lastModelCtx(ctx),
-						ProviderID: e.lastProviderCtx(ctx),
+					if doneAfterTodoCheck("todo continuation budget exhausted after tool loop cap") {
+						continue
 					}
 					return
 				}
@@ -5213,7 +5414,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"error", streamErr,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("todo continuation stream failed after tool loop cap") {
+						continue
+					}
 					return
 				}
 				attempt++
@@ -5241,7 +5444,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"error", streamErr,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("background task continuation stream failed") {
+						continue
+					}
 					return
 				}
 				attempt++
@@ -5271,7 +5476,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"error", streamErr,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("final-response grace round stream failed") {
+						continue
+					}
 					return
 				}
 				attempt++
@@ -5299,7 +5506,9 @@ func (e *Engine) streamWithToolLoop(
 						"session", sessionID,
 						"error", streamErr,
 					)
-					e.completeResponse(ctx, sessionID, result.responseContent, result.thinkingContent)
+					if completeAfterTodoCheck("forced summary round stream failed") {
+						continue
+					}
 					return
 				}
 				attempt++
@@ -9166,11 +9375,16 @@ func (e *Engine) emitPostRetryContextUsage(_ context.Context, sessionID string, 
 //   - Same as buildContextWindow (publishes context-window events,
 //     updates lastContextResult). Acceptable because mid-loop reload
 //     is a real assembly cycle the operator wants observability for.
-func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context, sessionID string) []provider.Message {
+func (e *Engine) rebuildContextWindowAfterMidLoopCompaction(ctx context.Context, sessionID string, messages []provider.Message) []provider.Message {
 	if e == nil || e.store == nil || sessionID == "" {
 		return nil
 	}
-	return e.buildContextWindow(ctx, sessionID, "")
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return e.buildContextWindow(ctx, sessionID, messages[i].Content)
+		}
+	}
+	return nil
 }
 
 // MaybeCompactForModel resolves the supplied (newProvider, newModel)
@@ -10117,7 +10331,7 @@ func (e *Engine) completeResponse(ctx context.Context, sessionID string, content
 	e.publishProviderResponseEventCtx(ctx, sessionID, content)
 }
 
-// dualWriteToChainStore appends an assistant message to the chain store if one is configured.
+// dualWriteToChainStore appends an assistant message to the the chain store if one is configured.
 //
 // Stamps the chain-store append with the agent ID bound to ctx via
 // WithBoundManifest so a goroutine spawned by Stream() with manifest A

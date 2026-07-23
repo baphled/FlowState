@@ -108,6 +108,66 @@ var _ = Describe("Engine forced-summary round", func() {
 			"the engine must inject the forced-completion message before the forced summary round")
 	})
 
+	It("keeps the wrap-up prompt on the input side and persists the summary as assistant content", func() {
+		script := make([]scriptedBatch, 0, 6)
+		for i := 0; i < 5; i++ {
+			script = append(script, scriptedBatch{
+				toolCalls: []*provider.ToolCall{{
+					ID:        fmt.Sprintf("read_%d", i),
+					Name:      "read",
+					Arguments: map[string]any{"path": fmt.Sprintf("/tmp/%d.txt", i)},
+				}},
+			})
+		}
+		script = append(script, scriptedBatch{content: "Final summary of all files read."})
+
+		prov := &capturingScriptedProvider{name: "forced-summary-history", script: script}
+
+		eng := engine.New(engine.Config{
+			ChatProvider: prov,
+			Manifest:     manifest,
+			Tools:        []tool.Tool{},
+		})
+		eng.SetMaxToolLoopIterationsForTest(5)
+		eng.SetMaxIdenticalToolCallsForTest(0)
+		eng.SetMaxToolLoopDurationForTest(0)
+		eng.SetMaxSameToolPatternCallsForTest(0)
+
+		mgr := session.NewManager(eng)
+		sess, err := mgr.CreateSession("forced-summary-agent")
+		Expect(err).NotTo(HaveOccurred())
+
+		ch, err := mgr.SendMessage(context.Background(), sess.ID, "Read several files")
+		Expect(err).NotTo(HaveOccurred())
+		for range ch {
+		}
+
+		sess, err = mgr.GetSession(sess.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sess.Messages).NotTo(BeEmpty())
+
+		last := sess.Messages[len(sess.Messages)-1]
+		Expect(last.Role).To(Equal("assistant"))
+		Expect(last.Content).To(Equal("Final summary of all files read."))
+
+		for _, msg := range sess.Messages {
+			Expect(msg.Content).NotTo(ContainSubstring("tool loop budget is exhausted"))
+		}
+
+		Expect(prov.sawMessageContaining("tool loop budget is exhausted")).To(BeTrue())
+
+		next, err := mgr.SendMessage(context.Background(), sess.ID, "What next?")
+		Expect(err).NotTo(HaveOccurred())
+		for range next {
+		}
+
+		req, ok := prov.requestAt(6)
+		Expect(ok).To(BeTrue())
+		for _, msg := range req.Messages {
+			Expect(msg.Content).NotTo(ContainSubstring("tool loop budget is exhausted"))
+		}
+	})
+
 	It("fires a forced summary when the duration backstop trips", func() {
 		// Use a tiny duration (1ns) so the backstop trips on the very first
 		// cap check (after batch 0 executes). The forced summary retry

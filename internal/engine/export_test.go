@@ -154,8 +154,8 @@ func (e *Engine) EmitMidToolLoopRefreshReportForTest(ctx context.Context, sessio
 // post-fix invariant — the rebuilt slice carries the auto-compacted
 // summary marker — without driving a full multi-batch tool loop
 // end-to-end.
-func (e *Engine) RebuildMessagesAfterCompactionForTest(ctx context.Context, sessionID string) []provider.Message {
-	return e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID)
+func (e *Engine) RebuildMessagesAfterCompactionForTest(ctx context.Context, sessionID string, messages []provider.Message) []provider.Message {
+	return e.rebuildContextWindowAfterMidLoopCompaction(ctx, sessionID, messages)
 }
 
 // EmitPostRetryContextUsageForTest exposes the Bug #36 post-retry

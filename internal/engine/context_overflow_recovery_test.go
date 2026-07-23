@@ -264,6 +264,66 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 				"channel must close after context cancellation")
 		})
 
+		It("compacts before re-sending a near-limit continuation turn", func() {
+			prov := &overflowScriptedProvider{
+				name: "near-limit-todo-prov",
+				script: []overflowProviderTurn{
+					{content: "Working on it..."},
+					{content: "Recovered after compaction."},
+				},
+			}
+
+			summariser := &recordingSummariser{response: buildSummaryJSON()}
+
+			tempDir := GinkgoT().TempDir()
+			store, err := recall.NewFileContextStore(tempDir+"/ctx.json", "test-model")
+			Expect(err).NotTo(HaveOccurred())
+
+			content := strings.TrimSpace(strings.Repeat("w ", 6) + "w")
+			for range 7 {
+				store.Append(provider.Message{Role: "assistant", Content: content})
+			}
+
+			cfg := ctxstore.DefaultCompressionConfig()
+			cfg.AutoCompaction.Enabled = true
+			cfg.AutoCompaction.Threshold = 0.99
+
+			todoStore.Set(sessionID, []todo.Item{
+				{Content: "write the report", Status: "pending", Priority: "high"},
+			})
+
+			cm := agent.DefaultContextManagement()
+			cm.CompactionThreshold = 0
+
+			eng := engine.New(engine.Config{
+				ChatProvider:      prov,
+				Manifest:          agent.Manifest{ID: "near-limit-agent", Name: "Near Limit Agent", Instructions: agent.Instructions{SystemPrompt: "sys"}, Capabilities: agent.Capabilities{Tools: []string{"echo", "todowrite"}}, ContextManagement: cm},
+				Store:             store,
+				TokenCounter:      &wordTokenCounter{limit: 100},
+				AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
+				CompressionConfig: cfg,
+			})
+			eng.SetTodoStoreForTest(todoStore)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			ctx = context.WithValue(ctx, session.IDKey{}, sessionID)
+			chunks, streamErr := eng.Stream(ctx, sessionID, "Go")
+			Expect(streamErr).NotTo(HaveOccurred())
+
+			Eventually(func() int { return prov.callCount() }, "3s", "100ms").Should(
+				BeNumerically(">=", 2),
+				"the continuation turn should be resent after compaction",
+			)
+
+			cancel()
+			received, closed := drain(chunks)
+			Expect(closed).To(BeTrue(), "channel must close after the continuation retry compacts")
+			Expect(prov.callCount()).To(BeNumerically(">=", 2), "the continuation turn should be resent after compaction")
+			Expect(summariser.calls.Load()).To(BeNumerically(">=", 1))
+			Expect(hasContentContaining(received, "Recovered after compaction.")).To(BeTrue())
+		})
+
 		It("stops after three no-progress continuations", func() {
 			prov := &overflowScriptedProvider{
 				name: "stuck-with-todos-prov",

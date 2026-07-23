@@ -378,4 +378,47 @@ var _ = Describe("DeliveryToolGate", func() {
 			Expect(collectedContent).To(ContainSubstring("Final narration"))
 		})
 	})
+
+	Context("when todos remain after delivery retries are exhausted", func() {
+		BeforeEach(func() {
+			chatProvider.sequences = [][]provider.StreamChunk{
+				{{Content: "Narrating without calling tools", Done: true, StopReason: "end_turn"}},
+				{{Content: "Still narrating", Done: true, StopReason: "end_turn"}},
+				{{Content: "More narration", Done: true, StopReason: "end_turn"}},
+				{{Content: "Final narration", Done: true, StopReason: "end_turn"}},
+				{{Content: "Continuing after todo guard", Done: true, StopReason: "end_turn"}},
+			}
+		})
+
+		It("injects a todo continuation before completing the turn", func() {
+			todoStore := todo.NewMemoryStore()
+			sessionID := "delivery-todo-guard-session"
+			todoStore.Set(sessionID, []todo.Item{{Content: "finish the report", Status: "pending", Priority: "high"}})
+
+			eng := engine.New(engine.Config{
+				ChatProvider: chatProvider,
+				EventBus:     eventbus.NewEventBus(),
+				Manifest:     manifest,
+				Tools:        []tool.Tool{coordinationStore},
+			})
+			eng.SetTodoStoreForTest(todoStore)
+
+			ctx, cancel := context.WithCancel(context.WithValue(context.Background(), session.IDKey{}, sessionID))
+			DeferCleanup(cancel)
+
+			chunks, err := eng.Stream(ctx, sessionID, "Hello")
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func() int {
+				return chatProvider.callIndex
+			}, "3s", "50ms").Should(BeNumerically(">=", 5))
+
+			Expect(chatProvider.capturedRequests[4].Messages[len(chatProvider.capturedRequests[4].Messages)-1].Content).
+				To(ContainSubstring("You have incomplete tasks"))
+
+			cancel()
+			for range chunks {
+			}
+		})
+	})
 })

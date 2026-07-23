@@ -111,6 +111,11 @@ type ToolChoiceOverrideKey struct{}
 // advertisement and the runtime tool gate see the same reduced set.
 type ToolsAllowlistOverrideKey struct{}
 
+// SkipContextWindowOverflowCheckKey is the context key used to bypass the
+// proactive context-window overflow gate for a single retry turn after the
+// engine has already compacted the request.
+type SkipContextWindowOverflowCheckKey struct{}
+
 // WithToolChoiceOverride returns a derived context carrying a single-turn
 // tool_choice override. An empty/whitespace value short-circuits to the
 // input context unchanged — the override is opt-in and a no-op when the
@@ -144,6 +149,19 @@ func WithToolsAllowlistOverride(ctx context.Context, tools []string) context.Con
 // override. Nil means no override.
 func ToolsAllowlistOverrideFromContext(ctx context.Context) []string {
 	v, _ := ctx.Value(ToolsAllowlistOverrideKey{}).([]string)
+	return v
+}
+
+// WithSkipContextWindowOverflowCheck returns a derived context that skips the
+// proactive overflow refusal gate for the next retry only.
+func WithSkipContextWindowOverflowCheck(ctx context.Context) context.Context {
+	return context.WithValue(ctx, SkipContextWindowOverflowCheckKey{}, true)
+}
+
+// SkipContextWindowOverflowCheckFromContext reports whether the next provider
+// stream should bypass the proactive overflow refusal gate.
+func SkipContextWindowOverflowCheckFromContext(ctx context.Context) bool {
+	v, _ := ctx.Value(SkipContextWindowOverflowCheckKey{}).(bool)
 	return v
 }
 

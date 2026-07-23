@@ -296,7 +296,7 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 					{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 					{Provider: "openai", Model: "gpt-4o"},
 				},
-			})
+			}, "", "")
 
 			prefs := eng.FailoverManager().Preferences()
 
@@ -317,7 +317,7 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 		})
 
 		It("leaves the config-derived chain unchanged when the manifest declares no preferred_models", func() {
-			eng.ReseedFailoverBasePreferences(agent.Manifest{ID: "planner"})
+			eng.ReseedFailoverBasePreferences(agent.Manifest{ID: "planner"}, "", "")
 
 			prefs := eng.FailoverManager().Preferences()
 
@@ -354,7 +354,7 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 						{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 						{Provider: "openai", Model: "gpt-4o"},
 					},
-				})
+				}, "", "")
 
 				Expect(eng.LastProvider()).To(Equal("anthropic"),
 					"the engine's first pick must be the manifest head, NOT the startup config default (zai)")
@@ -395,15 +395,35 @@ var _ = Describe("Engine Integration", Label("integration"), func() {
 					PreferredModels: []agent.ModelPreference{
 						{Provider: "anthropic", Model: "claude-sonnet-4-6"},
 					},
-				})
+				}, "", "")
 				Expect(eng.LastProvider()).To(Equal("anthropic"))
 
-				eng.ReseedFailoverBasePreferences(agent.Manifest{ID: "default"})
+				eng.ReseedFailoverBasePreferences(agent.Manifest{ID: "default"}, "", "")
 
 				Expect(eng.LastProvider()).To(Equal(configHead.Provider),
 					"a no-preferred_models turn must restore the startup config default, not leak the prior anthropic head")
 				Expect(eng.LastModel()).To(Equal(configHead.Model),
 					"a no-preferred_models turn must restore the startup config-default model")
+			})
+
+			It("preserves a user-selected provider/model through reseed while keeping the remaining fallback tail", func() {
+				eng.SetModelPreference("zai", "glm-5.2")
+
+				eng.ReseedFailoverBasePreferences(agent.Manifest{
+					ID: "planner",
+					PreferredModels: []agent.ModelPreference{
+						{Provider: "anthropic", Model: "claude-sonnet-4-6"},
+						{Provider: "openai", Model: "gpt-4o"},
+					},
+				}, "zai", "glm-5.2")
+
+				Expect(eng.LastProvider()).To(Equal("zai"))
+				Expect(eng.LastModel()).To(Equal("glm-5.2"))
+
+				prefs := eng.FailoverManager().Preferences()
+				Expect(prefs[0]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-5.2"}))
+				Expect(prefs).To(ContainElement(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-6"}))
+				Expect(prefs).To(ContainElement(provider.ModelPreference{Provider: "openai", Model: "gpt-4o"}))
 			})
 		})
 	})

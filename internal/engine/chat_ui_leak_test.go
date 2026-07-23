@@ -38,6 +38,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/baphled/flowstate/internal/agent"
+	"github.com/baphled/flowstate/internal/config"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
@@ -168,17 +169,13 @@ var _ = Describe("Chat-UI leak: harness EventType chunks must not contaminate pe
 			delegation = agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"plan-writer"}}
 		})
 
-		Context("when TeeChildContent is false (default)", func() {
-			// Since the July 2026 content-leak fix, the tee is gated
-			// off by default. Child content stays in the child session
-			// and surfaces to the parent only via the delegation
-			// tool_result — matching the consensus pattern across
-			// Claude Code, OpenCode, and other harnesses.
-			It("does not write any child content into the parent stream", func() {
+		Context("when TeeChildContent is true (default)", func() {
+			It("writes genuine child content into the parent stream", func() {
 				parentOut := make(chan provider.StreamChunk, 64)
 				ctx := engine.WithStreamOutput(context.Background(), parentOut)
 
-				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator")
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+					WithTeeChildContent(config.DefaultConfig().Delegation.TeeChildContent)
 				_, err := delegateTool.Execute(ctx, tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
@@ -195,20 +192,20 @@ var _ = Describe("Chat-UI leak: harness EventType chunks must not contaminate pe
 						teedText.WriteString(chunk.Content)
 					}
 				}
-				Expect(teedText.String()).NotTo(ContainSubstring("Now I have all the context"),
-					"when TeeChildContent is false (default), child content must not surface in the parent stream — see Delegation Content Leak (July 2026)")
+				Expect(teedText.String()).To(ContainSubstring("Now I have all the context"),
+					"when TeeChildContent is true (default), child content must surface in the parent stream")
 				Expect(teedText.String()).NotTo(ContainSubstring(`{"attempt":`),
 					"harness EventType Content must not surface regardless of gate state")
 			})
 		})
 
-		Context("when TeeChildContent is true (legacy)", func() {
-			It("filters harness EventType Content but surfaces genuine child text", func() {
+		Context("when TeeChildContent is false (explicit opt-out)", func() {
+			It("filters harness EventType Content and hides genuine child text", func() {
 				parentOut := make(chan provider.StreamChunk, 64)
 				ctx := engine.WithStreamOutput(context.Background(), parentOut)
 
 				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
-					WithTeeChildContent(true)
+					WithTeeChildContent(false)
 				_, err := delegateTool.Execute(ctx, tool.Input{
 					Name: "delegate",
 					Arguments: map[string]interface{}{
@@ -227,8 +224,8 @@ var _ = Describe("Chat-UI leak: harness EventType chunks must not contaminate pe
 				}
 				Expect(teedText.String()).NotTo(ContainSubstring(`{"attempt":`),
 					"teeToParentStream must filter out-of-band EventType Content — see session 2d8dc0ac msg 169/180/185/190")
-				Expect(teedText.String()).To(ContainSubstring("Now I have all the context"),
-					"genuine sub-agent text must still surface in the parent stream when TeeChildContent is true (legacy mode)")
+				Expect(teedText.String()).NotTo(ContainSubstring("Now I have all the context"),
+					"explicit opt-out must keep genuine sub-agent text out of the parent stream")
 			})
 		})
 	})

@@ -596,6 +596,11 @@ var _ = Describe("Engine mid-tool-loop refresh hook", func() {
 			summariser := &recordingSummariser{response: buildSummaryJSON()}
 			eng, store := newGateProxEngine(summariser, true, 0.99)
 			seedGateProxMessages(store, 95)
+			messages := []provider.Message{
+				{Role: "user", Content: "rebuild this request"},
+				{Role: "assistant", Content: "tool call"},
+				{Role: "tool", Content: "tool output"},
+			}
 
 			outChan := make(chan provider.StreamChunk, 4)
 			compacted := eng.EmitMidToolLoopRefreshReportForTest(context.Background(), "sess-reload-rebuilt", outChan)
@@ -612,7 +617,7 @@ var _ = Describe("Engine mid-tool-loop refresh hook", func() {
 			// history. The fix exposes RebuildMessagesAfterCompactionForTest
 			// so the caller can swap the in-memory slice for the
 			// compacted view.
-			rebuilt := eng.RebuildMessagesAfterCompactionForTest(context.Background(), "sess-reload-rebuilt")
+			rebuilt := eng.RebuildMessagesAfterCompactionForTest(context.Background(), "sess-reload-rebuilt", messages)
 			Expect(rebuilt).NotTo(BeEmpty(),
 				"the rebuilt slice must contain at least the system prompt + summary block")
 
@@ -625,6 +630,9 @@ var _ = Describe("Engine mid-tool-loop refresh hook", func() {
 			}
 			Expect(summaryFound).To(BeTrue(),
 				"the rebuilt slice must carry the compacted summary so the next retry request sees the compressed view")
+
+			Expect(rebuilt[len(rebuilt)-1]).To(Equal(provider.Message{Role: "user", Content: "rebuild this request"}),
+				"the rebuilt slice must preserve the original user prompt instead of appending an empty trailing user message")
 
 			Expect(summariser.calls.Load()).To(Equal(int32(1)),
 				"reload must reuse the H2 memo, not re-invoke the summariser")
