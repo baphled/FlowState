@@ -240,12 +240,14 @@ type reseedingDispatchEngine struct {
 	*fakeDispatchEngine
 	reMu          sync.Mutex
 	reseededAgent []agent.Manifest
+	reseededPref  []provider.ModelPreference
 }
 
-func (r *reseedingDispatchEngine) ReseedFailoverBasePreferences(manifest agent.Manifest) {
+func (r *reseedingDispatchEngine) ReseedFailoverBasePreferences(manifest agent.Manifest, providerName, modelName string) {
 	r.reMu.Lock()
 	defer r.reMu.Unlock()
 	r.reseededAgent = append(r.reseededAgent, manifest)
+	r.reseededPref = append(r.reseededPref, provider.ModelPreference{Provider: providerName, Model: modelName})
 }
 
 func (r *reseedingDispatchEngine) reseeds() []agent.Manifest {
@@ -871,6 +873,23 @@ var _ = Describe("Dispatcher.DispatchSessioned", func() {
 				"on an auto-dispatch swarm turn the reseed must use the swarm LEAD manifest")
 			Expect(reEng.reseeds()[0].PreferredModels).To(ConsistOf(
 				agent.ModelPreference{Provider: "openai", Model: "gpt-4o"}))
+		})
+
+		It("forwards the session's persisted provider/model selection into the reseed", func() {
+			mgr.sess.CurrentProviderID = "zai"
+			mgr.sess.CurrentModelID = "glm-5.2"
+			d := dispatch.New(drip, reEng, swarmer, reg, mgr)
+
+			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-1",
+				AgentID:      "default-assistant",
+				Content:      "hello",
+				ScanMentions: true,
+			}, broker)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(reEng.reseeds, "2s").Should(HaveLen(1))
+			Expect(reEng.reseededPref[0]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-5.2"}))
 		})
 	})
 

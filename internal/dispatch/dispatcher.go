@@ -153,7 +153,7 @@ type SessionManager interface {
 // it simply skip the reseed (their specs pin lifecycle ordering, not
 // failover routing). See engine.Engine.ReseedFailoverBasePreferences.
 type failoverReseeder interface {
-	ReseedFailoverBasePreferences(manifest agent.Manifest)
+	ReseedFailoverBasePreferences(manifest agent.Manifest, providerName, modelName string)
 }
 
 // Dispatcher is the single owner of the "user input → engine stream"
@@ -836,7 +836,7 @@ func (d *Dispatcher) DispatchSessioned(
 			if swarmActive {
 				d.dispatchEngine.SetSwarmContext(swarmCtx)
 			}
-			d.reseedDispatchFailover(reseedAgentID)
+			d.reseedDispatchFailover(reseedAgentID, snap.CurrentProviderID, snap.CurrentModelID)
 		}
 
 		chunks, streamErr := d.sessionManager.StartStream(
@@ -891,7 +891,7 @@ func (d *Dispatcher) DispatchSessioned(
 // An unknown agent intentionally does NOT reseed: leaving the engine on
 // its current (config-derived or prior-turn) chain is safer than wiping
 // it to an empty manifest.
-func (d *Dispatcher) reseedDispatchFailover(agentID string) {
+func (d *Dispatcher) reseedDispatchFailover(agentID, providerName, modelName string) {
 	if agentID == "" || d.agentRegistry == nil {
 		return
 	}
@@ -903,7 +903,7 @@ func (d *Dispatcher) reseedDispatchFailover(agentID string) {
 	if !found || manifest == nil {
 		return
 	}
-	reseeder.ReseedFailoverBasePreferences(*manifest)
+	reseeder.ReseedFailoverBasePreferences(*manifest, providerName, modelName)
 }
 
 // wrapWithTurnLifecycle observes the chunks channel as it drains and

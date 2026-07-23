@@ -1195,20 +1195,11 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	}
 	sess.Messages = append(sess.Messages, msg)
 
-	// When the engine stamps a (model, provider) onto an assistant message
-	// and the session-level fields are stale (empty, or a previously failed
-	// candidate that the failover hook has since replaced), promote the
-	// pair onto the session. This keeps the persistent chip ("on glm-4.6 ·
-	// zai") aligned with the model that actually produced the most recent
-	// turn, without requiring an explicit UpdateSessionModel PATCH from
-	// the client. The check is restricted to assistant turns so tool_call
-	// / tool_result / delegation messages — which never carry these
-	// fields anyway — cannot accidentally clear the pair.
 	if msg.Role == "assistant" {
-		if msg.ModelName != "" && sess.CurrentModelID != msg.ModelName {
+		if msg.ModelName != "" && sess.CurrentModelID == "" {
 			sess.CurrentModelID = msg.ModelName
 		}
-		if msg.ProviderName != "" && sess.CurrentProviderID != msg.ProviderName {
+		if msg.ProviderName != "" && sess.CurrentProviderID == "" {
 			sess.CurrentProviderID = msg.ProviderName
 		}
 		// Surfaced-failure flip (Bugs E, F and G, May 2026). When the

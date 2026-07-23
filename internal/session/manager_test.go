@@ -571,6 +571,23 @@ var _ = Describe("Manager", func() {
 			Expect(loaded.CurrentModelID).To(Equal("claude-sonnet-4-6"))
 		})
 
+		It("keeps a seeded session provider+model when the assistant message reports a different failover pair", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "assistant",
+				Content:      "fallback answer",
+				ModelName:    "glm-4.6",
+				ProviderName: "zai",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.CurrentProviderID).To(Equal("anthropic"))
+			Expect(loaded.CurrentModelID).To(Equal("claude-sonnet-4-6"))
+		})
+
 		It("does not promote model/provider on non-assistant message roles", func() {
 			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
 			Expect(err).NotTo(HaveOccurred())
