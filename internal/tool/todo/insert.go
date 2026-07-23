@@ -10,11 +10,11 @@ import (
 	"github.com/baphled/flowstate/internal/tool"
 )
 
-// InsertTool implements the todo_insert tool: inserts a single item at a
-// specified 0-based index in the stored todo list, shifting all subsequent
-// items down. It is the companion to todo_append (end-of-list add) and
-// todo_update (in-place patch) that handles the case where a new subtask
-// belongs between two existing items rather than at the end.
+// InsertTool implements the list-insert tool: it inserts a single item at a
+// specified 0-based index in the stored task list, shifting all subsequent
+// items down. It is the companion to the append and patch tools for the case
+// where a new subtask belongs between two existing items rather than at the
+// end.
 type InsertTool struct {
 	store Store
 }
@@ -52,7 +52,8 @@ func (t *InsertTool) Name() string {
 // Side effects:
 //   - None.
 func (t *InsertTool) Description() string {
-	return "Insert a new todo item at a specific 0-based index, shifting subsequent items down. Use this when a new subtask belongs between existing items rather than at the end."
+	return "Insert a new task item at a specific 0-based index, shifting subsequent items down. " +
+		"Use this when a new subtask belongs between existing items rather than at the end."
 }
 
 // Schema returns the input schema for the todo_insert tool.

@@ -9,10 +9,10 @@ import (
 )
 
 // FileStore is a thread-safe, file-backed implementation of Store. Each
-// session's todo list is persisted as a JSON file at
+// session's task list is persisted as a JSON file at
 // <baseDir>/<sessionID>.json. The store loads lazily on first Get and
 // writes synchronously on every Set so a crash never loses committed
-// todo state.
+// task state.
 type FileStore struct {
 	mu      sync.RWMutex
 	baseDir string

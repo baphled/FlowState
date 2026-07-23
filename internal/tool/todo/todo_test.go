@@ -317,34 +317,34 @@ var _ = Describe("TodoUpdateTool", func() {
 		})
 
 		Context("when patching multiple fields at once", func() {
-		It("applies every non-empty patch field on the targeted entry and auto-advances the next pending item", func() {
-			// Fraud prevention: must claim item before completing it
-			_, err := u.Execute(sessionCtx(), tool.Input{
-				Name: "todo_update",
-				Arguments: map[string]interface{}{
-					"index":  float64(0),
-					"status": "in_progress",
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
+			It("applies every non-empty patch field on the targeted entry and auto-advances the next pending item", func() {
+				// Fraud prevention: must claim item before completing it
+				_, err := u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":  float64(0),
+						"status": "in_progress",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
 
-			_, err = u.Execute(sessionCtx(), tool.Input{
-				Name: "todo_update",
-				Arguments: map[string]interface{}{
-					"index":    float64(0),
-					"status":   "completed",
-					"priority": "low",
-				},
-			})
+				_, err = u.Execute(sessionCtx(), tool.Input{
+					Name: "todo_update",
+					Arguments: map[string]interface{}{
+						"index":    float64(0),
+						"status":   "completed",
+						"priority": "low",
+					},
+				})
 
-			Expect(err).NotTo(HaveOccurred())
-			stored := store.Get("sess-123")
-			Expect(stored[0].Status).To(Equal("completed"))
-			Expect(stored[0].Priority).To(Equal("low"))
-			Expect(stored[0].Content).To(Equal("First task"))
-			// Sequential discipline: completing item 0 auto-advances item 1.
-			Expect(stored[1].Status).To(Equal("in_progress"))
-		})
+				Expect(err).NotTo(HaveOccurred())
+				stored := store.Get("sess-123")
+				Expect(stored[0].Status).To(Equal("completed"))
+				Expect(stored[0].Priority).To(Equal("low"))
+				Expect(stored[0].Content).To(Equal("First task"))
+				// Sequential discipline: completing item 0 auto-advances item 1.
+				Expect(stored[1].Status).To(Equal("in_progress"))
+			})
 		})
 
 		Context("sequential discipline: auto-advance on complete", func() {
@@ -377,7 +377,7 @@ var _ = Describe("TodoUpdateTool", func() {
 
 			It("does not fail when completing the last item with no pending items after it", func() {
 				// Complete all three items in sequence.
-				for i := 0; i < 3; i++ {
+				for i := range 3 {
 					// Fraud prevention: must claim item before completing it
 					_, err := u.Execute(sessionCtx(), tool.Input{
 						Name: "todo_update",

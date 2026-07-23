@@ -98,7 +98,7 @@ func (t *UpdateTool) Schema() tool.Schema {
 }
 
 // IsStateModifying returns true because todo_update patches the stored
-// todo list for the session.
+// task list for the session.
 func (t *UpdateTool) IsStateModifying() bool { return true }
 
 // Execute patches a single todo in the stored list and returns the full

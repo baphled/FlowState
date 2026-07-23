@@ -53,7 +53,8 @@ func (t *AppendTool) Name() string {
 // Side effects:
 //   - None.
 func (t *AppendTool) Description() string {
-	return "Append a single todo item to the end of the current list. Use this when you discover an additional subtask mid-work and need to grow the list without replacing it."
+	return "Append a single task item to the end of the current list. " +
+		"Use this when you discover an additional subtask mid-work and need to grow the list without replacing it."
 }
 
 // Schema returns the input schema for the todo_append tool.

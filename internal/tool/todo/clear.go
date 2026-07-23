@@ -74,7 +74,7 @@ func (t *ClearTool) Schema() tool.Schema {
 }
 
 // IsStateModifying returns true because todo_clear replaces the stored
-// todo list for the session with an empty slice.
+// task list for the session with an empty slice.
 func (t *ClearTool) IsStateModifying() bool { return true }
 
 // Execute wipes the stored todo list for the session and returns an empty

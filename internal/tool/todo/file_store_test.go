@@ -110,7 +110,7 @@ var _ = Describe("FileStore", func() {
 	Describe("concurrent access", func() {
 		It("handles concurrent Set calls for different sessions", func() {
 			done := make(chan struct{})
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				go func(n int) {
 					defer GinkgoRecover()
 					sid := sessID + "-" + string(rune('A'+n))
@@ -120,7 +120,7 @@ var _ = Describe("FileStore", func() {
 					done <- struct{}{}
 				}(i)
 			}
-			for i := 0; i < 10; i++ {
+			for range 10 {
 				<-done
 			}
 		})
@@ -147,7 +147,7 @@ var _ = Describe("FileStore integration with tools", func() {
 	})
 
 	It("FileStore satisfies the Store interface", func() {
-		var _ todotool.Store = store
+		var _ todotool.Store = (*todotool.FileStore)(nil)
 	})
 
 	It("works with the todowrite tool end-to-end", func() {

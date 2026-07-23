@@ -91,7 +91,7 @@ func (t *Tool) Schema() tool.Schema {
 }
 
 // IsStateModifying returns true because todowrite replaces the stored
-// todo list for the session.
+// task list for the session.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute stores the provided todo list for the current session and returns it as JSON.
@@ -128,7 +128,9 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 		if err != nil {
 			return tool.Result{}, fmt.Errorf("serialising existing todos: %w", err)
 		}
-		return tool.Result{Output: fmt.Sprintf("A todo list already exists for this session — do NOT create a new one. Use todo_update to modify individual items. Current list:\n%s", string(out))}, nil
+		message := "A task list already exists for this session — do NOT create a new one. " +
+			"Use todo_update to modify individual items. Current list:\n%s"
+		return tool.Result{Output: fmt.Sprintf(message, string(out))}, nil
 	}
 
 	if err := t.store.Set(sessionID, todos); err != nil {
