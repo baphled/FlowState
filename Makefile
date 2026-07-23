@@ -1,4 +1,4 @@
-.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids qdrant-up qdrant-down qdrant-logs qdrant-status
+.PHONY: all build run test test-e2e test-external test-recall bdd bdd-smoke bdd-wip fmt lint check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift clean help ai-commit check-ai-attribution list-ai-commits coverage-check install-coverage-tools install-hooks debug-session debug-latest debug-errors session-overview log-analysis parse-recording session-history session-history-detail session-ids evidence-pack qdrant-up qdrant-down qdrant-logs qdrant-status
 
 # Binary name
 BINARY_NAME=flowstate
@@ -304,6 +304,20 @@ parse-recording: ## Parse a session recording timeline (ID=<session-id>)
 		exit 1; \
 	fi
 	@python3 scripts/parse-recording.py "$(ID)" $(OPTS)
+
+evidence-pack: ## Create a portable investigation evidence pack (INVESTIGATION=slug [VAULT_ROOT=... PROJECT_ROOT=... DEST_DIR=... EVIDENCE_ARGS='--source ... --excerpt ... --command-output ...'] [DRY_RUN=1])
+	@if [ -z "$(INVESTIGATION)" ]; then \
+		echo "Usage: make evidence-pack INVESTIGATION=2026-07-23-session-duration [VAULT_ROOT=...] [PROJECT_ROOT=...] [DEST_DIR=...] [EVIDENCE_ARGS='--source notes=/tmp/notes.md --excerpt /tmp/redacted.txt --command-output run=/tmp/run.txt'] [DRY_RUN=1]"; \
+		exit 1; \
+	fi
+	@python3 scripts/evidence-pack.py --investigation "$(INVESTIGATION)" \
+		$(if $(VAULT_ROOT),--vault-root "$(VAULT_ROOT)") \
+		$(if $(PROJECT_ROOT),--project-root "$(PROJECT_ROOT)") \
+		$(if $(DEST_DIR),--destination "$(DEST_DIR)") \
+		$(if $(EVIDENCE_ID),--evidence-id "$(EVIDENCE_ID)") \
+		$(if $(SUPPORTS),$(foreach support,$(SUPPORTS),--supports "$(support)")) \
+		$(if $(DRY_RUN),--dry-run) \
+		$(EVIDENCE_ARGS)
 
 session-history: ## Show session conversation history (ID=<session-id>)
 	@if [ -z "$(ID)" ]; then \
