@@ -12,6 +12,7 @@ node_modules/
 *.dylib
 .opencode/*
 .claude/*.lock
+.omo
 
 # Test binary, built with `go test -c`
 *.test
