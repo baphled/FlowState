@@ -219,7 +219,9 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		// <primary>"). Only the first failure is tracked — a chain of
 		// failures collapses to "primary failed" in the user's mental
 		// model, and listing every retired candidate would be noise.
-		var state retryState
+		state := retryState{
+			permanentlyFailed: make(map[string]provider.ModelPreference),
+		}
 
 		// totalWaited accumulates backoff sleep across rounds so the loop
 		// gives up once the MaxTotalWait budget is exhausted, independent
@@ -241,7 +243,7 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		// never retried: roundAllTransient goes false and we fail fast.
 		for round := range sh.retry.MaxRounds {
 			if round > 0 {
-				candidates = sh.nextRoundCandidates(ctx, req)
+				candidates = sh.nextRoundCandidates(ctx, req, &state)
 				if len(candidates) == 0 {
 					break
 				}
@@ -266,18 +268,31 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 // The backoff between rounds waited for cooldowns to lapse, so previously
 // rate-limited pairs should now re-enter the pool. The same agent-chain and
 // pinned-provider ordering applied on the first pass is re-applied so retry
-// rounds honour the agent's preferred order.
+// rounds honour the agent's preferred order. Permanently-failed providers
+// (from state.permanentlyFailed) are filtered out before applying ordering.
 //
 // Expected:
 //   - req carries the pinned provider/model (if any) to re-promote.
+//   - state contains the set of permanently-failed providers to exclude.
 //
 // Returns:
-//   - The ordered healthy candidate chain (possibly empty).
+//   - The ordered healthy candidate chain excluding permanently-failed providers (possibly empty).
 //
 // Side effects:
 //   - None.
-func (sh *StreamHook) nextRoundCandidates(ctx context.Context, req *provider.ChatRequest) []provider.ModelPreference {
+func (sh *StreamHook) nextRoundCandidates(ctx context.Context, req *provider.ChatRequest, state *retryState) []provider.ModelPreference {
 	candidates := sh.manager.Candidates()
+	// Filter out permanently-failed providers from retry rounds
+	if len(state.permanentlyFailed) > 0 {
+		filtered := make([]provider.ModelPreference, 0, len(candidates))
+		for _, c := range candidates {
+			key := c.Provider + ":" + c.Model
+			if _, exists := state.permanentlyFailed[key]; !exists {
+				filtered = append(filtered, c)
+			}
+		}
+		candidates = filtered
+	}
 	candidates = sh.prependAgentChain(ctx, candidates)
 	return promotePinned(candidates, req.Provider, req.Model)
 }
@@ -317,7 +332,7 @@ func (sh *StreamHook) decorateSuccess(
 // backoffBeforeRetry decides whether to back off and start another retry round,
 // and performs the wait. It returns the duration actually slept and whether the
 // caller should retry. We retry only when: the round actually attempted a
-// candidate, EVERY failure was transient, this is not the last permitted round,
+// candidate, AT LEAST ONE failure was transient (new behavior), this is not the last permitted round,
 // and the cumulative wait budget is not exhausted. A ctx cancel/deadline during
 // the sleep aborts the retry (returns retry=false) so a cancelled request never
 // sleeps on.
@@ -338,10 +353,10 @@ func (sh *StreamHook) backoffBeforeRetry(
 	attempts roundOutcome,
 	totalWaited time.Duration,
 ) (time.Duration, bool) {
-	if round == sh.retry.MaxRounds-1 || !attempts.allTransient || len(attempts.pairs) == 0 {
+	if round == sh.retry.MaxRounds-1 || !attempts.hasAnyTransient || len(attempts.pairs) == 0 {
 		return 0, false
 	}
-	wait := computeBackoff(sh.manager.Health(), attempts.pairs)
+	wait := computeBackoff(sh.manager.Health(), attempts.transientPairs)
 	if remaining := sh.retry.MaxTotalWait - totalWaited; wait > remaining {
 		wait = remaining
 	}
@@ -367,7 +382,22 @@ type roundOutcome struct {
 	// provider error (rate-limit / overload / network / 5xx). A single
 	// permanent failure (auth, model-not-found, context-window) sets it
 	// false so the loop fails fast instead of retrying.
+	//
+	// DEPRECATED: Use transientPairs and hasAnyTransient instead. This field
+	// is retained for backward compatibility but will be removed in a future version.
 	allTransient bool
+	// transientPairs are the (provider, model) candidates that failed with
+	// transient errors (rate-limit, overload, network, server) this round.
+	// These are the only providers that should be retried in subsequent rounds.
+	transientPairs []provider.ModelPreference
+	// permanentPairs are the (provider, model) candidates that failed with
+	// permanent errors (auth, billing, quota, model-not-found, context-window)
+	// this round. These should be excluded from retry rounds.
+	permanentPairs []provider.ModelPreference
+	// hasAnyTransient is true when at least one provider failed with a transient
+	// error this round. When true, the retry loop should continue attempting
+	// only the transient providers.
+	hasAnyTransient bool
 }
 
 // retryState carries the failure bookkeeping that must persist ACROSS retry
@@ -377,6 +407,11 @@ type roundOutcome struct {
 type retryState struct {
 	lastErr        error
 	previousFailed *failedCandidate
+	// permanentlyFailed is a set of (provider, model) pairs that failed with
+	// permanent errors (auth, billing, quota, model-not-found, context-window)
+	// in any round. These are excluded from retry rounds after their first failure.
+	// Map key is "provider:model" for O(1) lookup.
+	permanentlyFailed map[string]provider.ModelPreference
 }
 
 type attemptDebugMeta struct {
@@ -401,7 +436,7 @@ type attemptDebugMeta struct {
 //
 // Side effects:
 //   - Sets req.Provider / req.Model per attempt.
-//   - Updates state.lastErr / state.previousFailed.
+//   - Updates state.lastErr / state.previousFailed / state.permanentlyFailed.
 //   - Publishes a provider.error event for each failed attempt via publishFailoverError.
 func (sh *StreamHook) runCandidateRound(
 	ctx context.Context,
@@ -421,8 +456,16 @@ func (sh *StreamHook) runCandidateRound(
 		replayCh, err := sh.attemptCandidate(ctx, next, req, candidate)
 		if err != nil {
 			state.lastErr = err
-			if !isTransientFailoverError(err) {
+			isTransient := isTransientFailoverError(err)
+			if !isTransient {
 				outcome.allTransient = false
+				outcome.permanentPairs = append(outcome.permanentPairs, candidate)
+				// Track permanently-failed providers across rounds
+				key := candidate.Provider + ":" + candidate.Model
+				state.permanentlyFailed[key] = candidate
+			} else {
+				outcome.transientPairs = append(outcome.transientPairs, candidate)
+				outcome.hasAnyTransient = true
 			}
 			if state.previousFailed == nil {
 				state.previousFailed = &failedCandidate{
