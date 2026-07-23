@@ -154,9 +154,11 @@ type AppConfig struct {
 	//
 	//   - Empty (default): walk up from the current working directory
 	//     looking for a `.flowstate/` marker directory. If found, use
-	//     `<projectRoot>/.flowstate/plans/`. If no marker is found, fall
-	//     back to `${cfg.DataDir}/plans/` so users without a project
-	//     setup still get a working location.
+	//     `<projectRoot>/.flowstate/plans/`. Otherwise fall back to the
+	//     nearest Git worktree root (`.git` file or directory) so
+	//     repo-local worktrees share the same layout. If no marker is
+	//     found, fall back to `${cfg.DataDir}/plans/` so users without
+	//     a project setup still get a working location.
 	//   - Non-empty: the literal path is used verbatim, with `~` and
 	//     `~/` expanded against the user's home directory. Bare relative
 	//     paths are resolved against the user's CWD at call time, NOT
@@ -413,7 +415,7 @@ func parsePositiveInt(s string) (int, error) {
 }
 
 // ResolvedPlanLocation returns the directory FlowState should use for plan
-// markdown files. The three-tier resolution mirrors the field godoc on
+// markdown files. The four-tier resolution mirrors the field godoc on
 // PlanLocation:
 //
 //  1. If PlanLocation is non-empty, expand a leading `~` / `~/` against
@@ -424,7 +426,11 @@ func parsePositiveInt(s string) (int, error) {
 //     for a `.flowstate/` marker. The first match wins; the resolver
 //     returns `<dir>/.flowstate/plans/`. This matches OMO's project-
 //     local layout and allows shared plans via `git`.
-//  3. Otherwise fall back to `<DataDir>/plans/` so fresh users with no
+//  3. Otherwise walk parents again looking for a `.git` file or
+//     directory. The first match wins; the resolver returns
+//     `<worktreeRoot>/.flowstate/plans/` so Git worktrees share the
+//     same project-local layout.
+//  4. Otherwise fall back to `<DataDir>/plans/` so fresh users with no
 //     project marker still get a working location.
 //
 // A nil receiver returns the empty string. App test fixtures construct
@@ -438,6 +444,9 @@ func (c *AppConfig) ResolvedPlanLocation() string {
 	}
 	if dir := findProjectFlowstateDir(); dir != "" {
 		return filepath.Join(dir, "plans")
+	}
+	if dir := findGitWorktreeRoot(); dir != "" {
+		return filepath.Join(dir, ".flowstate", "plans")
 	}
 	return filepath.Join(c.DataDir, "plans")
 }
@@ -459,6 +468,28 @@ func findProjectFlowstateDir() string {
 		candidate := filepath.Join(dir, ".flowstate")
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+// findGitWorktreeRoot walks parents of the current working directory looking
+// for a `.git` file or directory. Returns the directory that contains the Git
+// entry, or the empty string when no Git root is found.
+func findGitWorktreeRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	dir := cwd
+	for {
+		candidate := filepath.Join(dir, ".git")
+		if _, err := os.Stat(candidate); err == nil {
+			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -1418,12 +1449,10 @@ func DefaultConfig() *AppConfig {
 	}
 }
 
-// DefaultDelegationConfig returns the default delegation configuration
-// with TeeChildContent disabled. The child session plus tool_result
-// remains the canonical surface for delegate output.
+// DefaultDelegationConfig returns the default delegation configuration with TeeChildContent enabled; the child session plus tool_result remains the canonical surface when callers explicitly opt out.
 func DefaultDelegationConfig() DelegationConfig {
 	return DelegationConfig{
-		TeeChildContent: false,
+		TeeChildContent: true,
 	}
 }
 

@@ -131,6 +131,13 @@ var _ = Describe("Config", func() {
 			Expect(cfg.SkillDir).NotTo(Equal(filepath.Join(config.DataDir(), "skills")),
 				"SkillDir must NOT be re-derived from DataDir — XDG_CONFIG is correct")
 		})
+
+		It("enables delegation teeing by default", func() {
+			cfg := config.DefaultConfig()
+
+			Expect(cfg.Delegation.TeeChildContent).To(BeTrue())
+			Expect(config.DefaultDelegationConfig().TeeChildContent).To(BeTrue())
+		})
 	})
 
 	Describe("LoadConfig", func() {
@@ -886,6 +893,41 @@ var _ = Describe("AppConfig.ResolvedPlanLocation", func() {
 			Expect(cfg.ResolvedPlanLocation()).NotTo(ContainSubstring("datadir"))
 		})
 	})
+
+	Context("when a .flowstate marker and a git root both exist", func() {
+		It("prefers the .flowstate marker over the git root", func() {
+			repoRoot := filepath.Join(tempDir, "repo")
+			projectRoot := filepath.Join(repoRoot, "project")
+			nested := filepath.Join(projectRoot, "nested")
+
+			Expect(os.MkdirAll(filepath.Join(projectRoot, ".flowstate"), 0o755)).To(Succeed())
+			Expect(os.MkdirAll(nested, 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(repoRoot, ".git"), []byte("gitdir: /tmp/actual"), 0o644)).To(Succeed())
+			Expect(os.Chdir(nested)).To(Succeed())
+
+			cfg := &config.AppConfig{DataDir: filepath.Join(tempDir, "datadir")}
+			Expect(cfg.ResolvedPlanLocation()).To(Equal(filepath.Join(projectRoot, ".flowstate", "plans")))
+		})
+	})
+
+	DescribeTable("returns the git worktree root plans directory when no .flowstate marker exists", func(gitAsFile bool) {
+		repoRoot := filepath.Join(tempDir, "repo")
+		nested := filepath.Join(repoRoot, "a", "b")
+
+		Expect(os.MkdirAll(nested, 0o755)).To(Succeed())
+		if gitAsFile {
+			Expect(os.WriteFile(filepath.Join(repoRoot, ".git"), []byte("gitdir: /tmp/actual"), 0o644)).To(Succeed())
+		} else {
+			Expect(os.MkdirAll(filepath.Join(repoRoot, ".git"), 0o755)).To(Succeed())
+		}
+		Expect(os.Chdir(nested)).To(Succeed())
+
+		cfg := &config.AppConfig{DataDir: filepath.Join(tempDir, "datadir")}
+		Expect(cfg.ResolvedPlanLocation()).To(Equal(filepath.Join(repoRoot, ".flowstate", "plans")))
+	},
+		Entry("when .git is a directory", false),
+		Entry("when .git is a file", true),
+	)
 
 	Context("when PlanLocation is empty and no .flowstate/ marker exists", func() {
 		It("falls back to <DataDir>/plans/", func() {
