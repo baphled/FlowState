@@ -4621,6 +4621,7 @@ func (e *Engine) streamWithToolLoop(
 		if !shouldContinue {
 			return false
 		}
+		todoContinuationCount++
 
 		messages = append(messages, contMsg)
 		maybeCompactForRetry("todo continuation retry")
