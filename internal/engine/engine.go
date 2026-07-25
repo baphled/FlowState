@@ -6694,10 +6694,10 @@ func (e *Engine) buildTodoContextMessage(sessionID string) *provider.Message {
 		return nil
 	}
 
-	e.mu.Lock()
+	e.mu.RLock()
 	toolCallCount := e.todoNonTodowriteToolCalls[sessionID]
 	complexity := e.sessionComplexity[sessionID]
-	e.mu.Unlock()
+	e.mu.RUnlock()
 
 	msg := renderTodoSystemMessage(items, toolCallCount, complexity)
 	return &msg
