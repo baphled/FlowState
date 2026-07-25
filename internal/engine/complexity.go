@@ -136,12 +136,13 @@ var todoToolNames = map[string]struct{}{
 	"todo_update": {},
 	"todo_append": {},
 	"todo_insert": {},
+	"todo_clear":  {},
 }
 
 // isTodoTool reports whether the given tool name is a todo-management tool
-// (todowrite, todo_update, todo_append, or todo_insert). Used by the strict
-// gate and the stale-continuation work-call counter to distinguish todo
-// operations from "real work" tool calls.
+// (todowrite, todo_update, todo_append, todo_insert, or todo_clear). Used by
+// the strict gate and the stale-continuation work-call counter to distinguish
+// todo operations from "real work" tool calls.
 func isTodoTool(name string) bool {
 	_, ok := todoToolNames[name]
 	return ok

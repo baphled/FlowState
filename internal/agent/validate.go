@@ -161,7 +161,11 @@ type validatorManifestProbe struct {
 // access to the discipline + observability surface every agent
 // depends on. The base set restores that floor; per-agent
 // Capabilities.ToolsDeny opts back out for the rare manifest that
-// genuinely needs the denial.
+// genuinely needs the denial. todo_clear is included because every
+// agent manifest's system prompt instructs the agent to retire a
+// finished list via todo_clear; omitting it from the inherited floor
+// hid the tool from the schema filter so agents could not reach the
+// tool they were told to call.
 //
 // Hard-coded rather than YAML-config per D1 rationale (zero user-
 // stated benefit to a per-environment override matrix today; YAML
@@ -171,6 +175,7 @@ var defaultBaseTools = []string{
 	"todo_update",
 	"todo_append",
 	"todo_insert",
+	"todo_clear",
 	"skill_load",
 }
 
@@ -339,7 +344,7 @@ func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
 	return []Violation{{
 		Manifest: name,
 		Rule:     "tools-empty",
-		Detail:   "capabilities.tools is empty — under D1 the agent inherits only the default base toolset (todowrite, todo_update, todo_append, todo_insert, skill_load); if more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical fail-closed regression this rule originally caught)",
+		Detail:   "capabilities.tools is empty — under D1 the agent inherits only the default base toolset (todowrite, todo_update, todo_append, todo_insert, todo_clear, skill_load); if more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical fail-closed regression this rule originally caught)",
 	}}
 }
 

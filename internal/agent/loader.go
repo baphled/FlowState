@@ -16,7 +16,7 @@ import (
 // capabilities.tools. Under D1 (Agent Runtime Quality plan, May 2026)
 // the engine inherits the DefaultBaseTools floor for every manifest, so
 // such agents are no longer silently stuck — they still have
-// todowrite/todo_update/skill_load. The warning persists because an
+// todowrite/todo_update/todo_clear/skill_load. The warning persists because an
 // empty declared toolset usually signals operator intent gone missing
 // (engineering agent shipping without bash/read/write/edit), and the
 // loader is the earliest place we can flag that.
@@ -25,7 +25,7 @@ func warnIfNoTools(m *Manifest, path string) {
 		return
 	}
 	slog.Warn(
-		"agent manifest has no capabilities.tools; agent will inherit only the default base toolset (todowrite, todo_update, todo_append, todo_insert, skill_load)",
+		"agent manifest has no capabilities.tools; agent will inherit only the default base toolset (todowrite, todo_update, todo_append, todo_insert, todo_clear, skill_load)",
 		"path", path,
 		"agent_id", m.ID,
 	)

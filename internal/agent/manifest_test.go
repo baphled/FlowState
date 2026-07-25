@@ -120,7 +120,7 @@ var _ = Describe("Manifest", func() {
 	Describe("EffectiveTools (D1)", func() {
 		It("returns just the default base toolset for a manifest with no declared tools", func() {
 			manifest := &agent.Manifest{ID: "bare", Name: "Bare"}
-			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "skill_load"))
+			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load"))
 		})
 
 		It("unions the manifest tools with the default base toolset", func() {
@@ -131,7 +131,7 @@ var _ = Describe("Manifest", func() {
 					Tools: []string{"bash"},
 				},
 			}
-			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "todo_append", "todo_insert", "skill_load"))
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load"))
 		})
 
 		It("returns a sorted slice so callers get a stable ordering", func() {
@@ -142,14 +142,14 @@ var _ = Describe("Manifest", func() {
 			sorted := make([]string, len(tools))
 			copy(sorted, tools)
 			// EffectiveTools sort is alphabetical; this asserts the contract.
-			Expect(sorted).To(Equal([]string{"bash", "read", "skill_load", "todo_append", "todo_insert", "todo_update", "todowrite", "write"}))
+			Expect(sorted).To(Equal([]string{"bash", "read", "skill_load", "todo_append", "todo_clear", "todo_insert", "todo_update", "todowrite", "write"}))
 		})
 
 		It("is idempotent — declaring a base tool explicitly does not duplicate it", func() {
 			manifest := &agent.Manifest{
 				Capabilities: agent.Capabilities{Tools: []string{"todowrite", "bash"}},
 			}
-			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "skill_load", "bash"))
+			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load", "bash"))
 		})
 
 		It("subtracts capabilities.tools_deny entries — even base tools", func() {
@@ -159,19 +159,19 @@ var _ = Describe("Manifest", func() {
 					ToolsDeny: []string{"todowrite"},
 				},
 			}
-			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todo_update", "todo_append", "todo_insert", "skill_load"))
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load"))
 		})
 
 		It("returns the base set when called on a nil receiver", func() {
 			var manifest *agent.Manifest
-			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "skill_load"))
+			Expect(manifest.EffectiveTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load"))
 		})
 
 		It("ignores empty string entries in capabilities.tools", func() {
 			manifest := &agent.Manifest{
 				Capabilities: agent.Capabilities{Tools: []string{"", "bash", ""}},
 			}
-			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "todo_append", "todo_insert", "skill_load"))
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load"))
 		})
 
 		It("survives a tools_deny that includes a tool the manifest never declared", func() {
@@ -181,19 +181,28 @@ var _ = Describe("Manifest", func() {
 					ToolsDeny: []string{"not-in-the-set", "skill_load"},
 				},
 			}
-			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "todo_append", "todo_insert"))
+			Expect(manifest.EffectiveTools()).To(ConsistOf("bash", "todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear"))
 		})
 	})
 
 	Describe("DefaultBaseTools (D1)", func() {
-		It("exposes the five-tool floor every manifest inherits", func() {
-			Expect(agent.DefaultBaseTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "skill_load"))
+		It("exposes the six-tool floor every manifest inherits", func() {
+			Expect(agent.DefaultBaseTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load"))
+		})
+
+		// Regression pin: every agent manifest's system prompt instructs the
+		// agent to call todo_clear when the list is finished, so todo_clear
+		// MUST be in the inherited base toolset. Without it the schema filter
+		// hides todo_clear from any agent that does not declare it explicitly
+		// (none do), and the agent cannot reach the tool it is told to call.
+		It("includes todo_clear so agents can retire a finished list", func() {
+			Expect(agent.DefaultBaseTools()).To(ContainElement("todo_clear"))
 		})
 
 		It("returns a fresh copy so callers cannot mutate the package constant", func() {
 			first := agent.DefaultBaseTools()
 			first[0] = "mutated"
-			Expect(agent.DefaultBaseTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "skill_load"))
+			Expect(agent.DefaultBaseTools()).To(ConsistOf("todowrite", "todo_update", "todo_append", "todo_insert", "todo_clear", "skill_load"))
 		})
 	})
 })
