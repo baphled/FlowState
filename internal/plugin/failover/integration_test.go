@@ -246,22 +246,21 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			Expect(err.Error()).To(ContainSubstring("all providers failed"))
 		})
 
-		It("marks billing/quota providers but NOT auth-failure (H8)", func() {
+		It("marks both auth-failure and billing providers for cooldown (S1 inverts H8)", func() {
 			handler := sh.Execute(baseHandler(registry))
 			_, _ = handler(context.Background(), &provider.ChatRequest{})
 
-			// H8: auth-failure is user-correctable (fix the key) and a 24h
-			// cooldown punishes a typo. The gate in markProviderHealth
-			// suppresses the health mark for this category only — billing
-			// stays as a per-credential cooldown signal.
-			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
-				"AuthFailure no longer marks health post-H8; the "+
-					"user fixes the key and the next request succeeds "+
-					"without waiting on a persisted 24h cooldown")
+			// S1 (2026-07): AuthFailure is NO LONGER exempt from cooldown.
+			// The H8 gate (isUserCorrectableError) previously suppressed the
+			// health mark for auth failures. S1 removes that gate because
+			// S2 adds reactive OAuth refresh-on-401 and S5 adds operator
+			// reset affordances. Without the gate, auth failures reach the
+			// cooldown table, stopping the infinite-retry pattern seen in
+			// session 79ba468e.
+			Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue(),
+				"AuthFailure marks health post-S1")
 			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue(),
-				"Billing remains per-credential and continues to mark "+
-					"health — the next call with the same key will "+
-					"fail the same way, so failing over is meaningful")
+				"Billing still marks health — per-credential exhaustion")
 		})
 	})
 

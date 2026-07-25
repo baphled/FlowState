@@ -1289,17 +1289,15 @@ var _ = Describe("StreamHook", func() {
 				})
 			})
 
-			It("does NOT mark the provider as unavailable on a typo'd or rotated key", func() {
+			It("marks the provider for cooldown even on auth_failure (S1 inverts H8)", func() {
 				handler := sh.Execute(baseHandler(registry))
 				_, err := handler(context.Background(), &provider.ChatRequest{})
 				Expect(err).To(HaveOccurred(),
-					"the auth error still surfaces to the caller — "+
-						"only the persistent 24h health-mark is skipped")
-				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
-					"a fixable credential mistake must not park the "+
-						"provider on a 24h cooldown that survives restart; "+
-						"the user fixes the key and the next request must "+
-						"succeed without waiting a day")
+					"the auth error still surfaces to the caller")
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue(),
+					"S1 removes the H8 gate: auth failures now reach the "+
+						"cooldown table because S2 adds reactive OAuth "+
+						"refresh-on-401 and S5 adds operator reset")
 			})
 		})
 
@@ -1322,14 +1320,13 @@ var _ = Describe("StreamHook", func() {
 				})
 			})
 
-			It("does NOT mark the provider as unavailable", func() {
+			It("marks the provider for cooldown on async auth_failure (S1 inverts H8)", func() {
 				handler := sh.Execute(baseHandler(registry))
 				_, err := handler(context.Background(), &provider.ChatRequest{})
 				Expect(err).To(HaveOccurred())
-				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
-					"auth-failure on the async path must also skip "+
-						"health-marking — same contract as the sync "+
-						"sibling spec")
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue(),
+					"S1 removes the H8 async gate — same contract as "+
+						"the sync sibling")
 			})
 		})
 
@@ -1397,17 +1394,15 @@ var _ = Describe("StreamHook", func() {
 				})
 			})
 
-			It("does NOT mark the provider as unavailable on a wrong model ID", func() {
+			It("marks the provider for cooldown on model_not_found (S1 inverts H9)", func() {
 				handler := sh.Execute(baseHandler(registry))
 				_, err := handler(context.Background(), &provider.ChatRequest{})
 				Expect(err).To(HaveOccurred(),
-					"the model-not-found error still surfaces to the caller — "+
-						"only the persistent 24h health-mark is skipped")
-				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
-					"a wrong model ID must not park the provider on a 24h "+
-						"cooldown; other models on the same provider remain "+
-						"functional and the next request with the correct model "+
-						"ID must succeed immediately")
+					"the model-not-found error still surfaces to the caller")
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue(),
+					"S1 removes the H9 gate: stale model IDs now reach the "+
+						"cooldown table; per-model granularity will be "+
+						"addressed in a follow-up")
 			})
 		})
 
@@ -1429,13 +1424,13 @@ var _ = Describe("StreamHook", func() {
 				})
 			})
 
-			It("does NOT mark the provider as unavailable", func() {
+			It("marks the provider for cooldown on async model_not_found (S1 inverts H9)", func() {
 				handler := sh.Execute(baseHandler(registry))
 				_, err := handler(context.Background(), &provider.ChatRequest{})
 				Expect(err).To(HaveOccurred())
-				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse(),
-					"model-not-found on the async path must also skip "+
-						"health-marking — same contract as the sync sibling")
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue(),
+					"S1 removes the H9 async gate — same contract as "+
+						"the sync sibling")
 			})
 		})
 

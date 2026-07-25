@@ -69,6 +69,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterOrchestratorMetadataSteps(ctx)
 	RegisterConfigSteps(ctx)
 	RegisterPluginSteps(ctx)
+	RegisterFailoverSteps(ctx)
 	RegisterDelegationSessionSteps(ctx)
 	s.RegisterSteps(ctx)
 	s.RegisterAgentLayeringSteps(ctx)
