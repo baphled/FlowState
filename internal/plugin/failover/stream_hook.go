@@ -99,6 +99,10 @@ type StreamHook struct {
 	eventBus *eventbus.EventBus
 	agentID  string
 	retry    RetryBackoffConfig
+
+	// authRefreshConfig controls the reactive OAuth refresh behaviour
+	// (S2) when a provider returns ErrorTypeAuthFailure.
+	authRefreshConfig provider.RefreshPolicy
 }
 
 // NewStreamHook creates a new StreamHook with the given failover manager,
@@ -971,6 +975,114 @@ func promotePinned(candidates []provider.ModelPreference, pinnedProvider, pinned
 	return reordered
 }
 
+// tryRefreshRetry attempts reactive OAuth refresh when the hook receives
+// an ErrorTypeAuthFailure from a provider that implements RefreshCapable.
+//
+// On success the provider's cached token is replaced, and this method
+// retries the next() call with a fresh timeout context. On failure it
+// returns nil and the caller falls through to cooldown marking.
+//
+// Expected:
+//   - err is a non-nil provider error (typically ErrorTypeAuthFailure).
+//   - candidate identifies the provider/model being attempted.
+//
+// Returns:
+//   - (newCh, newCancel, true) when the retry succeeded.
+//   - (nil, nil, false) when refresh was not attempted or failed.
+//
+// Side effects:
+//   - Cancels the original timeout context.
+//   - Acquires and releases the provider's TokenManager mutex.
+//   - May perform an HTTP token refresh.
+func (sh *StreamHook) tryRefreshRetry(
+	ctx context.Context,
+	err error,
+	next hook.HandlerFunc,
+	req *provider.ChatRequest,
+	candidate provider.ModelPreference,
+	detached context.Context,
+	attemptTimeout time.Duration,
+	originalCancel context.CancelFunc,
+) (<-chan provider.StreamChunk, context.CancelFunc, bool) {
+	// Only attempt refresh on auth failures.
+	var provErr *provider.Error
+	if !errors.As(err, &provErr) || provErr.ErrorType != provider.ErrorTypeAuthFailure {
+		return nil, nil, false
+	}
+
+	// Resolve the provider from the registry.
+	p, err := sh.manager.registry.Get(candidate.Provider)
+	if err != nil {
+		slog.Debug("tryRefreshRetry: provider not in registry",
+			"provider", candidate.Provider, "error", err)
+		return nil, nil, false
+	}
+
+	// Check if the provider supports reactive refresh.
+	rc, ok := p.(provider.RefreshCapable)
+	if !ok {
+		return nil, nil, false
+	}
+
+	// Check consecutive-failure budget.
+	_, consecutiveFailures := rc.RefreshStatus()
+	maxRetries := sh.authRefreshConfig.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 3 // sensible default
+	}
+	if consecutiveFailures >= maxRetries {
+		slog.Warn("tryRefreshRetry: max consecutive refresh failures reached, skipping retry",
+			"provider", candidate.Provider,
+			"consecutive_failures", consecutiveFailures,
+			"max_retries", maxRetries)
+		return nil, nil, false
+	}
+
+	// Cancelling the original failed attempt's context.
+	originalCancel()
+
+	// Create a context for the refresh call (separate from the retry).
+	refreshCtx, refreshCancel := context.WithTimeout(detached, 30*time.Second)
+	defer refreshCancel()
+
+	slog.Info("tryRefreshRetry: attempting reactive token refresh",
+		"provider", candidate.Provider,
+		"attempt", consecutiveFailures+1,
+		"max_retries", maxRetries)
+
+	// S2.5: Single-flight dedup — if a refresh was already completed
+	// within the last 2 seconds (and it succeeded, meaning
+	// consecutiveFailures == 0), skip the duplicate HTTP call and
+	// retry the request directly.
+	lastRefresh, lastFailures := rc.RefreshStatus()
+	if !lastRefresh.IsZero() && time.Since(lastRefresh) < 2*time.Second && lastFailures == 0 {
+		slog.Debug("tryRefreshRetry: recent refresh detected, skipping duplicate",
+			"provider", candidate.Provider,
+			"last_refresh_ago", time.Since(lastRefresh))
+	} else {
+		if rerr := rc.RefreshNow(refreshCtx); rerr != nil {
+			slog.Warn("tryRefreshRetry: token refresh failed",
+				"provider", candidate.Provider, "error", rerr)
+			return nil, nil, false
+		}
+	}
+
+	slog.Info("tryRefreshRetry: token refresh succeeded, retrying request",
+		"provider", candidate.Provider)
+
+	// Retry the request with a fresh timeout context.
+	retryCtx, retryCancel := context.WithTimeout(detached, attemptTimeout)
+	newCh, newErr := next(retryCtx, req)
+	if newErr != nil {
+		retryCancel()
+		slog.Warn("tryRefreshRetry: retry after refresh also failed",
+			"provider", candidate.Provider, "error", newErr)
+		return nil, nil, false
+	}
+
+	return newCh, retryCancel, true
+}
+
 // attemptCandidate tries a single provider candidate with per-attempt timeout and
 // peek-and-replay. Returns the replay channel on success or an error on failure.
 //
@@ -1018,6 +1130,18 @@ func (sh *StreamHook) attemptCandidate(
 
 	ch, err := next(timeoutCtx, req)
 	if err != nil {
+		// S2: Reactive OAuth refresh on auth failure before cooldown.
+		if newCh, newCancel, ok := sh.tryRefreshRetry(
+			ctx, err, next, req, candidate,
+			detached, attemptTimeout, cancel,
+		); ok {
+			// Retry after refresh — continue to peekFirstChunk with
+			// the new channel and cancel function.
+			cancel = newCancel
+			ch = newCh
+			goto afterInvoke
+		}
+
 		cancel()
 		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, err)
 		sh.publishFailoverError(ctx, candidate, requestStats, err, attemptDebugMeta{
@@ -1028,6 +1152,8 @@ func (sh *StreamHook) attemptCandidate(
 		})
 		return nil, err
 	}
+
+afterInvoke:
 
 	firstChunk, ok, peekErr := peekFirstChunk(timeoutCtx, ch, candidate.Provider)
 	if peekErr != nil {

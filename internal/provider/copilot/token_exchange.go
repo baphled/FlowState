@@ -82,6 +82,16 @@ type TokenManager struct {
 	mu          sync.Mutex
 	token       string
 	expiresAt   int64
+
+	// consecutiveFailures is the number of consecutive token refresh
+	// failures since the last successful refresh. Reset to 0 after
+	// every successful refresh. Used by the failover hook (S2) to
+	// determine when to give up on this provider.
+	consecutiveFailures int
+	// lastRefreshAt is the wall-clock time of the most recent token
+	// refresh attempt (successful or failed). Zero value means no
+	// attempt has been made since process start.
+	lastRefreshAt time.Time
 }
 
 // NewTokenManager creates a TokenManager that exchanges GitHub tokens using the provided TokenExchanger.
@@ -172,12 +182,67 @@ func (tm *TokenManager) EnsureToken(ctx context.Context) (string, error) {
 		return tm.token, nil
 	}
 
+	tm.lastRefreshAt = time.Now()
+
 	token, expiresAt, err := tm.exchanger.Exchange(ctx, tm.githubToken)
 	if err != nil {
+		tm.consecutiveFailures++
 		return "", fmt.Errorf("refreshing copilot token: %w", err)
 	}
 
 	tm.token = token
 	tm.expiresAt = expiresAt
+	tm.consecutiveFailures = 0
 	return tm.token, nil
+}
+
+// RefreshNow forces an immediate token exchange, bypassing the
+// proactive expiry check inside EnsureToken.
+//
+// Expected:
+//   - ctx is a valid context for request cancellation.
+//
+// Returns:
+//   - nil on success (new token acquired and cached).
+//   - error if the exchange attempt fails.
+//
+// Concurrency:
+//   - Acquires and releases the internal mutex.
+//   - May perform an HTTP token exchange.
+func (tm *TokenManager) RefreshNow(ctx context.Context) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	tm.lastRefreshAt = time.Now()
+
+	if tm.exchanger == nil {
+		tm.consecutiveFailures++
+		return fmt.Errorf("copilot token: no exchanger configured")
+	}
+
+	token, expiresAt, err := tm.exchanger.Exchange(ctx, tm.githubToken)
+	if err != nil {
+		tm.consecutiveFailures++
+		return fmt.Errorf("refreshing copilot token: %w", err)
+	}
+
+	tm.token = token
+	tm.expiresAt = expiresAt
+	tm.consecutiveFailures = 0
+	return nil
+}
+
+// RefreshStatus returns the last refresh attempt time and the
+// consecutive failure count.
+//
+// Returns:
+//   - lastAttempt is the wall-clock time of the most recent
+//     RefreshNow or EnsureToken refresh attempt. Zero when no
+//     attempt has been made since process start.
+//   - consecutiveFailures is the number of consecutive refresh
+//     failures since the last successful refresh.
+func (tm *TokenManager) RefreshStatus() (time.Time, int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.lastRefreshAt, tm.consecutiveFailures
 }

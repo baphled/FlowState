@@ -674,3 +674,68 @@ type Provider interface {
 	// Models returns the list of available models.
 	Models() ([]Model, error)
 }
+
+// RefreshResult carries the tokens and expiry returned by a successful
+// token refresh operation. The fields mirror the per-provider structs
+// in openai.TokenManager and anthropic.TokenManager so that the
+// RefreshCapable interface can use a single agnostic type at the
+// provider boundary.
+type RefreshResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresAt    int64
+}
+
+// RefreshPolicy configures the per-provider reactive refresh behaviour
+// that the failover hook applies when a provider returns
+// ErrorTypeAuthFailure.
+//
+// The zero value (MaxRetries=0) disables the reactive refresh path — the
+// provider's existing EnsureToken-based proactive refresh continues to
+// run inside Stream/Chat as before.
+type RefreshPolicy struct {
+	// MaxRetries is the number of consecutive refresh attempts before
+	// the failover hook gives up on this provider for the current
+	// request. When the per-process counter exceeds this the provider
+	// is skipped for the rest of the process lifetime (a restart
+	// resets the counter).
+	MaxRetries int
+}
+
+// RefreshCapable is implemented by providers that support reactive
+// OAuth token refresh triggered by the failover hook when it receives
+// an ErrorTypeAuthFailure.
+//
+// The failover hook calls RefreshNow after a 401 to force a new token
+// exchange before retrying the failed request. Providers that use
+// static API keys or non-expiring tokens do not implement this
+// interface.
+type RefreshCapable interface {
+	// RefreshNow forces an immediate token refresh, bypassing the
+	// proactive expiry check inside EnsureToken.
+	//
+	// Expected:
+	//   - ctx is a valid context for request cancellation.
+	//
+	// Returns:
+	//   - nil on success (new token acquired and cached).
+	//   - error if the refresh attempt fails.
+	//
+	// Concurrency:
+	//   - The implementation MUST be safe for concurrent calls.
+	//   - Callers SHOULD serialise via single-flight (S2.5).
+	RefreshNow(ctx context.Context) error
+
+	// RefreshStatus returns the last refresh attempt time and the
+	// consecutive failure count.
+	//
+	// Returns:
+	//   - lastAttempt is the wall-clock time of the most recent
+	//     RefreshNow or EnsureToken refresh attempt. Zero when no
+	//     attempt has been made since process start.
+	//   - consecutiveFailures is the number of consecutive refresh
+	//     failures since the last successful refresh. Reset to 0
+	//     after a successful refresh.
+	RefreshStatus() (lastAttempt time.Time, consecutiveFailures int)
+}
+

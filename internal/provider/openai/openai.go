@@ -48,6 +48,16 @@ type TokenManager struct {
 	refresher    TokenRefresher
 	authFilePath string
 	mu           sync.Mutex
+
+	// consecutiveFailures is the number of consecutive token refresh
+	// failures since the last successful refresh. Reset to 0 after
+	// every successful refresh. Used by the failover hook (S2) to
+	// determine when to give up on this provider.
+	consecutiveFailures int
+	// lastRefreshAt is the wall-clock time of the most recent token
+	// refresh attempt (successful or failed). Zero value means no
+	// attempt has been made since process start.
+	lastRefreshAt time.Time
 }
 
 // TokenRefresher defines the interface for refreshing an OAuth token.
@@ -133,14 +143,18 @@ func (tm *TokenManager) EnsureToken(ctx context.Context) (string, error) {
 		return tm.accessToken, nil
 	}
 
+	tm.lastRefreshAt = time.Now()
+
 	result, err := tm.refresher.Refresh(ctx, tm.refreshToken)
 	if err != nil {
+		tm.consecutiveFailures++
 		return "", fmt.Errorf("refreshing openai token: %w", err)
 	}
 
 	tm.accessToken = result.AccessToken
 	tm.refreshToken = result.RefreshToken
 	tm.expiresAt = result.ExpiresAt
+	tm.consecutiveFailures = 0
 
 	return tm.accessToken, nil
 }
@@ -148,6 +162,58 @@ func (tm *TokenManager) EnsureToken(ctx context.Context) (string, error) {
 // needsRefresh reports whether the access token is within 5 minutes of expiry.
 func (tm *TokenManager) needsRefresh() bool {
 	return time.Now().UnixMilli() >= tm.expiresAt-5*60*1000
+}
+
+// RefreshNow forces an immediate token refresh, bypassing the
+// proactive expiry check inside EnsureToken.
+//
+// Expected:
+//   - ctx is a valid context for request cancellation.
+//
+// Returns:
+//   - nil on success (new token acquired and cached).
+//   - error if the refresh attempt fails.
+//
+// Concurrency:
+//   - Acquires and releases the internal mutex.
+//   - May perform an HTTP token refresh.
+func (tm *TokenManager) RefreshNow(ctx context.Context) error {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	tm.lastRefreshAt = time.Now()
+
+	if tm.refresher == nil {
+		tm.consecutiveFailures++
+		return fmt.Errorf("openai token: no refresher configured")
+	}
+
+	result, err := tm.refresher.Refresh(ctx, tm.refreshToken)
+	if err != nil {
+		tm.consecutiveFailures++
+		return fmt.Errorf("refreshing openai token: %w", err)
+	}
+
+	tm.accessToken = result.AccessToken
+	tm.refreshToken = result.RefreshToken
+	tm.expiresAt = result.ExpiresAt
+	tm.consecutiveFailures = 0
+	return nil
+}
+
+// RefreshStatus returns the last refresh attempt time and the
+// consecutive failure count.
+//
+// Returns:
+//   - lastAttempt is the wall-clock time of the most recent
+//     RefreshNow or EnsureToken refresh attempt. Zero when no
+//     attempt has been made since process start.
+//   - consecutiveFailures is the number of consecutive refresh
+//     failures since the last successful refresh.
+func (tm *TokenManager) RefreshStatus() (time.Time, int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.lastRefreshAt, tm.consecutiveFailures
 }
 
 // Provider implements the provider.Provider interface for OpenAI.

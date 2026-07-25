@@ -50,6 +50,16 @@ func (m *FailoverMockStreamProvider) Models() ([]provider.Model, error) {
 	return nil, errFailoverMockNotImplemented
 }
 
+// RefreshNow is a no-op that always succeeds, used in S2 reactive refresh tests.
+func (m *FailoverMockStreamProvider) RefreshNow(_ context.Context) error {
+	return nil
+}
+
+// RefreshStatus returns a recent successful refresh, used in S2 reactive refresh tests.
+func (m *FailoverMockStreamProvider) RefreshStatus() (time.Time, int) {
+	return time.Now(), 0
+}
+
 // FailoverSteps holds state for failover BDD step definitions.
 type FailoverSteps struct {
 	registry          *provider.Registry
@@ -77,6 +87,7 @@ func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 
 	ctx.Step(`^a failover hook with a single candidate "([^"]*)" / "([^"]*)"$`, fs.aFailoverHookWithSingleCandidate)
 	ctx.Step(`^the candidate returns an auth failure error with code "([^"]*)"$`, fs.candidateReturnsAuthFailure)
+	ctx.Step(`^the candidate fails once with auth failure then succeeds$`, fs.candidateFailsOnceThenSucceeds)
 	ctx.Step(`^the candidate returns a model-not-found error$`, fs.candidateReturnsModelNotFound)
 	ctx.Step(`^the failover hook executes a chat request$`, fs.failoverHookExecutesChatRequest)
 	ctx.Step(`^the health manager marks "([^"]*)" / "([^"]*)" as rate-limited$`, fs.healthManagerMarksAsRateLimited)
@@ -114,6 +125,35 @@ func (fs *FailoverSteps) candidateReturnsAuthFailure(errorCode string) error {
 		name: fs.candidateProvider,
 		streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 			return nil, authErr
+		},
+	})
+	return nil
+}
+
+// candidateFailsOnceThenSucceeds registers a mock provider that returns an
+// ErrorTypeAuthFailure on the first Stream call, then succeeds on
+// every subsequent call. Simulates the S2 refresh-retry flow where
+// the hook refreshes the token and retries the request.
+func (fs *FailoverSteps) candidateFailsOnceThenSucceeds() error {
+	var callCount int
+	fs.registry.Register(&FailoverMockStreamProvider{
+		name: fs.candidateProvider,
+		streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+			callCount++
+			if callCount == 1 {
+				return nil, &provider.Error{
+					HTTPStatus: 401,
+					ErrorCode:  "token_expired",
+					ErrorType:  provider.ErrorTypeAuthFailure,
+					Provider:   fs.candidateProvider,
+					Message:    "token expired",
+				}
+			}
+			ch := make(chan provider.StreamChunk, 2)
+			ch <- provider.StreamChunk{Content: "Hello", Done: false}
+			ch <- provider.StreamChunk{Done: true}
+			close(ch)
+			return ch, nil
 		},
 	})
 	return nil
