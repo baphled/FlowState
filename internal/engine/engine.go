@@ -1356,7 +1356,7 @@ func maybeStartIdleSweeper(eng *Engine, cfg Config) {
 //   - Spawns one goroutine + writes eng.toolOutputCleanupStop when
 //     retention is non-negative; otherwise no-op.
 func maybeStartToolOutputCleanup(eng *Engine, cfg Config) {
-	if cfg.ToolOutputRetention < 0 {
+	if cfg.ToolOutputRetention < 0 || cfg.ToolOutputDir == "" {
 		return
 	}
 	retention := cfg.ToolOutputRetention
@@ -7519,14 +7519,16 @@ func (e *Engine) appendToolResultsBatchToMessages(
 	// IsError is stamped explicitly from results[i].Error != nil so the
 	// provider does not have to re-derive from content. Bug M4 (May 2026)
 	// — see provider.Message.IsError and anthropic.buildToolResultMessage.
-	// The "Error: " content prefix is retained for the model's text-level
-	// reading of the failure: it has been there since pre-fix and pruning
-	// it would change the visible payload in passing.
+	// When the tool sets a rich Output message (e.g. "You cannot complete
+	// this todo item without doing any work...") that text is preserved
+	// verbatim for the agent to read. The "Error: " prefix fallback is
+	// used only when Output is empty, matching the chunk path at the
+	// tool-loop emit site (lines ~5116-5118).
 	totalContentBytes := 0
 	for i, tc := range toolCalls {
 		content := results[i].Output
 		isError := results[i].Error != nil
-		if isError {
+		if isError && content == "" {
 			content = "Error: " + results[i].Error.Error()
 		}
 		totalContentBytes += len(content)

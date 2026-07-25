@@ -259,9 +259,36 @@ var _ = Describe("appendToolResultsBatchToMessages: IsError propagation (M4)", f
 		Expect(toolMsgs[2].IsError).To(BeFalse(),
 			"a success result whose Content begins with 'Error:' must not be flagged")
 	})
+
+	It("preserves rich Output guidance when both Output and Error are set", func() {
+		// Bug M4 follow-up (July 2026): appendToolResultsBatchToMessages was
+		// unconditionally overwriting Output with "Error: " + Error.Error(),
+		// stripping rich guidance text that tools set (e.g. todo completion
+		// rejection). The fix preserves Output verbatim when non-empty and
+		// only falls back to "Error: ..." when Output is empty.
+		messages := []provider.Message{baseSys, userMsg}
+		calls := []*provider.ToolCall{
+			{ID: "call_guided_err", Name: "todo_update"},
+		}
+		guidance := "You cannot complete this todo item without doing any work since the last one."
+		results := []tool.Result{{
+			Output: guidance,
+			Error:  errors.New("todo completion rejected: no work done since last completion"),
+		}}
+
+		out := eng.AppendToolResultsBatchToMessagesForTest(messages, calls, results)
+
+		toolMsg := out[len(out)-1]
+		Expect(toolMsg.Role).To(Equal("tool"))
+		Expect(toolMsg.IsError).To(BeTrue(),
+			"IsError must be true when Error is non-nil")
+		Expect(toolMsg.Content).To(Equal(guidance),
+			"Content must preserve the tool's Output guidance instead of being overwritten with 'Error: ...'")
+	})
 })
 
 var _ = Describe("Default-assistant prompt re-anchoring directive", func() {
+
 	It("includes a Turn Rule that anchors the assistant on the user's most recent user-role message", func() {
 		// This is the prompt-side half of the fix. The engine injects a re-anchor
 		// reminder after large tool-result batches; the prompt directive ensures
