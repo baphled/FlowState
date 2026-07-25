@@ -3357,31 +3357,42 @@ func buildPathGuardFromConfig(cfg *config.AppConfig) *pathguard.Guard {
 
 	permsPath := filepath.Join(config.Dir(), "permissions.yaml")
 	perms, err := config.LoadPermissions(permsPath)
-	if err != nil {
+
+	var g *pathguard.Guard
+	switch {
+	case err != nil:
 		slog.Warn("failed to load permissions.yaml — falling back to legacy denied-roots guard",
 			"path", permsPath,
 			"error", err,
 		)
-		return pathguard.New(denied)
-	}
-	if perms == nil {
+		g = pathguard.New(denied)
+	case perms == nil:
 		// File absent OR unsupported version (LoadPermissions logs its
 		// own warning for the latter). Preserve the legacy code path.
-		return pathguard.New(denied)
+		g = pathguard.New(denied)
+	default:
+		// Plan-Mode Output Directory plan §3 Slice 1: route the
+		// operator's configured plan_output_dir through to the pathguard
+		// overlay so Plan-mode write/edit/multiedit/apply_patch calls
+		// are scoped to that directory. Loud-disclosure log surfaces the
+		// constraint on the bash-stays-filtered limitation at startup
+		// (the Vue chip popover surface is deferred to Slice 2).
+		if perms.PlanOutputDir != "" {
+			slog.Info("Plan mode: bash filtered at schema, file tools restricted to plan_output_dir",
+				"plan_output_dir", perms.PlanOutputDir,
+			)
+		}
+		g = pathguard.NewWithPermissionsAndPlanOutputDir(denied, perms, perms.PlanOutputDir)
 	}
 
-	// Plan-Mode Output Directory plan §3 Slice 1: route the
-	// operator's configured plan_output_dir through to the pathguard
-	// overlay so Plan-mode write/edit/multiedit/apply_patch calls
-	// are scoped to that directory. Loud-disclosure log surfaces the
-	// constraint on the bash-stays-filtered limitation at startup
-	// (the Vue chip popover surface is deferred to Slice 2).
-	if perms.PlanOutputDir != "" {
-		slog.Info("Plan mode: bash filtered at schema, file tools restricted to plan_output_dir",
-			"plan_output_dir", perms.PlanOutputDir,
-		)
+	// Name the in-process vault-rag query tool in denial messages
+	// so agents receive an actionable hint pointing at the right MCP
+	// tool rather than the generic "use the appropriate MCP tool"
+	// fallback.
+	if cfg != nil && cfg.VaultPath != "" {
+		g.SetMCPHint("mcp_vault-rag_query_vault")
 	}
-	return pathguard.NewWithPermissionsAndPlanOutputDir(denied, perms, perms.PlanOutputDir)
+	return g
 }
 
 // buildPermissionsWriter constructs the pathguard.Writer that handles

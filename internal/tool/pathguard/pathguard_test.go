@@ -781,3 +781,49 @@ func (c *countingMatcher) Match(string, string) (string, bool) {
 	c.calls++
 	return "", false
 }
+
+var _ = Describe("Pathguard — MCP hint injection", func() {
+	const denied = "/tmp/pathguard-mcphint-fixture"
+
+	Describe("Check — default hint (no SetMCPHint call)", func() {
+		It("produces the legacy generic hint in the denial message", func() {
+			g := pathguard.New([]string{denied})
+			err := g.Check(filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("use the appropriate MCP tool"))
+		})
+	})
+
+	Describe("Check — specific hint after SetMCPHint", func() {
+		It("names the configured MCP tool in the denial message", func() {
+			g := pathguard.New([]string{denied})
+			g.SetMCPHint("mcp_vault-rag_query_vault")
+			err := g.Check(filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("use the mcp_vault-rag_query_vault MCP tool"))
+			Expect(err.Error()).NotTo(ContainSubstring("appropriate MCP tool"))
+		})
+	})
+
+	Describe("CheckCommand — specific hint after SetMCPHint", func() {
+		It("names the configured MCP tool in the command denial message", func() {
+			g := pathguard.New([]string{denied})
+			g.SetMCPHint("mcp_vault-rag_query_vault")
+			cmd := "cat " + filepath.Join(denied, "notes.md")
+			err := g.CheckCommand(cmd)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("use the mcp_vault-rag_query_vault MCP tool"))
+		})
+	})
+
+	Describe("SetMCPHint with empty string reverts to generic", func() {
+		It("falls back to the generic hint when SetMCPHint(\"\") is called after a non-empty hint", func() {
+			g := pathguard.New([]string{denied})
+			g.SetMCPHint("mcp_vault-rag_query_vault")
+			g.SetMCPHint("")
+			err := g.Check(filepath.Join(denied, "foo.md"))
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("use the appropriate MCP tool"))
+		})
+	})
+})

@@ -138,6 +138,13 @@ type Guard struct {
 	// without re-consulting the prompter. In-memory only; clears
 	// when the engine evicts the session.
 	sessionAllow map[string]map[string]bool
+	// mcpHint, when non-empty, names the specific MCP tool denial
+	// messages should suggest in place of the generic "use the
+	// appropriate MCP tool" fallback. Wired by the config layer
+	// (app.buildPathGuardFromConfig) which knows vault paths are
+	// reached via an MCP query tool. Empty (the zero
+	// value) preserves the legacy generic hint.
+	mcpHint string
 }
 
 // planScopedTools is the set of file-mutating tools that pathguard's
@@ -198,6 +205,16 @@ func NewWithPermissionsAndPlanOutputDir(denied []string, perms PermissionsMatche
 		}
 	}
 	return g
+}
+
+// SetMCPHint names the specific MCP tool denial messages should
+// suggest instead of the generic "use the appropriate MCP tool"
+// fallback. Empty hint reverts to the legacy generic message. The
+// setter shape (rather than a new constructor) mirrors
+// SetPermissionPrompter and avoids combinatorial growth of the
+// New* constructor surface.
+func (g *Guard) SetMCPHint(hint string) {
+	g.mcpHint = hint
 }
 
 // SetPermissionPrompter wires a PermissionPrompter onto an existing
@@ -282,6 +299,19 @@ func normaliseDenied(denied []string) []string {
 	return abs
 }
 
+// mcpHintClause returns the parenthesised recovery hint clause
+// used inside denial messages. When g.mcpHint is empty the legacy
+// generic hint is preserved so existing callers and tests are
+// unaffected; when non-empty the configured tool name is named
+// explicitly so agents receive an actionable pointer instead of a
+// vague instruction.
+func (g *Guard) mcpHintClause() string {
+	if g.mcpHint == "" {
+		return "use the appropriate MCP tool"
+	}
+	return fmt.Sprintf("use the %s MCP tool", g.mcpHint)
+}
+
 // Check returns an error when path resolves inside any denied directory.
 // If the current working directory is itself inside a denied directory,
 // the check passes (the user chose to work inside that directory).
@@ -307,7 +337,7 @@ func (g *Guard) Check(path string) error {
 			continue
 		}
 		if strings.HasPrefix(abs, d+string(filepath.Separator)) || abs == d {
-			return fmt.Errorf("access denied: %s is a protected path (use the appropriate MCP tool)", path)
+			return fmt.Errorf("access denied: %s is a protected path (%s)", path, g.mcpHintClause())
 		}
 	}
 	return nil
@@ -363,7 +393,7 @@ func (g *Guard) CheckCommand(command string) error {
 				continue
 			}
 			if strings.HasPrefix(abs, d+string(filepath.Separator)) || abs == d {
-				return fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d)
+				return fmt.Errorf("access denied: command references protected path %s (%s)", d, g.mcpHintClause())
 			}
 		}
 	}
@@ -824,7 +854,7 @@ func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.M
 				continue
 			}
 			if strings.HasPrefix(abs, d+string(filepath.Separator)) || abs == d {
-				return abs, fmt.Errorf("access denied: command references protected path %s (use the appropriate MCP tool)", d)
+				return abs, fmt.Errorf("access denied: command references protected path %s (%s)", d, g.mcpHintClause())
 			}
 		}
 	}
