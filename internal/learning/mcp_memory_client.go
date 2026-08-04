@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/baphled/flowstate/internal/mcp"
 )
@@ -250,7 +251,10 @@ func (m *MCPMemoryClient) WriteLearningRecord(record *Record) error {
 		EntityType:   "learning-record",
 		Observations: observations,
 	}
-	_, err := m.CreateEntities(context.Background(), []Entity{entity})
+	created, err := m.CreateEntities(context.Background(), []Entity{entity})
+	if err == nil && len(created) == 0 {
+		slog.Warn("WriteLearningRecord: CreateEntities returned empty result, entity not persisted", "agent_id", record.AgentID)
+	}
 	return err
 }
 
