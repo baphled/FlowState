@@ -178,6 +178,7 @@ def build_session_rows(metas, since=None, agent_filter=None, parent_filter=None)
             "parent_id": parent,
             "created_at": created,
             "messages": msg_count,
+            "failure_reason": meta.get("failure_reason", ""),
             "recording": recording,
         }
         rows.append(row)
@@ -208,8 +209,9 @@ def print_session_table(rows):
         rec = row["recording"]
 
         status_colour = "green" if status == "completed" else "yellow"
+        failure_reason = row.get("failure_reason", "")
         if status == "failed":
-            status_colour = "red"
+            status_colour = "red" if failure_reason else "red"
 
         events = rec["events"] if rec else 0
         llm = rec["provider_requests"] if rec else 0
@@ -224,9 +226,14 @@ def print_session_table(rows):
             except (ValueError, TypeError):
                 created = row["created_at"][:16]
 
+        if status == "failed" and failure_reason:
+            status_display = f"{c('red', 'failed')} [{failure_reason[:40]}]"
+        else:
+            status_display = c(status_colour, status)
+
         print(
             f"  {c('cyan', sid):>23}  {c('magenta', agent):>23}  "
-            f"{c(status_colour, status):>21}  "
+            f"{status_display:>21}  "
             f"{msgs:>5}  {events:>6}  {llm:>4}  "
             f"{tools:>5}  {duration:>8}  {created:>20}"
         )
@@ -385,6 +392,7 @@ def main():
                 "session_id": row["session_id"],
                 "agent_id": row["agent_id"],
                 "status": row["status"],
+                "failure_reason": row.get("failure_reason", ""),
                 "parent_id": row["parent_id"],
                 "created_at": row["created_at"],
                 "messages": row["messages"],

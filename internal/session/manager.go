@@ -145,6 +145,10 @@ type Session struct {
 	// Persisted with omitempty so legacy session sidecars stay
 	// byte-identical until a mode other than "default" is set.
 	PermissionMode string `json:"permission_mode,omitempty"`
+	// FailureReason captures the terminal error that caused this session
+	// to flip to StatusFailed. Written once on the active -> failed
+	// transition; empty for all other states. Truncated to 256 chars.
+	FailureReason string `json:"failure_reason,omitempty"`
 	// ChainID stamps the delegation coordination chain identifier on a
 	// child session at spawn time. Empty for top-level (non-delegated)
 	// sessions, populated for any session created via
@@ -1242,13 +1246,21 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 		// further mutations.
 		if (msg.StopReason == StopReasonStreamTruncated ||
 			msg.StopReason == StopReasonToolUseNoCalls ||
-			msg.StopReason == StopReasonAbandonedTool) &&
+			msg.StopReason == StopReasonAbandonedTool ||
+			msg.StopReason == StopReasonToolLoopExceeded) &&
 			sess.Status != string(StatusFailed) &&
 			sess.Status != string(StatusAbandoned) {
 			sess.Status = string(StatusFailed)
+			// Capture the stop reason as the failure reason, truncated to 256 chars.
+			reason := string(msg.StopReason)
+			if len(reason) > 256 {
+				reason = reason[:256]
+			}
+			sess.FailureReason = reason
 		} else if msg.StopReason != StopReasonStreamTruncated &&
 			msg.StopReason != StopReasonToolUseNoCalls &&
 			msg.StopReason != StopReasonAbandonedTool &&
+			msg.StopReason != StopReasonToolLoopExceeded &&
 			sess.Status == string(StatusFailed) {
 			// Failed-recovery demotion (Option A, June 2026). A healthy
 			// assistant message arrived on a session that was previously
@@ -1264,6 +1276,8 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 			// MarkEndedFromEvent, both updated below to allow the
 			// failed -> completed edge.
 			sess.Status = string(StatusActive)
+			// Demotion implies recovery — clear the failure reason.
+			sess.FailureReason = ""
 		}
 	}
 
