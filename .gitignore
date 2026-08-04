@@ -54,6 +54,7 @@ build/
 __debug_bin*
 debug.log
 /.tmp
+scripts/__pycache__/
 
 # Test artifacts
 test-results/
