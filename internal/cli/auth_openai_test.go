@@ -33,7 +33,6 @@ var _ = Describe("auth openai subcommand", func() {
 		Expect(os.MkdirAll(filepath.Join(tmpDir, "flowstate"), 0o700)).To(Succeed())
 
 		cfg := config.DefaultConfig()
-		cfg.Providers.Default = "openai"
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
 
@@ -61,7 +60,7 @@ var _ = Describe("auth openai subcommand", func() {
 		cmd.SetErr(out)
 
 		Expect(cmd.Execute()).To(Succeed())
-		Expect(out.String()).To(ContainSubstring("OpenAI API key saved"))
+		Expect(out.String()).To(ContainSubstring("OpenAI credential saved"))
 		Expect(testApp.Config.Providers.OpenAI.APIKey).To(Equal("sk-test-suite-openai-1234567890"))
 
 		data, err := os.ReadFile(filepath.Join(tmpDir, "flowstate", "config.yaml"))
@@ -80,6 +79,6 @@ var _ = Describe("auth openai subcommand", func() {
 
 		err := cmd.Execute()
 		Expect(err).To(HaveOccurred())
-		Expect(out.String()).To(ContainSubstring("Invalid API key format"))
+		Expect(out.String()).To(ContainSubstring("Invalid credential format"))
 	})
 })

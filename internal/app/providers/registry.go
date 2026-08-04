@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/baphled/flowstate/internal/config"
@@ -29,10 +28,8 @@ var ErrOpenAINoKey = errors.New(
 	"no API key (set OPENAI_API_KEY or providers.openai.api_key)",
 )
 
-// Build initialises and registers all configured LLM providers, discarding
-// the per-provider failure detail. Use BuildWithFailures when callers need
-// to surface provider-construction errors (e.g. the default-provider
-// resolution diagnostic in the composition root).
+// Build initialises and registers all configured LLM providers. Use
+// BuildWithFailures when callers need the underlying construction errors.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with provider configuration.
@@ -137,14 +134,13 @@ func ResolveProviderKey(envVar, cfgValue string) string {
 }
 
 // BuildConfigPreferences constructs a provider preference list from
-// application configuration, ordered so that cfg.Providers.Default is
-// always tried first.
+// application configuration.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with provider configuration.
 //
 // Returns:
-//   - A slice of ModelPreference values in default-first order, skipping
+//   - A slice of ModelPreference values in configuration order, skipping
 //     providers with no model configured.
 //
 // Side effects:
@@ -155,15 +151,6 @@ func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
 		model string
 	}
 
-	// Order capable cloud providers first and the tiny local provider
-	// (ollama) last. The failover loop walks this list in order after the
-	// default-hoist below, so a non-ollama default that hits a transient
-	// failure cascades through capable cloud models (anthropic, openai,
-	// zai, github, openzen, ollamacloud) BEFORE ever reaching a local
-	// llama3.2 that cannot reliably emit a structured delegate tool call.
-	// Putting ollama at the tail makes it the last-resort target rather
-	// than the first failover hop. See bug-fix note: "Failover Prefers
-	// Tiny Local Model Over Capable Cloud (June 2026)".
 	allProviders := []namedProvider{
 		{"anthropic", cfg.Providers.Anthropic.Model},
 		{"openai", cfg.Providers.OpenAI.Model},
@@ -175,15 +162,7 @@ func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
 		{"ollama", cfg.Providers.Ollama.Model},
 	}
 
-	defaultName := cfg.Providers.Default
-	sorted := make([]namedProvider, 0, len(allProviders))
-	for _, p := range allProviders {
-		if p.name == defaultName {
-			sorted = append([]namedProvider{p}, sorted...)
-		} else {
-			sorted = append(sorted, p)
-		}
-	}
+	sorted := allProviders
 
 	var prefs []provider.ModelPreference
 	for _, p := range sorted {
@@ -198,88 +177,13 @@ func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
 	return prefs
 }
 
-// DescribeResolutionFailure returns an error whose message surfaces the
-// full diagnostic context for a missing default provider: the list of
-// successfully registered providers and the per-provider failure reasons.
-// This makes startup failures actionable from stderr alone, rather than
-// requiring the user to grep the log file at
-// ~/.local/share/flowstate/flowstate.log.
-//
-// Expected:
-//   - requested is the name of the provider resolved from cfg.Providers.Default.
-//   - registered is the list of provider names that successfully registered.
-//   - failures is a map of provider-name to the constructor error. May be nil or empty.
-//   - lookupErr is the error returned by provider.Registry.Get for the requested provider.
-//
-// Returns:
-//   - An error wrapping lookupErr with additional context. Never nil.
-//
-// Side effects:
-//   - None.
-func DescribeResolutionFailure(
-	requested string,
-	registered []string,
-	failures map[string]error,
-	lookupErr error,
-) error {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%v\n  registered: %v", lookupErr, registered)
-	if failure, ok := failures[requested]; ok && failure != nil {
-		fmt.Fprintf(&b, "\n  %s failure: %v", requested, failure)
-	}
-	if len(failures) > 0 {
-		// Emit other failures in a stable order so the error message is
-		// deterministic in tests and log analysis.
-		names := make([]string, 0, len(failures))
-		for name := range failures {
-			if name == requested {
-				continue
-			}
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		if len(names) > 0 {
-			b.WriteString("\n  other failures:")
-			for _, name := range names {
-				fmt.Fprintf(&b, "\n    %s: %v", name, failures[name])
-			}
-		}
-	}
-	return errors.New(b.String())
-}
-
-// ResolveDefault verifies the default provider is registered and returns a
-// diagnostic error that surfaces the list of registered providers and the
-// reason the default provider failed to register, if any.
-//
-// Expected:
-//   - registry is non-nil and already populated by BuildWithFailures.
-//   - failures is the per-provider failure map from BuildWithFailures.
-//     May be nil.
-//   - defaultName is the provider name resolved from cfg.Providers.Default.
-//
-// Returns:
-//   - nil if the default provider is registered.
-//   - An error wrapping the lookup failure with diagnostic context otherwise.
-//
-// Side effects:
-//   - None.
-func ResolveDefault(
-	registry *provider.Registry,
-	failures map[string]error,
-	defaultName string,
-) error {
+// ResolveDefault validates that the configured default provider exists in the registry.
+func ResolveDefault(registry *provider.Registry, failures map[string]error, defaultName string) error {
 	if _, err := registry.Get(defaultName); err != nil {
-		return fmt.Errorf(
-			"getting default provider %q: %w",
-			defaultName,
-			DescribeResolutionFailure(
-				defaultName,
-				registry.List(),
-				failures,
-				err,
-			),
-		)
+		if failure, ok := failures[defaultName]; ok && failure != nil {
+			return fmt.Errorf("default provider %q unavailable: %w", defaultName, failure)
+		}
+		return fmt.Errorf("default provider %q unavailable: %w", defaultName, err)
 	}
 	return nil
 }
@@ -304,9 +208,9 @@ func buildOpenAIProvider(cfg *config.AppConfig) (*openai.Provider, error) {
 // exceeds the provider's concurrent-request cap, regardless of how the
 // concurrency arises (e.g. a swarm lead's batched delegate tool calls each
 // opening their own stream). Wrapping here — rather than at the traced-provider
-// seam in the composition root — ensures BOTH the default provider AND all
-// failover targets resolved from this registry inherit the cap. A
-// maxConcurrent of 0 leaves the provider unwrapped, preserving prior behaviour.
+// seam in the composition root — ensures all failover targets resolved from
+// this registry inherit the cap. A maxConcurrent of 0 leaves the provider
+// unwrapped, preserving prior behaviour.
 func recordProvider(
 	registry *provider.Registry,
 	failures map[string]error,

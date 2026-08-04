@@ -542,34 +542,6 @@ func (c *AppConfig) ResolvedEmbeddingModel() string {
 	return c.EmbeddingModel
 }
 
-// DefaultProviderModel returns the chat model configured for the provider
-// named in cfg.Providers.Default. Returns empty when the default provider
-// has no model configured (callers treat empty as "no usable default" and
-// surface their own error).
-func (c *AppConfig) DefaultProviderModel() string {
-	if c == nil {
-		return ""
-	}
-	switch c.Providers.Default {
-	case "anthropic":
-		return c.Providers.Anthropic.Model
-	case "openai":
-		return c.Providers.OpenAI.Model
-	case "ollama":
-		return c.Providers.Ollama.Model
-	case "github", "github-copilot":
-		return c.Providers.GitHub.Model
-	case "zai":
-		return c.Providers.ZAI.Model
-	case "openzen":
-		return c.Providers.OpenZen.Model
-	case "opencode-go":
-		return c.Providers.OpenCodeGo.Model
-	default:
-		return ""
-	}
-}
-
 // QdrantConfig provides configuration for Qdrant-based recall storage.
 //
 // Fields:
@@ -630,7 +602,6 @@ func (c *AppConfig) ResolvedQdrantURL() string {
 // ProvidersConfig configures all available LLM providers.
 type ProvidersConfig struct {
 	Anthropic   ProviderConfig `json:"anthropic" yaml:"anthropic"`
-	Default     string         `json:"default" yaml:"default"`
 	GitHub      ProviderConfig `json:"github" yaml:"github"`
 	Ollama      ProviderConfig `json:"ollama" yaml:"ollama"`
 	OllamaCloud ProviderConfig `json:"ollamacloud" yaml:"ollamacloud"`
@@ -762,10 +733,9 @@ type MCPServerConfig struct {
 // LearningOnNovelty triggers learning captures when novel output is detected.
 //
 // CriticModel overrides the chat model used by the LLM critic. When empty,
-// the harness falls back to the default provider's primary model (resolved
-// from cfg.Providers.<default>.Model). Set this only when the critic should
-// run on a different model from the agent under critique — e.g. a cheaper
-// reviewer over an expensive primary, or vice versa.
+// the harness falls back to the provider's primary model. Set this only when
+// the critic should run on a different model from the agent under critique —
+// e.g. a cheaper reviewer over an expensive primary, or vice versa.
 type HarnessConfig struct {
 	Enabled            bool   `json:"enabled" yaml:"enabled"`
 	ProjectRoot        string `json:"project_root" yaml:"project_root"`
@@ -1359,7 +1329,6 @@ func DefaultConfig() *AppConfig {
 
 	return &AppConfig{
 		Providers: ProvidersConfig{
-			Default: "anthropic",
 			Ollama: ProviderConfig{
 				Host:  "http://localhost:11434",
 				Model: "llama3.2",
@@ -1690,10 +1659,6 @@ func ValidateMCPServers(servers []MCPServerConfig) error {
 //   - Modifies cfg in place, filling empty fields with default values from DefaultConfig.
 func applyDefaults(cfg *AppConfig) {
 	defaults := DefaultConfig()
-
-	if cfg.Providers.Default == "" {
-		cfg.Providers.Default = defaults.Providers.Default
-	}
 	applyProviderDefaults(&cfg.Providers.Ollama, defaults.Providers.Ollama)
 	applyProviderDefaults(&cfg.Providers.OpenAI, defaults.Providers.OpenAI)
 	applyProviderDefaults(&cfg.Providers.Anthropic, defaults.Providers.Anthropic)

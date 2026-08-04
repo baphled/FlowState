@@ -363,7 +363,7 @@ func NewWithOptions(cfg *config.AppConfig, opts NewOptions) (*App, error) {
 		Bootstrap(cfg)
 	}
 
-	providerRegistry, ollamaProvider, providerFailures := providers.BuildWithFailures(cfg)
+	providerRegistry, ollamaProvider, _ := providers.BuildWithFailures(cfg)
 	agentRegistry := setupAgentRegistry(cfg)
 	swarmRegistry := setupSwarmRegistry(resolveSwarmDir(cfg), agentRegistry)
 	setupSwarmSchemas(cfg)
@@ -372,9 +372,6 @@ func NewWithOptions(cfg *config.AppConfig, opts NewOptions) (*App, error) {
 	}
 	defaultManifest := selectDefaultManifest(agentRegistry, cfg.DefaultAgent)
 	skills, alwaysActiveSkills := loadSkills(cfg, defaultManifest)
-	if err := providers.ResolveDefault(providerRegistry, providerFailures, cfg.Providers.Default); err != nil {
-		return nil, err
-	}
 	sessionStore, learningStore, err := createDataStores(cfg, ollamaProvider)
 	if err != nil {
 		return nil, err
@@ -884,7 +881,7 @@ type compressionComponents struct {
 // Side effects:
 //   - Creates the MCP manager, tool registry, engine, discovery, streamer, and API server.
 func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
-	traced, err := buildTracedProvider(params.providerRegistry, params.cfg.Providers.Default)
+	traced, err := buildTracedProvider(params.providerRegistry)
 	if err != nil {
 		return nil, err
 	}
@@ -937,7 +934,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 	quotaW.withAggregator(eng)
 	bindCompressionManifest(compression, params.defaultManifest)
 	disc := createDiscovery(params.agentRegistry)
-	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, params.cfg.DefaultProviderModel(), createCoordinationStore(params.cfg))
+	streamer := createHarnessStreamer(eng, params.agentRegistry, params.cfg.Harness, traced.provider, createCoordinationStore(params.cfg))
 	sessionMgr := session.NewManager(streamer)
 	sessionMgr.SetSessionsDir(sessionsDirFromCfg(params.cfg))
 	// Stamp the configured embedding model on every newly-created
@@ -1096,7 +1093,7 @@ func buildEngineParams(in engineAssemblyParams) engineParams {
 		permissionHandler:       in.tools.permissionHandler,
 		mcpServerTools:          in.tools.mcpServerTools,
 		agentsFileLoader:        buildAgentsFileLoader(),
-		tokenCounter:            ctxstore.NewTiktokenCounterWithResolver(in.setup.failoverManager, in.setup.cfg.Providers.Default),
+		tokenCounter:            ctxstore.NewTiktokenCounterWithResolver(in.setup.failoverManager, ""),
 		contextAssemblyHooks:    in.setup.cfg.ContextAssemblyHooks,
 		failoverHook:            in.setup.failoverHook,
 		failoverManager:         in.setup.failoverManager,
@@ -2509,7 +2506,7 @@ func (a *App) createDelegateEngine(
 		// rather than building a fresh one. The delegate harness streamer's
 		// wave-fan-in validator reads the coordination namespace; a separate
 		// store instance would read a stale, never-refreshed in-memory map.
-		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, a.Config.DefaultProviderModel(), store)
+		str = createHarnessStreamer(eng, a.Registry, a.Config.Harness, a.defaultProvider, store)
 	}
 	return eng, str
 }
@@ -2524,7 +2521,7 @@ func (a *App) delegateTokenCounter() ctxstore.TokenCounter {
 		}
 	}
 	if a.plugins != nil && a.plugins.failoverManager != nil && a.Config != nil {
-		return ctxstore.NewTiktokenCounterWithResolver(a.plugins.failoverManager, a.Config.Providers.Default)
+		return ctxstore.NewTiktokenCounterWithResolver(a.plugins.failoverManager, "")
 	}
 	return ctxstore.NewTiktokenCounter()
 }
@@ -3877,7 +3874,8 @@ func handleToolExecuteResult(msg any, learningHk *learning.Hook, distiller learn
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx := context.WithValue(context.Background(), learning.AgentIDKey, toolEvt.Data.SessionID)
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		result := &learning.ToolCallResult{
 			Outcome: fmt.Sprintf("%s:%s", toolEvt.Data.ToolName, toolEvt.Data.Result),
@@ -4274,38 +4272,39 @@ type tracedBundle struct {
 	provider *tracer.TracingProvider
 }
 
-// buildTracedProvider creates a Prometheus metrics registry, wraps the default
-// provider with a TracingProvider that records per-method latency, and returns
-// the pieces required by the application container.
+// buildTracedProvider creates a Prometheus metrics registry, wraps the first
+// registered provider with a TracingProvider that records per-method latency.
 //
 // Expected:
 //   - providerRegistry is a non-nil provider.Registry with registered providers.
-//   - defaultName is the name of the default provider to retrieve.
 //
 // Returns:
 //   - A tracedBundle containing the prometheus registry, the shared
-//     tracer.Recorder, and a TracingProvider wrapping the default
-//     provider. The recorder is exposed so compression counters
+//     tracer.Recorder, and a TracingProvider wrapping the first provider.
+//     The recorder is exposed so compression counters
 //     (RecordContextWindowTokens, RecordCompressionTokensSaved) surface
 //     through the same /metrics handler used for provider latency.
-//   - An error if the default provider cannot be found.
+//   - An error if no provider is registered.
 //
 // Side effects:
 //   - Registers Prometheus collectors with the metrics registry.
 func buildTracedProvider(
 	providerRegistry *provider.Registry,
-	defaultName string,
 ) (tracedBundle, error) {
 	metricsReg := prometheus.NewRegistry()
 	recorder := tracer.NewPrometheusRecorder(metricsReg)
-	defaultProvider, err := providerRegistry.Get(defaultName)
+	providers := providerRegistry.List()
+	if len(providers) == 0 {
+		return tracedBundle{}, fmt.Errorf("no providers registered")
+	}
+	p, err := providerRegistry.Get(providers[0])
 	if err != nil {
-		return tracedBundle{}, fmt.Errorf("getting default provider %q: %w", defaultName, err)
+		return tracedBundle{}, fmt.Errorf("getting provider %q: %w", providers[0], err)
 	}
 	return tracedBundle{
 		metrics:  metricsReg,
 		recorder: recorder,
-		provider: tracer.NewTracingProvider(defaultProvider, recorder),
+		provider: tracer.NewTracingProvider(p, recorder),
 	}, nil
 }
 

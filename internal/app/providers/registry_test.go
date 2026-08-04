@@ -109,22 +109,23 @@ var _ = Describe("providers.ResolveProviderKey", func() {
 })
 
 var _ = Describe("providers.BuildConfigPreferences", func() {
-	It("orders the default provider first", func() {
+	It("preserves provider order without hoisting a default", func() {
 		cfg := config.DefaultConfig()
-		cfg.Providers.Default = "anthropic"
 		cfg.Providers.Anthropic.Model = "claude-test"
 		cfg.Providers.OpenAI.Model = "gpt-test"
+		cfg.Providers.OllamaCloud.Model = ""
 		cfg.Providers.Ollama.Model = "ollama-test"
 
 		prefs := providers.BuildConfigPreferences(cfg)
 
-		Expect(prefs).NotTo(BeEmpty())
+		Expect(prefs).To(HaveLen(3))
 		Expect(prefs[0].Provider).To(Equal("anthropic"))
+		Expect(prefs[1].Provider).To(Equal("openai"))
+		Expect(prefs[2].Provider).To(Equal("ollama"))
 	})
 
 	It("skips providers that have no model configured", func() {
 		cfg := config.DefaultConfig()
-		cfg.Providers.Default = "ollama"
 		cfg.Providers.Anthropic.Model = ""
 		cfg.Providers.OpenAI.Model = ""
 		cfg.Providers.Ollama.Model = "qwen3"
@@ -143,7 +144,6 @@ var _ = Describe("providers.BuildConfigPreferences", func() {
 	It("includes zai, copilot, and openzen when configured with models", func() {
 		cfg := &config.AppConfig{
 			Providers: config.ProvidersConfig{
-				Default: "zai",
 				Ollama:  config.ProviderConfig{Model: "llama3.2"},
 				ZAI:     config.ProviderConfig{Model: "glm-4.7"},
 				GitHub:  config.ProviderConfig{Model: "gpt-4o"},
@@ -162,10 +162,9 @@ var _ = Describe("providers.BuildConfigPreferences", func() {
 		Expect(providerNames).To(ContainElement("openzen"))
 	})
 
-	It("places the zai default first when configured", func() {
+	It("keeps cloud providers ahead of the tiny local provider", func() {
 		cfg := &config.AppConfig{
 			Providers: config.ProvidersConfig{
-				Default:   "zai",
 				Ollama:    config.ProviderConfig{Model: "llama3.2"},
 				Anthropic: config.ProviderConfig{Model: "claude-sonnet-4"},
 				ZAI:       config.ProviderConfig{Model: "glm-4.7"},
@@ -174,121 +173,27 @@ var _ = Describe("providers.BuildConfigPreferences", func() {
 
 		prefs := providers.BuildConfigPreferences(cfg)
 
-		Expect(prefs).ToNot(BeEmpty())
-		Expect(prefs[0].Provider).To(Equal("zai"))
-		Expect(prefs[0].Model).To(Equal("glm-4.7"))
+		Expect(prefs).To(HaveLen(3))
+		Expect(prefs[0].Provider).To(Equal("anthropic"))
+		Expect(prefs[1].Provider).To(Equal("zai"))
+		Expect(prefs[2].Provider).To(Equal("ollama"))
 	})
 
-	// Regression: failover preference order must prefer capable cloud
-	// providers over a tiny local model. Before the reorder, the literal
-	// slice put ollama at index 0 and zai at index 5, so with a non-ollama
-	// default the auto-failover tail reached ollama/llama3.2 BEFORE
-	// zai/glm-5.1 — stranding a swarm on a model too weak to emit a
-	// structured delegate call. We use default=openai so NEITHER zai nor
-	// ollama is hoisted, exercising the literal-order tail directly.
 	It("orders capable cloud providers ahead of the tiny local provider", func() {
 		cfg := &config.AppConfig{
 			Providers: config.ProvidersConfig{
-				Default:   "openai",
-				Ollama:    config.ProviderConfig{Model: "llama3.2"},
 				Anthropic: config.ProviderConfig{Model: "claude-sonnet-4"},
-				OpenAI:    config.ProviderConfig{Model: "gpt-5.5"},
 				ZAI:       config.ProviderConfig{Model: "glm-5.1"},
+				Ollama:    config.ProviderConfig{Model: "llama3.2"},
 			},
 		}
 
 		prefs := providers.BuildConfigPreferences(cfg)
 
-		names := make([]string, 0, len(prefs))
-		for _, p := range prefs {
-			names = append(names, p.Provider)
-		}
-
-		// Default openai is hoisted to the head.
-		Expect(names[0]).To(Equal("openai"))
-		// zai (capable cloud) must precede ollama (tiny local) in the tail.
-		zaiIdx := indexOfString(names, "zai")
-		ollamaIdx := indexOfString(names, "ollama")
-		anthropicIdx := indexOfString(names, "anthropic")
-		Expect(zaiIdx).To(BeNumerically(">", -1))
-		Expect(ollamaIdx).To(BeNumerically(">", -1))
-		Expect(zaiIdx).To(BeNumerically("<", ollamaIdx),
-			"capable cloud zai must precede tiny-local ollama in failover order")
-		Expect(anthropicIdx).To(BeNumerically("<", ollamaIdx),
-			"capable cloud anthropic must precede tiny-local ollama in failover order")
-		// ollama must be the last entry — the last-resort failover target.
-		Expect(ollamaIdx).To(Equal(len(names)-1),
-			"tiny-local ollama must be the final failover candidate")
-	})
-})
-
-// indexOfString returns the index of the first occurrence of target in
-// names, or -1 when absent. Inlined to keep the ordering assertions
-// readable without pulling in slices.Index just for the test.
-func indexOfString(names []string, target string) int {
-	for i, n := range names {
-		if n == target {
-			return i
-		}
-	}
-	return -1
-}
-
-var _ = Describe("providers.ResolveDefault", func() {
-	Context("when the default provider is registered", func() {
-		It("returns nil", func() {
-			cfg := config.DefaultConfig()
-			reg, _, failures := providers.BuildWithFailures(cfg)
-
-			Expect(providers.ResolveDefault(reg, failures, "ollama")).To(Succeed())
-		})
-	})
-
-	Context("when the default provider is missing", func() {
-		It("returns an error wrapping the registered provider list and per-provider failure reasons", func() {
-			cfg := config.DefaultConfig()
-			cfg.Providers.Anthropic.APIKey = ""
-			reg, _, failures := providers.BuildWithFailures(cfg)
-
-			err := providers.ResolveDefault(reg, failures, "anthropic")
-
-			Expect(err).To(HaveOccurred())
-			// Anthropic is not registered when no key is supplied; the
-			// diagnostic must include the lookup-failure substring and
-			// the list of providers that did register (ollama is always
-			// constructed from default config).
-			Expect(err.Error()).To(ContainSubstring("anthropic"))
-			Expect(err.Error()).To(ContainSubstring("registered:"))
-		})
-	})
-})
-
-var _ = Describe("providers.DescribeResolutionFailure", func() {
-	It("formats failures in deterministic order", func() {
-		failures := map[string]error{
-			"anthropic": errors.New("anthropic boom"),
-			"openai":    errors.New("openai boom"),
-			"zai":       errors.New("zai boom"),
-		}
-
-		err := providers.DescribeResolutionFailure(
-			"anthropic",
-			[]string{"ollama"},
-			failures,
-			errors.New("provider not registered"),
-		)
-
-		Expect(err).To(HaveOccurred())
-		// The "other failures" section sorts alphabetically; openai must
-		// appear before zai so the message is stable in error logs.
-		msg := err.Error()
-		Expect(msg).To(ContainSubstring("anthropic failure: anthropic boom"))
-		Expect(msg).To(ContainSubstring("other failures:"))
-		openaiIdx := indexOf(msg, "openai: openai boom")
-		zaiIdx := indexOf(msg, "zai: zai boom")
-		Expect(openaiIdx).To(BeNumerically(">", -1))
-		Expect(zaiIdx).To(BeNumerically(">", -1))
-		Expect(openaiIdx).To(BeNumerically("<", zaiIdx))
+		Expect(prefs).To(HaveLen(3))
+		Expect(prefs[0].Provider).To(Equal("anthropic"))
+		Expect(prefs[1].Provider).To(Equal("zai"))
+		Expect(prefs[2].Provider).To(Equal("ollama"))
 	})
 })
 
@@ -335,15 +240,3 @@ var _ = Describe("OpenCode credential migration", Label("opencode"), func() {
 		})
 	})
 })
-
-// indexOf returns the byte index of the first occurrence of substr in s,
-// or -1 when not found. Inlined here to avoid pulling in strings.Index
-// just for ordering assertions.
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
-}

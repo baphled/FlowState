@@ -1265,9 +1265,6 @@ func (s *StepDefinitions) theDefaultConfigurationShouldBeUsed() error {
 	}
 
 	defaults := config.DefaultConfig()
-	if s.config.Providers.Default != defaults.Providers.Default {
-		return fmt.Errorf("expected default provider %q, got %q", defaults.Providers.Default, s.config.Providers.Default)
-	}
 	if s.config.AgentDir != defaults.AgentDir {
 		return fmt.Errorf("expected agent dir %q, got %q", defaults.AgentDir, s.config.AgentDir)
 	}
@@ -1335,9 +1332,6 @@ func (s *StepDefinitions) theConfigurationFromThatFileShouldBeUsed() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
 	}
-	if s.config.Providers.Default != "openai" {
-		return fmt.Errorf("expected provider default \"openai\", got %q", s.config.Providers.Default)
-	}
 	if s.config.LogLevel != "debug" {
 		return fmt.Errorf("expected log level \"debug\", got %q", s.config.LogLevel)
 	}
@@ -1362,9 +1356,6 @@ func (s *StepDefinitions) flowstateHasLoadedItsConfiguration() error {
 func (s *StepDefinitions) theConfigurationShouldIncludeProviderSettings() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
-	}
-	if s.config.Providers.Default == "" {
-		return errors.New("expected default provider to be set")
 	}
 	if s.config.Providers.Ollama.Model == "" {
 		return errors.New("expected ollama provider settings to be present")
@@ -3209,9 +3200,6 @@ func (s *StepDefinitions) aConfigFileExistsAtThatPath() error {
 func (s *StepDefinitions) theConfigShouldBeLoadedFromTheXDGPath() error {
 	if s.config == nil {
 		return errors.New("expected configuration to be loaded")
-	}
-	if s.config.Providers.Default != "anthropic" {
-		return fmt.Errorf("expected provider default %q, got %q", "anthropic", s.config.Providers.Default)
 	}
 	if s.config.LogLevel != "trace" {
 		return fmt.Errorf("expected log level %q, got %q", "trace", s.config.LogLevel)

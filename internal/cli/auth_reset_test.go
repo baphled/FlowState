@@ -58,7 +58,6 @@ var _ = Describe("flowstate auth reset (admin recovery — Auth Track C9 PR4 + p
 		Expect(os.Setenv("OPENAI_API_KEY", "test-key-auth-reset-suite")).To(Succeed())
 
 		cfg := config.DefaultConfig()
-		cfg.Providers.Default = "openai"
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
 

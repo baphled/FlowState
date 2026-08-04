@@ -547,7 +547,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -574,7 +573,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -604,7 +602,6 @@ When to use: Testing purposes
 				)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -645,7 +642,6 @@ When to use: Testing purposes
 				)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -682,7 +678,6 @@ When to use: Testing purposes
 				)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -733,7 +728,6 @@ When to use: Testing purposes
 				)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -779,72 +773,6 @@ When to use: Testing purposes
 			})
 		})
 
-		Context("when default provider is not registered", func() {
-			It("returns an error", func() {
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("ANTHROPIC_API_KEY")
-				DeferCleanup(func() {
-					os.Unsetenv("OPENAI_API_KEY")
-					os.Unsetenv("ANTHROPIC_API_KEY")
-				})
-
-				agentsDir := filepath.Join(tempDir, "agents")
-				skillsDir := filepath.Join(tempDir, "skills")
-				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
-				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
-
-				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "nonexistent"
-				cfg.DataDir = tempDir
-				cfg.AgentDir = agentsDir
-				cfg.SkillDir = skillsDir
-				cfg.Providers.OpenAI.APIKey = ""
-				cfg.Providers.Anthropic.APIKey = ""
-
-				application, err := app.New(cfg)
-
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("getting default provider"))
-				Expect(application).To(BeNil())
-			})
-
-			It("surfaces the failure reason for the missing default provider", func() {
-				os.Unsetenv("OPENAI_API_KEY")
-				os.Unsetenv("ANTHROPIC_API_KEY")
-				DeferCleanup(func() {
-					os.Unsetenv("OPENAI_API_KEY")
-					os.Unsetenv("ANTHROPIC_API_KEY")
-				})
-
-				agentsDir := filepath.Join(tempDir, "agents")
-				skillsDir := filepath.Join(tempDir, "skills")
-				Expect(os.MkdirAll(agentsDir, 0o755)).To(Succeed())
-				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
-
-				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
-				cfg.DataDir = tempDir
-				cfg.AgentDir = agentsDir
-				cfg.SkillDir = skillsDir
-				cfg.Providers.OpenAI.APIKey = ""
-				cfg.Providers.Anthropic.APIKey = ""
-
-				application, err := app.New(cfg)
-
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("getting default provider"))
-				Expect(err.Error()).To(ContainSubstring("openai"))
-				// The reason for openai's failure should be visible to the user
-				// so they can act without grepping the log file.
-				Expect(err.Error()).To(Or(
-					ContainSubstring("OPENAI_API_KEY"),
-					ContainSubstring("api_key"),
-					ContainSubstring("no API key"),
-				))
-				Expect(application).To(BeNil())
-			})
-		})
-
 		Describe("RegisterProvidersWithFailuresForTest", func() {
 			It("returns the failure reason for providers that did not register", func() {
 				os.Unsetenv("OPENAI_API_KEY")
@@ -878,7 +806,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -902,7 +829,7 @@ When to use: Testing purposes
 
 	Describe("Context assembly hook wiring", func() {
 		It("passes configured custom hooks into the engine", func() {
-			// config.DefaultConfig pins Providers.Default to "anthropic"; the
+			// config.DefaultConfig previously pinned Providers.Default to "anthropic"; the
 			// test doubles in this suite do not register anthropic and the
 			// sibling specs already switch to openai with a test API key
 			// (see "wires plugin config into startup runtime" above).
@@ -912,7 +839,6 @@ When to use: Testing purposes
 			DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
 			customHook := func(context.Context, *pluginpkg.ContextAssemblyPayload) error { return nil }
 			cfg := config.DefaultConfig()
-			cfg.Providers.Default = "openai"
 			cfg.DataDir = tempDir
 			cfg.ContextAssemblyHooks = []pluginpkg.ContextAssemblyHook{customHook}
 
@@ -933,7 +859,6 @@ When to use: Testing purposes
 			os.Setenv("OPENAI_API_KEY", "test-key-hook-wiring-default")
 			DeferCleanup(func() { os.Unsetenv("OPENAI_API_KEY") })
 			cfg := config.DefaultConfig()
-			cfg.Providers.Default = "openai"
 			cfg.DataDir = tempDir
 			cfg.ContextAssemblyHooks = nil
 
@@ -959,7 +884,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -981,7 +905,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -1002,7 +925,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -1023,7 +945,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -1048,7 +969,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -1075,7 +995,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(pluginsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -1100,7 +1019,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -1135,7 +1053,6 @@ When to use: Testing purposes
 				)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -1162,7 +1079,6 @@ When to use: Testing purposes
 				Expect(os.MkdirAll(pluginsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir

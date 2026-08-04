@@ -80,7 +80,6 @@ var _ = Describe("Config", func() {
 			cfg := config.DefaultConfig()
 
 			Expect(cfg).NotTo(BeNil())
-			Expect(cfg.Providers.Default).To(Equal("anthropic"))
 			Expect(cfg.LogLevel).To(Equal("info"))
 			Expect(cfg.DefaultAgent).To(Equal("default-assistant"))
 		})
@@ -162,7 +161,6 @@ log_level: debug
 				cfg, err := config.LoadConfig()
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.Providers.Default).To(Equal("openai"))
 				Expect(cfg.LogLevel).To(Equal("debug"))
 			})
 		})
@@ -182,7 +180,6 @@ log_level: debug
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg).NotTo(BeNil())
-				Expect(cfg.Providers.Default).To(Equal("anthropic"))
 			})
 		})
 	})
@@ -252,7 +249,6 @@ plugins:
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg).NotTo(BeNil())
-				Expect(cfg.Providers.Default).To(Equal("anthropic"))
 			})
 		})
 
@@ -272,7 +268,6 @@ log_level: debug
 				cfg, err := config.LoadConfigFromPath(configPath)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.Providers.Default).To(Equal("openai"))
 				Expect(cfg.Providers.OpenAI.APIKey).To(Equal("test-key"))
 				Expect(cfg.LogLevel).To(Equal("debug"))
 				Expect(cfg.Providers.Ollama.Host).To(Equal("http://localhost:11434"))
@@ -290,7 +285,6 @@ log_level: warn
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(cfg.LogLevel).To(Equal("warn"))
-				Expect(cfg.Providers.Default).To(Equal("anthropic"))
 				Expect(cfg.DefaultAgent).To(Equal("default-assistant"))
 			})
 
@@ -780,26 +774,6 @@ log_level: info
 		})
 	})
 
-	Describe("DefaultProviderModel", func() {
-		It("returns the model for the named default provider", func() {
-			cfg := &config.AppConfig{}
-			cfg.Providers.Default = "zai"
-			cfg.Providers.ZAI.Model = "glm-4.7"
-			Expect(cfg.DefaultProviderModel()).To(Equal("glm-4.7"))
-		})
-
-		It("returns empty when the default provider has no model configured", func() {
-			cfg := &config.AppConfig{}
-			cfg.Providers.Default = "anthropic"
-			Expect(cfg.DefaultProviderModel()).To(BeEmpty())
-		})
-
-		It("returns empty when the default provider name is unknown", func() {
-			cfg := &config.AppConfig{}
-			cfg.Providers.Default = "made-up"
-			Expect(cfg.DefaultProviderModel()).To(BeEmpty())
-		})
-	})
 })
 
 // AppConfig.ResolvedPlanLocation centralises the three-tier resolution

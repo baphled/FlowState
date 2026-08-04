@@ -18,22 +18,8 @@ import (
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
-// resolveCriticModel decides which chat model the LLM critic runs against.
-//
-// Precedence:
-//  1. cfg.CriticModel — explicit override from harness configuration.
-//  2. The provider's primary model resolved from cfg.Providers.<default>
-//     — passed in as fallback so the critic uses the same model as the
-//     agent under critique by default. Zero-config sane behaviour.
-//
-// Returns the empty string when neither is set; callers MUST treat that
-// as "skip critic wiring" rather than passing an empty model id through
-// to the LLM SDK.
-func resolveCriticModel(criticOverride, providerFallback string) string {
-	if criticOverride != "" {
-		return criticOverride
-	}
-	return providerFallback
+func resolveCriticModel(criticOverride string) string {
+	return criticOverride
 }
 
 // waveRetryFloor is the minimum harness retry budget when any agent
@@ -140,9 +126,6 @@ func (a *harnessAdapter) StreamEvaluate(
 //   - registry is a non-nil agent.Registry for manifest lookup.
 //   - cfg is a config.HarnessConfig specifying whether the critic is enabled.
 //   - p is a provider.Provider for the LLM critic (required when CriticEnabled is true).
-//   - defaultProviderModel is the chat model configured for the active default
-//     provider. Used as the critic model fallback when cfg.CriticModel is empty.
-//     May be empty when no provider model is configured.
 //
 // Returns:
 //   - A configured HarnessStreamer that routes harness-enabled agents through the evaluator.
@@ -155,7 +138,6 @@ func createHarnessStreamer(
 	registry *agent.Registry,
 	cfg config.HarnessConfig,
 	p provider.Provider,
-	defaultProviderModel string,
 	coordStore coordination.Store,
 ) *streaming.HarnessStreamer {
 	projectRoot := cfg.ProjectRoot
@@ -185,10 +167,10 @@ func createHarnessStreamer(
 	// false; conversely, the legacy global flag still works for callers
 	// that want a blanket enable.
 	if p != nil && (cfg.CriticEnabled || registryHasCriticEnabledAgent(registry)) {
-		criticModel := resolveCriticModel(cfg.CriticModel, defaultProviderModel)
+		criticModel := resolveCriticModel(cfg.CriticModel)
 		if criticModel == "" {
 			slog.Warn("harness: critic enabled but no model resolved; skipping critic wiring",
-				"hint", "set harness.critic_model in config or ensure the default provider has a model configured")
+				"hint", "set harness.critic_model in config")
 		} else {
 			critic, err := harness.NewLLMCritic(true, criticModel)
 			if err == nil {
@@ -466,7 +448,7 @@ func collectAgentWaves(registry *agent.Registry) []harness.WaveStage {
 // Side effects:
 //   - None.
 //
-// Tests pass an empty defaultProviderModel; the critic is only wired when
+// The critic is only wired when
 // CriticEnabled is true AND a provider is supplied AND a model resolves,
 // so the test-helper signature is stable for callers that don't exercise
 // the critic path.
@@ -476,5 +458,5 @@ func CreateHarnessStreamerForTest(
 	cfg config.HarnessConfig,
 	p provider.Provider,
 ) *streaming.HarnessStreamer {
-	return createHarnessStreamer(inner, registry, cfg, p, "", nil)
+	return createHarnessStreamer(inner, registry, cfg, p, nil)
 }

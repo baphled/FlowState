@@ -59,11 +59,10 @@ var _ = Describe("App bootstrap isolation", func() {
 		// at call time, so it MUST be constructed after the env vars
 		// above so the resolved paths sit inside tmpDir.
 		cfg = config.DefaultConfig()
-		// DefaultConfig pins Providers.Default to "anthropic"; switch to
+		// default provider concept removed; test uses explicit provider
 		// openai with a throwaway key so NewWithOptions can resolve a
 		// default provider without contacting any live API. Mirrors the
 		// pattern already used in internal/cli/auth_test.go.
-		cfg.Providers.Default = "openai"
 		Expect(os.Setenv("OPENAI_API_KEY", "test-key-bootstrap-isolation")).To(Succeed())
 	})
 

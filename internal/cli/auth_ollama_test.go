@@ -33,7 +33,6 @@ var _ = Describe("auth ollama subcommand", func() {
 		Expect(os.MkdirAll(filepath.Join(tmpDir, "flowstate"), 0o700)).To(Succeed())
 
 		cfg := config.DefaultConfig()
-		cfg.Providers.Default = "openai"
 		cfg.DataDir = filepath.Join(tmpDir, "data")
 		Expect(os.MkdirAll(cfg.DataDir, 0o700)).To(Succeed())
 

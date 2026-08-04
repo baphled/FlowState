@@ -151,16 +151,16 @@ var _ = Describe("resolveHarnessRetries (wave retry-budget floor)", func() {
 // resolveCriticModel is a tiny precedence helper; covering it directly
 // here keeps the public-API surface narrow (no exported shim needed).
 var _ = Describe("resolveCriticModel precedence", func() {
-	It("prefers the explicit critic override when both values are present", func() {
-		Expect(resolveCriticModel("opus-4-1", "sonnet-4-5")).To(Equal("opus-4-1"))
+	It("prefers the explicit critic override", func() {
+		Expect(resolveCriticModel("opus-4-1")).To(Equal("opus-4-1"))
 	})
 
-	It("falls back to the default-provider model when no override is set", func() {
-		Expect(resolveCriticModel("", "glm-4.7")).To(Equal("glm-4.7"))
+	It("returns the override string directly", func() {
+		Expect(resolveCriticModel("glm-4.7")).To(Equal("glm-4.7"))
 	})
 
-	It("returns empty when neither override nor fallback are set", func() {
-		Expect(resolveCriticModel("", "")).To(BeEmpty())
+	It("returns empty when override is empty", func() {
+		Expect(resolveCriticModel("")).To(BeEmpty())
 	})
 })
 

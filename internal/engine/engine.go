@@ -1187,7 +1187,7 @@ const engineStreamIdleTimeout = 60 * time.Second
 // SetMaxToolLoopIterationsForTest or config.yaml tool_loop_iterations;
 // zero/negative disables the backstop (defence-in-depth gate, mirroring
 // engineStreamIdleTimeout's disable-when-unset semantics).
-const engineMaxToolLoopIterations = 200
+const engineMaxToolLoopIterations = 50
 
 // engineMaxToolLoopDuration is the cumulative wall-clock ceiling for a
 // single turn's tool-loop continuations in streamWithToolLoop. When the

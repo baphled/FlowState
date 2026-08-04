@@ -39,7 +39,6 @@ var _ = Describe("Harness wiring", func() {
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
@@ -60,7 +59,6 @@ var _ = Describe("Harness wiring", func() {
 				Expect(os.MkdirAll(skillsDir, 0o755)).To(Succeed())
 
 				cfg := config.DefaultConfig()
-				cfg.Providers.Default = "openai"
 				cfg.DataDir = tempDir
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
