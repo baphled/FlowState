@@ -156,6 +156,8 @@ type Server struct {
 type DispatcherService interface {
 	DispatchEphemeral(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.EphemeralHandle, error)
 	DispatchSessioned(ctx context.Context, req dispatch.DispatchRequest, consumer streaming.StreamConsumer) (dispatch.SessionedHandle, error)
+	CancelQueuedPrompt(sessionID, promptID string) bool
+	CloseSessionQueue(sessionID string)
 	// TurnRegistry exposes the in-memory Turn store the Dispatcher writes
 	// into during DispatchSessioned. Phase 2 of "Turn-Based Post-Then-Poll
 	// Architecture (May 2026)" reads from this registry to serve
@@ -1048,6 +1050,7 @@ func (s *Server) setupRoutes() {
 	s.registerProtected("GET /api/v1/sessions/{id}/tree", s.handleSessionTree)
 	s.registerProtected("GET /api/v1/sessions/{id}/parent", s.handleSessionParent)
 	s.registerProtected("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
+	s.registerProtected("DELETE /api/v1/sessions/{id}/queue/{prompt_id}", s.handleCancelQueuedPrompt)
 	s.registerProtected("DELETE /api/v1/sessions/{id}/messages/from/{messageId}", s.handleTruncateMessages)
 	s.registerProtected("PATCH /api/v1/sessions/{id}/agent", s.handleUpdateSessionAgent)
 	s.registerProtected("PATCH /api/v1/sessions/{id}/model", s.handleUpdateSessionModel)
@@ -1613,6 +1616,10 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "attachment id not found in session", http.StatusBadRequest)
 			return
 		}
+		if errors.Is(err, dispatch.ErrQueueOverflow) {
+			writeJSONError(w, err, "queue_full", http.StatusTooManyRequests)
+			return
+		}
 		// Phase 2 — Turn-Based Post-Then-Poll Architecture (May 2026).
 		// dispatch.ErrTurnConflict surfaces when a second POST hits a
 		// session whose prior Turn is still StatusRunning. Per the
@@ -1670,11 +1677,25 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	// constraint forbids removing the existing top-level fields. The
 	// additive approach satisfies both without breaking the Vue UI.
 	snapshot := NewSessionResponse(&handle.Snapshot)
-	writeJSON(w, sessionMessageResponse{
+	status := http.StatusOK
+	if handle.Queued {
+		status = http.StatusAccepted
+	}
+	response := sessionMessageResponse{
 		SessionResponse: snapshot,
 		TurnID:          handle.TurnID,
 		Snapshot:        snapshot,
-	})
+		Queued:          handle.Queued,
+		QueuePosition:   handle.QueuePosition,
+		PromptID:        handle.PromptID,
+	}
+	if status == http.StatusAccepted {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(response)
+		return
+	}
+	writeJSON(w, response)
 }
 
 // sessionMessageResponse is the Phase-2 wire shape for POST
@@ -1690,8 +1711,11 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 // to the legacy clients, load-bearing for the Phase 3 frontend.
 type sessionMessageResponse struct {
 	*SessionResponse
-	TurnID   string           `json:"turn_id"`
-	Snapshot *SessionResponse `json:"snapshot"`
+	TurnID        string           `json:"turn_id"`
+	Snapshot      *SessionResponse `json:"snapshot"`
+	Queued        bool             `json:"queued,omitempty"`
+	QueuePosition int              `json:"queue_position,omitempty"`
+	PromptID      string           `json:"prompt_id,omitempty"`
 }
 
 // turnResponse is the wire shape for GET /api/v1/sessions/{id}/turns/{turn_id}.
@@ -2900,6 +2924,23 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.sessionManager.DeleteSession(id); err != nil {
 		writeJSONError(w, err, "session_not_found", http.StatusNotFound)
+		return
+	}
+	if s.dispatcher != nil {
+		s.dispatcher.CloseSessionQueue(id)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleCancelQueuedPrompt(w http.ResponseWriter, r *http.Request) {
+	if s.dispatcher == nil {
+		http.Error(w, "dispatcher not configured", http.StatusNotImplemented)
+		return
+	}
+	id := r.PathValue("id")
+	promptID := r.PathValue("prompt_id")
+	if !s.dispatcher.CancelQueuedPrompt(id, promptID) {
+		writeJSONError(w, errors.New("queued prompt not found"), "queue_not_found", http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

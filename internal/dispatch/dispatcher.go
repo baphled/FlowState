@@ -41,6 +41,7 @@ import (
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/turn"
+	"github.com/google/uuid"
 )
 
 // ErrTurnConflict surfaces from DispatchSessioned when a second POST
@@ -102,7 +103,10 @@ type SessionedHandle struct {
 	Snapshot session.Session
 	// TurnID is the freshly-minted UUID for this dispatch's Turn.
 	// Non-empty for every successful DispatchSessioned call.
-	TurnID string
+	TurnID        string
+	Queued        bool
+	QueuePosition int
+	PromptID      string
 }
 
 // EphemeralHandle is what DispatchEphemeral returns. There is no
@@ -192,7 +196,8 @@ type Dispatcher struct {
 	// hands ownership of Complete/Fail to the wrap goroutine that
 	// drains the chunks channel. Never nil — New / NewWithTurns
 	// always wire a registry instance.
-	turnRegistry *turn.Registry
+	turnRegistry  *turn.Registry
+	sessionQueues sync.Map
 	// engineMu serialises cross-session engine state mutations
 	// (SetSwarmContext, ManifestSnapshot, ReseedFailoverBasePreferences)
 	// with the StartStream call that depends on them. Without this
@@ -290,6 +295,71 @@ func NewWithTurns(
 // construction.
 func (d *Dispatcher) TurnRegistry() *turn.Registry {
 	return d.turnRegistry
+}
+
+func (d *Dispatcher) queueForSession(sessionID string) *sessionQueue {
+	if existing, ok := d.sessionQueues.Load(sessionID); ok {
+		return existing.(*sessionQueue)
+	}
+	queue := newSessionQueue()
+	actual, _ := d.sessionQueues.LoadOrStore(sessionID, queue)
+	return actual.(*sessionQueue)
+}
+
+// CloseSessionQueue removes the queued prompts for a session and drops
+// any pending work for that session.
+func (d *Dispatcher) CloseSessionQueue(sessionID string) {
+	if existing, ok := d.sessionQueues.LoadAndDelete(sessionID); ok {
+		existing.(*sessionQueue).close()
+	}
+}
+
+// CancelQueuedPrompt removes a queued prompt for a session.
+func (d *Dispatcher) CancelQueuedPrompt(sessionID, promptID string) bool {
+	existing, ok := d.sessionQueues.Load(sessionID)
+	if !ok {
+		return false
+	}
+	return existing.(*sessionQueue).cancel(promptID)
+}
+
+func (d *Dispatcher) enqueueSessionPrompt(
+	ctx context.Context, req DispatchRequest, consumer streaming.StreamConsumer,
+) (SessionedHandle, error) {
+	queue := d.queueForSession(req.SessionID)
+	snapshot, snapErr := d.sessionManager.SnapshotSession(req.SessionID)
+	if snapErr != nil {
+		return SessionedHandle{}, snapErr
+	}
+	prompt := queuedPrompt{
+		PromptID:  uuid.NewString(),
+		SessionID: req.SessionID,
+		Request:   req,
+		Ctx:       ctx,
+		Consumer:  consumer,
+	}
+	position, err := queue.enqueue(prompt)
+	if err != nil {
+		return SessionedHandle{}, err
+	}
+	return SessionedHandle{Snapshot: snapshot, Queued: true, QueuePosition: position, PromptID: prompt.PromptID}, nil
+}
+
+func (d *Dispatcher) drainQueue(sessionID string) {
+	existing, ok := d.sessionQueues.Load(sessionID)
+	if !ok {
+		return
+	}
+	queue := existing.(*sessionQueue)
+	if !queue.beginDrain() {
+		return
+	}
+	defer queue.endDrain()
+	prompt := queue.dequeue()
+	if prompt == nil {
+		return
+	}
+	_, _ = d.DispatchSessioned(prompt.Ctx, prompt.Request, prompt.Consumer)
 }
 
 // errNoTarget fires when DispatchEphemeral is called without a usable
@@ -598,6 +668,9 @@ func (d *Dispatcher) DispatchSessioned(
 	// of Complete on the happy path.
 	turnID, turnErr := d.turnRegistry.Start(req.SessionID)
 	if turnErr != nil {
+		if errors.Is(turnErr, ErrTurnConflict) {
+			return d.enqueueSessionPrompt(ctx, req, consumer)
+		}
 		return SessionedHandle{}, turnErr
 	}
 	// turnOwnedByWrap is set true the moment the wrap goroutine
@@ -852,6 +925,7 @@ func (d *Dispatcher) DispatchSessioned(
 			}
 			releaseGateSync()
 			_ = d.turnRegistry.Fail(turnID, streamErr)
+			d.drainQueue(req.SessionID)
 			return
 		}
 
@@ -872,6 +946,7 @@ func (d *Dispatcher) DispatchSessioned(
 			releaseGateSync()
 			_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{})
 		}
+		d.drainQueue(req.SessionID)
 	}()
 
 	return SessionedHandle{Snapshot: snap, TurnID: turnID}, nil

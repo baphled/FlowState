@@ -61,6 +61,8 @@ func clientError(err error, category string) (safeMsg string, correlationID stri
 		safeMsg = "cancel failed"
 	case "swarm_error":
 		safeMsg = "invalid request"
+	case "queue_full":
+		safeMsg = "queue full"
 	default:
 		safeMsg = "internal error"
 	}

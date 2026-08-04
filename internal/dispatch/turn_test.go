@@ -731,7 +731,7 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 	})
 
 	Context("when a second DispatchSessioned fires on the same session while the first is still running", func() {
-		It("returns ErrTurnConflict from the second call", func() {
+		It("queues the second call and drains it after the first turn finishes", func() {
 			probe := &turnProbeStreamer{
 				chunks:       []provider.StreamChunk{{Content: "slow-ack"}, {Done: true}},
 				emitInterval: 200 * time.Millisecond,
@@ -778,16 +778,18 @@ var _ = Describe("Dispatcher.DispatchSessioned — Turn integration", func() {
 				"the first DispatchSessioned must have called Start + opened the streamer ctx before the second fires — otherwise the conflict check has nothing to observe")
 
 			// Second call: while turn 1 is still parked, fire turn 2
-			// on the same sessionID. Per the plan's v1 "one turn per
-			// session" rule, this MUST return ErrTurnConflict.
-			_, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+			// on the same sessionID. The dispatcher now queues the
+			// prompt instead of returning ErrTurnConflict.
+			handle2, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
 				SessionID:    "sess-1",
 				AgentID:      "default-assistant",
 				Content:      "second turn",
 				ScanMentions: false,
 			}, nil)
-			Expect(err).To(MatchError(dispatch.ErrTurnConflict),
-				"v1 supports ONE in-flight turn per session — a concurrent POST while turn 1 is StatusRunning must surface dispatch.ErrTurnConflict so the HTTP handler can map to 409")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(handle2.Queued).To(BeTrue())
+			Expect(handle2.QueuePosition).To(Equal(1))
+			Expect(handle2.PromptID).NotTo(BeEmpty())
 
 			// Release turn 1 so its goroutine can complete and the
 			// spec exits cleanly.

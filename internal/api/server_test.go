@@ -171,6 +171,10 @@ func (sp *spyDispatcher) DispatchSessioned(_ context.Context, req dispatch.Dispa
 	return dispatch.SessionedHandle{}, nil
 }
 
+func (sp *spyDispatcher) CancelQueuedPrompt(_, _ string) bool { return false }
+
+func (sp *spyDispatcher) CloseSessionQueue(string) {}
+
 // TurnRegistry returns nil — the spy does not exercise the Turn surface.
 // handleGetTurn maps a nil registry to HTTP 501 so callers that wire the
 // spy can still observe the route's other behaviours. Phase 2 of "Turn-
@@ -5275,13 +5279,9 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 		}
 	})
 
-	It("Concurrent POST during running turn returns HTTP 409", func() {
+	It("Concurrent POST during running turn returns HTTP 202 and queues the second prompt", func() {
 		// Slow drip so turn 1 stays Running while turn 2 fires. The
-		// dispatcher's registry.Start is the gate: turn 2 sees a
-		// Running entry for the sessionID and surfaces
-		// dispatch.ErrTurnConflict, which the HTTP handler maps to 409.
-		// This is the load-bearing predecessor pin for the ErrTurnConflict
-		// → 409 mapping added in this commit.
+		// dispatcher now queues the second prompt and returns 202.
 		setup([]provider.StreamChunk{
 			{Content: "slow-1"},
 			{Content: "slow-2"},
@@ -5310,11 +5310,12 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 		}, "2s", "10ms").Should(Equal("running"),
 			"turn 1 must register as Running in the Turn registry before the conflict-POST fires; otherwise the conflict-gate has nothing to observe")
 
-		// POST 2 — must surface 409 Conflict because turn 1 is
-		// still Running. v1 supports ONE in-flight turn per session.
-		st2, _, raw2 := postMessage(sess.ID, "second")
-		Expect(st2).To(Equal(http.StatusConflict),
-			"a second POST while turn 1 is StatusRunning must return HTTP 409 Conflict — dispatch.ErrTurnConflict must map to http.StatusConflict in handleSessionMessage. Got body: %s", string(raw2))
+		// POST 2 — queues behind turn 1 and returns 202 Accepted.
+		st2, body2, _ := postMessage(sess.ID, "second")
+		Expect(st2).To(Equal(http.StatusAccepted))
+		Expect(body2["queued"]).To(BeTrue())
+		Expect(body2["queue_position"]).To(BeNumerically("==", 1))
+		Expect(body2["prompt_id"]).NotTo(BeEmpty())
 	})
 
 	// §AC#13 absolute (active-send SLO). Phase 4 / Phase B re-verification

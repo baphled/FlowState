@@ -420,6 +420,9 @@ type fakeSessionManager struct {
 	// so the spec can assert WithStreamAgentOverride threaded through and
 	// context.WithoutCancel decoupled the request ctx.
 	lastStreamCtx context.Context
+	startCalls    int
+	startErr      error
+	startRelease  chan struct{}
 }
 
 func (f *fakeSessionManager) SnapshotSession(_ string) (session.Session, error) {
@@ -453,7 +456,18 @@ func (f *fakeSessionManager) StartStream(
 ) (<-chan provider.StreamChunk, error) {
 	f.mu.Lock()
 	streamer := f.streamer
+	f.startCalls++
+	callNum := f.startCalls
+	startErr := f.startErr
+	release := f.startRelease
 	f.mu.Unlock()
+
+	if callNum == 1 && release != nil {
+		<-release
+	}
+	if callNum == 1 && startErr != nil {
+		return nil, startErr
+	}
 
 	if streamer == nil {
 		return nil, nil
@@ -1475,6 +1489,52 @@ var _ = Describe("Swarm lifecycle handshake across consecutive POSTs", func() {
 
 			Eventually(done, "2s").Should(BeClosed(),
 				"after the synchronous-error path, the per-session gate MUST be released — a permanently-blocked gate would deadlock the next call on this sessionID")
+		})
+
+		It("drains the queued prompt after the stream-error path releases the gate", func() {
+			eng := &fakeDispatchEngine{}
+			firstRelease := make(chan struct{})
+			mgr := &fakeSessionManager{
+				sess: session.Session{ID: "sess-queue", AgentID: "coordinator"},
+				streamer: &dripStreamer{
+					chunks:       []provider.StreamChunk{{Done: true}},
+					emitInterval: 1 * time.Millisecond,
+				},
+				startErr:     errors.New("simulated stream failure"),
+				startRelease: firstRelease,
+			}
+			d := dispatch.New(nil, eng, swarmer, reg, mgr)
+
+			go func() {
+				_, _ = d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+					SessionID:    "sess-queue",
+					AgentID:      "coordinator",
+					Content:      "first",
+					ScanMentions: true,
+				}, nil)
+			}()
+
+			Eventually(func() int {
+				mgr.mu.Lock()
+				defer mgr.mu.Unlock()
+				return mgr.startCalls
+			}, "2s").Should(BeNumerically(">=", 1))
+
+			handle2, err := d.DispatchSessioned(context.Background(), dispatch.DispatchRequest{
+				SessionID:    "sess-queue",
+				AgentID:      "coordinator",
+				Content:      "second",
+				ScanMentions: true,
+			}, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(handle2.Queued).To(BeTrue())
+			Expect(handle2.QueuePosition).To(Equal(1))
+			close(firstRelease)
+			Expect(func() int {
+				mgr.mu.Lock()
+				defer mgr.mu.Unlock()
+				return mgr.startCalls
+			}()).To(Equal(1))
 		})
 	})
 })
