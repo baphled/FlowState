@@ -1132,6 +1132,10 @@ type ProviderErrorEventData struct {
 	QueueDepth int
 	// MaxConcurrent is the concurrency cap when the provider is locally limited.
 	MaxConcurrent int
+	// ConsecutiveFails is the consecutive failure count for this provider/model pair.
+	ConsecutiveFails int
+	// LastCooldownMs is the last applied cooldown duration in milliseconds.
+	LastCooldownMs int64
 }
 
 // MarshalJSON serialises ProviderErrorEventData while preserving error messages.

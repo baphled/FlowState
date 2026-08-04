@@ -1034,6 +1034,16 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 				"Opus 4.7 must omit temperature so the API uses its server-side default")
 		})
 
+		It("claude-fable-5 strips temperature even when caller sets it", func() {
+			req := baseReq("claude-fable-5-20251201")
+			t := 0.5
+			req.Temperature = &t
+			params, _, err := p.buildRequestParams(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(params.Temperature.Valid()).To(BeFalse(),
+				"claude-fable-5 must omit temperature as the API rejects it")
+		})
+
 		It("strips top_p and top_k when caller sets them", func() {
 			req := baseReq("claude-opus-4-7-20251201")
 			tp := 0.9
@@ -1217,6 +1227,7 @@ var _ = Describe("buildRequestParams per-model contract", func() {
 				"claude-opus-4-6-20251020",
 				"claude-sonnet-4-6-20251020",
 				"claude-sonnet-4-5-20251020",
+				"claude-fable-5",
 				"claude-opus-4-20250514",
 				"claude-3-7-sonnet-20250219",
 				"claude-3-5-haiku-latest",

@@ -419,6 +419,55 @@ make test          # Go tests
 | `features/*.feature` | BDD scenarios |
 | `.sisyphus/plans/` | Active and historical delivery plans |
 
+## Session Metadata: `failure_reason` (S5)
+
+Session `.meta.json` sidecars now carry an optional `failure_reason` field
+(written once when the session flips from `active` to `failed`):
+
+- **Field name:** `failure_reason` (JSON: `"failure_reason"`)
+- **Value:** The terminal stop reason that caused the failover — one of
+  `StopReasonStreamTruncated`, `StopReasonToolUseNoCalls`, or
+  `StopReasonAbandonedTool`.
+- **Truncation:** Capped at 256 characters.
+- **Cleared on recovery:** If the session is later demoted back to `active`
+  by the recovery-demotion path, `failure_reason` is cleared.
+- **Display:** `make session-overview` now appends the failure reason in
+  brackets for failed sessions. Use `flowstate debug-session ID=<uuid>` to
+  inspect the full metadata.
+
+## Provider Health CLI (`flowstate health`) (S5)
+
+A new top-level CLI group `flowstate health` exposes the failover health
+manager's state:
+
+| Subcommand | Description |
+|---|---|
+| `flowstate health status` | List all provider/model cooldowns with expiry, consecutive failures, and last cooldown duration. |
+| `flowstate health reset <provider> <model>` | Reset a specific provider+model cooldown immediately. |
+
+The `status` subcommand reads `HealthStateEntry` records from the failover
+`HealthManager` and renders them in a tabular format. The `reset` subcommand
+calls `HealthManager.ResetProviderHealth` to clear the cooldown for the given
+provider/model pair.
+
+## HealthStateEntry Type
+
+The `HealthStateEntry` struct (`internal/plugin/failover/healthmanager.go`) is
+the exported snapshot of a provider/model's health state:
+
+```go
+type HealthStateEntry struct {
+    Provider         string
+    Model            string
+    ExpiresAt        time.Time
+    ConsecutiveFails int
+    LastCooldown     time.Duration
+}
+```
+
+Access via `HealthManager.GetHealthStateEntries()` — returns a slice of
+`HealthStateEntry` sorted by expiry (expired entries excluded).
+
 ## Qdrant Vector Store
 
 FlowState uses Qdrant for vector-backed recall and learning pipelines. The recall feature is **optional** at runtime — if `QDRANT_URL` is unset or unreachable, FlowState boots normally and logs a warning that the recall broker is disabled (`internal/app/app.go`). It is, however, a **required dev dependency** for anyone working on `internal/recall/...`, `internal/vaultindex/...` (the in-process vault-rag surface — `buildVaultQueryHandler` plus the `vault_index` / `vault_sync` admin tools), or vector-learning pipelines.

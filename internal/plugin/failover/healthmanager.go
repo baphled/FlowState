@@ -19,9 +19,16 @@ import (
 // the boundary. Struct keys eliminate both halves and keep the public
 // IsRateLimited / MarkRateLimited / RateLimitedUntil string-string
 // signatures intact.
+type healthEntry struct {
+	expiresAt        time.Time
+	consecutiveFails int
+	lastCooldown     time.Duration
+}
+
+// HealthManager manages provider/model rate-limit health with concurrency safety.
 type HealthManager struct {
 	mu          sync.RWMutex
-	data        map[ProviderModel]time.Time
+	data        map[ProviderModel]healthEntry
 	persistPath string
 }
 
@@ -36,7 +43,7 @@ func NewHealthManager() *HealthManager {
 		persistPath = filepath.Join(os.TempDir(), "flowstate", "provider-health.json")
 	}
 	return &HealthManager{
-		data:        make(map[ProviderModel]time.Time),
+		data:        make(map[ProviderModel]healthEntry),
 		persistPath: persistPath,
 	}
 }
@@ -65,6 +72,131 @@ func (hm *HealthManager) PersistPath() string {
 	return hm.persistPath
 }
 
+// GetHealthState returns a snapshot of the current health state for
+// all tracked provider/model pairs. Used by the health CLI and TUI
+// slash command (S5).
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A map of ProviderModel to healthEntry (expired entries excluded).
+//
+// Side effects:
+//   - None (read-only).
+func (hm *HealthManager) GetHealthState() map[ProviderModel]healthEntry {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
+	now := time.Now()
+	for k, v := range hm.data {
+		if v.expiresAt.After(now) {
+			snapshot[k] = v
+		}
+	}
+	return snapshot
+}
+
+// GetHealthStateEntries returns a slice of exported HealthStateEntry
+// structs for all tracked provider/model pairs. Used by the health CLI
+// and TUI slash command (S5) which cannot access unexported fields.
+//
+// Expected:
+//   - None.
+//
+// Returns:
+//   - A slice of HealthStateEntry (expired entries excluded).
+//
+// Side effects:
+//   - None (read-only).
+func (hm *HealthManager) GetHealthStateEntries() []HealthStateEntry {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	now := time.Now()
+	var result []HealthStateEntry
+	for k, v := range hm.data {
+		if v.expiresAt.After(now) {
+			result = append(result, HealthStateEntry{
+				Provider:         k.Provider,
+				Model:            k.Model,
+				ExpiresAt:        v.expiresAt,
+				ConsecutiveFails: v.consecutiveFails,
+				LastCooldown:     v.lastCooldown,
+			})
+		}
+	}
+	return result
+}
+
+// ResetProviderHealth clears health state for an optional specific
+// (provider, model) pair. When both are empty, ALL entries are cleared
+// and the persist file is written with an empty array.
+//
+// Expected:
+//   - provider and model may be "" to clear all.
+//
+// Returns:
+//   - An error if persistence fails.
+//
+// Side effects:
+//   - Clears health state and rewrites the persist file.
+func (hm *HealthManager) ResetProviderHealth(provider, model string) error {
+	hm.mu.Lock()
+	if provider == "" && model == "" {
+		hm.data = make(map[ProviderModel]healthEntry)
+	} else {
+		delete(hm.data, ProviderModel{Provider: provider, Model: model})
+	}
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
+	for k, v := range hm.data {
+		snapshot[k] = v
+	}
+	hm.mu.Unlock()
+	return hm.PersistState(hm.persistPath, snapshot)
+}
+
+// ConsecutiveFailures returns the consecutive failure count for a
+// provider/model pair. Returns 0 when the pair is not tracked.
+//
+// Expected:
+//   - provider and model are non-empty strings.
+//
+// Returns:
+//   - The number of consecutive failures.
+//
+// Side effects:
+//   - None.
+func (hm *HealthManager) ConsecutiveFailures(provider, model string) int {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	entry, ok := hm.data[ProviderModel{Provider: provider, Model: model}]
+	if !ok {
+		return 0
+	}
+	return entry.consecutiveFails
+}
+
+// LastCooldown returns the last applied cooldown duration for a
+// provider/model pair. Returns 0 when the pair is not tracked.
+//
+// Expected:
+//   - provider and model are non-empty strings.
+//
+// Returns:
+//   - The last cooldown duration.
+//
+// Side effects:
+//   - None.
+func (hm *HealthManager) LastCooldown(provider, model string) time.Duration {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	entry, ok := hm.data[ProviderModel{Provider: provider, Model: model}]
+	if !ok {
+		return 0
+	}
+	return entry.lastCooldown
+}
+
 // MarkRateLimited marks a provider/model as rate-limited until retryAfter.
 //
 // Expected: provider and model are non-empty strings, retryAfter is in the future.
@@ -73,8 +205,56 @@ func (hm *HealthManager) PersistPath() string {
 func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time.Time) {
 	hm.mu.Lock()
 	key := ProviderModel{Provider: provider, Model: model}
-	hm.data[key] = retryAfter
-	snapshot := make(map[ProviderModel]time.Time, len(hm.data))
+
+	now := time.Now()
+
+	// When the caller passes a past time, they want to clear the entry
+	// (used by tests and the Sleep function to re-open a candidate).
+	// Don't escalate — just record the past expiry so IsRateLimited
+	// returns false on the next check.
+	if !retryAfter.After(now) {
+		hm.data[key] = healthEntry{
+			expiresAt: retryAfter,
+		}
+		hm.mu.Unlock()
+		return
+	}
+
+	newCooldown := retryAfter.Sub(now)
+	newEntry := healthEntry{
+		expiresAt:    retryAfter,
+		lastCooldown: newCooldown,
+	}
+
+	// Escalation: when the existing entry has not yet expired AND the
+	// error type is the same (proxied by newCooldown >= existing cooldown),
+	// double the cooldown capped at 24h and increment consecutiveFails.
+	// When the existing entry has already expired, start fresh.
+	if existing, ok := hm.data[key]; ok {
+		if existing.expiresAt.After(now) {
+			// Same-pair failure with live cooldown — escalate.
+			escalated := existing.lastCooldown * 2
+			cap := 24 * time.Hour
+			if escalated > cap {
+				escalated = cap
+			}
+			// Use the longer of existing escalated or new cooldown.
+			if newCooldown < escalated {
+				newCooldown = escalated
+			}
+			newEntry.expiresAt = now.Add(newCooldown)
+			newEntry.lastCooldown = newCooldown
+			newEntry.consecutiveFails = existing.consecutiveFails + 1
+		} else {
+			// Expired — reset.
+			newEntry.consecutiveFails = 1
+		}
+	} else {
+		newEntry.consecutiveFails = 1
+	}
+
+	hm.data[key] = newEntry
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
 	for k, v := range hm.data {
 		snapshot[k] = v
 	}
@@ -105,10 +285,10 @@ func (hm *HealthManager) RateLimitedUntil(provider, model string) (time.Time, bo
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
 	expiry, ok := hm.data[ProviderModel{Provider: provider, Model: model}]
-	if !ok || !expiry.After(time.Now()) {
+	if !ok || !expiry.expiresAt.After(time.Now()) {
 		return time.Time{}, false
 	}
-	return expiry, true
+	return expiry.expiresAt, true
 }
 
 // IsRateLimited returns true if provider/model is currently rate-limited.
@@ -119,12 +299,12 @@ func (hm *HealthManager) RateLimitedUntil(provider, model string) (time.Time, bo
 func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 	hm.mu.RLock()
 	key := ProviderModel{Provider: provider, Model: model}
-	expiry, ok := hm.data[key]
+	entry, ok := hm.data[key]
 	hm.mu.RUnlock()
 	if !ok {
 		return false
 	}
-	if expiry.After(time.Now()) {
+	if entry.expiresAt.After(time.Now()) {
 		return true
 	}
 	hm.mu.Lock()
@@ -140,7 +320,7 @@ func (hm *HealthManager) IsRateLimited(provider, model string) bool {
 // Side effects: none (read-only operation).
 func (hm *HealthManager) GetHealthyAlternatives(_, _ string) []ProviderModel {
 	hm.mu.RLock()
-	snapshot := make(map[ProviderModel]time.Time, len(hm.data))
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
 	for k, v := range hm.data {
 		snapshot[k] = v
 	}
@@ -148,12 +328,22 @@ func (hm *HealthManager) GetHealthyAlternatives(_, _ string) []ProviderModel {
 
 	var result []ProviderModel
 	now := time.Now()
-	for k, expiry := range snapshot {
-		if !expiry.After(now) && k.Provider != "" && k.Model != "" {
+	for k, entry := range snapshot {
+		if !entry.expiresAt.After(now) && k.Provider != "" && k.Model != "" {
 			result = append(result, k)
 		}
 	}
 	return result
+}
+
+// HealthStateEntry is a publicly-visible snapshot of a provider/model's
+// health state. Used by the health CLI and TUI slash command (S5).
+type HealthStateEntry struct {
+	Provider         string
+	Model            string
+	ExpiresAt        time.Time
+	ConsecutiveFails int
+	LastCooldown     time.Duration
 }
 
 // persistedEntry is the on-disk representation of one rate-limit
@@ -162,9 +352,11 @@ func (hm *HealthManager) GetHealthyAlternatives(_, _ string) []ProviderModel {
 // boundary between fields whenever either contained a "+" (e.g.
 // openrouter model ids like "mistral/mistral-7b+free").
 type persistedEntry struct {
-	Provider  string `json:"provider"`
-	Model     string `json:"model"`
-	ExpiresAt string `json:"expires_at"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	ExpiresAt        string `json:"expires_at"`
+	ConsecutiveFails int    `json:"consecutive_fails,omitempty"`
+	LastCooldownMs   int64  `json:"last_cooldown_ms,omitempty"`
 }
 
 // PersistState writes the health state to disk atomically.
@@ -176,7 +368,7 @@ type persistedEntry struct {
 // Wire format: a JSON array of {provider, model, expires_at} objects.
 // The structured shape is unambiguous regardless of "+" characters in
 // either id, closing the M3 collision (Bug Hunt May 2026).
-func (hm *HealthManager) PersistState(path string, snapshot map[ProviderModel]time.Time) error {
+func (hm *HealthManager) PersistState(path string, snapshot map[ProviderModel]healthEntry) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
@@ -184,9 +376,11 @@ func (hm *HealthManager) PersistState(path string, snapshot map[ProviderModel]ti
 	entries := make([]persistedEntry, 0, len(snapshot))
 	for k, v := range snapshot {
 		entries = append(entries, persistedEntry{
-			Provider:  k.Provider,
-			Model:     k.Model,
-			ExpiresAt: v.UTC().Format(time.RFC3339),
+			Provider:         k.Provider,
+			Model:            k.Model,
+			ExpiresAt:        v.expiresAt.UTC().Format(time.RFC3339),
+			ConsecutiveFails: v.consecutiveFails,
+			LastCooldownMs:   v.lastCooldown.Milliseconds(),
 		})
 	}
 	b, err := json.MarshalIndent(entries, "", "  ")
@@ -210,7 +404,7 @@ func (hm *HealthManager) PersistState(path string, snapshot map[ProviderModel]ti
 // Side effects: reads current rate-limit state and writes to disk atomically.
 func (hm *HealthManager) PersistStateInternal(path string) error {
 	hm.mu.RLock()
-	snapshot := make(map[ProviderModel]time.Time, len(hm.data))
+	snapshot := make(map[ProviderModel]healthEntry, len(hm.data))
 	for k, v := range hm.data {
 		snapshot[k] = v
 	}
@@ -251,7 +445,11 @@ func (hm *HealthManager) LoadState(path string) error {
 				continue
 			}
 			if t.After(now) {
-				hm.data[ProviderModel{Provider: e.Provider, Model: e.Model}] = t
+				hm.data[ProviderModel{Provider: e.Provider, Model: e.Model}] = healthEntry{
+					expiresAt:        t,
+					consecutiveFails: e.ConsecutiveFails,
+					lastCooldown:     time.Duration(e.LastCooldownMs) * time.Millisecond,
+				}
 			}
 		}
 		return nil
@@ -281,7 +479,11 @@ func (hm *HealthManager) LoadState(path string) error {
 		if sep <= 0 || sep >= len(k)-1 {
 			continue
 		}
-		hm.data[ProviderModel{Provider: k[:sep], Model: k[sep+1:]}] = t
+		hm.data[ProviderModel{Provider: k[:sep], Model: k[sep+1:]}] = healthEntry{
+			expiresAt:        t,
+			consecutiveFails: 0,
+			lastCooldown:     0,
+		}
 	}
 	return nil
 }

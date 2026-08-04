@@ -311,6 +311,16 @@ func resolveModelDefaults(model string) modelDefaults {
 			supportsOutput128kBeta:          true,
 			betas:                           nil,
 		}
+	case strings.HasPrefix(id, "claude-fable-5"):
+		return modelDefaults{
+			maxTokens:                    128000,
+			rejectsCustomSampling:        true,
+			rejectsManualThinkingEnabled: true,
+			supportsThinking:             true,
+			supportsAdaptiveThinking:     true,
+			rejectsAssistantPrefill:      true,
+			supportsCompactionBeta:       true,
+		}
 	}
 	return modelDefaults{}
 }

@@ -571,7 +571,7 @@ var _ = Describe("Hook", func() {
 			Expect(req.Model).To(Equal("claude-3-5-sonnet-20241022"))
 		})
 
-		It("uses default provider when Provider field is empty", func() {
+		It("uses first healthy provider when Provider field is empty", func() {
 			req := &provider.ChatRequest{
 				Provider: "",
 				Model:    "",
@@ -582,9 +582,10 @@ var _ = Describe("Hook", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(req.Provider).To(Equal("anthropic"))
+			Expect(req.Model).To(Equal("claude-3-5-sonnet-20241022"))
 		})
 
-		It("preserves existing model when Provider field is empty", func() {
+		It("sets both provider and model from chain when Provider field is empty", func() {
 			req := &provider.ChatRequest{
 				Provider: "",
 				Model:    "claude-sonnet-4-6",
@@ -595,7 +596,7 @@ var _ = Describe("Hook", func() {
 
 			Expect(err).NotTo(HaveOccurred())
 			Expect(req.Provider).To(Equal("anthropic"))
-			Expect(req.Model).To(Equal("claude-sonnet-4-6"))
+			Expect(req.Model).To(Equal("claude-3-5-sonnet-20241022"))
 		})
 	})
 

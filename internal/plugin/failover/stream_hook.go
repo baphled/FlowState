@@ -1349,6 +1349,9 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 	if err == nil {
 		return
 	}
+	if isAggregateFailoverError(err) {
+		return
+	}
 	var provErr *provider.Error
 	if errors.As(err, &provErr) {
 		if isUserCorrectableError(provErr.ErrorType) {
@@ -1416,8 +1419,14 @@ func isUserCorrectableError(t provider.ErrorType) bool {
 // Side effects:
 //   - None.
 func cooldownForProviderError(provErr *provider.Error) time.Duration {
+	// Precedence: carrier retry-after > auth error code > error type table.
 	if provErr.RateLimit != nil && provErr.RateLimit.RetryAfter > 0 {
 		return provErr.RateLimit.RetryAfter
+	}
+	if provErr.ErrorType == provider.ErrorTypeAuthFailure && provErr.ErrorCode != "" {
+		if d := CooldownForAuthErrorCode(provErr.ErrorCode); d > 0 {
+			return d
+		}
 	}
 	return CooldownForErrorType(provErr.ErrorType)
 }
@@ -1473,6 +1482,12 @@ func (sh *StreamHook) publishFailoverError(
 		data.ErrorCode = provErr.ErrorCode
 		data.HTTPStatus = provErr.HTTPStatus
 		data.IsRetriable = provErr.IsRetriable
+	}
+	// S4.4: Surface escalation state so the chat UI can show consecutive
+	// failures and escalating back-off.
+	if health := sh.manager.Health(); health != nil {
+		data.ConsecutiveFails = health.ConsecutiveFailures(candidate.Provider, candidate.Model)
+		data.LastCooldownMs = health.LastCooldown(candidate.Provider, candidate.Model).Milliseconds()
 	}
 	slog.Warn("failover candidate failed",
 		"session_id", data.SessionID,

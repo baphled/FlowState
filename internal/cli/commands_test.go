@@ -422,7 +422,7 @@ var _ = Describe("CLI Commands", func() {
 		// Flag-override specs invoke initApp which reinitialises the app
 		// via app.New(cfg) against the baseCfg carried on application.Config.
 		// NewForTest currently plumbs config.DefaultConfig through, whose
-		// Providers.Default is "anthropic" — a provider no test fixture
+		// default provider concept has been removed — providers come from agent manifests
 		// registers. Exporting an OPENAI_API_KEY and switching the app's
 		// baseCfg default to openai (which IS registered by app.New) lets
 		// the reinit succeed so the real assertion — that the override
@@ -442,7 +442,6 @@ var _ = Describe("CLI Commands", func() {
 		// help/usage surface shown.
 		It("applies agents-dir override", func() {
 			testApp := createTestApp("", "")
-			testApp.Config.Providers.Default = "openai"
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--agents-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
@@ -451,7 +450,6 @@ var _ = Describe("CLI Commands", func() {
 
 		It("applies skills-dir override", func() {
 			testApp := createTestApp("", "")
-			testApp.Config.Providers.Default = "openai"
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--skills-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())
@@ -460,7 +458,6 @@ var _ = Describe("CLI Commands", func() {
 
 		It("applies sessions-dir override", func() {
 			testApp := createTestApp("", "")
-			testApp.Config.Providers.Default = "openai"
 			overrideDir := GinkgoT().TempDir()
 			err := cmd(testApp, "--sessions-dir", overrideDir)
 			Expect(err).NotTo(HaveOccurred())

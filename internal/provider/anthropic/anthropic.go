@@ -14,6 +14,8 @@ import (
 	"time"
 
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
+
+	"encoding/json"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
@@ -850,6 +852,43 @@ func containsContextWindowKeyword(msg string) bool {
 //
 // Side effects:
 //   - None.
+
+// anthropicErrorBody is a minimal parse target for the Anthropic API
+// error response JSON: {"type":"error","error":{"type":"...","message":"..."}}
+type anthropicErrorBody struct {
+	Error struct {
+		Type string `json:"type"`
+	} `json:"error"`
+}
+
+// extractAnthropicErrorCode parses the raw JSON body of an Anthropic API
+// error response to extract the `error.type` field (e.g. "authentication_error",
+// "invalid_request_error", "billing_error"). Returns the type string when
+// parsing succeeds, or an empty string when the body is unparseable.
+//
+// Expected:
+//   - apiErr is a non-nil Anthropic API error whose RawJSON may be empty.
+//
+// Returns:
+//   - The error type string from the body, or "" when parsing fails.
+//
+// Side effects:
+//   - None.
+func extractAnthropicErrorCode(apiErr *anthropicAPI.Error) string {
+	raw := apiErr.RawJSON()
+	if raw == "" {
+		return ""
+	}
+	var body anthropicErrorBody
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		return ""
+	}
+	if body.Error.Type == "" {
+		return ""
+	}
+	return body.Error.Type
+}
+
 func buildProviderError(
 	apiErr *anthropicAPI.Error,
 	errType provider.ErrorType,
@@ -857,6 +896,7 @@ func buildProviderError(
 ) *provider.Error {
 	return &provider.Error{
 		HTTPStatus:  apiErr.StatusCode,
+		ErrorCode:   extractAnthropicErrorCode(apiErr),
 		ErrorType:   errType,
 		Provider:    providerName,
 		Message:     apiErr.Error(),

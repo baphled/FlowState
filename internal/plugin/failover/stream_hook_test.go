@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1083,6 +1085,44 @@ var _ = Describe("StreamHook", func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+			})
+		})
+
+		Context("when a downstream provider.Error is wrapped in all providers failed", func() {
+			BeforeEach(func() {
+				dir, err := os.MkdirTemp("", "failover-aggregate-*")
+				Expect(err).NotTo(HaveOccurred())
+				DeferCleanup(func() {
+					_ = os.RemoveAll(dir)
+				})
+
+				health = failover.NewHealthManager()
+				health.SetPersistPath(filepath.Join(dir, "provider-health.json"))
+				manager = failover.NewManager(registry, health, timeout)
+				bus := eventbus.NewEventBus()
+				_ = failover.NewRateLimitDetector(bus, health)
+				sh = failover.NewStreamHook(manager, bus, "")
+
+				aggregateErr := &provider.Error{
+					ErrorType: provider.ErrorTypeRateLimit,
+					Provider:  "anthropic",
+					Message:   "all providers failed: provider zai error [rate_limit/1310 HTTP 429]",
+				}
+				registry.Register(&mockStreamProvider{
+					name:     "anthropic",
+					streamFn: syncErrorStreamFn(aggregateErr),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "anthropic", Model: "claude-fable-5"},
+				})
+			})
+
+			It("does not poison the selected upstream provider health", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("all providers failed"))
+				Expect(health.IsRateLimited("anthropic", "claude-fable-5")).To(BeFalse())
 			})
 		})
 

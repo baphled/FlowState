@@ -738,4 +738,3 @@ type RefreshCapable interface {
 	//     after a successful refresh.
 	RefreshStatus() (lastAttempt time.Time, consecutiveFailures int)
 }
-

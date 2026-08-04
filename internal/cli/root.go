@@ -160,6 +160,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 	cmd.AddCommand(
 		newSessionCmd(getApp),
 		newModelsCmd(getApp),
+		newHealthCmd(getApp),
 		newConfigCmd(getApp),
 	)
 

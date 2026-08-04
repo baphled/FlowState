@@ -29,6 +29,9 @@ func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, 
 	if err == nil {
 		return false
 	}
+	if isAggregateFailoverError(err) {
+		return false
+	}
 	d := &RateLimitDetector{health: health}
 	if d.isRateLimitedError(err) {
 		cooldown := time.Hour
@@ -52,6 +55,41 @@ func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, 
 //
 // Side effects:
 //   - None.
+
+// CooldownForAuthErrorCode returns a cooldown duration for a known
+// auth-layer error code (OpenAI/Anthropic `error.code` field). A
+// return of 0 means "no opinion" — the caller MUST then defer to
+// CooldownForErrorType for the table default. Non-zero returns are
+// authoritative for that code.
+//
+// S3.4: token_expired/expired_token get a short cooldown (5 min) because
+// S2's reactive refresh path will handle the actual remediation. All
+// other known auth codes get cooldowns appropriate to their severity.
+//
+// Expected:
+//   - code is the provider-specific error code (may be "").
+//
+// Returns:
+//   - A cooldown duration when the code is recognised.
+//   - 0 when the code is unknown (caller defers to CooldownForErrorType).
+//
+// Side effects:
+//   - None.
+func CooldownForAuthErrorCode(code string) time.Duration {
+	switch code {
+	case "token_expired", "expired_token":
+		return 5 * time.Minute // S2 will refresh; this is fallback
+	case "invalid_api_key", "invalid_auth":
+		return time.Hour
+	case "account_deactivated", "billing_not_active":
+		return 24 * time.Hour
+	case "insufficient_quota":
+		return 24 * time.Hour
+	default:
+		return 0 // no opinion — caller defers to CooldownForErrorType
+	}
+}
+
 func CooldownForErrorType(t provider.ErrorType) time.Duration {
 	switch t {
 	case provider.ErrorTypeRateLimit:
@@ -114,6 +152,9 @@ func (d *RateLimitDetector) HandleError(event any) {
 	}
 
 	data := providerErrorEvent.Data
+	if isAggregateFailoverError(data.Error) {
+		return
+	}
 
 	if d.isRateLimitedError(data.Error) {
 		cooldown := time.Hour
@@ -164,6 +205,13 @@ func (d *RateLimitDetector) isRateLimitedError(err error) bool {
 	return false
 }
 
+func isAggregateFailoverError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "all providers failed:")
+}
+
 // Hook implements ChatParamsHook to automatically switch providers on rate-limit.
 //
 // Hook checks if the current provider is rate-limited before each chat request,
@@ -205,8 +253,14 @@ func (fh *Hook) Apply(_ context.Context, req *provider.ChatRequest) error {
 	currentModel := req.Model
 
 	if currentProvider == "" {
-		currentProvider = "anthropic"
-		req.Provider = currentProvider
+		next, err := fh.chain.NextHealthy(ProviderModel{}, fh.health)
+		if err != nil {
+			return errors.New("no healthy provider available")
+		}
+
+		req.Provider = next.Provider
+		req.Model = next.Model
+		return nil
 	}
 
 	if !fh.health.IsRateLimited(currentProvider, currentModel) {
