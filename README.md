@@ -1,8 +1,8 @@
 # FlowState
 
-A general-purpose AI assistant TUI for everyday tasks.
+A general-purpose agentic harness platform for everyday tasks.
 
-FlowState brings the power of AI-assisted workflows to your terminal - not just for coding, but for research, analysis, decision-making, and any domain where AI can help.
+FlowState brings the power of AI-assisted workflows to the CLI, HTTP API, and SSE surfaces. It is built for research, analysis, decision-making, and any domain where agents can help.
 
 ## Features
 
@@ -15,7 +15,7 @@ FlowState brings the power of AI-assisted workflows to your terminal - not just 
 - **Session management** - Persistent conversations with search.
 - **Tool system** - Bash, file operations, web fetching with granular permissions.
 - **Extensible skill and command system** - Add custom commands and integrate with your workflows.
-- **Local-first** - Optional local memory server with user control.
+- **Hooks, gates, plugins** - Extend the runtime with integration surfaces instead of UI-specific glue.
 
 ## Installation
 
@@ -144,9 +144,9 @@ Inside the Layer 2 trigger, the cold-range slice that the summariser would other
 
 ### Manual compaction
 
-Operators and the chat UI can force-fire compaction without waiting for an automatic trigger:
+Operators and the CLI or API can force-fire compaction without waiting for an automatic trigger:
 
-- **Slash command:** `/compact` in the Vue chat (`web/src/commands/slashCommands.ts`). Renamed from the earlier `/compress` in May 2026; the old name no longer exists. The TUI does not currently register a `/compact` builtin.
+- **Command surface:** the CLI and API can trigger compaction. Renamed from the earlier `/compress` in May 2026; the old UI command surface no longer exists.
 - **HTTP endpoint:** `POST /api/v1/sessions/{id}/compact`. Renamed from `POST /api/v1/sessions/{id}/compress`; the old path now returns 405. The `compression` segment is retained for the config endpoints (`GET / PATCH /api/v1/config/compression`) because they tune the broader `compression:` block, not the per-session compact action.
 - **Master switch still applies.** Both paths honour `compression.auto_compaction.enabled` — if Layer 2 is disabled, the manual command is a no-op.
 
@@ -325,8 +325,7 @@ Swarms are coordinated teams of specialist agents that work together to solve co
 ### Triggering a swarm
 
 - **CLI:** `flowstate run --agent <swarm-id>` (accepts both agent and swarm IDs)
-- **TUI chat:** Type `@<swarm-id>` in the chat input to trigger a swarm from an active conversation
-- **Agent picker:** Press `Ctrl+A` in the TUI to select a swarm from the picker
+- **API:** Trigger the same swarm through the HTTP integration surface
 
 ### Key concepts
 
@@ -357,8 +356,8 @@ Agents are discovered at startup from:
 
 ### Running an agent
 
-- **CLI:** `flowstate run --agent <id>` — starts the TUI with the specified agent
-- **TUI:** Press `Ctrl+A` in the chat to open the agent picker and switch agents mid-conversation
+- **CLI:** `flowstate run --agent <id>` — runs the specified agent through the harness
+- **API:** Use the HTTP surface to run the same agent from external tooling
 
 ### Custom agents
 
@@ -382,14 +381,7 @@ entry is required to use it.
 
 ## Keyboard Shortcuts
 
-| Key | Action |
-|-----|--------|
-| `Enter` | Send message |
-| `↑/↓`, `PgUp/PgDn` | Scroll through chat history |
-| `Ctrl+C` | Quit |
-| `Ctrl+T` | Toggle swarm activity pane |
-| `Ctrl+A` | Open agent picker |
-| `@<swarm-id>` | Trigger a swarm from chat |
+The Bubble Tea keyboard shortcuts were part of the decommissioned TUI and are no longer current.
 
 ## Commands
 
@@ -397,8 +389,8 @@ entry is required to use it.
 
 | Command | Description |
 |---------|-------------|
-| `flowstate run [--agent <id>]` | Run the TUI with an optional agent or swarm |
-| `flowstate chat` | Launch the chat TUI |
+| `flowstate run [--agent <id>]` | Run an agent or swarm through the harness |
+| `flowstate serve` | Launch the HTTP API daemon |
 | `flowstate models` | List available models from all configured providers |
 | `flowstate help` | Show all available commands |
 

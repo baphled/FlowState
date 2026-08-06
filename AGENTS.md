@@ -1,6 +1,6 @@
 # FlowState AI Agent Instructions
 
-> **Reference document** for AI coding agents working on FlowState — a Go TUI application built with the Bubble Tea framework. Read this before writing any code, making any commits, or asking for clarification. All rules here are non-negotiable unless an explicit exception is stated.
+> **Reference document** for AI coding agents working on FlowState, an agentic harness daemon and platform. Read this before writing any code, making any commits, or asking for clarification. All rules here are non-negotiable unless an explicit exception is stated.
 
 ## Git Worktree Setup
 
@@ -47,49 +47,9 @@ git branch -d feature/my-feature
 | **Full check** | `make check` |
 | **Install hooks** | `make install-hooks` |
 
-## Keybindings
+## Historical UI Notes
 
-The chat intent's keyboard shortcuts are listed below. Use `Ctrl+T` to toggle the swarm activity pane that renders delegation, tool-call, plan, and review events in real time. The activity pane is visible by default; toggling hides it and falls back to a single-pane layout.
-
-### Chat intent
-
-| Key | Action |
-|-----|--------|
-| `Enter` | Send the current message |
-| `Alt+Enter` | Insert a new line in the input buffer |
-| `Tab` | Cycle the active agent |
-| `Esc` | Dismiss modals, pickers, or the session viewer; otherwise no-op |
-| `Ctrl+C` | Cancel the active stream, save the session, and quit |
-| `Ctrl+D` | Open the delegation picker |
-| `Ctrl+A` | Open the agent picker |
-| `Ctrl+P` | Open the model selector |
-| `Ctrl+S` | Open the session browser |
-| `Ctrl+G` | Open the session tree overlay |
-| `Ctrl+E` | Open event details modal (most recent swarm event) |
-| `Ctrl+T` | Toggle the swarm activity pane (visible by default) |
-| `↑` / `↓` | Scroll the message viewport line by line |
-| `PgUp` / `PgDn` | Scroll the message viewport a page at a time |
-| `Home` / `End` | Jump to the top or bottom of the message viewport |
-
-### Session tree modal (`Ctrl+G`)
-
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` | Navigate session tree |
-| `Enter` | Select session |
-| `Esc` | Close modal |
-
-### Event details modal (`Ctrl+E`)
-
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` / `j` / `k` | Scroll event details |
-| `Esc` | Close modal |
-
-### Notes
-
-- **Narrow terminals.** On terminals narrower than 80 columns the activity pane is suppressed; the `Ctrl+T` keybinding remains bound but has no visible effect.
-- **`Ctrl+S` and XOFF.** Some terminals intercept `Ctrl+S` as XOFF flow-control, which can present as an apparent freeze. If you hit this, run `stty -ixon` before launching FlowState.
+The Bubble Tea chat interface is decommissioned. Do not treat any archived keybinding notes as current product guidance.
 
 ## Commit Rules (MANDATORY — NO EXCEPTIONS)
 
@@ -171,86 +131,22 @@ refactor(chat): extract message formatting [REFACTOR]
 ### Layer Hierarchy (MUST follow)
 
 ```
-App -> Intents -> UIKit + Behaviors
+CLI / API -> App -> Engine -> Hooks / Gates / Plugins / Providers / Sessions
 ```
 
 ### Dependency Rules
 
-- `uikit/` **NEVER** imports `intents/` or `behaviours/`
-- `behaviours/` **NEVER** imports `intents/`
-- Intents communicate results via `IntentResult[T]` — never direct state mutation
-- **NO `screens/` package** — screens are legacy; intents use UIKit directly
+- `internal/tui`, `internal/ui`, and `internal/uikit` are historical and must not be used for current work
+- Engine and app code communicate through explicit contracts, not UI state mutation
+- Hooks, gates, and plugins are the extension points for cross-cutting behaviour
 
-### Intent Pattern
+### Runtime Patterns
 
-```go
-type Intent interface {
-    Init() tea.Cmd
-    Update(msg tea.Msg) tea.Cmd  // Returns Cmd only, NOT (Model, Cmd)
-    View() string
-    Result() *IntentResult
-}
-```
+Runtime work should flow through the engine, hooks, gates, plugins, and provider contracts. Keep current code in `internal/app`, `internal/api`, `internal/cli`, `internal/engine`, `internal/hook`, `internal/gates`, `internal/plugin`, `internal/provider`, `internal/session`, and `internal/streaming`.
 
-### BaseIntent Pattern
+### Historical Chat UX
 
-All intents embed `*BaseIntent` for common functionality:
-
-```go
-type MyIntent struct {
-    *intents.BaseIntent
-    // ... intent-specific fields
-}
-
-func NewMyIntent() *MyIntent {
-    return &MyIntent{
-        BaseIntent: intents.NewBaseIntent(),
-    }
-}
-
-func (i *MyIntent) View() string {
-    view := i.CreateViewWithBreadcrumbs("Main", "My Intent")
-    view.WithContent(i.renderContent())
-    view.WithHelp(intents.ThemedNavigationFooter(i.Theme()))
-    return view.Render()
-}
-```
-
-### ContentProvider Pattern
-
-```go
-type ContentProvider interface {
-    Content(width, height int) string
-    Title() string
-    Footer() string
-}
-
-// Usage
-asScreen := render.AsScreen(myComponent, layout)
-asModal := render.AsModal(myComponent, background, w, h, theme)
-```
-
-### Multi-Agent Chat UX
-
-The chat intent uses a dual-pane layout with a 70/30 horizontal split
-(`ScreenLayout.WithSecondaryContent()` in `internal/tui/uikit/layout/`). The
-primary pane renders the conversation; the secondary pane shows a live swarm
-activity timeline of delegation, tool-call, plan, and review events.
-
-Key components:
-
-| Component | Location |
-|-----------|----------|
-| **SwarmEvent model** | `internal/streaming/swarm_event.go` |
-| **MemorySwarmStore** | `internal/streaming/event_store_memory.go` |
-| **JSONL persistence** | `internal/streaming/swarm_event_persistence.go` |
-| **Session tree modal** | `internal/tui/intents/sessiontree/` |
-| **Event details modal** | `internal/tui/intents/eventdetails/` |
-| **Dual-pane layout** | `internal/tui/uikit/layout/screen_layout.go` |
-
-Events are persisted in JSONL format (one JSON object per line, RFC3339
-timestamps, `omitempty` on metadata). See `docs/design/swarm_event_model.md`
-for the full schema and persistence contract.
+The old dual-pane chat UI and its supporting packages are archived. Preserve the historical docs, but do not add new work in `internal/tui`, `internal/ui`, or `internal/uikit`.
 
 ### Child Content TEE Gate
 
@@ -267,10 +163,10 @@ import (
     "fmt"
     
     // 2. External (alphabetical)
-    tea "github.com/charmbracelet/bubbletea"
+    "github.com/spf13/cobra"
     
     // 3. Internal (alphabetical)
-    "github.com/baphled/flowstate/internal/tui/intents"
+    "github.com/baphled/flowstate/internal/engine"
 )
 ```
 
