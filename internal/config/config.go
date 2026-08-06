@@ -601,6 +601,9 @@ func (c *AppConfig) ResolvedQdrantURL() string {
 
 // ProvidersConfig configures all available LLM providers.
 type ProvidersConfig struct {
+	// Default names the preferred provider for failover and model preference construction.
+	// Empty means "use the first eligible configured provider".
+	Default     string         `json:"default" yaml:"default"`
 	Anthropic   ProviderConfig `json:"anthropic" yaml:"anthropic"`
 	GitHub      ProviderConfig `json:"github" yaml:"github"`
 	Ollama      ProviderConfig `json:"ollama" yaml:"ollama"`
@@ -1625,7 +1628,79 @@ func validateConfig(cfg *AppConfig) error {
 	if err := cfg.Compression.Validate(); err != nil {
 		return err
 	}
+	if err := validateDefaultProvider(cfg); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateDefaultProvider(cfg *AppConfig) error {
+	defaultName := strings.TrimSpace(cfg.Providers.Default)
+	if defaultName == "" {
+		return nil
+	}
+	if !providerEligibleForDefault(cfg, defaultName) {
+		if !knownProviderName(defaultName) {
+			return fmt.Errorf("providers.default: unknown provider %q", defaultName)
+		}
+		return fmt.Errorf("providers.default: provider %q is not configured", defaultName)
+	}
+	return nil
+}
+
+func providerEligibleForDefault(cfg *AppConfig, name string) bool {
+	checker, ok := providerEligibilityChecks[name]
+	if !ok {
+		return false
+	}
+	return checker(cfg)
+}
+
+var providerEligibilityChecks = map[string]func(*AppConfig) bool{
+	"anthropic": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.Anthropic.Model, cfg.Providers.Anthropic.APIKey, "ANTHROPIC_API_KEY")
+	},
+	"openai": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OpenAI.Model, cfg.Providers.OpenAI.APIKey, "OPENAI_API_KEY")
+	},
+	"zai": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.ZAI.Model, cfg.Providers.ZAI.APIKey, "ZAI_API_KEY")
+	},
+	"copilot": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.GitHub.Model, cfg.Providers.GitHub.APIKey, "GITHUB_TOKEN")
+	},
+	"openzen": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OpenZen.Model, cfg.Providers.OpenZen.APIKey, "OPENZEN_API_KEY")
+	},
+	"opencode-go": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OpenCodeGo.Model, cfg.Providers.OpenCodeGo.APIKey, "OPENCODE_GO_API_KEY")
+	},
+	"ollamacloud": func(cfg *AppConfig) bool {
+		return providerModelAndCredentialConfigured(cfg.Providers.OllamaCloud.Model, cfg.Providers.OllamaCloud.APIKey, "OLLAMA_CLOUD_API_KEY")
+	},
+	"ollama": func(cfg *AppConfig) bool {
+		defaults := DefaultConfig().Providers.Ollama
+		host := strings.TrimSpace(cfg.Providers.Ollama.Host)
+		model := strings.TrimSpace(cfg.Providers.Ollama.Model)
+		return host != "" && model != "" && (host != strings.TrimSpace(defaults.Host) || model != strings.TrimSpace(defaults.Model))
+	},
+}
+
+func providerModelAndCredentialConfigured(model, cfgValue, envVar string) bool {
+	return model != "" && providerCredentialConfigured(cfgValue, envVar)
+}
+
+func providerCredentialConfigured(cfgValue, envVar string) bool {
+	return strings.TrimSpace(cfgValue) != "" || strings.TrimSpace(os.Getenv(envVar)) != ""
+}
+
+func knownProviderName(name string) bool {
+	switch name {
+	case "anthropic", "openai", "zai", "copilot", "openzen", "opencode-go", "ollamacloud", "ollama":
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidateMCPServers validates that all MCP servers have required fields.

@@ -109,19 +109,38 @@ var _ = Describe("providers.ResolveProviderKey", func() {
 })
 
 var _ = Describe("providers.BuildConfigPreferences", func() {
-	It("preserves provider order without hoisting a default", func() {
+	It("hoists the configured default and excludes providers without credentials", func() {
 		cfg := config.DefaultConfig()
-		cfg.Providers.Anthropic.Model = "claude-test"
-		cfg.Providers.OpenAI.Model = "gpt-test"
+		cfg.Providers.Default = "anthropic"
+		cfg.Providers.Anthropic.APIKey = "anthropic-key"
+		cfg.Providers.OpenAI.APIKey = "openai-key"
+		cfg.Providers.ZAI.Model = "glm-test"
 		cfg.Providers.OllamaCloud.Model = ""
-		cfg.Providers.Ollama.Model = "ollama-test"
+		cfg.Providers.Ollama.Model = ""
+		cfg.Providers.Ollama.Host = ""
+		cfg.Providers.GitHub.Model = ""
+		cfg.Providers.OpenZen.Model = ""
+		cfg.Providers.OpenCodeGo.Model = ""
 
 		prefs := providers.BuildConfigPreferences(cfg)
 
-		Expect(prefs).To(HaveLen(3))
+		Expect(prefs).To(HaveLen(2))
 		Expect(prefs[0].Provider).To(Equal("anthropic"))
 		Expect(prefs[1].Provider).To(Equal("openai"))
-		Expect(prefs[2].Provider).To(Equal("ollama"))
+	})
+
+	It("returns an empty chain when no providers are eligible", func() {
+		cfg := &config.AppConfig{
+			Providers: config.ProvidersConfig{
+				Anthropic: config.ProviderConfig{Model: "claude-test"},
+				OpenAI:    config.ProviderConfig{Model: "gpt-test"},
+				ZAI:       config.ProviderConfig{Model: "glm-test"},
+			},
+		}
+
+		prefs := providers.BuildConfigPreferences(cfg)
+
+		Expect(prefs).To(BeEmpty())
 	})
 
 	It("skips providers that have no model configured", func() {
@@ -144,10 +163,11 @@ var _ = Describe("providers.BuildConfigPreferences", func() {
 	It("includes zai, copilot, and openzen when configured with models", func() {
 		cfg := &config.AppConfig{
 			Providers: config.ProvidersConfig{
-				Ollama:  config.ProviderConfig{Model: "llama3.2"},
-				ZAI:     config.ProviderConfig{Model: "glm-4.7"},
-				GitHub:  config.ProviderConfig{Model: "gpt-4o"},
-				OpenZen: config.ProviderConfig{Model: "qwen-coder"},
+				Ollama:    config.ProviderConfig{Model: "llama3.2", Host: "http://localhost:11434"},
+				ZAI:       config.ProviderConfig{Model: "glm-4.7", APIKey: "zai-key"},
+				GitHub:    config.ProviderConfig{Model: "gpt-4o", APIKey: "github-key"},
+				OpenZen:   config.ProviderConfig{Model: "qwen-coder", APIKey: "openzen-key"},
+				Anthropic: config.ProviderConfig{Model: "claude-test", APIKey: "anthropic-key"},
 			},
 		}
 
@@ -162,38 +182,34 @@ var _ = Describe("providers.BuildConfigPreferences", func() {
 		Expect(providerNames).To(ContainElement("openzen"))
 	})
 
-	It("keeps cloud providers ahead of the tiny local provider", func() {
+	It("keeps credentialed cloud providers in deterministic order", func() {
 		cfg := &config.AppConfig{
 			Providers: config.ProvidersConfig{
-				Ollama:    config.ProviderConfig{Model: "llama3.2"},
-				Anthropic: config.ProviderConfig{Model: "claude-sonnet-4"},
-				ZAI:       config.ProviderConfig{Model: "glm-4.7"},
+				Anthropic: config.ProviderConfig{Model: "claude-sonnet-4", APIKey: "anthropic-key"},
+				ZAI:       config.ProviderConfig{Model: "glm-4.7", APIKey: "zai-key"},
 			},
 		}
 
 		prefs := providers.BuildConfigPreferences(cfg)
 
-		Expect(prefs).To(HaveLen(3))
+		Expect(prefs).To(HaveLen(2))
 		Expect(prefs[0].Provider).To(Equal("anthropic"))
 		Expect(prefs[1].Provider).To(Equal("zai"))
-		Expect(prefs[2].Provider).To(Equal("ollama"))
 	})
 
-	It("orders capable cloud providers ahead of the tiny local provider", func() {
+	It("orders eligible providers in deterministic order", func() {
 		cfg := &config.AppConfig{
 			Providers: config.ProvidersConfig{
-				Anthropic: config.ProviderConfig{Model: "claude-sonnet-4"},
-				ZAI:       config.ProviderConfig{Model: "glm-5.1"},
-				Ollama:    config.ProviderConfig{Model: "llama3.2"},
+				Anthropic: config.ProviderConfig{Model: "claude-sonnet-4", APIKey: "anthropic-key"},
+				ZAI:       config.ProviderConfig{Model: "glm-5.1", APIKey: "zai-key"},
 			},
 		}
 
 		prefs := providers.BuildConfigPreferences(cfg)
 
-		Expect(prefs).To(HaveLen(3))
+		Expect(prefs).To(HaveLen(2))
 		Expect(prefs[0].Provider).To(Equal("anthropic"))
 		Expect(prefs[1].Provider).To(Equal("zai"))
-		Expect(prefs[2].Provider).To(Equal("ollama"))
 	})
 })
 

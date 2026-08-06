@@ -174,8 +174,91 @@ var _ = Describe("Manager", func() {
 			Expect(mgr.Candidates()).To(Equal(expected))
 		})
 
+		It("ranks healthy candidates by failure history while excluding active cooldowns", func() {
+			prefs := []provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-3"},
+				{Provider: "openai", Model: "gpt-4"},
+				{Provider: "zai", Model: "glm"},
+			}
+			mgr.SetBasePreferences(prefs)
+
+			for range 3 {
+				health.MarkRateLimited("anthropic", "claude-3", time.Now().Add(1*time.Hour))
+			}
+			health.MarkRateLimited("anthropic", "claude-3", time.Now().Add(-1*time.Minute))
+			health.MarkRateLimited("zai", "glm", time.Now().Add(1*time.Hour))
+
+			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
+				{Provider: "openai", Model: "gpt-4"},
+				{Provider: "anthropic", Model: "claude-3"},
+			}))
+		})
+
+		It("keeps equal-score candidates in preference order", func() {
+			prefs := []provider.ModelPreference{
+				{Provider: "openai", Model: "gpt-4"},
+				{Provider: "openzen", Model: "gpt-4"},
+			}
+			mgr.SetBasePreferences(prefs)
+
+			Expect(mgr.Candidates()).To(Equal(prefs))
+		})
+
 		It("returns empty when no preferences are set", func() {
 			Expect(mgr.Candidates()).To(BeEmpty())
+		})
+	})
+
+	Describe("Equivalent provider rotation", func() {
+		It("rotates same-tier equal-score candidates by least recently used attempt order", func() {
+			mgr.SetModelTiers(map[string]string{
+				"claude-a":  failover.Tier0,
+				"anthropic": failover.Tier1,
+				"copilot":   failover.Tier0,
+				"gpt-4o":    failover.Tier1,
+			})
+			mgr.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-a"},
+				{Provider: "copilot", Model: "claude-a"},
+				{Provider: "openai", Model: "gpt-4o"},
+			})
+
+			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-a"},
+				{Provider: "copilot", Model: "claude-a"},
+				{Provider: "openai", Model: "gpt-4o"},
+			}))
+
+			mgr.RecordAttempt("anthropic", "claude-a")
+
+			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
+				{Provider: "copilot", Model: "claude-a"},
+				{Provider: "anthropic", Model: "claude-a"},
+				{Provider: "openai", Model: "gpt-4o"},
+			}))
+
+			mgr.SetLast("copilot", "claude-a")
+
+			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-a"},
+				{Provider: "copilot", Model: "claude-a"},
+				{Provider: "openai", Model: "gpt-4o"},
+			}))
+		})
+
+		It("keeps a singleton tier unchanged", func() {
+			mgr.SetModelTiers(map[string]string{
+				"claude-a": failover.Tier0,
+			})
+			mgr.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-a"},
+			})
+
+			mgr.RecordAttempt("anthropic", "claude-a")
+
+			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
+				{Provider: "anthropic", Model: "claude-a"},
+			}))
 		})
 	})
 

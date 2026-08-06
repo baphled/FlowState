@@ -2,6 +2,7 @@ package failover
 
 import (
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,6 +32,8 @@ type Manager struct {
 	timeout         time.Duration
 	lastProvider    string
 	lastModel       string
+	modelTiers      map[string]string
+	attempts        map[ProviderModel]attemptRecord
 	// capabilityFilter, when non-nil, reports whether a (provider, model)
 	// pair is tool-capable enough to be an auto-failover target. It is
 	// injected from the layer above (app/engine wires the engine's
@@ -217,6 +220,22 @@ func (m *Manager) SetBasePreferences(prefs []provider.ModelPreference) {
 	m.basePreferences = prefs
 }
 
+// SetModelTiers replaces the tier lookup used to keep equivalent candidates
+// grouped without rotating across tier boundaries.
+func (m *Manager) SetModelTiers(tiers map[string]string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(tiers) == 0 {
+		m.modelTiers = nil
+		return
+	}
+	cloned := make(map[string]string, len(tiers))
+	for key, value := range tiers {
+		cloned[key] = value
+	}
+	m.modelTiers = cloned
+}
+
 // SetOverride sets a user override as the first candidate. The override is prepended
 // to base preferences so that base preferences are preserved as fallback.
 //
@@ -307,8 +326,17 @@ func (m *Manager) LastModel() string {
 func (m *Manager) SetLast(providerName, model string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.recordAttemptLocked(providerName, model)
 	m.lastProvider = providerName
 	m.lastModel = model
+}
+
+// RecordAttempt records an attempted provider/model pair so equivalent
+// candidates can rotate by least-recently-used order.
+func (m *Manager) RecordAttempt(providerName, model string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recordAttemptLocked(providerName, model)
 }
 
 // ListModels returns all available models from all providers in the registry.
@@ -393,17 +421,13 @@ func (m *Manager) effectivePreferences() []provider.ModelPreference {
 // Returns: capability- then health-filtered preferences, preserving order.
 // Side effects: none.
 func (m *Manager) healthyCandidates() []provider.ModelPreference {
-	prefs := m.capabilityFilteredPreferences()
-	if len(prefs) == 0 {
-		return nil
-	}
-	result := make([]provider.ModelPreference, 0, len(prefs))
-	for _, pref := range prefs {
-		if !m.health.IsRateLimited(pref.Provider, pref.Model) {
-			result = append(result, pref)
-		}
-	}
-	return result
+	return rankCandidatesByHealth(m.health, m.modelTiers, m.attempts, m.capabilityFilteredPreferences())
+}
+
+func (m *Manager) rankCandidates(candidates []provider.ModelPreference) []provider.ModelPreference {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return rankCandidatesByHealth(m.health, m.modelTiers, m.attempts, candidates)
 }
 
 // capabilityFilteredPreferences composes the effective preference list
@@ -454,4 +478,149 @@ func (m *Manager) capabilityFilteredBase() []provider.ModelPreference {
 		return m.basePreferences
 	}
 	return filtered
+}
+
+func rankCandidatesByHealth(
+	health *HealthManager,
+	tiers map[string]string,
+	attempts map[ProviderModel]attemptRecord,
+	candidates []provider.ModelPreference,
+) []provider.ModelPreference {
+	if health == nil || len(candidates) == 0 {
+		return rankCandidatesWithTiers(nil, tiers, attempts, candidates)
+	}
+
+	return rankCandidatesWithTiers(health, tiers, attempts, candidates)
+}
+
+type attemptRecord struct {
+	lastAttemptAt time.Time
+}
+
+type rankedCandidate struct {
+	candidate provider.ModelPreference
+	score     uint64
+	tier      string
+	index     int
+	attempt   attemptRecord
+}
+
+func (m *Manager) recordAttemptLocked(providerName, model string) {
+	if m.attempts == nil {
+		m.attempts = make(map[ProviderModel]attemptRecord)
+	}
+	m.attempts[ProviderModel{Provider: providerName, Model: model}] = attemptRecord{
+		lastAttemptAt: time.Now(),
+	}
+}
+
+func rankCandidatesWithTiers(
+	health *HealthManager,
+	tiers map[string]string,
+	attempts map[ProviderModel]attemptRecord,
+	candidates []provider.ModelPreference,
+) []provider.ModelPreference {
+	if len(candidates) == 0 {
+		return nil
+	}
+	now := time.Now()
+	ranked := make([]rankedCandidate, 0, len(candidates))
+	for i, candidate := range candidates {
+		if health != nil && health.IsRateLimited(candidate.Provider, candidate.Model) {
+			continue
+		}
+		score := uint64(0)
+		if health != nil {
+			score = health.HealthScore(candidate.Provider, candidate.Model, now)
+		}
+		ranked = append(ranked, rankedCandidate{
+			candidate: candidate,
+			score:     score,
+			tier:      equivalentTierForCandidate(tiers, candidate),
+			index:     i,
+			attempt:   attempts[ProviderModel{Provider: candidate.Provider, Model: candidate.Model}],
+		})
+	}
+	if len(ranked) < 2 {
+		return rankedCandidatesToPreferences(ranked)
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return ranked[i].score < ranked[j].score
+	})
+	ordered := make([]provider.ModelPreference, 0, len(ranked))
+	for start := 0; start < len(ranked); {
+		end := start + 1
+		for end < len(ranked) && ranked[end].score == ranked[start].score {
+			end++
+		}
+		ordered = append(ordered, orderEquivalentCandidates(ranked[start:end])...)
+		start = end
+	}
+	return ordered
+}
+
+func rankedCandidatesToPreferences(candidates []rankedCandidate) []provider.ModelPreference {
+	result := make([]provider.ModelPreference, len(candidates))
+	for i, candidate := range candidates {
+		result[i] = candidate.candidate
+	}
+	return result
+}
+
+func orderEquivalentCandidates(candidates []rankedCandidate) []provider.ModelPreference {
+	if len(candidates) < 2 {
+		return rankedCandidatesToPreferences(candidates)
+	}
+	groups := groupEquivalentCandidates(candidates)
+	ordered := make([]provider.ModelPreference, 0, len(candidates))
+	for _, group := range groups {
+		sortEquivalentGroup(group)
+		for _, candidate := range group {
+			ordered = append(ordered, candidate.candidate)
+		}
+	}
+	return ordered
+}
+
+func groupEquivalentCandidates(candidates []rankedCandidate) [][]rankedCandidate {
+	groups := make([][]rankedCandidate, 0, len(candidates))
+	groupIndexes := make(map[string]int, len(candidates))
+	for _, candidate := range candidates {
+		if idx, ok := groupIndexes[candidate.tier]; ok {
+			groups[idx] = append(groups[idx], candidate)
+			continue
+		}
+		groupIndexes[candidate.tier] = len(groups)
+		groups = append(groups, []rankedCandidate{candidate})
+	}
+	return groups
+}
+
+func sortEquivalentGroup(candidates []rankedCandidate) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left := candidates[i].attempt
+		right := candidates[j].attempt
+		switch {
+		case left.lastAttemptAt.IsZero() && !right.lastAttemptAt.IsZero():
+			return true
+		case !left.lastAttemptAt.IsZero() && right.lastAttemptAt.IsZero():
+			return false
+		case left.lastAttemptAt.Before(right.lastAttemptAt):
+			return true
+		case right.lastAttemptAt.Before(left.lastAttemptAt):
+			return false
+		default:
+			return candidates[i].index < candidates[j].index
+		}
+	})
+}
+
+func equivalentTierForCandidate(tiers map[string]string, candidate provider.ModelPreference) string {
+	if tier, ok := tiers[candidate.Model]; ok {
+		return tier
+	}
+	if tier, ok := tiers[candidate.Provider]; ok {
+		return tier
+	}
+	return ""
 }

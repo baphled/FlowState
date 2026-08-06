@@ -1,12 +1,11 @@
-// Package failover provides provider health tracking and rate-limit detection for the plugin system.
+// Package failover provides health-aware provider selection, cooldown tracking, and failover routing for the plugin system.
 //
-// This package manages health state for language model providers, detecting rate limits
-// and coordinating failover to healthy alternatives:
+// This package manages provider/model health state and chooses healthy alternatives:
 //   - Health state tracking with thread-safe RWMutex
 //   - Persistent health state caching to disk
-//   - Rate-limit detection and provider switching
-//   - Tier-based fallback chains for automatic failover
+//   - Rate-limit and error-type cooldown classification
+//   - Health-aware candidate selection and tier-aware fallback helpers
 //
 // HealthManager tracks which providers are rate-limited and when they will be healthy again.
-// PersistStateInternal and LoadState handle disk caching to survive application restarts.
+// PersistState and LoadState handle disk caching to survive application restarts.
 package failover

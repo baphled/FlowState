@@ -1346,7 +1346,8 @@ func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
 	}
 }
 
-// applyFailoverPreferences sets base preferences on the failover manager when configured.
+// applyFailoverPreferences seeds the failover manager with the config-derived
+// provider preference chain and capability filter when the manager is present.
 //
 // Expected:
 //   - failoverManager may be nil.
@@ -1358,6 +1359,7 @@ func applyFailoverPreferences(failoverManager *failover.Manager, cfg *config.App
 	if failoverManager == nil {
 		return
 	}
+	failoverManager.SetModelTiers(resolveFailoverTiers(cfg.Plugins.Failover.Tiers))
 	failoverManager.SetCapabilityFilter(capabilityFilterFor(cfg))
 	if prefs := providers.BuildConfigPreferences(cfg); len(prefs) > 0 {
 		failoverManager.SetBasePreferences(prefs)
@@ -3975,9 +3977,8 @@ func failoverHookAdapter(fh *failover.Hook) hook.Hook {
 	}
 }
 
-// buildFailoverProviders derives the failover provider list from application
-// configuration, using the same ordering as BuildConfigPreferences so that
-// all configured providers participate in the fallback chain.
+// buildFailoverProviders adapts the config-derived provider preferences into
+// failover.ProviderModel values for the fallback chain.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with at least one provider model set.

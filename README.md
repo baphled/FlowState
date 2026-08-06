@@ -111,15 +111,15 @@ repo or install a memory server separately.
 ## Quick Start
 
 1. **Install FlowState** as described above.
-2. **Configure your provider** (Ollama is the default if running locally).
-3. **Launch the TUI**:
+2. **Configure your provider** — set `providers.default` in `config.yaml` to name your preferred provider (e.g. `default: "ollama"`); other configured providers act as health-aware failover candidates.
+3. **Run an agentic task**:
    ```bash
-   flowstate chat
+   flowstate run --agent general "help me research a topic"
    ```
-4. **Interact**:
-   - Type your message and press `Enter` to send.
-   - Use arrow keys or `PgUp`/`PgDn` to scroll through chat history.
-   - Press `Ctrl+C` to quit.
+4. **Start the daemon when you need integrations**:
+   ```bash
+   flowstate serve
+   ```
 
 For a full walkthrough, see the [Demo Guide](docs/DEMO.md).
 

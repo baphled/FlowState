@@ -2,6 +2,8 @@ package failover
 
 import (
 	"errors"
+
+	"github.com/baphled/flowstate/internal/provider"
 )
 
 // Tier0 is the primary tier (Anthropic).
@@ -51,12 +53,20 @@ func (fc *FallbackChain) NextHealthy(current ProviderModel, health *HealthManage
 		}
 	}
 
-	for i := currentIdx + 1; i < len(fc.providers); i++ {
-		provider := fc.providers[i]
-		if !health.IsRateLimited(provider.Provider, provider.Model) {
-			return provider, nil
-		}
+	if currentIdx >= len(fc.providers)-1 {
+		return ProviderModel{}, errors.New("all providers rate-limited or exhausted")
 	}
 
-	return ProviderModel{}, errors.New("all providers rate-limited or exhausted")
+	remaining := make([]provider.ModelPreference, 0, len(fc.providers)-(currentIdx+1))
+	for i := currentIdx + 1; i < len(fc.providers); i++ {
+		candidate := fc.providers[i]
+		remaining = append(remaining, provider.ModelPreference{Provider: candidate.Provider, Model: candidate.Model})
+	}
+
+	ranked := rankCandidatesByHealth(health, fc.tiers, nil, remaining)
+	if len(ranked) == 0 {
+		return ProviderModel{}, errors.New("all providers rate-limited or exhausted")
+	}
+
+	return ProviderModel{Provider: ranked[0].Provider, Model: ranked[0].Model}, nil
 }

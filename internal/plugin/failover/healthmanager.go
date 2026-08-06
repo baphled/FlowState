@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	healthScoreFailureWeight = uint64(1) << 32
+	healthScoreMaxAge        = uint64(^uint32(0))
+)
+
 // HealthManager manages provider/model rate-limit health with concurrency safety.
 //
 // The in-memory state is keyed by the comparable ProviderModel struct
@@ -23,6 +28,7 @@ type healthEntry struct {
 	expiresAt        time.Time
 	consecutiveFails int
 	lastCooldown     time.Duration
+	lastFailureAt    time.Time
 }
 
 // HealthManager manages provider/model rate-limit health with concurrency safety.
@@ -122,6 +128,7 @@ func (hm *HealthManager) GetHealthStateEntries() []HealthStateEntry {
 				ExpiresAt:        v.expiresAt,
 				ConsecutiveFails: v.consecutiveFails,
 				LastCooldown:     v.lastCooldown,
+				LastFailureAt:    v.lastFailureAt,
 			})
 		}
 	}
@@ -197,6 +204,41 @@ func (hm *HealthManager) LastCooldown(provider, model string) time.Duration {
 	return entry.lastCooldown
 }
 
+// HealthScore returns a read-only ranking score for a provider/model pair.
+//
+// Lower scores are healthier. Provider/model pairs with no recorded failure
+// history score best, then pairs with fewer consecutive failures, then pairs
+// whose last failure is older.
+func (hm *HealthManager) HealthScore(provider, model string, now time.Time) uint64 {
+	entry, ok := hm.healthEntry(provider, model)
+	if !ok || entry.consecutiveFails <= 0 {
+		return 0
+	}
+
+	score := uint64(entry.consecutiveFails) * healthScoreFailureWeight
+	if entry.lastFailureAt.IsZero() {
+		return score + healthScoreMaxAge
+	}
+
+	age := now.Sub(entry.lastFailureAt)
+	if age < 0 {
+		age = 0
+	}
+	ageSeconds := uint64(age / time.Second)
+	if ageSeconds > healthScoreMaxAge {
+		ageSeconds = healthScoreMaxAge
+	}
+
+	return score + (healthScoreMaxAge - ageSeconds)
+}
+
+func (hm *HealthManager) healthEntry(provider, model string) (healthEntry, bool) {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	entry, ok := hm.data[ProviderModel{Provider: provider, Model: model}]
+	return entry, ok
+}
+
 // MarkRateLimited marks a provider/model as rate-limited until retryAfter.
 //
 // Expected: provider and model are non-empty strings, retryAfter is in the future.
@@ -213,17 +255,23 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 	// Don't escalate — just record the past expiry so IsRateLimited
 	// returns false on the next check.
 	if !retryAfter.After(now) {
-		hm.data[key] = healthEntry{
-			expiresAt: retryAfter,
+		entry := healthEntry{expiresAt: retryAfter, lastFailureAt: retryAfter}
+		if existing, ok := hm.data[key]; ok {
+			entry.consecutiveFails = existing.consecutiveFails
+			entry.lastCooldown = existing.lastCooldown
+		} else {
+			entry.consecutiveFails = 1
 		}
+		hm.data[key] = entry
 		hm.mu.Unlock()
 		return
 	}
 
 	newCooldown := retryAfter.Sub(now)
 	newEntry := healthEntry{
-		expiresAt:    retryAfter,
-		lastCooldown: newCooldown,
+		expiresAt:     retryAfter,
+		lastCooldown:  newCooldown,
+		lastFailureAt: now,
 	}
 
 	// Escalation: when the existing entry has not yet expired AND the
@@ -245,6 +293,7 @@ func (hm *HealthManager) MarkRateLimited(provider, model string, retryAfter time
 			newEntry.expiresAt = now.Add(newCooldown)
 			newEntry.lastCooldown = newCooldown
 			newEntry.consecutiveFails = existing.consecutiveFails + 1
+			newEntry.lastFailureAt = now
 		} else {
 			// Expired — reset.
 			newEntry.consecutiveFails = 1
@@ -295,21 +344,15 @@ func (hm *HealthManager) RateLimitedUntil(provider, model string) (time.Time, bo
 //
 // Expected: provider and model are non-empty strings.
 // Returns: true if the provider/model is rate-limited and has not yet expired.
-// Side effects: cleans up expired rate-limit entries when checking.
+// Side effects: none.
 func (hm *HealthManager) IsRateLimited(provider, model string) bool {
-	hm.mu.RLock()
-	key := ProviderModel{Provider: provider, Model: model}
-	entry, ok := hm.data[key]
-	hm.mu.RUnlock()
+	entry, ok := hm.healthEntry(provider, model)
 	if !ok {
 		return false
 	}
 	if entry.expiresAt.After(time.Now()) {
 		return true
 	}
-	hm.mu.Lock()
-	delete(hm.data, key)
-	hm.mu.Unlock()
 	return false
 }
 
@@ -344,6 +387,7 @@ type HealthStateEntry struct {
 	ExpiresAt        time.Time
 	ConsecutiveFails int
 	LastCooldown     time.Duration
+	LastFailureAt    time.Time
 }
 
 // persistedEntry is the on-disk representation of one rate-limit
@@ -357,6 +401,7 @@ type persistedEntry struct {
 	ExpiresAt        string `json:"expires_at"`
 	ConsecutiveFails int    `json:"consecutive_fails,omitempty"`
 	LastCooldownMs   int64  `json:"last_cooldown_ms,omitempty"`
+	LastFailureAt    string `json:"last_failure_at,omitempty"`
 }
 
 // PersistState writes the health state to disk atomically.
@@ -381,6 +426,7 @@ func (hm *HealthManager) PersistState(path string, snapshot map[ProviderModel]he
 			ExpiresAt:        v.expiresAt.UTC().Format(time.RFC3339),
 			ConsecutiveFails: v.consecutiveFails,
 			LastCooldownMs:   v.lastCooldown.Milliseconds(),
+			LastFailureAt:    v.lastFailureAt.UTC().Format(time.RFC3339),
 		})
 	}
 	b, err := json.MarshalIndent(entries, "", "  ")
@@ -445,10 +491,19 @@ func (hm *HealthManager) LoadState(path string) error {
 				continue
 			}
 			if t.After(now) {
+				failureAt := t
+				if e.LastFailureAt != "" {
+					if parsedFailureAt, ferr := time.Parse(time.RFC3339, e.LastFailureAt); ferr == nil {
+						failureAt = parsedFailureAt
+					}
+				} else if e.LastCooldownMs > 0 {
+					failureAt = t.Add(-time.Duration(e.LastCooldownMs) * time.Millisecond)
+				}
 				hm.data[ProviderModel{Provider: e.Provider, Model: e.Model}] = healthEntry{
 					expiresAt:        t,
 					consecutiveFails: e.ConsecutiveFails,
 					lastCooldown:     time.Duration(e.LastCooldownMs) * time.Millisecond,
+					lastFailureAt:    failureAt,
 				}
 			}
 		}
@@ -483,6 +538,7 @@ func (hm *HealthManager) LoadState(path string) error {
 			expiresAt:        t,
 			consecutiveFails: 0,
 			lastCooldown:     0,
+			lastFailureAt:    t,
 		}
 	}
 	return nil

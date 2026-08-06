@@ -148,7 +148,6 @@ var _ = Describe("Config", func() {
 
 				configContent := `
 providers:
-  default: openai
 log_level: debug
 `
 				configPath := filepath.Join(flowstatePath, "config.yaml")
@@ -268,9 +267,48 @@ log_level: debug
 				cfg, err := config.LoadConfigFromPath(configPath)
 
 				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.Providers.Default).To(Equal("openai"))
 				Expect(cfg.Providers.OpenAI.APIKey).To(Equal("test-key"))
 				Expect(cfg.LogLevel).To(Equal("debug"))
 				Expect(cfg.Providers.Ollama.Host).To(Equal("http://localhost:11434"))
+			})
+
+			It("rejects an unknown providers.default value", func() {
+				configContent := `
+providers:
+  default: does-not-exist
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("unknown provider"))
+				Expect(cfg).To(BeNil())
+			})
+
+			It("rejects a known providers.default value without credentials", func() {
+				original := os.Getenv("ZAI_API_KEY")
+				os.Unsetenv("ZAI_API_KEY")
+				DeferCleanup(func() { os.Setenv("ZAI_API_KEY", original) })
+
+				configContent := `
+providers:
+  default: zai
+  zai:
+    model: glm-4.7
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("not configured"))
+				Expect(cfg).To(BeNil())
 			})
 
 			It("applies defaults for missing fields", func() {

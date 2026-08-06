@@ -571,11 +571,11 @@ Claude then calls the `skill_load` tool to fetch each skill's SKILL.md content a
 
 ### Provider Priority
 
-FlowState builds a failback chain with providers in this order: **anthropic → github-copilot → openai → zai → openzen → ollama**. The `buildModelPreferences` function (at `internal/engine/engine.go`) iterates providers in this order when constructing the failback chain. If the first provider fails (e.g. model not found, auth error), the next is tried automatically.
+FlowState now builds the failback chain from the configuration's `providers` block: `providers.default` is hoisted to the front, and the `buildModelPreferences` function (at `internal/engine/engine.go`) uses that config wiring when constructing the failback chain. Selection is health-aware: each provider/model pair is ranked by health, blocked or unhealthy entries are deprioritised, and healthy eligible providers rotate by model tier with least-recently-used ordering instead of a fixed provider order.
 
 ### Agent Manifest Model Names
 
-Agent manifests in `~/.config/flowstate/agents/` must use **current model names** from the provider. Stale model names (e.g. `claude-3-5-sonnet-20241022`) cause silent failback to the next provider. Use `flowstate models` to list available models and verify names. (Manifests previously lived in `~/.local/share/flowstate/agents/` — the first run after the XDG_DATA → XDG_CONFIG migration copies your edits across automatically; the legacy dir is left in place for you to remove manually.)
+Agent manifests in `~/.config/flowstate/agents/` must use **current model names** from the provider. Stale model names (e.g. `claude-3-5-sonnet-20241022`) no longer cause a blind first-try failover; they fall through to the next eligible provider. Use `flowstate models` to list available models and verify names. (Manifests previously lived in `~/.local/share/flowstate/agents/` — the first run after the XDG_DATA → XDG_CONFIG migration copies your edits across automatically; the legacy dir is left in place for you to remove manually.)
 
 ### Anthropic Streaming Tool Call Arguments
 

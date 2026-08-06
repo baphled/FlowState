@@ -21,6 +21,11 @@ import (
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
+type providerSpec struct {
+	name  string
+	model string
+}
+
 // ErrOpenAINoKey is returned when OpenAI has no API key from any source. It
 // is exported so tests and the error-surface helper can match it
 // programmatically without coupling to a specific log-message string.
@@ -134,7 +139,9 @@ func ResolveProviderKey(envVar, cfgValue string) string {
 }
 
 // BuildConfigPreferences constructs a provider preference list from
-// application configuration.
+// application configuration, filtering to providers with a configured model
+// and effective credential, then hoisting providers.default to the front when
+// it is eligible.
 //
 // Expected:
 //   - cfg is a non-nil AppConfig with provider configuration.
@@ -146,33 +153,87 @@ func ResolveProviderKey(envVar, cfgValue string) string {
 // Side effects:
 //   - None.
 func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
-	type namedProvider struct {
-		name  string
-		model string
-	}
-
-	allProviders := []namedProvider{
-		{"anthropic", cfg.Providers.Anthropic.Model},
-		{"openai", cfg.Providers.OpenAI.Model},
-		{"zai", cfg.Providers.ZAI.Model},
-		{"copilot", cfg.Providers.GitHub.Model},
-		{"openzen", cfg.Providers.OpenZen.Model},
-		{"opencode-go", cfg.Providers.OpenCodeGo.Model},
-		{"ollamacloud", cfg.Providers.OllamaCloud.Model},
-		{"ollama", cfg.Providers.Ollama.Model},
-	}
-
-	sorted := allProviders
-
-	var prefs []provider.ModelPreference
-	for _, p := range sorted {
-		if p.model == "" {
+	prefs := make([]provider.ModelPreference, 0, len(configuredProviderSpecs(cfg)))
+	for _, spec := range configuredProviderSpecs(cfg) {
+		if spec.model == "" || !effectiveProviderCredentialConfigured(cfg, spec.name) {
 			continue
 		}
-		prefs = append(prefs, provider.ModelPreference{
-			Provider: p.name,
-			Model:    p.model,
-		})
+		prefs = append(prefs, provider.ModelPreference{Provider: spec.name, Model: spec.model})
+	}
+	return hoistDefaultProvider(prefs, cfg.Providers.Default)
+}
+
+func configuredProviderSpecs(cfg *config.AppConfig) []providerSpec {
+	return []providerSpec{
+		{name: "anthropic", model: cfg.Providers.Anthropic.Model},
+		{name: "openai", model: cfg.Providers.OpenAI.Model},
+		{name: "zai", model: cfg.Providers.ZAI.Model},
+		{name: "copilot", model: cfg.Providers.GitHub.Model},
+		{name: "openzen", model: cfg.Providers.OpenZen.Model},
+		{name: "opencode-go", model: cfg.Providers.OpenCodeGo.Model},
+		{name: "ollamacloud", model: cfg.Providers.OllamaCloud.Model},
+		{name: "ollama", model: cfg.Providers.Ollama.Model},
+	}
+}
+
+func effectiveProviderCredentialConfigured(cfg *config.AppConfig, providerName string) bool {
+	checker, ok := providerCredentialChecks[providerName]
+	if !ok {
+		return false
+	}
+	return checker(cfg)
+}
+
+var providerCredentialChecks = map[string]func(*config.AppConfig) bool{
+	"anthropic": func(cfg *config.AppConfig) bool {
+		return providerCredentialConfigured(cfg.Providers.Anthropic.APIKey, "ANTHROPIC_API_KEY")
+	},
+	"openai": func(cfg *config.AppConfig) bool {
+		return providerCredentialConfigured(cfg.Providers.OpenAI.APIKey, "OPENAI_API_KEY")
+	},
+	"zai": func(cfg *config.AppConfig) bool {
+		return providerCredentialConfigured(cfg.Providers.ZAI.APIKey, "ZAI_API_KEY")
+	},
+	"copilot": func(cfg *config.AppConfig) bool {
+		return providerCredentialConfigured(cfg.Providers.GitHub.APIKey, "GITHUB_TOKEN")
+	},
+	"openzen": func(cfg *config.AppConfig) bool {
+		return providerCredentialConfigured(cfg.Providers.OpenZen.APIKey, "OPENZEN_API_KEY")
+	},
+	"opencode-go": func(cfg *config.AppConfig) bool {
+		return providerCredentialConfigured(cfg.Providers.OpenCodeGo.APIKey, "OPENCODE_GO_API_KEY")
+	},
+	"ollamacloud": func(cfg *config.AppConfig) bool {
+		return providerCredentialConfigured(cfg.Providers.OllamaCloud.APIKey, "OLLAMA_CLOUD_API_KEY")
+	},
+	"ollama": func(cfg *config.AppConfig) bool {
+		defaults := config.DefaultConfig().Providers.Ollama
+		host := strings.TrimSpace(cfg.Providers.Ollama.Host)
+		model := strings.TrimSpace(cfg.Providers.Ollama.Model)
+		return host != "" && model != "" && (host != strings.TrimSpace(defaults.Host) || model != strings.TrimSpace(defaults.Model))
+	},
+}
+
+func providerCredentialConfigured(cfgValue, envVar string) bool {
+	return strings.TrimSpace(cfgValue) != "" || strings.TrimSpace(os.Getenv(envVar)) != ""
+}
+
+func hoistDefaultProvider(prefs []provider.ModelPreference, defaultName string) []provider.ModelPreference {
+	if defaultName == "" {
+		return prefs
+	}
+	for i, pref := range prefs {
+		if pref.Provider != defaultName {
+			continue
+		}
+		if i == 0 {
+			return prefs
+		}
+		hoisted := make([]provider.ModelPreference, 0, len(prefs))
+		hoisted = append(hoisted, pref)
+		hoisted = append(hoisted, prefs[:i]...)
+		hoisted = append(hoisted, prefs[i+1:]...)
+		return hoisted
 	}
 	return prefs
 }

@@ -2,7 +2,7 @@
 
 This document records the known technical debt items identified during the review cycle for the deterministic planning loop. It is intended to help future engineers understand the current risks, prioritise remediation, and separate low-risk maintenance from pre-deployment work.
 
-**Last Updated:** 2026-04-18
+**Last Updated:** 2026-08-05
 
 ## Debt Register
 
@@ -15,6 +15,14 @@ This document records the known technical debt items identified during the revie
 | TD-05 | Security response headers are missing | HTTP responses do not include CSP, `X-Content-Type-Options`, `X-Frame-Options`, or HSTS headers. | MEDIUM (pre-deployment) | API team | Add a security headers middleware to `setupRoutes()`. |
 | TD-06 | Background task launch has no goroutine cap | `BackgroundTaskManager.Launch` does not enforce a concurrency limit, so runaway or adversarial delegation can create an unbounded number of goroutines. | MEDIUM (pre-deployment) | Engine team | Add a semaphore, such as `golang.org/x/sync/semaphore`, with a configurable cap and a default of 50. |
 | TD-07 | IndexAgents godoc is inaccurate | The `IndexAgents` godoc in `internal/discovery/embedding.go` claims it returns an error if embedding fails for any agent, but the implementation continues on per-agent failures in a best-effort manner. | LOW | Discovery team | Update the godoc so it describes the best-effort behaviour accurately. |
+
+## Lint Debt Cleanup
+
+- Extracted dispatch maps and boolean helpers from two gocyclo hot spots.
+- Wrapped two long manager signatures to satisfy linting constraints.
+- Removed two empty test blocks.
+- Verification: `make bdd-wip` still reports pre-existing undefined WIP steps, while the in-scope failover tag buckets pass (4 + 15 + 4 + 3 = 26 scenarios).
+- No runtime behaviour changed; this was a lint-only cleanup.
 
 ## Notes
 

@@ -75,7 +75,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			Expect(health.IsRateLimited("zai", "glm-5")).To(BeTrue())
 		})
 
-		It("classifies billing as NOT a rate-limit via CheckAndMarkRateLimited", func() {
+		It("classifies billing via CheckAndMarkRateLimited", func() {
 			billingErr := &provider.Error{
 				ErrorType: provider.ErrorTypeBilling,
 				Provider:  "zai",
@@ -83,7 +83,7 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			}
 
 			result := failover.CheckAndMarkRateLimited(health, "zai", "glm-5", billingErr)
-			Expect(result).To(BeFalse())
+			Expect(result).To(BeTrue())
 		})
 
 		It("records the successful fallback provider as last", func() {
@@ -320,14 +320,14 @@ var _ = Describe("Integration: full error classification chain", Label("integrat
 			Expect(result).To(BeTrue())
 		})
 
-		It("structured billing error is NOT classified as rate-limited", func() {
+		It("structured billing error is classified as rate-limited", func() {
 			billingErr := &provider.Error{
 				ErrorType: provider.ErrorTypeBilling,
 				Provider:  "zai",
 				Message:   "insufficient balance",
 			}
 			result := failover.CheckAndMarkRateLimited(health, "zai", "glm-5", billingErr)
-			Expect(result).To(BeFalse())
+			Expect(result).To(BeTrue())
 		})
 	})
 

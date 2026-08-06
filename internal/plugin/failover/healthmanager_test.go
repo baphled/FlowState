@@ -60,8 +60,9 @@ var _ = Describe("HealthManager", func() {
 	})
 
 	It("loads state from disk (round-trip)", func() {
-		now := time.Now().Add(1 * time.Hour)
-		hm.MarkRateLimited("anthropic", "claude-3", now)
+		retryAfter := time.Now().Add(1 * time.Hour)
+		failureAt := time.Now()
+		hm.MarkRateLimited("anthropic", "claude-3", retryAfter)
 		err := hm.PersistStateInternal(path)
 		Expect(err).NotTo(HaveOccurred())
 		newHM := NewHealthManager()
@@ -69,6 +70,35 @@ var _ = Describe("HealthManager", func() {
 		err = newHM.LoadState(path)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(newHM.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+		Expect(newHM.ConsecutiveFailures("anthropic", "claude-3")).To(Equal(1))
+		Expect(newHM.LastCooldown("anthropic", "claude-3")).To(BeNumerically(">=", 59*time.Minute))
+		Expect(newHM.LastCooldown("anthropic", "claude-3")).To(BeNumerically("<=", time.Hour))
+		entries := newHM.GetHealthStateEntries()
+		Expect(entries).To(HaveLen(1))
+		Expect(entries[0].LastFailureAt).To(BeTemporally("~", failureAt, time.Second))
+	})
+
+	It("excludes expired persisted cooldowns from active status", func() {
+		hm.MarkRateLimited("anthropic", "claude-3", time.Now().Add(-1*time.Hour))
+		Expect(hm.PersistStateInternal(path)).To(Succeed())
+
+		fresh := NewHealthManager()
+		fresh.persistPath = path
+		Expect(fresh.LoadState(path)).To(Succeed())
+		Expect(fresh.GetHealthStateEntries()).To(BeEmpty())
+		Expect(fresh.IsRateLimited("anthropic", "claude-3")).To(BeFalse())
+	})
+
+	It("scores healthier candidates lower", func() {
+		now := time.Now()
+		hm.MarkRateLimited("anthropic", "claude-3", time.Now().Add(1*time.Hour))
+		hm.MarkRateLimited("anthropic", "claude-3", time.Now().Add(1*time.Hour))
+		hm.MarkRateLimited("anthropic", "claude-3", time.Now().Add(-1*time.Minute))
+		hm.MarkRateLimited("openai", "gpt-4", time.Now().Add(-1*time.Minute))
+		hm.MarkRateLimited("openzen", "gpt-4", time.Now().Add(-1*time.Hour))
+
+		Expect(hm.HealthScore("openai", "gpt-4", now)).To(BeNumerically(">", hm.HealthScore("openzen", "gpt-4", now)))
+		Expect(hm.HealthScore("openzen", "gpt-4", now)).To(BeNumerically("<", hm.HealthScore("anthropic", "claude-3", now)))
 	})
 
 	It("does not race on concurrent reads (RLock)", func() {

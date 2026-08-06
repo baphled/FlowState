@@ -26,26 +26,15 @@ import (
 // Side effects:
 //   - May update health state for the given provider/model.
 func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, err error) bool {
-	if err == nil {
+	cooldown, ok := classifyProviderHealthCooldown(err)
+	if !ok {
 		return false
 	}
-	if isAggregateFailoverError(err) {
-		return false
-	}
-	d := &RateLimitDetector{health: health}
-	if d.isRateLimitedError(err) {
-		cooldown := time.Hour
-		var provErr *provider.Error
-		if errors.As(err, &provErr) {
-			cooldown = cooldownForProviderError(provErr)
-		}
-		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
-		return true
-	}
-	return false
+	health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
+	return true
 }
 
-// CooldownForErrorType returns the recommended cooldown duration for a given error type.
+// CooldownForErrorType returns the recommended cooldown duration for a given provider error type.
 //
 // Expected:
 //   - t is a provider error classification.
@@ -55,41 +44,9 @@ func CheckAndMarkRateLimited(health RateLimitAware, providerName, model string, 
 //
 // Side effects:
 //   - None.
-
-// CooldownForAuthErrorCode returns a cooldown duration for a known
-// auth-layer error code (OpenAI/Anthropic `error.code` field). A
-// return of 0 means "no opinion" — the caller MUST then defer to
-// CooldownForErrorType for the table default. Non-zero returns are
-// authoritative for that code.
 //
-// S3.4: token_expired/expired_token get a short cooldown (5 min) because
-// S2's reactive refresh path will handle the actual remediation. All
-// other known auth codes get cooldowns appropriate to their severity.
-//
-// Expected:
-//   - code is the provider-specific error code (may be "").
-//
-// Returns:
-//   - A cooldown duration when the code is recognised.
-//   - 0 when the code is unknown (caller defers to CooldownForErrorType).
-//
-// Side effects:
-//   - None.
-func CooldownForAuthErrorCode(code string) time.Duration {
-	switch code {
-	case "token_expired", "expired_token":
-		return 5 * time.Minute // S2 will refresh; this is fallback
-	case "invalid_api_key", "invalid_auth":
-		return time.Hour
-	case "account_deactivated", "billing_not_active":
-		return 24 * time.Hour
-	case "insufficient_quota":
-		return 24 * time.Hour
-	default:
-		return 0 // no opinion — caller defers to CooldownForErrorType
-	}
-}
-
+// This table keeps provider-specific health classification aligned with the
+// request-correctable versus durable distinction used by the failover hook.
 func CooldownForErrorType(t provider.ErrorType) time.Duration {
 	switch t {
 	case provider.ErrorTypeRateLimit:
@@ -104,6 +61,41 @@ func CooldownForErrorType(t provider.ErrorType) time.Duration {
 		return 2 * time.Minute
 	default:
 		return 5 * time.Minute
+	}
+}
+
+// CooldownForAuthErrorCode returns a cooldown duration for a known
+// auth-layer error code (OpenAI/Anthropic `error.code` field). A
+// return of 0 means "no opinion" — the caller MUST then defer to
+// CooldownForErrorType for the table default. Non-zero returns are
+// authoritative for that code.
+//
+// S3.4: token_expired/expired_token now get a durable cooldown because
+// the reactive refresh path runs before health marking and a failed
+// refresh should poison the pair for long enough to re-open naturally.
+// All other known auth codes get cooldowns appropriate to their severity.
+//
+// Expected:
+//   - code is the provider-specific error code (may be "").
+//
+// Returns:
+//   - A cooldown duration when the code is recognised.
+//   - 0 when the code is unknown (caller defers to CooldownForErrorType).
+//
+// Side effects:
+//   - None.
+func CooldownForAuthErrorCode(code string) time.Duration {
+	switch code {
+	case "token_expired", "expired_token":
+		return 24 * time.Hour
+	case "invalid_api_key", "invalid_auth":
+		return time.Hour
+	case "account_deactivated", "billing_not_active":
+		return 24 * time.Hour
+	case "insufficient_quota":
+		return 24 * time.Hour
+	default:
+		return 0 // no opinion — caller defers to CooldownForErrorType
 	}
 }
 
@@ -156,17 +148,8 @@ func (d *RateLimitDetector) HandleError(event any) {
 		return
 	}
 
-	if d.isRateLimitedError(data.Error) {
-		cooldown := time.Hour
-		var provErr *provider.Error
-		if errors.As(data.Error, &provErr) {
-			cooldown = cooldownForProviderError(provErr)
-		}
-		d.health.MarkRateLimited(
-			data.ProviderName,
-			data.ModelName,
-			time.Now().Add(cooldown),
-		)
+	if cooldown, ok := classifyProviderHealthCooldown(data.Error); ok {
+		d.health.MarkRateLimited(data.ProviderName, data.ModelName, time.Now().Add(cooldown))
 		d.bus.Publish(events.EventProviderRateLimited, events.NewProviderEvent(events.ProviderEventData{
 			ProviderName: data.ProviderName,
 		}))
@@ -179,29 +162,78 @@ func (d *RateLimitDetector) HandleError(event any) {
 // Returns: true if error is a rate-limit signal.
 // Side effects: none.
 func (d *RateLimitDetector) isRateLimitedError(err error) bool {
-	if err == nil {
-		return false
+	_, ok := classifyProviderHealthCooldown(err)
+	return ok
+}
+
+func classifyProviderHealthCooldown(err error) (time.Duration, bool) {
+	if err == nil || isAggregateFailoverError(err) {
+		return 0, false
 	}
 
 	var provErr *provider.Error
 	if errors.As(err, &provErr) {
-		return provErr.ErrorType == provider.ErrorTypeRateLimit
+		if isUserCorrectableError(provErr.ErrorType) {
+			return 0, false
+		}
+		return cooldownForProviderError(provErr), true
 	}
 
-	errMsg := strings.ToLower(err.Error())
-	rateLimitKeywords := []string{
+	return classifyProviderHealthCooldownText(err.Error())
+}
+
+func classifyProviderHealthCooldownText(message string) (time.Duration, bool) {
+	msg := strings.ToLower(message)
+
+	if containsAny(msg,
 		"rate_limit",
 		"rate limit",
 		"too many requests",
 		"free usage exceeded",
+	) {
+		return time.Hour, true
 	}
 
-	for _, keyword := range rateLimitKeywords {
-		if strings.Contains(errMsg, keyword) {
+	if containsAny(msg,
+		"401",
+		"unauthorized",
+		"authentication failed",
+		"auth failed",
+		"invalid api key",
+		"invalid auth",
+		"token expired",
+		"token_expired",
+		"expired_token",
+		"403",
+		"forbidden",
+		"subscription expired",
+		"account disabled",
+		"limit exhausted",
+		"quota exceeded",
+		"quota exhausted",
+		"insufficient balance",
+		"billing",
+	) {
+		return 24 * time.Hour, true
+	}
+
+	if containsAny(msg,
+		"invalid request",
+		"malformed request",
+		"context window exceeded",
+	) {
+		return 0, false
+	}
+
+	return 0, false
+}
+
+func containsAny(message string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(message, needle) {
 			return true
 		}
 	}
-
 	return false
 }
 

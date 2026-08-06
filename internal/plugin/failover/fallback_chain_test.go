@@ -54,6 +54,17 @@ var _ = Describe("FallbackChain", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(next).To(Equal(chain[2]))
 		})
+
+		It("ranks healthy remaining providers by failure history", func() {
+			current := chain[0]
+			for range 3 {
+				health.MarkRateLimited("github-copilot", "claude-3", time.Now().Add(1*time.Hour))
+			}
+			health.MarkRateLimited("github-copilot", "claude-3", time.Now().Add(-1*time.Minute))
+			next, err := fc.NextHealthy(current, health)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(next).To(Equal(chain[2]))
+		})
 	})
 
 	Context("with configurable tiers", func() {

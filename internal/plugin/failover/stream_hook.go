@@ -201,6 +201,10 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		// health-filtered the chain, and re-inserting a rate-limited
 		// pair would loop forever (the "agent looping and bailing" bug).
 		candidates = promotePinned(candidates, req.Provider, req.Model)
+		candidates = sh.manager.rankCandidates(candidates)
+		if len(candidates) == 0 {
+			return nil, errors.New("no healthy providers available")
+		}
 
 		// Honour a parent ctx that is already cancelled or past its
 		// deadline at loop entry — this is how an upstream caller signals
@@ -257,6 +261,9 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 			if ok {
 				return sh.decorateSuccess(ctx, replayCh, attempts.winner, state.previousFailed), nil
 			}
+			if len(attempts.pairs) == 0 {
+				return nil, errors.New("no healthy providers available")
+			}
 
 			waited, retry := sh.backoffBeforeRetry(ctx, round, attempts, totalWaited)
 			if !retry {
@@ -298,7 +305,8 @@ func (sh *StreamHook) nextRoundCandidates(ctx context.Context, req *provider.Cha
 		candidates = filtered
 	}
 	candidates = sh.prependAgentChain(ctx, candidates)
-	return promotePinned(candidates, req.Provider, req.Model)
+	candidates = promotePinned(candidates, req.Provider, req.Model)
+	return sh.manager.rankCandidates(candidates)
 }
 
 // decorateSuccess prepends the model_active (and, on failover, provider_changed)
@@ -451,6 +459,9 @@ func (sh *StreamHook) runCandidateRound(
 ) (<-chan provider.StreamChunk, roundOutcome, bool) {
 	outcome := roundOutcome{allTransient: true}
 	for _, candidate := range candidates {
+		if !sh.selectAttemptCandidate(candidate) {
+			continue
+		}
 		req.Provider = candidate.Provider
 		req.Model = candidate.Model
 		outcome.pairs = append(outcome.pairs, candidate)
@@ -484,6 +495,14 @@ func (sh *StreamHook) runCandidateRound(
 		return replayCh, outcome, true
 	}
 	return nil, outcome, false
+}
+
+func (sh *StreamHook) selectAttemptCandidate(candidate provider.ModelPreference) bool {
+	health := sh.manager.Health()
+	if health == nil {
+		return true
+	}
+	return !health.IsRateLimited(candidate.Provider, candidate.Model)
 }
 
 // stripAssistantTail removes trailing assistant messages that have no tool calls
@@ -1003,11 +1022,11 @@ func (sh *StreamHook) tryRefreshRetry(
 	detached context.Context,
 	attemptTimeout time.Duration,
 	originalCancel context.CancelFunc,
-) (<-chan provider.StreamChunk, context.CancelFunc, bool) {
+) (<-chan provider.StreamChunk, context.Context, context.CancelFunc, bool) {
 	// Only attempt refresh on auth failures.
 	var provErr *provider.Error
 	if !errors.As(err, &provErr) || provErr.ErrorType != provider.ErrorTypeAuthFailure {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	// Resolve the provider from the registry.
@@ -1015,13 +1034,13 @@ func (sh *StreamHook) tryRefreshRetry(
 	if err != nil {
 		slog.Debug("tryRefreshRetry: provider not in registry",
 			"provider", candidate.Provider, "error", err)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	// Check if the provider supports reactive refresh.
 	rc, ok := p.(provider.RefreshCapable)
 	if !ok {
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	// Check consecutive-failure budget.
@@ -1035,7 +1054,7 @@ func (sh *StreamHook) tryRefreshRetry(
 			"provider", candidate.Provider,
 			"consecutive_failures", consecutiveFailures,
 			"max_retries", maxRetries)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
 	// Cancelling the original failed attempt's context.
@@ -1063,7 +1082,7 @@ func (sh *StreamHook) tryRefreshRetry(
 		if rerr := rc.RefreshNow(refreshCtx); rerr != nil {
 			slog.Warn("tryRefreshRetry: token refresh failed",
 				"provider", candidate.Provider, "error", rerr)
-			return nil, nil, false
+			return nil, nil, nil, false
 		}
 	}
 
@@ -1077,10 +1096,10 @@ func (sh *StreamHook) tryRefreshRetry(
 		retryCancel()
 		slog.Warn("tryRefreshRetry: retry after refresh also failed",
 			"provider", candidate.Provider, "error", newErr)
-		return nil, nil, false
+		return nil, nil, nil, false
 	}
 
-	return newCh, retryCancel, true
+	return newCh, retryCtx, retryCancel, true
 }
 
 // attemptCandidate tries a single provider candidate with per-attempt timeout and
@@ -1130,13 +1149,15 @@ func (sh *StreamHook) attemptCandidate(
 
 	ch, err := next(timeoutCtx, req)
 	if err != nil {
+		sh.manager.RecordAttempt(candidate.Provider, candidate.Model)
 		// S2: Reactive OAuth refresh on auth failure before cooldown.
-		if newCh, newCancel, ok := sh.tryRefreshRetry(
+		if newCh, newCtx, newCancel, ok := sh.tryRefreshRetry(
 			ctx, err, next, req, candidate,
 			detached, attemptTimeout, cancel,
 		); ok {
 			// Retry after refresh — continue to peekFirstChunk with
 			// the new channel and cancel function.
+			timeoutCtx = newCtx
 			cancel = newCancel
 			ch = newCh
 			goto afterInvoke
@@ -1158,6 +1179,7 @@ afterInvoke:
 	firstChunk, ok, peekErr := peekFirstChunk(timeoutCtx, ch, candidate.Provider)
 	if peekErr != nil {
 		cancel()
+		sh.manager.RecordAttempt(candidate.Provider, candidate.Model)
 		// A stall before the first chunk (the per-attempt StreamTimeout or a
 		// clamped parent deadline) is a transport-level failure. Tag it as a
 		// retriable NetworkError and health-mark it so a persistently-stalling
@@ -1176,6 +1198,7 @@ afterInvoke:
 	}
 	if !ok {
 		cancel()
+		sh.manager.RecordAttempt(candidate.Provider, candidate.Model)
 		// A stream that opens then closes without emitting any chunk produced
 		// nothing usable — a transport-level failure. Health-mark it so it is
 		// skipped next turn rather than re-tried into the same empty result.
@@ -1192,6 +1215,7 @@ afterInvoke:
 	}
 	if firstChunk.Error != nil && firstChunk.Done {
 		cancel()
+		sh.manager.RecordAttempt(candidate.Provider, candidate.Model)
 		markProviderHealth(sh.manager.Health(), candidate.Provider, candidate.Model, firstChunk.Error)
 		sh.publishFailoverError(ctx, candidate, requestStats, firstChunk.Error, attemptDebugMeta{
 			stage:                 "first_chunk_error",
@@ -1352,16 +1376,9 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 	if isAggregateFailoverError(err) {
 		return
 	}
-	var provErr *provider.Error
-	if errors.As(err, &provErr) {
-		if isUserCorrectableError(provErr.ErrorType) {
-			return
-		}
-		cooldown := cooldownForProviderError(provErr)
+	if cooldown, ok := classifyProviderHealthCooldown(err); ok {
 		health.MarkRateLimited(providerName, model, time.Now().Add(cooldown))
-		return
 	}
-	CheckAndMarkRateLimited(health, providerName, model, err)
 }
 
 // isUserCorrectableError reports whether the error attributes the failure

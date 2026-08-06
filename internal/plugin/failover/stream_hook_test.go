@@ -45,6 +45,26 @@ func (m *mockStreamProvider) Models() ([]provider.Model, error) {
 	return nil, errMockNotImplemented
 }
 
+type refreshableMockStreamProvider struct {
+	mockStreamProvider
+	refreshNowFn    func(ctx context.Context) error
+	refreshStatusFn func() (time.Time, int)
+}
+
+func (m *refreshableMockStreamProvider) RefreshNow(ctx context.Context) error {
+	if m.refreshNowFn != nil {
+		return m.refreshNowFn(ctx)
+	}
+	return nil
+}
+
+func (m *refreshableMockStreamProvider) RefreshStatus() (time.Time, int) {
+	if m.refreshStatusFn != nil {
+		return m.refreshStatusFn()
+	}
+	return time.Now(), 0
+}
+
 func successStreamFn(chunks ...provider.StreamChunk) func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	return func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 		ch := make(chan provider.StreamChunk, len(chunks))
@@ -832,6 +852,114 @@ var _ = Describe("StreamHook", func() {
 					Expect(manager.LastProvider()).To(Equal("ollama"))
 				})
 			})
+
+			Context("and the pinned candidate is cooldowned", func() {
+				var attempted []string
+				var attemptedMu sync.Mutex
+
+				BeforeEach(func() {
+					attempted = nil
+					registry.Register(&mockStreamProvider{
+						name: "ollama",
+						streamFn: successStreamFn(
+							provider.StreamChunk{Content: "ollama-reply", Done: true},
+						),
+					})
+					registry.Register(&mockStreamProvider{
+						name: "anthropic",
+						streamFn: successStreamFn(
+							provider.StreamChunk{Content: "anthropic-reply", Done: true},
+						),
+					})
+					manager.SetBasePreferences([]provider.ModelPreference{
+						{Provider: "ollama", Model: "llama3.2"},
+						{Provider: "anthropic", Model: "claude-sonnet-4"},
+					})
+					health.MarkRateLimited("anthropic", "claude-sonnet-4", time.Now().Add(1*time.Hour))
+				})
+
+				It("skips inserting the cooldowned pin and falls back to the healthy candidate", func() {
+					recordingHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						attemptedMu.Lock()
+						attempted = append(attempted, req.Provider)
+						attemptedMu.Unlock()
+						p, err := registry.Get(req.Provider)
+						if err != nil {
+							return nil, err
+						}
+						return p.Stream(ctx, *req)
+					}
+
+					handler := sh.Execute(recordingHandler)
+					pinnedReq := &provider.ChatRequest{
+						Provider: "anthropic",
+						Model:    "claude-sonnet-4",
+					}
+					ch, err := handler(context.Background(), pinnedReq)
+					Expect(err).NotTo(HaveOccurred())
+
+					var raw []provider.StreamChunk
+					for chunk := range ch {
+						raw = append(raw, chunk)
+					}
+
+					attemptedMu.Lock()
+					defer attemptedMu.Unlock()
+					Expect(attempted).To(Equal([]string{"ollama"}))
+					Expect(stripTransitionChunks(raw)[0].Content).To(Equal("ollama-reply"))
+				})
+			})
+		})
+
+		Context("when a candidate cools down before its turn", func() {
+			var attempted []string
+			var attemptedMu sync.Mutex
+
+			BeforeEach(func() {
+				attempted = nil
+				registry.Register(&mockStreamProvider{
+					name: "openai",
+					streamFn: func(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+						health.MarkRateLimited("anthropic", "claude-sonnet-4", time.Now().Add(1*time.Hour))
+						return syncErrorStreamFn(errors.New("openai failed"))(ctx, req)
+					},
+				})
+				registry.Register(&mockStreamProvider{
+					name: "anthropic",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "anthropic-reply", Done: true},
+					),
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{
+					{Provider: "openai", Model: "gpt-4o"},
+					{Provider: "anthropic", Model: "claude-sonnet-4"},
+				})
+			})
+
+			It("does not attempt the cooled-down candidate", func() {
+				recordingHandler := func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					attemptedMu.Lock()
+					attempted = append(attempted, req.Provider)
+					attemptedMu.Unlock()
+					p, err := registry.Get(req.Provider)
+					if err != nil {
+						return nil, err
+					}
+					return p.Stream(ctx, *req)
+				}
+
+				handler := sh.Execute(recordingHandler)
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				if err == nil && ch != nil {
+					for range ch {
+						continue
+					}
+				}
+
+				attemptedMu.Lock()
+				defer attemptedMu.Unlock()
+				Expect(attempted).To(Equal([]string{"openai"}))
+			})
 		})
 
 		Context("when event bus is configured and a candidate fails synchronously", func() {
@@ -1403,6 +1531,89 @@ var _ = Describe("StreamHook", func() {
 						"next call with the same key will fail the same way, "+
 						"so the long cooldown is the right behaviour and "+
 						"failover to a different provider is meaningful")
+			})
+		})
+
+		Context("when sync error is token_expired and refresh succeeds", func() {
+			BeforeEach(func() {
+				var calls int
+				registry.Register(&refreshableMockStreamProvider{
+					mockStreamProvider: mockStreamProvider{
+						name: "anthropic",
+						streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+							calls++
+							if calls == 1 {
+								return nil, &provider.Error{
+									HTTPStatus: 401,
+									ErrorCode:  "token_expired",
+									ErrorType:  provider.ErrorTypeAuthFailure,
+									Provider:   "anthropic",
+									Message:    "token expired",
+								}
+							}
+							ch := make(chan provider.StreamChunk, 1)
+							ch <- provider.StreamChunk{Content: "refreshed", Done: true}
+							close(ch)
+							return ch, nil
+						},
+					},
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{{Provider: "anthropic", Model: "claude-3"}, {Provider: "backup", Model: "backup-model"}})
+				registry.Register(&mockStreamProvider{
+					name: "backup",
+					streamFn: successStreamFn(
+						provider.StreamChunk{Content: "backup", Done: true},
+					),
+				})
+			})
+
+			It("does not poison health after the refresh retry succeeds", func() {
+				handler := sh.Execute(baseHandler(registry))
+				ch, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).NotTo(HaveOccurred())
+				for range ch {
+					continue
+				}
+
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeFalse())
+			})
+		})
+
+		Context("when sync error is token_expired and the retry still fails", func() {
+			BeforeEach(func() {
+				var calls int
+				registry.Register(&refreshableMockStreamProvider{
+					mockStreamProvider: mockStreamProvider{
+						name: "anthropic",
+						streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+							calls++
+							if calls <= 2 {
+								return nil, &provider.Error{
+									HTTPStatus: 401,
+									ErrorCode:  "token_expired",
+									ErrorType:  provider.ErrorTypeAuthFailure,
+									Provider:   "anthropic",
+									Message:    "token expired",
+								}
+							}
+							ch := make(chan provider.StreamChunk, 1)
+							ch <- provider.StreamChunk{Content: "retry failed", Done: true}
+							close(ch)
+							return ch, nil
+						},
+					},
+				})
+				manager.SetBasePreferences([]provider.ModelPreference{{Provider: "anthropic", Model: "claude-3"}})
+			})
+
+			It("marks the provider with a durable cooldown when refresh recovery fails", func() {
+				handler := sh.Execute(baseHandler(registry))
+				_, err := handler(context.Background(), &provider.ChatRequest{})
+				Expect(err).To(HaveOccurred())
+				Expect(health.IsRateLimited("anthropic", "claude-3")).To(BeTrue())
+				expiry, ok := health.RateLimitedUntil("anthropic", "claude-3")
+				Expect(ok).To(BeTrue())
+				Expect(expiry).To(BeTemporally(">=", time.Now().Add(23*time.Hour)))
 			})
 		})
 
