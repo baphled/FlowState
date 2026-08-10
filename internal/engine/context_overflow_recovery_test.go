@@ -280,7 +280,7 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			content := strings.TrimSpace(strings.Repeat("w ", 6) + "w")
-			for range 7 {
+			for range 14 {
 				store.Append(provider.Message{Role: "assistant", Content: content})
 			}
 
@@ -295,6 +295,12 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 			cm := agent.DefaultContextManagement()
 			cm.CompactionThreshold = 0
 
+			failoverMgr := newTestFailoverManager(
+				[]provider.ModelPreference{{Provider: "near-limit-todo-prov", Model: ""}},
+				nil,
+			)
+			failoverMgr.SetContextFallback(4260)
+
 			eng := engine.New(engine.Config{
 				ChatProvider:      prov,
 				Manifest:          agent.Manifest{ID: "near-limit-agent", Name: "Near Limit Agent", Instructions: agent.Instructions{SystemPrompt: "sys"}, Capabilities: agent.Capabilities{Tools: []string{"echo", "todowrite"}}, ContextManagement: cm},
@@ -302,6 +308,7 @@ var _ = Describe("Engine context-window overflow recovery", func() {
 				TokenCounter:      &wordTokenCounter{limit: 100},
 				AutoCompactor:     ctxstore.NewAutoCompactor(summariser),
 				CompressionConfig: cfg,
+				FailoverManager:   failoverMgr,
 			})
 			eng.SetTodoStoreForTest(todoStore)
 
