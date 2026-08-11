@@ -43,11 +43,12 @@ members:
   - plan-reviewer
 
 harness:
-  # Sequential by default — the planner's loop is dependency-driven
-  # (interview → research → analysis → write → review) and parallelism
-  # at this layer would race the coordination_store. §T37 will offer
-  # `parallel: true` for swarms whose member set is genuinely
-  # independent.
+  # Sequential by default — this swarm is dependency-driven
+  # (interview → research → analysis → write → review), so these specific
+  # member outputs are real downstream inputs. Do not generalise this into
+  # mandatory coordination-store writes for standalone direct-work agents.
+  # Future swarms whose member sets are genuinely independent may use
+  # `parallel: true`.
   parallel: false
 
   # Defence-in-depth ceiling on a single member's whole stream (all its

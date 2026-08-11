@@ -51,6 +51,8 @@ const canonicalTodoMandate = "Always use the `todowrite` tool to track multi-ste
 // anti-pattern phrasings so every agent has the same explicit guard.
 const canonicalAutoContinueSentence = `Once the list is recorded, work through it without asking the user "should I continue?", "do you want me to proceed?", or "shall I move on?" — pause only for genuinely missing input, an unresolvable blocker, or list completion.`
 
+const canonicalProgressUpdateResponseSentence = "A concise progress update that states what you are doing now and why, when work is underway."
+
 // canonicalTodoUpdateSentence is the case-sensitive substring every agent
 // prompt MUST carry on its Progress bullet. Bug provenance: session
 // 59b4e1a2-daf9-44f2-b179-fa0757c34f02 emitted 4 todowrite calls vs ~94 bash
@@ -117,6 +119,18 @@ var _ = Describe("Turn Rules anchor directive on agent prompts", func() {
 				"agent prompt missing canonical anchor sentence: %s", path)
 		}
 	})
+	It("every agent prompt allows concise progress updates as a valid response", func() {
+		for _, path := range listAgentPrompts() {
+			if reason, exempt := exemptedPrompts[filepath.Base(path)]; exempt {
+				By("skipping " + path + " — " + reason)
+				continue
+			}
+			content := readFile(path)
+			Expect(content).To(ContainSubstring(canonicalProgressUpdateResponseSentence),
+				"agent prompt missing concise progress update response option: %s", path)
+		}
+	})
+
 })
 
 // todoExempt is the documented allow-list for agent prompts excluded from the
@@ -222,6 +236,26 @@ var _ = Describe("Todo Discipline directive on agent prompts", func() {
 	})
 })
 
+const conditionalExplorerSearchSentence = "Use the smallest evidence set that can answer the requested question confidently"
+
+const conditionalCoordinatorSearchSentence = "Search-first briefing is conditional"
+
+var _ = Describe("Agent prompt fast-path discipline", func() {
+	It("keeps explorer from requiring every investigation layer by default", func() {
+		content := readFile("explorer.md")
+		Expect(content).To(ContainSubstring(conditionalExplorerSearchSentence))
+		Expect(content).To(ContainSubstring("Do not perform every layer by default."))
+		Expect(content).NotTo(ContainSubstring("You must employ multiple layers of investigation"))
+	})
+
+	It("keeps coordinator search-first briefing conditional", func() {
+		content := readFile("coordinator.md")
+		Expect(content).To(ContainSubstring(conditionalCoordinatorSearchSentence))
+		Expect(content).To(ContainSubstring("Do not force memory/vault discovery for concrete direct-work tasks"))
+		Expect(content).NotTo(ContainSubstring("Search-first briefing is mandatory"))
+	})
+})
+
 // PR6/C2 close-out (May 2026): the embed seed contracts. PR4 rewrote the
 // per-user copies in `~/.config/flowstate/agents/` to remove the reflex
 // "Call skill_load(name) for EACH skill before beginning any work" anchor
@@ -233,7 +267,7 @@ var _ = Describe("Todo Discipline directive on agent prompts", func() {
 // copies again. The per-user copy is reseeded from the embed FS on first
 // install; tightening the in-repo copy is the load-bearing fix.
 //
-// staleReflexSentence: the literal anchor PR4 retired. Any in-repo
+// StaleReflexSentence: the literal anchor PR4 retired. Any in-repo
 // manifest that re-introduces "for EACH skill before beginning" should
 // fail the contract. The wording is deliberately specific to the retired
 // version, so the assertion does not over-fire on related future

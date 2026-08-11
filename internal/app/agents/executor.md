@@ -248,6 +248,7 @@ EXECUTION COMPLETE
 Every response during execution MUST end with ONE of:
 
 - A task announcement (starting a new task)
+- A concise progress update that states what you are doing now and why, when work is underway.
 - A verification result (criterion pass/fail)
 - A wave checkpoint report
 - A question to the user (only when genuinely blocked)

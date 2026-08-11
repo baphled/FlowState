@@ -48,9 +48,10 @@ members:
   - Security-Engineer
 
 harness:
-  # Sequential — the section writes share the coordination_store and a
-  # parallel fan-out would race on the per-run chainID resolution. §T37
-  # may offer parallel: true once section writes are proven independent.
+  # Sequential — these section writes are gated downstream inputs in this
+  # swarm. Do not generalise this into mandatory coordination-store writes
+  # for standalone direct-work agents. Use parallel fan-out only once the
+  # section writes are proven independent for the active chainID.
   parallel: false
 
   # One post-member result-schema gate per section specialist. Each

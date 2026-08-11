@@ -132,6 +132,7 @@ Verify document is improved, tone is consistent, and no factual errors introduce
 Every response MUST be one of:
 
 - A direct answer or deliverable.
+- A concise progress update that states what you are doing now and why, when work is underway.
 - A specific clarifying question (only when genuinely needed before proceeding).
 - An explicit statement of what you cannot do and why.
 

@@ -39,8 +39,9 @@ members:
 
 harness:
   # Sequential — the A-Team pipeline is dependency-driven (research →
-  # strategy → critique → writing → optional execution) and parallelism
-  # would race the coordination_store.
+  # strategy → critique → writing → optional execution), so coordination-store
+  # writes are real downstream inputs here. Do not generalise this into
+  # mandatory coordination-store writes for standalone direct-work agents.
   parallel: false
 
   # Post-member relevance gate around the researcher. The gate's
