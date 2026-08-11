@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"regexp"
@@ -151,7 +152,7 @@ type validatorManifestProbe struct {
 // MCP tools are accepted via the mcp_* prefix rather than being
 // enumerated — the MCP set is discovered at runtime and any static
 // list would drift the moment an operator wires a new server.
-// defaultBaseTools is the toolset every agent inherits regardless of
+// DefaultBaseTools is the toolset every agent inherits regardless of
 // manifest declaration (D1 in Agent Runtime Quality plan, May 2026).
 // Convergent precedent: Claude Code subagents omit `tools:` to inherit
 // the full belt; OpenCode hard-codes a built-in tool set.
@@ -161,7 +162,7 @@ type validatorManifestProbe struct {
 // access to the discipline + observability surface every agent
 // depends on. The base set restores that floor; per-agent
 // Capabilities.ToolsDeny opts back out for the rare manifest that
-// genuinely needs the denial. todo_clear is included because every
+// genuinely needs the denial. Todo_clear is included because every
 // agent manifest's system prompt instructs the agent to retire a
 // finished list via todo_clear; omitting it from the inherited floor
 // hid the tool from the schema filter so agents could not reach the
@@ -212,6 +213,7 @@ var canonicalTools = map[string]bool{
 	"background_output":  true,
 	"background_cancel":  true,
 	"autoresearch_run":   true,
+	"autoresearch_prune": true,
 	"todowrite":          true,
 	"todo_update":        true,
 
@@ -344,7 +346,10 @@ func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
 	return []Violation{{
 		Manifest: name,
 		Rule:     "tools-empty",
-		Detail:   "capabilities.tools is empty — under D1 the agent inherits only the default base toolset (todowrite, todo_update, todo_append, todo_insert, todo_clear, skill_load); if more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical fail-closed regression this rule originally caught)",
+		Detail: "capabilities.tools is empty — under D1 the agent inherits only the default base " +
+			"toolset (todowrite, todo_update, todo_append, todo_insert, todo_clear, skill_load); if " +
+			"more capability is intended, declare it (see ecbe59d3 / b17038c2 for the historical " +
+			"fail-closed regression this rule originally caught)",
 	}}
 }
 
@@ -521,7 +526,7 @@ func extractFrontmatterOrEmpty(content string) (string, error) {
 	}
 	parts := strings.SplitN(content[3:], "---", 2)
 	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid frontmatter: missing closing ---")
+		return "", errors.New("invalid frontmatter: missing closing ---")
 	}
 	return strings.TrimSpace(parts[0]), nil
 }

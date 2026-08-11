@@ -15,6 +15,7 @@ capabilities:
     - search_nodes
     - open_nodes
     - todowrite
+    - bash
     - read
     - write
     - edit
