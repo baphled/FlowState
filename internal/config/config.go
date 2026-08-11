@@ -1421,10 +1421,11 @@ func DefaultConfig() *AppConfig {
 	}
 }
 
-// DefaultDelegationConfig returns the default delegation configuration with TeeChildContent enabled; the child session plus tool_result remains the canonical surface when callers explicitly opt out.
+// DefaultDelegationConfig returns the default delegation configuration with TeeChildContent disabled; the child session plus
+// tool_result is the canonical surface unless callers explicitly opt in.
 func DefaultDelegationConfig() DelegationConfig {
 	return DelegationConfig{
-		TeeChildContent: true,
+		TeeChildContent: false,
 	}
 }
 

@@ -164,7 +164,9 @@ func IsControlEvent(eventType string) bool {
 		"review_verdict",
 		"status_transition",
 		"provider_changed",
-		"model_active":
+		"model_active",
+		"context_usage",
+		"provider_quota":
 		return true
 	default:
 		return false
@@ -187,7 +189,7 @@ func IsControlEvent(eventType string) bool {
 //   - If c implements HarnessEventConsumer, calls the corresponding method for harness event types.
 //   - If c implements EventConsumer, calls WriteEvent for plan_artifact, review_verdict, and
 //     status_transition event types.
-//   - provider_changed and model_active are silently consumed (no consumer interface delivery)
+//   - provider_changed, model_active, context_usage, and provider_quota are silently consumed (no consumer interface delivery)
 //     since the dispatcher's turn registry tap handles their data for the long-poll API surface.
 func dispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
 	var harnessFunc func(HarnessEventConsumer)
@@ -209,7 +211,7 @@ func dispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
 	case "status_transition":
 		deliverTypedEvent(c, StatusTransitionEvent{})
 		return true
-	case "provider_changed", "model_active":
+	case "provider_changed", "model_active", "context_usage", "provider_quota":
 		return true
 	default:
 		return false

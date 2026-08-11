@@ -160,10 +160,10 @@ The delegation engine supports the `delegation.tee_child_content` key to control
 
 ```yaml
 delegation:
-  # When true (default), child-agent reasoning text is mirrored into the
-  # parent's chat bubble. Set this to false to keep child output in the
-  # child session and surface it only via the tool_result.
-  tee_child_content: true
+  # When true, child-agent reasoning text is mirrored into the
+  # parent's chat bubble. The default is false: child output stays in the
+  # child session and surfaces only via the tool_result.
+  tee_child_content: false
 ```
 
 ### Example configuration

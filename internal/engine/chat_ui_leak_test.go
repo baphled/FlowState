@@ -62,6 +62,8 @@ var _ = Describe("Chat-UI leak: harness EventType chunks must not contaminate pe
 				"plan_artifact",
 				"review_verdict",
 				"status_transition",
+				"context_usage",
+				"provider_quota",
 			}
 			for _, et := range knownControl {
 				Expect(streaming.IsControlEvent(et)).To(BeTrue(),
@@ -169,8 +171,38 @@ var _ = Describe("Chat-UI leak: harness EventType chunks must not contaminate pe
 			delegation = agent.Delegation{CanDelegate: true, DelegationAllowlist: []string{"plan-writer"}}
 		})
 
-		Context("when TeeChildContent is true (default)", func() {
+		Context("when TeeChildContent is true (explicit opt-in)", func() {
 			It("writes genuine child content into the parent stream", func() {
+				parentOut := make(chan provider.StreamChunk, 64)
+				ctx := engine.WithStreamOutput(context.Background(), parentOut)
+
+				delegateTool := engine.NewDelegateTool(engines, delegation, "orchestrator").
+					WithTeeChildContent(true)
+				_, err := delegateTool.Execute(ctx, tool.Input{
+					Name: "delegate",
+					Arguments: map[string]interface{}{
+						"subagent_type": "plan-writer",
+						"message":       "Plan it",
+					},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				close(parentOut)
+				var teedText strings.Builder
+				for chunk := range parentOut {
+					if chunk.EventType == "" && chunk.Content != "" {
+						teedText.WriteString(chunk.Content)
+					}
+				}
+				Expect(teedText.String()).To(ContainSubstring("Now I have all the context"),
+					"when TeeChildContent is true, child content must surface in the parent stream")
+				Expect(teedText.String()).NotTo(ContainSubstring(`{"attempt":`),
+					"harness EventType Content must not surface regardless of gate state")
+			})
+		})
+
+		Context("when TeeChildContent uses the default", func() {
+			It("keeps genuine child content out of the parent stream", func() {
 				parentOut := make(chan provider.StreamChunk, 64)
 				ctx := engine.WithStreamOutput(context.Background(), parentOut)
 
@@ -192,10 +224,8 @@ var _ = Describe("Chat-UI leak: harness EventType chunks must not contaminate pe
 						teedText.WriteString(chunk.Content)
 					}
 				}
-				Expect(teedText.String()).To(ContainSubstring("Now I have all the context"),
-					"when TeeChildContent is true (default), child content must surface in the parent stream")
-				Expect(teedText.String()).NotTo(ContainSubstring(`{"attempt":`),
-					"harness EventType Content must not surface regardless of gate state")
+				Expect(teedText.String()).NotTo(ContainSubstring("Now I have all the context"),
+					"default configuration must keep child text in the child session and delegation tool_result")
 			})
 		})
 

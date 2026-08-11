@@ -131,11 +131,11 @@ var _ = Describe("Config", func() {
 				"SkillDir must NOT be re-derived from DataDir — XDG_CONFIG is correct")
 		})
 
-		It("enables delegation teeing by default", func() {
+		It("disables delegation teeing by default", func() {
 			cfg := config.DefaultConfig()
 
-			Expect(cfg.Delegation.TeeChildContent).To(BeTrue())
-			Expect(config.DefaultDelegationConfig().TeeChildContent).To(BeTrue())
+			Expect(cfg.Delegation.TeeChildContent).To(BeFalse())
+			Expect(config.DefaultDelegationConfig().TeeChildContent).To(BeFalse())
 		})
 	})
 
