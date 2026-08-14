@@ -49,6 +49,8 @@ func NewUpdate(s Store) *UpdateTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *UpdateTool) Name() string {
 	return "todo_update"
 }
@@ -60,6 +62,8 @@ func (t *UpdateTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *UpdateTool) Description() string {
 	return "Patch a single todo entry by 0-based index; status transitions are forward-only and only one item may be in_progress at a time."
 }
@@ -72,6 +76,8 @@ func (t *UpdateTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *UpdateTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -99,6 +105,10 @@ func (t *UpdateTool) Schema() tool.Schema {
 
 // IsStateModifying returns true because todo_update patches the stored
 // task list for the session.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *UpdateTool) IsStateModifying() bool { return true }
 
 // Execute patches a single todo in the stored list and returns the full
@@ -311,6 +321,10 @@ type itemPatch struct {
 // parseIndex extracts the index argument from a tool input map. JSON numbers
 // decode as float64 in Go, so accept that as the canonical form; reject any
 // other type with an explicit error.
+//
+// Expected: parameters for parseIndex.
+// Returns: result of parseIndex.
+// Side effects: None.
 func parseIndex(args map[string]interface{}) (int, error) {
 	raw, present := args["index"]
 	if !present {
@@ -331,6 +345,10 @@ func parseIndex(args map[string]interface{}) (int, error) {
 // parsePatch reads the optional status, content, and priority fields from a
 // tool input map. Returns ok=true when at least one non-empty patch field is
 // present so Execute can reject empty-patch calls.
+//
+// Expected: parameters for parsePatch.
+// Returns: result of parsePatch.
+// Side effects: None.
 func parsePatch(args map[string]interface{}) (itemPatch, bool) {
 	p := itemPatch{
 		status:   stringField(args, "status"),
@@ -345,6 +363,9 @@ func parsePatch(args map[string]interface{}) (itemPatch, bool) {
 
 // applyPatch mutates target in place with any non-empty patch fields. Empty
 // patch fields preserve the existing values — the patch is additive.
+//
+// Expected: parameters for applyPatch.
+// Side effects: None.
 func applyPatch(target *Item, p itemPatch) {
 	if p.status != "" {
 		target.Status = p.status

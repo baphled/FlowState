@@ -37,6 +37,8 @@ type rateLimitPlugin struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *rateLimitPlugin) Name() string { return "rate-limit-detector" }
 
 // Version returns the plugin version.
@@ -46,6 +48,8 @@ func (p *rateLimitPlugin) Name() string { return "rate-limit-detector" }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Version.
 func (p *rateLimitPlugin) Version() string { return "1.0.0" }
 
 // Init is a no-op for rateLimitPlugin.
@@ -55,6 +59,8 @@ func (p *rateLimitPlugin) Version() string { return "1.0.0" }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Init.
 func (p *rateLimitPlugin) Init() error { return nil }
 
 // Start creates the RateLimitDetector and subscribes it to provider errors.

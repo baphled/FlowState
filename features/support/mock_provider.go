@@ -112,6 +112,8 @@ func NewMockProvider() *MockProvider {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (m *MockProvider) Name() string {
 	return m.name
 }
@@ -159,6 +161,8 @@ func (m *MockProvider) Stream(ctx context.Context, req ChatRequest) (<-chan Stre
 //
 // Side effects:
 //   - Sends up to longStreamChunks StreamChunk values on ch.
+//
+// Returns: result of streamLong.
 func (m *MockProvider) streamLong(ctx context.Context, ch chan<- StreamChunk) {
 	defer close(ch)
 	for i := range longStreamChunks {
@@ -186,6 +190,8 @@ func (m *MockProvider) streamLong(ctx context.Context, ch chan<- StreamChunk) {
 // Side effects:
 //   - Mutates longStream so subsequent Stream calls emit longStreamChunks
 //     chunks with a short per-chunk delay.
+//
+// Returns: result of SetLongStream.
 func (m *MockProvider) SetLongStream(enabled bool) {
 	m.longStream = enabled
 }
@@ -330,6 +336,8 @@ func (m *MockProvider) Embed(_ context.Context, _ EmbedRequest) ([]float64, erro
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Models.
 func (m *MockProvider) Models() ([]Model, error) {
 	return m.models, nil
 }
@@ -341,6 +349,8 @@ func (m *MockProvider) Models() ([]Model, error) {
 //
 // Side effects:
 //   - Replaces the provider's internal response list.
+//
+// Returns: result of SetResponses.
 func (m *MockProvider) SetResponses(responses []string) {
 	m.responses = responses
 }
@@ -352,6 +362,8 @@ func (m *MockProvider) SetResponses(responses []string) {
 //
 // Side effects:
 //   - Replaces the provider's internal embeddings.
+//
+// Returns: result of SetEmbeddings.
 func (m *MockProvider) SetEmbeddings(embeddings []float64) {
 	m.embeddings = embeddings
 }
@@ -363,6 +375,8 @@ func (m *MockProvider) SetEmbeddings(embeddings []float64) {
 //
 // Side effects:
 //   - Replaces the provider's internal model list.
+//
+// Returns: result of SetModels.
 func (m *MockProvider) SetModels(models []Model) {
 	m.models = models
 }

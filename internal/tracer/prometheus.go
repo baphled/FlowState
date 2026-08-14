@@ -117,6 +117,8 @@ func NewPrometheusRecorder(reg prometheus.Registerer) Recorder {
 //
 // Side effects:
 //   - Increments the retry counter label for agentID.
+//
+// Returns: result of RecordRetry.
 func (p *prometheusRecorder) RecordRetry(agentID string) {
 	p.retries.WithLabelValues(agentID).Inc()
 }
@@ -129,6 +131,8 @@ func (p *prometheusRecorder) RecordRetry(agentID string) {
 //
 // Side effects:
 //   - Observes score on the validation scores histogram for agentID.
+//
+// Returns: result of RecordValidationScore.
 func (p *prometheusRecorder) RecordValidationScore(agentID string, score float64) {
 	p.validationScores.WithLabelValues(agentID).Observe(score)
 }
@@ -140,6 +144,8 @@ func (p *prometheusRecorder) RecordValidationScore(agentID string, score float64
 //
 // Side effects:
 //   - Increments the critic results counter for agentID with the passed label.
+//
+// Returns: result of RecordCriticResult.
 func (p *prometheusRecorder) RecordCriticResult(agentID string, passed bool) {
 	p.criticResults.WithLabelValues(agentID, strconv.FormatBool(passed)).Inc()
 }
@@ -152,6 +158,8 @@ func (p *prometheusRecorder) RecordCriticResult(agentID string, passed bool) {
 //
 // Side effects:
 //   - Observes ms on the provider latency histogram for the prov and method labels.
+//
+// Returns: result of RecordProviderLatency.
 func (p *prometheusRecorder) RecordProviderLatency(prov, method string, ms float64) {
 	p.providerLatency.WithLabelValues(prov, method).Observe(ms)
 }
@@ -164,6 +172,8 @@ func (p *prometheusRecorder) RecordProviderLatency(prov, method string, ms float
 //
 // Side effects:
 //   - Sets the flowstate_context_window_tokens gauge for agentID.
+//
+// Returns: result of RecordContextWindowTokens.
 func (p *prometheusRecorder) RecordContextWindowTokens(agentID string, tokens int) {
 	p.contextWindowTokens.WithLabelValues(agentID).Set(float64(tokens))
 }
@@ -178,6 +188,8 @@ func (p *prometheusRecorder) RecordContextWindowTokens(agentID string, tokens in
 // Side effects:
 //   - Increments the flowstate_compression_tokens_saved_total counter
 //     for agentID by tokensSaved when positive; otherwise no-op.
+//
+// Returns: result of RecordCompressionTokensSaved.
 func (p *prometheusRecorder) RecordCompressionTokensSaved(agentID string, tokensSaved int) {
 	if tokensSaved <= 0 {
 		return
@@ -197,6 +209,8 @@ func (p *prometheusRecorder) RecordCompressionTokensSaved(agentID string, tokens
 //   - Increments the flowstate_compression_overhead_tokens_total
 //     counter for agentID by overheadTokens when positive; otherwise
 //     no-op.
+//
+// Returns: result of RecordCompressionOverheadTokens.
 func (p *prometheusRecorder) RecordCompressionOverheadTokens(agentID string, overheadTokens int) {
 	if overheadTokens <= 0 {
 		return
@@ -209,6 +223,9 @@ func (p *prometheusRecorder) RecordCompressionOverheadTokens(agentID string, ove
 //
 // Side effects:
 //   - Increments the flowstate_permission_pending gauge.
+//
+// Expected: parameters for IncPermissionPending.
+// Returns: result of IncPermissionPending.
 func (p *prometheusRecorder) IncPermissionPending() {
 	p.permissionPending.Inc()
 }
@@ -221,6 +238,9 @@ func (p *prometheusRecorder) IncPermissionPending() {
 //
 // Side effects:
 //   - Decrements the flowstate_permission_pending gauge.
+//
+// Expected: parameters for DecPermissionPending.
+// Returns: result of DecPermissionPending.
 func (p *prometheusRecorder) DecPermissionPending() {
 	p.permissionPending.Dec()
 }

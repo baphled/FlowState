@@ -76,6 +76,8 @@ func NewTiktokenCounter() *TiktokenCounter {
 //
 // Side effects:
 //   - Mutates the receiver.
+//
+// Returns: result of SetFallback.
 func (c *TiktokenCounter) SetFallback(limit int) {
 	if limit <= 0 {
 		return
@@ -192,6 +194,8 @@ func NewApproximateCounter() *ApproximateCounter {
 //
 // Side effects:
 //   - Mutates the receiver.
+//
+// Returns: result of SetFallback.
 func (c *ApproximateCounter) SetFallback(limit int) {
 	if limit <= 0 {
 		return
@@ -290,6 +294,8 @@ func NewTokenBudget(total int) *TokenBudget {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Remaining.
 func (b *TokenBudget) Remaining() int {
 	return b.Total - b.Used
 }
@@ -302,6 +308,8 @@ func (b *TokenBudget) Remaining() int {
 //
 // Side effects:
 //   - Increases the used token count and category-specific allocation.
+//
+// Returns: result of Reserve.
 func (b *TokenBudget) Reserve(category string, tokens int) {
 	b.Used += tokens
 	b.categories[category] += tokens
@@ -325,6 +333,9 @@ func (b *TokenBudget) CanFit(tokens int) bool {
 //
 // Side effects:
 //   - Sets used tokens to zero and removes all category allocations.
+//
+// Expected: parameters for Reset.
+// Returns: result of Reset.
 func (b *TokenBudget) Reset() {
 	b.Used = 0
 	b.categories = make(map[string]int)

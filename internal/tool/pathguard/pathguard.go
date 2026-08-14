@@ -170,6 +170,10 @@ var planScopedTools = map[string]struct{}{
 // The returned Guard has no PermissionsMatcher attached — all *ForTool
 // methods fall straight through to the legacy Check / CheckCommand
 // logic. Use NewWithPermissions to wire a matcher in.
+//
+// Expected: parameters for New.
+// Returns: result of New.
+// Side effects: None.
 func New(denied []string) *Guard {
 	abs := normaliseDenied(denied)
 	return &Guard{denied: abs}
@@ -179,6 +183,10 @@ func New(denied []string) *Guard {
 // *ForTool methods, then falls through to the legacy denied-roots
 // Check when perms has no opinion. perms may be nil, in which case
 // behaviour matches New(denied).
+//
+// Expected: parameters for NewWithPermissions.
+// Returns: result of NewWithPermissions.
+// Side effects: None.
 func NewWithPermissions(denied []string, perms PermissionsMatcher) *Guard {
 	abs := normaliseDenied(denied)
 	return &Guard{denied: abs, perms: perms}
@@ -196,6 +204,10 @@ func NewWithPermissions(denied []string, perms PermissionsMatcher) *Guard {
 // matcher / legacy guard. This is the safe fall-back when XDG resolution
 // failed at bootstrap time; Plan-mode writes then fail closed via the
 // matcher (no allow rule matches the path).
+//
+// Expected: parameters for NewWithPermissionsAndPlanOutputDir.
+// Returns: result of NewWithPermissionsAndPlanOutputDir.
+// Side effects: None.
 func NewWithPermissionsAndPlanOutputDir(denied []string, perms PermissionsMatcher, planOutputDir string) *Guard {
 	abs := normaliseDenied(denied)
 	g := &Guard{denied: abs, perms: perms}
@@ -213,6 +225,10 @@ func NewWithPermissionsAndPlanOutputDir(denied []string, perms PermissionsMatche
 // setter shape (rather than a new constructor) mirrors
 // SetPermissionPrompter and avoids combinatorial growth of the
 // New* constructor surface.
+//
+// Expected: parameters for SetMCPHint.
+// Returns: result of SetMCPHint.
+// Side effects: None.
 func (g *Guard) SetMCPHint(hint string) {
 	g.mcpHint = hint
 }
@@ -227,6 +243,10 @@ func (g *Guard) SetMCPHint(hint string) {
 // already handle the matcher / plan-output-dir / denied-roots cross
 // product. The prompter is orthogonal and is wired by app.go after
 // the Guard is constructed.
+//
+// Expected: parameters for SetPermissionPrompter.
+// Returns: result of SetPermissionPrompter.
+// Side effects: None.
 func (g *Guard) SetPermissionPrompter(p PermissionPrompter) {
 	g.prompter = p
 }
@@ -235,6 +255,10 @@ func (g *Guard) SetPermissionPrompter(p PermissionPrompter) {
 // pair has been granted GrantSession scope for sessionID. The
 // per-session map is allocated lazily so the cold path stays
 // allocation-free.
+//
+// Expected: parameters for rememberSessionAllow.
+// Returns: result of rememberSessionAllow.
+// Side effects: None.
 func (g *Guard) rememberSessionAllow(sessionID, tool, resource string) {
 	if sessionID == "" {
 		return
@@ -255,6 +279,10 @@ func (g *Guard) rememberSessionAllow(sessionID, tool, resource string) {
 // isSessionAllowed reports whether (tool, resource) has been granted
 // GrantSession scope for sessionID. False when sessionID is empty
 // (no session ⇒ no per-session memory).
+//
+// Expected: parameters for isSessionAllowed.
+// Returns: result of isSessionAllowed.
+// Side effects: None.
 func (g *Guard) isSessionAllowed(sessionID, tool, resource string) bool {
 	if sessionID == "" {
 		return false
@@ -271,6 +299,10 @@ func (g *Guard) isSessionAllowed(sessionID, tool, resource string) bool {
 // ClearSessionAllow drops the per-session in-memory allow set for
 // sessionID. Called by the session-ended event subscriber so the
 // pathguard does not retain grants beyond the session lifetime.
+//
+// Expected: parameters for ClearSessionAllow.
+// Returns: result of ClearSessionAllow.
+// Side effects: None.
 func (g *Guard) ClearSessionAllow(sessionID string) {
 	if sessionID == "" {
 		return
@@ -280,10 +312,24 @@ func (g *Guard) ClearSessionAllow(sessionID string) {
 	delete(g.sessionAllow, sessionID)
 }
 
+// sessionAllowKey ...
+//
+// Expected: parameters for sessionAllowKey.
+//
+// Returns: result of sessionAllowKey.
+//
+// Side effects: None.
 func sessionAllowKey(tool, resource string) string {
 	return tool + "\x00" + resource
 }
 
+// normaliseDenied ...
+//
+// Expected: parameters for normaliseDenied.
+//
+// Returns: result of normaliseDenied.
+//
+// Side effects: None.
 func normaliseDenied(denied []string) []string {
 	abs := make([]string, 0, len(denied))
 	for _, d := range denied {
@@ -305,6 +351,10 @@ func normaliseDenied(denied []string) []string {
 // unaffected; when non-empty the configured tool name is named
 // explicitly so agents receive an actionable pointer instead of a
 // vague instruction.
+//
+// Expected: parameters for mcpHintClause.
+// Returns: result of mcpHintClause.
+// Side effects: None.
 func (g *Guard) mcpHintClause() string {
 	if g.mcpHint == "" {
 		return "use the appropriate MCP tool"
@@ -318,6 +368,10 @@ func (g *Guard) mcpHintClause() string {
 //
 // Check is equivalent to CheckForTool("", path) — it never consults the
 // PermissionsMatcher and uses only the legacy denied-roots semantics.
+//
+// Expected: parameters for Check.
+// Returns: result of Check.
+// Side effects: None.
 func (g *Guard) Check(path string) error {
 	if len(g.denied) == 0 {
 		return nil
@@ -362,6 +416,10 @@ func (g *Guard) Check(path string) error {
 // The cwd carve-out from Check applies here too: when the working
 // directory is inside a denied root, the user is intentionally working
 // in that tree and commands referring to it are allowed.
+//
+// Expected: parameters for CheckCommand.
+// Returns: result of CheckCommand.
+// Side effects: None.
 func (g *Guard) CheckCommand(command string) error {
 	if len(g.denied) == 0 {
 		return nil
@@ -426,6 +484,10 @@ func (g *Guard) CheckCommand(command string) error {
 // to kill the most common false-positive case; rare exotic
 // constructs may still leak a token, which is acceptable given the
 // fallback Check on the actual filesystem call.
+//
+// Expected: parameters for tokenize.
+// Returns: result of tokenize.
+// Side effects: None.
 func tokenize(command string) []string {
 	var tokens []string
 	var current strings.Builder
@@ -527,6 +589,10 @@ func tokenize(command string) []string {
 // isSeparator reports whether a byte ends the current token. This is a
 // superset of POSIX shell whitespace plus the redirection /
 // command-grouping metacharacters that the shell uses to delimit words.
+//
+// Expected: parameters for isSeparator.
+// Returns: result of isSeparator.
+// Side effects: None.
 func isSeparator(c byte) bool {
 	switch c {
 	case ' ', '\t', '\r':
@@ -541,6 +607,10 @@ func isSeparator(c byte) bool {
 // shell would hand to a file-touching syscall. A bare word with no `/`
 // and no leading `.` or `~` is treated as a command name or argument
 // value, not a path.
+//
+// Expected: parameters for looksLikePath.
+// Returns: result of looksLikePath.
+// Side effects: None.
 func looksLikePath(tok string) bool {
 	if tok == "" {
 		return false
@@ -587,6 +657,10 @@ func looksLikePath(tok string) bool {
 // permissionmode.FromContext so legacy callers that have not yet
 // wired the engine seam still get the safe pre-Permission-Modes
 // behaviour. Permission Modes plan §4 Slice 1.
+//
+// Expected: parameters for CheckForTool.
+// Returns: result of CheckForTool.
+// Side effects: None.
 func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
 	mode := permissionmode.FromContext(ctx)
 	if mode == permissionmode.ModeYolo {
@@ -639,6 +713,10 @@ func (g *Guard) CheckForTool(ctx context.Context, tool, path string) error {
 // returns the access-denied error (or nil for permitted). Extracted
 // from CheckForTool so the ask-user escalation site can decide
 // independently of the underlying decision flow.
+//
+// Expected: parameters for computeDenial.
+// Returns: result of computeDenial.
+// Side effects: None.
 func (g *Guard) computeDenial(tool, path string) error {
 	if g.perms != nil && tool != "" {
 		abs, err := filepath.Abs(path)
@@ -663,6 +741,10 @@ func (g *Guard) computeDenial(tool, path string) error {
 // follow-up call within the session bypasses the prompter. GrantDeny
 // returns the original denial (or the prompter-supplied error if
 // non-nil).
+//
+// Expected: parameters for escalateForTool.
+// Returns: result of escalateForTool.
+// Side effects: None.
 func (g *Guard) escalateForTool(ctx context.Context, tool, path string, denial error) error {
 	sessionID := pathguardSessionID(ctx)
 	agentName := pathguardAgentName(ctx)
@@ -717,6 +799,8 @@ func (g *Guard) escalateForTool(ctx context.Context, tool, path string, denial e
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for checkPlanModeScoped.
 func (g *Guard) checkPlanModeScoped(tool, path string) error {
 	if g.planOutputDir == "" {
 		return fmt.Errorf("access denied: Plan mode requires plan_output_dir to be configured (%q tool blocked: %s)", tool, path)
@@ -741,6 +825,10 @@ func (g *Guard) checkPlanModeScoped(tool, path string) error {
 // inside dir (also expected absolute). Both equal-to-dir and a strict
 // descendant return true; the function is used to scope Plan-mode
 // writes to the operator's plan_output_dir.
+//
+// Expected: parameters for isUnderDir.
+// Returns: result of isUnderDir.
+// Side effects: None.
 func isUnderDir(abs, dir string) bool {
 	if abs == dir {
 		return true
@@ -770,6 +858,10 @@ func isUnderDir(abs, dir string) bool {
 // permissionmode.FromContext so legacy callers that have not yet
 // wired the engine seam still get the safe pre-Permission-Modes
 // behaviour. Permission Modes plan §4 Slice 1.
+//
+// Expected: parameters for CheckCommandForTool.
+// Returns: result of CheckCommandForTool.
+// Side effects: None.
 func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) error {
 	mode := permissionmode.FromContext(ctx)
 	if mode == permissionmode.ModeYolo {
@@ -808,6 +900,10 @@ func (g *Guard) CheckCommandForTool(ctx context.Context, tool, command string) e
 // can decide independently of the underlying decision flow. Under
 // ModeAskUser the per-session allow set short-circuits the matcher
 // per token; outside ModeAskUser the allow set is ignored.
+//
+// Expected: parameters for computeCommandDenial.
+// Returns: result of computeCommandDenial.
+// Side effects: None.
 func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.Mode) (string, error) {
 	if g.perms == nil || tool == "" {
 		if err := g.CheckCommand(command); err != nil {
@@ -864,6 +960,10 @@ func (g *Guard) computeCommandDenial(tool, command string, mode permissionmode.M
 // pathguardSessionID extracts the active session ID from the tool-
 // invocation ctx using the canonical session.IDKey{}. Empty when no
 // session is stamped (test harnesses, legacy call sites).
+//
+// Expected: parameters for pathguardSessionID.
+// Returns: result of pathguardSessionID.
+// Side effects: None.
 func pathguardSessionID(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -880,6 +980,10 @@ func pathguardSessionID(ctx context.Context) string {
 // override is present, which is the dominant case for sessions
 // driven by their persistent agent_id. Best-effort: the prompter
 // uses the value for diagnostic stamping only.
+//
+// Expected: parameters for pathguardAgentName.
+// Returns: result of pathguardAgentName.
+// Side effects: None.
 func pathguardAgentName(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -900,6 +1004,8 @@ func pathguardAgentName(ctx context.Context) string {
 // Side effects:
 //   - Reads $HOME / cwd via os.UserHomeDir / os.Getwd (mirrors the
 //     legacy CheckCommand tokenisation path).
+//
+// Expected: parameters for checkPlanModeCommand.
 func (g *Guard) checkPlanModeCommand(tool, command string) error {
 	if g.planOutputDir == "" {
 		return fmt.Errorf("access denied: Plan mode requires plan_output_dir to be configured (%q tool blocked)", tool)
@@ -933,6 +1039,10 @@ func (g *Guard) checkPlanModeCommand(tool, command string) error {
 // expandHome replaces a leading `~` or `$HOME` with the supplied home
 // directory. It is intentionally narrow — only the leading form is
 // expanded so `~user` or mid-token `$HOME` references are left alone.
+//
+// Expected: parameters for expandHome.
+// Returns: result of expandHome.
+// Side effects: None.
 func expandHome(tok, home string) string {
 	if home == "" {
 		return tok

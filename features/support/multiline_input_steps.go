@@ -48,6 +48,8 @@ func RegisterMultilineInputSteps(sc *godog.ScenarioContext, steps *StepDefinitio
 // Side effects:
 //   - Sets isInsertMode to true and clears inputBuffer.
 //   - Records the current message count for later assertions.
+//
+// Expected: parameters for iAmInTheChatInput.
 func (s *MultilineInputSteps) iAmInTheChatInput() error {
 	s.steps.isInsertMode = true
 	s.steps.inputBuffer = ""
@@ -62,6 +64,8 @@ func (s *MultilineInputSteps) iAmInTheChatInput() error {
 //
 // Side effects:
 //   - Appends "\n" to the inputBuffer.
+//
+// Expected: parameters for iPressAltEnter.
 func (s *MultilineInputSteps) iPressAltEnter() error {
 	s.steps.inputBuffer += "\n"
 	return nil
@@ -74,6 +78,8 @@ func (s *MultilineInputSteps) iPressAltEnter() error {
 //
 // Side effects:
 //   - Truncates the last character from inputBuffer, or does nothing if empty.
+//
+// Expected: parameters for iPressBackspace.
 func (s *MultilineInputSteps) iPressBackspace() error {
 	if s.steps.inputBuffer != "" {
 		s.steps.inputBuffer = s.steps.inputBuffer[:len(s.steps.inputBuffer)-1]
@@ -104,6 +110,8 @@ func (s *MultilineInputSteps) iHaveTypedThenPressedAltEnterThenTyped(first, seco
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theInputShouldContainANewline.
 func (s *MultilineInputSteps) theInputShouldContainANewline() error {
 	if !strings.Contains(s.steps.inputBuffer, "\n") {
 		return fmt.Errorf("expected input to contain a newline, got: %q", s.steps.inputBuffer)
@@ -118,6 +126,8 @@ func (s *MultilineInputSteps) theInputShouldContainANewline() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for noMessageShouldBeSentToTheAI.
 func (s *MultilineInputSteps) noMessageShouldBeSentToTheAI() error {
 	if len(s.steps.app.messages) > s.messageCountBefore {
 		return fmt.Errorf("expected no new messages, but %d were sent", len(s.steps.app.messages)-s.messageCountBefore)
@@ -169,6 +179,8 @@ func (s *MultilineInputSteps) theMessageViewportShouldBeReducedByRow(rows int) e
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theMessageContainingANewlineShouldBeSent.
 func (s *MultilineInputSteps) theMessageContainingANewlineShouldBeSent() error {
 	if len(s.steps.app.messages) == 0 {
 		return errors.New("no messages were sent")
@@ -208,6 +220,8 @@ func (s *MultilineInputSteps) theInputShouldEqual(expected string) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theInputShouldContainNoNewline.
 func (s *MultilineInputSteps) theInputShouldContainNoNewline() error {
 	if strings.Contains(s.steps.inputBuffer, "\n") {
 		return fmt.Errorf("expected no newlines in input, got: %q", s.steps.inputBuffer)

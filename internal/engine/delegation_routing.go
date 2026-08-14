@@ -11,11 +11,22 @@ import (
 // preferences configured but all candidates are currently unavailable.
 // This prevents a delegation attempt certain to fail and surfaces a
 // diagnostic before the stream is opened.
+//
+// Expected: parameters for checkDelegationCandidates.
+// Returns: result of checkDelegationCandidates.
+// Side effects: None.
 func checkDelegationCandidates(eng *Engine) error {
 	_, _, err := delegationCandidatesStatus(eng)
 	return err
 }
 
+// delegationCandidatesStatus ...
+//
+// Expected: parameters for delegationCandidatesStatus.
+//
+// Returns: result of delegationCandidatesStatus.
+//
+// Side effects: None.
 func delegationCandidatesStatus(eng *Engine) ([]provider.ModelPreference, []provider.ModelPreference, error) {
 	if eng == nil {
 		return nil, nil, nil
@@ -32,6 +43,11 @@ func delegationCandidatesStatus(eng *Engine) ([]provider.ModelPreference, []prov
 	return prefs, candidates, nil
 }
 
+// promoteHealthyDelegationCandidate ...
+//
+// Expected: parameters for promoteHealthyDelegationCandidate.
+//
+// Side effects: None.
 func promoteHealthyDelegationCandidate(eng *Engine) {
 	if eng == nil {
 		return
@@ -43,6 +59,11 @@ func promoteHealthyDelegationCandidate(eng *Engine) {
 	promoteDelegationCandidateIfNeeded(eng, candidates[0])
 }
 
+// promoteDelegationCandidateIfNeeded ...
+//
+// Expected: parameters for promoteDelegationCandidateIfNeeded.
+//
+// Side effects: None.
 func promoteDelegationCandidateIfNeeded(eng *Engine, candidate provider.ModelPreference) {
 	if eng == nil {
 		return
@@ -57,6 +78,13 @@ func promoteDelegationCandidateIfNeeded(eng *Engine, candidate provider.ModelPre
 	}
 }
 
+// delegationCurrentProviderUnavailable ...
+//
+// Expected: parameters for delegationCurrentProviderUnavailable.
+//
+// Returns: result of delegationCurrentProviderUnavailable.
+//
+// Side effects: None.
 func delegationCurrentProviderUnavailable(eng *Engine, providerName, modelName string) bool {
 	if eng == nil {
 		return false
@@ -208,6 +236,9 @@ func (d *DelegateTool) resolveChildModelOverride(target delegationTarget) (strin
 //     behaviour.
 //
 // Side effects: none.
+//
+// Expected: parameters for resolveChildModelChain.
+// Returns: result of resolveChildModelChain.
 func (d *DelegateTool) resolveChildModelChain(target delegationTarget) []provider.ModelPreference {
 	manifestChain := d.fetchManifestChain(target)
 	if target.resolvedProvider == "" && target.resolvedModel == "" {
@@ -299,6 +330,9 @@ func (d *DelegateTool) fetchManifestChain(target delegationTarget) []provider.Mo
 // tool, just without re-routing the model.
 //
 // Side effects: none.
+//
+// Expected: parameters for correctiveRetryModel.
+// Returns: result of correctiveRetryModel.
 func (d *DelegateTool) correctiveRetryModel(target delegationTarget) (string, string) {
 	// Primary: escalate onto the member's capable preferred-tier head.
 	if chain := d.resolveChildModelChain(target); len(chain) > 0 {

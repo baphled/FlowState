@@ -83,6 +83,8 @@ func NewPersistedSwarmStore(inner SwarmEventStore, appendFn AppendFunc) SwarmEve
 // Side effects:
 //   - Mutates the underlying store.
 //   - Writes one JSONL line to disk via the configured AppendFunc.
+//
+// Returns: result of Append.
 func (s *persistedSwarmStore) Append(ev SwarmEvent) {
 	s.inner.Append(ev)
 	if s.append == nil {
@@ -104,6 +106,8 @@ func (s *persistedSwarmStore) Append(ev SwarmEvent) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for All.
 func (s *persistedSwarmStore) All() []SwarmEvent {
 	return s.inner.All()
 }
@@ -115,6 +119,9 @@ func (s *persistedSwarmStore) All() []SwarmEvent {
 //
 // Side effects:
 //   - Mutates the underlying store.
+//
+// Expected: parameters for Clear.
+// Returns: result of Clear.
 func (s *persistedSwarmStore) Clear() {
 	s.inner.Clear()
 }
@@ -136,6 +143,8 @@ func (s *persistedSwarmStore) Clear() {
 //
 // Side effects:
 //   - Mutates the inner store. Never invokes s.append.
+//
+// Returns: result of RestoreEvents.
 func (s *persistedSwarmStore) RestoreEvents(events []SwarmEvent) {
 	if len(events) == 0 {
 		return

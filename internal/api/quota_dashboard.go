@@ -136,6 +136,9 @@ type quotaResetRequest struct {
 // Per OD-3 (account-scoped, not principal-scoped): every authenticated
 // principal sees the SAME aggregated view. The Snapshot is keyed by
 // (provider, account_hash, model), not by the calling principal_id.
+//
+// Expected: parameters for handleListProviderQuotas.
+// Side effects: None.
 func (s *Server) handleListProviderQuotas(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
@@ -197,6 +200,9 @@ func (s *Server) handleListProviderQuotas(w http.ResponseWriter, r *http.Request
 // per the Auth Track PR3 middleware composition). The middleware
 // rejects with 403 before reaching this handler when the token is
 // missing or invalid.
+//
+// Expected: parameters for handleResetProviderQuota.
+// Side effects: None.
 func (s *Server) handleResetProviderQuota(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)
@@ -247,6 +253,10 @@ func (s *Server) handleResetProviderQuota(w http.ResponseWriter, r *http.Request
 // Returns (row, true) when the Snapshot satisfies the discriminant
 // invariant; (zero, false) otherwise so callers suppress malformed
 // rows.
+//
+// Expected: parameters for snapshotToDashboardEntry.
+// Returns: result of snapshotToDashboardEntry.
+// Side effects: None.
 func snapshotToDashboardEntry(snap quota.Snapshot) (quotaDashboardEntry, bool) {
 	if !snap.IsValid() {
 		return quotaDashboardEntry{}, false
@@ -311,6 +321,10 @@ func snapshotToDashboardEntry(snap quota.Snapshot) (quotaDashboardEntry, bool) {
 //  2. "exhausted"    — rate-limit variant with tightest_percent_remaining == 0.
 //  3. "spent"        — token-spend variant where Spent >= Cap (cap set).
 //  4. "healthy"      — none of the above.
+//
+// Expected: parameters for synthesiseStatus.
+// Returns: result of synthesiseStatus.
+// Side effects: None.
 func synthesiseStatus(snap quota.Snapshot) string {
 	if !snap.RateLimitedUntil.IsZero() && snap.RateLimitedUntil.After(time.Now()) {
 		return "rate_limited"
@@ -325,6 +339,13 @@ func synthesiseStatus(snap quota.Snapshot) string {
 	return "healthy"
 }
 
+// dashboardWindow ...
+//
+// Expected: parameters for dashboardWindow.
+//
+// Returns: result of dashboardWindow.
+//
+// Side effects: None.
 func dashboardWindow(w quota.Window) dashboardQuotaWindow {
 	out := dashboardQuotaWindow{Limit: w.Limit, Remaining: w.Remaining}
 	if !w.Reset.IsZero() {

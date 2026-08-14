@@ -37,6 +37,10 @@ func New() *Tool {
 // against each `*** Update File:` target inside the patch text, and
 // against the patch source path when the patch argument is loaded from
 // disk.
+//
+// Expected: parameters for NewWithGuard.
+// Returns: result of NewWithGuard.
+// Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool {
 	return &Tool{guard: g}
 }
@@ -94,6 +98,10 @@ func (t *Tool) Schema() tool.Schema {
 
 // IsStateModifying returns true because apply_patch reads and writes
 // files on the filesystem.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute applies a patch.

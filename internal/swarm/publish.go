@@ -79,6 +79,10 @@ type planEnvelope struct {
 // body returns the envelope's markdown plan body, preferring the `markdown`
 // key and falling back to the `plan` alias. Empty when neither carries a
 // non-whitespace string.
+//
+// Expected: parameters for body.
+// Returns: result of body.
+// Side effects: None.
 func (e planEnvelope) body() string {
 	if md := strings.TrimSpace(e.Markdown); md != "" {
 		return e.Markdown
@@ -272,6 +276,9 @@ func PublishPlanToVault(store coordination.Store, outputDir, chainID string) (st
 //   - The concrete chainID, the plan bytes, found=true on a hit.
 //   - ("", nil, false, nil) when no plan is available.
 //   - A non-nil error only on a store read/list failure.
+//
+// Expected: parameters for resolvePlanForChain.
+// Side effects: None.
 func resolvePlanForChain(store coordination.Store, chainID string) (string, []byte, bool, error) {
 	if strings.TrimSpace(chainID) != "" {
 		key := chainID + "/" + planSuffix
@@ -336,6 +343,10 @@ func resolvePlanForChain(store coordination.Store, chainID string) (string, []by
 // PublishPlanToVault would later refuse. Used by resolvePlanForChain to decide
 // whether the bare named key is the real plan or a prose/JSON blob that should
 // yield to a deeper member-written key.
+//
+// Expected: parameters for isResolvablePlan.
+// Returns: result of isResolvablePlan.
+// Side effects: None.
 func isResolvablePlan(raw []byte) bool {
 	if strings.TrimSpace(string(raw)) == "" {
 		return false
@@ -361,6 +372,10 @@ func isResolvablePlan(raw []byte) bool {
 // Returns the resolved descendant chainID (the key with "/plan" stripped), its
 // bytes, found=true on a hit; ("", nil, false, nil) when no valid descendant
 // plan exists.
+//
+// Expected: parameters for scanDescendantPlan.
+// Returns: result of scanDescendantPlan.
+// Side effects: None.
 func scanDescendantPlan(store coordination.Store, chainID string) (string, []byte, bool, error) {
 	keys, err := store.List("")
 	if err != nil {
@@ -412,6 +427,10 @@ func scanDescendantPlan(store coordination.Store, chainID string) (string, []byt
 // coord-store key ending in "/<suffix>". The chainID is the key with the
 // "/<suffix>" tail stripped (e.g. "readyz-2026-05-28/plan" → chainID
 // "readyz-2026-05-28"). found is false when no such key exists.
+//
+// Expected: parameters for scanForSuffix.
+// Returns: result of scanForSuffix.
+// Side effects: None.
 func scanForSuffix(store coordination.Store, suffix string) (chainID string, value []byte, found bool, err error) {
 	keys, listErr := store.List("")
 	if listErr != nil {
@@ -435,6 +454,10 @@ func scanForSuffix(store coordination.Store, suffix string) (chainID string, val
 // treats publication as authorised (the post-member review gate already
 // ran). approved is true only when a parseable record carries
 // verdict == "approve".
+//
+// Expected: parameters for reviewApproves.
+// Returns: result of reviewApproves.
+// Side effects: None.
 func reviewApproves(store coordination.Store, chainID string) (approved bool, ok bool) {
 	key := chainID + "/" + reviewSuffix
 	exists, err := store.Exists(key)
@@ -466,6 +489,10 @@ func reviewApproves(store coordination.Store, chainID string) (approved bool, ok
 // store is consulted only for the optional plan-markdown key; planRaw is
 // the already-read "<chainID>/plan" value so the hot path makes at most
 // one extra Exists probe.
+//
+// Expected: parameters for resolvePlanBody.
+// Returns: result of resolvePlanBody.
+// Side effects: None.
 func resolvePlanBody(store coordination.Store, resolvedChain string, planRaw []byte) (title, body string) {
 	if md, ok := planMarkdownOverride(store, resolvedChain); ok {
 		// A curated markdown body wins; title is derived from its first
@@ -478,6 +505,10 @@ func resolvePlanBody(store coordination.Store, resolvedChain string, planRaw []b
 // planMarkdownOverride returns the "<chainID>/plan-markdown" body when the
 // key exists and is non-empty. A missing key or read error is treated as
 // "no override" (ok=false) so the envelope / raw plan-key path applies.
+//
+// Expected: parameters for planMarkdownOverride.
+// Returns: result of planMarkdownOverride.
+// Side effects: None.
 func planMarkdownOverride(store coordination.Store, chainID string) (string, bool) {
 	key := chainID + "/" + planMarkdownSuffix
 	exists, err := store.Exists(key)
@@ -522,6 +553,10 @@ func planMarkdownOverride(store coordination.Store, chainID string) (string, boo
 // (a recognised executive_summary / phased_slices), so a contentless
 // metadata-only blob still falls through to verbatim → reject, preserving the
 // incident intent.
+//
+// Expected: parameters for parsePlan.
+// Returns: result of parsePlan.
+// Side effects: None.
 func parsePlan(raw []byte) (title, body string) {
 	var env planEnvelope
 	if err := json.Unmarshal(raw, &env); err == nil {
@@ -568,6 +603,10 @@ type structuredPlanPhasedSlice struct {
 
 // heading returns the slice's renderable heading text (title preferred,
 // else name), trimmed; "" when neither is set.
+//
+// Expected: parameters for heading.
+// Returns: result of heading.
+// Side effects: None.
 func (s structuredPlanPhasedSlice) heading() string {
 	if h := strings.TrimSpace(s.Title); h != "" {
 		return h
@@ -577,6 +616,10 @@ func (s structuredPlanPhasedSlice) heading() string {
 
 // prose returns the slice's renderable body prose, picking the first
 // non-empty of description / body / details / summary; "" when none set.
+//
+// Expected: parameters for prose.
+// Returns: result of prose.
+// Side effects: None.
 func (s structuredPlanPhasedSlice) prose() string {
 	for _, candidate := range []string{s.Description, s.Body, s.Details, s.Summary} {
 		if p := strings.TrimSpace(candidate); p != "" {
@@ -597,6 +640,10 @@ func (s structuredPlanPhasedSlice) prose() string {
 // publisher derives the filename from it), then an "## Executive Summary"
 // section when present, then a "## Phased Slices" section with each slice as a
 // "### heading" + its prose.
+//
+// Expected: parameters for renderStructuredPlan.
+// Returns: result of renderStructuredPlan.
+// Side effects: None.
 func renderStructuredPlan(raw []byte) (title, body string, ok bool) {
 	var env structuredPlanEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
@@ -650,6 +697,10 @@ func renderStructuredPlan(raw []byte) (title, body string, ok bool) {
 // (a heading and/or prose), each with a guaranteed non-empty heading so the
 // rendered "### " line is never bare. A slice with neither heading nor prose
 // contributes nothing and is dropped.
+//
+// Expected: parameters for renderableSlices.
+// Returns: result of renderableSlices.
+// Side effects: None.
 func renderableSlices(slices []structuredPlanPhasedSlice) []structuredPlanPhasedSlice {
 	var out []structuredPlanPhasedSlice
 	for i, sl := range slices {
@@ -682,6 +733,10 @@ func renderableSlices(slices []structuredPlanPhasedSlice) []structuredPlanPhased
 // resolvedChain is the concrete chain the spine resolved under; the section
 // keys share it ("<chainID>/sections/<name>"), so the same resolution is
 // reused — no separate chain lookup.
+//
+// Expected: parameters for assemblePlanBody.
+// Returns: result of assemblePlanBody.
+// Side effects: None.
 func assemblePlanBody(store coordination.Store, resolvedChain, spine string) string {
 	sections := collectSections(store, resolvedChain)
 	if len(sections) == 0 {
@@ -708,6 +763,10 @@ func assemblePlanBody(store coordination.Store, resolvedChain, spine string) str
 // or missing section never blocks the others. The result preserves
 // sectionNamesOrdered, so the output is deterministic regardless of coord-store
 // key ordering.
+//
+// Expected: parameters for collectSections.
+// Returns: result of collectSections.
+// Side effects: None.
 func collectSections(store coordination.Store, resolvedChain string) []sectionEnvelope {
 	var out []sectionEnvelope
 	for _, name := range sectionNamesOrdered {
@@ -740,6 +799,10 @@ func collectSections(store coordination.Store, resolvedChain string) []sectionEn
 // (when any) as a trailing "- " bullet list. An empty Title falls back to the
 // canonical Section name (already title-handled by collectSections's
 // usable-content guard) so a heading is always present.
+//
+// Expected: parameters for renderSection.
+// Returns: result of renderSection.
+// Side effects: None.
 func renderSection(sec sectionEnvelope) string {
 	var b strings.Builder
 	heading := strings.TrimSpace(sec.Title)
@@ -771,6 +834,10 @@ func renderSection(sec sectionEnvelope) string {
 // nonEmptyPoints returns the key points with blank entries dropped and each
 // trimmed, so a stray empty string in key_points does not render a bare "- "
 // bullet.
+//
+// Expected: parameters for nonEmptyPoints.
+// Returns: result of nonEmptyPoints.
+// Side effects: None.
 func nonEmptyPoints(points []string) []string {
 	var out []string
 	for _, p := range points {
@@ -816,6 +883,10 @@ const unsafeFileNameChars = `/\:*?"<>|`
 // the same filename, so re-publishing overwrites the same file rather than
 // littering the vault. When no usable title is available the chainID is
 // rendered readably (hyphens → spaces, title-cased) rather than as a raw slug.
+//
+// Expected: parameters for planFileName.
+// Returns: result of planFileName.
+// Side effects: None.
 func planFileName(title, body, chainID string) string {
 	source := strings.TrimSpace(title)
 	if source == "" {
@@ -841,6 +912,10 @@ func planFileName(title, body, chainID string) string {
 // dotfile), caps the length at fileNameMaxLen on a word boundary, and trims
 // trailing punctuation and whitespace so the name never ends mid-word or with
 // a stray separator. Returns "" when nothing safe remains.
+//
+// Expected: parameters for normaliseFileName.
+// Returns: result of normaliseFileName.
+// Side effects: None.
 func normaliseFileName(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -868,6 +943,10 @@ func normaliseFileName(s string) string {
 
 // collapseWhitespace replaces every run of whitespace with a single space and
 // trims leading/trailing whitespace, so "Foo   Bar " becomes "Foo Bar".
+//
+// Expected: parameters for collapseWhitespace.
+// Returns: result of collapseWhitespace.
+// Side effects: None.
 func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
@@ -876,6 +955,10 @@ func collapseWhitespace(s string) string {
 // space boundary so no partial word survives, then strips any trailing
 // punctuation or whitespace. Idempotent: a name already within the cap is
 // returned unchanged (modulo trailing-punctuation tidy).
+//
+// Expected: parameters for capFileName.
+// Returns: result of capFileName.
+// Side effects: None.
 func capFileName(name string) string {
 	runes := []rune(name)
 	if len(runes) > fileNameMaxLen {
@@ -892,6 +975,10 @@ func capFileName(name string) string {
 
 // lastSpace returns the index of the last ASCII space in runes, or -1 when
 // none is present.
+//
+// Expected: parameters for lastSpace.
+// Returns: result of lastSpace.
+// Side effects: None.
 func lastSpace(runes []rune) int {
 	for i := len(runes) - 1; i >= 0; i-- {
 		if runes[i] == ' ' {
@@ -906,6 +993,10 @@ func lastSpace(runes []rune) int {
 // "off-chain-plan" → "Off Chain Plan". This is the no-title fallback — a
 // readable name rather than a raw slug. A chainID that is already prose (e.g.
 // "Mental Health Companion") survives unchanged.
+//
+// Expected: parameters for readableChainID.
+// Returns: result of readableChainID.
+// Side effects: None.
 func readableChainID(chainID string) string {
 	chainID = strings.TrimSpace(chainID)
 	if chainID == "" {
@@ -921,6 +1012,10 @@ func readableChainID(chainID string) string {
 
 // titleWord upper-cases the first rune of w and leaves the remainder as-is, so
 // an already-capitalised or acronymic word ("API") is not flattened.
+//
+// Expected: parameters for titleWord.
+// Returns: result of titleWord.
+// Side effects: None.
 func titleWord(w string) string {
 	if w == "" {
 		return ""
@@ -934,6 +1029,10 @@ func titleWord(w string) string {
 // when none is present. Only a single leading "# " (H1) is matched;
 // deeper headings ("##", "###") are ignored so the filename tracks the
 // plan's title, not a sub-section.
+//
+// Expected: parameters for firstH1.
+// Returns: result of firstH1.
+// Side effects: None.
 func firstH1(body string) string {
 	for line := range strings.SplitSeq(body, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -947,6 +1046,10 @@ func firstH1(body string) string {
 // recordPublication writes the honest "<chainID>/plan_publication" record
 // pointing at the real path just written. The shape matches the honesty
 // gate's planPublication reader: {"vault_path": ..., "published_at": ...}.
+//
+// Expected: parameters for recordPublication.
+// Returns: result of recordPublication.
+// Side effects: None.
 func recordPublication(store coordination.Store, chainID, vaultPath string) error {
 	record := struct {
 		VaultPath   string `json:"vault_path"`
@@ -973,6 +1076,10 @@ func recordPublication(store coordination.Store, chainID, vaultPath string) erro
 // feedback_atomicity_awareness_uneven) minus the flock — a single
 // post-swarm flush owns this write, so cross-process locking is not
 // required for the plan file.
+//
+// Expected: parameters for atomicWriteFile.
+// Returns: result of atomicWriteFile.
+// Side effects: None.
 func atomicWriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

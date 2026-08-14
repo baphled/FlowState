@@ -216,6 +216,10 @@ type spendState struct {
 // newSpendState constructs the spend-cache extension. Returns nil when
 // neither a resolver nor a store is supplied (the PR1/PR3 NewTracker
 // path) — the Tracker's spend methods then short-circuit cleanly.
+//
+// Expected: parameters for newSpendState.
+// Returns: result of newSpendState.
+// Side effects: None.
 func newSpendState(resolver PriceEntryResolver, st SpendStore, nowFunc func() time.Time) *spendState {
 	if nowFunc == nil {
 		nowFunc = time.Now
@@ -254,6 +258,10 @@ func newSpendState(resolver PriceEntryResolver, st SpendStore, nowFunc func() ti
 // in the engine's wire-up code, not in this package, so the quota
 // package stays free of the store import that would re-cycle into
 // quota itself.
+//
+// Expected: parameters for NewTrackerWithSpend.
+// Returns: result of NewTrackerWithSpend.
+// Side effects: None.
 func NewTrackerWithSpend(
 	backendLabel string,
 	resolver any, // accept either PricingResolver or PriceEntryResolver or both
@@ -307,6 +315,8 @@ func NewTrackerWithSpend(
 //
 // Plan §"Engine integration / spend accumulation rules (A4 resolution)"
 // lines 299-318.
+//
+// Expected: parameters for RecordSpend.
 func (t *Tracker) RecordSpend(ctx context.Context, rec SpendRecord) error {
 	if t == nil || t.spend == nil {
 		// PR1/PR3 NewTracker path — no spend wiring. Quiet no-op so
@@ -516,6 +526,10 @@ func (t *Tracker) RecordSpend(ctx context.Context, rec SpendRecord) error {
 // Float arithmetic is confined to this function — the rate division
 // produces a fractional result that is rounded once to int64 minor
 // units. All upstream addition stays in int64 to avoid drift.
+//
+// Expected: parameters for tokenCostMinor.
+// Returns: result of tokenCostMinor.
+// Side effects: None.
 func tokenCostMinor(tokens int64, perMillion float64, currency string) int64 {
 	_ = currency // v1 OD-6 currencies all use 100-minor-per-major; keep the seam
 	if tokens <= 0 || perMillion <= 0 {
@@ -537,6 +551,10 @@ func tokenCostMinor(tokens int64, perMillion float64, currency string) int64 {
 // imported to keep the quota package free of the config dependency
 // (config already imports quota for the Money type; the reverse
 // would cycle).
+//
+// Expected: parameters for resolveThresholdsForCap.
+// Returns: result of resolveThresholdsForCap.
+// Side effects: None.
 func resolveThresholdsForCap(cap CapConfig) (amber, red int) {
 	if cap.Cap.IsZero() {
 		return -1, -1
@@ -565,6 +583,10 @@ func resolveThresholdsForCap(cap CapConfig) (amber, red int) {
 // aggregator returns the rotated-and-zeroed Snapshot when a period
 // has crossed; this preserves the per-row semantics LookupSpend
 // honours for single-row reads.
+//
+// Expected: parameters for Snapshots.
+// Returns: result of Snapshots.
+// Side effects: None.
 func (t *Tracker) Snapshots(ctx context.Context) ([]SpendStoreEntry, error) {
 	if t == nil || t.spend == nil || t.spend.storeBackend == nil {
 		return nil, nil
@@ -613,6 +635,9 @@ func (t *Tracker) Snapshots(ctx context.Context) ([]SpendStoreEntry, error) {
 //
 // Used by the PR5 dashboard "Reset spend counter" button via
 // POST /api/v1/providers/quota/reset (OD-8 manual-reset path).
+//
+// Expected: parameters for ResetSpend.
+// Returns: result of ResetSpend.
 func (t *Tracker) ResetSpend(ctx context.Context, providerID, accountHash, modelID string) (bool, error) {
 	if t == nil || t.spend == nil || t.spend.storeBackend == nil {
 		return false, nil
@@ -656,6 +681,10 @@ func (t *Tracker) ResetSpend(ctx context.Context, providerID, accountHash, model
 //
 // Returns ok=false when no Snapshot exists for the key OR when the
 // Tracker has no spend wiring.
+//
+// Expected: parameters for LookupSpend.
+// Returns: result of LookupSpend.
+// Side effects: None.
 func (t *Tracker) LookupSpend(ctx context.Context, providerID, accountHash, modelID string) (Snapshot, bool) {
 	if t == nil || t.spend == nil || t.spend.storeBackend == nil {
 		return Snapshot{}, false
@@ -689,6 +718,10 @@ func (t *Tracker) LookupSpend(ctx context.Context, providerID, accountHash, mode
 //
 // Plan §"`internal/provider/quota/`" lines 191-204 (TokenSpend
 // variant shape) + OD-8 auto-reset lines 511-516.
+//
+// Expected: parameters for lookupSpendOverlay.
+// Returns: result of lookupSpendOverlay.
+// Side effects: None.
 func (t *Tracker) lookupSpendOverlay(
 	ctx context.Context,
 	providerID, modelID string,
@@ -756,6 +789,10 @@ func (t *Tracker) lookupSpendOverlay(
 // period; rolling-30d and session are accepted by config validation
 // but Tracker treats them all as monthly for v1. Future expansion
 // adds dispatch on CapConfig.Period.
+//
+// Expected: parameters for monthlyPeriod.
+// Returns: result of monthlyPeriod.
+// Side effects: None.
 func monthlyPeriod(now time.Time) (start, end time.Time) {
 	utc := now.UTC()
 	start = time.Date(utc.Year(), utc.Month(), 1, 0, 0, 0, 0, time.UTC)

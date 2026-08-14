@@ -69,6 +69,10 @@ func (r *autoresearchAppRunner) RunAutoresearch(
 // NewAutoresearchAppRunner creates a runner.AutoresearchRunner backed by
 // the given App. The CLI root command calls this and passes the result to
 // app.SetAutoresearchRunner to wire the autoresearch_run engine tool.
+//
+// Expected: parameters for NewAutoresearchAppRunner.
+// Returns: result of NewAutoresearchAppRunner.
+// Side effects: None.
 func NewAutoresearchAppRunner(application *app.App) runner.AutoresearchRunner {
 	return &autoresearchAppRunner{application: application}
 }

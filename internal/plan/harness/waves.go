@@ -116,6 +116,9 @@ func WithWaves(stages []WaveStage, validator WaveValidator) Option {
 //
 // Side effects:
 //   - May call the validator (which itself may read from a store).
+//
+// Expected: parameters for checkWavesIncomplete.
+// Returns: result of checkWavesIncomplete.
 func (h *Harness) checkWavesIncomplete(ctx context.Context, agentID string, noToolCall bool) string {
 	if h.waveValidator == nil || len(h.waves) == 0 {
 		return ""
@@ -144,6 +147,10 @@ func (h *Harness) checkWavesIncomplete(ctx context.Context, agentID string, noTo
 // so the feedback names the failure explicitly and instructs the agent
 // to emit the coordination_store write tool call NOW rather than narrate
 // it — the directive that breaks the synthesis-hang loop.
+//
+// Expected: parameters for buildWaveFeedback.
+// Returns: result of buildWaveFeedback.
+// Side effects: None.
 func buildWaveFeedback(stage WaveStage, missing []string, err error, noToolCall bool) string {
 	var b strings.Builder
 	b.WriteString("Wave fan-in incomplete: stage `")

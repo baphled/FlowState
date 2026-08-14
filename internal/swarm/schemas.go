@@ -328,6 +328,10 @@ func PlanDocumentV1Schema() *jsonschema.Schema {
 // schemaIntPtr returns a pointer to n for jsonschema's *int constraint
 // fields (MinLength etc.). Kept local so the schema constructors stay
 // declarative without a sprinkling of throwaway address-of locals.
+//
+// Expected: parameters for schemaIntPtr.
+// Returns: result of schemaIntPtr.
+// Side effects: None.
 func schemaIntPtr(n int) *int {
 	return &n
 }

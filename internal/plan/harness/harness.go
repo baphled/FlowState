@@ -439,6 +439,10 @@ func (h *Harness) forwardAndAccumulate(
 // or as a "tool_call" / "tool_use" event/stop-reason, depending on the
 // provider. Any of these signals counts: the wave barrier only needs to
 // know that SOME tool was called this turn, not which one.
+//
+// Expected: parameters for chunkHasToolCall.
+// Returns: result of chunkHasToolCall.
+// Side effects: None.
 func chunkHasToolCall(chunk provider.StreamChunk) bool {
 	if chunk.ToolCall != nil {
 		return true

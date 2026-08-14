@@ -40,6 +40,8 @@ func NewInsert(s Store) *InsertTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *InsertTool) Name() string {
 	return "todo_insert"
 }
@@ -51,6 +53,8 @@ func (t *InsertTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *InsertTool) Description() string {
 	return "Insert a new task item at a specific 0-based index, shifting subsequent items down. " +
 		"Use this when a new subtask belongs between existing items rather than at the end."
@@ -64,6 +68,8 @@ func (t *InsertTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *InsertTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -91,6 +97,10 @@ func (t *InsertTool) Schema() tool.Schema {
 
 // IsStateModifying returns true because todo_insert inserts an item into
 // the stored todo list for the session.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *InsertTool) IsStateModifying() bool { return true }
 
 // Execute inserts a single todo item at the specified index in the stored

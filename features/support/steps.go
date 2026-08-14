@@ -32,6 +32,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
 // StepDefinitions holds state and step implementations for BDD scenarios.
@@ -82,6 +83,9 @@ type StepDefinitions struct {
 	bashPermission       string
 	bashOutput           string
 	bashError            string
+	bigToolOutput        string
+	bashTruncated        bool
+	bashSpillPath        string
 	toolRequest          *ToolRequest
 	permissionPrompt     bool
 	commandExecuted      bool
@@ -188,6 +192,8 @@ type ToolRequest struct {
 //
 // Side effects:
 //   - Registers before hooks and all step patterns on the scenario context.
+//
+// Returns: result of RegisterSteps.
 func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
 		s.ctx = ctx
@@ -380,6 +386,11 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the AI should be informed of the cancellation$`, s.theAIShouldBeInformedOfTheCancellation)
 	ctx.Step(`^I am in directory "([^"]*)"$`, s.iAmInDirectory)
 	ctx.Step(`^the output should show "([^"]*)"$`, s.theOutputShouldShow)
+
+	ctx.Step(`^tool output truncation is configured with max_bytes (\d+) and max_lines (\d+)$`, s.toolOutputTruncationConfigured)
+	ctx.Step(`^the AI runs a bash command producing output above the default cap$`, s.theAIRunsABashCommandProducingOutputAboveDefaultCap)
+	ctx.Step(`^the bash output should be delivered verbatim without truncation$`, s.theBashOutputShouldBeDeliveredVerbatim)
+	ctx.Step(`^no overflow spill file should be written$`, s.noOverflowSpillFileShouldBeWritten)
 
 	// MCP tool integration steps
 	ctx.Step(`^FlowState is configured with an MCP server$`, s.flowstateIsConfiguredWithAnMCPServer)
@@ -2954,6 +2965,8 @@ func (s *StepDefinitions) whenCompleteIShouldSeeTheOutput() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theAIShouldBeInformedOfTheCancellation.
 func (s *StepDefinitions) theAIShouldBeInformedOfTheCancellation() error {
 	if !s.commandCancelled {
 		return errors.New("expected command cancellation to be recorded")
@@ -2984,6 +2997,83 @@ func (s *StepDefinitions) theOutputShouldShow(expected string) error {
 	return nil
 }
 
+// toolOutputTruncationConfigured threads the configured tool-output limits
+// into the truncate package so the bash envelope inherits them at Apply time.
+//
+// Expected:
+//   - maxBytes is the configured byte cap (0 means unlimited).
+//   - maxLines is the configured line cap (0 means unlimited).
+//
+// Returns:
+//   - nil on success.
+//
+// Side effects:
+//   - Calls truncate.SetToolOutputLimits, mutating package-level state.
+func (s *StepDefinitions) toolOutputTruncationConfigured(maxBytes, maxLines int) error {
+	truncate.SetToolOutputLimits(maxBytes, maxLines)
+	return nil
+}
+
+// theAIRunsABashCommandProducingOutputAboveDefaultCap routes a payload larger
+// than the compiled-in default cap through the shared truncation envelope,
+// mirroring capOutput in internal/tool/bash/bash.go.
+//
+// Returns:
+//   - nil on success.
+//
+// Side effects:
+//   - Sets s.bashOutput from the truncation Result content and records the
+//     truncation flag plus spill path for the assertion steps.
+//
+// Expected: parameters for theAIRunsABashCommandProducingOutputAboveDefaultCap.
+func (s *StepDefinitions) theAIRunsABashCommandProducingOutputAboveDefaultCap() error {
+	s.bigToolOutput = strings.Repeat("x", truncate.DefaultMaxBytes+1024)
+	result := truncate.Apply(s.bigToolOutput, truncate.Options{
+		SessionID: "bdd-bash-unlimited",
+		ToolName:  "bash",
+	})
+	s.bashOutput = result.Content
+	s.bashTruncated = result.Truncated
+	s.bashSpillPath = result.OutputPath
+	return nil
+}
+
+// theBashOutputShouldBeDeliveredVerbatim asserts the routed bash output was
+// returned unchanged — no slicing, no hint, no truncation flag.
+//
+// Returns:
+//   - An error when output was truncated or differs from the original.
+//
+// Side effects: None.
+//
+// Expected: parameters for theBashOutputShouldBeDeliveredVerbatim.
+func (s *StepDefinitions) theBashOutputShouldBeDeliveredVerbatim() error {
+	if s.bashTruncated {
+		return fmt.Errorf("expected verbatim output but truncation was applied")
+	}
+	if s.bashOutput != s.bigToolOutput {
+		return fmt.Errorf("expected verbatim output of %d bytes, got %d bytes", len(s.bigToolOutput), len(s.bashOutput))
+	}
+	return nil
+}
+
+// noOverflowSpillFileShouldBeWritten asserts no spill file was created for
+// the routed bash output — the unlimited envelope must skip the spill write
+// entirely rather than relying on a best-effort IO path.
+//
+// Returns:
+//   - An error when a spill path was recorded.
+//
+// Side effects: None.
+//
+// Expected: parameters for noOverflowSpillFileShouldBeWritten.
+func (s *StepDefinitions) noOverflowSpillFileShouldBeWritten() error {
+	if s.bashSpillPath != "" {
+		return fmt.Errorf("expected no overflow spill file, got %q", s.bashSpillPath)
+	}
+	return nil
+}
+
 // MCP tool integration step stubs — pending implementation.
 
 // flowstateIsConfiguredWithAnMCPServer sets up an in-memory MCP server for testing.
@@ -2993,6 +3083,8 @@ func (s *StepDefinitions) theOutputShouldShow(expected string) error {
 //
 // Side effects:
 //   - Initialises s.mcpManager, s.mcpClientTransport, s.mcpServerTransport, and s.mcpServer.
+//
+// Expected: parameters for flowstateIsConfiguredWithAnMCPServer.
 func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
 	s.mcpManager = mcp.NewManager()
 
@@ -3043,6 +3135,8 @@ func (s *StepDefinitions) flowstateIsConfiguredWithAnMCPServer() error {
 //
 // Side effects:
 //   - Establishes a connection to the MCP server.
+//
+// Expected: parameters for iConnectToTheMCPServer.
 func (s *StepDefinitions) iConnectToTheMCPServer() error {
 	ctx := context.Background()
 	return s.mcpManager.ConnectWithTransport(ctx, "test-server", s.mcpClientTransport)
@@ -3055,6 +3149,8 @@ func (s *StepDefinitions) iConnectToTheMCPServer() error {
 //
 // Side effects:
 //   - Populates s.mcpTools with the list of available tools.
+//
+// Expected: parameters for iShouldSeeAvailableToolsFromTheServer.
 func (s *StepDefinitions) iShouldSeeAvailableToolsFromTheServer() error {
 	ctx := context.Background()
 	tools, err := s.mcpManager.ListTools(ctx, "test-server")
@@ -3075,6 +3171,8 @@ func (s *StepDefinitions) iShouldSeeAvailableToolsFromTheServer() error {
 //
 // Side effects:
 //   - Calls flowstateIsConfiguredWithAnMCPServer and iConnectToTheMCPServer.
+//
+// Expected: parameters for iAmConnectedToTheMCPServer.
 func (s *StepDefinitions) iAmConnectedToTheMCPServer() error {
 	if err := s.flowstateIsConfiguredWithAnMCPServer(); err != nil {
 		return err
@@ -3089,6 +3187,8 @@ func (s *StepDefinitions) iAmConnectedToTheMCPServer() error {
 //
 // Side effects:
 //   - Populates s.mcpToolResult with the tool execution result.
+//
+// Expected: parameters for iAskTheAgentToUseAnMCPTool.
 func (s *StepDefinitions) iAskTheAgentToUseAnMCPTool() error {
 	ctx := context.Background()
 	result, err := s.mcpManager.CallTool(ctx, "test-server", "echo", map[string]any{"message": "hello"})
@@ -3106,6 +3206,8 @@ func (s *StepDefinitions) iAskTheAgentToUseAnMCPTool() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theToolShouldExecuteAndReturnAResult.
 func (s *StepDefinitions) theToolShouldExecuteAndReturnAResult() error {
 	if s.mcpToolResult == nil {
 		return errors.New("expected tool result, got nil")
@@ -3126,6 +3228,8 @@ func (s *StepDefinitions) theToolShouldExecuteAndReturnAResult() error {
 //
 // Side effects:
 //   - Closes the connection to the MCP server.
+//
+// Expected: parameters for iDisconnectFromTheMCPServer.
 func (s *StepDefinitions) iDisconnectFromTheMCPServer() error {
 	if s.mcpManager == nil {
 		return errors.New("MCP manager not initialised")
@@ -3140,6 +3244,8 @@ func (s *StepDefinitions) iDisconnectFromTheMCPServer() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theServerConnectionShouldBeCleanedUp.
 func (s *StepDefinitions) theServerConnectionShouldBeCleanedUp() error {
 	if s.mcpManager == nil {
 		return errors.New("MCP manager not initialised")
@@ -3846,6 +3952,8 @@ func (s *StepDefinitions) anAgentsMdExistsInTheWorkingDirectoryWithContent(conte
 //
 // Returns: nil on success.
 // Side effects: Creates empty temp dirs for config and working directory.
+//
+// Expected: parameters for noAgentsMdFilesExist.
 func (s *StepDefinitions) noAgentsMdFilesExist() error {
 	s.agentsConfigDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-empty-config-%d", time.Now().UnixNano()))
 	s.agentsWorkingDir = filepath.Join(os.TempDir(), fmt.Sprintf("flowstate-bdd-empty-workdir-%d", time.Now().UnixNano()))
@@ -3859,6 +3967,8 @@ func (s *StepDefinitions) noAgentsMdFilesExist() error {
 //
 // Returns: nil on success.
 // Side effects: Creates engine, builds and stores system prompt in s.lastPrompt.
+//
+// Expected: parameters for aNewSessionIsStarted.
 func (s *StepDefinitions) aNewSessionIsStarted() error {
 	configDir := s.agentsConfigDir
 	if configDir == "" {
@@ -3915,6 +4025,8 @@ func (s *StepDefinitions) theSystemPromptShouldContain(expected string) error {
 //
 // Returns: nil if no AGENTS.md content found, error otherwise.
 // Side effects: None.
+//
+// Expected: parameters for theSystemPromptShouldNotContainAgentsMdContent.
 func (s *StepDefinitions) theSystemPromptShouldNotContainAgentsMdContent() error {
 	if s.lastPrompt == "" {
 		return errors.New("no system prompt built")

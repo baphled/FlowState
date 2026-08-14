@@ -14,18 +14,48 @@ type SwarmListTool struct {
 }
 
 // NewSwarmListTool creates a SwarmListTool backed by the given registry.
+//
+// Expected: parameters for NewSwarmListTool.
+// Returns: result of NewSwarmListTool.
+// Side effects: None.
 func NewSwarmListTool(registry SwarmReader) *SwarmListTool {
 	return &SwarmListTool{registry: registry}
 }
 
-func (t *SwarmListTool) Name() string        { return "swarm_list" }
+// Name ...
+//
+// Expected: parameters for Name.
+//
+// Returns: result of Name.
+//
+// Side effects: None.
+func (t *SwarmListTool) Name() string { return "swarm_list" }
+
+// Description ...
+//
+// Expected: parameters for Description.
+//
+// Returns: result of Description.
+//
+// Side effects: None.
 func (t *SwarmListTool) Description() string { return "List all registered swarms" }
 
+// Schema ...
+//
+// Expected: parameters for Schema.
+//
+// Returns: result of Schema.
+//
+// Side effects: None.
 func (t *SwarmListTool) Schema() tool.Schema {
 	return tool.Schema{Type: "object", Properties: map[string]tool.Property{}}
 }
 
 // Execute returns a formatted table of all registered swarms.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *SwarmListTool) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
 	manifests := t.registry.List()
 	if len(manifests) == 0 {

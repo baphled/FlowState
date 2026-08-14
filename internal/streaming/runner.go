@@ -16,6 +16,9 @@ import (
 //
 // Side effects:
 //   - See dispatchHarnessEvent.
+//
+// Expected: parameters for DispatchHarnessEvent.
+// Returns: result of DispatchHarnessEvent.
 func DispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
 	return dispatchHarnessEvent(c, chunk)
 }
@@ -25,6 +28,9 @@ func DispatchHarnessEvent(c StreamConsumer, chunk provider.StreamChunk) bool {
 //
 // Side effects:
 //   - See deliverDelegationEvent.
+//
+// Expected: parameters for DeliverDelegationEvent.
+// Returns: result of DeliverDelegationEvent.
 func DeliverDelegationEvent(c StreamConsumer, info *provider.DelegationInfo) bool {
 	return deliverDelegationEvent(c, info)
 }
@@ -34,6 +40,8 @@ func DeliverDelegationEvent(c StreamConsumer, info *provider.DelegationInfo) boo
 //
 // Side effects:
 //   - See deliverToolCall.
+//
+// Expected: parameters for DeliverToolCall.
 func DeliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
 	deliverToolCall(c, toolCall)
 }
@@ -43,6 +51,8 @@ func DeliverToolCall(c StreamConsumer, toolCall *provider.ToolCall) {
 //
 // Side effects:
 //   - See deliverToolResult.
+//
+// Expected: parameters for DeliverToolResult.
 func DeliverToolResult(c StreamConsumer, result *provider.ToolResultInfo) {
 	deliverToolResult(c, result)
 }

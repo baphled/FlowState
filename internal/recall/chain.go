@@ -67,6 +67,8 @@ func NewInMemoryChainStore(embeddingProvider provider.Provider) *InMemoryChainSt
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ChainID.
 func (s *InMemoryChainStore) ChainID() string {
 	return s.chainID
 }

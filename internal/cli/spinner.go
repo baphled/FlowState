@@ -71,6 +71,8 @@ func NewSpinner(out io.Writer, msg string) *Spinner {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for IsTTY.
 func (s *Spinner) IsTTY() bool {
 	return s.isTTY
 }

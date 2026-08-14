@@ -417,6 +417,9 @@ func (o *Orchestrator) IsSwarmMention(message string) bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for agentLookup.
+// Returns: result of agentLookup.
 func (o *Orchestrator) agentLookup() swarm.HasAgent {
 	if o.agentRegistry == nil {
 		return nil
@@ -602,6 +605,8 @@ func (o *Orchestrator) LoadSession(_ context.Context, sessionID string) (*Loaded
 // Side effects:
 //   - Calls engine.SetContextStore with a new empty store and the
 //     generated id.
+//
+// Expected: parameters for NewSession.
 func (o *Orchestrator) NewSession(_ context.Context) (string, error) {
 	sessionID := uuid.New().String()
 	if o.engine != nil {

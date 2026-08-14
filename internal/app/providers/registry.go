@@ -21,6 +21,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider/zai"
 )
 
+// providerSpec holds a provider name and default model for registry construction.
 type providerSpec struct {
 	name  string
 	model string
@@ -163,6 +164,13 @@ func BuildConfigPreferences(cfg *config.AppConfig) []provider.ModelPreference {
 	return hoistDefaultProvider(prefs, cfg.Providers.Default)
 }
 
+// configuredProviderSpecs ...
+//
+// Expected: parameters for configuredProviderSpecs.
+//
+// Returns: result of configuredProviderSpecs.
+//
+// Side effects: None.
 func configuredProviderSpecs(cfg *config.AppConfig) []providerSpec {
 	return []providerSpec{
 		{name: "anthropic", model: cfg.Providers.Anthropic.Model},
@@ -176,6 +184,13 @@ func configuredProviderSpecs(cfg *config.AppConfig) []providerSpec {
 	}
 }
 
+// effectiveProviderCredentialConfigured ...
+//
+// Expected: parameters for effectiveProviderCredentialConfigured.
+//
+// Returns: result of effectiveProviderCredentialConfigured.
+//
+// Side effects: None.
 func effectiveProviderCredentialConfigured(cfg *config.AppConfig, providerName string) bool {
 	checker, ok := providerCredentialChecks[providerName]
 	if !ok {
@@ -214,10 +229,24 @@ var providerCredentialChecks = map[string]func(*config.AppConfig) bool{
 	},
 }
 
+// providerCredentialConfigured ...
+//
+// Expected: parameters for providerCredentialConfigured.
+//
+// Returns: result of providerCredentialConfigured.
+//
+// Side effects: None.
 func providerCredentialConfigured(cfgValue, envVar string) bool {
 	return strings.TrimSpace(cfgValue) != "" || strings.TrimSpace(os.Getenv(envVar)) != ""
 }
 
+// hoistDefaultProvider ...
+//
+// Expected: parameters for hoistDefaultProvider.
+//
+// Returns: result of hoistDefaultProvider.
+//
+// Side effects: None.
 func hoistDefaultProvider(prefs []provider.ModelPreference, defaultName string) []provider.ModelPreference {
 	if defaultName == "" {
 		return prefs
@@ -239,6 +268,10 @@ func hoistDefaultProvider(prefs []provider.ModelPreference, defaultName string) 
 }
 
 // ResolveDefault validates that the configured default provider exists in the registry.
+//
+// Expected: parameters for ResolveDefault.
+// Returns: result of ResolveDefault.
+// Side effects: None.
 func ResolveDefault(registry *provider.Registry, failures map[string]error, defaultName string) error {
 	if _, err := registry.Get(defaultName); err != nil {
 		if failure, ok := failures[defaultName]; ok && failure != nil {
@@ -252,6 +285,10 @@ func ResolveDefault(registry *provider.Registry, failures map[string]error, defa
 // buildOpenAIProvider constructs the OpenAI provider from the configured
 // key, returning ErrOpenAINoKey when no key is available so the caller
 // records a uniform failure message.
+//
+// Expected: parameters for buildOpenAIProvider.
+// Returns: result of buildOpenAIProvider.
+// Side effects: None.
 func buildOpenAIProvider(cfg *config.AppConfig) (*openai.Provider, error) {
 	key := ResolveProviderKey("OPENAI_API_KEY", cfg.Providers.OpenAI.APIKey)
 	if key == "" {
@@ -272,6 +309,9 @@ func buildOpenAIProvider(cfg *config.AppConfig) (*openai.Provider, error) {
 // seam in the composition root — ensures all failover targets resolved from
 // this registry inherit the cap. A maxConcurrent of 0 leaves the provider
 // unwrapped, preserving prior behaviour.
+//
+// Expected: parameters for recordProvider.
+// Side effects: None.
 func recordProvider(
 	registry *provider.Registry,
 	failures map[string]error,
@@ -295,6 +335,10 @@ func recordProvider(
 // the failures map is failing — i.e. nothing was successfully registered
 // for any authenticated provider. We use this to decide whether to emit
 // the OpenCode-migration WARN.
+//
+// Expected: parameters for zaiAllProvidersFailed.
+// Returns: result of zaiAllProvidersFailed.
+// Side effects: None.
 func zaiAllProvidersFailed(failures map[string]error) bool {
 	authProviders := []string{"anthropic", "copilot", "zai", "openzen"}
 	for _, name := range authProviders {
@@ -309,6 +353,9 @@ func zaiAllProvidersFailed(failures map[string]error) bool {
 // have an OpenCode auth.json on disk and no FlowState provider authenticated
 // successfully. The OpenCode credential bridge has been removed, so the
 // user must paste keys into config.yaml or run `flowstate auth <provider>`.
+//
+// Expected: parameters for warnIfOpenCodeAuthPresent.
+// Side effects: None.
 func warnIfOpenCodeAuthPresent(failures map[string]error) {
 	if !zaiAllProvidersFailed(failures) {
 		return
@@ -338,6 +385,9 @@ func warnIfOpenCodeAuthPresent(failures map[string]error) {
 //
 // Skips when the provider failed to initialise (no point announcing a
 // non-existent route).
+//
+// Expected: parameters for logZAIPlanResolution.
+// Side effects: None.
 func logZAIPlanResolution(plan string, initErr error) {
 	if initErr != nil {
 		return
@@ -361,6 +411,10 @@ func logZAIPlanResolution(plan string, initErr error) {
 //  2. Empty Plan but Host equal to the coding-plan URL — back-compat
 //     inference for legacy configs that encoded the plan in Host.
 //  3. Otherwise — empty string ("general").
+//
+// Expected: parameters for zaiPlanFromConfig.
+// Returns: result of zaiPlanFromConfig.
+// Side effects: None.
 func zaiPlanFromConfig(cfg *config.AppConfig) string {
 	plan := strings.ToLower(strings.TrimSpace(cfg.Providers.ZAI.Plan))
 	if plan == zai.PlanCoding {

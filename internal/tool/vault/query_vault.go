@@ -22,15 +22,41 @@ type QueryVaultTool struct {
 }
 
 // NewQueryVaultTool creates a QueryVaultTool backed by the given Handler.
+//
+// Expected: parameters for NewQueryVaultTool.
+// Returns: result of NewQueryVaultTool.
+// Side effects: None.
 func NewQueryVaultTool(handler Handler) *QueryVaultTool {
 	return &QueryVaultTool{handler: handler}
 }
 
+// Name ...
+//
+// Expected: parameters for Name.
+//
+// Returns: result of Name.
+//
+// Side effects: None.
 func (t *QueryVaultTool) Name() string { return "mcp_vault-rag_query_vault" }
+
+// Description ...
+//
+// Expected: parameters for Description.
+//
+// Returns: result of Description.
+//
+// Side effects: None.
 func (t *QueryVaultTool) Description() string {
 	return "Search the indexed Obsidian vault for relevant knowledge"
 }
 
+// Schema ...
+//
+// Expected: parameters for Schema.
+//
+// Returns: result of Schema.
+//
+// Side effects: None.
 func (t *QueryVaultTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -44,6 +70,10 @@ func (t *QueryVaultTool) Schema() tool.Schema {
 }
 
 // Execute queries the vault and returns formatted chunk results.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *QueryVaultTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	question, ok := input.Arguments["question"].(string)
 	if !ok || question == "" {

@@ -102,6 +102,8 @@ func New(baseDir string) *Recorder {
 //
 // Returns: nil.
 // Side effects: none.
+//
+// Expected: parameters for Init.
 func (r *Recorder) Init() error {
 	return nil
 }
@@ -110,6 +112,8 @@ func (r *Recorder) Init() error {
 //
 // Returns: the builtin plugin name.
 // Side effects: none.
+//
+// Expected: parameters for Name.
 func (r *Recorder) Name() string {
 	return "session-recorder"
 }
@@ -118,6 +122,8 @@ func (r *Recorder) Name() string {
 //
 // Returns: the builtin plugin version string.
 // Side effects: none.
+//
+// Expected: parameters for Version.
 func (r *Recorder) Version() string {
 	return "v0.0.0"
 }
@@ -167,6 +173,8 @@ func (r *Recorder) RecordChunk(sessionID string, chunk provider.StreamChunk) {
 //
 // Returns: error if any file cannot be closed.
 // Side effects: closes all file handles.
+//
+// Expected: parameters for Close.
 func (r *Recorder) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

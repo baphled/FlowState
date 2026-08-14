@@ -321,6 +321,10 @@ func runAutoresearch(ctx context.Context, cmd *cobra.Command, application *app.A
 // Implementation note: cobra's `Flags().Changed(name)` distinguishes
 // "explicitly set" from "unset; default-zero", so the guard does not
 // trigger on the default zero values produced by the flagset.
+//
+// Expected: parameters for rejectGitModeFlagsWithoutCommitTrials.
+// Returns: result of rejectGitModeFlagsWithoutCommitTrials.
+// Side effects: None.
 func rejectGitModeFlagsWithoutCommitTrials(cmd *cobra.Command, opts autoresearchRunOptions) error {
 	if opts.commitTrials {
 		return nil
@@ -344,6 +348,10 @@ func rejectGitModeFlagsWithoutCommitTrials(cmd *cobra.Command, opts autoresearch
 // loop drives the driver via stdin/stdout, and candidates flow as
 // strings — no worktree, no commits, no `git` subprocesses in this
 // code path.
+//
+// Expected: parameters for runAutoresearchContent.
+// Returns: result of runAutoresearchContent.
+// Side effects: None.
 func runAutoresearchContent(ctx context.Context, cmd *cobra.Command, application *app.App, resolved autoresearchRunOptions) error {
 	store, err := openCoordStore(application)
 	if err != nil {
@@ -416,6 +424,10 @@ func runAutoresearchContent(ctx context.Context, cmd *cobra.Command, application
 // runAutoresearchCommitTrials implements the legacy git-mediated
 // substrate. Behaviour preserved byte-for-byte from the pre-pivot
 // runAutoresearch — only the entry-point branching is new.
+//
+// Expected: parameters for runAutoresearchCommitTrials.
+// Returns: result of runAutoresearchCommitTrials.
+// Side effects: None.
 func runAutoresearchCommitTrials(ctx context.Context, cmd *cobra.Command, application *app.App, resolved autoresearchRunOptions) error {
 	surfaceRepoRoot, err := surfaceRepoRoot(resolved.surface)
 	if err != nil {
@@ -462,7 +474,7 @@ func runAutoresearchCommitTrials(ctx context.Context, cmd *cobra.Command, applic
 	}
 	worktreeSurface := filepath.Join(worktreePath, relSurface)
 
-	baseline, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID, resolved.evaluatorTimeout)
+	baseline, err := runEvaluatorScript(ctx, resolved.evaluatorScript, worktreePath, relSurface, resolved.runID, resolved.evaluatorTimeout)
 	if err != nil {
 		return fmt.Errorf("baseline evaluator: %w", err)
 	}
@@ -509,6 +521,10 @@ func runAutoresearchCommitTrials(ctx context.Context, cmd *cobra.Command, applic
 // enclosing git repository. Used by the content substrate to give
 // the synthesiser a stable relSurface anchor without requiring a
 // worktree.
+//
+// Expected: parameters for surfaceRelativeToRepo.
+// Returns: result of surfaceRelativeToRepo.
+// Side effects: None.
 func surfaceRelativeToRepo(surface string) (string, error) {
 	repoRoot, err := surfaceRepoRoot(surface)
 	if err != nil {
@@ -527,6 +543,10 @@ func surfaceRelativeToRepo(surface string) (string, error) {
 
 // worktreeHeadSHA returns the worktree's current HEAD SHA via
 // `git -C <worktree> rev-parse HEAD`.
+//
+// Expected: parameters for worktreeHeadSHA.
+// Returns: result of worktreeHeadSHA.
+// Side effects: None.
 func worktreeHeadSHA(worktreePath string) (string, error) {
 	cmd := observedCommand("git", "-C", worktreePath, "rev-parse", "HEAD")
 	out, err := cmd.Output()
@@ -542,6 +562,9 @@ func worktreeHeadSHA(worktreePath string) (string, error) {
 // run-id, and worktree path so the operator has the breadcrumbs to
 // inspect kept commits or trigger Slice 1d's cherry-pick (deferred
 // to Slice 4+ — Slice 1's summary is informational only).
+//
+// Expected: parameters for printRunSummary.
+// Side effects: None.
 func printRunSummary(
 	w io.Writer,
 	resolved autoresearchRunOptions,
@@ -712,6 +735,10 @@ func resolveAutoresearchOptions(application *app.App, opts autoresearchRunOption
 // rule keeps the surface predictable: skill names live in
 // `skills/<name>/SKILL.md` and never carry a slash; ad-hoc programs
 // are operator-authored markdown files.
+//
+// Expected: parameters for programIsPathForm.
+// Returns: result of programIsPathForm.
+// Side effects: None.
 func programIsPathForm(value string) bool {
 	if strings.ContainsRune(value, '/') {
 		return true
@@ -859,6 +886,10 @@ func applyCallingAgentDeDup(opts autoresearchRunOptions, w io.Writer) bool {
 // cfg.AgentDirs into a single slice for the path heuristic. An
 // empty primary AgentDir is dropped so the heuristic does not
 // silently match every path under the empty string.
+//
+// Expected: parameters for agentDirsFromConfig.
+// Returns: result of agentDirsFromConfig.
+// Side effects: None.
 func agentDirsFromConfig(application *app.App) []string {
 	if application == nil || application.Config == nil {
 		return nil
@@ -1081,6 +1112,8 @@ func restoreParentStash(w io.Writer, repoRoot, stashRef string) {
 //
 // Returns:
 //   - The branch name string.
+//
+// Side effects: None.
 func autoresearchBranchName(runID string) string {
 	short := runID
 	if len(short) > 8 {
@@ -1360,6 +1393,10 @@ func writeManifestRecord(
 }
 
 // manifestKey returns the coord-store key for a run's manifest record.
+//
+// Expected: parameters for manifestKey.
+// Returns: result of manifestKey.
+// Side effects: None.
 func manifestKey(runID string) string {
 	return "autoresearch/" + runID + "/manifest"
 }
@@ -1367,6 +1404,10 @@ func manifestKey(runID string) string {
 // defaultEvaluator returns the configured evaluator command label:
 // the explicit --evaluator-script when supplied, otherwise the
 // hard-coded MVP default `scripts/validate-harness.sh --score`.
+//
+// Expected: parameters for defaultEvaluator.
+// Returns: result of defaultEvaluator.
+// Side effects: None.
 func defaultEvaluator(supplied string) string {
 	if supplied != "" {
 		return supplied
@@ -1381,6 +1422,10 @@ func defaultEvaluator(supplied string) string {
 // smoke path or a fixed-point-only fixture run); the field is left
 // empty so downstream readers can distinguish "no driver" from
 // "script driver".
+//
+// Expected: parameters for driverModeForRecord.
+// Returns: result of driverModeForRecord.
+// Side effects: None.
 func driverModeForRecord(opts autoresearchRunOptions) string {
 	if opts.driverScript == "" {
 		return ""
@@ -1393,6 +1438,10 @@ func driverModeForRecord(opts autoresearchRunOptions) string {
 // de-dup fired, the path is suffixed with " (deduplicated against
 // calling agent)" so an auditor can reconcile the logged line with
 // the persisted record without cross-referencing stdout.
+//
+// Expected: parameters for programResolvedRecord.
+// Returns: result of programResolvedRecord.
+// Side effects: None.
 func programResolvedRecord(opts autoresearchRunOptions) string {
 	if opts.programDeduplicated {
 		return opts.programResolvedPath + " (deduplicated against calling agent)"

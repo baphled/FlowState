@@ -62,7 +62,7 @@ func (m *testStoreAdapter) Put(ctx context.Context, k quota.SpendStoreKey, s quo
 func (m *testStoreAdapter) Reset(ctx context.Context, k quota.SpendStoreKey) error {
 	return m.inner.Reset(ctx, quotastore.Key{ProviderID: k.ProviderID, AccountHash: k.AccountHash, ModelID: k.ModelID})
 }
-func (m *testStoreAdapter) List(ctx context.Context) ([]quota.SpendStoreEntry, error) {
+func (m *testStoreAdapter) List(ctx context.Context) ([]quota.SpendStoreEntry, error) { //nolint:dupl // test fixture mirrors the prod adapter's row projection
 	rows, err := m.inner.List(ctx)
 	if err != nil {
 		return nil, err

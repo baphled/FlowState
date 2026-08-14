@@ -83,6 +83,10 @@ func isAbstractDescriptor(model string) bool {
 // CategoryResolver.Resolve to SetModelPreference — an unresolved alias
 // passed to the failover manager would silently fail to match any real
 // model at request time.
+//
+// Expected: parameters for IsAbstractModelDescriptor.
+// Returns: result of IsAbstractModelDescriptor.
+// Side effects: None.
 func IsAbstractModelDescriptor(model string) bool {
 	return isAbstractDescriptor(model)
 }
@@ -363,6 +367,8 @@ func pickByDescriptor(descriptor string, models []provider.Model) provider.Model
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for capabilityActive.
 func (r *CategoryResolver) capabilityActive() bool {
 	return len(r.toolCapableModels) > 0 || len(r.toolIncapableModels) > 0
 }

@@ -138,6 +138,10 @@ func RegisterQueryTool(server *mcp.Server, handler *QueryHandler) {
 // failing the entire query — the server should still return whatever rows
 // it can rather than blocking the caller's recall pipeline on a single
 // malformed point.
+//
+// Expected: parameters for chunkFromPayload.
+// Returns: result of chunkFromPayload.
+// Side effects: None.
 func chunkFromPayload(payload map[string]any) Chunk {
 	chunk := Chunk{}
 	if v, ok := payload["content"].(string); ok {
@@ -152,6 +156,10 @@ func chunkFromPayload(payload map[string]any) Chunk {
 
 // intFromPayload coerces a Qdrant payload value to int, accepting both
 // JSON numbers (decoded as float64) and json.Number representations.
+//
+// Expected: parameters for intFromPayload.
+// Returns: result of intFromPayload.
+// Side effects: None.
 func intFromPayload(v any) int {
 	switch n := v.(type) {
 	case int:

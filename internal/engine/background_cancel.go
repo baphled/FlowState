@@ -35,6 +35,8 @@ func NewBackgroundCancelTool(manager *BackgroundTaskManager) *BackgroundCancelTo
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (b *BackgroundCancelTool) Name() string {
 	return "background_cancel"
 }
@@ -46,6 +48,8 @@ func (b *BackgroundCancelTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (b *BackgroundCancelTool) Description() string {
 	return "Cancel a background task by ID or cancel all running tasks"
 }
@@ -57,6 +61,8 @@ func (b *BackgroundCancelTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (b *BackgroundCancelTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

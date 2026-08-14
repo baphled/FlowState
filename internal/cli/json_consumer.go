@@ -54,6 +54,8 @@ func (c *JSONConsumer) WriteChunk(content string) error {
 // Side effects:
 //   - Stores the error for retrieval via Err().
 //   - Writes a JSON line to the writer.
+//
+// Returns: result of WriteError.
 func (c *JSONConsumer) WriteError(err error) {
 	c.err = err
 	event := map[string]string{"type": "error", "error": err.Error()}
@@ -66,6 +68,9 @@ func (c *JSONConsumer) WriteError(err error) {
 //
 // Side effects:
 //   - Writes a JSON line to the writer.
+//
+// Expected: parameters for Done.
+// Returns: result of Done.
 func (c *JSONConsumer) Done() {
 	event := map[string]string{"type": "done"}
 	if err := c.writeEvent(event); err != nil {
@@ -80,6 +85,8 @@ func (c *JSONConsumer) Done() {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Response.
 func (c *JSONConsumer) Response() string {
 	return c.response
 }
@@ -91,6 +98,8 @@ func (c *JSONConsumer) Response() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Err.
 func (c *JSONConsumer) Err() error {
 	return c.err
 }
@@ -102,6 +111,8 @@ func (c *JSONConsumer) Err() error {
 //
 // Side effects:
 //   - Writes a JSON line to the writer.
+//
+// Returns: result of WriteToolCall.
 func (c *JSONConsumer) WriteToolCall(name string) {
 	event := map[string]string{"type": "tool_call", "name": name}
 	if err := c.writeEvent(event); err != nil {
@@ -116,6 +127,8 @@ func (c *JSONConsumer) WriteToolCall(name string) {
 //
 // Side effects:
 //   - Writes a JSON line to the writer.
+//
+// Returns: result of WriteToolResult.
 func (c *JSONConsumer) WriteToolResult(content string) {
 	event := map[string]string{"type": "tool_result", "content": content}
 	if err := c.writeEvent(event); err != nil {

@@ -160,6 +160,10 @@ func runAutoresearchPromote(cmd *cobra.Command, application *app.App, runID stri
 // at autoresearch/<runID>/best. A missing pointer is operator-facing
 // — surface a hint pointing at `autoresearch list` (Slice 5) so the
 // operator can confirm whether the run produced any kept candidates.
+//
+// Expected: parameters for readBestPointer.
+// Returns: result of readBestPointer.
+// Side effects: None.
 func readBestPointer(store coordination.Store, runID string) (bestRecord, error) {
 	key := fmt.Sprintf("autoresearch/%s/best", runID)
 	raw, err := store.Get(key)
@@ -185,6 +189,10 @@ func readBestPointer(store coordination.Store, runID string) (bestRecord, error)
 
 // readPromoteManifestRecord reads the manifest record so promote can
 // resolve the parent repo root via the recorded `surface` field.
+//
+// Expected: parameters for readPromoteManifestRecord.
+// Returns: result of readPromoteManifestRecord.
+// Side effects: None.
 func readPromoteManifestRecord(store coordination.Store, runID string) (manifestRecord, error) {
 	raw, err := store.Get(manifestKey(runID))
 	if err != nil {
@@ -205,6 +213,10 @@ func readPromoteManifestRecord(store coordination.Store, runID string) (manifest
 // is supplied it is used verbatim. Otherwise we read the parent's
 // HEAD; if HEAD is detached, the function refuses with a clear
 // error (R1.4 — promote-from-detached-HEAD is a hard refusal).
+//
+// Expected: parameters for resolvePromoteTarget.
+// Returns: result of resolvePromoteTarget.
+// Side effects: None.
 func resolvePromoteTarget(parentRepoRoot, explicitTarget string) (string, error) {
 	if explicitTarget != "" {
 		return explicitTarget, nil
@@ -227,6 +239,10 @@ func resolvePromoteTarget(parentRepoRoot, explicitTarget string) (string, error)
 // convenience so the operator can promote with `--target main`
 // without manually checking it out first; failures propagate as
 // errors.
+//
+// Expected: parameters for checkoutBranch.
+// Returns: result of checkoutBranch.
+// Side effects: None.
 func checkoutBranch(parentRepoRoot, target string) error {
 	headCmd := observedCommand("git", "-C", parentRepoRoot, "rev-parse", "--abbrev-ref", "HEAD")
 	headOut, err := headCmd.Output()

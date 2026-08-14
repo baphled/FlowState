@@ -28,6 +28,11 @@ func init() {
 	}
 }
 
+// RegisterAdultingMemorySteps ...
+//
+// Expected: parameters for RegisterAdultingMemorySteps.
+//
+// Side effects: None.
 func RegisterAdultingMemorySteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the adulting swarm is defined$`, adultingState.theAdultingSwarmIsDefined)
 	ctx.Step(`^the adulting agent manifests are loaded$`, adultingState.theAdultingAgentManifestsAreLoaded)
@@ -39,6 +44,12 @@ func RegisterAdultingMemorySteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^its always_active_skills should not include "([^"]*)"$`, adultingState.itsAlwaysActiveSkillsShouldNotInclude)
 }
 
+// reset ...
+//
+// Side effects: None.
+//
+// Expected: parameters for reset.
+// Returns: result of reset.
 func (s *adultingSwarmState) reset() {
 	s.manifests = make(map[string]map[string]interface{})
 	s.currentID = ""
@@ -46,6 +57,13 @@ func (s *adultingSwarmState) reset() {
 	s.swarmDir = ""
 }
 
+// theAdultingSwarmIsDefined ...
+//
+// Returns: result of theAdultingSwarmIsDefined.
+//
+// Side effects: None.
+//
+// Expected: parameters for theAdultingSwarmIsDefined.
 func (s *adultingSwarmState) theAdultingSwarmIsDefined() error {
 	s.reset()
 
@@ -58,6 +76,13 @@ func (s *adultingSwarmState) theAdultingSwarmIsDefined() error {
 	return nil
 }
 
+// theAdultingAgentManifestsAreLoaded ...
+//
+// Returns: result of theAdultingAgentManifestsAreLoaded.
+//
+// Side effects: None.
+//
+// Expected: parameters for theAdultingAgentManifestsAreLoaded.
 func (s *adultingSwarmState) theAdultingAgentManifestsAreLoaded() error {
 	agentsDir := filepath.Join(s.swarmDir, "agents")
 	entries, err := os.ReadDir(agentsDir)
@@ -91,6 +116,13 @@ func (s *adultingSwarmState) theAdultingAgentManifestsAreLoaded() error {
 	return nil
 }
 
+// theAgentManifest ...
+//
+// Expected: parameters for theAgentManifest.
+//
+// Returns: result of theAgentManifest.
+//
+// Side effects: None.
 func (s *adultingSwarmState) theAgentManifest(id string) error {
 	data, ok := s.manifests[id]
 	if !ok {
@@ -101,6 +133,13 @@ func (s *adultingSwarmState) theAgentManifest(id string) error {
 	return nil
 }
 
+// itShouldHaveSetTo ...
+//
+// Expected: parameters for itShouldHaveSetTo.
+//
+// Returns: result of itShouldHaveSetTo.
+//
+// Side effects: None.
 func (s *adultingSwarmState) itShouldHaveSetTo(field, value string) error {
 	if s.currentData == nil {
 		return fmt.Errorf("no agent manifest selected")
@@ -116,6 +155,13 @@ func (s *adultingSwarmState) itShouldHaveSetTo(field, value string) error {
 	return nil
 }
 
+// itsCapabilitiesToolsShouldInclude ...
+//
+// Expected: parameters for itsCapabilitiesToolsShouldInclude.
+//
+// Returns: result of itsCapabilitiesToolsShouldInclude.
+//
+// Side effects: None.
 func (s *adultingSwarmState) itsCapabilitiesToolsShouldInclude(tool string) error {
 	tools := getToolsList(s.currentData)
 	for _, t := range tools {
@@ -126,6 +172,13 @@ func (s *adultingSwarmState) itsCapabilitiesToolsShouldInclude(tool string) erro
 	return fmt.Errorf("%s: capabilities.tools %v does not include %q", s.currentID, tools, tool)
 }
 
+// itsCapabilitiesToolsShouldNotInclude ...
+//
+// Expected: parameters for itsCapabilitiesToolsShouldNotInclude.
+//
+// Returns: result of itsCapabilitiesToolsShouldNotInclude.
+//
+// Side effects: None.
 func (s *adultingSwarmState) itsCapabilitiesToolsShouldNotInclude(tool string) error {
 	tools := getToolsList(s.currentData)
 	for _, t := range tools {
@@ -136,6 +189,13 @@ func (s *adultingSwarmState) itsCapabilitiesToolsShouldNotInclude(tool string) e
 	return nil
 }
 
+// itsAlwaysActiveSkillsShouldInclude ...
+//
+// Expected: parameters for itsAlwaysActiveSkillsShouldInclude.
+//
+// Returns: result of itsAlwaysActiveSkillsShouldInclude.
+//
+// Side effects: None.
 func (s *adultingSwarmState) itsAlwaysActiveSkillsShouldInclude(skill string) error {
 	skills := getAlwaysActiveSkills(s.currentData)
 	for _, sk := range skills {
@@ -146,6 +206,13 @@ func (s *adultingSwarmState) itsAlwaysActiveSkillsShouldInclude(skill string) er
 	return fmt.Errorf("%s: always_active_skills %v does not include %q", s.currentID, skills, skill)
 }
 
+// itsAlwaysActiveSkillsShouldNotInclude ...
+//
+// Expected: parameters for itsAlwaysActiveSkillsShouldNotInclude.
+//
+// Returns: result of itsAlwaysActiveSkillsShouldNotInclude.
+//
+// Side effects: None.
 func (s *adultingSwarmState) itsAlwaysActiveSkillsShouldNotInclude(skill string) error {
 	skills := getAlwaysActiveSkills(s.currentData)
 	for _, sk := range skills {
@@ -156,6 +223,13 @@ func (s *adultingSwarmState) itsAlwaysActiveSkillsShouldNotInclude(skill string)
 	return nil
 }
 
+// extractFrontmatter ...
+//
+// Expected: parameters for extractFrontmatter.
+//
+// Returns: result of extractFrontmatter.
+//
+// Side effects: None.
 func extractFrontmatter(content string) (string, error) {
 	if !strings.HasPrefix(content, "---") {
 		return "", fmt.Errorf("no frontmatter delimiter")
@@ -167,14 +241,35 @@ func extractFrontmatter(content string) (string, error) {
 	return strings.TrimSpace(parts[0]), nil
 }
 
+// getToolsList ...
+//
+// Expected: parameters for getToolsList.
+//
+// Returns: result of getToolsList.
+//
+// Side effects: None.
 func getToolsList(data map[string]interface{}) []string {
 	return getStringSlice(data, "capabilities", "tools")
 }
 
+// getAlwaysActiveSkills ...
+//
+// Expected: parameters for getAlwaysActiveSkills.
+//
+// Returns: result of getAlwaysActiveSkills.
+//
+// Side effects: None.
 func getAlwaysActiveSkills(data map[string]interface{}) []string {
 	return getStringSlice(data, "capabilities", "always_active_skills")
 }
 
+// getStringSlice ...
+//
+// Expected: parameters for getStringSlice.
+//
+// Returns: result of getStringSlice.
+//
+// Side effects: None.
 func getStringSlice(data map[string]interface{}, keys ...string) []string {
 	current := data
 	for i, key := range keys {
@@ -207,6 +302,13 @@ func getStringSlice(data map[string]interface{}, keys ...string) []string {
 	return nil
 }
 
+// manifestKeys ...
+//
+// Expected: parameters for manifestKeys.
+//
+// Returns: result of manifestKeys.
+//
+// Side effects: None.
 func manifestKeys(m map[string]map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -215,6 +317,11 @@ func manifestKeys(m map[string]map[string]interface{}) []string {
 	return keys
 }
 
+// findRepoRoot ...
+//
+// Returns: result of findRepoRoot.
+//
+// Side effects: None.
 func findRepoRoot() string {
 	dir, _ := os.Getwd()
 	for {

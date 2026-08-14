@@ -325,6 +325,8 @@ func (tm *TokenManager) EnsureToken(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for needsRefresh.
 func (tm *TokenManager) needsRefresh() bool {
 	if tm.accessToken == "" {
 		return true
@@ -339,6 +341,8 @@ func (tm *TokenManager) needsRefresh() bool {
 //
 // Side effects:
 //   - Acquires and releases the internal mutex.
+//
+// Expected: parameters for AccessToken.
 func (tm *TokenManager) AccessToken() string {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -352,6 +356,8 @@ func (tm *TokenManager) AccessToken() string {
 //
 // Side effects:
 //   - Acquires and releases the internal mutex.
+//
+// Expected: parameters for ExpiresAt.
 func (tm *TokenManager) ExpiresAt() int64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -365,6 +371,8 @@ func (tm *TokenManager) ExpiresAt() int64 {
 //
 // Side effects:
 //   - Acquires and releases the internal mutex.
+//
+// Returns: result of SetExpiresAt.
 func (tm *TokenManager) SetExpiresAt(ms int64) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -401,6 +409,8 @@ func (tm *TokenManager) SetExpiresAt(ms int64) {
 // Side effects:
 //   - Writes <authFilePath>.tmp and renames it over <authFilePath>.
 //   - Logs failures via slog.Warn before returning the error.
+//
+// Expected: parameters for persistTokens.
 func (tm *TokenManager) persistTokens() error {
 	if tm.authFilePath == "" {
 		return nil
@@ -433,6 +443,10 @@ func (tm *TokenManager) persistTokens() error {
 // PersistTokensForTest exposes persistTokens to the package's test
 // suite so the F3 atomicity + error-surfacing specs can drive the
 // persist path without standing up a full EnsureToken flow.
+//
+// Expected: parameters for PersistTokensForTest.
+// Returns: result of PersistTokensForTest.
+// Side effects: None.
 func (tm *TokenManager) PersistTokensForTest() error {
 	return tm.persistTokens()
 }
@@ -451,6 +465,8 @@ func (tm *TokenManager) PersistTokensForTest() error {
 //   - Acquires and releases the internal mutex.
 //   - May perform an HTTP token refresh.
 //   - May update auth.json on disk.
+//
+// Side effects: None.
 func (tm *TokenManager) RefreshNow(ctx context.Context) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -491,6 +507,9 @@ func (tm *TokenManager) RefreshNow(ctx context.Context) error {
 //     attempt has been made since process start.
 //   - consecutiveFailures is the number of consecutive refresh
 //     failures since the last successful refresh.
+//
+// Expected: parameters for RefreshStatus.
+// Side effects: None.
 func (tm *TokenManager) RefreshStatus() (time.Time, int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()

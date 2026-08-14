@@ -41,6 +41,8 @@ func New(loader Loader) *Tool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *Tool) Name() string {
 	return "skill_load"
 }
@@ -59,6 +61,8 @@ func (t *Tool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *Tool) Description() string {
 	return "Load a skill's full markdown content by name for runtime guidance. " +
 		"Available skills are listed in system-reminder messages in the conversation. " +
@@ -73,6 +77,8 @@ func (t *Tool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

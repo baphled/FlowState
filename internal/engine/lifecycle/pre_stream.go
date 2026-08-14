@@ -19,6 +19,9 @@ type PreStreamCtx struct {
 //
 // The slot phase has no pre-registered hooks and a pass-through handler.
 // Hooks activate the slot by being added to the chain.
+//
+// Returns: result of DefaultPreStream.
+// Side effects: None.
 func DefaultPreStream() LifecycleStage[PreStreamCtx] {
 	return LifecycleStage[PreStreamCtx]{
 		Name:    "pre_stream",

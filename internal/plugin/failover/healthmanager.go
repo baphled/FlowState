@@ -14,7 +14,7 @@ const (
 	healthScoreMaxAge        = uint64(^uint32(0))
 )
 
-// HealthManager manages provider/model rate-limit health with concurrency safety.
+// healthEntry holds per-provider/model rate-limit health state.
 //
 // The in-memory state is keyed by the comparable ProviderModel struct
 // (NOT a "<provider>+<model>" joined string). Bug Hunt May 2026 / M3
@@ -72,6 +72,8 @@ func (hm *HealthManager) SetPersistPath(path string) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for PersistPath.
 func (hm *HealthManager) PersistPath() string {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
@@ -209,6 +211,10 @@ func (hm *HealthManager) LastCooldown(provider, model string) time.Duration {
 // Lower scores are healthier. Provider/model pairs with no recorded failure
 // history score best, then pairs with fewer consecutive failures, then pairs
 // whose last failure is older.
+//
+// Expected: parameters for HealthScore.
+// Returns: result of HealthScore.
+// Side effects: None.
 func (hm *HealthManager) HealthScore(provider, model string, now time.Time) uint64 {
 	entry, ok := hm.healthEntry(provider, model)
 	if !ok || entry.consecutiveFails <= 0 {
@@ -232,6 +238,13 @@ func (hm *HealthManager) HealthScore(provider, model string, now time.Time) uint
 	return score + (healthScoreMaxAge - ageSeconds)
 }
 
+// healthEntry ...
+//
+// Expected: parameters for healthEntry.
+//
+// Returns: result of healthEntry.
+//
+// Side effects: None.
 func (hm *HealthManager) healthEntry(provider, model string) (healthEntry, bool) {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()

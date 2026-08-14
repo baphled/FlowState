@@ -74,6 +74,10 @@ func (d *DelegateTool) WithTurnRegistry(reg *turn.Registry) *DelegateTool {
 // verify the Fail-call-count invariant. Test seam only; production
 // callers MUST use WithTurnRegistry which preserves the typed
 // *turn.Registry signature.
+//
+// Expected: parameters for withChildTurnRegistry.
+// Returns: result of withChildTurnRegistry.
+// Side effects: None.
 func (d *DelegateTool) withChildTurnRegistry(reg childTurnRegistry) *DelegateTool {
 	d.turnRegistry = reg
 	return d
@@ -228,6 +232,8 @@ func (d *DelegateTool) WithOwnerEngine(eng *Engine) *DelegateTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for GateRunner.
 func (d *DelegateTool) GateRunner() swarm.GateRunner {
 	return d.gateRunner
 }
@@ -258,6 +264,8 @@ func (d *DelegateTool) GateRunner() swarm.GateRunner {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for TurnRegistry.
 func (d *DelegateTool) TurnRegistry() *turn.Registry {
 	if d.turnRegistry == nil {
 		return nil
@@ -338,6 +346,8 @@ func newRejectionTrackerIfPresent(store coordination.Store) *delegation.Rejectio
 //
 // Side effects:
 //   - Sets the embeddingDiscovery field for use in target resolution.
+//
+// Returns: result of SetEmbeddingDiscovery.
 func (d *DelegateTool) SetEmbeddingDiscovery(ed *discovery.EmbeddingDiscovery) {
 	d.embeddingDiscovery = ed
 }
@@ -564,9 +574,13 @@ func newDelegationChainID() string {
 //
 // Side effects:
 //   - None.
-//
+
 // injectPreamble prepends preamble to message, separated by a blank line.
 // When message is empty the preamble is returned as-is.
+//
+// Expected: preamble and message may be empty strings.
+// Returns: preamble + blank line + message, or preamble alone if message is empty.
+// Side effects: None.
 func injectPreamble(preamble, message string) string {
 	if message == "" {
 		return preamble
@@ -807,6 +821,8 @@ func (e *Engine) DelegateToAgent(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for BackgroundManager.
 func (d *DelegateTool) BackgroundManager() *BackgroundTaskManager {
 	return d.backgroundManager
 }
@@ -818,6 +834,8 @@ func (d *DelegateTool) BackgroundManager() *BackgroundTaskManager {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for CoordinationStore.
 func (d *DelegateTool) CoordinationStore() coordination.Store {
 	return d.coordinationStore
 }
@@ -829,6 +847,8 @@ func (d *DelegateTool) CoordinationStore() coordination.Store {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for HasEmbeddingDiscovery.
 func (d *DelegateTool) HasEmbeddingDiscovery() bool {
 	return d.embeddingDiscovery != nil
 }
@@ -840,6 +860,8 @@ func (d *DelegateTool) HasEmbeddingDiscovery() bool {
 //
 // Side effects:
 //   - Replaces the internal delegation config used during Execute().
+//
+// Returns: result of SetDelegation.
 func (d *DelegateTool) SetDelegation(config agent.Delegation) {
 	d.delegation = config
 }
@@ -851,6 +873,8 @@ func (d *DelegateTool) SetDelegation(config agent.Delegation) {
 //
 // Side effects:
 //   - Replaces the internal sourceAgentID used during Execute().
+//
+// Returns: result of SetSourceAgentID.
 func (d *DelegateTool) SetSourceAgentID(id string) {
 	d.sourceAgentID = id
 }
@@ -874,6 +898,8 @@ func (d *DelegateTool) SetSourceAgentID(id string) {
 //
 // Side effects:
 //   - Replaces the internal coordinationStore used during gate evaluation.
+//
+// Returns: result of SetCoordinationStore.
 func (d *DelegateTool) SetCoordinationStore(store coordination.Store) {
 	d.coordinationStore = store
 }
@@ -885,6 +911,8 @@ func (d *DelegateTool) SetCoordinationStore(store coordination.Store) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Delegation.
 func (d *DelegateTool) Delegation() agent.Delegation {
 	return d.delegation
 }
@@ -896,6 +924,8 @@ func (d *DelegateTool) Delegation() agent.Delegation {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for CircuitBreaker.
 func (d *DelegateTool) CircuitBreaker() *delegation.CircuitBreaker {
 	return d.circuitBreaker
 }
@@ -982,6 +1012,8 @@ func containsSkillMarker(prompt, marker string) bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Engines.
 func (d *DelegateTool) Engines() map[string]*Engine {
 	return d.engines
 }

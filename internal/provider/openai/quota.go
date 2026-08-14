@@ -41,6 +41,10 @@ type Quota struct {
 // returns IsValid()==true before the first response flows. The
 // first success-path response from Chat or Stream flips the variant
 // to RateLimit.
+//
+// Expected: parameters for NewQuota.
+// Returns: result of NewQuota.
+// Side effects: None.
 func NewQuota(accountHash string) *Quota {
 	return &Quota{
 		accountHash: accountHash,
@@ -67,6 +71,10 @@ func NewQuota(accountHash string) *Quota {
 //
 // Idempotent: calling Bind a second time replaces the observer (the
 // engine's reconfigure path may rewire).
+//
+// Expected: parameters for Bind.
+// Returns: result of Bind.
+// Side effects: None.
 func (q *Quota) Bind(p *Provider) {
 	if p == nil {
 		return
@@ -106,6 +114,10 @@ func (q *Quota) Bind(p *Provider) {
 // it carries either a RateLimit variant (after the first successful
 // response) or a NotConfigured variant (before the first response,
 // with Reason "awaiting-first-response").
+//
+// Expected: parameters for Remaining.
+// Returns: result of Remaining.
+// Side effects: None.
 func (q *Quota) Remaining(_ context.Context, _, modelID string) (quota.Snapshot, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -134,6 +146,10 @@ func (q *Quota) Remaining(_ context.Context, _, modelID string) (quota.Snapshot,
 // Concurrent-safe: holds the write lock for the duration of the
 // snap replacement; readers see either the prior or new snapshot,
 // never a torn read.
+//
+// Expected: parameters for RecordResponse.
+// Returns: result of RecordResponse.
+// Side effects: None.
 func (q *Quota) RecordResponse(_, modelID string, headers http.Header, _ provider.Usage) {
 	rl := openaicompat.ExtractRateLimitHeadersFromResponse(headers)
 	if rl == nil {

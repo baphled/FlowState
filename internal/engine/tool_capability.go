@@ -20,6 +20,10 @@ import "strings"
 // The provider argument is part of the signature — even when unused
 // today — so future scoping like "anthropic claude-* is fine but
 // ollama claude-3-haiku-clone isn't" can land without a callsite churn.
+//
+// Expected: parameters for IsToolCapableModel.
+// Returns: result of IsToolCapableModel.
+// Side effects: None.
 func IsToolCapableModel(_ string, model string, allow, deny []string) bool {
 	if model == "" {
 		return false
@@ -32,6 +36,10 @@ func IsToolCapableModel(_ string, model string, allow, deny []string) bool {
 
 // matchesAnyPattern reports whether model matches any of the given
 // patterns. An empty or nil pattern slice yields false (fail closed).
+//
+// Expected: parameters for matchesAnyPattern.
+// Returns: result of matchesAnyPattern.
+// Side effects: None.
 func matchesAnyPattern(model string, patterns []string) bool {
 	for _, pat := range patterns {
 		if matchesPattern(model, pat) {
@@ -59,6 +67,10 @@ func matchesAnyPattern(model string, patterns []string) bool {
 // plus suffix-after-last-star; middle `*` are not treated as
 // independent wildcards. Empty pattern never matches; empty model
 // never matches.
+//
+// Expected: parameters for matchesPattern.
+// Returns: result of matchesPattern.
+// Side effects: None.
 func matchesPattern(model, pattern string) bool {
 	if model == "" || pattern == "" {
 		return false

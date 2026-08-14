@@ -59,6 +59,8 @@ func RegisterSkillSteps(ctx *godog.ScenarioContext, stepDefs *StepDefinitions) {
 // Side effects:
 //   - Creates temporary skill directory at s.tempDir.
 //   - Sets s.skillTool.
+//
+// Expected: parameters for theSkillLoadToolIsAvailable.
 func (s *SkillStepDefinitions) theSkillLoadToolIsAvailable() error {
 	dir, err := os.MkdirTemp("", "skill-bdd-*")
 	if err != nil {
@@ -108,6 +110,8 @@ func (s *SkillStepDefinitions) iCallSkillLoadWithSkillName(skillName string) err
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theToolShouldReturnTheSkillContent.
 func (s *SkillStepDefinitions) theToolShouldReturnTheSkillContent() error {
 	if s.lastErr != nil {
 		return fmt.Errorf("expected no error, got: %w", s.lastErr)
@@ -125,6 +129,8 @@ func (s *SkillStepDefinitions) theToolShouldReturnTheSkillContent() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theContentShouldContainSkillDocumentation.
 func (s *SkillStepDefinitions) theContentShouldContainSkillDocumentation() error {
 	if len(s.lastResult.Output) < 10 {
 		return fmt.Errorf("skill content too short: %q", s.lastResult.Output)
@@ -139,6 +145,8 @@ func (s *SkillStepDefinitions) theContentShouldContainSkillDocumentation() error
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theToolShouldReturnAnError.
 func (s *SkillStepDefinitions) theToolShouldReturnAnError() error {
 	if s.lastErr == nil {
 		return errors.New("expected an error, got nil")
@@ -153,6 +161,8 @@ func (s *SkillStepDefinitions) theToolShouldReturnAnError() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theErrorMessageShouldIndicateSkillNotFound.
 func (s *SkillStepDefinitions) theErrorMessageShouldIndicateSkillNotFound() error {
 	if s.lastErr == nil {
 		return errors.New("expected error, got nil")

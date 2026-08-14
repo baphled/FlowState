@@ -94,6 +94,10 @@ type SessionResponseOption func(*sessionResponseOptions)
 // WithIsStreaming annotates the response with the live-streaming flag from
 // the session broker. Pass true when the broker reports IsPublishing for the
 // session being projected.
+//
+// Expected: parameters for WithIsStreaming.
+// Returns: result of WithIsStreaming.
+// Side effects: None.
 func WithIsStreaming(streaming bool) SessionResponseOption {
 	return func(o *sessionResponseOptions) {
 		o.isStreaming = streaming
@@ -109,6 +113,10 @@ func WithIsStreaming(streaming bool) SessionResponseOption {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1.
+//
+// Expected: parameters for WithActiveTurnID.
+// Returns: result of WithActiveTurnID.
+// Side effects: None.
 func WithActiveTurnID(turnID string) SessionResponseOption {
 	return func(o *sessionResponseOptions) {
 		o.activeTurnID = turnID
@@ -119,6 +127,10 @@ func WithActiveTurnID(turnID string) SessionResponseOption {
 // context_usage payload (Phase 3). Pass the JSON bytes verbatim from
 // the engine — the wire shape is owned by the engine and the api
 // server forwards it without re-parsing.
+//
+// Expected: parameters for WithContextUsage.
+// Returns: result of WithContextUsage.
+// Side effects: None.
 func WithContextUsage(payload []byte) SessionResponseOption {
 	return func(o *sessionResponseOptions) {
 		if len(payload) > 0 {
@@ -131,6 +143,10 @@ func WithContextUsage(payload []byte) SessionResponseOption {
 // Optional SessionResponseOption values can annotate the response with
 // runtime state (e.g. broker streaming status) that is not part of the
 // persisted session model.
+//
+// Expected: parameters for NewSessionResponse.
+// Returns: result of NewSessionResponse.
+// Side effects: None.
 func NewSessionResponse(sess *session.Session, opts ...SessionResponseOption) *SessionResponse {
 	if sess == nil {
 		return nil

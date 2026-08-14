@@ -37,6 +37,10 @@ type StageHookChain[C any] []StageHook[C]
 // reverse order for after-hooks.
 //
 // A nil or empty chain returns the handler unchanged.
+//
+// Expected: parameters for Then.
+// Returns: result of Then.
+// Side effects: None.
 func (c StageHookChain[C]) Then(handler StageHandler[C]) StageHandler[C] {
 	if len(c) == 0 {
 		return handler
@@ -78,12 +82,22 @@ type LifecycleStage[C any] struct {
 //
 //	ctx, err := stage.Execute(ctx)
 //	if ctx.Result != nil { ... }
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (s LifecycleStage[C]) Execute(ctx C) (C, error) {
 	return s.Hooks.Then(s.Handler)(ctx)
 }
 
 // passThroughHandler is the default handler for slot phase stages.
 // It performs no work; the slot is activated entirely through its hooks.
+//
+// Expected: ctx is the generic phase payload.
+//
+// Returns: the unmodified context and nil error.
+//
+// Side effects: None.
 func passThroughHandler[C any](ctx C) (C, error) {
 	return ctx, nil
 }

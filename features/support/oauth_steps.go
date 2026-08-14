@@ -158,6 +158,8 @@ func RegisterOAuthSteps(ctx *godog.ScenarioContext, stepDefs *StepDefinitions) {
 //
 // Side effects:
 //   - Sets s.tempOAuthDir.
+//
+// Expected: parameters for setupTempDir.
 func (s *OAuthStepDefinitions) setupTempDir() error {
 	if s.tempOAuthDir != "" {
 		return nil
@@ -197,6 +199,8 @@ func randomString(n int) string {
 //
 // Side effects:
 //   - Sets s.provider.
+//
+// Expected: parameters for flowStateIsConfiguredForOAuth.
 func (s *OAuthStepDefinitions) flowStateIsConfiguredForOAuth() error {
 	s.provider = oauth.NewGitHub("test-client-id")
 	return nil
@@ -209,6 +213,8 @@ func (s *OAuthStepDefinitions) flowStateIsConfiguredForOAuth() error {
 //
 // Side effects:
 //   - Sets s.store and deletes existing GitHub token.
+//
+// Expected: parameters for noExistingGitHubTokenStored.
 func (s *OAuthStepDefinitions) noExistingGitHubTokenStored() error {
 	if err := s.setupTempDir(); err != nil {
 		return err
@@ -229,6 +235,8 @@ func (s *OAuthStepDefinitions) noExistingGitHubTokenStored() error {
 //
 // Side effects:
 //   - Sets s.provider and s.deviceResponse.
+//
+// Expected: parameters for iRequestGitHubOAuthAuthentication.
 func (s *OAuthStepDefinitions) iRequestGitHubOAuthAuthentication() error {
 	if s.provider == nil {
 		s.provider = oauth.NewGitHub("test-client-id")
@@ -252,6 +260,8 @@ func (s *OAuthStepDefinitions) iRequestGitHubOAuthAuthentication() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveADeviceCode.
 func (s *OAuthStepDefinitions) iShouldReceiveADeviceCode() error {
 	if s.deviceResponse == nil || s.deviceResponse.DeviceCode == "" {
 		return errors.New("expected device code but got none")
@@ -266,6 +276,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveADeviceCode() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveAUserCode.
 func (s *OAuthStepDefinitions) iShouldReceiveAUserCode() error {
 	if s.deviceResponse == nil || s.deviceResponse.UserCode == "" {
 		return errors.New("expected user code but got none")
@@ -280,6 +292,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveAUserCode() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveAVerificationURL.
 func (s *OAuthStepDefinitions) iShouldReceiveAVerificationURL() error {
 	if s.deviceResponse == nil || s.deviceResponse.VerificationURI == "" {
 		return errors.New("expected verification URL but got none")
@@ -294,6 +308,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveAVerificationURL() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveAPollingInterval.
 func (s *OAuthStepDefinitions) iShouldReceiveAPollingInterval() error {
 	if s.deviceResponse == nil || s.deviceResponse.Interval == 0 {
 		return errors.New("expected polling interval but got none")
@@ -308,6 +324,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveAPollingInterval() error {
 //
 // Side effects:
 //   - Initializes OAuth flow.
+//
+// Expected: parameters for iInitiateGitHubOAuth.
 func (s *OAuthStepDefinitions) iInitiateGitHubOAuth() error {
 	return s.iRequestGitHubOAuthAuthentication()
 }
@@ -319,6 +337,8 @@ func (s *OAuthStepDefinitions) iInitiateGitHubOAuth() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theUserCodeShouldBeDisplayed.
 func (s *OAuthStepDefinitions) theUserCodeShouldBeDisplayed() error {
 	return s.iShouldReceiveAUserCode()
 }
@@ -330,6 +350,8 @@ func (s *OAuthStepDefinitions) theUserCodeShouldBeDisplayed() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theVerificationURLShouldBeDisplayed.
 func (s *OAuthStepDefinitions) theVerificationURLShouldBeDisplayed() error {
 	return s.iShouldReceiveAVerificationURL()
 }
@@ -341,6 +363,8 @@ func (s *OAuthStepDefinitions) theVerificationURLShouldBeDisplayed() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeInstructedToVisitURL.
 func (s *OAuthStepDefinitions) iShouldBeInstructedToVisitURL() error {
 	if s.deviceResponse == nil || s.deviceResponse.ExpiresIn == 0 {
 		return errors.New("expected expiry time instruction")
@@ -355,6 +379,8 @@ func (s *OAuthStepDefinitions) iShouldBeInstructedToVisitURL() error {
 //
 // Side effects:
 //   - Initializes OAuth flow.
+//
+// Expected: parameters for iHaveInitiatedGitHubOAuth.
 func (s *OAuthStepDefinitions) iHaveInitiatedGitHubOAuth() error {
 	return s.iInitiateGitHubOAuth()
 }
@@ -366,6 +392,8 @@ func (s *OAuthStepDefinitions) iHaveInitiatedGitHubOAuth() error {
 //
 // Side effects:
 //   - Sets s.approvalStatus to "approved".
+//
+// Expected: parameters for iApproveTheAuthorizationInBrowser.
 func (s *OAuthStepDefinitions) iApproveTheAuthorizationInBrowser() error {
 	s.approvalStatus = "approved"
 	return nil
@@ -378,6 +406,8 @@ func (s *OAuthStepDefinitions) iApproveTheAuthorizationInBrowser() error {
 //
 // Side effects:
 //   - Sets s.flowResult if approval is completed.
+//
+// Expected: parameters for thePollingShouldReturnASuccessStatus.
 func (s *OAuthStepDefinitions) thePollingShouldReturnASuccessStatus() error {
 	// Simulate polling behavior - if approved, return success
 	if s.approvalStatus == "approved" {
@@ -404,6 +434,8 @@ func (s *OAuthStepDefinitions) thePollingShouldReturnASuccessStatus() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveAnAccessToken.
 func (s *OAuthStepDefinitions) iShouldReceiveAnAccessToken() error {
 	if s.flowResult == nil || s.flowResult.Token == nil || s.flowResult.Token.AccessToken == "" {
 		return errors.New("expected access token")
@@ -418,6 +450,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveAnAccessToken() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveATokenType.
 func (s *OAuthStepDefinitions) iShouldReceiveATokenType() error {
 	if s.flowResult == nil || s.flowResult.Token == nil || s.flowResult.Token.TokenType == "" {
 		return errors.New("expected token type")
@@ -432,6 +466,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveATokenType() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theTokenShouldHaveAnExpiryTime.
 func (s *OAuthStepDefinitions) theTokenShouldHaveAnExpiryTime() error {
 	if s.flowResult == nil || s.flowResult.Token == nil || s.flowResult.Token.ExpiresAt.IsZero() {
 		return errors.New("expected expiry time")
@@ -446,6 +482,8 @@ func (s *OAuthStepDefinitions) theTokenShouldHaveAnExpiryTime() error {
 //
 // Side effects:
 //   - Sets s.approvalStatus to "pending".
+//
+// Expected: parameters for iHaveNotYetApprovedInBrowser.
 func (s *OAuthStepDefinitions) iHaveNotYetApprovedInBrowser() error {
 	s.approvalStatus = "pending"
 	return nil
@@ -458,6 +496,8 @@ func (s *OAuthStepDefinitions) iHaveNotYetApprovedInBrowser() error {
 //
 // Side effects:
 //   - Sets s.flowResult based on approval status.
+//
+// Expected: parameters for iPollForAuthorizationStatus.
 func (s *OAuthStepDefinitions) iPollForAuthorizationStatus() error {
 	if s.approvalStatus == "approved" {
 		s.flowResult = &oauth.FlowResult{
@@ -492,6 +532,8 @@ func (s *OAuthStepDefinitions) iPollForAuthorizationStatus() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveAPendingStatus.
 func (s *OAuthStepDefinitions) iShouldReceiveAPendingStatus() error {
 	if s.flowResult == nil || s.flowResult.State != oauth.StatePending {
 		return errors.New("expected pending status")
@@ -506,6 +548,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveAPendingStatus() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeToldToContinueWaiting.
 func (s *OAuthStepDefinitions) iShouldBeToldToContinueWaiting() error {
 	return s.iShouldReceiveAPendingStatus()
 }
@@ -517,6 +561,8 @@ func (s *OAuthStepDefinitions) iShouldBeToldToContinueWaiting() error {
 //
 // Side effects:
 //   - Sets s.tokenExpired to true.
+//
+// Expected: parameters for theAuthorizationHasExpired.
 func (s *OAuthStepDefinitions) theAuthorizationHasExpired() error {
 	s.tokenExpired = true
 	return nil
@@ -529,6 +575,8 @@ func (s *OAuthStepDefinitions) theAuthorizationHasExpired() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveAnExpiredStatus.
 func (s *OAuthStepDefinitions) iShouldReceiveAnExpiredStatus() error {
 	if s.flowResult == nil || s.flowResult.State != oauth.StateExpired {
 		return errors.New("expected expired status")
@@ -543,6 +591,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveAnExpiredStatus() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeInstructedToRestartFlow.
 func (s *OAuthStepDefinitions) iShouldBeInstructedToRestartFlow() error {
 	return s.iShouldReceiveAnExpiredStatus()
 }
@@ -554,6 +604,8 @@ func (s *OAuthStepDefinitions) iShouldBeInstructedToRestartFlow() error {
 //
 // Side effects:
 //   - Sets s.rateLimited to true.
+//
+// Expected: parameters for gitHubRateLimitsThePolling.
 func (s *OAuthStepDefinitions) gitHubRateLimitsThePolling() error {
 	s.rateLimited = true
 	return nil
@@ -566,6 +618,8 @@ func (s *OAuthStepDefinitions) gitHubRateLimitsThePolling() error {
 //
 // Side effects:
 //   - Sets s.flowResult if rate limited.
+//
+// Expected: parameters for iShouldReceiveARateLimitedError.
 func (s *OAuthStepDefinitions) iShouldReceiveARateLimitedError() error {
 	// Simulate polling behavior - if rate limited, return rate limit info
 	if s.rateLimited {
@@ -587,6 +641,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveARateLimitedError() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldWaitForTheSpecifiedInterval.
 func (s *OAuthStepDefinitions) iShouldWaitForTheSpecifiedInterval() error {
 	return s.iShouldReceiveARateLimitedError()
 }
@@ -633,6 +689,8 @@ func (s *OAuthStepDefinitions) iPollPeriodicallyForUpToSeconds(_ int) error {
 //
 // Side effects:
 //   - Sets s.approvalStatus to "approved".
+//
+// Expected: parameters for iEventuallyApproveInBrowser.
 func (s *OAuthStepDefinitions) iEventuallyApproveInBrowser() error {
 	return s.iApproveTheAuthorizationInBrowser()
 }
@@ -644,6 +702,8 @@ func (s *OAuthStepDefinitions) iEventuallyApproveInBrowser() error {
 //
 // Side effects:
 //   - Sets s.flowResult if approval is completed.
+//
+// Expected: parameters for iShouldStillReceiveAValidAccessToken.
 func (s *OAuthStepDefinitions) iShouldStillReceiveAValidAccessToken() error {
 	// Simulate polling behavior after slow approval
 	if s.approvalStatus == "approved" {
@@ -687,6 +747,8 @@ func (s *OAuthStepDefinitions) theRequestShouldIncludeScope(scope string) error 
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theRequestShouldIncludeDeviceFlowParameters.
 func (s *OAuthStepDefinitions) theRequestShouldIncludeDeviceFlowParameters() error {
 	return nil // Parameters are hardcoded in the implementation
 }
@@ -698,6 +760,8 @@ func (s *OAuthStepDefinitions) theRequestShouldIncludeDeviceFlowParameters() err
 //
 // Side effects:
 //   - Stores a test token.
+//
+// Expected: parameters for iCompleteGitHubOAuthAuthentication.
 func (s *OAuthStepDefinitions) iCompleteGitHubOAuthAuthentication() error {
 	if err := s.setupTempDir(); err != nil {
 		return err
@@ -721,6 +785,8 @@ func (s *OAuthStepDefinitions) iCompleteGitHubOAuthAuthentication() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theAccessTokenShouldBeStoredSecurely.
 func (s *OAuthStepDefinitions) theAccessTokenShouldBeStoredSecurely() error {
 	return s.theStoredTokenShouldBeEncrypted()
 }
@@ -732,6 +798,8 @@ func (s *OAuthStepDefinitions) theAccessTokenShouldBeStoredSecurely() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theTokenShouldBeEncryptedAtRest.
 func (s *OAuthStepDefinitions) theTokenShouldBeEncryptedAtRest() error {
 	return s.theStoredTokenShouldBeEncrypted()
 }
@@ -745,6 +813,8 @@ func (s *OAuthStepDefinitions) theTokenShouldBeEncryptedAtRest() error {
 //
 // Side effects:
 //   - Initializes OAuth provider.
+//
+// Expected: parameters for flowStateUsesEncryptedTokenStorage.
 func (s *OAuthStepDefinitions) flowStateUsesEncryptedTokenStorage() error {
 	return s.flowStateIsConfiguredForOAuth()
 }
@@ -756,6 +826,8 @@ func (s *OAuthStepDefinitions) flowStateUsesEncryptedTokenStorage() error {
 //
 // Side effects:
 //   - Sets s.rawToken.
+//
+// Expected: parameters for iHaveARawOAuthAccessToken.
 func (s *OAuthStepDefinitions) iHaveARawOAuthAccessToken() error {
 	s.rawToken = "gho_test_raw_token_" + randomString(16)
 	return nil
@@ -768,6 +840,8 @@ func (s *OAuthStepDefinitions) iHaveARawOAuthAccessToken() error {
 //
 // Side effects:
 //   - Stores token and sets s.store and s.rawToken.
+//
+// Expected: parameters for iStoreTheToken.
 func (s *OAuthStepDefinitions) iStoreTheToken() error {
 	if err := s.setupTempDir(); err != nil {
 		return err
@@ -796,6 +870,8 @@ func (s *OAuthStepDefinitions) iStoreTheToken() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theStoredTokenShouldBeEncrypted.
 func (s *OAuthStepDefinitions) theStoredTokenShouldBeEncrypted() error {
 	if s.store == nil {
 		return errors.New("no store available")
@@ -814,6 +890,8 @@ func (s *OAuthStepDefinitions) theStoredTokenShouldBeEncrypted() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theEncryptedDataShouldNotContainRawToken.
 func (s *OAuthStepDefinitions) theEncryptedDataShouldNotContainRawToken() error {
 	if s.rawToken == "" {
 		return errors.New("no raw token to check")
@@ -836,6 +914,8 @@ func (s *OAuthStepDefinitions) theEncryptedDataShouldNotContainRawToken() error 
 //
 // Side effects:
 //   - Stores a token and sets s.rawToken.
+//
+// Expected: parameters for iHaveStoredAnEncryptedToken.
 func (s *OAuthStepDefinitions) iHaveStoredAnEncryptedToken() error {
 	s.rawToken = "stored_token_" + randomString(8)
 	return s.iStoreTheToken()
@@ -848,6 +928,8 @@ func (s *OAuthStepDefinitions) iHaveStoredAnEncryptedToken() error {
 //
 // Side effects:
 //   - Stores retrieved token in s.token.
+//
+// Expected: parameters for iRetrieveTheToken.
 func (s *OAuthStepDefinitions) iRetrieveTheToken() error {
 	if s.store == nil {
 		if err := s.setupTempDir(); err != nil {
@@ -874,6 +956,8 @@ func (s *OAuthStepDefinitions) iRetrieveTheToken() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theRetrievedTokenShouldMatchTheOriginal.
 func (s *OAuthStepDefinitions) theRetrievedTokenShouldMatchTheOriginal() error {
 	if s.token == nil || s.token.AccessToken != s.rawToken {
 		return errors.New("retrieved token does not match original")
@@ -888,6 +972,8 @@ func (s *OAuthStepDefinitions) theRetrievedTokenShouldMatchTheOriginal() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for decryptionShouldCompleteWithinAcceptableTime.
 func (s *OAuthStepDefinitions) decryptionShouldCompleteWithinAcceptableTime() error {
 	// In real tests, we'd measure time
 	return nil
@@ -900,6 +986,8 @@ func (s *OAuthStepDefinitions) decryptionShouldCompleteWithinAcceptableTime() er
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theTokenFileShouldHaveRestrictedPermissions.
 func (s *OAuthStepDefinitions) theTokenFileShouldHaveRestrictedPermissions() error {
 	tokenPath := filepath.Join(s.tempOAuthDir, "tokens", "github_oauth_tokens.age")
 	info, err := os.Stat(tokenPath)
@@ -920,6 +1008,8 @@ func (s *OAuthStepDefinitions) theTokenFileShouldHaveRestrictedPermissions() err
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for onlyTheOwnerShouldHaveReadAccess.
 func (s *OAuthStepDefinitions) onlyTheOwnerShouldHaveReadAccess() error {
 	return s.theTokenFileShouldHaveRestrictedPermissions()
 }
@@ -931,6 +1021,8 @@ func (s *OAuthStepDefinitions) onlyTheOwnerShouldHaveReadAccess() error {
 //
 // Side effects:
 //   - Initializes encrypted storage.
+//
+// Expected: parameters for noEncryptionKeyExists.
 func (s *OAuthStepDefinitions) noEncryptionKeyExists() error {
 	return s.flowStateUsesEncryptedTokenStorage()
 }
@@ -942,6 +1034,8 @@ func (s *OAuthStepDefinitions) noEncryptionKeyExists() error {
 //
 // Side effects:
 //   - Retrieves token into s.token.
+//
+// Expected: parameters for iAttemptToRetrieveAStoredToken.
 func (s *OAuthStepDefinitions) iAttemptToRetrieveAStoredToken() error {
 	return s.iRetrieveTheToken()
 }
@@ -953,6 +1047,8 @@ func (s *OAuthStepDefinitions) iAttemptToRetrieveAStoredToken() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveAnErrorIndicatingKeyMissing.
 func (s *OAuthStepDefinitions) iShouldReceiveAnErrorIndicatingKeyMissing() error {
 	_, err := s.store.Retrieve("nonexistent")
 	if err == nil {
@@ -968,6 +1064,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveAnErrorIndicatingKeyMissing() error
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBePromptedToReauthenticate.
 func (s *OAuthStepDefinitions) iShouldBePromptedToReauthenticate() error {
 	return nil // This would be handled by UI layer
 }
@@ -979,6 +1077,8 @@ func (s *OAuthStepDefinitions) iShouldBePromptedToReauthenticate() error {
 //
 // Side effects:
 //   - Creates a corrupted token file for testing.
+//
+// Expected: parameters for aTokenFileExistsButIsCorrupted.
 func (s *OAuthStepDefinitions) aTokenFileExistsButIsCorrupted() error {
 	if err := s.setupTempDir(); err != nil {
 		return err
@@ -999,6 +1099,8 @@ func (s *OAuthStepDefinitions) aTokenFileExistsButIsCorrupted() error {
 //
 // Side effects:
 //   - Stores decryption result in s.lastErr.
+//
+// Expected: parameters for iAttemptToDecryptTheToken.
 func (s *OAuthStepDefinitions) iAttemptToDecryptTheToken() error {
 	_, err := s.store.Retrieve("github")
 	s.lastErr = err
@@ -1012,6 +1114,8 @@ func (s *OAuthStepDefinitions) iAttemptToDecryptTheToken() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldReceiveADecryptionError.
 func (s *OAuthStepDefinitions) iShouldReceiveADecryptionError() error {
 	if s.lastErr == nil {
 		return errors.New("expected decryption error")
@@ -1026,6 +1130,8 @@ func (s *OAuthStepDefinitions) iShouldReceiveADecryptionError() error {
 //
 // Side effects:
 //   - Stores tokens for GitHub and OpenAI providers.
+//
+// Expected: parameters for iHaveTokensForMultipleProviders.
 func (s *OAuthStepDefinitions) iHaveTokensForMultipleProviders() error {
 	if err := s.setupTempDir(); err != nil {
 		return err
@@ -1055,6 +1161,8 @@ func (s *OAuthStepDefinitions) iHaveTokensForMultipleProviders() error {
 //
 // Side effects:
 //   - Retrieves GitHub token into s.token.
+//
+// Expected: parameters for iRetrieveTheGitHubToken.
 func (s *OAuthStepDefinitions) iRetrieveTheGitHubToken() error {
 	return s.iRetrieveTheToken()
 }
@@ -1066,6 +1174,8 @@ func (s *OAuthStepDefinitions) iRetrieveTheGitHubToken() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldNotReceiveTokensForOtherProviders.
 func (s *OAuthStepDefinitions) iShouldNotReceiveTokensForOtherProviders() error {
 	if s.token == nil || s.token.AccessToken == "openai-token" {
 		return errors.New("should not receive other provider's token")
@@ -1080,6 +1190,8 @@ func (s *OAuthStepDefinitions) iShouldNotReceiveTokensForOtherProviders() error 
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for eachProvidersTokenShouldBeIsolated.
 func (s *OAuthStepDefinitions) eachProvidersTokenShouldBeIsolated() error {
 	return s.iShouldNotReceiveTokensForOtherProviders()
 }
@@ -1091,6 +1203,8 @@ func (s *OAuthStepDefinitions) eachProvidersTokenShouldBeIsolated() error {
 //
 // Side effects:
 //   - Stores a token with key version 1.
+//
+// Expected: parameters for iHaveAStoredTokenWithKeyVersion1.
 func (s *OAuthStepDefinitions) iHaveAStoredTokenWithKeyVersion1() error {
 	return s.iHaveStoredAnEncryptedToken()
 }
@@ -1102,6 +1216,8 @@ func (s *OAuthStepDefinitions) iHaveAStoredTokenWithKeyVersion1() error {
 //
 // Side effects:
 //   - Creates a new encrypted store (simulates key rotation by creating a fresh store).
+//
+// Expected: parameters for iRotateToANewEncryptionKey.
 func (s *OAuthStepDefinitions) iRotateToANewEncryptionKey() error {
 	// Store current token before rotation
 	if s.store == nil {
@@ -1134,6 +1250,8 @@ func (s *OAuthStepDefinitions) iRotateToANewEncryptionKey() error {
 //
 // Side effects:
 //   - Verifies the token is still retrievable (and thus was re-encrypted correctly).
+//
+// Expected: parameters for theTokenShouldBeReEncryptedWithTheNewKey.
 func (s *OAuthStepDefinitions) theTokenShouldBeReEncryptedWithTheNewKey() error {
 	if s.store == nil {
 		return errors.New("no store available")
@@ -1156,6 +1274,8 @@ func (s *OAuthStepDefinitions) theTokenShouldBeReEncryptedWithTheNewKey() error 
 //
 // Side effects:
 //   - Verifies the new store (with new key version) is functional.
+//
+// Expected: parameters for theNewKeyVersionShouldBeStored.
 func (s *OAuthStepDefinitions) theNewKeyVersionShouldBeStored() error {
 	if s.store == nil {
 		return errors.New("no store available")
@@ -1174,6 +1294,8 @@ func (s *OAuthStepDefinitions) theNewKeyVersionShouldBeStored() error {
 //
 // Side effects:
 //   - Stores a GitHub token in the test store.
+//
+// Expected: parameters for iHaveAStoredGitHubToken.
 func (s *OAuthStepDefinitions) iHaveAStoredGitHubToken() error {
 	return s.iCompleteGitHubOAuthAuthentication()
 }
@@ -1185,6 +1307,8 @@ func (s *OAuthStepDefinitions) iHaveAStoredGitHubToken() error {
 //
 // Side effects:
 //   - Deletes the stored GitHub token.
+//
+// Expected: parameters for iRemoveTheGitHubProviderConfiguration.
 func (s *OAuthStepDefinitions) iRemoveTheGitHubProviderConfiguration() error {
 	if s.store == nil {
 		return errors.New("no store available")
@@ -1199,6 +1323,8 @@ func (s *OAuthStepDefinitions) iRemoveTheGitHubProviderConfiguration() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theStoredTokenShouldBeDeleted.
 func (s *OAuthStepDefinitions) theStoredTokenShouldBeDeleted() error {
 	if s.store.HasToken("github") {
 		return errors.New("token should be deleted")
@@ -1213,6 +1339,8 @@ func (s *OAuthStepDefinitions) theStoredTokenShouldBeDeleted() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for noResidualTokenDataShouldRemain.
 func (s *OAuthStepDefinitions) noResidualTokenDataShouldRemain() error {
 	return s.theStoredTokenShouldBeDeleted()
 }
@@ -1231,6 +1359,8 @@ func (s *OAuthStepDefinitions) noResidualTokenDataShouldRemain() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theProviderSetupScreenIsShown.
 func (s *OAuthStepDefinitions) theProviderSetupScreenIsShown() error {
 	return nil
 }
@@ -1242,6 +1372,8 @@ func (s *OAuthStepDefinitions) theProviderSetupScreenIsShown() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iAmOnTheProvidersStep.
 func (s *OAuthStepDefinitions) iAmOnTheProvidersStep() error {
 	return nil
 }
@@ -1301,6 +1433,8 @@ func (s *OAuthStepDefinitions) iShouldSeeAsAlternativeOption(_ string) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iChooseTheOAuthAuthenticationOption.
 func (s *OAuthStepDefinitions) iChooseTheOAuthAuthenticationOption() error {
 	return nil
 }
@@ -1312,6 +1446,8 @@ func (s *OAuthStepDefinitions) iChooseTheOAuthAuthenticationOption() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldSeeTheOAuthFlowInitiatedMessage.
 func (s *OAuthStepDefinitions) iShouldSeeTheOAuthFlowInitiatedMessage() error {
 	return nil
 }
@@ -1323,6 +1459,8 @@ func (s *OAuthStepDefinitions) iShouldSeeTheOAuthFlowInitiatedMessage() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeShownTheUserCode.
 func (s *OAuthStepDefinitions) iShouldBeShownTheUserCode() error {
 	return nil
 }
@@ -1334,6 +1472,8 @@ func (s *OAuthStepDefinitions) iShouldBeShownTheUserCode() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeShownTheVerificationURL.
 func (s *OAuthStepDefinitions) iShouldBeShownTheVerificationURL() error {
 	return nil
 }
@@ -1345,6 +1485,8 @@ func (s *OAuthStepDefinitions) iShouldBeShownTheVerificationURL() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theVerificationURLShouldBeProminentlyDisplayed.
 func (s *OAuthStepDefinitions) theVerificationURLShouldBeProminentlyDisplayed() error {
 	return nil
 }
@@ -1356,6 +1498,8 @@ func (s *OAuthStepDefinitions) theVerificationURLShouldBeProminentlyDisplayed() 
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theUserShouldBeInstructedToVisitTheURL.
 func (s *OAuthStepDefinitions) theUserShouldBeInstructedToVisitTheURL() error {
 	return nil
 }
@@ -1367,6 +1511,8 @@ func (s *OAuthStepDefinitions) theUserShouldBeInstructedToVisitTheURL() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theUserCodeShouldBeInMonospaceFont.
 func (s *OAuthStepDefinitions) theUserCodeShouldBeInMonospaceFont() error {
 	return nil
 }
@@ -1378,6 +1524,8 @@ func (s *OAuthStepDefinitions) theUserCodeShouldBeInMonospaceFont() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theUserCodeShouldBeHighlightedForEasyCopying.
 func (s *OAuthStepDefinitions) theUserCodeShouldBeHighlightedForEasyCopying() error {
 	return nil
 }
@@ -1389,6 +1537,8 @@ func (s *OAuthStepDefinitions) theUserCodeShouldBeHighlightedForEasyCopying() er
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iApproveInBrowser.
 func (s *OAuthStepDefinitions) iApproveInBrowser() error {
 	return nil
 }
@@ -1400,6 +1550,8 @@ func (s *OAuthStepDefinitions) iApproveInBrowser() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theTUIShouldDetectTheApproval.
 func (s *OAuthStepDefinitions) theTUIShouldDetectTheApproval() error {
 	return nil
 }
@@ -1411,6 +1563,8 @@ func (s *OAuthStepDefinitions) theTUIShouldDetectTheApproval() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldSeeASuccessMessage.
 func (s *OAuthStepDefinitions) iShouldSeeASuccessMessage() error {
 	return nil
 }
@@ -1422,6 +1576,8 @@ func (s *OAuthStepDefinitions) iShouldSeeASuccessMessage() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for oAuthFlowIsInitiated.
 func (s *OAuthStepDefinitions) oAuthFlowIsInitiated() error {
 	return nil
 }
@@ -1433,6 +1589,8 @@ func (s *OAuthStepDefinitions) oAuthFlowIsInitiated() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for oAuthAuthenticationCompletes.
 func (s *OAuthStepDefinitions) oAuthAuthenticationCompletes() error {
 	return nil
 }
@@ -1444,6 +1602,8 @@ func (s *OAuthStepDefinitions) oAuthAuthenticationCompletes() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for gitHubCopilotShouldBeMarkedAsConfigured.
 func (s *OAuthStepDefinitions) gitHubCopilotShouldBeMarkedAsConfigured() error {
 	return nil
 }
@@ -1455,6 +1615,8 @@ func (s *OAuthStepDefinitions) gitHubCopilotShouldBeMarkedAsConfigured() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeAbleToReturnToProviderList.
 func (s *OAuthStepDefinitions) iShouldBeAbleToReturnToProviderList() error {
 	return nil
 }
@@ -1466,6 +1628,8 @@ func (s *OAuthStepDefinitions) iShouldBeAbleToReturnToProviderList() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theAuthorizationTimesOut.
 func (s *OAuthStepDefinitions) theAuthorizationTimesOut() error {
 	return nil
 }
@@ -1477,6 +1641,8 @@ func (s *OAuthStepDefinitions) theAuthorizationTimesOut() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for thePollingDetectsTimeout.
 func (s *OAuthStepDefinitions) thePollingDetectsTimeout() error {
 	return nil
 }
@@ -1488,6 +1654,8 @@ func (s *OAuthStepDefinitions) thePollingDetectsTimeout() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldSeeATimeoutErrorMessage.
 func (s *OAuthStepDefinitions) iShouldSeeATimeoutErrorMessage() error {
 	return nil
 }
@@ -1499,6 +1667,8 @@ func (s *OAuthStepDefinitions) iShouldSeeATimeoutErrorMessage() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeGivenTheOptionToRetry.
 func (s *OAuthStepDefinitions) iShouldBeGivenTheOptionToRetry() error {
 	return nil
 }
@@ -1510,6 +1680,8 @@ func (s *OAuthStepDefinitions) iShouldBeGivenTheOptionToRetry() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for oAuthFlowIsInProgress.
 func (s *OAuthStepDefinitions) oAuthFlowIsInProgress() error {
 	return nil
 }
@@ -1521,6 +1693,8 @@ func (s *OAuthStepDefinitions) oAuthFlowIsInProgress() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iChooseToCancelOAuth.
 func (s *OAuthStepDefinitions) iChooseToCancelOAuth() error {
 	return nil
 }
@@ -1532,6 +1706,8 @@ func (s *OAuthStepDefinitions) iChooseToCancelOAuth() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldBeGivenTheOptionToEnterAnAPIKeyInstead.
 func (s *OAuthStepDefinitions) iShouldBeGivenTheOptionToEnterAnAPIKeyInstead() error {
 	return nil
 }
@@ -1543,6 +1719,8 @@ func (s *OAuthStepDefinitions) iShouldBeGivenTheOptionToEnterAnAPIKeyInstead() e
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldSeeTheAPIKeyInputField.
 func (s *OAuthStepDefinitions) iShouldSeeTheAPIKeyInputField() error {
 	return nil
 }
@@ -1554,6 +1732,8 @@ func (s *OAuthStepDefinitions) iShouldSeeTheAPIKeyInputField() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for oAuthFlowEncountersAnError.
 func (s *OAuthStepDefinitions) oAuthFlowEncountersAnError() error {
 	return nil
 }
@@ -1565,6 +1745,8 @@ func (s *OAuthStepDefinitions) oAuthFlowEncountersAnError() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iShouldSeeAClearErrorMessage.
 func (s *OAuthStepDefinitions) iShouldSeeAClearErrorMessage() error {
 	return nil
 }
@@ -1576,6 +1758,8 @@ func (s *OAuthStepDefinitions) iShouldSeeAClearErrorMessage() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theErrorShouldNotCrashTheTUI.
 func (s *OAuthStepDefinitions) theErrorShouldNotCrashTheTUI() error {
 	return nil
 }
@@ -1587,6 +1771,8 @@ func (s *OAuthStepDefinitions) theErrorShouldNotCrashTheTUI() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for oAuthAuthenticationCompletesForGitHubCopilot.
 func (s *OAuthStepDefinitions) oAuthAuthenticationCompletesForGitHubCopilot() error {
 	return nil
 }
@@ -1598,6 +1784,8 @@ func (s *OAuthStepDefinitions) oAuthAuthenticationCompletesForGitHubCopilot() er
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for iExitTheProviderSetup.
 func (s *OAuthStepDefinitions) iExitTheProviderSetup() error {
 	return nil
 }
@@ -1609,6 +1797,8 @@ func (s *OAuthStepDefinitions) iExitTheProviderSetup() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for gitHubCopilotShouldAppearAsEnabledInTheProviderList.
 func (s *OAuthStepDefinitions) gitHubCopilotShouldAppearAsEnabledInTheProviderList() error {
 	return nil
 }
@@ -1620,6 +1810,8 @@ func (s *OAuthStepDefinitions) gitHubCopilotShouldAppearAsEnabledInTheProviderLi
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theCopilotProviderShouldBeReadyToUse.
 func (s *OAuthStepDefinitions) theCopilotProviderShouldBeReadyToUse() error {
 	return nil
 }

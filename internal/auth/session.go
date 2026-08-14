@@ -47,6 +47,9 @@ type SessionConfig struct {
 // DefaultSessionConfig returns the production defaults defined by the plan
 // §"Wire Protocol" lines 408-417 and OD-B. Callers MUST set Mode after
 // taking the defaults — there is no sensible Mode default.
+//
+// Returns: result of DefaultSessionConfig.
+// Side effects: None.
 func DefaultSessionConfig() SessionConfig {
 	return SessionConfig{
 		CookieName:    "flowstate_session",
@@ -93,6 +96,10 @@ type SessionManager struct {
 // cookie attributes, with scs.Store wired through to OUR store.Store via
 // scsStoreAdapter. The scs manager is the cookie attr + Set-Cookie engine;
 // our store.Store is the authoritative Record source-of-truth.
+//
+// Expected: parameters for NewSessionManager.
+// Returns: result of NewSessionManager.
+// Side effects: None.
 func NewSessionManager(s store.Store, cfg SessionConfig) *SessionManager {
 	sm := scs.New()
 	sm.Lifetime = cfg.Lifetime
@@ -153,6 +160,10 @@ var ErrSessionModeMismatch = errors.New("auth: session mode mismatch")
 // Returns the session token (cookie value). The CSRF token lives on
 // Record.CSRFToken in the store; login.go reads it back via the
 // Record-shaped Get and writes it into the response body.
+//
+// Expected: parameters for Begin.
+// Returns: result of Begin.
+// Side effects: None.
 func (m *SessionManager) Begin(w http.ResponseWriter, r *http.Request, principal identity.Principal) (string, error) {
 	token, err := mintToken()
 	if err != nil {
@@ -202,6 +213,10 @@ func (m *SessionManager) Begin(w http.ResponseWriter, r *http.Request, principal
 //
 // Cleared cookie attributes mirror Begin's write exactly except for
 // MaxAge=-1 (per RFC 6265 §5.2.2 — instruct the browser to delete).
+//
+// Expected: parameters for End.
+// Returns: result of End.
+// Side effects: None.
 func (m *SessionManager) End(w http.ResponseWriter, r *http.Request) error {
 	cookie, err := r.Cookie(m.cfg.CookieName)
 	if err == nil && cookie.Value != "" {
@@ -243,6 +258,10 @@ func (m *SessionManager) End(w http.ResponseWriter, r *http.Request) error {
 // disk. Returning ErrSessionModeMismatch here causes RequireSession to
 // 401 + slog.Warn so the operator sees the flip and the client is
 // invited to re-authenticate.
+//
+// Expected: parameters for Authenticate.
+// Returns: result of Authenticate.
+// Side effects: None.
 func (m *SessionManager) Authenticate(r *http.Request) (*store.Record, error) {
 	cookie, err := r.Cookie(m.cfg.CookieName)
 	if err != nil || cookie.Value == "" {
@@ -278,6 +297,10 @@ func (m *SessionManager) Authenticate(r *http.Request) (*store.Record, error) {
 // handler in addition to End — End calls Revoke internally. Exposed
 // separately so administrative paths (PR4/C9's `flowstate auth reset`)
 // can drop sessions without a fake request context.
+//
+// Expected: parameters for Revoke.
+// Returns: result of Revoke.
+// Side effects: None.
 func (m *SessionManager) Revoke(ctx context.Context, token string) error {
 	return m.store.Delete(ctx, token)
 }
@@ -286,6 +309,10 @@ func (m *SessionManager) Revoke(ctx context.Context, token string) error {
 // Used by CSRF and login.go to inherit Secure / Path attributes for the
 // _csrf cookie (plan §"Wire Protocol" lines 422-431 — _csrf inherits
 // Secure from the session cookie).
+//
+// Expected: parameters for Config.
+// Returns: result of Config.
+// Side effects: None.
 func (m *SessionManager) Config() SessionConfig {
 	return m.cfg
 }
@@ -294,10 +321,21 @@ func (m *SessionManager) Config() SessionConfig {
 // need scs-shaped middleware composition (e.g. ad-hoc handlers outside
 // the plan's RequireSession path). Production callers use Begin/End/
 // Authenticate; this getter is the escape hatch for tooling.
+//
+// Expected: parameters for SCS.
+// Returns: result of SCS.
+// Side effects: None.
 func (m *SessionManager) SCS() *scs.SessionManager {
 	return m.scs
 }
 
+// now ...
+//
+// Expected: parameters for now.
+//
+// Returns: result of now.
+//
+// Side effects: None.
 func (m *SessionManager) now() time.Time {
 	if m.cfg.Now != nil {
 		return m.cfg.Now()
@@ -312,6 +350,9 @@ func (m *SessionManager) now() time.Time {
 //
 // Returns the encoded token; errors only on rand.Read failure (which is
 // effectively impossible on Linux but pinned defensively).
+//
+// Returns: result of mintToken.
+// Side effects: None.
 func mintToken() (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
@@ -346,6 +387,10 @@ type scsBlob struct {
 
 // Find returns the scs blob for token, or found=false on miss / expired
 // record (per scs.Store contract — system errors only on err).
+//
+// Expected: parameters for Find.
+// Returns: result of Find.
+// Side effects: None.
 func (a *scsStoreAdapter) Find(token string) ([]byte, bool, error) {
 	rec, err := a.inner.Get(context.Background(), token)
 	if err != nil {
@@ -372,6 +417,10 @@ func (a *scsStoreAdapter) Find(token string) ([]byte, bool, error) {
 // Commit writes a Record for token with the supplied expiry. Mode is
 // stamped from the adapter's configured cfg.Mode so cluster-mode B3
 // checks survive scs-routed writes.
+//
+// Expected: parameters for Commit.
+// Returns: result of Commit.
+// Side effects: None.
 func (a *scsStoreAdapter) Commit(token string, b []byte, expiry time.Time) error {
 	var blob scsBlob
 	if err := json.Unmarshal(b, &blob); err != nil {
@@ -390,6 +439,10 @@ func (a *scsStoreAdapter) Commit(token string, b []byte, expiry time.Time) error
 }
 
 // Delete removes the Record for token. Idempotent (per scs.Store contract).
+//
+// Expected: parameters for Delete.
+// Returns: result of Delete.
+// Side effects: None.
 func (a *scsStoreAdapter) Delete(token string) error {
 	return a.inner.Delete(context.Background(), token)
 }

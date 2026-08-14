@@ -34,6 +34,10 @@ func New() *Tool { return &Tool{} }
 // paths via the supplied pathguard. The guard is consulted before any
 // file IO, mirroring read/write/edit so the agent surface stays
 // consistent across mutating file tools.
+//
+// Expected: parameters for NewWithGuard.
+// Returns: result of NewWithGuard.
+// Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool { return &Tool{guard: g} }
 
 // Name returns the tool identifier.
@@ -94,6 +98,10 @@ func (t *Tool) Schema() tool.Schema {
 
 // IsStateModifying returns true because multiedit reads and writes a
 // file on the filesystem.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute applies the configured edits to the target file.

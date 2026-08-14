@@ -49,6 +49,10 @@ type NotConfiguredAdapter struct {
 //     graduated them to real adapters. No production code emits it.
 //
 // Other strings compile but break the chip's tooltip rendering.
+//
+// Expected: parameters for NewNotConfiguredAdapter.
+// Returns: result of NewNotConfiguredAdapter.
+// Side effects: None.
 func NewNotConfiguredAdapter(providerID, accountHash, reason string) *NotConfiguredAdapter {
 	return &NotConfiguredAdapter{
 		providerID:  providerID,
@@ -59,6 +63,10 @@ func NewNotConfiguredAdapter(providerID, accountHash, reason string) *NotConfigu
 
 // Remaining returns a NotConfigured Snapshot with the adapter's
 // configured reason. The Snapshot satisfies IsValid() == true.
+//
+// Expected: parameters for Remaining.
+// Returns: result of Remaining.
+// Side effects: None.
 func (a *NotConfiguredAdapter) Remaining(_ context.Context, _, modelID string) (Snapshot, error) {
 	return Snapshot{
 		Provider:    a.providerID,
@@ -76,6 +84,10 @@ func (a *NotConfiguredAdapter) Remaining(_ context.Context, _, modelID string) (
 // changes (e.g. ollamacloud starts emitting headers and graduates
 // out of NotConfigured) — the seam exists so the engine can fan out
 // uniformly across all providers without nil-checking.
+//
+// Expected: parameters for RecordResponse.
+// Returns: result of RecordResponse.
+// Side effects: None.
 func (a *NotConfiguredAdapter) RecordResponse(_, _ string, _ http.Header, _ provider.Usage) {
 }
 

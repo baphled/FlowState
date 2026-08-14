@@ -395,6 +395,10 @@ func parseEntities(content []byte, toolName, serverName string) ([]Entity, error
 
 // parseRelations decodes a raw MCP content payload into the canonical
 // []Relation shape, mirroring parseEntities for the relation-bearing tools.
+//
+// Expected: parameters for parseRelations.
+// Returns: result of parseRelations.
+// Side effects: None.
 func parseRelations(content []byte, toolName, serverName string) ([]Relation, error) {
 	var wrapped struct {
 		Relations []Relation `json:"relations"`
@@ -408,12 +412,24 @@ func parseRelations(content []byte, toolName, serverName string) ([]Relation, er
 	})
 }
 
+// mcpListDecodeConfig configures decoding of MCP list-style responses.
+//
+// It carries the generic type parameter, the field name to extract, and a
+// closure that returns the decoded items from the wrapped struct.
 type mcpListDecodeConfig[T any] struct {
 	fieldName string
 	wrapped   any
 	getItems  func() []T
 }
 
+// parseMCPItems decodes an MCP tool response into a slice of items.
+//
+// Expected: content is the raw MCP response bytes; toolName and serverName
+// are used for error attribution; cfg describes the decode strategy.
+//
+// Returns: the decoded slice of items, or an error if decoding fails.
+//
+// Side effects: None.
 func parseMCPItems[T any](content []byte, toolName, serverName string, cfg mcpListDecodeConfig[T]) ([]T, error) {
 	empty, err := mcp.DecodeContent(string(content), cfg.wrapped,
 		"tool", toolName, "server", serverName)

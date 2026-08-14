@@ -145,6 +145,9 @@ func NewCompletionOrchestrator(
 // Side effects:
 //   - Subscribes two handlers to the EventBus.
 //   - Spawns one goroutine that runs until Stop() is called.
+//
+// Expected: parameters for Start.
+// Returns: result of Start.
 func (o *CompletionOrchestrator) Start() {
 	o.eventBus.Subscribe(events.EventBackgroundTaskCompleted, o.handleEvent)
 	o.eventBus.Subscribe(events.EventBackgroundTaskFailed, o.handleEvent)
@@ -158,6 +161,9 @@ func (o *CompletionOrchestrator) Start() {
 // Side effects:
 //   - Closes the stop channel, causing the drain goroutine to exit.
 //   - Unsubscribes from EventBus events.
+//
+// Expected: parameters for Stop.
+// Returns: result of Stop.
 func (o *CompletionOrchestrator) Stop() {
 	close(o.stopCh)
 	o.wg.Wait()
@@ -177,6 +183,8 @@ func (o *CompletionOrchestrator) Stop() {
 //
 // Side effects:
 //   - Sends to completionCh or logs a warning on channel full.
+//
+// Returns: result of handleEvent.
 func (o *CompletionOrchestrator) handleEvent(event any) {
 	var sessionID, taskID string
 
@@ -208,6 +216,9 @@ func (o *CompletionOrchestrator) handleEvent(event any) {
 //
 // Side effects:
 //   - Calls processCompletion for each event received on completionCh.
+//
+// Expected: parameters for drainLoop.
+// Returns: result of drainLoop.
 func (o *CompletionOrchestrator) drainLoop() {
 	defer o.wg.Done()
 
@@ -236,6 +247,8 @@ func (o *CompletionOrchestrator) drainLoop() {
 //
 // Side effects:
 //   - May spawn a worker goroutine running triggerRePrompt.
+//
+// Returns: result of processCompletion.
 func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
 	if o.backgroundMgr.ActiveCountForSession(evt.sessionID) > 0 {
 		return
@@ -298,6 +311,8 @@ func (o *CompletionOrchestrator) processCompletion(evt completionEvent) {
 //     must NOT consume the re-prompt budget.
 //   - Clears the CAS flag and re-enqueues pending completions on every
 //     return path so racing-empty-notif completions stay observable.
+//
+// Returns: result of triggerRePrompt.
 func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
 	// F1: track whether a SendMessage was actually attempted in this
 	// invocation. The deferred closure only increments rePromptCount
@@ -391,6 +406,8 @@ func (o *CompletionOrchestrator) triggerRePrompt(sessionID string) {
 //
 // Side effects:
 //   - Publishes to broker or drains the channel.
+//
+// Returns: result of publishOrDrain.
 func (o *CompletionOrchestrator) publishOrDrain(sessionID string, chunks <-chan provider.StreamChunk) {
 	if o.broker != nil {
 		o.broker.Publish(sessionID, chunks)
@@ -409,6 +426,8 @@ func (o *CompletionOrchestrator) publishOrDrain(sessionID string, chunks <-chan 
 //
 // Side effects:
 //   - Resets the re-prompt counter for the given session.
+//
+// Returns: result of ResetRePromptCount.
 func (o *CompletionOrchestrator) ResetRePromptCount(sessionID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -446,6 +465,8 @@ func (o *CompletionOrchestrator) SubscribeRePrompt(sessionID string) <-chan (<-c
 //
 // Side effects:
 //   - Closes the subscriber channel and removes it from the map.
+//
+// Returns: result of UnsubscribeRePrompt.
 func (o *CompletionOrchestrator) UnsubscribeRePrompt(sessionID string) {
 	o.subsMu.Lock()
 	if ch, ok := o.rePromptSubs[sessionID]; ok {

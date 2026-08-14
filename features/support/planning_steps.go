@@ -92,6 +92,8 @@ type planningMockProvider struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *planningMockProvider) Name() string { return "mock-planning" }
 
 // Stream returns a single content chunk and closes the channel.
@@ -156,6 +158,8 @@ func (p *planningMockProvider) Embed(_ context.Context, _ provider.EmbedRequest)
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Models.
 func (p *planningMockProvider) Models() ([]provider.Model, error) {
 	return []provider.Model{{ID: "llama3.2", Provider: "mock-planning", ContextLength: 8192}}, nil
 }

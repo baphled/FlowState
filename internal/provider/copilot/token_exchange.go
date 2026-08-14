@@ -139,6 +139,8 @@ const tokenRefreshBuffer = 60
 // Side effects:
 //   - Acquires and releases the internal mutex.
 //   - Overwrites the current expiresAt value.
+//
+// Returns: result of SetExpiresAt.
 func (tm *TokenManager) SetExpiresAt(ts int64) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -152,6 +154,8 @@ func (tm *TokenManager) SetExpiresAt(ts int64) {
 //
 // Side effects:
 //   - Acquires and releases the internal mutex.
+//
+// Expected: parameters for ExpiresAt.
 func (tm *TokenManager) ExpiresAt() int64 {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -209,6 +213,8 @@ func (tm *TokenManager) EnsureToken(ctx context.Context) (string, error) {
 // Concurrency:
 //   - Acquires and releases the internal mutex.
 //   - May perform an HTTP token exchange.
+//
+// Side effects: None.
 func (tm *TokenManager) RefreshNow(ctx context.Context) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -241,6 +247,9 @@ func (tm *TokenManager) RefreshNow(ctx context.Context) error {
 //     attempt has been made since process start.
 //   - consecutiveFailures is the number of consecutive refresh
 //     failures since the last successful refresh.
+//
+// Expected: parameters for RefreshStatus.
+// Side effects: None.
 func (tm *TokenManager) RefreshStatus() (time.Time, int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()

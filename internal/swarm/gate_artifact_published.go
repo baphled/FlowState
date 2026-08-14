@@ -64,6 +64,10 @@ type statFunc func(path string) (bool, error)
 // osStat is the production statFunc backed by os.Stat. A non-IsNotExist
 // error is surfaced so a permission fault does not masquerade as
 // "artifact absent".
+//
+// Expected: parameters for osStat.
+// Returns: result of osStat.
+// Side effects: None.
 func osStat(path string) (bool, error) {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
@@ -221,6 +225,10 @@ func (r artifactPublishedRunner) Run(_ context.Context, gate GateSpec, args Gate
 //     chainIDSuffixScan so the honesty gate works as a post-swarm gate
 //     without new chainID threading.
 //   - A non-templated explicit OutputKey is read verbatim.
+//
+// Expected: parameters for resolvePlanBody.
+// Returns: result of resolvePlanBody.
+// Side effects: None.
 func (r artifactPublishedRunner) resolvePlanBody(gate GateSpec, args GateArgs) (string, []byte, error) {
 	if strings.Contains(gate.OutputKey, chainIDPlaceholder) {
 		if args.ChainID != "" {
@@ -277,6 +285,10 @@ func (r artifactPublishedRunner) resolvePlanBody(gate GateSpec, args GateArgs) (
 // post-swarm completion check: the gate's job is "did SOME plan land",
 // and the publication-claim check below catches a stale-chain false hit
 // when a vault path was claimed.
+//
+// Expected: parameters for suffixScan.
+// Returns: result of suffixScan.
+// Side effects: None.
 func (r artifactPublishedRunner) suffixScan(args GateArgs, suffix string) (string, []byte, bool, error) {
 	keys, err := args.CoordStore.List("")
 	if err != nil {
@@ -303,6 +315,10 @@ func (r artifactPublishedRunner) suffixScan(args GateArgs, suffix string) (strin
 // When args.ChainID is empty (post-swarm dispatch), the record is located
 // by suffix-scanning for any "*/plan_publication" key — the same fallback
 // resolvePlanBody uses for the plan key.
+//
+// Expected: parameters for publicationClaim.
+// Returns: result of publicationClaim.
+// Side effects: None.
 func (r artifactPublishedRunner) publicationClaim(args GateArgs) (planPublication, bool) {
 	raw, ok := r.publicationRecordBytes(args)
 	if !ok {
@@ -318,6 +334,10 @@ func (r artifactPublishedRunner) publicationClaim(args GateArgs) (planPublicatio
 // publicationRecordBytes returns the raw publication-record bytes,
 // resolving the key directly when a chainID is available and by
 // suffix-scan otherwise.
+//
+// Expected: parameters for publicationRecordBytes.
+// Returns: result of publicationRecordBytes.
+// Side effects: None.
 func (r artifactPublishedRunner) publicationRecordBytes(args GateArgs) ([]byte, bool) {
 	if args.ChainID != "" {
 		key := args.ChainID + "/" + planPublicationSuffix
@@ -341,6 +361,10 @@ func (r artifactPublishedRunner) publicationRecordBytes(args GateArgs) ([]byte, 
 // verifyVaultClaim checks that a claimed vault_path is under the resolved
 // output dir AND that the file actually exists. Either failure is a
 // fabricated-publication signal.
+//
+// Expected: parameters for verifyVaultClaim.
+// Returns: result of verifyVaultClaim.
+// Side effects: None.
 func (r artifactPublishedRunner) verifyVaultClaim(gate GateSpec, args GateArgs, vaultPath string) error {
 	if r.outputDir != "" && !pathUnder(r.outputDir, vaultPath) {
 		return newGateFailure(gate, args, fmt.Sprintf(
@@ -365,6 +389,10 @@ func (r artifactPublishedRunner) verifyVaultClaim(gate GateSpec, args GateArgs, 
 // pathUnder reports whether candidate is the directory dir itself or a
 // descendant of it, comparing cleaned absolute paths so "/a/b/../b/c"
 // resolves under "/a/b". A candidate that escapes via ".." returns false.
+//
+// Expected: parameters for pathUnder.
+// Returns: result of pathUnder.
+// Side effects: None.
 func pathUnder(dir, candidate string) bool {
 	cleanDir := filepath.Clean(dir)
 	rel, err := filepath.Rel(cleanDir, filepath.Clean(candidate))

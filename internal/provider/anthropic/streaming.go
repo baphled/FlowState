@@ -208,6 +208,10 @@ func (h *streamEventHandler) handleMessageDelta(
 // isUsageEmpty reports whether a UsageDelta has any non-zero/empty
 // field. Used to suppress synthesised chunks that would carry no
 // information.
+//
+// Expected: parameters for isUsageEmpty.
+// Returns: result of isUsageEmpty.
+// Side effects: None.
 func isUsageEmpty(u *provider.UsageDelta) bool {
 	if u == nil {
 		return true

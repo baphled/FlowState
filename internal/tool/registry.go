@@ -33,6 +33,8 @@ func NewRegistry() *Registry {
 //
 // Side effects:
 //   - Modifies the registry's internal state (thread-safe).
+//
+// Returns: result of Register.
 func (r *Registry) Register(t Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -67,6 +69,8 @@ func (r *Registry) Get(name string) (Tool, error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for List.
 func (r *Registry) List() []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

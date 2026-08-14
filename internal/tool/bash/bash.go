@@ -34,6 +34,10 @@ func New() *Tool {
 }
 
 // NewWithGuard creates a bash tool that denies commands referencing protected paths.
+//
+// Expected: parameters for NewWithGuard.
+// Returns: result of NewWithGuard.
+// Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool {
 	return &Tool{guard: g}
 }
@@ -45,6 +49,8 @@ func NewWithGuard(g *pathguard.Guard) *Tool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *Tool) Name() string {
 	return "bash"
 }
@@ -56,6 +62,8 @@ func (t *Tool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *Tool) Description() string {
 	return "Execute bash commands with a 30-second timeout. For writing file content, use the `write` tool instead — it handles path validation, directory creation, and proper file permissions automatically. Only use bash for commands that genuinely need a shell (build tools, git operations, process management)."
 }
@@ -67,6 +75,8 @@ func (t *Tool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -82,6 +92,10 @@ func (t *Tool) Schema() tool.Schema {
 
 // IsStateModifying returns true because bash executes arbitrary
 // commands that may have persistent side effects on the system.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute runs the specified bash command and returns its output.
@@ -129,6 +143,10 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 
 // capOutput applies the shared truncation envelope using the session ID
 // from ctx. Output stays unchanged when under the byte/line budget.
+//
+// Expected: parameters for capOutput.
+// Returns: result of capOutput.
+// Side effects: None.
 func capOutput(ctx context.Context, output string) string {
 	sessionID, _ := ctx.Value(session.IDKey{}).(string)
 	r := truncate.Apply(output, truncate.Options{

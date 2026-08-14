@@ -78,6 +78,10 @@ type Tracker struct {
 // No pricing resolver is wired — Snapshot.PricingSource will remain
 // empty on every Lookup. Callers wanting the PR2 three-tier pricing
 // audit trail use NewTrackerWithPricing.
+//
+// Expected: parameters for NewTracker.
+// Returns: result of NewTracker.
+// Side effects: None.
 func NewTracker(storeBackend string) *Tracker {
 	return &Tracker{
 		adapters:     make(map[string]Quota),
@@ -96,6 +100,10 @@ func NewTracker(storeBackend string) *Tracker {
 // SetRegistry method without touching the Tracker.
 //
 // Plan §"Pricing table" lines 338-388 (PR2 plumbing).
+//
+// Expected: parameters for NewTrackerWithPricing.
+// Returns: result of NewTrackerWithPricing.
+// Side effects: None.
 func NewTrackerWithPricing(storeBackend string, resolver PricingResolver) *Tracker {
 	return &Tracker{
 		adapters:        make(map[string]Quota),
@@ -107,6 +115,10 @@ func NewTrackerWithPricing(storeBackend string, resolver PricingResolver) *Track
 // Register binds a per-provider Quota adapter under the given
 // providerID. Re-registering the same providerID overwrites the prior
 // adapter. The engine calls this once per configured provider at boot.
+//
+// Expected: parameters for Register.
+// Returns: result of Register.
+// Side effects: None.
 func (t *Tracker) Register(providerID string, adapter Quota) {
 	if adapter == nil {
 		return
@@ -135,6 +147,10 @@ func (t *Tracker) Register(providerID string, adapter Quota) {
 // don't need to thread it separately. When a PricingResolver is
 // wired (PR2 plumbing), Snapshot.PricingSource is also stamped with
 // the resolver's audit-trail string for hits on (providerID, modelID).
+//
+// Expected: parameters for Lookup.
+// Returns: result of Lookup.
+// Side effects: None.
 func (t *Tracker) Lookup(ctx context.Context, providerID, accountHash, modelID string) (Snapshot, error) {
 	// PR4 overlay: when spend is wired AND the Store has a Snapshot
 	// for this key, prefer it. The TokenSpend variant carries the
@@ -208,6 +224,10 @@ func (t *Tracker) Lookup(ctx context.Context, providerID, accountHash, modelID s
 // when constructed via NewTracker (PR1 path). Exposed for tests and
 // for the engine boundary so PR4 adapters can perform the per-model
 // pricing lookup at RecordResponse time.
+//
+// Expected: parameters for PricingResolver.
+// Returns: result of PricingResolver.
+// Side effects: None.
 func (t *Tracker) PricingResolver() PricingResolver {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -221,6 +241,10 @@ func (t *Tracker) PricingResolver() PricingResolver {
 //
 // No-op when no adapter is registered for providerID — the engine
 // must not crash because a future provider isn't wired in yet.
+//
+// Expected: parameters for RecordResponse.
+// Returns: result of RecordResponse.
+// Side effects: None.
 func (t *Tracker) RecordResponse(providerID, modelID string, headers http.Header, usage provider.Usage) {
 	t.mu.RLock()
 	adapter, ok := t.adapters[providerID]
@@ -234,6 +258,10 @@ func (t *Tracker) RecordResponse(providerID, modelID string, headers http.Header
 // StoreBackend returns the backend label the Tracker stamps into
 // every Snapshot. Exposed for tests and for the boot-validation
 // audit trail.
+//
+// Expected: parameters for StoreBackend.
+// Returns: result of StoreBackend.
+// Side effects: None.
 func (t *Tracker) StoreBackend() string {
 	return t.storeBackend
 }

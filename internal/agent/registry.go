@@ -140,6 +140,8 @@ func (r *Registry) DiscoverMerge(dir string) error {
 //
 // Side effects:
 //   - Modifies the registry's internal state.
+//
+// Returns: result of Register.
 func (r *Registry) Register(manifest *Manifest) {
 	r.manifests[manifest.ID] = manifest
 }
@@ -206,6 +208,8 @@ func (r *Registry) GetByNameOrAlias(name string) (*Manifest, bool) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for List.
 func (r *Registry) List() []*Manifest {
 	if len(r.manifests) == 0 {
 		return nil

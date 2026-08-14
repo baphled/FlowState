@@ -53,6 +53,13 @@ type countingE2ESummariser struct {
 	resp  string
 }
 
+// Summarise ...
+//
+// Expected: parameters for Summarise.
+//
+// Returns: result of Summarise.
+//
+// Side effects: None.
 func (s *countingE2ESummariser) Summarise(_ context.Context, _, _ string, _ []provider.Message) (string, error) {
 	s.calls.Add(1)
 	return s.resp, nil
@@ -63,6 +70,13 @@ func (s *countingE2ESummariser) Summarise(_ context.Context, _, _ string, _ []pr
 // token-boundary arithmetic in the scenarios is predictable.
 type wordE2ECounter struct{ limit int }
 
+// Count ...
+//
+// Expected: parameters for Count.
+//
+// Returns: result of Count.
+//
+// Side effects: None.
 func (w wordE2ECounter) Count(text string) int {
 	if text == "" {
 		return 0
@@ -70,6 +84,13 @@ func (w wordE2ECounter) Count(text string) int {
 	return len(strings.Fields(text))
 }
 
+// ModelLimit ...
+//
+// Expected: parameters for ModelLimit.
+//
+// Returns: result of ModelLimit.
+//
+// Side effects: None.
 func (w wordE2ECounter) ModelLimit(_ string) int { return w.limit }
 
 // singleWordToolE2E is a tool.Tool stub whose Name and Description are
@@ -78,11 +99,42 @@ func (w wordE2ECounter) ModelLimit(_ string) int { return w.limit }
 // estimateRequestTokens, making the per-tool contribution predictable.
 type singleWordToolE2E struct{ n string }
 
-func (t *singleWordToolE2E) Name() string        { return t.n }
+// Name ...
+//
+// Returns: result of Name.
+//
+// Side effects: None.
+//
+// Expected: parameters for Name.
+func (t *singleWordToolE2E) Name() string { return t.n }
+
+// Description ...
+//
+// Returns: result of Description.
+//
+// Side effects: None.
+//
+// Expected: parameters for Description.
 func (t *singleWordToolE2E) Description() string { return "d" }
+
+// Execute ...
+//
+// Expected: parameters for Execute.
+//
+// Returns: result of Execute.
+//
+// Side effects: None.
 func (t *singleWordToolE2E) Execute(_ context.Context, _ tool.Input) (tool.Result, error) {
 	return tool.Result{}, nil
 }
+
+// Schema ...
+//
+// Returns: result of Schema.
+//
+// Side effects: None.
+//
+// Expected: parameters for Schema.
 func (t *singleWordToolE2E) Schema() tool.Schema { return tool.Schema{} }
 
 // RegisterCompressionE2ESteps wires the plan T20 @e2e scenarios that

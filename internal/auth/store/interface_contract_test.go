@@ -38,8 +38,6 @@ var allStoreFactories = []storeFactory{
 
 var _ = Describe("Store contract ladder", func() {
 	for _, factory := range allStoreFactories {
-		factory := factory // capture per-iteration for closures
-
 		Context(factory.name, func() {
 			var s store.Store
 

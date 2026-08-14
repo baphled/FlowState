@@ -85,6 +85,7 @@ func manifestFromContext(ctx context.Context) (agent.Manifest, bool) {
 // stream's retry requests silently route to the wrong provider/model.
 type boundProviderModelKey struct{}
 
+// providerModelPair holds a provider name and model name as a value type.
 type providerModelPair struct {
 	provider string
 	model    string
@@ -94,6 +95,10 @@ type providerModelPair struct {
 // provider and model as the per-stream binding. Stream() calls this
 // once at entry, after reseedFailoverBasePreferences has resolved the
 // manifest head onto e.preferredProvider / e.preferredModel.
+//
+// Expected: parameters for WithBoundProviderModel.
+// Returns: result of WithBoundProviderModel.
+// Side effects: None.
 func WithBoundProviderModel(ctx context.Context, provider, model string) context.Context {
 	return context.WithValue(ctx, boundProviderModelKey{}, providerModelPair{
 		provider: provider,
@@ -103,6 +108,10 @@ func WithBoundProviderModel(ctx context.Context, provider, model string) context
 
 // providerModelFromContext extracts the bound provider/model pair from
 // ctx. Returns ok=false when no binding is present.
+//
+// Expected: parameters for providerModelFromContext.
+// Returns: result of providerModelFromContext.
+// Side effects: None.
 func providerModelFromContext(ctx context.Context) (string, string, bool) {
 	if ctx == nil {
 		return "", "", false

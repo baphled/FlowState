@@ -51,6 +51,8 @@ func NewProxy(client mcp.Client, serverName string, info mcp.ToolInfo) *Proxy {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *Proxy) Name() string {
 	return p.name
 }
@@ -62,6 +64,8 @@ func (p *Proxy) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (p *Proxy) Description() string {
 	return p.description
 }
@@ -143,6 +147,8 @@ func (p *Proxy) capOutput(ctx context.Context, output string) string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (p *Proxy) Schema() tool.Schema {
 	if p.inputSchema == nil {
 		return tool.Schema{

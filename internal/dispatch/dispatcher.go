@@ -293,10 +293,21 @@ func NewWithTurns(
 // TurnRegistry returns the Dispatcher's Turn registry so Phase 2's
 // HTTP handler can read Turn state by id. Always non-nil after
 // construction.
+//
+// Expected: parameters for TurnRegistry.
+// Returns: result of TurnRegistry.
+// Side effects: None.
 func (d *Dispatcher) TurnRegistry() *turn.Registry {
 	return d.turnRegistry
 }
 
+// queueForSession ...
+//
+// Expected: parameters for queueForSession.
+//
+// Returns: result of queueForSession.
+//
+// Side effects: None.
 func (d *Dispatcher) queueForSession(sessionID string) *sessionQueue {
 	if existing, ok := d.sessionQueues.Load(sessionID); ok {
 		return existing.(*sessionQueue)
@@ -308,6 +319,10 @@ func (d *Dispatcher) queueForSession(sessionID string) *sessionQueue {
 
 // CloseSessionQueue removes the queued prompts for a session and drops
 // any pending work for that session.
+//
+// Expected: parameters for CloseSessionQueue.
+// Returns: result of CloseSessionQueue.
+// Side effects: None.
 func (d *Dispatcher) CloseSessionQueue(sessionID string) {
 	if existing, ok := d.sessionQueues.LoadAndDelete(sessionID); ok {
 		existing.(*sessionQueue).close()
@@ -315,6 +330,10 @@ func (d *Dispatcher) CloseSessionQueue(sessionID string) {
 }
 
 // CancelQueuedPrompt removes a queued prompt for a session.
+//
+// Expected: parameters for CancelQueuedPrompt.
+// Returns: result of CancelQueuedPrompt.
+// Side effects: None.
 func (d *Dispatcher) CancelQueuedPrompt(sessionID, promptID string) bool {
 	existing, ok := d.sessionQueues.Load(sessionID)
 	if !ok {
@@ -323,6 +342,13 @@ func (d *Dispatcher) CancelQueuedPrompt(sessionID, promptID string) bool {
 	return existing.(*sessionQueue).cancel(promptID)
 }
 
+// enqueueSessionPrompt ...
+//
+// Expected: parameters for enqueueSessionPrompt.
+//
+// Returns: result of enqueueSessionPrompt.
+//
+// Side effects: None.
 func (d *Dispatcher) enqueueSessionPrompt(
 	ctx context.Context, req DispatchRequest, consumer streaming.StreamConsumer,
 ) (SessionedHandle, error) {
@@ -345,6 +371,13 @@ func (d *Dispatcher) enqueueSessionPrompt(
 	return SessionedHandle{Snapshot: snapshot, Queued: true, QueuePosition: position, PromptID: prompt.PromptID}, nil
 }
 
+// drainQueue ...
+//
+// Expected: parameters for drainQueue.
+//
+// Returns: result of drainQueue.
+//
+// Side effects: None.
 func (d *Dispatcher) drainQueue(sessionID string) {
 	existing, ok := d.sessionQueues.Load(sessionID)
 	if !ok {
@@ -513,6 +546,9 @@ func (d *Dispatcher) RunEphemeralSync(
 //
 // Side effects:
 //   - See swarm.DispatchSwarm / streaming.Run.
+//
+// Expected: parameters for runEphemeralStream.
+// Returns: result of runEphemeralStream.
 func (d *Dispatcher) runEphemeralStream(
 	ctx context.Context,
 	leadID string,
@@ -966,6 +1002,10 @@ func (d *Dispatcher) DispatchSessioned(
 // An unknown agent intentionally does NOT reseed: leaving the engine on
 // its current (config-derived or prior-turn) chain is safer than wiping
 // it to an empty manifest.
+//
+// Expected: parameters for reseedDispatchFailover.
+// Returns: result of reseedDispatchFailover.
+// Side effects: None.
 func (d *Dispatcher) reseedDispatchFailover(agentID, providerName, modelName string) {
 	if agentID == "" || d.agentRegistry == nil {
 		return
@@ -1005,6 +1045,9 @@ func (d *Dispatcher) reseedDispatchFailover(agentID, providerName, modelName str
 // Side effects:
 //   - Spawns one goroutine that consumes src to completion.
 //   - Calls turnRegistry.Complete OR turnRegistry.Fail exactly once.
+//
+// Expected: parameters for wrapWithTurnLifecycle.
+// Returns: result of wrapWithTurnLifecycle.
 func (d *Dispatcher) wrapWithTurnLifecycle(
 	src <-chan provider.StreamChunk,
 	turnID string,
@@ -1165,6 +1208,10 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 // Returns a non-nil pointer; callers can safely dereference. The
 // registry's SetCriticalError copies the pointee, so the dispatcher
 // can reuse this on retry without poisoning the stored value.
+//
+// Expected: parameters for buildTurnCriticalError.
+// Returns: result of buildTurnCriticalError.
+// Side effects: None.
 func buildTurnCriticalError(err error) *turn.TurnCriticalError {
 	category := "stream_critical"
 	var pErr *provider.Error
@@ -1204,6 +1251,9 @@ func buildTurnCriticalError(err error) *turn.TurnCriticalError {
 // Side effects:
 //   - LoadOrStore in sessionLifecycleGates; consumes one buffered slot
 //     by receiving the baton from the channel.
+//
+// Expected: parameters for acquireSessionLifecycleGate.
+// Returns: result of acquireSessionLifecycleGate.
 func (d *Dispatcher) acquireSessionLifecycleGate(sessionID string) chan struct{} {
 	// Build the pre-charged channel template; LoadOrStore returns the
 	// existing channel if another goroutine raced us. The "new" channel
@@ -1233,6 +1283,9 @@ func (d *Dispatcher) acquireSessionLifecycleGate(sessionID string) chan struct{}
 //
 // Side effects:
 //   - Non-blocking send (capacity 1, no contending holder).
+//
+// Expected: parameters for releaseSessionLifecycleGate.
+// Returns: result of releaseSessionLifecycleGate.
 func (d *Dispatcher) releaseSessionLifecycleGate(_ string, gate chan struct{}) {
 	select {
 	case gate <- struct{}{}:
@@ -1247,6 +1300,10 @@ func (d *Dispatcher) releaseSessionLifecycleGate(_ string, gate chan struct{}) {
 // + session manager are all wired so swarm dispatch is observable on
 // the engine. Test surfaces that omit any of the three fall through to
 // plain-agent streaming.
+//
+// Expected: parameters for canDispatchSwarm.
+// Returns: result of canDispatchSwarm.
+// Side effects: None.
 func (d *Dispatcher) canDispatchSwarm() bool {
 	return d.swarmRegistry != nil && d.dispatchEngine != nil && d.sessionManager != nil
 }
@@ -1287,6 +1344,8 @@ func (d *Dispatcher) canDispatchSwarm() bool {
 // Side effects:
 //   - Starts one goroutine that ranges over src and runs flush + restore
 //   - gate-release after the range exits.
+//
+// Returns: result of wrapWithSwarmLifecycle.
 func (d *Dispatcher) wrapWithSwarmLifecycle(
 	ctx context.Context,
 	src <-chan provider.StreamChunk,
@@ -1336,6 +1395,9 @@ func (d *Dispatcher) wrapWithSwarmLifecycle(
 //
 // Side effects:
 //   - Spawns one goroutine that consumes src to completion.
+//
+// Expected: parameters for fanOutSessionedChunks.
+// Returns: result of fanOutSessionedChunks.
 func (d *Dispatcher) fanOutSessionedChunks(
 	sessionID string,
 	src <-chan provider.StreamChunk,
@@ -1362,6 +1424,9 @@ func (d *Dispatcher) fanOutSessionedChunks(
 // Side effects:
 //   - Reads src to completion.
 //   - Calls consumer.WriteChunk / WriteError / Done for each chunk.
+//
+// Expected: parameters for driveConsumer.
+// Returns: result of driveConsumer.
 func (d *Dispatcher) driveConsumer(src <-chan provider.StreamChunk, consumer streaming.StreamConsumer) {
 	for chunk := range src {
 		d.deliverChunkToConsumer(chunk, consumer)
@@ -1381,6 +1446,9 @@ func (d *Dispatcher) driveConsumer(src <-chan provider.StreamChunk, consumer str
 //
 // Side effects:
 //   - One or more Write* calls on consumer depending on chunk shape.
+//
+// Expected: parameters for deliverChunkToConsumer.
+// Returns: result of deliverChunkToConsumer.
 func (d *Dispatcher) deliverChunkToConsumer(chunk provider.StreamChunk, consumer streaming.StreamConsumer) {
 	if chunk.Error != nil {
 		consumer.WriteError(chunk.Error)
@@ -1457,6 +1525,9 @@ func (d *Dispatcher) resolve(req DispatchRequest) (string, *swarm.Context, error
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for agentLookup.
+// Returns: result of agentLookup.
 func (d *Dispatcher) agentLookup() swarm.HasAgent {
 	if d.agentRegistry == nil {
 		return nil

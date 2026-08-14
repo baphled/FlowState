@@ -154,6 +154,8 @@ func (s *StepDefinitions) iSend(text string) error {
 //
 // Side effects:
 //   - None (reads s.responseParts without mutating).
+//
+// Expected: parameters for iSeeTokensAppearing.
 func (s *StepDefinitions) iSeeTokensAppearing() error {
 	deadline := time.Now().Add(streamTokensWaitBudget)
 	for time.Now().Before(deadline) {
@@ -202,6 +204,8 @@ func hasVisibleToken(parts []string) bool {
 //
 // Side effects:
 //   - Invokes s.streamCancel and records that the user initiated the cancel.
+//
+// Expected: parameters for iPressEscapeTwiceWithin500ms.
 func (s *StepDefinitions) iPressEscapeTwiceWithin500ms() error {
 	// Copy the cancel func under the mutex so we do not call it while
 	// holding the lock (context.cancel can call into user code).
@@ -230,6 +234,8 @@ func (s *StepDefinitions) iPressEscapeTwiceWithin500ms() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theStreamShouldBeCancelled.
 func (s *StepDefinitions) theStreamShouldBeCancelled() error {
 	// Snapshot the drain channel and the cancelled flag together under
 	// the mutex so we observe a consistent view. Channel sends (close)
@@ -263,6 +269,8 @@ func (s *StepDefinitions) theStreamShouldBeCancelled() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for noErrorShouldBeShown.
 func (s *StepDefinitions) noErrorShouldBeShown() error {
 	s.streamMu.Lock()
 	userEscd := s.streamUserEscd
@@ -287,6 +295,8 @@ func (s *StepDefinitions) noErrorShouldBeShown() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theResponseShouldBeIncomplete.
 func (s *StepDefinitions) theResponseShouldBeIncomplete() error {
 	s.streamMu.Lock()
 	fullLen := s.streamFullLen

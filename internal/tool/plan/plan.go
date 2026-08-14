@@ -507,6 +507,8 @@ func NewWrite(plansDir string) *WriteTool { return &WriteTool{plansDir: plansDir
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *WriteTool) Name() string { return writeName }
 
 // Description returns a human-readable description of the tool.
@@ -516,6 +518,8 @@ func (t *WriteTool) Name() string { return writeName }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *WriteTool) Description() string {
 	return "Persist a FlowState plan to the plans data directory as a " +
 		"markdown file. The input must be the full plan text including " +
@@ -532,6 +536,8 @@ func (t *WriteTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *WriteTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -550,6 +556,10 @@ func (t *WriteTool) Schema() tool.Schema {
 
 // IsStateModifying returns true because plan_write persists a plan file
 // to the filesystem.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *WriteTool) IsStateModifying() bool { return true }
 
 // Execute parses the supplied markdown into a plan.File and persists it via

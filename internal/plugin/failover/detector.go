@@ -166,6 +166,13 @@ func (d *RateLimitDetector) isRateLimitedError(err error) bool {
 	return ok
 }
 
+// classifyProviderHealthCooldown ...
+//
+// Expected: parameters for classifyProviderHealthCooldown.
+//
+// Returns: result of classifyProviderHealthCooldown.
+//
+// Side effects: None.
 func classifyProviderHealthCooldown(err error) (time.Duration, bool) {
 	if err == nil || isAggregateFailoverError(err) {
 		return 0, false
@@ -182,6 +189,13 @@ func classifyProviderHealthCooldown(err error) (time.Duration, bool) {
 	return classifyProviderHealthCooldownText(err.Error())
 }
 
+// classifyProviderHealthCooldownText ...
+//
+// Expected: parameters for classifyProviderHealthCooldownText.
+//
+// Returns: result of classifyProviderHealthCooldownText.
+//
+// Side effects: None.
 func classifyProviderHealthCooldownText(message string) (time.Duration, bool) {
 	msg := strings.ToLower(message)
 
@@ -228,6 +242,13 @@ func classifyProviderHealthCooldownText(message string) (time.Duration, bool) {
 	return 0, false
 }
 
+// containsAny ...
+//
+// Expected: parameters for containsAny.
+//
+// Returns: result of containsAny.
+//
+// Side effects: None.
 func containsAny(message string, needles ...string) bool {
 	for _, needle := range needles {
 		if strings.Contains(message, needle) {
@@ -237,6 +258,13 @@ func containsAny(message string, needles ...string) bool {
 	return false
 }
 
+// isAggregateFailoverError ...
+//
+// Expected: parameters for isAggregateFailoverError.
+//
+// Returns: result of isAggregateFailoverError.
+//
+// Side effects: None.
 func isAggregateFailoverError(err error) bool {
 	if err == nil {
 		return false

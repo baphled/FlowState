@@ -35,6 +35,8 @@ func NewChainGetMessagesTool(store chainrecall.ChainContextStore) *ChainGetMessa
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *ChainGetMessagesTool) Name() string {
 	return "chain_get_messages"
 }
@@ -46,6 +48,8 @@ func (t *ChainGetMessagesTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *ChainGetMessagesTool) Description() string {
 	return "Retrieve the most recent messages from a specific agent in the shared chain context"
 }
@@ -57,6 +61,8 @@ func (t *ChainGetMessagesTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *ChainGetMessagesTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

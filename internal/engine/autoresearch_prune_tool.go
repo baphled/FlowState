@@ -49,6 +49,8 @@ func NewAutoresearchPruneTool(pruner runner.AutoresearchPruner) *AutoresearchPru
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *AutoresearchPruneTool) Name() string { return "autoresearch_prune" }
 
 // CanDelegate reports whether this tool can be used in a delegation context.
@@ -58,6 +60,8 @@ func (t *AutoresearchPruneTool) Name() string { return "autoresearch_prune" }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for CanDelegate.
 func (t *AutoresearchPruneTool) CanDelegate() bool { return true }
 
 // Description returns a human-readable description of the tool.
@@ -67,6 +71,8 @@ func (t *AutoresearchPruneTool) CanDelegate() bool { return true }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *AutoresearchPruneTool) Description() string {
 	return "Prune old autoresearch runs from the coordination store. " +
 		"Pass dry_run=true to preview what would be deleted without making changes. " +
@@ -81,6 +87,8 @@ func (t *AutoresearchPruneTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *AutoresearchPruneTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

@@ -44,6 +44,8 @@ type Config struct {
 //   - MicroEnabled:      true
 //   - HotTailMinResults: 3
 //   - HotTailSizeBudget: 8000 (≈ 32 KiB of tool-result text)
+//
+// Side effects: None.
 func DefaultConfig() Config {
 	return Config{
 		MicroEnabled:      true,

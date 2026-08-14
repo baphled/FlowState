@@ -167,6 +167,10 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 // capOutput applies truncation to prevent websearch results from blowing
 // up the model context. Each result can contain substantial text content,
 // so we cap at the same limits used by other tools.
+//
+// Expected: parameters for capOutput.
+// Returns: result of capOutput.
+// Side effects: None.
 func capOutput(ctx context.Context, output string) string {
 	sessionID, _ := ctx.Value(session.IDKey{}).(string)
 	r := truncate.Apply(output, truncate.Options{

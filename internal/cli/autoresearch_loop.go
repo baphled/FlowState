@@ -198,12 +198,17 @@ var (
 //
 // Reset via ResetCommandRunnerForTest in a DeferCleanup so adjacent
 // tests are not affected.
+//
+// Expected: parameters for SetCommandRunnerForTest.
+// Side effects: None.
 func SetCommandRunnerForTest(observer commandRunner) {
 	currentCommandRunner = observer
 }
 
 // ResetCommandRunnerForTest clears any observer installed by
 // SetCommandRunnerForTest.
+//
+// Side effects: None.
 func ResetCommandRunnerForTest() {
 	currentCommandRunner = nil
 }
@@ -211,6 +216,9 @@ func ResetCommandRunnerForTest() {
 // observeCommand notifies the test observer (if installed) that a
 // subprocess command is being built. Always safe to call — a nil
 // observer is a no-op.
+//
+// Expected: parameters for observeCommand.
+// Side effects: None.
 func observeCommand(name string, args ...string) {
 	if currentCommandRunner != nil {
 		currentCommandRunner(name, args...)
@@ -222,6 +230,10 @@ func observeCommand(name string, args ...string) {
 // subprocess invocation under the autoresearch command tree so the
 // "no git in default mode" assertion (April 2026 In-Memory Default
 // plan, R1.2) covers every code path.
+//
+// Expected: parameters for observedCommand.
+// Returns: result of observedCommand.
+// Side effects: None.
 func observedCommand(name string, args ...string) *exec.Cmd {
 	observeCommand(name, args...)
 	return exec.Command(name, args...)
@@ -230,6 +242,10 @@ func observedCommand(name string, args ...string) *exec.Cmd {
 // observedCommandContext is the context-bound twin of observedCommand.
 // Used by subprocess invocations that honour ctx cancellation
 // (driver, evaluator).
+//
+// Expected: parameters for observedCommandContext.
+// Returns: result of observedCommandContext.
+// Side effects: None.
 func observedCommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	observeCommand(name, args...)
 	return exec.CommandContext(ctx, name, args...)
@@ -339,7 +355,7 @@ func runTrialLoop(
 			err     error
 		)
 		if resolved.commitTrials {
-			outcome, err = runOneTrial(n, resolved, worktreePath, worktreeSurface, relSurface, state)
+			outcome, err = runOneTrial(n, resolved, worktreePath, worktreeSurface, relSurface, state, ctx)
 		} else {
 			outcome, err = runOneTrialContent(ctx, n, resolved, relSurface, state)
 		}
@@ -437,6 +453,7 @@ func runOneTrial(
 	resolved autoresearchRunOptions,
 	worktreePath, worktreeSurface, relSurface string,
 	state *trialLoopState,
+	ctx context.Context,
 ) (trialOutcome, error) {
 	startedAt := time.Now()
 	outcome := trialOutcome{
@@ -481,7 +498,7 @@ func runOneTrial(
 		outcome.PromptSHA = promptSHA
 	}
 
-	timedOut, dErr := runDriverScript(driverInvocation{
+	timedOut, dErr := runDriverScript(ctx, driverInvocation{
 		driverPath:     resolved.driverScript,
 		worktreePath:   worktreePath,
 		relSurface:     relSurface,
@@ -490,6 +507,7 @@ func runOneTrial(
 		promptFilePath: promptFilePath,
 		timeout:        resolved.driverTimeout,
 		maxTurns:       resolved.driverMaxTurns,
+		ctx:            ctx,
 		driverAgent:    resolved.driverAgent,
 	})
 	if dErr != nil {
@@ -575,7 +593,7 @@ func runOneTrial(
 	}
 	outcome.CommitSHA = commitSHA
 
-	evalRes, err := runEvaluatorScript(resolved.evaluatorScript, worktreePath, relSurface, resolved.runID, resolved.evaluatorTimeout)
+	evalRes, err := runEvaluatorScript(ctx, resolved.evaluatorScript, worktreePath, relSurface, resolved.runID, resolved.evaluatorTimeout)
 	if err != nil {
 		return outcome, fmt.Errorf("evaluator harness failure: %w", err)
 	}
@@ -645,6 +663,9 @@ func runOneTrial(
 }
 
 // finishOutcome closes out the timing fields on a trial outcome.
+//
+// Expected: parameters for finishOutcome.
+// Side effects: None.
 func finishOutcome(o *trialOutcome, startedAt time.Time) {
 	end := time.Now()
 	o.EndedAt = end.UTC().Format(time.RFC3339)
@@ -680,6 +701,9 @@ func finishOutcome(o *trialOutcome, startedAt time.Time) {
 //     root — passed to the synthesiser verbatim.
 //   - state.surfaceBytes carries the immutable surface content read
 //     once at run start.
+//
+// Returns: result of runOneTrialContent.
+// Side effects: None.
 func runOneTrialContent(
 	ctx context.Context,
 	n int,
@@ -823,6 +847,10 @@ func runOneTrialContent(
 // Shared by the content baseline seeding and the per-trial candidate
 // hashing — the SHA is the canonical content identifier under the
 // April 2026 substrate swap.
+//
+// Expected: parameters for contentSHA.
+// Returns: result of contentSHA.
+// Side effects: None.
 func contentSHA(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -832,6 +860,10 @@ func contentSHA(b []byte) string {
 // cap. Returns (stored, truncated) where stored is at most
 // maxBytes long and truncated is true when the input exceeded the
 // cap. A non-positive maxBytes falls back to defaultMaxCandidateCap.
+//
+// Expected: parameters for truncateCandidate.
+// Returns: result of truncateCandidate.
+// Side effects: None.
 func truncateCandidate(content []byte, maxBytes int) ([]byte, bool) {
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxCandidateCap
@@ -851,6 +883,10 @@ func truncateCandidate(content []byte, maxBytes int) ([]byte, bool) {
 // the surface basename, so any error message the validator emits
 // references the operator's mental model rather than an opaque
 // generated path.
+//
+// Expected: parameters for validateManifestCandidateContent.
+// Returns: result of validateManifestCandidateContent.
+// Side effects: None.
 func validateManifestCandidateContent(candidate []byte, relSurface string) error {
 	base := filepath.Base(relSurface)
 	if base == "" {
@@ -899,6 +935,8 @@ func validateManifestCandidateContent(candidate []byte, relSurface string) error
 //   - timedOut flag when the driver wall-clock cap fired.
 //   - non-nil error on non-zero exit, timeout, or harness-side I/O
 //     failure.
+//
+// Side effects: None.
 func runDriverContent(ctx context.Context, inv driverInvocation, prompt []byte) (candidate []byte, timedOut bool, err error) {
 	if inv.driverPath == "" {
 		// Empty driver path is treated as a configuration error in
@@ -1026,6 +1064,10 @@ func runDriverContent(ctx context.Context, inv driverInvocation, prompt []byte) 
 // § 4.6): one non-negative integer to stdout, exit 0, SIGTERM-then-
 // SIGKILL on timeout. The shared parseEvaluatorStdout enforces the
 // stdout shape.
+//
+// Expected: parameters for runEvaluatorContent.
+// Returns: result of runEvaluatorContent.
+// Side effects: None.
 func runEvaluatorContent(ctx context.Context, evaluatorPath, runID string, candidate []byte, timeout time.Duration) (evaluatorResult, error) {
 	if evaluatorPath == "" {
 		evaluatorPath = "scripts/validate-harness.sh"
@@ -1121,6 +1163,7 @@ type driverInvocation struct {
 	promptFilePath string
 	timeout        time.Duration
 	maxTurns       int
+	ctx            context.Context
 	// driverAgent is forwarded as FLOWSTATE_AUTORESEARCH_DRIVER_AGENT.
 	// Empty means the driver script falls back to its own default.
 	driverAgent string
@@ -1161,11 +1204,10 @@ type driverInvocation struct {
 //   - On timeout the subprocess is sent SIGTERM at the deadline and
 //     SIGKILL `evaluatorTermGracePeriod` later (mirrors the evaluator
 //     wall-clock pattern in runEvaluatorScript).
-func runDriverScript(inv driverInvocation) (timedOut bool, err error) {
+func runDriverScript(ctx context.Context, inv driverInvocation) (timedOut bool, err error) {
 	if inv.driverPath == "" {
 		return false, nil
 	}
-	ctx := context.Background()
 	var cancel context.CancelFunc
 	if inv.timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, inv.timeout)
@@ -1266,12 +1308,11 @@ type evaluatorResult struct {
 // Side effects:
 //   - Executes the evaluator script as a subprocess. The subprocess
 //     receives SIGTERM/SIGKILL on timeout.
-func runEvaluatorScript(evaluatorPath, worktreePath, relSurface, runID string, timeout time.Duration) (evaluatorResult, error) {
+func runEvaluatorScript(ctx context.Context, evaluatorPath, worktreePath, relSurface, runID string, timeout time.Duration) (evaluatorResult, error) {
 	if evaluatorPath == "" {
 		evaluatorPath = "scripts/validate-harness.sh"
 	}
 
-	ctx := context.Background()
 	var cancel context.CancelFunc
 	timedOut := false
 	timeoutMS := int64(0)
@@ -1358,6 +1399,10 @@ func runEvaluatorScript(evaluatorPath, worktreePath, relSurface, runID string, t
 //   - more than one non-empty line after splitting on '\n'
 //
 // Whitespace surrounding the integer on its single line is trimmed.
+//
+// Expected: parameters for parseEvaluatorStdout.
+// Returns: result of parseEvaluatorStdout.
+// Side effects: None.
 func parseEvaluatorStdout(stdout string) (int64, error) {
 	// Drop a single trailing newline so a well-formed
 	// "12\n" parses identically to "12". Anything beyond that is
@@ -1423,6 +1468,10 @@ func surfaceSHA(path string) (string, error) {
 
 // isFixedPoint returns true when sha matches any candidate already in
 // the ring. Linear scan is fine — the ring caps at 20 entries.
+//
+// Expected: parameters for isFixedPoint.
+// Returns: result of isFixedPoint.
+// Side effects: None.
 func isFixedPoint(ring []seenCandidate, sha string) bool {
 	for _, c := range ring {
 		if c.CandidateSHA == sha {
@@ -1434,6 +1483,10 @@ func isFixedPoint(ring []seenCandidate, sha string) bool {
 
 // appendSeenRing appends an entry to the seen-candidates ring,
 // truncating from the front to maintain the ring capacity.
+//
+// Expected: parameters for appendSeenRing.
+// Returns: result of appendSeenRing.
+// Side effects: None.
 func appendSeenRing(ring []seenCandidate, entry seenCandidate) []seenCandidate {
 	ring = append(ring, entry)
 	if len(ring) > seenCandidatesRingCapacity {
@@ -1449,6 +1502,10 @@ func appendSeenRing(ring []seenCandidate, entry seenCandidate) []seenCandidate {
 // window caps the slice from the front. A non-positive window falls
 // back to driverPromptHistoryDefault so the loop never accumulates an
 // unbounded slice when the operator passes --prompt-history-window 0.
+//
+// Expected: parameters for appendRecentOutcomes.
+// Returns: result of appendRecentOutcomes.
+// Side effects: None.
 func appendRecentOutcomes(history []trialOutcome, entry trialOutcome, window int) []trialOutcome {
 	if window <= 0 {
 		window = driverPromptHistoryDefault
@@ -1462,6 +1519,10 @@ func appendRecentOutcomes(history []trialOutcome, entry trialOutcome, window int
 
 // isImprovement compares score against the best-so-far given
 // --metric-direction. The first scored trial is always an improvement.
+//
+// Expected: parameters for isImprovement.
+// Returns: result of isImprovement.
+// Side effects: None.
 func isImprovement(state *trialLoopState, score float64, direction string) bool {
 	if !state.bestScoreSet {
 		// Bootstrap: if a baseline is unset, the first trial sets it
@@ -1481,6 +1542,10 @@ func isImprovement(state *trialLoopState, score float64, direction string) bool 
 // worktree root. Both surface and worktreePath are expected to be
 // rooted in the same parent repo — surface lives in the operator's
 // tree, but the worktree's checkout mirrors the same path layout.
+//
+// Expected: parameters for relativeSurfacePath.
+// Returns: result of relativeSurfacePath.
+// Side effects: None.
 func relativeSurfacePath(surface, worktreePath string) (string, error) {
 	repoRoot, err := surfaceRepoRoot(surface)
 	if err != nil {
@@ -1500,6 +1565,10 @@ func relativeSurfacePath(surface, worktreePath string) (string, error) {
 // gitCommitTrial commits the candidate edit inside the worktree.
 // Per § 5.5 N13, --no-verify is mandatory; the worktree inherits the
 // parent's hooks including the make-check gate broken on origin.
+//
+// Expected: parameters for gitCommitTrial.
+// Returns: result of gitCommitTrial.
+// Side effects: None.
 func gitCommitTrial(worktreePath string, n int) (string, error) {
 	addCmd := observedCommand("git", "-C", worktreePath, "add", "-A")
 	if out, err := addCmd.CombinedOutput(); err != nil {
@@ -1529,6 +1598,10 @@ func gitCommitTrial(worktreePath string, n int) (string, error) {
 
 // gitResetHard runs `git reset --hard HEAD~1` inside the worktree —
 // the canonical revert for a regression-or-no-improve candidate.
+//
+// Expected: parameters for gitResetHard.
+// Returns: result of gitResetHard.
+// Side effects: None.
 func gitResetHard(worktreePath string) error {
 	cmd := observedCommand("git", "-C", worktreePath, "reset", "--hard", "HEAD~1")
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -1541,6 +1614,10 @@ func gitResetHard(worktreePath string) error {
 // HEAD content — used by the fixed-point and manifest-gate paths
 // where the driver wrote a candidate but no commit was issued, so
 // `reset --hard HEAD~1` would over-revert.
+//
+// Expected: parameters for gitCheckoutSurface.
+// Returns: result of gitCheckoutSurface.
+// Side effects: None.
 func gitCheckoutSurface(worktreePath, relSurface string) error {
 	cmd := observedCommand("git", "-C", worktreePath, "checkout", "HEAD", "--", relSurface)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -1550,6 +1627,10 @@ func gitCheckoutSurface(worktreePath, relSurface string) error {
 }
 
 // writeTrialRecord persists a trial outcome to the coord-store.
+//
+// Expected: parameters for writeTrialRecord.
+// Returns: result of writeTrialRecord.
+// Side effects: None.
 func writeTrialRecord(store coordination.Store, runID string, outcome trialOutcome) error {
 	raw, err := json.Marshal(outcome)
 	if err != nil {
@@ -1564,6 +1645,10 @@ func writeTrialRecord(store coordination.Store, runID string, outcome trialOutco
 // Content mode (April 2026 In-Memory Default): CommitSHA is empty
 // and CandidateContentSHA carries the load-bearing content identifier.
 // In --commit-trials mode the legacy CommitSHA stays populated.
+//
+// Expected: parameters for writeBestRecord.
+// Returns: result of writeBestRecord.
+// Side effects: None.
 func writeBestRecord(store coordination.Store, runID string, state *trialLoopState) error {
 	rec := bestRecord{
 		CommitSHA:           state.bestCommitSHA,
@@ -1580,6 +1665,10 @@ func writeBestRecord(store coordination.Store, runID string, state *trialLoopSta
 }
 
 // writeSeenCandidates persists the SHA ring as a single JSON array.
+//
+// Expected: parameters for writeSeenCandidates.
+// Returns: result of writeSeenCandidates.
+// Side effects: None.
 func writeSeenCandidates(store coordination.Store, runID string, ring []seenCandidate) error {
 	raw, err := json.Marshal(ring)
 	if err != nil {
@@ -1592,6 +1681,10 @@ func writeSeenCandidates(store coordination.Store, runID string, ring []seenCand
 // writeResultRecord persists the run-end summary. Total trials is
 // derived from the last outcome's N; final score/commit are taken
 // from best-so-far when set, otherwise from the last outcome.
+//
+// Expected: parameters for writeResultRecord.
+// Returns: result of writeResultRecord.
+// Side effects: None.
 func writeResultRecord(
 	store coordination.Store,
 	runID, terminationReason string,

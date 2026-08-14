@@ -16,6 +16,7 @@ import (
 	anthropicAPI "github.com/anthropics/anthropic-sdk-go"
 
 	"encoding/json"
+
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/baphled/flowstate/internal/provider"
 	shared "github.com/baphled/flowstate/internal/provider/shared"
@@ -158,6 +159,10 @@ type Provider struct {
 // uses a no-locking-needed read of an atomic-friendly value because
 // the observer is set once at boot and never changes during a
 // session in v1. v2 hot-reload work will need to revisit this seam.
+//
+// Expected: parameters for SetResponseObserver.
+// Returns: result of SetResponseObserver.
+// Side effects: None.
 func (p *Provider) SetResponseObserver(fn func(http.Header)) {
 	p.responseObserver = fn
 }
@@ -167,6 +172,10 @@ func (p *Provider) SetResponseObserver(fn func(http.Header)) {
 // raw response pointer is non-nil (defensive — SDK contract is to
 // populate it before returning, but a nil here would crash the
 // happy path).
+//
+// Expected: parameters for notifyResponseObserver.
+// Returns: result of notifyResponseObserver.
+// Side effects: None.
 func (p *Provider) notifyResponseObserver(raw *http.Response) {
 	if p.responseObserver == nil || raw == nil {
 		return
@@ -186,6 +195,8 @@ func (p *Provider) notifyResponseObserver(raw *http.Response) {
 // Side effects:
 //   - Subsequent Chat/stream requests may carry the compaction beta
 //     header when the target model supports it.
+//
+// Returns: result of SetCompactionBetaEnabled.
 func (p *Provider) SetCompactionBetaEnabled(enabled bool) {
 	p.compactionBetaEnabled = enabled
 }
@@ -198,6 +209,8 @@ func (p *Provider) SetCompactionBetaEnabled(enabled bool) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for CompactionBetaEnabled.
 func (p *Provider) CompactionBetaEnabled() bool {
 	return p.compactionBetaEnabled
 }
@@ -390,6 +403,8 @@ func NewWithOptions(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *Provider) Name() string {
 	return providerName
 }
@@ -462,6 +477,8 @@ func (p *Provider) Stream(
 // Side effects:
 //   - Closes ch when streaming completes.
 //   - Makes an HTTP streaming request to the Anthropic API.
+//
+// Returns: result of streamMessages.
 func (p *Provider) streamMessages(
 	ctx context.Context,
 	params anthropicAPI.MessageNewParams,
@@ -651,6 +668,8 @@ func (p *Provider) Embed(
 //
 // Side effects:
 //   - Makes an HTTP request to the Anthropic Models API.
+//
+// Expected: parameters for Models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	models, err := p.fetchModels()
 	if err == nil {
@@ -667,6 +686,8 @@ func (p *Provider) Models() ([]provider.Model, error) {
 //
 // Side effects:
 //   - Makes an HTTP request to the Anthropic Models API.
+//
+// Expected: parameters for fetchModels.
 func (p *Provider) fetchModels() ([]provider.Model, error) {
 	ctx := context.Background()
 	pager := p.client.Models.ListAutoPaging(
@@ -889,6 +910,13 @@ func extractAnthropicErrorCode(apiErr *anthropicAPI.Error) string {
 	return body.Error.Type
 }
 
+// buildProviderError ...
+//
+// Expected: parameters for buildProviderError.
+//
+// Returns: result of buildProviderError.
+//
+// Side effects: None.
 func buildProviderError(
 	apiErr *anthropicAPI.Error,
 	errType provider.ErrorType,
@@ -1447,6 +1475,8 @@ func buildUserMessage(m provider.Message) *anthropicAPI.MessageParam {
 // Returns:
 //   - A slice of ContentBlockParamUnion values, one per input
 //     attachment, in input order.
+//
+// Side effects: None.
 func attachmentsToBlocks(atts []provider.Attachment) []anthropicAPI.ContentBlockParamUnion {
 	if len(atts) == 0 {
 		return nil
@@ -1491,6 +1521,10 @@ func attachmentsToBlocks(atts []provider.Attachment) []anthropicAPI.ContentBlock
 // helper exposed by internal/provider. Retained for back-compat with
 // callers and tests inside this package; new code should call
 // provider.TotalAttachmentBytes directly.
+//
+// Expected: parameters for TotalAttachmentBytes.
+// Returns: result of TotalAttachmentBytes.
+// Side effects: None.
 func TotalAttachmentBytes(atts []provider.Attachment) int64 {
 	return provider.TotalAttachmentBytes(atts)
 }
@@ -1499,6 +1533,9 @@ func TotalAttachmentBytes(atts []provider.Attachment) int64 {
 // ceiling exposed by internal/provider. Retained for back-compat with
 // callers and tests inside this package; new code should call
 // provider.MaxAttachmentRequestBytes directly.
+//
+// Returns: result of MaxAttachmentRequestBytes.
+// Side effects: None.
 func MaxAttachmentRequestBytes() int64 { return provider.MaxAttachmentRequestBytes() }
 
 // buildThinkingBlocks converts captured ThinkingBlock records into
@@ -1525,6 +1562,10 @@ func MaxAttachmentRequestBytes() int64 { return provider.MaxAttachmentRequestByt
 // being persisted in the first place; this filter is the
 // belt-and-braces gate against any future regression that lets one
 // slip through into a session's history.
+//
+// Expected: parameters for buildThinkingBlocks.
+// Returns: result of buildThinkingBlocks.
+// Side effects: None.
 func buildThinkingBlocks(
 	blocks []provider.ThinkingBlock,
 ) []anthropicAPI.ContentBlockParamUnion {
@@ -1931,6 +1972,10 @@ func applyConversationCacheBreakpoint(
 
 // lastAssistantIndex returns the index of the last assistant message
 // in messages, or -1 when none exists.
+//
+// Expected: parameters for lastAssistantIndex.
+// Returns: result of lastAssistantIndex.
+// Side effects: None.
 func lastAssistantIndex(messages []anthropicAPI.MessageParam) int {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if string(messages[i].Role) == "assistant" {
@@ -1943,6 +1988,10 @@ func lastAssistantIndex(messages []anthropicAPI.MessageParam) int {
 // countExistingCacheBreakpoints counts cache_control breakpoints
 // already present on system blocks and tool definitions. Used to gate
 // the conversation breakpoint against the per-request cap.
+//
+// Expected: parameters for countExistingCacheBreakpoints.
+// Returns: result of countExistingCacheBreakpoints.
+// Side effects: None.
 func countExistingCacheBreakpoints(
 	params *anthropicAPI.MessageNewParams,
 ) int {

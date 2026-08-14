@@ -18,15 +18,41 @@ type SearchNodesTool struct {
 }
 
 // NewSearchNodesTool creates a SearchNodesTool backed by the given MemoryClient.
+//
+// Expected: parameters for NewSearchNodesTool.
+// Returns: result of NewSearchNodesTool.
+// Side effects: None.
 func NewSearchNodesTool(client learning.MemoryClient) *SearchNodesTool {
 	return &SearchNodesTool{client: client}
 }
 
+// Name ...
+//
+// Expected: parameters for Name.
+//
+// Returns: result of Name.
+//
+// Side effects: None.
 func (t *SearchNodesTool) Name() string { return "mcp_memory_search_nodes" }
+
+// Description ...
+//
+// Expected: parameters for Description.
+//
+// Returns: result of Description.
+//
+// Side effects: None.
 func (t *SearchNodesTool) Description() string {
 	return "Search the memory store for entities matching a query"
 }
 
+// Schema ...
+//
+// Expected: parameters for Schema.
+//
+// Returns: result of Schema.
+//
+// Side effects: None.
 func (t *SearchNodesTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -39,6 +65,10 @@ func (t *SearchNodesTool) Schema() tool.Schema {
 }
 
 // Execute performs a semantic search and returns formatted entity results.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *SearchNodesTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	query, ok := input.Arguments["query"].(string)
 	if !ok || query == "" {

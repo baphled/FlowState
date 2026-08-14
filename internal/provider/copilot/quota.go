@@ -17,6 +17,10 @@ import "github.com/baphled/flowstate/internal/provider/quota"
 //
 // accountHash partitions Snapshots across rotated keys; pass
 // quota.HashAccount(apiKey) at boot.
+//
+// Expected: parameters for NewQuota.
+// Returns: result of NewQuota.
+// Side effects: None.
 func NewQuota(accountHash string) quota.Quota {
 	return quota.NewNotConfiguredAdapter("copilot", accountHash, "subscription-only")
 }

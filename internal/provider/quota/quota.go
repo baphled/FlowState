@@ -123,6 +123,10 @@ type Snapshot struct {
 // The contract spec (contract_test.go) asserts this on every Snapshot
 // produced by Quota.Remaining for every in-scope provider. Adapters
 // MUST honour the invariant or callers see undefined render behaviour.
+//
+// Expected: parameters for IsValid.
+// Returns: result of IsValid.
+// Side effects: None.
 func (s Snapshot) IsValid() bool {
 	set := 0
 	if s.RateLimit != nil {
@@ -185,6 +189,9 @@ type Window struct {
 // NewWindow returns a Window pre-populated with -1 sentinels so a
 // caller building a variant from partial headers can disambiguate
 // "field absent" from a real "0 remaining".
+//
+// Returns: result of NewWindow.
+// Side effects: None.
 func NewWindow() Window {
 	return Window{Limit: -1, Remaining: -1}
 }
@@ -275,6 +282,10 @@ type Money struct {
 // IsZero reports whether the Money is the zero value. Used to
 // distinguish "uncapped" (Cap.IsZero() == true) from "capped at 0"
 // (impossible; defensive check only).
+//
+// Expected: parameters for IsZero.
+// Returns: result of IsZero.
+// Side effects: None.
 func (m Money) IsZero() bool {
 	return m.Amount == 0 && m.Currency == ""
 }
@@ -289,6 +300,10 @@ func (m Money) IsZero() bool {
 // string.
 //
 // Plan §"`internal/provider/quota/`" lines 170-171.
+//
+// Expected: parameters for HashAccount.
+// Returns: result of HashAccount.
+// Side effects: None.
 func HashAccount(apiKey string) string {
 	if apiKey == "" {
 		return ""

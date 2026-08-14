@@ -154,7 +154,7 @@ func filterManifestEntries(entries []os.DirEntry) []string {
 // Side effects:
 //   - Creates or truncates destPath.
 func copyManifestFromDisk(srcPath, destPath string) error {
-	srcFile, err := os.Open(srcPath) //nolint:gosec // srcPath comes from os.ReadDir of a configured agents dir
+	srcFile, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("opening legacy manifest %q: %w", srcPath, err)
 	}
@@ -285,6 +285,8 @@ func MigrateSkillsToConfigDir(oldDir, newDir string) (MigrateSkillsResult, error
 //
 // Side effects:
 //   - Reads oldDir and stat()s SKILL.md inside each candidate.
+//
+// Expected: parameters for findSkillBundles.
 func findSkillBundles(oldDir string) ([]string, error) {
 	entries, err := os.ReadDir(oldDir)
 	if err != nil {

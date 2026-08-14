@@ -226,6 +226,8 @@ func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) er
 // Side effects:
 //   - Reassigns *appPtr to the freshly-constructed App with populated
 //     registries.
+//
+// Returns: result of rebuildAppAfterBootstrap.
 func rebuildAppAfterBootstrap(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) error {
 	cfg, _, err := resolveFlagOverrides(cmd, baseCfg)
 	if err != nil {

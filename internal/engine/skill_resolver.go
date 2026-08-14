@@ -101,6 +101,8 @@ func (r *FileSkillResolver) readCache(name string) (string, bool) {
 //
 // Side effects:
 //   - Stores content in the in-memory cache under the given name.
+//
+// Returns: result of writeCache.
 func (r *FileSkillResolver) writeCache(name, content string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -69,12 +69,20 @@ const (
 // SourceRegistryString formats a Source value for a registry hit.
 // Returns "registry:<url>" — the canonical string Snapshot.PricingSource
 // carries per plan line 386.
+//
+// Expected: parameters for SourceRegistryString.
+// Returns: result of SourceRegistryString.
+// Side effects: None.
 func SourceRegistryString(url string) string {
 	return string(SourceRegistry) + ":" + url
 }
 
 // SourceOverrideString formats a Source value for an operator-override
 // hit. Returns "operator-override:<path>".
+//
+// Expected: parameters for SourceOverrideString.
+// Returns: result of SourceOverrideString.
+// Side effects: None.
 func SourceOverrideString(path string) string {
 	return string(SourceOverride) + ":" + path
 }
@@ -154,6 +162,9 @@ var embeddedJSON []byte
 // returned Table without affecting subsequent LoadEmbedded calls.
 //
 // Plan §"Pricing table" line 346 (embedded fallback always present).
+//
+// Returns: result of LoadEmbedded.
+// Side effects: None.
 func LoadEmbedded() (Table, error) {
 	t, err := parseTable(embeddedJSON)
 	if err != nil {
@@ -172,6 +183,10 @@ func LoadEmbedded() (Table, error) {
 // Models map, or any entry with non-positive InputPerMillion /
 // OutputPerMillion (a zero price would silently report $0.00 spend
 // which violates the honesty stance the plan demands).
+//
+// Expected: parameters for ParseTable.
+// Returns: result of ParseTable.
+// Side effects: None.
 func ParseTable(data []byte) (Table, error) {
 	return parseTable(data)
 }
@@ -179,6 +194,10 @@ func ParseTable(data []byte) (Table, error) {
 // WithSource returns a copy of the Table with Source replaced. Used by
 // the registry loader and operator-override loader to stamp their
 // audit-trail string after parsing.
+//
+// Expected: parameters for WithSource.
+// Returns: result of WithSource.
+// Side effects: None.
 func (t Table) WithSource(source string) Table {
 	clone := t
 	// Avoid sharing the models map with the caller's other references —
@@ -192,6 +211,13 @@ func (t Table) WithSource(source string) Table {
 	return clone
 }
 
+// parseTable ...
+//
+// Expected: parameters for parseTable.
+//
+// Returns: result of parseTable.
+//
+// Side effects: None.
 func parseTable(data []byte) (Table, error) {
 	if len(data) == 0 {
 		return Table{}, errors.New("pricing: empty pricing table data")
@@ -254,6 +280,10 @@ type Resolver struct {
 // zero value) — Lookup falls through cleanly. The embedded tier MUST
 // be non-empty in production — pass LoadEmbedded() output. Tests may
 // pass a zero embedded Table to assert "no tiers populated" behaviour.
+//
+// Expected: parameters for NewResolver.
+// Returns: result of NewResolver.
+// Side effects: None.
 func NewResolver(embedded, registry, override Table) *Resolver {
 	return &Resolver{
 		embedded: embedded,
@@ -273,6 +303,10 @@ func NewResolver(embedded, registry, override Table) *Resolver {
 //
 // Lookup formats the key as "<provider>/<model>" — the canonical form
 // every tier uses. Empty provider or model returns (zero, "", false).
+//
+// Expected: parameters for Lookup.
+// Returns: result of Lookup.
+// Side effects: None.
 func (r *Resolver) Lookup(provider, model string) (Entry, string, bool) {
 	if provider == "" || model == "" {
 		return Entry{}, "", false
@@ -295,6 +329,10 @@ func (r *Resolver) Lookup(provider, model string) (Entry, string, bool) {
 // registry refresh ticker (PR5/PR6) to pick up a hot-reloaded table
 // without rebuilding the Resolver from scratch. Single-writer
 // discipline expected — callers serialise through their own mutex.
+//
+// Expected: parameters for SetRegistry.
+// Returns: result of SetRegistry.
+// Side effects: None.
 func (r *Resolver) SetRegistry(table Table) {
 	r.registry = table
 }
@@ -302,6 +340,10 @@ func (r *Resolver) SetRegistry(table Table) {
 // HasModel reports whether ANY tier has the (provider, model) key.
 // Convenience helper for callers that only need the existence check;
 // equivalent to discarding the first two return values from Lookup.
+//
+// Expected: parameters for HasModel.
+// Returns: result of HasModel.
+// Side effects: None.
 func (r *Resolver) HasModel(provider, model string) bool {
 	_, _, ok := r.Lookup(provider, model)
 	return ok
@@ -311,6 +353,10 @@ func (r *Resolver) HasModel(provider, model string) bool {
 // "<provider>/<model>" string the embedded and registry tables key on.
 // Surfaced for tests and for adapters that want to log the lookup
 // key for audit purposes.
+//
+// Expected: parameters for CanonicalKey.
+// Returns: result of CanonicalKey.
+// Side effects: None.
 func CanonicalKey(provider, model string) string {
 	return strings.TrimSpace(provider) + "/" + strings.TrimSpace(model)
 }
@@ -334,6 +380,10 @@ func CanonicalKey(provider, model string) string {
 // SourceLookup is exposed so engine wire-up code can express the
 // adapter inline without leaking the pricing.Resolver shape into
 // the engine signature.
+//
+// Expected: parameters for SourceLookup.
+// Returns: result of SourceLookup.
+// Side effects: None.
 func (r *Resolver) SourceLookup(provider, model string) (string, bool) {
 	_, source, ok := r.Lookup(provider, model)
 	return source, ok
@@ -350,6 +400,10 @@ type Sourced struct {
 // Lookup satisfies quota.PricingResolver. Returns ("", false) when
 // the embedded resolver is nil — defensive against zero-value
 // constructors.
+//
+// Expected: parameters for Lookup.
+// Returns: result of Lookup.
+// Side effects: None.
 func (s Sourced) Lookup(provider, model string) (string, bool) {
 	if s.Resolver == nil {
 		return "", false
@@ -381,6 +435,10 @@ type SpendResolver struct {
 // Lookup satisfies quota.PricingResolver — returns the audit-trail
 // source string for the price tier that holds (provider, model).
 // Returns ("", false) when the embedded resolver is nil.
+//
+// Expected: parameters for Lookup.
+// Returns: result of Lookup.
+// Side effects: None.
 func (s SpendResolver) Lookup(provider, model string) (string, bool) {
 	if s.Resolver == nil {
 		return "", false
@@ -397,6 +455,10 @@ func (s SpendResolver) Lookup(provider, model string) (string, bool) {
 // pricing — the PR2 plan deliberately put the PricingResolver
 // interface in quota with this directional discipline). The compile-
 // time assertion below catches any drift in quota.PriceEntry shape.
+//
+// Expected: parameters for Entry.
+// Returns: result of Entry.
+// Side effects: None.
 func (s SpendResolver) Entry(provider, model string) (quota.PriceEntry, bool) {
 	if s.Resolver == nil {
 		return quota.PriceEntry{}, false

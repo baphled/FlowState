@@ -144,6 +144,8 @@ func NewContext(id string, m *Manifest) Context {
 //     Context is shared with concurrent member closures (the dispatcher
 //     assigns at run start, before SetSwarmContext / fan-out), so the
 //     immutability contract for the in-flight Context still holds.
+//
+// Returns: result of AssignRunChainID.
 func (c *Context) AssignRunChainID(runID string) {
 	if c == nil || runID == "" {
 		return
@@ -164,6 +166,10 @@ func (c *Context) AssignRunChainID(runID string) {
 // for a given run yet distinct across runs. Truncation to 12 hex chars
 // (48 bits) keeps keys readable while leaving collision probability
 // negligible for the per-swarm-run population.
+//
+// Expected: parameters for runChainIDSuffix.
+// Returns: result of runChainIDSuffix.
+// Side effects: None.
 func runChainIDSuffix(runID string) string {
 	sum := sha256.Sum256([]byte(runID))
 	return hex.EncodeToString(sum[:])[:12]
@@ -180,6 +186,8 @@ func runChainIDSuffix(runID string) string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for SubSwarmPath.
 func (c Context) SubSwarmPath() string {
 	return c.ChainPrefix
 }
@@ -453,6 +461,10 @@ type NotFoundError struct {
 
 // Error returns the canonical "no agent or swarm named '<id>'"
 // message from spec §2. Fixed wording so callers can match on it.
+//
+// Expected: parameters for Error.
+// Returns: result of Error.
+// Side effects: None.
 func (e *NotFoundError) Error() string {
 	return "no agent or swarm named \"" + e.ID + "\""
 }

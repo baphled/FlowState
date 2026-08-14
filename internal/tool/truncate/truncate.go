@@ -16,7 +16,9 @@ import (
 )
 
 const (
+	// DefaultMaxLines is the default maximum number of lines kept when truncating.
 	DefaultMaxLines = 500
+	// DefaultMaxBytes is the default maximum payload size in bytes.
 	DefaultMaxBytes = 20 * 1024
 )
 
@@ -74,6 +76,10 @@ type Result struct {
 // progressing on the visible slice. The OutputPath in the returned
 // Result is empty when the spill failed; the hint omits the path in
 // that case.
+//
+// Expected: parameters for Apply.
+// Returns: result of Apply.
+// Side effects: None.
 func Apply(text string, opts Options) Result {
 	maxLines := opts.MaxLines
 	if maxLines <= 0 {
@@ -112,6 +118,10 @@ func Apply(text string, opts Options) Result {
 
 // splitLines splits text on newlines without dropping the trailing
 // empty line that strings.Split would lose for "a\n".
+//
+// Expected: parameters for splitLines.
+// Returns: result of splitLines.
+// Side effects: None.
 func splitLines(text string) []string {
 	if text == "" {
 		return []string{}
@@ -121,6 +131,10 @@ func splitLines(text string) []string {
 
 // slice returns the head or tail slice that fits both the line budget
 // and the byte budget, plus removal metadata for the hint.
+//
+// Expected: parameters for slice.
+// Returns: result of slice.
+// Side effects: None.
 func slice(lines []string, maxLines, maxBytes int, direction Direction) (preview string, hitBytes bool, removed int, unit string) {
 	totalBytes := bytesForLines(lines)
 	out := make([]string, 0, maxLines)
@@ -167,6 +181,10 @@ func slice(lines []string, maxLines, maxBytes int, direction Direction) (preview
 }
 
 // bytesForLines reconstructs the byte length of a join-on-newline.
+//
+// Expected: parameters for bytesForLines.
+// Returns: result of bytesForLines.
+// Side effects: None.
 func bytesForLines(lines []string) int {
 	if len(lines) == 0 {
 		return 0
@@ -182,6 +200,10 @@ func bytesForLines(lines []string) int {
 // The hint is the user-facing contract for this package and must
 // reference both the read tool's offset/limit fields and grep so the
 // model can recover specific ranges without reloading the full spill.
+//
+// Expected: parameters for buildHint.
+// Returns: result of buildHint.
+// Side effects: None.
 func buildHint(removed int, unit string, hitBytes bool, outputPath string) string {
 	var head string
 	if hitBytes {
@@ -201,6 +223,10 @@ func buildHint(removed int, unit string, hitBytes bool, outputPath string) strin
 // writeOverflow spills the full original content to a session-scoped
 // file and returns the absolute path. On any IO error the function
 // returns "" so Apply can still succeed for the model.
+//
+// Expected: parameters for writeOverflow.
+// Returns: result of writeOverflow.
+// Side effects: None.
 func writeOverflow(text string, opts Options) string {
 	dir, err := overflowDir(opts)
 	if err != nil {
@@ -221,6 +247,10 @@ func writeOverflow(text string, opts Options) string {
 // Layout: <root>/<session>/ where root defaults to
 // UserCacheDir/flowstate/tool-output and session defaults to
 // "_unscoped" when no session ID was supplied.
+//
+// Expected: parameters for overflowDir.
+// Returns: result of overflowDir.
+// Side effects: None.
 func overflowDir(opts Options) (string, error) {
 	root := opts.Dir
 	if root == "" {
@@ -240,6 +270,10 @@ func overflowDir(opts Options) (string, error) {
 // overflowFilename returns a deterministic-ish name combining the tool
 // label, a millisecond timestamp, and a short random tag so concurrent
 // truncations don't collide.
+//
+// Expected: parameters for overflowFilename.
+// Returns: result of overflowFilename.
+// Side effects: None.
 func overflowFilename(opts Options) string {
 	tool := opts.ToolName
 	if tool == "" {
@@ -253,6 +287,10 @@ func overflowFilename(opts Options) string {
 // randomHex returns a hex-encoded random tag of n bytes. Falls back to
 // a static label on rand failure (a session-load with no entropy is
 // already broken; the spill is best-effort).
+//
+// Expected: parameters for randomHex.
+// Returns: result of randomHex.
+// Side effects: None.
 func randomHex(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
@@ -264,6 +302,10 @@ func randomHex(n int) string {
 // sanitiseSegment strips path separators and other shell metacharacters
 // from a directory or file segment so callers can pass session IDs and
 // tool names verbatim.
+//
+// Expected: parameters for sanitiseSegment.
+// Returns: result of sanitiseSegment.
+// Side effects: None.
 func sanitiseSegment(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -293,6 +335,9 @@ func sanitiseSegment(s string) string {
 var errOverflowFailed = errors.New("truncate: failed to write overflow spill")
 
 // OverflowError returns the sentinel for spill-write failures.
+//
+// Returns: result of OverflowError.
+// Side effects: None.
 func OverflowError() error { return errOverflowFailed }
 
 // Default scheduler knobs for the spill-file cleanup goroutine.
@@ -339,6 +384,10 @@ const (
 //   - WalkDir returns first IO err  → returned to the caller (the
 //     scheduler treats a non-nil error as a transient sweep failure
 //     and retries on the next tick).
+//
+// Expected: parameters for Cleanup.
+// Returns: result of Cleanup.
+// Side effects: None.
 func Cleanup(root string, retention time.Duration) error {
 	if root == "" {
 		cache, err := os.UserCacheDir()
@@ -387,6 +436,10 @@ type cleanupVisitor struct {
 // visit handles one filepath.WalkDir entry. Returns SkipAll only when
 // the root entirely disappears mid-walk; every other error path logs
 // at DEBUG and continues so a single bad file cannot abort the sweep.
+//
+// Expected: parameters for visit.
+// Returns: result of visit.
+// Side effects: None.
 func (c cleanupVisitor) visit(path string, d fs.DirEntry, fnErr error) error {
 	if fnErr != nil {
 		if errors.Is(fnErr, fs.ErrNotExist) {
@@ -422,6 +475,10 @@ func (c cleanupVisitor) visit(path string, d fs.DirEntry, fnErr error) error {
 // inside the safeWriteWindow, and files newer than the cutoff all
 // survive. The spill writer only creates regular files; anything
 // else in the tree is foreign and Cleanup must not chase it.
+//
+// Expected: parameters for shouldRemove.
+// Returns: result of shouldRemove.
+// Side effects: None.
 func shouldRemove(info fs.FileInfo, cutoff, safeFloor time.Time) bool {
 	if !info.Mode().IsRegular() {
 		return false
@@ -454,6 +511,9 @@ func shouldRemove(info fs.FileInfo, cutoff, safeFloor time.Time) bool {
 //   - One Cleanup invocation synchronously before the goroutine
 //     enters its select loop, so the first sweep is observable
 //     immediately and the spec does not have to wait for tick #1.
+//
+// Expected: parameters for StartCleanupScheduler.
+// Returns: result of StartCleanupScheduler.
 func StartCleanupScheduler(ctx context.Context, root string, retention, tick time.Duration) func() {
 	if retention < 0 {
 		return func() {}

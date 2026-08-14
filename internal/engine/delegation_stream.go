@@ -51,6 +51,10 @@ import (
 // not need additional attribution. Interleaved output when multiple
 // members run in parallel is a rendering concern for the UI to solve via
 // per-agent stream lanes — not by stalling the wire.
+//
+// Expected: parameters for teeToParentStream.
+// Returns: result of teeToParentStream.
+// Side effects: None.
 func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.StreamChunk) <-chan provider.StreamChunk {
 	parentOut, ok := streamOutputFromContext(ctx)
 	if !ok {
@@ -118,6 +122,7 @@ func teeToParentStream(ctx context.Context, agentID string, src <-chan provider.
 	return out
 }
 
+// childAttemptState tracks the lifecycle of a single delegated child attempt.
 type childAttemptState struct {
 	closeStore      func()
 	childCancel     func()
@@ -126,6 +131,11 @@ type childAttemptState struct {
 	delegateCtx     context.Context
 }
 
+// newChildAttemptState ...
+//
+// Returns: result of newChildAttemptState.
+//
+// Side effects: None.
 func newChildAttemptState() *childAttemptState {
 	return &childAttemptState{
 		closeStore:  func() {},
@@ -133,6 +143,13 @@ func newChildAttemptState() *childAttemptState {
 	}
 }
 
+// bind ...
+//
+// Expected: parameters for bind.
+//
+// Returns: result of bind.
+//
+// Side effects: None.
 func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, target delegationTarget, sessionID, message string) {
 	s.closeStore()
 	s.childCancel()
@@ -167,6 +184,13 @@ func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, targe
 	s.delegateCtx = delegateCtx
 }
 
+// startFreshRetry ...
+//
+// Expected: parameters for startFreshRetry.
+//
+// Returns: result of startFreshRetry.
+//
+// Side effects: None.
 func (s *childAttemptState) startFreshRetry(baseCtx context.Context, d *DelegateTool, target delegationTarget, chainID, message string, baseInfo *provider.DelegationInfo) string {
 	delegateSessionID := d.createChildSession(baseCtx, target.agentID, chainID)
 	baseInfo.TargetSessionID = delegateSessionID
@@ -174,6 +198,13 @@ func (s *childAttemptState) startFreshRetry(baseCtx context.Context, d *Delegate
 	return delegateSessionID
 }
 
+// attemptContext ...
+//
+// Expected: parameters for attemptContext.
+//
+// Returns: result of attemptContext.
+//
+// Side effects: None.
 func (s *childAttemptState) attemptContext(forcedToolChoice string, finisherToolsAllowlist []string) context.Context {
 	attemptCtx := session.WithToolChoiceOverride(s.delegateCtx, forcedToolChoice)
 	if len(finisherToolsAllowlist) > 0 {
@@ -182,6 +213,13 @@ func (s *childAttemptState) attemptContext(forcedToolChoice string, finisherTool
 	return attemptCtx
 }
 
+// failIfOwned ...
+//
+// Expected: parameters for failIfOwned.
+//
+// Returns: result of failIfOwned.
+//
+// Side effects: None.
 func (s *childAttemptState) failIfOwned(d *DelegateTool, cause error) {
 	if s.turnOwnedByWrap || d.turnRegistry == nil || s.childTurnID == "" {
 		return
@@ -189,6 +227,13 @@ func (s *childAttemptState) failIfOwned(d *DelegateTool, cause error) {
 	_ = d.turnRegistry.Fail(s.childTurnID, cause)
 }
 
+// complete ...
+//
+// Expected: parameters for complete.
+//
+// Returns: result of complete.
+//
+// Side effects: None.
 func (s *childAttemptState) complete(d *DelegateTool, providerName, modelName string) {
 	if d.turnRegistry != nil && s.childTurnID != "" {
 		_ = d.turnRegistry.Complete(s.childTurnID, turn.ModelInfo{
@@ -199,12 +244,26 @@ func (s *childAttemptState) complete(d *DelegateTool, providerName, modelName st
 	}
 }
 
+// resetForRetry ...
+//
+// Expected: parameters for resetForRetry.
+//
+// Returns: result of resetForRetry.
+//
+// Side effects: None.
 func (s *childAttemptState) resetForRetry(d *DelegateTool) {
 	if d.turnRegistry != nil && s.childTurnID != "" {
 		_ = d.turnRegistry.ResetForRetry(s.childTurnID)
 	}
 }
 
+// teardown ...
+//
+// Expected: parameters for teardown.
+//
+// Returns: result of teardown.
+//
+// Side effects: None.
 func (s *childAttemptState) teardown() {
 	s.closeStore()
 	s.childCancel()
@@ -260,6 +319,8 @@ func (d *DelegateTool) wrapWithAccumulator(
 //     single user-role Message to the child session via AppendMessage.
 //   - No-op when messageAppender is nil, when sessionID is empty, or when
 //     message is empty (defensive — empty briefs would be a separate bug).
+//
+// Returns: result of persistChildBrief.
 func (d *DelegateTool) persistChildBrief(sessionID, agentID, message string) {
 	if d.messageAppender == nil || sessionID == "" || message == "" {
 		return
@@ -653,7 +714,7 @@ func (d *DelegateTool) executeSync(
 			}
 		}
 		result = delegationResult{}
-		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childState.childTurnID)
+		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childState.childTurnID) //nolint:contextcheck // attemptCtx derived from delegateCtx via closure chain
 		if dispatchErr != nil {
 			completedAt = time.Now().UTC()
 			baseInfo.ToolCalls = result.toolCalls
@@ -1205,6 +1266,13 @@ func (d *DelegateTool) executeBackgroundTask(
 	return result.response, nil
 }
 
+// backgroundRetryAt ...
+//
+// Expected: parameters for backgroundRetryAt.
+//
+// Returns: result of backgroundRetryAt.
+//
+// Side effects: None.
 func (d *DelegateTool) backgroundRetryAt(eng *Engine, err error) (time.Time, bool) {
 	if eng == nil || err == nil {
 		return time.Time{}, false
@@ -1236,6 +1304,13 @@ func (d *DelegateTool) backgroundRetryAt(eng *Engine, err error) (time.Time, boo
 	return time.Time{}, false
 }
 
+// waitForBackgroundProviderRetry ...
+//
+// Expected: parameters for waitForBackgroundProviderRetry.
+//
+// Returns: result of waitForBackgroundProviderRetry.
+//
+// Side effects: None.
 func (d *DelegateTool) waitForBackgroundProviderRetry(ctx context.Context, retryAt time.Time, taskID string) (bool, bool) {
 	const maxProviderRetryWait = 5 * time.Minute
 	wait := time.Until(retryAt)
@@ -1283,6 +1358,8 @@ func (d *DelegateTool) waitForBackgroundProviderRetry(ctx context.Context, retry
 //   - Suppresses ErrSessionNotFound; other errors are silently discarded.
 //   - Emits a slog.Warn when a delegated session wrote zero coordination_store keys or when the
 //     store check itself fails. The close ALWAYS proceeds regardless of the check outcome.
+//
+// Returns: result of closeSessionIfManaged.
 func (d *DelegateTool) closeSessionIfManaged(sessionID string) {
 	if d.sessionManager == nil {
 		return
@@ -1303,6 +1380,8 @@ func (d *DelegateTool) closeSessionIfManaged(sessionID string) {
 //
 // Side effects:
 //   - Emits slog.Warn entries; mutates no session or store state.
+//
+// Returns: result of warnIfDelegatedSessionLeftNoCoordinationKeys.
 func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID string) {
 	if d.coordinationStore == nil {
 		return
@@ -1361,6 +1440,13 @@ func (d *DelegateTool) warnIfDelegatedSessionLeftNoCoordinationKeys(sessionID st
 	}
 }
 
+// hasSubstantiveCoordinationValue ...
+//
+// Expected: parameters for hasSubstantiveCoordinationValue.
+//
+// Returns: result of hasSubstantiveCoordinationValue.
+//
+// Side effects: None.
 func (d *DelegateTool) hasSubstantiveCoordinationValue(key string) bool {
 	if d == nil || d.coordinationStore == nil || key == "" {
 		return false
@@ -1372,6 +1458,13 @@ func (d *DelegateTool) hasSubstantiveCoordinationValue(key string) bool {
 	return hasSubstantiveOutput(val)
 }
 
+// expectedCoordinationStoreKeyFromSession ...
+//
+// Expected: parameters for expectedCoordinationStoreKeyFromSession.
+//
+// Returns: result of expectedCoordinationStoreKeyFromSession.
+//
+// Side effects: None.
 func (d *DelegateTool) expectedCoordinationStoreKeyFromSession(sess *session.Session) (string, bool) {
 	if sess == nil {
 		return "", false
@@ -1384,6 +1477,13 @@ func (d *DelegateTool) expectedCoordinationStoreKeyFromSession(sess *session.Ses
 	return "", false
 }
 
+// engineDeliveryFailureFallback ...
+//
+// Expected: parameters for engineDeliveryFailureFallback.
+//
+// Returns: result of engineDeliveryFailureFallback.
+//
+// Side effects: None.
 func (d *DelegateTool) engineDeliveryFailureFallback(agentID, chainID, sessionID string) (*deliveryFailureEnvelope, string, bool) {
 	if d == nil || d.coordinationStore == nil {
 		return nil, "", false
@@ -1405,6 +1505,13 @@ func (d *DelegateTool) engineDeliveryFailureFallback(agentID, chainID, sessionID
 	return nil, "", false
 }
 
+// fallbackCoordinationFailureKeys ...
+//
+// Expected: parameters for fallbackCoordinationFailureKeys.
+//
+// Returns: result of fallbackCoordinationFailureKeys.
+//
+// Side effects: None.
 func fallbackCoordinationFailureKeys(agentID, chainID, sessionID string) []string {
 	keys := make([]string, 0, 2)
 	if key := fallbackCoordinationFailureKey(agentID, chainID); key != "" {
@@ -1441,6 +1548,8 @@ func fallbackCoordinationFailureKeys(agentID, chainID, sessionID string) []strin
 //
 // Side effects:
 //   - Calls sessionManager.UpdateSessionModel, which persists the sidecar.
+//
+// Returns: result of recordChildModelAttribution.
 func (d *DelegateTool) recordChildModelAttribution(sessionID, providerID, modelID string) {
 	if d.sessionManager == nil || sessionID == "" {
 		return

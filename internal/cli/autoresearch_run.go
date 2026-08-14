@@ -105,6 +105,10 @@ func RunAutoresearchWithResult(
 // use from the command (via cmd.OutOrStdout()). Flags() is not consulted
 // by the content/commitTrials paths once rejectGitModeFlagsWithoutCommitTrials
 // has already run (or is skipped here).
+//
+// Expected: parameters for syntheticCmd.
+// Returns: result of syntheticCmd.
+// Side effects: None.
 func syntheticCmd(out io.Writer) *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.SetOut(out)
@@ -115,6 +119,10 @@ func syntheticCmd(out io.Writer) *cobra.Command {
 // runAutoresearchContentTo is the io.Writer-accepting variant of
 // runAutoresearchContent; it avoids the cobra.Command dependency so
 // RunAutoresearchWithResult can call it directly.
+//
+// Expected: parameters for runAutoresearchContentTo.
+// Returns: result of runAutoresearchContentTo.
+// Side effects: None.
 func runAutoresearchContentTo(
 	ctx context.Context,
 	out io.Writer,
@@ -127,6 +135,10 @@ func runAutoresearchContentTo(
 
 // runAutoresearchCommitTrialsTo is the io.Writer-accepting variant of
 // runAutoresearchCommitTrials.
+//
+// Expected: parameters for runAutoresearchCommitTrialsTo.
+// Returns: result of runAutoresearchCommitTrialsTo.
+// Side effects: None.
 func runAutoresearchCommitTrialsTo(
 	ctx context.Context,
 	out io.Writer,
@@ -141,6 +153,10 @@ func runAutoresearchCommitTrialsTo(
 // coord-store and populates an AutoresearchResult. Missing records
 // (e.g. max-trials=0 runs that write no result record) produce a
 // zero-value struct without an error.
+//
+// Expected: parameters for readAutoresearchResult.
+// Returns: result of readAutoresearchResult.
+// Side effects: None.
 func readAutoresearchResult(application *app.App, runID string) (AutoresearchResult, error) {
 	store, err := openCoordStore(application)
 	if err != nil {
@@ -186,6 +202,10 @@ func readAutoresearchResult(application *app.App, runID string) (AutoresearchRes
 // autoresearchRunOptions shape understood by the existing implementation.
 // Fields not exposed in AutoresearchOptions are filled with their defaults
 // so resolveAutoresearchOptions can proceed normally.
+//
+// Expected: parameters for toPrivateOpts.
+// Returns: result of toPrivateOpts.
+// Side effects: None.
 func toPrivateOpts(pub AutoresearchOptions) autoresearchRunOptions {
 	metricDir := pub.MetricDirection
 	if metricDir == "" {

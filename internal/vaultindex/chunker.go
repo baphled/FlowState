@@ -45,9 +45,17 @@ func NewChunker(size, overlap int) *Chunker {
 }
 
 // Size returns the configured chunk size in tokens.
+//
+// Expected: parameters for Size.
+// Returns: result of Size.
+// Side effects: None.
 func (c *Chunker) Size() int { return c.size }
 
 // Overlap returns the configured chunk overlap in tokens.
+//
+// Expected: parameters for Overlap.
+// Returns: result of Overlap.
+// Side effects: None.
 func (c *Chunker) Overlap() int { return c.overlap }
 
 // Chunk splits text into overlapping token windows.

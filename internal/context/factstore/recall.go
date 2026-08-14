@@ -21,6 +21,10 @@ var stopwords = map[string]struct{}{
 // tokenise lowercases s and splits it on non-letter/digit boundaries,
 // dropping stopwords and tokens shorter than two characters. The
 // result is the bag-of-tokens used by the overlap ranker.
+//
+// Expected: parameters for tokenise.
+// Returns: result of tokenise.
+// Side effects: None.
 func tokenise(s string) []string {
 	s = strings.ToLower(s)
 	fields := strings.FieldsFunc(s, func(r rune) bool {
@@ -42,6 +46,10 @@ func tokenise(s string) []string {
 // overlapCount returns the number of tokens in q that also appear in f.
 // Each q token is counted once even if it appears multiple times in f
 // — set semantics keep the score linear in query length.
+//
+// Expected: parameters for overlapCount.
+// Returns: result of overlapCount.
+// Side effects: None.
 func overlapCount(q, f []string) int {
 	if len(q) == 0 || len(f) == 0 {
 		return 0
@@ -66,6 +74,10 @@ func overlapCount(q, f []string) int {
 
 // sqrtAtLeastOne returns sqrt(n) clamped at a 1.0 minimum so single-
 // token facts do not dominate the ranking.
+//
+// Expected: parameters for sqrtAtLeastOne.
+// Returns: result of sqrtAtLeastOne.
+// Side effects: None.
 func sqrtAtLeastOne(n int) float64 {
 	if n <= 1 {
 		return 1.0

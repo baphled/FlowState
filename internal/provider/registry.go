@@ -31,6 +31,8 @@ func NewRegistry() *Registry {
 //
 // Side effects:
 //   - Modifies the registry's internal state (thread-safe).
+//
+// Returns: result of Register.
 func (r *Registry) Register(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -65,6 +67,8 @@ func (r *Registry) Get(name string) (Provider, error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for List.
 func (r *Registry) List() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

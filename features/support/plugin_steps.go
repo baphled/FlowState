@@ -134,6 +134,8 @@ func (s *testSpawner) StopProcess(name string, p *external.PluginProcess) error 
 //
 // Side effects:
 //   - Closes the done channel and server pipes for the named process.
+//
+// Returns: result of crashPlugin.
 func (s *testSpawner) crashPlugin(name string) {
 	s.mu.Lock()
 	tp, ok := s.processes[name]
@@ -147,6 +149,9 @@ func (s *testSpawner) crashPlugin(name string) {
 //
 // Side effects:
 //   - Closes tp.done, tp.serverR, and tp.serverW.
+//
+// Expected: parameters for stop.
+// Returns: result of stop.
 func (tp *testProcess) stop() {
 	tp.stopOnce.Do(func() {
 		close(tp.done)
@@ -264,6 +269,8 @@ func RegisterPluginSteps(ctx *godog.ScenarioContext) {
 //
 // Side effects:
 //   - Sets p.tmpDir.
+//
+// Expected: parameters for ensureTmpDir.
 func (p *PluginStepDefinitions) ensureTmpDir() error {
 	if p.tmpDir != "" {
 		return nil
@@ -280,6 +287,9 @@ func (p *PluginStepDefinitions) ensureTmpDir() error {
 //
 // Side effects:
 //   - Sets p.registry.
+//
+// Expected: parameters for ensureRegistry.
+// Returns: result of ensureRegistry.
 func (p *PluginStepDefinitions) ensureRegistry() {
 	if p.registry == nil {
 		p.registry = plugin.NewRegistry()
@@ -293,6 +303,8 @@ func (p *PluginStepDefinitions) ensureRegistry() {
 //
 // Side effects:
 //   - Sets p.tmpDir, p.registry, and p.discoverer.
+//
+// Expected: parameters for flowstateIsConfiguredWithAnEmptyPluginsDirectory.
 func (p *PluginStepDefinitions) flowstateIsConfiguredWithAnEmptyPluginsDirectory() error {
 	if err := p.ensureTmpDir(); err != nil {
 		return err
@@ -310,6 +322,8 @@ func (p *PluginStepDefinitions) flowstateIsConfiguredWithAnEmptyPluginsDirectory
 //
 // Side effects:
 //   - Sets p.manifests and p.discoverErr.
+//
+// Expected: parameters for flowstateStarts.
 func (p *PluginStepDefinitions) flowstateStarts() error {
 	p.manifests, p.discoverErr = p.discoverer.Discover(p.tmpDir)
 	return nil
@@ -322,6 +336,8 @@ func (p *PluginStepDefinitions) flowstateStarts() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for thePluginSystemInitialisesWithoutError.
 func (p *PluginStepDefinitions) thePluginSystemInitialisesWithoutError() error {
 	if p.discoverErr != nil {
 		return fmt.Errorf("expected no error, got: %w", p.discoverErr)
@@ -336,6 +352,8 @@ func (p *PluginStepDefinitions) thePluginSystemInitialisesWithoutError() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for noExternalPluginsAreLoaded.
 func (p *PluginStepDefinitions) noExternalPluginsAreLoaded() error {
 	if len(p.manifests) != 0 {
 		return fmt.Errorf("expected 0 manifests, got %d", len(p.manifests))
@@ -353,6 +371,8 @@ func (p *PluginStepDefinitions) noExternalPluginsAreLoaded() error {
 //
 // Side effects:
 //   - Creates a plugin subdirectory with manifest.json in p.tmpDir.
+//
+// Expected: parameters for aValidPluginManifestExistsInThePluginsDirectory.
 func (p *PluginStepDefinitions) aValidPluginManifestExistsInThePluginsDirectory() error {
 	if err := p.ensureTmpDir(); err != nil {
 		return err
@@ -372,6 +392,8 @@ func (p *PluginStepDefinitions) aValidPluginManifestExistsInThePluginsDirectory(
 //
 // Side effects:
 //   - Registers discovered plugins in p.registry.
+//
+// Expected: parameters for thePluginIsRegisteredInThePluginRegistry.
 func (p *PluginStepDefinitions) thePluginIsRegisteredInThePluginRegistry() error {
 	if len(p.manifests) == 0 {
 		return errors.New("no manifests discovered")
@@ -395,6 +417,8 @@ func (p *PluginStepDefinitions) thePluginIsRegisteredInThePluginRegistry() error
 //
 // Side effects:
 //   - Creates a plugin subdirectory with malformed manifest.json in p.tmpDir.
+//
+// Expected: parameters for aMalformedPluginManifestExistsInThePluginsDirectory.
 func (p *PluginStepDefinitions) aMalformedPluginManifestExistsInThePluginsDirectory() error {
 	if err := p.ensureTmpDir(); err != nil {
 		return err
@@ -414,6 +438,8 @@ func (p *PluginStepDefinitions) aMalformedPluginManifestExistsInThePluginsDirect
 //
 // Side effects:
 //   - Temporarily registers then removes a health-check plugin.
+//
+// Expected: parameters for flowstateContinuesRunning.
 func (p *PluginStepDefinitions) flowstateContinuesRunning() error {
 	p.ensureRegistry()
 	tp := &testPlugin{name: "health-check", version: "1.0.0"}
@@ -431,6 +457,8 @@ func (p *PluginStepDefinitions) flowstateContinuesRunning() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theMalformedPluginIsNotLoaded.
 func (p *PluginStepDefinitions) theMalformedPluginIsNotLoaded() error {
 	if p.discoverErr != nil {
 		return fmt.Errorf("discovery returned error: %w", p.discoverErr)
@@ -450,6 +478,8 @@ func (p *PluginStepDefinitions) theMalformedPluginIsNotLoaded() error {
 //
 // Side effects:
 //   - Sets p.spawner and p.lifecycle; spawns mock plugin processes.
+//
+// Expected: parameters for flowstateHasStartedWithThePluginLoaded.
 func (p *PluginStepDefinitions) flowstateHasStartedWithThePluginLoaded() error {
 	p.spawner = newTestSpawner()
 	p.lifecycle = external.NewLifecycleManager(p.spawner, p.registry)
@@ -463,6 +493,8 @@ func (p *PluginStepDefinitions) flowstateHasStartedWithThePluginLoaded() error {
 //
 // Side effects:
 //   - Closes the mock process done channel and waits for the crash watcher goroutine.
+//
+// Expected: parameters for thePluginProcessCrashes.
 func (p *PluginStepDefinitions) thePluginProcessCrashes() error {
 	p.spawner.crashPlugin("test-plugin")
 	time.Sleep(100 * time.Millisecond)
@@ -476,6 +508,8 @@ func (p *PluginStepDefinitions) thePluginProcessCrashes() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theCrashedPluginIsRemovedFromTheRegistry.
 func (p *PluginStepDefinitions) theCrashedPluginIsRemovedFromTheRegistry() error {
 	if _, ok := p.registry.Get("test-plugin"); ok {
 		return errors.New("crashed plugin 'test-plugin' still in registry")
@@ -490,6 +524,8 @@ func (p *PluginStepDefinitions) theCrashedPluginIsRemovedFromTheRegistry() error
 //
 // Side effects:
 //   - Sets p.health and p.hook with a three-tier failover chain.
+//
+// Expected: parameters for flowstateIsRunningWithTheFailoverPluginActive.
 func (p *PluginStepDefinitions) flowstateIsRunningWithTheFailoverPluginActive() error {
 	p.health = failover.NewHealthManager()
 	chain := failover.NewFallbackChain([]failover.ProviderModel{
@@ -512,6 +548,8 @@ func (p *PluginStepDefinitions) flowstateIsRunningWithTheFailoverPluginActive() 
 //
 // Side effects:
 //   - Marks anthropic/claude-sonnet-4-20250514 as rate-limited in p.health.
+//
+// Expected: parameters for aProviderReturnsARateLimitError.
 func (p *PluginStepDefinitions) aProviderReturnsARateLimitError() error {
 	retryAfter := time.Now().Add(1 * time.Hour)
 	p.health.MarkRateLimited("anthropic", "claude-sonnet-4-20250514", retryAfter)
@@ -525,6 +563,8 @@ func (p *PluginStepDefinitions) aProviderReturnsARateLimitError() error {
 //
 // Side effects:
 //   - Sets p.lastReq.
+//
+// Expected: parameters for theFailoverHookSwitchesToAnAlternativeProvider.
 func (p *PluginStepDefinitions) theFailoverHookSwitchesToAnAlternativeProvider() error {
 	req := &provider.ChatRequest{
 		Provider: "anthropic",
@@ -547,6 +587,8 @@ func (p *PluginStepDefinitions) theFailoverHookSwitchesToAnAlternativeProvider()
 //
 // Side effects:
 //   - Sets p.bus, p.logger, and p.logPath; opens a JSONL log file.
+//
+// Expected: parameters for flowstateIsRunningWithTheEventLoggerActive.
 func (p *PluginStepDefinitions) flowstateIsRunningWithTheEventLoggerActive() error {
 	if err := p.ensureTmpDir(); err != nil {
 		return err
@@ -564,6 +606,8 @@ func (p *PluginStepDefinitions) flowstateIsRunningWithTheEventLoggerActive() err
 //
 // Side effects:
 //   - Publishes a session event and waits briefly for the logger to flush.
+//
+// Expected: parameters for aSessionIsCreated.
 func (p *PluginStepDefinitions) aSessionIsCreated() error {
 	event := events.NewSessionEvent(events.SessionEventData{
 		SessionID: "test-session-001",
@@ -591,6 +635,8 @@ func (p *PluginStepDefinitions) aSessionIsCreated() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for anEventIsWrittenToTheEventLogFile.
 func (p *PluginStepDefinitions) anEventIsWrittenToTheEventLogFile() error {
 	data, err := os.ReadFile(p.logPath)
 	if err != nil {
@@ -618,6 +664,8 @@ type testPlugin struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Init.
 func (tp *testPlugin) Init() error { return nil }
 
 // Name returns the test plugin's name.
@@ -627,6 +675,8 @@ func (tp *testPlugin) Init() error { return nil }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (tp *testPlugin) Name() string { return tp.name }
 
 // Version returns the test plugin's version.
@@ -636,6 +686,8 @@ func (tp *testPlugin) Name() string { return tp.name }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Version.
 func (tp *testPlugin) Version() string { return tp.version }
 
 // writeValidManifest creates a plugin subdirectory with a valid manifest.json.

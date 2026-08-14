@@ -58,6 +58,8 @@ func RegisterSkillAutoloadingSteps(ctx *godog.ScenarioContext) {
 // Side effects:
 //   - Sets s.selection with the skill selection result.
 //   - Sets s.capturedReq with a ChatRequest containing the lean skill injection.
+//
+// Returns: result of runSelectionAndCapture.
 func (s *SkillAutoloadingStepDefinitions) runSelectionAndCapture() {
 	input := hook.SkillSelectionInput{
 		AgentID:            s.manifest.ID,
@@ -105,6 +107,8 @@ func (s *SkillAutoloadingStepDefinitions) runSelectionAndCapture() {
 //
 // Side effects:
 //   - Sets s.cfg and s.manifest.
+//
+// Expected: parameters for theAgentSystemIsInitialised.
 func (s *SkillAutoloadingStepDefinitions) theAgentSystemIsInitialised() error {
 	s.cfg = hook.DefaultSkillAutoLoaderConfig()
 	s.manifest = agent.Manifest{
@@ -126,6 +130,8 @@ func (s *SkillAutoloadingStepDefinitions) theAgentSystemIsInitialised() error {
 //
 // Side effects:
 //   - Runs skill selection and captures the request.
+//
+// Expected: parameters for aNewAgentSessionStartsWithAnyPrompt.
 func (s *SkillAutoloadingStepDefinitions) aNewAgentSessionStartsWithAnyPrompt() error {
 	if s.cfg == nil {
 		return errors.New("agent system not initialised")
@@ -142,6 +148,8 @@ func (s *SkillAutoloadingStepDefinitions) aNewAgentSessionStartsWithAnyPrompt() 
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theBaselineSkillsShouldBePresentInTheSystemPrompt.
 func (s *SkillAutoloadingStepDefinitions) theBaselineSkillsShouldBePresentInTheSystemPrompt() error {
 	if s.capturedReq == nil {
 		return errors.New("no captured request; session has not started")
@@ -208,6 +216,8 @@ func (s *SkillAutoloadingStepDefinitions) anAgentManifestSpecifiesTheSkill(skill
 //
 // Side effects:
 //   - Runs skill selection and captures the request.
+//
+// Expected: parameters for theAgentIsStarted.
 func (s *SkillAutoloadingStepDefinitions) theAgentIsStarted() error {
 	if s.cfg == nil {
 		return errors.New("agent system not initialised")
@@ -272,6 +282,8 @@ func (s *SkillAutoloadingStepDefinitions) thePromptContainsTheKeyword(keyword st
 //
 // Side effects:
 //   - Runs skill selection and captures the request.
+//
+// Expected: parameters for theAgentSessionIsCreated.
 func (s *SkillAutoloadingStepDefinitions) theAgentSessionIsCreated() error {
 	if s.cfg == nil {
 		return errors.New("agent system not initialised")
@@ -302,6 +314,8 @@ func (s *SkillAutoloadingStepDefinitions) theSystemShouldInjectTheSkillIntoTheSy
 //
 // Side effects:
 //   - Runs skill selection and captures the request.
+//
+// Expected: parameters for aSkillIsInjected.
 func (s *SkillAutoloadingStepDefinitions) aSkillIsInjected() error {
 	if s.cfg == nil {
 		return errors.New("agent system not initialised")
@@ -320,6 +334,8 @@ func (s *SkillAutoloadingStepDefinitions) aSkillIsInjected() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theSystemPromptShouldListTheSkillByItsLeanNameOnly.
 func (s *SkillAutoloadingStepDefinitions) theSystemPromptShouldListTheSkillByItsLeanNameOnly() error {
 	if s.capturedReq == nil {
 		return errors.New("no captured request; skill has not been injected")
@@ -338,6 +354,8 @@ func (s *SkillAutoloadingStepDefinitions) theSystemPromptShouldListTheSkillByIts
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theSkillDocumentationShouldNotBeInlinedInThePrompt.
 func (s *SkillAutoloadingStepDefinitions) theSkillDocumentationShouldNotBeInlinedInThePrompt() error {
 	if s.capturedReq == nil {
 		return errors.New("no captured request; skill has not been injected")

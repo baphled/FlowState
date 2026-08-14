@@ -135,6 +135,8 @@ func NewCircuitBreaker(maxFailures int, opts ...Option) *CircuitBreaker {
 //
 // Returns: true when a request may proceed, false when it should be blocked.
 // Side effects: may reset expired failures or transition the circuit between states.
+//
+// Expected: parameters for Allow.
 func (cb *CircuitBreaker) Allow() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -183,6 +185,9 @@ func (cb *CircuitBreaker) Allow() bool {
 // When the circuit is already in Closed state, only the failure count is reset.
 //
 // Side effects: resets failure tracking and may close the circuit after a successful probe.
+//
+// Expected: parameters for RecordSuccess.
+// Returns: result of RecordSuccess.
 func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -205,6 +210,9 @@ func (cb *CircuitBreaker) RecordSuccess() {
 // indicating the underlying issue persists.
 //
 // Side effects: increments failure tracking and may open the circuit.
+//
+// Expected: parameters for RecordFailure.
+// Returns: result of RecordFailure.
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -233,6 +241,8 @@ func (cb *CircuitBreaker) RecordFailure() {
 //
 // Side effects:
 //   - May immediately open the circuit for non-retriable errors.
+//
+// Returns: result of RecordTypedFailure.
 func (cb *CircuitBreaker) RecordTypedFailure(isRetriable bool) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -266,6 +276,8 @@ func (cb *CircuitBreaker) RecordTypedFailure(isRetriable bool) {
 //
 // Returns: the current circuit state value
 // Side effects: acquires the circuit mutex while reading state.
+//
+// Expected: parameters for State.
 func (cb *CircuitBreaker) State() CircuitState {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -280,6 +292,8 @@ func (cb *CircuitBreaker) State() CircuitState {
 //
 // Returns: the number of consecutive failures currently recorded
 // Side effects: acquires the circuit mutex while reading failure state.
+//
+// Expected: parameters for Failures.
 func (cb *CircuitBreaker) Failures() int {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
@@ -294,6 +308,9 @@ func (cb *CircuitBreaker) Failures() int {
 // Contrast with automatic recovery via failure window expiry or half-open timeout.
 //
 // Side effects: moves the circuit to HalfOpen and clears the half-open usage flag.
+//
+// Expected: parameters for Reset.
+// Returns: result of Reset.
 func (cb *CircuitBreaker) Reset() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()

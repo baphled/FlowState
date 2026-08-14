@@ -142,6 +142,8 @@ func resolvePatterns(patterns []string) ([]string, error) {
 //   - event is the internal Go event struct emitted by the engine.
 //
 // Side effects: calls plugin handler functions with the serialised PublicEvent.
+//
+// Returns: result of dispatch.
 func (a *PluginEventAdapter) dispatch(topic string, event any) {
 	data, err := json.Marshal(event)
 	if err != nil {

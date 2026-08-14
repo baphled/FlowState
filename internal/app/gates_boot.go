@@ -15,6 +15,10 @@ import (
 // register, and a swarm referencing a failed gate fails per its
 // failurePolicy at dispatch time. ctx is reserved for future cancel-
 // during-discovery support; v0 discovery is synchronous and fast.
+//
+// Expected: parameters for RegisterDiscoveredGates.
+// Returns: result of RegisterDiscoveredGates.
+// Side effects: None.
 func RegisterDiscoveredGates(_ context.Context, cfg *config.AppConfig) []error {
 	if cfg == nil || cfg.GatesDir == "" {
 		return nil

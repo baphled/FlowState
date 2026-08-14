@@ -68,6 +68,8 @@ func (c *SSEConsumer) WriteChunk(content string) error {
 //   - Logs the raw error server-side with a correlation ID.
 //   - Writes SSE data line with JSON-encoded sanitized error to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteError.
 func (c *SSEConsumer) WriteError(err error) {
 	category := "stream_error"
 	if provider.IsCriticalStreamError(err) {
@@ -81,6 +83,9 @@ func (c *SSEConsumer) WriteError(err error) {
 // Side effects:
 //   - Writes SSE data line with "[DONE]" marker to the response.
 //   - Flushes the response buffer.
+//
+// Expected: parameters for Done.
+// Returns: result of Done.
 func (c *SSEConsumer) Done() {
 	writeSSEDone(c.w, c.flusher)
 }
@@ -93,6 +98,8 @@ func (c *SSEConsumer) Done() {
 // Side effects:
 //   - Writes SSE data line with JSON-encoded skill load or tool call to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteToolCall.
 func (c *SSEConsumer) WriteToolCall(name string) {
 	if strings.HasPrefix(name, "skill:") {
 		writeSSESkillLoad(c.w, c.flusher, strings.TrimPrefix(name, "skill:"))
@@ -109,6 +116,8 @@ func (c *SSEConsumer) WriteToolCall(name string) {
 // Side effects:
 //   - Writes SSE data line with JSON-encoded tool result to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteToolResult.
 func (c *SSEConsumer) WriteToolResult(content string) {
 	writeSSEToolResult(c.w, c.flusher, content)
 }
@@ -135,6 +144,8 @@ func (c *SSEConsumer) WriteToolResult(content string) {
 // Side effects:
 //   - Writes SSE data line with JSON-encoded tool_error to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteToolError.
 func (c *SSEConsumer) WriteToolError(content string) {
 	writeSSEToolError(c.w, c.flusher, content)
 }
@@ -147,6 +158,8 @@ func (c *SSEConsumer) WriteToolError(content string) {
 // Side effects:
 //   - Writes SSE data line with JSON-encoded harness retry event to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteHarnessRetry.
 func (c *SSEConsumer) WriteHarnessRetry(content string) {
 	writeSSEHarnessRetry(c.w, c.flusher, content)
 }
@@ -159,6 +172,8 @@ func (c *SSEConsumer) WriteHarnessRetry(content string) {
 // Side effects:
 //   - Writes SSE data line with JSON-encoded attempt start event to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteAttemptStart.
 func (c *SSEConsumer) WriteAttemptStart(content string) {
 	writeSSEAttemptStart(c.w, c.flusher, content)
 }
@@ -171,6 +186,8 @@ func (c *SSEConsumer) WriteAttemptStart(content string) {
 // Side effects:
 //   - Writes SSE data line with JSON-encoded harness complete event to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteComplete.
 func (c *SSEConsumer) WriteComplete(content string) {
 	writeSSEHarnessComplete(c.w, c.flusher, content)
 }
@@ -183,6 +200,8 @@ func (c *SSEConsumer) WriteComplete(content string) {
 // Side effects:
 //   - Writes SSE data line with JSON-encoded critic feedback event to the response.
 //   - Flushes the response buffer.
+//
+// Returns: result of WriteCriticFeedback.
 func (c *SSEConsumer) WriteCriticFeedback(content string) {
 	writeSSECriticFeedback(c.w, c.flusher, content)
 }

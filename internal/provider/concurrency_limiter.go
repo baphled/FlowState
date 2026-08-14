@@ -79,6 +79,10 @@ func NewConcurrencyLimitedProvider(inner Provider, maxConcurrent int) *Concurren
 func (c *ConcurrencyLimitedProvider) Name() string { return c.inner.Name() }
 
 // WrappedProvider returns the wrapped provider for recursive diagnostics.
+//
+// Expected: parameters for WrappedProvider.
+// Returns: result of WrappedProvider.
+// Side effects: None.
 func (c *ConcurrencyLimitedProvider) WrappedProvider() Provider { return c.inner }
 
 // acquire blocks until a semaphore slot is free, any active cooldown has
@@ -91,6 +95,8 @@ func (c *ConcurrencyLimitedProvider) WrappedProvider() Provider { return c.inner
 // Side effects:
 //   - Updates in-flight and queue-depth atomic counters.
 //   - Emits slog.Debug on acquire, cooldown-wait, or cancellation.
+//
+// Expected: parameters for acquire.
 func (c *ConcurrencyLimitedProvider) acquire(ctx context.Context) error {
 	c.queueDepth.Add(1)
 
@@ -125,6 +131,9 @@ func (c *ConcurrencyLimitedProvider) acquire(ctx context.Context) error {
 //
 // Side effects:
 //   - Sleeps for the remaining cooldown duration.
+//
+// Expected: parameters for waitCooldown.
+// Returns: result of waitCooldown.
 func (c *ConcurrencyLimitedProvider) waitCooldown(ctx context.Context) {
 	c.cooldownMu.Lock()
 	remaining := time.Until(c.cooldownUntil)
@@ -159,6 +168,8 @@ func (c *ConcurrencyLimitedProvider) waitCooldown(ctx context.Context) {
 //
 // Side effects:
 //   - Updates the cooldown deadline.
+//
+// Returns: result of SetCooldown.
 func (c *ConcurrencyLimitedProvider) SetCooldown(d time.Duration) {
 	if d <= 0 {
 		return
@@ -181,6 +192,9 @@ func (c *ConcurrencyLimitedProvider) SetCooldown(d time.Duration) {
 // Side effects:
 //   - Decrements the in-flight atomic counter.
 //   - Emits slog.Debug after release.
+//
+// Expected: parameters for release.
+// Returns: result of release.
 func (c *ConcurrencyLimitedProvider) release() {
 	<-c.sem
 	c.inFlight.Add(-1)
@@ -332,6 +346,10 @@ func (c *ConcurrencyLimitedProvider) Chat(
 //
 // The HealthManager still applies its own longer cooldowns for persistent
 // circuit-breaking; this is the CONCURRENCY gate for the thundering-herd.
+//
+// Expected: parameters for applyCooldownFromError.
+// Returns: result of applyCooldownFromError.
+// Side effects: None.
 func (c *ConcurrencyLimitedProvider) applyCooldownFromError(err error) {
 	if err == nil {
 		return

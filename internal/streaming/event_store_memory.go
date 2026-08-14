@@ -60,6 +60,8 @@ func NewMemorySwarmStore(capacity int) *MemorySwarmStore {
 //
 // Side effects:
 //   - Mutates the internal slice under the store mutex.
+//
+// Returns: result of Append.
 func (s *MemorySwarmStore) Append(ev SwarmEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,6 +90,8 @@ func (s *MemorySwarmStore) Append(ev SwarmEvent) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for All.
 func (s *MemorySwarmStore) All() []SwarmEvent {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,6 +109,9 @@ func (s *MemorySwarmStore) All() []SwarmEvent {
 //
 // Side effects:
 //   - Replaces the internal slice with an empty one under the store mutex.
+//
+// Expected: parameters for Clear.
+// Returns: result of Clear.
 func (s *MemorySwarmStore) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,6 +139,8 @@ func (s *MemorySwarmStore) Clear() {
 //
 // Side effects:
 //   - Mutates the internal slice under the store mutex. No disk I/O.
+//
+// Returns: result of RestoreEvents.
 func (s *MemorySwarmStore) RestoreEvents(events []SwarmEvent) {
 	if len(events) == 0 {
 		return
@@ -154,6 +163,8 @@ func (s *MemorySwarmStore) RestoreEvents(events []SwarmEvent) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Capacity.
 func (s *MemorySwarmStore) Capacity() int {
 	return s.capacity
 }

@@ -20,11 +20,18 @@ type Tool struct {
 }
 
 // New creates a new read tool instance.
+//
+// Returns: result of New.
+// Side effects: None.
 func New() *Tool {
 	return &Tool{}
 }
 
 // NewWithGuard creates a read tool that denies access to protected paths.
+//
+// Expected: parameters for NewWithGuard.
+// Returns: result of NewWithGuard.
+// Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool {
 	return &Tool{guard: g}
 }
@@ -36,6 +43,8 @@ func NewWithGuard(g *pathguard.Guard) *Tool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *Tool) Name() string {
 	return "read"
 }
@@ -47,6 +56,8 @@ func (t *Tool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *Tool) Description() string {
 	return "Read file contents with optional 1-indexed line offset and line limit"
 }
@@ -59,6 +70,8 @@ func (t *Tool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -144,6 +157,10 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 // When offset is 1 and limit is 0, the original text is returned
 // unchanged (preserving exact byte-for-byte content including a trailing
 // newline). When offset > total line count, returns an empty string.
+//
+// Expected: parameters for sliceLines.
+// Returns: result of sliceLines.
+// Side effects: None.
 func sliceLines(text string, offset, limit int) string {
 	if offset <= 1 && limit <= 0 {
 		return text
@@ -166,6 +183,10 @@ func sliceLines(text string, offset, limit int) string {
 // readIntArg coerces an integer-shaped argument from the validated input
 // map. Both float64 (JSON-decoded) and int are accepted; missing or nil
 // returns the supplied default.
+//
+// Expected: parameters for readIntArg.
+// Returns: result of readIntArg.
+// Side effects: None.
 func readIntArg(args map[string]interface{}, key string, def int) (int, error) {
 	v, ok := args[key]
 	if !ok || v == nil {
@@ -192,6 +213,10 @@ func readIntArg(args map[string]interface{}, key string, def int) (int, error) {
 // applyTruncation caps the output at the engine boundary using the
 // truncate primitive. The session ID is read from ctx so the spill file
 // lands in a session-scoped directory.
+//
+// Expected: parameters for applyTruncation.
+// Returns: result of applyTruncation.
+// Side effects: None.
 func applyTruncation(ctx context.Context, output, toolName string) string {
 	sessionID, _ := ctx.Value(session.IDKey{}).(string)
 	result := truncate.Apply(output, truncate.Options{

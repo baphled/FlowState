@@ -31,6 +31,10 @@ type PriorMessagesKey struct{}
 
 // ProviderOverrideFromContext extracts the provider override from the
 // context, returning an empty string when no override is present.
+//
+// Expected: parameters for ProviderOverrideFromContext.
+// Returns: result of ProviderOverrideFromContext.
+// Side effects: None.
 func ProviderOverrideFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(ProviderOverrideKey{}).(string)
 	return v
@@ -38,6 +42,10 @@ func ProviderOverrideFromContext(ctx context.Context) string {
 
 // ModelOverrideFromContext extracts the model override from the
 // context, returning an empty string when no override is present.
+//
+// Expected: parameters for ModelOverrideFromContext.
+// Returns: result of ModelOverrideFromContext.
+// Side effects: None.
 func ModelOverrideFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(ModelOverrideKey{}).(string)
 	return v
@@ -71,6 +79,10 @@ type PreferredModelsKey struct{}
 // opt-in and a no-op for agents with no preferred_models, so non-swarm
 // and chain-less agents keep the prior cascade-to-global-default
 // behaviour.
+//
+// Expected: parameters for WithPreferredModels.
+// Returns: result of WithPreferredModels.
+// Side effects: None.
 func WithPreferredModels(ctx context.Context, chain []provider.ModelPreference) context.Context {
 	if len(chain) == 0 {
 		return ctx
@@ -82,6 +94,10 @@ func WithPreferredModels(ctx context.Context, chain []provider.ModelPreference) 
 // preferred_models chain from the context. Returns a nil slice when no
 // key is present, which is the dominant case for non-swarm turns and
 // agents without a declared chain.
+//
+// Expected: parameters for PreferredModelsFromContext.
+// Returns: result of PreferredModelsFromContext.
+// Side effects: None.
 func PreferredModelsFromContext(ctx context.Context) []provider.ModelPreference {
 	v, _ := ctx.Value(PreferredModelsKey{}).([]provider.ModelPreference)
 	return v
@@ -120,6 +136,10 @@ type SkipContextWindowOverflowCheckKey struct{}
 // tool_choice override. An empty/whitespace value short-circuits to the
 // input context unchanged — the override is opt-in and a no-op when the
 // caller has nothing to force.
+//
+// Expected: parameters for WithToolChoiceOverride.
+// Returns: result of WithToolChoiceOverride.
+// Side effects: None.
 func WithToolChoiceOverride(ctx context.Context, choice string) context.Context {
 	if choice == "" {
 		return ctx
@@ -130,6 +150,10 @@ func WithToolChoiceOverride(ctx context.Context, choice string) context.Context 
 // ToolChoiceOverrideFromContext extracts the per-turn tool_choice
 // override, returning an empty string when none is set (the dominant
 // case — the model picks its own tool use).
+//
+// Expected: parameters for ToolChoiceOverrideFromContext.
+// Returns: result of ToolChoiceOverrideFromContext.
+// Side effects: None.
 func ToolChoiceOverrideFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(ToolChoiceOverrideKey{}).(string)
 	return v
@@ -137,6 +161,10 @@ func ToolChoiceOverrideFromContext(ctx context.Context) string {
 
 // WithToolsAllowlistOverride returns a derived context carrying a per-turn
 // tool allowlist override. Empty input is a no-op.
+//
+// Expected: parameters for WithToolsAllowlistOverride.
+// Returns: result of WithToolsAllowlistOverride.
+// Side effects: None.
 func WithToolsAllowlistOverride(ctx context.Context, tools []string) context.Context {
 	if len(tools) == 0 {
 		return ctx
@@ -147,6 +175,10 @@ func WithToolsAllowlistOverride(ctx context.Context, tools []string) context.Con
 
 // ToolsAllowlistOverrideFromContext extracts the per-turn tool allowlist
 // override. Nil means no override.
+//
+// Expected: parameters for ToolsAllowlistOverrideFromContext.
+// Returns: result of ToolsAllowlistOverrideFromContext.
+// Side effects: None.
 func ToolsAllowlistOverrideFromContext(ctx context.Context) []string {
 	v, _ := ctx.Value(ToolsAllowlistOverrideKey{}).([]string)
 	return v
@@ -154,12 +186,20 @@ func ToolsAllowlistOverrideFromContext(ctx context.Context) []string {
 
 // WithSkipContextWindowOverflowCheck returns a derived context that skips the
 // proactive overflow refusal gate for the next retry only.
+//
+// Expected: parameters for WithSkipContextWindowOverflowCheck.
+// Returns: result of WithSkipContextWindowOverflowCheck.
+// Side effects: None.
 func WithSkipContextWindowOverflowCheck(ctx context.Context) context.Context {
 	return context.WithValue(ctx, SkipContextWindowOverflowCheckKey{}, true)
 }
 
 // SkipContextWindowOverflowCheckFromContext reports whether the next provider
 // stream should bypass the proactive overflow refusal gate.
+//
+// Expected: parameters for SkipContextWindowOverflowCheckFromContext.
+// Returns: result of SkipContextWindowOverflowCheckFromContext.
+// Side effects: None.
 func SkipContextWindowOverflowCheckFromContext(ctx context.Context) bool {
 	v, _ := ctx.Value(SkipContextWindowOverflowCheckKey{}).(bool)
 	return v
@@ -174,6 +214,10 @@ func SkipContextWindowOverflowCheckFromContext(ctx context.Context) bool {
 // session-scoped path. Without this, turn 1 of every session would
 // silently fall through to the shared store (which still accumulates
 // every session's history) and inherit a contaminated prefix.
+//
+// Expected: parameters for WithPriorMessages.
+// Returns: result of WithPriorMessages.
+// Side effects: None.
 func WithPriorMessages(ctx context.Context, msgs []provider.Message) context.Context {
 	if msgs == nil {
 		// Materialise a non-nil empty slice so PriorMessagesFromContext
@@ -189,6 +233,10 @@ func WithPriorMessages(ctx context.Context, msgs []provider.Message) context.Con
 // (use session-scoped messages, even if empty). An empty slice with
 // the key attached means "fresh session, no prior history" and must
 // still bypass the shared store.
+//
+// Expected: parameters for PriorMessagesFromContext.
+// Returns: result of PriorMessagesFromContext.
+// Side effects: None.
 func PriorMessagesFromContext(ctx context.Context) ([]provider.Message, bool) {
 	v, ok := ctx.Value(PriorMessagesKey{}).([]provider.Message)
 	if !ok {
@@ -220,6 +268,10 @@ type StreamAgentOverrideKey struct{}
 // turn agent override. Empty/whitespace agentID short-circuits to the
 // input context unchanged — the override is opt-in and a noop when the
 // caller has no specific agent to redirect to.
+//
+// Expected: parameters for WithStreamAgentOverride.
+// Returns: result of WithStreamAgentOverride.
+// Side effects: None.
 func WithStreamAgentOverride(ctx context.Context, agentID string) context.Context {
 	if agentID == "" {
 		return ctx
@@ -231,6 +283,10 @@ func WithStreamAgentOverride(ctx context.Context, agentID string) context.Contex
 // from the context. Returns an empty string when no override is set,
 // which is the dominant case for sessions driven by their persistent
 // agent_id.
+//
+// Expected: parameters for StreamAgentOverrideFromContext.
+// Returns: result of StreamAgentOverrideFromContext.
+// Side effects: None.
 func StreamAgentOverrideFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(StreamAgentOverrideKey{}).(string)
 	return v
@@ -254,6 +310,10 @@ type AttachmentsKey struct{}
 // per-turn attachment slice. A nil/empty slice is a no-op — callers
 // that have no attachments should not call this helper at all, so
 // AttachmentsFromContext returns the zero state.
+//
+// Expected: parameters for WithAttachments.
+// Returns: result of WithAttachments.
+// Side effects: None.
 func WithAttachments(ctx context.Context, atts []provider.Attachment) context.Context {
 	if len(atts) == 0 {
 		return ctx
@@ -264,6 +324,10 @@ func WithAttachments(ctx context.Context, atts []provider.Attachment) context.Co
 // AttachmentsFromContext extracts the per-turn attachment slice from
 // the context. Returns a nil slice (and length-zero) when no key is
 // present, which is the dominant case for text-only turns.
+//
+// Expected: parameters for AttachmentsFromContext.
+// Returns: result of AttachmentsFromContext.
+// Side effects: None.
 func AttachmentsFromContext(ctx context.Context) []provider.Attachment {
 	v, _ := ctx.Value(AttachmentsKey{}).([]provider.Attachment)
 	return v

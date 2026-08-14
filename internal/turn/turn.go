@@ -194,6 +194,10 @@ type ProviderQuotaNotConfig struct {
 // partitionKey returns the partition-key string for a quota snapshot —
 // matches snapshotKey() on the FE side (quotaStore.ts:56-58). The
 // per-partition slice semantics in UpsertProviderQuota dedup on this key.
+//
+// Expected: parameters for partitionKey.
+// Returns: result of partitionKey.
+// Side effects: None.
 func (s ProviderQuotaSnapshot) partitionKey() string {
 	return s.Provider + ":" + s.AccountHash + ":" + s.Model
 }
@@ -669,6 +673,8 @@ func NewRegistry() *Registry {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for NewRegistryWithIDGen.
 func NewRegistryWithIDGen(idGen func() string, clock func() time.Time) *Registry {
 	if idGen == nil {
 		idGen = defaultIDGen
@@ -697,6 +703,9 @@ func NewRegistryWithIDGen(idGen func() string, clock func() time.Time) *Registry
 //     "broadcast" idiom for close-of-channel).
 //   - Replaces changeCh with a freshly-allocated chan struct{} so the
 //     next WaitForChange call gets a live token.
+//
+// Expected: parameters for broadcastChangeLocked.
+// Returns: result of broadcastChangeLocked.
 func (r *Registry) broadcastChangeLocked() {
 	close(r.changeCh)
 	r.changeCh = make(chan struct{})
@@ -1240,6 +1249,10 @@ func (r *Registry) SetHeartbeat(turnID, phase string, tokenCount int) {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-α.
+//
+// Expected: parameters for SetProviderModel.
+// Returns: result of SetProviderModel.
+// Side effects: None.
 func (r *Registry) SetProviderModel(turnID, provider, model string) {
 	if turnID == "" {
 		return
@@ -1295,6 +1308,10 @@ func (r *Registry) SetProviderModel(turnID, provider, model string) {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+//
+// Expected: parameters for SetContextUsage.
+// Returns: result of SetContextUsage.
+// Side effects: None.
 func (r *Registry) SetContextUsage(turnID string, cu *ContextUsage) {
 	if turnID == "" || cu == nil {
 		return
@@ -1350,6 +1367,10 @@ func (r *Registry) SetContextUsage(turnID string, cu *ContextUsage) {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-β.
+//
+// Expected: parameters for UpsertProviderQuota.
+// Returns: result of UpsertProviderQuota.
+// Side effects: None.
 func (r *Registry) UpsertProviderQuota(turnID string, snap ProviderQuotaSnapshot) {
 	if turnID == "" {
 		return
@@ -1417,6 +1438,10 @@ func (r *Registry) UpsertProviderQuota(turnID string, snap ProviderQuotaSnapshot
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+// Expected: parameters for AppendCompactionEvent.
+// Returns: result of AppendCompactionEvent.
+// Side effects: None.
 func (r *Registry) AppendCompactionEvent(turnID string, ev CompactionEvent) {
 	if turnID == "" {
 		return
@@ -1452,6 +1477,10 @@ func (r *Registry) AppendCompactionEvent(turnID string, ev CompactionEvent) {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+// Expected: parameters for AppendGateFailure.
+// Returns: result of AppendGateFailure.
+// Side effects: None.
 func (r *Registry) AppendGateFailure(turnID string, gf GateFailure) {
 	if turnID == "" {
 		return
@@ -1502,6 +1531,10 @@ func (r *Registry) AppendGateFailure(turnID string, gf GateFailure) {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Phase-5 Turn-Endpoint Event-Type Parity (May 2026).md §1c-γ.
+//
+// Expected: parameters for SetCriticalError.
+// Returns: result of SetCriticalError.
+// Side effects: None.
 func (r *Registry) SetCriticalError(turnID string, ce *TurnCriticalError) {
 	if turnID == "" || ce == nil {
 		return
@@ -1535,6 +1568,10 @@ func (r *Registry) SetCriticalError(turnID string, ce *TurnCriticalError) {
 // nil-vs-non-nil is a difference (the empty → real transition the FE's
 // first-render gate waits on); non-nil-vs-non-nil dereferences both
 // sides for field equality. Used by WaitForChange's predicate.
+//
+// Expected: parameters for criticalErrorDiffers.
+// Returns: result of criticalErrorDiffers.
+// Side effects: None.
 func criticalErrorDiffers(live, baseline *TurnCriticalError) bool {
 	if live == nil && baseline == nil {
 		return false
@@ -1549,6 +1586,10 @@ func criticalErrorDiffers(live, baseline *TurnCriticalError) bool {
 // each variant payload. Required so a caller's mutation of e.g.
 // snap.TokenSpend after the Upsert call does not leak into the registry's
 // stored snapshot.
+//
+// Expected: parameters for deepCopyProviderQuota.
+// Returns: result of deepCopyProviderQuota.
+// Side effects: None.
 func deepCopyProviderQuota(snap ProviderQuotaSnapshot) ProviderQuotaSnapshot {
 	out := snap
 	if snap.RateLimit != nil {
@@ -1570,6 +1611,10 @@ func deepCopyProviderQuota(snap ProviderQuotaSnapshot) ProviderQuotaSnapshot {
 // including the variant payloads. nil-vs-nil counts as equal; nil-vs-
 // non-nil counts as different. Used by the UpsertProviderQuota broadcast
 // gate to suppress spurious wakes during quiet streaming gaps.
+//
+// Expected: parameters for providerQuotaEqual.
+// Returns: result of providerQuotaEqual.
+// Side effects: None.
 func providerQuotaEqual(a, b ProviderQuotaSnapshot) bool {
 	if a.Provider != b.Provider ||
 		a.AccountHash != b.AccountHash ||
@@ -1609,6 +1654,10 @@ func providerQuotaEqual(a, b ProviderQuotaSnapshot) bool {
 // is a difference (the empty → real transition the FE's first-render path
 // waits on); non-nil-vs-non-nil dereferences both sides for field equality.
 // Used by WaitForChange's predicate.
+//
+// Expected: parameters for contextUsageDiffers.
+// Returns: result of contextUsageDiffers.
+// Side effects: None.
 func contextUsageDiffers(live, baseline *ContextUsage) bool {
 	if live == nil && baseline == nil {
 		return false
@@ -1627,6 +1676,10 @@ func contextUsageDiffers(live, baseline *ContextUsage) bool {
 // (a fresh partition appends, never inserts mid-slice). Length change OR
 // any element differing by providerQuotaEqual counts as a difference.
 // Used by WaitForChange's predicate.
+//
+// Expected: parameters for providerQuotasDiffer.
+// Returns: result of providerQuotasDiffer.
+// Side effects: None.
 func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 	if len(live) != len(baseline) {
 		return true
@@ -1656,6 +1709,10 @@ func providerQuotasDiffer(live, baseline []ProviderQuotaSnapshot) bool {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Permission Mode ModeAskUser Extension (May 2026).md §11 R5 + §17.1.
+//
+// Expected: parameters for permissionRequestsDiffer.
+// Returns: result of permissionRequestsDiffer.
+// Side effects: None.
 func permissionRequestsDiffer(live, baseline []TurnPermissionRequest) bool {
 	if len(live) != len(baseline) {
 		return true
@@ -1706,6 +1763,10 @@ func permissionRequestsDiffer(live, baseline []TurnPermissionRequest) bool {
 // Plan ref: ~/vaults/baphled/1. Projects/FlowState/Plans/
 //
 //	Permission Mode ModeAskUser Extension (May 2026).md §17.1.
+//
+// Expected: parameters for UpsertPermissionRequest.
+// Returns: result of UpsertPermissionRequest.
+// Side effects: None.
 func (r *Registry) UpsertPermissionRequest(turnID string, req TurnPermissionRequest) {
 	if turnID == "" || req.RequestID == "" {
 		return
@@ -1911,6 +1972,9 @@ func (r *Registry) WaitForChange(
 //
 // Side effects:
 //   - None — read-only on the input.
+//
+// Expected: parameters for snapshotLocked.
+// Returns: result of snapshotLocked.
 func (r *Registry) snapshotLocked(t *Turn) Turn {
 	out := *t
 	out.MessagesAdded = append([]session.Message(nil), t.MessagesAdded...)

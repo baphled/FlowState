@@ -94,6 +94,10 @@ const supportedPermissionsVersion = 2
 //     slog warning is emitted so operators see the silent fall-back.
 //   - (nil, err) on a real I/O or YAML parse error.
 //   - (parsed, nil) on success.
+//
+// Expected: parameters for LoadPermissions.
+// Returns: result of LoadPermissions.
+// Side effects: None.
 func LoadPermissions(path string) (*Permissions, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -132,6 +136,8 @@ func LoadPermissions(path string) (*Permissions, error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for parsePermissionsBytes.
 func parsePermissionsBytes(data []byte) (*Permissions, error) {
 	var perms Permissions
 	if err := yaml.Unmarshal(data, &perms); err != nil {
@@ -151,6 +157,10 @@ func parsePermissionsBytes(data []byte) (*Permissions, error) {
 //
 // Deny always beats allow: both lists are evaluated independently and
 // the deny verdict short-circuits regardless of allow matches.
+//
+// Expected: parameters for Match.
+// Returns: result of Match.
+// Side effects: None.
 func (p *Permissions) Match(tool, path string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -178,6 +188,10 @@ func (p *Permissions) Match(tool, path string) (string, bool) {
 // never fail closed on a syntax error in operator config, mirroring the
 // "permissions are advisory, legacy guard is the floor" stance of
 // Slice A.
+//
+// Expected: parameters for matchesAny.
+// Returns: result of matchesAny.
+// Side effects: None.
 func matchesAny(globs []string, path string) bool {
 	for _, g := range globs {
 		ok, err := doublestar.PathMatch(g, path)

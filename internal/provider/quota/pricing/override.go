@@ -26,11 +26,15 @@ import (
 // models, non-positive prices). The caller logs and falls back to
 // the registry / embedded baseline rather than failing boot — the
 // plan's honesty stance prefers a stale price over no price.
+//
+// Expected: parameters for LoadOverride.
+// Returns: result of LoadOverride.
+// Side effects: None.
 func LoadOverride(path string) (Table, error) {
 	if path == "" {
 		return Table{}, nil
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied path is intentional
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return Table{}, fmt.Errorf("pricing: reading override file %q: %w", path, err)
 	}

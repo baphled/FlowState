@@ -63,6 +63,10 @@ var generateCSRFKey = cryptoRandRead
 // cryptoRandRead is the production implementation: 32 random bytes from
 // crypto/rand. Pulled out so generateCSRFKey can be overridden in
 // tests.
+//
+// Expected: parameters for cryptoRandRead.
+// Returns: result of cryptoRandRead.
+// Side effects: None.
 func cryptoRandRead(buf []byte) error {
 	_, err := rand.Read(buf)
 	return err

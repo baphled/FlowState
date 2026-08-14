@@ -32,6 +32,9 @@ type todoSteps struct {
 // implemented return godog.ErrPending until the corresponding GREEN step
 // lands, which keeps the suite compiling under the e2e build tag while
 // marking the scenarios as failing (RED) under Strict mode.
+//
+// Expected: parameters for RegisterTodoSteps.
+// Side effects: None.
 func RegisterTodoSteps(ctx *godog.ScenarioContext) {
 	s := &todoSteps{}
 	ctx.Step(`^the todo tools are enabled$`, s.todoToolsAreEnabled)
@@ -48,6 +51,11 @@ func RegisterTodoSteps(ctx *godog.ScenarioContext) {
 
 // todoToolsAreEnabled is the Background step. It resets per-scenario state
 // so the seeded list and captured error never leak between scenarios.
+//
+// Returns: result of todoToolsAreEnabled.
+// Side effects: None.
+//
+// Expected: parameters for todoToolsAreEnabled.
 func (s *todoSteps) todoToolsAreEnabled() error {
 	s.store = nil
 	s.writeTool = nil
@@ -60,6 +68,10 @@ func (s *todoSteps) todoToolsAreEnabled() error {
 // sessionHasTodoList seeds a fresh per-session store with the items in the
 // Gherkin data table, using the real todowrite tool so the seed runs
 // through the same creation path as production.
+//
+// Expected: parameters for sessionHasTodoList.
+// Returns: result of sessionHasTodoList.
+// Side effects: None.
 func (s *todoSteps) sessionHasTodoList(table *godog.Table) error {
 	s.sessionID = "bdd-todo-session"
 	s.store = todotool.NewMemoryStore()
@@ -89,6 +101,13 @@ func (s *todoSteps) sessionHasTodoList(table *godog.Table) error {
 	return nil
 }
 
+// agentClearsTodoList ...
+//
+// Returns: result of agentClearsTodoList.
+//
+// Side effects: None.
+//
+// Expected: parameters for agentClearsTodoList.
 func (s *todoSteps) agentClearsTodoList() error {
 	clearTool := todotool.NewClear(s.store)
 	ctx := context.WithValue(context.Background(), session.IDKey{}, s.sessionID)
@@ -100,6 +119,13 @@ func (s *todoSteps) agentClearsTodoList() error {
 	return nil
 }
 
+// agentUpdatesTodoStatus ...
+//
+// Expected: parameters for agentUpdatesTodoStatus.
+//
+// Returns: result of agentUpdatesTodoStatus.
+//
+// Side effects: None.
 func (s *todoSteps) agentUpdatesTodoStatus(idx int, status string) error {
 	updateTool := todotool.NewUpdate(s.store)
 	ctx := context.WithValue(context.Background(), session.IDKey{}, s.sessionID)
@@ -114,6 +140,13 @@ func (s *todoSteps) agentUpdatesTodoStatus(idx int, status string) error {
 	return nil
 }
 
+// storedTodoListShouldBeEmpty ...
+//
+// Returns: result of storedTodoListShouldBeEmpty.
+//
+// Side effects: None.
+//
+// Expected: parameters for storedTodoListShouldBeEmpty.
 func (s *todoSteps) storedTodoListShouldBeEmpty() error {
 	if got := s.store.Get(s.sessionID); len(got) != 0 {
 		return fmt.Errorf("expected an empty todo list, got %d items", len(got))
@@ -121,6 +154,13 @@ func (s *todoSteps) storedTodoListShouldBeEmpty() error {
 	return nil
 }
 
+// aFreshTodowriteShouldCreateANewList ...
+//
+// Returns: result of aFreshTodowriteShouldCreateANewList.
+//
+// Side effects: None.
+//
+// Expected: parameters for aFreshTodowriteShouldCreateANewList.
 func (s *todoSteps) aFreshTodowriteShouldCreateANewList() error {
 	ctx := context.WithValue(context.Background(), session.IDKey{}, s.sessionID)
 	_, err := s.writeTool.Execute(ctx, tool.Input{
@@ -139,6 +179,13 @@ func (s *todoSteps) aFreshTodowriteShouldCreateANewList() error {
 	return err
 }
 
+// theUpdateShouldBeRejectedWith ...
+//
+// Expected: parameters for theUpdateShouldBeRejectedWith.
+//
+// Returns: result of theUpdateShouldBeRejectedWith.
+//
+// Side effects: None.
 func (s *todoSteps) theUpdateShouldBeRejectedWith(substr string) error {
 	if s.lastErr == nil {
 		return fmt.Errorf("expected the todo update to be rejected, but it succeeded")
@@ -149,6 +196,13 @@ func (s *todoSteps) theUpdateShouldBeRejectedWith(substr string) error {
 	return nil
 }
 
+// theClearShouldBeRejected ...
+//
+// Returns: result of theClearShouldBeRejected.
+//
+// Side effects: None.
+//
+// Expected: parameters for theClearShouldBeRejected.
 func (s *todoSteps) theClearShouldBeRejected() error {
 	if s.lastErr == nil {
 		return fmt.Errorf("expected the todo clear to be rejected, but it succeeded")
@@ -156,6 +210,13 @@ func (s *todoSteps) theClearShouldBeRejected() error {
 	return nil
 }
 
+// theTodoListShouldBeUnchanged ...
+//
+// Returns: result of theTodoListShouldBeUnchanged.
+//
+// Side effects: None.
+//
+// Expected: parameters for theTodoListShouldBeUnchanged.
 func (s *todoSteps) theTodoListShouldBeUnchanged() error {
 	if got := s.store.Get(s.sessionID); !reflect.DeepEqual(got, s.seed) {
 		return fmt.Errorf("expected the todo list to be unchanged from the seed, got %v", got)
@@ -163,6 +224,13 @@ func (s *todoSteps) theTodoListShouldBeUnchanged() error {
 	return nil
 }
 
+// todoAtIndexShouldHaveStatus ...
+//
+// Expected: parameters for todoAtIndexShouldHaveStatus.
+//
+// Returns: result of todoAtIndexShouldHaveStatus.
+//
+// Side effects: None.
 func (s *todoSteps) todoAtIndexShouldHaveStatus(idx int, status string) error {
 	items := s.store.Get(s.sessionID)
 	if idx < 0 || idx >= len(items) {

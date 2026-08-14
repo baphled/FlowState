@@ -43,6 +43,8 @@ type planRejectionMockProvider struct {
 // Returns: The string "mock-plan-rejection".
 //
 // Side effects: None.
+//
+// Expected: parameters for Name.
 func (p *planRejectionMockProvider) Name() string { return "mock-plan-rejection" }
 
 // Stream returns mock response chunks.
@@ -90,6 +92,8 @@ func (p *planRejectionMockProvider) Embed(_ context.Context, _ provider.EmbedReq
 // Returns: A slice containing one model entry for "llama3.2" on "mock-plan-rejection", nil error.
 //
 // Side effects: None.
+//
+// Expected: parameters for Models.
 func (p *planRejectionMockProvider) Models() ([]provider.Model, error) {
 	return []provider.Model{{ID: "llama3.2", Provider: "mock-plan-rejection", ContextLength: 8192}}, nil
 }
@@ -179,6 +183,8 @@ func initPlanRejectionLoopSteps(ctx *godog.ScenarioContext) {
 // Returns: nil on success.
 //
 // Side effects: Initializes shared state if not already done.
+//
+// Expected: parameters for thePlanWriterHasProducedPlan.
 func (p *planRejectionStepDefinitions) thePlanWriterHasProducedPlan() error {
 	if planRejectionDelegateTool == nil {
 		if err := initPlanningSession(); err != nil {
@@ -196,6 +202,8 @@ func (p *planRejectionStepDefinitions) thePlanWriterHasProducedPlan() error {
 // Returns: nil on success, or error if recording fails.
 //
 // Side effects: Increments rejection counter in the tracking store.
+//
+// Expected: parameters for thePlanReviewerReturnsReject.
 func (p *planRejectionStepDefinitions) thePlanReviewerReturnsReject() error {
 	p.lastVerdict = "REJECT"
 	_, err := p.rejectionTracker.Record(context.Background(), p.chainID)
@@ -207,6 +215,8 @@ func (p *planRejectionStepDefinitions) thePlanReviewerReturnsReject() error {
 // Returns: nil on success, or error if delegation fails.
 //
 // Side effects: Calls the delegate tool Execute method.
+//
+// Expected: parameters for thePlannerRedelegatesToPlanWriter.
 func (p *planRejectionStepDefinitions) thePlannerRedelegatesToPlanWriter() error {
 	if p.delegateTool == nil {
 		return errors.New("delegate tool not configured")
@@ -227,6 +237,8 @@ func (p *planRejectionStepDefinitions) thePlannerRedelegatesToPlanWriter() error
 // Returns: nil always.
 //
 // Side effects: None.
+//
+// Expected: parameters for thePlanWriterProducesNewPlan.
 func (p *planRejectionStepDefinitions) thePlanWriterProducesNewPlan() error {
 	return nil
 }
@@ -236,6 +248,8 @@ func (p *planRejectionStepDefinitions) thePlanWriterProducesNewPlan() error {
 // Returns: nil always.
 //
 // Side effects: Sets lastVerdict to "APPROVE".
+//
+// Expected: parameters for thePlanReviewerReturnsApprove.
 func (p *planRejectionStepDefinitions) thePlanReviewerReturnsApprove() error {
 	p.lastVerdict = "APPROVE"
 	return nil
@@ -246,6 +260,8 @@ func (p *planRejectionStepDefinitions) thePlanReviewerReturnsApprove() error {
 // Returns: nil if verdict is APPROVE, error otherwise.
 //
 // Side effects: Sets savedPlan content.
+//
+// Expected: parameters for theFinalPlanIsSaved.
 func (p *planRejectionStepDefinitions) theFinalPlanIsSaved() error {
 	if p.lastVerdict == "APPROVE" {
 		p.savedPlan = "approved-plan-content"
@@ -277,6 +293,8 @@ func (p *planRejectionStepDefinitions) thePlanReviewerRejectsConsecutiveTimes(n 
 // Returns: nil if errMaxRejectionsExhausted is returned, error otherwise.
 //
 // Side effects: Sets lastError on verification.
+//
+// Expected: parameters for theDelegateToolReturnsMaxRejectionsError.
 func (p *planRejectionStepDefinitions) theDelegateToolReturnsMaxRejectionsError() error {
 	if p.delegateTool == nil {
 		return errors.New("delegate tool not configured")
@@ -309,6 +327,8 @@ func (p *planRejectionStepDefinitions) theDelegateToolReturnsMaxRejectionsError(
 // Returns: nil if lastError is set, error otherwise.
 //
 // Side effects: Sets escalationMessage from lastError.
+//
+// Expected: parameters for thePlannerEscalatesToUserWithReason.
 func (p *planRejectionStepDefinitions) thePlannerEscalatesToUserWithReason() error {
 	if p.lastError != nil {
 		p.escalationMessage = p.lastError.Error()

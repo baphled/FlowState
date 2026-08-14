@@ -47,11 +47,19 @@ type Provider struct {
 
 // SetResponseObserver registers a callback the Provider invokes on
 // every 2xx response with the response headers. Per Quota Plan PR3.
+//
+// Expected: parameters for SetResponseObserver.
+// Returns: result of SetResponseObserver.
+// Side effects: None.
 func (p *Provider) SetResponseObserver(fn func(http.Header)) {
 	p.responseObserver = fn
 }
 
 // notifyResponseObserver — see openai.Provider.notifyResponseObserver.
+//
+// Expected: parameters for notifyResponseObserver.
+// Returns: result of notifyResponseObserver.
+// Side effects: None.
 func (p *Provider) notifyResponseObserver(raw *http.Response) {
 	if p.responseObserver == nil || raw == nil {
 		return
@@ -127,6 +135,8 @@ func NewFromConfig(apiKey string) (*Provider, error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *Provider) Name() string {
 	return providerName
 }
@@ -221,6 +231,8 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 //
 // Side effects:
 //   - Makes an HTTP request to the provider's Models API.
+//
+// Expected: parameters for Models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	models, err := p.fetchModels()
 	if err == nil {
@@ -237,6 +249,8 @@ func (p *Provider) Models() ([]provider.Model, error) {
 //
 // Side effects:
 //   - Makes an HTTP request to the provider's Models API.
+//
+// Expected: parameters for fetchModels.
 func (p *Provider) fetchModels() ([]provider.Model, error) {
 	ctx := context.Background()
 	modelsPage, err := p.client.Models.List(ctx)

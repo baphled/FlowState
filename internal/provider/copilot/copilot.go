@@ -135,6 +135,8 @@ func NewFromConfig(oauthToken *oauth.TokenResponse, fallbackToken string) (*Prov
 //
 // Side effects:
 //   - Mutates the baseURL field of the Provider.
+//
+// Returns: result of SetBaseURL.
 func (p *Provider) SetBaseURL(url string) {
 	p.baseURL = strings.TrimSuffix(url, "/")
 	if p.tokenManager != nil {
@@ -151,6 +153,8 @@ func (p *Provider) SetBaseURL(url string) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *Provider) Name() string {
 	return providerName
 }
@@ -163,6 +167,8 @@ func (p *Provider) Name() string {
 //
 // Side effects:
 //   - Makes an HTTP GET request to the Copilot models endpoint.
+//
+// Expected: parameters for Models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	models, err := p.fetchModels()
 	if err == nil {
@@ -179,6 +185,8 @@ func (p *Provider) Models() ([]provider.Model, error) {
 //
 // Side effects:
 //   - Makes an HTTP GET request to the Copilot models endpoint.
+//
+// Expected: parameters for fetchModels.
 func (p *Provider) fetchModels() ([]provider.Model, error) {
 	endpoint := p.baseURL + "/models"
 

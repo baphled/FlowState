@@ -78,6 +78,7 @@ const (
 	EventDelegationFailed        = "delegation.failed"
 	EventDelegationProgress      = "delegation.progress"
 	EventRecallEmbeddingStored   = "recall.embedding.stored"
+	// EventRecallSummarized is the bus event name for recall.summarized.
 	// EventRecallSearched and EventRecallChainSearched (May 2026)
 	// were removed by Bug Hunt #63 (May 11 2026) — both fired on
 	// every tool call (high frequency) with zero non-test
@@ -87,7 +88,6 @@ const (
 	// by eventlogger, so the recall-specific topics were pure log
 	// volume with no signal not already covered.
 	//
-	// EventRecallChainSearchFailed (M9, May 2026) was removed by F4
 	// (Bug Hunt Findings May 11 2026) — the dedicated bus event had
 	// zero non-test subscribers anywhere in the tree. The typed
 	// `recall.ErrAllSourcesFailed` sentinel and the engine's existing
@@ -98,7 +98,8 @@ const (
 	EventContextCompacted   = "context.compacted"
 	EventDiscoveryPublished = "discovery.published"
 	EventLearningRecorded   = "learning.recorded"
-	// Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026): swarm
+	// EventGateEvaluating is the bus event published when the swarm gate starts
+	// evaluating. Plans/Gate Bus Bridge — Engine to SSE and TUI (May 2026): swarm
 	// gate lifecycle events. The engine publishes one batch-level
 	// `gate.evaluating` and one batch-level `gate.passed` per
 	// `swarm.Dispatch` call site (clean batches), or one per-failing-
@@ -108,6 +109,7 @@ const (
 	EventGateEvaluating = "gate.evaluating"
 	EventGatePassed     = "gate.passed"
 	EventGateFailed     = "gate.failed"
+	// EventStreamingHeartbeat is the streaming heartbeat bus event.
 	// Streaming Coherence — Slice F (May 2026): streaming heartbeat.
 	// The engine emits one heartbeat at most every ~15s during a turn
 	// so the chat UI's stall watchdog re-arms even when the provider
@@ -134,6 +136,7 @@ const (
 	// xml_bleed_detected) so dashboards group by failure mode without
 	// re-parsing error strings.
 	EventToolArgsValidationFailed = "tool.args.validation_failed"
+	// EventPermissionRequired is published when pathguard asks for user permission.
 	// Permission Mode ModeAskUser Extension (May 2026) Slice 2.
 	//
 	// EventPermissionRequired fires when pathguard or the engine

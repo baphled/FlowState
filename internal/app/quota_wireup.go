@@ -90,6 +90,9 @@ type quotaWiring struct {
 // + config.ValidateProviderQuota calls in serve.go have already
 // passed. A misconfig that should fail at boot has already done so by
 // the time this runs.
+//
+// Expected: parameters for buildQuotaWiring.
+// Returns: result of buildQuotaWiring.
 func buildQuotaWiring(cfg *config.AppConfig) (quotaWiring, error) {
 	if cfg == nil {
 		return quotaWiring{}, nil
@@ -190,6 +193,10 @@ func buildQuotaWiring(cfg *config.AppConfig) (quotaWiring, error) {
 // Mutating wiring after construction keeps the engine → api edge
 // one-way: app constructs the engine without yet having the
 // aggregator, then this method attaches the adapter post-engine.
+//
+// Expected: parameters for withAggregator.
+// Returns: result of withAggregator.
+// Side effects: None.
 func (w *quotaWiring) withAggregator(eng *engine.Engine) {
 	if w == nil || w.tracker == nil || eng == nil {
 		return
@@ -207,6 +214,10 @@ type quotaAggregatorAdapter struct {
 
 // QuotaSnapshots satisfies api.QuotaAggregator. Translates
 // engine.QuotaAggregatorRow → api.QuotaAggregatorRow row-by-row.
+//
+// Expected: parameters for QuotaSnapshots.
+// Returns: result of QuotaSnapshots.
+// Side effects: None.
 func (a *quotaAggregatorAdapter) QuotaSnapshots(ctx context.Context) []api.QuotaAggregatorRow {
 	if a == nil || a.engine == nil {
 		return nil
@@ -228,6 +239,10 @@ func (a *quotaAggregatorAdapter) QuotaSnapshots(ctx context.Context) []api.Quota
 // engine. The engine purges its per-request cumulative cache so a
 // subsequent UsageDelta on this (provider, model) starts the counter
 // from zero rather than re-applying the prior cumulative cost.
+//
+// Expected: parameters for ResetQuotaSpend.
+// Returns: result of ResetQuotaSpend.
+// Side effects: None.
 func (a *quotaAggregatorAdapter) ResetQuotaSpend(ctx context.Context, providerID, accountHash, modelID string) (bool, error) {
 	if a == nil || a.engine == nil {
 		return false, nil
@@ -240,6 +255,10 @@ func (a *quotaAggregatorAdapter) ResetQuotaSpend(ctx context.Context, providerID
 // "no API key configured" — those providers get an empty hash so
 // the Snapshot's AccountHash field renders as "" verbatim (matching
 // the single-account-per-provider v1 default).
+//
+// Expected: parameters for buildAccountHashes.
+// Returns: result of buildAccountHashes.
+// Side effects: None.
 func buildAccountHashes(cfg *config.AppConfig) map[string]string {
 	if cfg == nil {
 		return map[string]string{}
@@ -262,6 +281,10 @@ func buildAccountHashes(cfg *config.AppConfig) map[string]string {
 //
 // Empty input map returns the empty map (chip renders without a
 // denominator per OD-9 uncapped default).
+//
+// Expected: parameters for buildCapConfigs.
+// Returns: result of buildCapConfigs.
+// Side effects: None.
 func buildCapConfigs(cfg *config.AppConfig) (map[string]quota.CapConfig, error) {
 	out := make(map[string]quota.CapConfig)
 	if cfg == nil {
@@ -304,10 +327,24 @@ type memorySpendStoreAdapter struct {
 	inner *quotastore.MemoryStore
 }
 
+// newMemorySpendStoreAdapter ...
+//
+// Expected: parameters for newMemorySpendStoreAdapter.
+//
+// Returns: result of newMemorySpendStoreAdapter.
+//
+// Side effects: None.
 func newMemorySpendStoreAdapter(inner *quotastore.MemoryStore) *memorySpendStoreAdapter {
 	return &memorySpendStoreAdapter{inner: inner}
 }
 
+// Get ...
+//
+// Expected: parameters for Get.
+//
+// Returns: result of Get.
+//
+// Side effects: None.
 func (m *memorySpendStoreAdapter) Get(ctx context.Context, key quota.SpendStoreKey) (quota.Snapshot, error) {
 	snap, err := m.inner.Get(ctx, quotastore.Key{
 		ProviderID:  key.ProviderID,
@@ -323,6 +360,13 @@ func (m *memorySpendStoreAdapter) Get(ctx context.Context, key quota.SpendStoreK
 	return snap, nil
 }
 
+// Put ...
+//
+// Expected: parameters for Put.
+//
+// Returns: result of Put.
+//
+// Side effects: None.
 func (m *memorySpendStoreAdapter) Put(ctx context.Context, key quota.SpendStoreKey, snap quota.Snapshot) error {
 	return m.inner.Put(ctx, quotastore.Key{
 		ProviderID:  key.ProviderID,
@@ -331,6 +375,13 @@ func (m *memorySpendStoreAdapter) Put(ctx context.Context, key quota.SpendStoreK
 	}, snap)
 }
 
+// Reset ...
+//
+// Expected: parameters for Reset.
+//
+// Returns: result of Reset.
+//
+// Side effects: None.
 func (m *memorySpendStoreAdapter) Reset(ctx context.Context, key quota.SpendStoreKey) error {
 	return m.inner.Reset(ctx, quotastore.Key{
 		ProviderID:  key.ProviderID,
@@ -339,6 +390,13 @@ func (m *memorySpendStoreAdapter) Reset(ctx context.Context, key quota.SpendStor
 	})
 }
 
+// List ...
+//
+// Expected: parameters for List.
+//
+// Returns: result of List.
+//
+// Side effects: None.
 func (m *memorySpendStoreAdapter) List(ctx context.Context) ([]quota.SpendStoreEntry, error) {
 	rows, err := m.inner.List(ctx)
 	if err != nil {
@@ -358,6 +416,13 @@ func (m *memorySpendStoreAdapter) List(ctx context.Context) ([]quota.SpendStoreE
 	return out, nil
 }
 
+// isStoreNotFound ...
+//
+// Expected: parameters for isStoreNotFound.
+//
+// Returns: result of isStoreNotFound.
+//
+// Side effects: None.
 func isStoreNotFound(err error) bool {
 	return err == quotastore.ErrSnapshotNotFound
 }

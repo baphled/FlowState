@@ -50,8 +50,6 @@ var _ = Describe("Per-provider quota fidelity matrix (plan lines 141-149)", func
 	}
 
 	for _, row := range rows {
-		row := row // closure capture
-
 		Context(row.providerID, func() {
 			var adapter quota.Quota
 

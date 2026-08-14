@@ -75,6 +75,10 @@ type ValidationError struct {
 }
 
 // Error implements the error interface.
+//
+// Expected: parameters for Error.
+// Returns: result of Error.
+// Side effects: None.
 func (e *ValidationError) Error() string { return e.Message }
 
 // ValidateToolArgs checks that args conform to the tool's schema. Unknown keys
@@ -185,6 +189,10 @@ func ValidateToolArgs(schema tool.Schema, args map[string]interface{}) (map[stri
 }
 
 // sortedSchemaKeys returns every Schema.Properties key in sorted order.
+//
+// Expected: parameters for sortedSchemaKeys.
+// Returns: result of sortedSchemaKeys.
+// Side effects: None.
 func sortedSchemaKeys(schema tool.Schema) []string {
 	keys := make([]string, 0, len(schema.Properties))
 	for k := range schema.Properties {
@@ -200,6 +208,10 @@ func sortedSchemaKeys(schema tool.Schema) []string {
 // arbitrary angle-bracketed text, so legitimate XML-bearing payloads
 // (model output, code snippets quoted into a string argument) do not trip
 // the classifier.
+//
+// Expected: parameters for hasXMLBleed.
+// Returns: result of hasXMLBleed.
+// Side effects: None.
 func hasXMLBleed(args map[string]interface{}) bool {
 	for key, v := range args {
 		if containsArgKeyMarker(key) {
@@ -212,6 +224,13 @@ func hasXMLBleed(args map[string]interface{}) bool {
 	return false
 }
 
+// containsArgKeyMarker ...
+//
+// Expected: parameters for containsArgKeyMarker.
+//
+// Returns: result of containsArgKeyMarker.
+//
+// Side effects: None.
 func containsArgKeyMarker(s string) bool {
 	return strings.Contains(s, "<arg_key>") || strings.Contains(s, "</arg_key>")
 }
@@ -223,6 +242,10 @@ func containsArgKeyMarker(s string) bool {
 // hint pairing the unknown key's value with each expected key — the
 // canonical recovery hint shape ("Did the value 'X' belong in 'Y'?"), and
 // the case the glm-4.6 `librarian` capture matches.
+//
+// Expected: parameters for buildUnknownKeysMessage.
+// Returns: result of buildUnknownKeysMessage.
+// Side effects: None.
 func buildUnknownKeysMessage(unknown, expectedKeys []string, args map[string]interface{}) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "unknown arguments: %s. Expected: %s.",
@@ -242,6 +265,13 @@ func buildUnknownKeysMessage(unknown, expectedKeys []string, args map[string]int
 	return b.String()
 }
 
+// buildBleedMessage ...
+//
+// Expected: parameters for buildBleedMessage.
+//
+// Returns: result of buildBleedMessage.
+//
+// Side effects: None.
 func buildBleedMessage(unknown, expectedKeys []string) string {
 	var b strings.Builder
 	b.WriteString("invalid arguments: serialised tool-call contains XML markers (<arg_key> / </arg_key>) in keys or values")

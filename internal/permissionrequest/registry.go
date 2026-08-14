@@ -144,6 +144,9 @@ type Registry struct {
 // No options today; the constructor exists so a future test seam (e.g.
 // injectable clock) lands without breaking the call sites that already
 // wire NewRegistry in app.go.
+//
+// Returns: result of NewRegistry.
+// Side effects: None.
 func NewRegistry() *Registry {
 	return &Registry{
 		byID:            make(map[string]*pendingRequest),
@@ -159,6 +162,9 @@ func NewRegistry() *Registry {
 //   - Allocates a buffered grant channel of size 1.
 //   - Records req under byID[req.RequestID] and appends RequestID to
 //     byActiveSession[req.SessionID].
+//
+// Expected: parameters for Register.
+// Returns: result of Register.
 func (r *Registry) Register(req PermissionRequest) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -186,6 +192,9 @@ func (r *Registry) Register(req PermissionRequest) error {
 //   - Sends grant into the request's grantCh (non-blocking; channel is
 //     buffered with capacity 1 so the send never blocks).
 //   - Removes the request from byID and byActiveSession[sessionID].
+//
+// Expected: parameters for Resolve.
+// Returns: result of Resolve.
 func (r *Registry) Resolve(requestID string, grant PermissionGrant) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -235,6 +244,9 @@ func (r *Registry) Resolve(requestID string, grant PermissionGrant) error {
 //
 // Side effects:
 //   - Blocks the calling goroutine until grant arrival or ctx cancel.
+//
+// Expected: parameters for Wait.
+// Returns: result of Wait.
 func (r *Registry) Wait(ctx context.Context, requestID string) (PermissionGrant, error) {
 	r.mu.Lock()
 	pending, exists := r.byID[requestID]
@@ -262,6 +274,10 @@ func (r *Registry) Wait(ctx context.Context, requestID string) (PermissionGrant,
 // Exposed primarily for the observability layer (R4 permission_pending
 // gauge cross-check) and for the long-poll API in Slice 3. The slice may
 // be empty when no requests are pending; never returns nil.
+//
+// Expected: parameters for PendingForSession.
+// Returns: result of PendingForSession.
+// Side effects: None.
 func (r *Registry) PendingForSession(sessionID string) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -285,6 +301,10 @@ func (r *Registry) PendingForSession(sessionID string) []string {
 //
 // Concurrency: takes the registry mutex internally; callers MUST NOT
 // hold r.mu.
+//
+// Expected: parameters for Lookup.
+// Returns: result of Lookup.
+// Side effects: None.
 func (r *Registry) Lookup(requestID string) (PermissionRequest, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -298,6 +318,10 @@ func (r *Registry) Lookup(requestID string) (PermissionRequest, bool) {
 // PendingCount returns the total number of in-flight permission
 // requests across all sessions. Used by the R4 gauge cross-check tests
 // (and by future ops dashboards) without exposing the internal maps.
+//
+// Expected: parameters for PendingCount.
+// Returns: result of PendingCount.
+// Side effects: None.
 func (r *Registry) PendingCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -307,6 +331,10 @@ func (r *Registry) PendingCount() int {
 // cancelPending removes a request from the registry maps. Tolerates a
 // concurrent Resolve that already removed the entry (no-op on missing).
 // Acquires the registry mutex internally; callers must NOT hold r.mu.
+//
+// Expected: parameters for cancelPending.
+// Returns: result of cancelPending.
+// Side effects: None.
 func (r *Registry) cancelPending(requestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -320,6 +348,10 @@ func (r *Registry) cancelPending(requestID string) {
 
 // removeFromSessionLocked drops requestID from byActiveSession[sessionID].
 // MUST be called with r.mu held.
+//
+// Expected: parameters for removeFromSessionLocked.
+// Returns: result of removeFromSessionLocked.
+// Side effects: None.
 func (r *Registry) removeFromSessionLocked(sessionID, requestID string) {
 	ids := r.byActiveSession[sessionID]
 	out := ids[:0]

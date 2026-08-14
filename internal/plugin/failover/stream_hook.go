@@ -61,6 +61,10 @@ type RetryBackoffConfig struct {
 // withDefaults returns a copy of the config with any unset field populated
 // from the package defaults, so a partially-specified override (common in
 // tests) stays safe.
+//
+// Expected: parameters for withDefaults.
+// Returns: result of withDefaults.
+// Side effects: None.
 func (c RetryBackoffConfig) withDefaults() RetryBackoffConfig {
 	if c.MaxRounds <= 0 {
 		c.MaxRounds = defaultMaxRetryRounds
@@ -77,6 +81,10 @@ func (c RetryBackoffConfig) withDefaults() RetryBackoffConfig {
 // ctxAwareSleep waits for d or returns early with ctx.Err() if ctx is done
 // first. It is the production backoff: respecting ctx cancellation/deadline
 // during the wait is mandatory so a cancelled request never sleeps on.
+//
+// Expected: parameters for ctxAwareSleep.
+// Returns: result of ctxAwareSleep.
+// Side effects: None.
 func ctxAwareSleep(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return ctx.Err()
@@ -138,6 +146,8 @@ func NewStreamHook(manager *Manager, bus *eventbus.EventBus, agentID string) *St
 //
 // Side effects:
 //   - Replaces the receiver's retry config.
+//
+// Returns: result of SetRetryBackoff.
 func (sh *StreamHook) SetRetryBackoff(cfg RetryBackoffConfig) {
 	sh.retry = cfg.withDefaults()
 }
@@ -426,6 +436,7 @@ type retryState struct {
 	permanentlyFailed map[string]provider.ModelPreference
 }
 
+// attemptDebugMeta records per-attempt metadata used for debug logging.
 type attemptDebugMeta struct {
 	stage                 string
 	duration              time.Duration
@@ -497,6 +508,13 @@ func (sh *StreamHook) runCandidateRound(
 	return nil, outcome, false
 }
 
+// selectAttemptCandidate ...
+//
+// Expected: parameters for selectAttemptCandidate.
+//
+// Returns: result of selectAttemptCandidate.
+//
+// Side effects: None.
 func (sh *StreamHook) selectAttemptCandidate(candidate provider.ModelPreference) bool {
 	health := sh.manager.Health()
 	if health == nil {
@@ -509,6 +527,10 @@ func (sh *StreamHook) selectAttemptCandidate(candidate provider.ModelPreference)
 // from the message list. Some providers (notably Anthropic) reject conversations
 // that end with an assistant turn — stripping the silent tail ensures structurally
 // valid input for every failover candidate.
+//
+// Expected: parameters for stripAssistantTail.
+// Returns: result of stripAssistantTail.
+// Side effects: None.
 func stripAssistantTail(msgs []provider.Message) []provider.Message {
 	cut := len(msgs)
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -1300,6 +1322,8 @@ func streamWithReplay(
 	return replayCh
 }
 
+// failoverTransportError wraps err into a retriable provider network error.
+//
 // markProviderHealth marks a provider as unavailable for a cooldown determined by
 // the error type. It applies differentiated durations: non-retriable errors use 24-hour
 // cooldown; retriable errors use error-type-specific durations from CooldownForErrorType.
@@ -1341,7 +1365,7 @@ func streamWithReplay(
 //
 // Side effects:
 //   - May update HealthManager state.
-//
+
 // failoverTransportError tags a transport-level failover failure — a pre-first-
 // chunk stall (peek-timeout) or an immediately-closed stream — as a retriable
 // NetworkError so markProviderHealth's typed branch applies a cooldown and the
@@ -1369,6 +1393,11 @@ func failoverTransportError(providerName string, err error) *provider.Error {
 	}
 }
 
+// markProviderHealth ...
+//
+// Expected: parameters for markProviderHealth.
+//
+// Side effects: None.
 func markProviderHealth(health RateLimitAware, providerName, model string, err error) {
 	if err == nil {
 		return
@@ -1528,6 +1557,13 @@ func (sh *StreamHook) publishFailoverError(
 	}
 }
 
+// currentProviderConcurrencyStats ...
+//
+// Expected: parameters for currentProviderConcurrencyStats.
+//
+// Returns: result of currentProviderConcurrencyStats.
+//
+// Side effects: None.
 func (sh *StreamHook) currentProviderConcurrencyStats(providerName string) (provider.ConcurrencyDebugStats, bool) {
 	if sh == nil || sh.manager == nil || sh.manager.registry == nil || providerName == "" {
 		return provider.ConcurrencyDebugStats{}, false

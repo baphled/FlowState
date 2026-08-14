@@ -98,6 +98,9 @@ func RegisterSessionForkSteps(sc *godog.ScenarioContext, shared *StepDefinitions
 // Side effects:
 //   - Clears every SessionForkSteps field except tempDir (which the
 //     After hook owns).
+//
+// Expected: parameters for reset.
+// Returns: result of reset.
 func (s *SessionForkSteps) reset() {
 	s.store = nil
 	s.originID = ""
@@ -118,6 +121,8 @@ func (s *SessionForkSteps) reset() {
 // Side effects:
 //   - Creates a temp dir at $TMPDIR/flowstate-session-fork-*.
 //   - Writes an origin session JSON file into that directory.
+//
+// Expected: parameters for iAmInASessionWithHistory.
 func (s *SessionForkSteps) iAmInASessionWithHistory() error {
 	tmpDir, err := os.MkdirTemp("", "flowstate-session-fork-*")
 	if err != nil {
@@ -256,6 +261,8 @@ func (s *SessionForkSteps) itShouldContainMessagesThrough(start, end int) error 
 //
 // Side effects:
 //   - Reads the origin session file.
+//
+// Expected: parameters for theOriginalSessionShouldBeUnchanged.
 func (s *SessionForkSteps) theOriginalSessionShouldBeUnchanged() error {
 	originStore, err := s.store.Load(s.originID)
 	if err != nil {

@@ -159,6 +159,8 @@ func NewEmptyContextStore(model string) *FileContextStore {
 // Side effects:
 //   - Populates the store's messages and embeddings from the file.
 //   - Discards embeddings if the stored model differs from the current model.
+//
+// Expected: parameters for load.
 func (s *FileContextStore) load() error {
 	data, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
@@ -199,6 +201,8 @@ func (s *FileContextStore) load() error {
 // Side effects:
 //   - Writes the store's messages and embeddings to disk.
 //   - Uses atomic write (write-to-temp, then rename) to prevent corruption.
+//
+// Expected: parameters for persist.
 func (s *FileContextStore) persist() error {
 	if s.path == "" {
 		return nil
@@ -236,6 +240,8 @@ func (s *FileContextStore) persist() error {
 //   - Evicts the oldest message if the store exceeds its maximum size.
 //   - Persists to disk when pendingWrites reaches flushThreshold.
 //   - Starts a timer to auto-flush after flushInterval if below threshold.
+//
+// Returns: result of Append.
 func (s *FileContextStore) Append(msg provider.Message) {
 	s.AppendReturningID(msg)
 }
@@ -289,6 +295,9 @@ func (s *FileContextStore) AppendReturningID(msg provider.Message) string {
 // Side effects:
 //   - Writes the store's messages and embeddings to disk via atomic write.
 //   - Resets the pending write counter and stops the flush timer.
+//
+// Expected: parameters for flushLocked.
+// Returns: result of flushLocked.
 func (s *FileContextStore) flushLocked() {
 	if s.path == "" || s.pendingWrites == 0 {
 		return
@@ -305,6 +314,9 @@ func (s *FileContextStore) flushLocked() {
 // Side effects:
 //   - Writes the current state to the store's file path.
 //   - Resets the pending write counter and stops the auto-flush timer.
+//
+// Expected: parameters for Flush.
+// Returns: result of Flush.
 func (s *FileContextStore) Flush() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -317,6 +329,9 @@ func (s *FileContextStore) Flush() {
 //   - Persists any pending messages to disk.
 //   - Stops the auto-flush timer.
 //   - Marks the store as closed; subsequent Append calls are ignored.
+//
+// Expected: parameters for Close.
+// Returns: result of Close.
 func (s *FileContextStore) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -330,6 +345,9 @@ func (s *FileContextStore) Close() {
 //
 // Side effects:
 //   - Stops any existing flush timer and starts a new one.
+//
+// Expected: parameters for resetFlushTimer.
+// Returns: result of resetFlushTimer.
 func (s *FileContextStore) resetFlushTimer() {
 	if s.flushInterval <= 0 {
 		return
@@ -345,6 +363,9 @@ func (s *FileContextStore) resetFlushTimer() {
 //
 // Side effects:
 //   - Stops and nils the flush timer if one is active.
+//
+// Expected: parameters for stopFlushTimer.
+// Returns: result of stopFlushTimer.
 func (s *FileContextStore) stopFlushTimer() {
 	if s.flushTimer != nil {
 		s.flushTimer.Stop()
@@ -418,6 +439,8 @@ func (s *FileContextStore) GetRecent(n int) []provider.Message {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Count.
 func (s *FileContextStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -431,6 +454,8 @@ func (s *FileContextStore) Count() int {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for AllMessages.
 func (s *FileContextStore) AllMessages() []provider.Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -585,6 +610,8 @@ func (s *FileContextStore) UnpinMessage(index int) bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for messageTokens.
 func messageTokens(sm StoredMessage) int {
 	contentLen := len(sm.Message.Content)
 	roleLen := len(sm.Message.Role)
@@ -599,6 +626,8 @@ func messageTokens(sm StoredMessage) int {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for totalTokensLocked.
 func (s *FileContextStore) totalTokensLocked() int {
 	total := 0
 	for _, sm := range s.messages {
@@ -618,6 +647,8 @@ func (s *FileContextStore) totalTokensLocked() int {
 // Side effects:
 //   - Marks the message as embedded in the store.
 //   - Persists the updated embeddings to disk.
+//
+// Returns: result of StoreEmbedding.
 func (s *FileContextStore) StoreEmbedding(msgID string, vector []float64, model string, dimensions int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

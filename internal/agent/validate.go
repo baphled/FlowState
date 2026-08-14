@@ -94,6 +94,10 @@ func ValidateManifestSet(root fs.FS, dir string) ([]Violation, error) {
 // every rule against it. The function is exported only via
 // ValidateManifestSet to keep the per-file parse logic out of the
 // caller's hands; tests cover behaviour at the set level.
+//
+// Expected: parameters for validateOneManifest.
+// Returns: result of validateOneManifest.
+// Side effects: None.
 func validateOneManifest(name string, data []byte) []Violation {
 	frontmatter, parseErr := extractFrontmatterOrEmpty(string(data))
 	if parseErr != nil {
@@ -184,6 +188,9 @@ var defaultBaseTools = []string{
 // callers outside the agent package (validators, registries, debug
 // surfaces). Returns a fresh copy so callers cannot mutate the
 // package-level constant.
+//
+// Returns: result of DefaultBaseTools.
+// Side effects: None.
 func DefaultBaseTools() []string {
 	out := make([]string, len(defaultBaseTools))
 	copy(out, defaultBaseTools)
@@ -304,6 +311,10 @@ var orchestrationForbidden = []string{
 // deny list ("bash" misspelt "bashh") surfaces at the CI gate rather
 // than silently failing to deny anything at runtime. Empty/nil
 // ToolsDeny is the pre-D3 zero value and trips no violation.
+//
+// Expected: parameters for ruleToolCanonical.
+// Returns: result of ruleToolCanonical.
+// Side effects: None.
 func ruleToolCanonical(name string, probe validatorManifestProbe) []Violation {
 	var out []Violation
 	for _, t := range probe.Capabilities.Tools {
@@ -339,6 +350,10 @@ func ruleToolCanonical(name string, probe validatorManifestProbe) []Violation {
 // with no implementation surfaces), and the load-time CI gate is the
 // earliest place we can surface it. The detail message reflects the
 // post-D1 reality.
+//
+// Expected: parameters for ruleToolsEmpty.
+// Returns: result of ruleToolsEmpty.
+// Side effects: None.
 func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
 	if len(probe.Capabilities.Tools) > 0 {
 		return nil
@@ -357,6 +372,10 @@ func ruleToolsEmpty(name string, probe validatorManifestProbe) []Violation {
 // but the tools allowlist omits delegate. Without delegate the agent
 // cannot call its only documented onward-routing tool, so the
 // "coordinator" prose contradicts the capability wiring.
+//
+// Expected: parameters for ruleDelegateToolRequired.
+// Returns: result of ruleDelegateToolRequired.
+// Side effects: None.
 func ruleDelegateToolRequired(name string, probe validatorManifestProbe) []Violation {
 	if !probe.Delegation.CanDelegate {
 		return nil
@@ -378,6 +397,10 @@ func ruleDelegateToolRequired(name string, probe validatorManifestProbe) []Viola
 // nor edit appears in tools. This is the regression that motivated
 // b17038c2 — Knowledge-Base-Curator's role said "curates" but the
 // shipped manifest had no write tool wired.
+//
+// Expected: parameters for ruleRoleWriteCapability.
+// Returns: result of ruleRoleWriteCapability.
+// Side effects: None.
 func ruleRoleWriteCapability(name string, probe validatorManifestProbe) []Violation {
 	if !roleWritePattern.MatchString(probe.Metadata.Role) {
 		return nil
@@ -409,6 +432,10 @@ func ruleRoleWriteCapability(name string, probe validatorManifestProbe) []Violat
 // Categories outside the table are not enforced — domain/specialist/
 // research/exploration/advisor categories vary widely and any blanket
 // rule would over-fit.
+//
+// Expected: parameters for ruleCategoryRequired.
+// Returns: result of ruleCategoryRequired.
+// Side effects: None.
 func ruleCategoryRequired(name string, probe validatorManifestProbe) []Violation {
 	cat := strings.TrimSpace(probe.OrchestratorMeta.Category)
 	required := requirementsForCategory(cat)
@@ -463,6 +490,10 @@ func ruleCategoryRequired(name string, probe validatorManifestProbe) []Violation
 // and the operator's fix mechanical (the detail enumerates every
 // forbidden tool the manifest declares so the next loader-cycle pass
 // can resolve them all together).
+//
+// Expected: parameters for ruleCategoryForbidden.
+// Returns: result of ruleCategoryForbidden.
+// Side effects: None.
 func ruleCategoryForbidden(name string, probe validatorManifestProbe) []Violation {
 	cat := strings.TrimSpace(probe.OrchestratorMeta.Category)
 	if cat != "orchestration" && cat != "coordination" {
@@ -499,6 +530,10 @@ func ruleCategoryForbidden(name string, probe validatorManifestProbe) []Violatio
 
 // requirementsForCategory returns the static rule table entry for the
 // given category, or nil if the category is unenforced.
+//
+// Expected: parameters for requirementsForCategory.
+// Returns: result of requirementsForCategory.
+// Side effects: None.
 func requirementsForCategory(category string) []string {
 	switch category {
 	case "implementation":
@@ -520,6 +555,10 @@ func requirementsForCategory(category string) []string {
 // extractFrontmatter. It returns ("", nil) on missing frontmatter so
 // the validator can decide whether absence is itself a violation
 // (rule-table choice) rather than aborting the whole walk.
+//
+// Expected: parameters for extractFrontmatterOrEmpty.
+// Returns: result of extractFrontmatterOrEmpty.
+// Side effects: None.
 func extractFrontmatterOrEmpty(content string) (string, error) {
 	if !strings.HasPrefix(content, "---") {
 		return "", nil

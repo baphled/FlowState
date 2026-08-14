@@ -166,6 +166,10 @@ func runAutoresearchApply(cmd *cobra.Command, application *app.App, runID string
 // readApplyBestPointer reads the run's best pointer and surfaces a
 // clear error when the pointer is missing or empty. Distinguishes
 // "no kept candidate" (operator-facing) from a generic store failure.
+//
+// Expected: parameters for readApplyBestPointer.
+// Returns: result of readApplyBestPointer.
+// Side effects: None.
 func readApplyBestPointer(store coordination.Store, runID string) (bestRecord, error) {
 	key := fmt.Sprintf("autoresearch/%s/best", runID)
 	raw, err := store.Get(key)
@@ -195,6 +199,10 @@ func readApplyBestPointer(store coordination.Store, runID string) (bestRecord, e
 // match the caller must supply a longer prefix. The second return value
 // is the resolved full run ID (equal to runID when the exact key was
 // found).
+//
+// Expected: parameters for readApplyManifestRecord.
+// Returns: result of readApplyManifestRecord.
+// Side effects: None.
 func readApplyManifestRecord(store coordination.Store, runID string) (manifestRecord, string, error) {
 	raw, err := store.Get(manifestKey(runID))
 	if err == nil {
@@ -230,6 +238,10 @@ func readApplyManifestRecord(store coordination.Store, runID string) (manifestRe
 // and returns the unique full run ID whose prefix matches the supplied
 // prefix string. Returns an operator-facing error when zero or multiple
 // run IDs match.
+//
+// Expected: parameters for resolveRunIDByPrefix.
+// Returns: result of resolveRunIDByPrefix.
+// Side effects: None.
 func resolveRunIDByPrefix(store coordination.Store, prefix string) (string, error) {
 	keys, err := store.List("autoresearch/")
 	if err != nil {
@@ -280,6 +292,10 @@ func resolveRunIDByPrefix(store coordination.Store, prefix string) (string, erro
 // candidate_content_truncated=true and the cap dropped the body).
 // Surface a descriptive error so the operator knows to widen the cap
 // or re-run.
+//
+// Expected: parameters for readCandidateContentFromTrial.
+// Returns: result of readCandidateContentFromTrial.
+// Side effects: None.
 func readCandidateContentFromTrial(store coordination.Store, runID string, best bestRecord) (string, error) {
 	keys, err := store.List(fmt.Sprintf("autoresearch/%s/", runID))
 	if err != nil {
@@ -322,6 +338,10 @@ func readCandidateContentFromTrial(store coordination.Store, runID string, best 
 // non-mutating contract — without it, the operator's first instinct
 // (pipe `apply` to a path next to the surface) silently re-engages
 // the disk-write workflow `--commit-trials` exists to handle.
+//
+// Expected: parameters for guardInsideRepo.
+// Returns: result of guardInsideRepo.
+// Side effects: None.
 func guardInsideRepo(writePath, surfacePath string, force bool) error {
 	if force {
 		return nil

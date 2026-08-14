@@ -69,14 +69,14 @@ func main() {
 			fmt.Printf("    member: %-23s [%s]\n", member, kind)
 		}
 		fmt.Printf("    gates: %d\n", len(m.Harness.Gates))
-		for _, g := range m.Harness.Gates {
+		for i := range m.Harness.Gates {
 			status := "OK"
-			if g.SchemaRef != "" && !registered[g.SchemaRef] {
+			if m.Harness.Gates[i].SchemaRef != "" && !registered[m.Harness.Gates[i].SchemaRef] {
 				status = "MISSING"
 				failures++
 			}
 			fmt.Printf("      - %-40s when=%-12s target=%-15s schema_ref=%-30s [%s]\n",
-				g.Name, g.When, g.Target, g.SchemaRef, status)
+				m.Harness.Gates[i].Name, m.Harness.Gates[i].When, m.Harness.Gates[i].Target, m.Harness.Gates[i].SchemaRef, status)
 		}
 	}
 
@@ -86,9 +86,16 @@ func main() {
 	if failures > 0 {
 		os.Exit(1)
 	}
-	fmt.Println("PASS")
+	fmt.Println("PASS") //nolint:forbidigo // smoke harness stdout marker
 }
 
+// must handles an internal operation.
+//
+// Expected:
+//   - Parameters are valid for this operation.
+//
+// Side effects:
+//   - None.
 func must(label string, err error) {
 	if err != nil {
 		fmt.Printf("FAIL %s: %v\n", label, err)
@@ -99,6 +106,10 @@ func must(label string, err error) {
 // resolveMemberKind classifies a roster entry the same way the runtime
 // resolver does: prefer agents, then fall back to registered sub-swarms.
 // Returns "agent", "swarm", or "MISSING" for the per-member status column.
+//
+// Expected: parameters for resolveMemberKind.
+// Returns: result of resolveMemberKind.
+// Side effects: None.
 func resolveMemberKind(member string, registry *agent.Registry, swarmIndex map[string]*swarm.Manifest) string {
 	if _, ok := registry.GetByNameOrAlias(member); ok {
 		return "agent"

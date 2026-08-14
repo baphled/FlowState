@@ -73,6 +73,8 @@ func aPlanningSessionIsInProgress() error {
 // Returns: nil always.
 //
 // Side effects: Sets planContent and validationErrors.
+//
+// Expected: parameters for thePlanWriterProducesInvalidPlanFirstAttempt.
 func (h *harnessE2EStepDefinitions) thePlanWriterProducesInvalidPlanFirstAttempt() error {
 	h.planContent = "invalid-plan-missing-tasks"
 	h.validationErrors = []string{"Plan is missing required tasks section"}
@@ -84,6 +86,8 @@ func (h *harnessE2EStepDefinitions) thePlanWriterProducesInvalidPlanFirstAttempt
 // Returns: nil if validation errors exist, error otherwise.
 //
 // Side effects: None.
+//
+// Expected: parameters for theHarnessEvaluatesPlanWriterOutput.
 func (h *harnessE2EStepDefinitions) theHarnessEvaluatesPlanWriterOutput() error {
 	if len(h.validationErrors) > 0 {
 		return nil
@@ -96,6 +100,8 @@ func (h *harnessE2EStepDefinitions) theHarnessEvaluatesPlanWriterOutput() error 
 // Returns: nil always.
 //
 // Side effects: Increments retryCount, updates planContent, clears validationErrors.
+//
+// Expected: parameters for theHarnessRetriesWithValidationFeedback.
 func (h *harnessE2EStepDefinitions) theHarnessRetriesWithValidationFeedback() error {
 	h.retryCount++
 	h.planContent = "valid-plan"
@@ -108,6 +114,8 @@ func (h *harnessE2EStepDefinitions) theHarnessRetriesWithValidationFeedback() er
 // Returns: nil if planContent is "valid-plan", error otherwise.
 //
 // Side effects: None.
+//
+// Expected: parameters for thePlanWriterProducesValidPlanOnRetry.
 func (h *harnessE2EStepDefinitions) thePlanWriterProducesValidPlanOnRetry() error {
 	if h.planContent != "valid-plan" {
 		return fmt.Errorf("expected valid plan, got: %s", h.planContent)
@@ -120,6 +128,8 @@ func (h *harnessE2EStepDefinitions) thePlanWriterProducesValidPlanOnRetry() erro
 // Returns: nil if no validation errors, error otherwise.
 //
 // Side effects: None.
+//
+// Expected: parameters for thePlanPassesHarnessEvaluation.
 func (h *harnessE2EStepDefinitions) thePlanPassesHarnessEvaluation() error {
 	if len(h.validationErrors) > 0 {
 		return fmt.Errorf("validation errors still present: %v", h.validationErrors)
@@ -132,6 +142,8 @@ func (h *harnessE2EStepDefinitions) thePlanPassesHarnessEvaluation() error {
 // Returns: nil always.
 //
 // Side effects: Sets planContent, clears validationErrors.
+//
+// Expected: parameters for thePlanWriterProducesPlanPassingSchema.
 func (h *harnessE2EStepDefinitions) thePlanWriterProducesPlanPassingSchema() error {
 	h.planContent = "schema-valid-but-poor-quality-plan"
 	h.validationErrors = nil
@@ -143,6 +155,8 @@ func (h *harnessE2EStepDefinitions) thePlanWriterProducesPlanPassingSchema() err
 // Returns: nil if planContent is poor quality, error otherwise.
 //
 // Side effects: Sets criticFeedback for poor quality plans.
+//
+// Expected: parameters for theHarnessCriticEvaluatesPlan.
 func (h *harnessE2EStepDefinitions) theHarnessCriticEvaluatesPlan() error {
 	if h.planContent == "schema-valid-but-poor-quality-plan" {
 		h.criticFeedback = "Plan lacks sufficient detail for implementation"
@@ -156,6 +170,8 @@ func (h *harnessE2EStepDefinitions) theHarnessCriticEvaluatesPlan() error {
 // Returns: nil if criticFeedback is set, error otherwise.
 //
 // Side effects: Sets lastVerdict to "REJECT".
+//
+// Expected: parameters for theCriticRejectsPlanWithFeedback.
 func (h *harnessE2EStepDefinitions) theCriticRejectsPlanWithFeedback() error {
 	h.lastVerdict = "REJECT"
 	if h.criticFeedback == "" {
@@ -169,6 +185,8 @@ func (h *harnessE2EStepDefinitions) theCriticRejectsPlanWithFeedback() error {
 // Returns: nil always.
 //
 // Side effects: Increments retryCount, updates planContent, clears criticFeedback.
+//
+// Expected: parameters for theHarnessRetriesWithCriticFeedback.
 func (h *harnessE2EStepDefinitions) theHarnessRetriesWithCriticFeedback() error {
 	h.retryCount++
 	h.planContent = "improved-high-quality-plan"
@@ -181,6 +199,8 @@ func (h *harnessE2EStepDefinitions) theHarnessRetriesWithCriticFeedback() error 
 // Returns: nil if planContent is improved, error otherwise.
 //
 // Side effects: Sets lastVerdict to "APPROVE".
+//
+// Expected: parameters for thePlanWriterProducesImprovedPlan.
 func (h *harnessE2EStepDefinitions) thePlanWriterProducesImprovedPlan() error {
 	if h.planContent != "improved-high-quality-plan" {
 		return fmt.Errorf("expected improved plan, got: %s", h.planContent)
@@ -194,6 +214,8 @@ func (h *harnessE2EStepDefinitions) thePlanWriterProducesImprovedPlan() error {
 // Returns: nil always.
 //
 // Side effects: Resets retryCount, sets planContent and validationErrors.
+//
+// Expected: parameters for thePlanWriterRepeatedlyProducesInvalidPlans.
 func (h *harnessE2EStepDefinitions) thePlanWriterRepeatedlyProducesInvalidPlans() error {
 	h.retryCount = 0
 	h.planContent = "invalid-plan"
@@ -206,6 +228,8 @@ func (h *harnessE2EStepDefinitions) thePlanWriterRepeatedlyProducesInvalidPlans(
 // Returns: nil always.
 //
 // Side effects: Sets retryCount to maxRetries, sets harnessComplete to true.
+//
+// Expected: parameters for theHarnessExhaustsRetryAttempts.
 func (h *harnessE2EStepDefinitions) theHarnessExhaustsRetryAttempts() error {
 	h.retryCount = h.maxRetries
 	h.harnessComplete = true
@@ -217,6 +241,8 @@ func (h *harnessE2EStepDefinitions) theHarnessExhaustsRetryAttempts() error {
 // Returns: nil if harness is complete with validation errors, error otherwise.
 //
 // Side effects: None.
+//
+// Expected: parameters for theHarnessEmitsCompleteWithErrors.
 func (h *harnessE2EStepDefinitions) theHarnessEmitsCompleteWithErrors() error {
 	if !h.harnessComplete {
 		return errors.New("harness not complete")
@@ -232,6 +258,8 @@ func (h *harnessE2EStepDefinitions) theHarnessEmitsCompleteWithErrors() error {
 // Returns: nil if harness exhausted with errors, error otherwise.
 //
 // Side effects: Sets escalationMessage.
+//
+// Expected: parameters for thePlannerEscalatesToUser.
 func (h *harnessE2EStepDefinitions) thePlannerEscalatesToUser() error {
 	if h.harnessComplete && len(h.validationErrors) > 0 {
 		h.escalationMessage = fmt.Sprintf("Harness exhausted after %d retries with errors: %v", h.maxRetries, h.validationErrors)

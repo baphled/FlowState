@@ -16,6 +16,9 @@ type PreToolExecCtx struct {
 //
 // The slot phase has no pre-registered hooks and a pass-through handler.
 // Hooks activate the slot by being added to the chain.
+//
+// Returns: result of DefaultPreToolExec.
+// Side effects: None.
 func DefaultPreToolExec() LifecycleStage[PreToolExecCtx] {
 	return LifecycleStage[PreToolExecCtx]{
 		Name:    "pre_tool_exec",

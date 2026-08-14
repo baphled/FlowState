@@ -186,6 +186,8 @@ func resolveOllamaContextLength(modelID string) int {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *Provider) Name() string {
 	return providerName
 }
@@ -350,6 +352,8 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 //
 // Side effects:
 //   - Makes an HTTP request to the Ollama API.
+//
+// Expected: parameters for Models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	resp, err := p.client.List(context.Background())
 	if err != nil {

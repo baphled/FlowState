@@ -91,6 +91,8 @@ const (
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for IsModelAllowed.
 func (m *Manifest) IsModelAllowed(provider, model string) bool {
 	if m == nil {
 		return true
@@ -119,6 +121,8 @@ func (m *Manifest) IsModelAllowed(provider, model string) bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for IsModelPreferred.
 func (m *Manifest) IsModelPreferred(provider, model string) bool {
 	if m == nil {
 		return false
@@ -270,6 +274,8 @@ const (
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for IsPermissive.
 func (d Delegation) IsPermissive() bool {
 	return d.Scope == DelegationScopePermissive
 }
@@ -353,6 +359,9 @@ var defaultEmbeddingModel = HistoricalDefaultEmbeddingModel
 // to be called once at application startup from the app package after
 // AppConfig has been resolved; concurrent callers (e.g. parallel test
 // runners) should treat the value as a soft global.
+//
+// Expected: parameters for SetDefaultEmbeddingModel.
+// Side effects: None.
 func SetDefaultEmbeddingModel(model string) {
 	if model == "" {
 		defaultEmbeddingModel = HistoricalDefaultEmbeddingModel
@@ -363,6 +372,9 @@ func SetDefaultEmbeddingModel(model string) {
 
 // DefaultEmbeddingModel returns the current package-level embedding-model
 // fallback. Useful for tests that want to assert the wiring took effect.
+//
+// Returns: result of DefaultEmbeddingModel.
+// Side effects: None.
 func DefaultEmbeddingModel() string {
 	return defaultEmbeddingModel
 }
@@ -393,6 +405,8 @@ func DefaultContextManagement() ContextManagement {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for DefaultContextManagementWith.
 func DefaultContextManagementWith(embeddingModel string) ContextManagement {
 	if embeddingModel == "" {
 		embeddingModel = HistoricalDefaultEmbeddingModel
@@ -414,6 +428,8 @@ func DefaultContextManagementWith(embeddingModel string) ContextManagement {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Validate.
 func (m *Manifest) Validate() error {
 	if m.ID == "" {
 		return &ValidationError{Field: "id", Message: "required"}
@@ -471,6 +487,8 @@ func (m *Manifest) Validate() error {
 //
 // Side effects:
 //   - None; pure computation over the receiver.
+//
+// Expected: parameters for EffectiveTools.
 func (m *Manifest) EffectiveTools() []string {
 	if m == nil {
 		return DefaultBaseTools()
@@ -509,6 +527,8 @@ type ValidationError struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Error.
 func (e *ValidationError) Error() string {
 	return e.Field + ": " + e.Message
 }

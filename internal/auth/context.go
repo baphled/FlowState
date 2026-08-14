@@ -24,6 +24,10 @@ const (
 // withRecord returns a copy of ctx carrying rec under ctxRecord. Used
 // internally by RequireSession; not exported because the auth surface
 // MUST be the sole writer of this key.
+//
+// Expected: parameters for withRecord.
+// Returns: result of withRecord.
+// Side effects: None.
 func withRecord(ctx context.Context, rec *store.Record) context.Context {
 	return context.WithValue(ctx, ctxRecord, rec)
 }
@@ -32,6 +36,10 @@ func withRecord(ctx context.Context, rec *store.Record) context.Context {
 // RequireSession, or nil if none is present. Internal-only — the
 // exported accessor is RecordFrom (below) for HTTP handlers consuming
 // the authenticated principal.
+//
+// Expected: parameters for requestRecord.
+// Returns: result of requestRecord.
+// Side effects: None.
 func requestRecord(r *http.Request) *store.Record {
 	if r == nil {
 		return nil
@@ -56,6 +64,10 @@ func requestRecord(r *http.Request) *store.Record {
 // principal as a hard precondition (no nil result) should rely on
 // RequireSession having executed first — its 401 short-circuit closes
 // the nil path.
+//
+// Expected: parameters for RecordFrom.
+// Returns: result of RecordFrom.
+// Side effects: None.
 func RecordFrom(r *http.Request) *store.Record {
 	return requestRecord(r)
 }

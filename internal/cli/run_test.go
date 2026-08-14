@@ -721,7 +721,7 @@ var _ = Describe("CLI saveSession sidecar parity (Bug 3 — plan-writer forensic
 		// refreshes the .meta.json sidecar.
 		cmd := &cobra.Command{}
 		cmd.SetErr(&bytes.Buffer{})
-		cli.SaveSessionForTest(cmd, testApp, sessionID)
+		cli.SaveSessionForTest(context.Background(), cmd, testApp, sessionID)
 
 		// Step 4 — Both files must agree. Without the fix, .json shows
 		// `agent-at-save` (post-swap) but .meta.json shows

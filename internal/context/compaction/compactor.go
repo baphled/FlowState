@@ -55,6 +55,8 @@ type Options struct {
 // Side effects:
 //   - None. The store directory is created lazily by Compact when the
 //     first cold payload needs to land.
+//
+// Expected: parameters for NewMicroCompactor.
 func NewMicroCompactor(opts Options) *MicroCompactor {
 	return &MicroCompactor{
 		storeRoot:        opts.StoreRoot,
@@ -95,6 +97,8 @@ func NewMicroCompactor(opts Options) *MicroCompactor {
 //     caller therefore must not proceed with the compacted view (rare;
 //     normal disk failures are returned so the engine can fall back to
 //     the full slice rather than silently lose history).
+//
+// Side effects: None.
 func (m *MicroCompactor) Compact(_ context.Context, sessionID string, messages []provider.Message) ([]provider.Message, error) {
 	if m == nil || !m.shouldRun(sessionID, messages) {
 		return cloneMessages(messages), nil
@@ -127,6 +131,10 @@ func (m *MicroCompactor) Compact(_ context.Context, sessionID string, messages [
 // IsCompactableTool reports whether the named tool is part of the
 // Phase A compactable set. Exposed so engine wiring tests and external
 // callers can reason about classification without duplicating the list.
+//
+// Expected: parameters for IsCompactableTool.
+// Returns: result of IsCompactableTool.
+// Side effects: None.
 func (m *MicroCompactor) IsCompactableTool(name string) bool {
 	if m == nil {
 		return false
@@ -137,6 +145,10 @@ func (m *MicroCompactor) IsCompactableTool(name string) bool {
 // shouldRun returns true when the compactor is configured to operate on
 // this slice. False when the compactor is mis-configured for the input
 // (no sessionID with a StoreRoot, empty slice).
+//
+// Expected: parameters for shouldRun.
+// Returns: result of shouldRun.
+// Side effects: None.
 func (m *MicroCompactor) shouldRun(sessionID string, messages []provider.Message) bool {
 	if len(messages) == 0 {
 		return false
@@ -150,6 +162,10 @@ func (m *MicroCompactor) shouldRun(sessionID string, messages []provider.Message
 // compactableIndices returns the indices in messages that are
 // compactable tool results, in original order. Already-compacted
 // reference messages are excluded so a second pass is idempotent.
+//
+// Expected: parameters for compactableIndices.
+// Returns: result of compactableIndices.
+// Side effects: None.
 func (m *MicroCompactor) compactableIndices(messages []provider.Message) []int {
 	out := make([]int, 0, len(messages))
 	for i := range messages {
@@ -169,6 +185,10 @@ func (m *MicroCompactor) compactableIndices(messages []provider.Message) []int {
 // hotTailMin entries; entries beyond that overflow to cold once their
 // cumulative size exceeds sizeBudget. Entries inside the budget but
 // older than hotTailMin still stay hot.
+//
+// Expected: parameters for coldIndices.
+// Returns: result of coldIndices.
+// Side effects: None.
 func (m *MicroCompactor) coldIndices(messages []provider.Message, compactable []int) []int {
 	hotCount := 0
 	hotBytes := 0
@@ -201,6 +221,10 @@ func (m *MicroCompactor) coldIndices(messages []provider.Message, compactable []
 // When storeRoot is empty the .txt write is skipped — the reference
 // message still references a stable id so a future call to spillOne
 // remains idempotent for that input.
+//
+// Expected: parameters for spillOne.
+// Returns: result of spillOne.
+// Side effects: None.
 func (m *MicroCompactor) spillOne(sessionID string, msg provider.Message) (provider.Message, error) {
 	id := messageID(msg)
 	relPath := filepath.Join(sessionID, "compacted", id+".txt")
@@ -227,6 +251,10 @@ func (m *MicroCompactor) spillOne(sessionID string, msg provider.Message) (provi
 // produced by a compactable tool. Tool-result messages carry Role:"tool"
 // and a ToolCalls entry whose Name is the tool that produced the
 // content. Non-tool messages always return false.
+//
+// Expected: parameters for isCompactableToolResult.
+// Returns: result of isCompactableToolResult.
+// Side effects: None.
 func (m *MicroCompactor) isCompactableToolResult(msg provider.Message) bool {
 	if msg.Role != "tool" {
 		return false
@@ -240,6 +268,10 @@ func (m *MicroCompactor) isCompactableToolResult(msg provider.Message) bool {
 // sessionLock returns the per-session mutex, creating one on first use.
 // The map mutex protects the registry; per-session locks protect the
 // .txt files during write.
+//
+// Expected: parameters for sessionLock.
+// Returns: result of sessionLock.
+// Side effects: None.
 func (m *MicroCompactor) sessionLock(sessionID string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -262,6 +294,10 @@ const (
 
 // buildReferenceText returns the human-readable sentinel embedded in
 // the rewritten tool-result message.
+//
+// Expected: parameters for buildReferenceText.
+// Returns: result of buildReferenceText.
+// Side effects: None.
 func buildReferenceText(relPath string) string {
 	return referencePrefix + relPath + referenceSuffix
 }
@@ -269,6 +305,10 @@ func buildReferenceText(relPath string) string {
 // isReferenceMessage reports whether a tool-result message has already
 // been rewritten by a prior compaction pass. Used by compactableIndices
 // to keep Compact idempotent.
+//
+// Expected: parameters for isReferenceMessage.
+// Returns: result of isReferenceMessage.
+// Side effects: None.
 func isReferenceMessage(msg provider.Message) bool {
 	return strings.HasPrefix(msg.Content, referencePrefix) && strings.HasSuffix(msg.Content, referenceSuffix)
 }
@@ -277,6 +317,10 @@ func isReferenceMessage(msg provider.Message) bool {
 // The id is derived from the tool-call id when present (so replays
 // land at the same path) and from a fnv-1a hash of the content
 // otherwise. Always 16 hex chars; never collides with reserved names.
+//
+// Expected: parameters for messageID.
+// Returns: result of messageID.
+// Side effects: None.
 func messageID(msg provider.Message) string {
 	if len(msg.ToolCalls) > 0 && msg.ToolCalls[0].ID != "" {
 		return sanitiseID(msg.ToolCalls[0].ID)
@@ -289,6 +333,10 @@ func messageID(msg provider.Message) string {
 // sanitiseID strips characters that are dangerous in filenames so a
 // hostile (or merely odd) tool-call id can never escape the
 // compacted/ subdirectory. The output is deterministic.
+//
+// Expected: parameters for sanitiseID.
+// Returns: result of sanitiseID.
+// Side effects: None.
 func sanitiseID(raw string) string {
 	var b strings.Builder
 	b.Grow(len(raw))
@@ -311,6 +359,10 @@ func sanitiseID(raw string) string {
 // cloneMessages returns a defensive copy of msgs. ToolCalls slices are
 // likewise cloned so callers cannot reach back through ours and mutate
 // the persisted history.
+//
+// Expected: parameters for cloneMessages.
+// Returns: result of cloneMessages.
+// Side effects: None.
 func cloneMessages(msgs []provider.Message) []provider.Message {
 	out := make([]provider.Message, len(msgs))
 	for i := range msgs {
@@ -321,6 +373,10 @@ func cloneMessages(msgs []provider.Message) []provider.Message {
 }
 
 // cloneToolCalls returns a defensive copy of calls; nil-in -> nil-out.
+//
+// Expected: parameters for cloneToolCalls.
+// Returns: result of cloneToolCalls.
+// Side effects: None.
 func cloneToolCalls(calls []provider.ToolCall) []provider.ToolCall {
 	if calls == nil {
 		return nil
@@ -333,6 +389,9 @@ func cloneToolCalls(calls []provider.ToolCall) []provider.ToolCall {
 // reverseInts mutates xs in place. Used to flip the right-to-left walk
 // of coldIndices back into ascending order so callers can iterate the
 // result and rewrite messages by ascending index.
+//
+// Expected: parameters for reverseInts.
+// Side effects: None.
 func reverseInts(xs []int) {
 	for i, j := 0, len(xs)-1; i < j; i, j = i+1, j-1 {
 		xs[i], xs[j] = xs[j], xs[i]
@@ -342,6 +401,10 @@ func reverseInts(xs []int) {
 // maxInt is the duplicated three-line helper Go's stdlib finally got in
 // 1.21; this package targets 1.21+ but keeping a local helper keeps the
 // import surface small and the code reviewable in isolation.
+//
+// Expected: parameters for maxInt.
+// Returns: result of maxInt.
+// Side effects: None.
 func maxInt(a, b int) int {
 	if a > b {
 		return a
@@ -358,6 +421,9 @@ func maxInt(a, b int) int {
 // todowrite, todoread, chain_*, batch, question)
 // is intentionally NOT enumerated here — anything missing from this
 // map is non-compactable by default, which is the safe direction.
+//
+// Returns: result of defaultCompactableTools.
+// Side effects: None.
 func defaultCompactableTools() map[string]bool {
 	return map[string]bool{
 		"read":               true,

@@ -62,6 +62,10 @@ type AuthBundle struct {
 // Helpers use this to choose between the wrapped path and the
 // pass-through path; centralising the predicate avoids a
 // per-call-site nil check drift.
+//
+// Expected: parameters for active.
+// Returns: result of active.
+// Side effects: None.
 func (b AuthBundle) active() bool {
 	return b.Session != nil && b.Auth.Enabled
 }
@@ -73,6 +77,10 @@ func (b AuthBundle) active() bool {
 // Production wires this from cfg.Auth (TOML) after constructing the
 // SessionManager, OriginConfig, AuthConfig, and CSRFConfig from the
 // same config layer.
+//
+// Expected: parameters for WithAuth.
+// Returns: result of WithAuth.
+// Side effects: None.
 func WithAuth(bundle AuthBundle) ServerOption {
 	return func(s *Server) { s.auth = bundle }
 }
@@ -85,6 +93,10 @@ func WithAuth(bundle AuthBundle) ServerOption {
 //
 // Used by setupRoutes for every endpoint in §"Endpoint Inventory"
 // Protected list (16 routes).
+//
+// Expected: parameters for registerProtected.
+// Returns: result of registerProtected.
+// Side effects: None.
 func (s *Server) registerProtected(pattern string, h http.HandlerFunc) {
 	if !s.auth.active() {
 		s.mux.HandleFunc(pattern, h)
@@ -107,6 +119,10 @@ func (s *Server) registerProtected(pattern string, h http.HandlerFunc) {
 // The helper exists as an explicit marker at the call site so a reader
 // can audit "is this endpoint public?" at registration time rather than
 // inferring from absence-of-wrap.
+//
+// Expected: parameters for registerPublic.
+// Returns: result of registerPublic.
+// Side effects: None.
 func (s *Server) registerPublic(pattern string, h http.HandlerFunc) {
 	s.mux.HandleFunc(pattern, h)
 }
@@ -126,6 +142,10 @@ func (s *Server) registerPublic(pattern string, h http.HandlerFunc) {
 // caller cannot fingerprint the active auth.mode by probing /whoami
 // (which the plan's line 511 "unauth returns {mode, authenticated:false}"
 // shape would have leaked).
+//
+// Expected: parameters for registerLogin.
+// Returns: result of registerLogin.
+// Side effects: None.
 func (s *Server) registerLogin(pattern string, h http.HandlerFunc) {
 	if !s.auth.active() {
 		s.mux.HandleFunc(pattern, h)
@@ -177,6 +197,9 @@ type WhoamiView struct {
 // (defensive — net/http's pattern matching already filters by method
 // prefix in the route registration, so this branch is hit only when a
 // future route restructure drops the method prefix).
+//
+// Expected: parameters for handleWhoami.
+// Side effects: None.
 func handleWhoami(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method_not_allowed", http.StatusMethodNotAllowed)

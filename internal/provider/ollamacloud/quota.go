@@ -29,6 +29,10 @@ type Quota struct {
 
 // NewQuota constructs an Ollama Cloud quota adapter — see
 // openai.NewQuota.
+//
+// Expected: parameters for NewQuota.
+// Returns: result of NewQuota.
+// Side effects: None.
 func NewQuota(accountHash string) *Quota {
 	return &Quota{
 		accountHash: accountHash,
@@ -44,6 +48,10 @@ func NewQuota(accountHash string) *Quota {
 }
 
 // Bind — see openai.Quota.Bind.
+//
+// Expected: parameters for Bind.
+// Returns: result of Bind.
+// Side effects: None.
 func (q *Quota) Bind(p *Provider) {
 	if p == nil {
 		return
@@ -54,6 +62,10 @@ func (q *Quota) Bind(p *Provider) {
 }
 
 // Remaining — see openai.Quota.Remaining.
+//
+// Expected: parameters for Remaining.
+// Returns: result of Remaining.
+// Side effects: None.
 func (q *Quota) Remaining(_ context.Context, _, modelID string) (quota.Snapshot, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -68,6 +80,10 @@ func (q *Quota) Remaining(_ context.Context, _, modelID string) (quota.Snapshot,
 }
 
 // RecordResponse — see openai.Quota.RecordResponse.
+//
+// Expected: parameters for RecordResponse.
+// Returns: result of RecordResponse.
+// Side effects: None.
 func (q *Quota) RecordResponse(_, modelID string, headers http.Header, _ provider.Usage) {
 	rl := openaicompat.ExtractRateLimitHeadersFromResponse(headers)
 	if rl == nil {

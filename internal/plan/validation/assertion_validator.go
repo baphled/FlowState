@@ -54,6 +54,8 @@ func (v *AssertionValidator) Validate(planFile *plan.File) (*plan.ValidationResu
 // Side effects:
 //   - Modifies result by appending errors and reducing score.
 //   - Populates titleSet and titleToIdx maps.
+//
+// Returns: result of checkDuplicateTitles.
 func (v *AssertionValidator) checkDuplicateTitles(
 	planFile *plan.File,
 	result *plan.ValidationResult,
@@ -81,6 +83,8 @@ func (v *AssertionValidator) checkDuplicateTitles(
 //
 // Side effects:
 //   - Modifies result by appending errors and reducing score.
+//
+// Returns: result of checkInvalidDependencies.
 func (v *AssertionValidator) checkInvalidDependencies(planFile *plan.File, result *plan.ValidationResult, titleSet map[string]struct{}) {
 	for i := range planFile.Tasks {
 		task := &planFile.Tasks[i]
@@ -101,6 +105,8 @@ func (v *AssertionValidator) checkInvalidDependencies(planFile *plan.File, resul
 //
 // Side effects:
 //   - Modifies result by appending errors and reducing score if a cycle is found.
+//
+// Returns: result of checkCircularDependencies.
 func (v *AssertionValidator) checkCircularDependencies(planFile *plan.File, result *plan.ValidationResult, titleToIdx map[string]int) {
 	visited := make(map[string]bool)
 	stack := make(map[string]bool)
@@ -147,6 +153,8 @@ func (v *AssertionValidator) checkCircularDependencies(planFile *plan.File, resu
 //
 // Side effects:
 //   - Modifies result by appending errors and reducing score for tasks without effort.
+//
+// Returns: result of checkMissingEffort.
 func (v *AssertionValidator) checkMissingEffort(planFile *plan.File, result *plan.ValidationResult) {
 	for i := range planFile.Tasks {
 		task := &planFile.Tasks[i]
@@ -164,6 +172,8 @@ func (v *AssertionValidator) checkMissingEffort(planFile *plan.File, result *pla
 //
 // Side effects:
 //   - Modifies result by clamping the Score field.
+//
+// Returns: result of normalizeScore.
 func (v *AssertionValidator) normalizeScore(result *plan.ValidationResult) {
 	if result.Score < 0.0 {
 		result.Score = 0.0

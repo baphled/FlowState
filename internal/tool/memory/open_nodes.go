@@ -16,13 +16,39 @@ type OpenNodesTool struct {
 }
 
 // NewOpenNodesTool creates an OpenNodesTool backed by the given MemoryClient.
+//
+// Expected: parameters for NewOpenNodesTool.
+// Returns: result of NewOpenNodesTool.
+// Side effects: None.
 func NewOpenNodesTool(client learning.MemoryClient) *OpenNodesTool {
 	return &OpenNodesTool{client: client}
 }
 
-func (t *OpenNodesTool) Name() string        { return "mcp_memory_open_nodes" }
+// Name ...
+//
+// Expected: parameters for Name.
+//
+// Returns: result of Name.
+//
+// Side effects: None.
+func (t *OpenNodesTool) Name() string { return "mcp_memory_open_nodes" }
+
+// Description ...
+//
+// Expected: parameters for Description.
+//
+// Returns: result of Description.
+//
+// Side effects: None.
 func (t *OpenNodesTool) Description() string { return "Retrieve specific memory nodes by name" }
 
+// Schema ...
+//
+// Expected: parameters for Schema.
+//
+// Returns: result of Schema.
+//
+// Side effects: None.
 func (t *OpenNodesTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -34,6 +60,10 @@ func (t *OpenNodesTool) Schema() tool.Schema {
 }
 
 // Execute retrieves the requested nodes and returns a formatted knowledge graph.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *OpenNodesTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	raw, ok := input.Arguments["names"]
 	if !ok {
@@ -74,6 +104,10 @@ func (t *OpenNodesTool) Execute(ctx context.Context, input tool.Input) (tool.Res
 
 // toStringSlice coerces an interface{} to []string, accepting both
 // []interface{} (from JSON decode) and []string.
+//
+// Expected: parameters for toStringSlice.
+// Returns: result of toStringSlice.
+// Side effects: None.
 func toStringSlice(v interface{}) ([]string, error) {
 	switch typed := v.(type) {
 	case []string:

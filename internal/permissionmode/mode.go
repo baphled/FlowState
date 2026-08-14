@@ -87,6 +87,10 @@ type modeKey struct{}
 // behaviour when the key is absent" semantic and avoids stamping a
 // zero value that downstream consumers would treat as the same as
 // ModeDefault anyway.
+//
+// Expected: parameters for WithMode.
+// Returns: result of WithMode.
+// Side effects: None.
 func WithMode(ctx context.Context, mode Mode) context.Context {
 	if mode == "" {
 		return ctx
@@ -98,6 +102,10 @@ func WithMode(ctx context.Context, mode Mode) context.Context {
 // ModeDefault when no key is present (or when the value bound is the
 // empty string). Callers MUST treat ModeDefault as the safe fall-back
 // — a missing mode means "behave as Default", never "bypass".
+//
+// Expected: parameters for FromContext.
+// Returns: result of FromContext.
+// Side effects: None.
 func FromContext(ctx context.Context) Mode {
 	if ctx == nil {
 		return ModeDefault
@@ -152,6 +160,10 @@ var MutatingTools = map[string]struct{}{
 // set. Provided so engine-side callers don't have to import the map
 // directly (and so a future move to a richer predicate — e.g. one
 // that consults a tool-side flag — is non-breaking).
+//
+// Expected: parameters for IsMutating.
+// Returns: result of IsMutating.
+// Side effects: None.
 func IsMutating(toolName string) bool {
 	_, ok := MutatingTools[toolName]
 	return ok
@@ -181,6 +193,10 @@ var PlanModeStrippedTools = map[string]struct{}{
 // seam consults this predicate when subtracting tools under Plan mode;
 // callers in other packages can use it without importing the map
 // directly.
+//
+// Expected: parameters for IsStrippedUnderPlan.
+// Returns: result of IsStrippedUnderPlan.
+// Side effects: None.
 func IsStrippedUnderPlan(toolName string) bool {
 	_, ok := PlanModeStrippedTools[toolName]
 	return ok

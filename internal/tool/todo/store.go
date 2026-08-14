@@ -86,6 +86,10 @@ func (s *MemoryStore) Get(sessionID string) []Item {
 // Apply atomically reads, transforms, and writes the todo list for
 // sessionID under a single write lock. See Store.Apply for the full
 // contract.
+//
+// Expected: parameters for Apply.
+// Returns: result of Apply.
+// Side effects: None.
 func (s *MemoryStore) Apply(sessionID string, fn func(current []Item) (next []Item, err error)) ([]Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

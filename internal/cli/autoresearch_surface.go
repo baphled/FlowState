@@ -44,9 +44,12 @@ import (
 type SurfaceType string
 
 const (
+	// SurfaceTypeManifest represents a manifest surface type.
 	SurfaceTypeManifest SurfaceType = "manifest"
-	SurfaceTypeSkill    SurfaceType = "skill"
-	SurfaceTypeSource   SurfaceType = "source"
+	// SurfaceTypeSkill represents a skill surface type.
+	SurfaceTypeSkill SurfaceType = "skill"
+	// SurfaceTypeSource represents a source surface type.
+	SurfaceTypeSource SurfaceType = "source"
 )
 
 // frontmatterReadLimit caps the bytes consumed when probing a file
@@ -117,6 +120,10 @@ func detectSurfaceType(surface string, agentDirs []string) (SurfaceType, error) 
 // comparison is byte-wise after a trailing separator is appended
 // to parent so that /agents-extra is not treated as a prefix of
 // /agents.
+//
+// Expected: parameters for pathContains.
+// Returns: result of pathContains.
+// Side effects: None.
 func pathContains(parent, child string) bool {
 	parent = filepath.Clean(parent)
 	child = filepath.Clean(child)
@@ -134,6 +141,10 @@ func pathContains(parent, child string) bool {
 // the skill heuristic is intentionally narrow — arbitrary .md
 // files under skills/ are NOT auto-classified as skill bodies;
 // only the canonical SKILL.md filename qualifies.
+//
+// Expected: parameters for isSkillPath.
+// Returns: result of isSkillPath.
+// Side effects: None.
 func isSkillPath(surface string) bool {
 	if filepath.Base(surface) != "SKILL.md" {
 		return false
@@ -163,6 +174,9 @@ func isSkillPath(surface string) bool {
 //     marker present).
 //   - An error only on file I/O failures — callers may treat
 //     errors as a soft "not a manifest" signal.
+//
+// Expected: parameters for frontmatterIsManifest.
+// Side effects: None.
 func frontmatterIsManifest(path string) (bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -209,6 +223,10 @@ func frontmatterIsManifest(path string) (bool, error) {
 // and trailing `---` lines from the head of content. Returns the
 // frontmatter body (without the delimiters) and a boolean
 // indicating whether a well-formed delimiter pair was found.
+//
+// Expected: parameters for extractFrontmatter.
+// Returns: result of extractFrontmatter.
+// Side effects: None.
 func extractFrontmatter(content string) (string, bool) {
 	// Frontmatter must begin on the very first line.
 	if !strings.HasPrefix(content, "---\n") && !strings.HasPrefix(content, "---\r\n") {

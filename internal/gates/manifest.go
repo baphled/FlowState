@@ -69,6 +69,10 @@ const TargetPlaceholder = "${target}"
 // per-field defaults. The returned Manifest has Dir populated to the
 // parent directory of path so AbsoluteExecPath can resolve relative
 // exec entries.
+//
+// Expected: parameters for LoadManifest.
+// Returns: result of LoadManifest.
+// Side effects: None.
 func LoadManifest(path string) (Manifest, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
@@ -93,6 +97,10 @@ func LoadManifest(path string) (Manifest, error) {
 // AbsoluteExecPath returns the gate's executable resolved against its
 // manifest directory. An absolute Exec is returned verbatim; a
 // relative Exec joins onto Dir.
+//
+// Expected: parameters for AbsoluteExecPath.
+// Returns: result of AbsoluteExecPath.
+// Side effects: None.
 func (m Manifest) AbsoluteExecPath() string {
 	if filepath.IsAbs(m.Exec) {
 		return m.Exec
@@ -102,6 +110,9 @@ func (m Manifest) AbsoluteExecPath() string {
 
 // applyManifestDefaults sets Timeout=30s when zero and leaves every
 // other field as-loaded.
+//
+// Expected: parameters for applyManifestDefaults.
+// Side effects: None.
 func applyManifestDefaults(m *Manifest) {
 	if m.Timeout == 0 {
 		m.Timeout = 30 * time.Second
@@ -110,6 +121,10 @@ func applyManifestDefaults(m *Manifest) {
 
 // validateManifest enforces Name and Exec presence and a non-negative
 // Timeout. Returns the first failure as an error.
+//
+// Expected: parameters for validateManifest.
+// Returns: result of validateManifest.
+// Side effects: None.
 func validateManifest(m *Manifest) error {
 	if strings.TrimSpace(m.Name) == "" {
 		return fmt.Errorf("name: required")

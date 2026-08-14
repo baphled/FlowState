@@ -11,10 +11,14 @@ import (
 type ToolExecPhase string
 
 const (
-	ToolExecBegin    ToolExecPhase = "begin"
+	// ToolExecBegin marks the start of the tool execution sub-lifecycle.
+	ToolExecBegin ToolExecPhase = "begin"
+	// ToolExecDispatch marks the dispatch phase where the tool call is routed.
 	ToolExecDispatch ToolExecPhase = "dispatch"
-	ToolExecRun      ToolExecPhase = "run"
-	ToolExecEnd      ToolExecPhase = "end"
+	// ToolExecRun marks the core execution phase where the tool runs.
+	ToolExecRun ToolExecPhase = "run"
+	// ToolExecEnd marks the completion of the tool execution sub-lifecycle.
+	ToolExecEnd ToolExecPhase = "end"
 )
 
 // ToolExecCtx carries the data for a single tool call within the ToolExec
@@ -61,6 +65,9 @@ type ToolExecResult struct {
 // The ToolExec stage pre-registers hooks that implement permission checks,
 // plugin dispatch, quota tracking, knowledge extraction, and event publishing.
 // Custom pipelines can reorder or replace these.
+//
+// Returns: result of DefaultToolExec.
+// Side effects: None.
 func DefaultToolExec() LifecycleStage[ToolExecCtx] {
 	return LifecycleStage[ToolExecCtx]{
 		Name:    "tool_exec",

@@ -162,6 +162,8 @@ func (d *DelegateTool) prepareExecution(
 //
 // Side effects:
 //   - Mutates targetEngine's manifest and agent-file loading flag.
+//
+// Returns: result of applySkillsAndSessionMode.
 func (d *DelegateTool) applySkillsAndSessionMode(targetEngine *Engine, params delegationParams) {
 	if len(params.loadSkills) > 0 {
 		manifest := targetEngine.Manifest()

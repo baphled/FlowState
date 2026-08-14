@@ -37,6 +37,10 @@ type Embedder interface {
 type EmbedderFunc func(ctx context.Context, text string) ([]float64, error)
 
 // Embed implements Embedder by invoking the wrapped function.
+//
+// Expected: parameters for Embed.
+// Returns: result of Embed.
+// Side effects: None.
 func (f EmbedderFunc) Embed(ctx context.Context, text string) ([]float64, error) {
 	return f(ctx, text)
 }
@@ -175,6 +179,10 @@ func (i *Indexer) IndexAll(ctx context.Context) (Summary, error) {
 
 // indexFile reads a single file, chunks it, embeds it in batches, and
 // upserts the resulting points.
+//
+// Expected: parameters for indexFile.
+// Returns: result of indexFile.
+// Side effects: None.
 func (i *Indexer) indexFile(ctx context.Context, f MarkdownFile) (int, error) {
 	body, err := os.ReadFile(f.AbsPath)
 	if err != nil {
@@ -200,6 +208,10 @@ func (i *Indexer) indexFile(ctx context.Context, f MarkdownFile) (int, error) {
 
 // embedBatches chunks the embedding work into BatchSize windows and
 // produces the corresponding qdrant.Point slice.
+//
+// Expected: parameters for embedBatches.
+// Returns: result of embedBatches.
+// Side effects: None.
 func (i *Indexer) embedBatches(ctx context.Context, f MarkdownFile, chunks []string) ([]qdrant.Point, error) {
 	points := make([]qdrant.Point, 0, len(chunks))
 	for start := 0; start < len(chunks); start += i.cfg.BatchSize {
@@ -234,6 +246,10 @@ func (i *Indexer) embedBatches(ctx context.Context, f MarkdownFile, chunks []str
 // ID. The UUID-v5 derivation gives every (file, chunk_index) tuple a stable
 // identifier, so re-indexes overwrite the existing row rather than
 // duplicating it. The namespace is fixed in pointNamespace.
+//
+// Expected: parameters for pointID.
+// Returns: result of pointID.
+// Side effects: None.
 func pointID(relPath string, chunkIndex int) string {
 	return uuid.NewSHA1(pointNamespace, fmt.Appendf(nil, "%s:%d", relPath, chunkIndex)).String()
 }
@@ -250,4 +266,8 @@ type Summary struct {
 type noopLogger struct{}
 
 // Printf implements Logger by doing nothing.
+//
+// Expected: parameters for Printf.
+// Returns: result of Printf.
+// Side effects: None.
 func (noopLogger) Printf(_ string, _ ...any) {}

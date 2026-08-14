@@ -79,6 +79,10 @@ type ExtGateRunner interface {
 type ExtGateFunc func(ctx context.Context, req ExtGateRequest) (ExtGateResponse, error)
 
 // Evaluate satisfies ExtGateRunner.
+//
+// Expected: parameters for Evaluate.
+// Returns: result of Evaluate.
+// Side effects: None.
 func (f ExtGateFunc) Evaluate(ctx context.Context, req ExtGateRequest) (ExtGateResponse, error) {
 	return f(ctx, req)
 }
@@ -92,6 +96,10 @@ var (
 // RegisterExtGateFunc registers a Go function as a v0 gate runner.
 // Used by tests to skip the filesystem path; the runtime treats
 // func-registered and file-discovered runners identically.
+//
+// Expected: parameters for RegisterExtGateFunc.
+// Returns: result of RegisterExtGateFunc.
+// Side effects: None.
 func RegisterExtGateFunc(name string, fn ExtGateFunc) error {
 	return RegisterExtGateFuncWithInputs(name, fn, nil)
 }
@@ -106,6 +114,10 @@ func RegisterExtGateFunc(name string, fn ExtGateFunc) error {
 // without going through the filesystem path; production wiring uses
 // RegisterExtGateFromManifest, which feeds the manifest's Inputs into
 // the same registry slot.
+//
+// Expected: parameters for RegisterExtGateFuncWithInputs.
+// Returns: result of RegisterExtGateFuncWithInputs.
+// Side effects: None.
 func RegisterExtGateFuncWithInputs(name string, fn ExtGateFunc, inputs []gates.InputSpec) error {
 	if name == "" {
 		return fmt.Errorf("ext gate registration: empty name")
@@ -122,6 +134,10 @@ func RegisterExtGateFuncWithInputs(name string, fn ExtGateFunc, inputs []gates.I
 // manifest's Inputs declaration is published into the same registry
 // slot so the multi-key composition path can resolve it by gate name
 // at dispatch time.
+//
+// Expected: parameters for RegisterExtGateFromManifest.
+// Returns: result of RegisterExtGateFromManifest.
+// Side effects: None.
 func RegisterExtGateFromManifest(m gates.Manifest) error {
 	runner, err := newSubprocessRunner(m)
 	if err != nil {
@@ -131,6 +147,10 @@ func RegisterExtGateFromManifest(m gates.Manifest) error {
 }
 
 // LookupExtGate returns the registered runner for name plus a found bit.
+//
+// Expected: parameters for LookupExtGate.
+// Returns: result of LookupExtGate.
+// Side effects: None.
 func LookupExtGate(name string) (ExtGateRunner, bool) {
 	extGateRegistryMu.RLock()
 	defer extGateRegistryMu.RUnlock()
@@ -164,6 +184,8 @@ func LookupGateInputs(name string) ([]gates.InputSpec, bool) {
 }
 
 // ResetExtGateRegistryForTest clears the registry. Test-only.
+//
+// Side effects: None.
 func ResetExtGateRegistryForTest() {
 	extGateRegistryMu.Lock()
 	defer extGateRegistryMu.Unlock()
@@ -178,6 +200,10 @@ func ResetExtGateRegistryForTest() {
 // error so the formatted message names the failing gate and swarm —
 // the 2026-05-18 `gate "" ... in swarm ""` user report traced to these
 // slots being left blank at the wrap site.
+//
+// Expected: parameters for DispatchExt.
+// Returns: result of DispatchExt.
+// Side effects: None.
 func DispatchExt(ctx context.Context, kind string, req ExtGateRequest) error {
 	if !strings.HasPrefix(kind, gateKindExtPrefix) {
 		return fmt.Errorf("DispatchExt: kind %q must start with %s", kind, gateKindExtPrefix)
@@ -218,6 +244,10 @@ func DispatchExt(ctx context.Context, kind string, req ExtGateRequest) error {
 // inputs declaration alongside the runner so the multi-key composition
 // path can resolve it by name without taking a back-channel through the
 // runner interface.
+//
+// Expected: parameters for registerRunner.
+// Returns: result of registerRunner.
+// Side effects: None.
 func registerRunner(name string, runner ExtGateRunner, inputs []gates.InputSpec) error {
 	extGateRegistryMu.Lock()
 	defer extGateRegistryMu.Unlock()
@@ -240,6 +270,10 @@ type subprocessRunner struct {
 // executable's resolved path is loadable (file exists, executable bit
 // set). Filesystem-level validation here prevents a swarm dispatch
 // from being the first failure point.
+//
+// Expected: parameters for newSubprocessRunner.
+// Returns: result of newSubprocessRunner.
+// Side effects: None.
 func newSubprocessRunner(m gates.Manifest) (*subprocessRunner, error) {
 	abs := m.AbsoluteExecPath()
 	info, err := os.Stat(abs)
@@ -258,6 +292,10 @@ func newSubprocessRunner(m gates.Manifest) (*subprocessRunner, error) {
 // Evaluate forks the gate, marshals the request, parses the response,
 // and enforces the manifest's timeout. Output errors carry the gate
 // name + a short stderr excerpt.
+//
+// Expected: parameters for Evaluate.
+// Returns: result of Evaluate.
+// Side effects: None.
 func (s *subprocessRunner) Evaluate(ctx context.Context, req ExtGateRequest) (ExtGateResponse, error) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.manifest.Timeout)
 	defer cancel()
@@ -294,6 +332,10 @@ func (s *subprocessRunner) Evaluate(ctx context.Context, req ExtGateRequest) (Ex
 
 // mergePolicy returns a fresh map combining manifest defaults with
 // per-request overrides. Per-request keys win on collision.
+//
+// Expected: parameters for mergePolicy.
+// Returns: result of mergePolicy.
+// Side effects: None.
 func mergePolicy(manifest, request map[string]any) map[string]any {
 	out := make(map[string]any, len(manifest)+len(request))
 	for k, v := range manifest {
@@ -314,10 +356,24 @@ type boundedBuffer struct {
 	buf bytes.Buffer
 }
 
+// newBoundedBuffer ...
+//
+// Expected: parameters for newBoundedBuffer.
+//
+// Returns: result of newBoundedBuffer.
+//
+// Side effects: None.
 func newBoundedBuffer(cap int) *boundedBuffer {
 	return &boundedBuffer{cap: cap}
 }
 
+// Write ...
+//
+// Expected: parameters for Write.
+//
+// Returns: result of Write.
+//
+// Side effects: None.
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	remaining := b.cap - b.buf.Len()
 	if remaining <= 0 {
@@ -329,4 +385,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
+// String ...
+//
+// Expected: parameters for String.
+//
+// Returns: result of String.
+//
+// Side effects: None.
 func (b *boundedBuffer) String() string { return b.buf.String() }

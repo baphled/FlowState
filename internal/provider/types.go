@@ -248,6 +248,10 @@ type wrappedProvider interface {
 }
 
 // RequestStats returns a compact diagnostic summary of req.
+//
+// Expected: parameters for RequestStats.
+// Returns: result of RequestStats.
+// Side effects: None.
 func RequestStats(req ChatRequest) RequestDebugStats {
 	stats := RequestDebugStats{MessageCount: len(req.Messages)}
 	raw, err := json.Marshal(req)
@@ -259,6 +263,10 @@ func RequestStats(req ChatRequest) RequestDebugStats {
 
 // ConcurrencyStats returns the active concurrency-limiter snapshot for p when
 // one is present anywhere in the wrapper chain.
+//
+// Expected: parameters for ConcurrencyStats.
+// Returns: result of ConcurrencyStats.
+// Side effects: None.
 func ConcurrencyStats(p Provider) (ConcurrencyDebugStats, bool) {
 	for p != nil {
 		if limited, ok := p.(*ConcurrencyLimitedProvider); ok {

@@ -81,6 +81,8 @@ func ResolveXDGDataHome() string {
 //
 // Side effects:
 //   - Reads XDG_DATA_HOME / HOME via os.Getenv / os.UserHomeDir.
+//
+// Expected: parameters for DefaultPermissionsYAML.
 func DefaultPermissionsYAML(vaultPath string) string {
 	content := defaultPermissionsYAML
 	if vaultPath != "" {
@@ -195,6 +197,8 @@ func EnsurePermissionsFile(dir, vaultPath string) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for resolvePlanOutputDirFromYAML.
 func resolvePlanOutputDirFromYAML(content string) (string, error) {
 	perms, err := parsePermissionsBytes([]byte(content))
 	if err != nil {
@@ -224,6 +228,8 @@ func resolvePlanOutputDirFromYAML(content string) (string, error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LoadDefaultPermissions.
 func LoadDefaultPermissions(vaultPath string) (*Permissions, error) {
 	return parsePermissionsBytes([]byte(DefaultPermissionsYAML(vaultPath)))
 }
@@ -240,6 +246,8 @@ func LoadDefaultPermissions(vaultPath string) (*Permissions, error) {
 //
 // Side effects:
 //   - Creates and removes a temporary probe file under dir on success.
+//
+// Expected: parameters for isDirWritable.
 func isDirWritable(dir string) bool {
 	f, err := os.CreateTemp(dir, ".permissions-bootstrap-probe-*")
 	if err != nil {

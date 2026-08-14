@@ -103,6 +103,10 @@ func ValidatePlanDocumentBody(payload []byte) error {
 // The {"markdown": "..."} envelope is NOT handled here — callers unwrap the
 // envelope to its Markdown body BEFORE validating, so a valid envelope is
 // validated on its inner markdown (which must itself have heading structure).
+//
+// Expected: parameters for isPlanDocument.
+// Returns: result of isPlanDocument.
+// Side effects: None.
 func isPlanDocument(body string) (ok bool, reason planValidationReason) {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
@@ -124,6 +128,10 @@ func isPlanDocument(body string) (ok bool, reason planValidationReason) {
 // non-heading line — i.e. there is plan CONTENT below the title/section
 // headers, not just a bare heading. "# TBD" alone is a stub; "# Plan\n\nbody"
 // has content.
+//
+// Expected: parameters for hasContentBeyondHeadings.
+// Returns: result of hasContentBeyondHeadings.
+// Side effects: None.
 func hasContentBeyondHeadings(body string) bool {
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -148,6 +156,10 @@ func hasContentBeyondHeadings(body string) bool {
 // gate's verdict consistent with the publisher's behaviour — a valid
 // envelope-wrapped plan and a salvageable structured plan pass both; a
 // contentless JSON spec blob fails both.
+//
+// Expected: parameters for resolveValidationBody.
+// Returns: result of resolveValidationBody.
+// Side effects: None.
 func resolveValidationBody(raw []byte) string {
 	var env planEnvelope
 	if err := json.Unmarshal(raw, &env); err == nil {
@@ -168,6 +180,10 @@ func resolveValidationBody(raw []byte) string {
 //
 // The cheap structural check (leading '{') gates the more expensive
 // json.Unmarshal so a long markdown body is rejected as "not JSON" in O(1).
+//
+// Expected: parameters for isJSONObject.
+// Returns: result of isJSONObject.
+// Side effects: None.
 func isJSONObject(s string) bool {
 	trimmed := strings.TrimSpace(s)
 	if !strings.HasPrefix(trimmed, "{") {
@@ -181,6 +197,10 @@ func isJSONObject(s string) bool {
 // heading ("#", "##", ... up to "######") at the start of any line. A heading
 // is "# Title" — one to six '#' followed by a space and text. A bare "#" with
 // no following space/text (e.g. a C-style comment or a "#tag") does not count.
+//
+// Expected: parameters for hasMarkdownHeading.
+// Returns: result of hasMarkdownHeading.
+// Side effects: None.
 func hasMarkdownHeading(body string) bool {
 	for _, line := range strings.Split(body, "\n") {
 		if isATXHeading(strings.TrimSpace(line)) {
@@ -193,6 +213,10 @@ func hasMarkdownHeading(body string) bool {
 // isATXHeading reports whether a (already-trimmed) line is an ATX heading:
 // one to six leading '#' characters followed by a space and at least one
 // non-space character of heading text.
+//
+// Expected: parameters for isATXHeading.
+// Returns: result of isATXHeading.
+// Side effects: None.
 func isATXHeading(line string) bool {
 	hashes := 0
 	for _, r := range line {

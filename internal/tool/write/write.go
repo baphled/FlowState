@@ -30,11 +30,18 @@ type Tool struct {
 }
 
 // New creates a new write tool instance.
+//
+// Returns: result of New.
+// Side effects: None.
 func New() *Tool {
 	return &Tool{}
 }
 
 // NewWithGuard creates a write tool that denies access to protected paths.
+//
+// Expected: parameters for NewWithGuard.
+// Returns: result of NewWithGuard.
+// Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool {
 	return &Tool{guard: g}
 }
@@ -46,6 +53,8 @@ func NewWithGuard(g *pathguard.Guard) *Tool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *Tool) Name() string {
 	return "write"
 }
@@ -57,6 +66,8 @@ func (t *Tool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *Tool) Description() string {
 	return "Write content to files with path validation (max 100KB per call)"
 }
@@ -68,6 +79,8 @@ func (t *Tool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -95,12 +108,18 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Timeout.
 func (t *Tool) Timeout() time.Duration {
 	return toolTimeout
 }
 
 // IsStateModifying returns true because write creates or overwrites a
 // file on the filesystem.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute performs the file write operation specified in input.

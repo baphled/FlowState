@@ -17,11 +17,11 @@ type adultingDataset struct {
 		Today       string `json:"today"`
 		Description string `json:"description"`
 	} `json:"meta"`
-	Tasks []adultingTask `json:"tasks"`
-	ExpectedDeadlineClasses map[string]string   `json:"expected_deadline_classes"`
-	ExpectedBillItems       []string            `json:"expected_bill_items"`
-	ExpectedBillStatuses    map[string]string   `json:"expected_bill_statuses"`
-	ExpectedCriticalPath    []string            `json:"expected_critical_path"`
+	Tasks                   []adultingTask    `json:"tasks"`
+	ExpectedDeadlineClasses map[string]string `json:"expected_deadline_classes"`
+	ExpectedBillItems       []string          `json:"expected_bill_items"`
+	ExpectedBillStatuses    map[string]string `json:"expected_bill_statuses"`
+	ExpectedCriticalPath    []string          `json:"expected_critical_path"`
 }
 
 type adultingTask struct {
@@ -44,6 +44,11 @@ func init() {
 	dlState = &deadlineState{}
 }
 
+// RegisterAdultingDeadlineSteps ...
+//
+// Expected: parameters for RegisterAdultingDeadlineSteps.
+//
+// Side effects: None.
 func RegisterAdultingDeadlineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the adulting test dataset is loaded with anchor date (.+)$`, dlState.loadDataset)
 	ctx.Step(`^the task "([^"]*)" should have deadline class "([^"]*)"$`, dlState.taskShouldHaveDeadlineClass)
@@ -52,6 +57,13 @@ func RegisterAdultingDeadlineSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the following tasks should be on the critical path:$`, dlState.tasksShouldBeOnCriticalPath)
 }
 
+// loadDataset ...
+//
+// Expected: parameters for loadDataset.
+//
+// Returns: result of loadDataset.
+//
+// Side effects: None.
 func (s *deadlineState) loadDataset(anchorDate string) error {
 	paths := []string{
 		filepath.Join("examples", "swarms", "adulting", "testdata", "tasks_fixture.json"),
@@ -90,6 +102,13 @@ func (s *deadlineState) loadDataset(anchorDate string) error {
 	return nil
 }
 
+// taskShouldHaveDeadlineClass ...
+//
+// Expected: parameters for taskShouldHaveDeadlineClass.
+//
+// Returns: result of taskShouldHaveDeadlineClass.
+//
+// Side effects: None.
 func (s *deadlineState) taskShouldHaveDeadlineClass(taskTitle, expectedClass string) error {
 	if s.dataset == nil {
 		return fmt.Errorf("dataset not loaded")
@@ -126,6 +145,13 @@ func (s *deadlineState) taskShouldHaveDeadlineClass(taskTitle, expectedClass str
 	return nil
 }
 
+// verifyDeadlineClass ...
+//
+// Expected: parameters for verifyDeadlineClass.
+//
+// Returns: result of verifyDeadlineClass.
+//
+// Side effects: None.
 func (s *deadlineState) verifyDeadlineClass(task *adultingTask) (string, error) {
 	if task.Deadline == "" || task.Deadline == "null" {
 		return "unspecified", nil
@@ -152,6 +178,13 @@ func (s *deadlineState) verifyDeadlineClass(task *adultingTask) (string, error) 
 	}
 }
 
+// tasksShouldIncludeBillItems ...
+//
+// Expected: parameters for tasksShouldIncludeBillItems.
+//
+// Returns: result of tasksShouldIncludeBillItems.
+//
+// Side effects: None.
 func (s *deadlineState) tasksShouldIncludeBillItems(table *godog.Table) error {
 	if s.dataset == nil {
 		return fmt.Errorf("dataset not loaded")
@@ -177,6 +210,13 @@ func (s *deadlineState) tasksShouldIncludeBillItems(table *godog.Table) error {
 	return nil
 }
 
+// billShouldHaveStatus ...
+//
+// Expected: parameters for billShouldHaveStatus.
+//
+// Returns: result of billShouldHaveStatus.
+//
+// Side effects: None.
 func (s *deadlineState) billShouldHaveStatus(billTitle, expectedStatus string) error {
 	if s.dataset == nil {
 		return fmt.Errorf("dataset not loaded")
@@ -194,6 +234,13 @@ func (s *deadlineState) billShouldHaveStatus(billTitle, expectedStatus string) e
 	return nil
 }
 
+// tasksShouldBeOnCriticalPath ...
+//
+// Expected: parameters for tasksShouldBeOnCriticalPath.
+//
+// Returns: result of tasksShouldBeOnCriticalPath.
+//
+// Side effects: None.
 func (s *deadlineState) tasksShouldBeOnCriticalPath(table *godog.Table) error {
 	if s.dataset == nil {
 		return fmt.Errorf("dataset not loaded")

@@ -122,7 +122,7 @@ var _ = Describe("Engine.executeToolCall todo counter tracking", func() {
 				ID:   "lead",
 				Name: "Lead",
 				Capabilities: agent.Capabilities{
-					Tools: []string{"bash", "read"},
+					Tools: []string{"bash", "read", "coordination_store", "todo_update"},
 				},
 			},
 			AgentRegistry:  agent.NewRegistry(),
@@ -132,7 +132,9 @@ var _ = Describe("Engine.executeToolCall todo counter tracking", func() {
 		})
 		eng.AddTool(&gateHaltFakeTool{name: "bash", err: nil})
 		eng.AddTool(&gateHaltFakeTool{name: "read", err: nil})
+		eng.AddTool(&gateHaltFakeTool{name: "coordination_store", err: nil})
 		eng.AddTool(&gateHaltFakeTool{name: "todowrite", err: nil})
+		eng.AddTool(&gateHaltFakeTool{name: "todo_update", err: nil})
 		return eng
 	}
 
@@ -176,6 +178,38 @@ var _ = Describe("Engine.executeToolCall todo counter tracking", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.IsError).To(BeFalse(),
 				"per-session counters are independent")
+		})
+
+		It("does not count coordination_store as work before completing a todo", func() {
+			eng := makeEngine(true)
+
+			_, err := runTool(eng, "sess-coord-only", "bash")
+			Expect(err).NotTo(HaveOccurred())
+			firstCompletion, err := eng.ExecuteToolCallForTest(context.Background(), "sess-coord-only", &provider.ToolCall{
+				ID:   "call-first-complete",
+				Name: "todo_update",
+				Arguments: map[string]any{
+					"status": "completed",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(firstCompletion.IsError).To(BeFalse())
+
+			_, err = runTool(eng, "sess-coord-only", "coordination_store")
+			Expect(err).NotTo(HaveOccurred())
+			secondCompletion, err := eng.ExecuteToolCallForTest(context.Background(), "sess-coord-only", &provider.ToolCall{
+				ID:   "call-second-complete",
+				Name: "todo_update",
+				Arguments: map[string]any{
+					"status": "completed",
+				},
+			})
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(secondCompletion.IsError).To(BeTrue(),
+				"a coordination_store write is a handoff artefact, not substantive implementation work")
+			Expect(secondCompletion.Output).To(ContainSubstring("without doing any work"))
+			Expect(secondCompletion.Output).NotTo(ContainSubstring("coordination_store"))
 		})
 	})
 })

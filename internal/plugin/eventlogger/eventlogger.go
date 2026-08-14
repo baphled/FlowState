@@ -122,6 +122,8 @@ type EventLogger struct {
 //
 // Returns: nil.
 // Side effects: none.
+//
+// Expected: parameters for Init.
 func (l *EventLogger) Init() error {
 	return nil
 }
@@ -130,6 +132,8 @@ func (l *EventLogger) Init() error {
 //
 // Returns: the builtin plugin name.
 // Side effects: none.
+//
+// Expected: parameters for Name.
 func (l *EventLogger) Name() string {
 	return "event-logger"
 }
@@ -138,6 +142,8 @@ func (l *EventLogger) Name() string {
 //
 // Returns: the builtin plugin version string.
 // Side effects: none.
+//
+// Expected: parameters for Version.
 func (l *EventLogger) Version() string {
 	return "v0.0.0"
 }

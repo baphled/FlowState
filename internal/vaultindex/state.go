@@ -71,11 +71,19 @@ func LoadState(path string) (*State, error) {
 }
 
 // SidecarPath returns the canonical sidecar path for the supplied vault root.
+//
+// Expected: parameters for SidecarPath.
+// Returns: result of SidecarPath.
+// Side effects: None.
 func SidecarPath(vaultRoot string) string {
 	return filepath.Join(vaultRoot, SidecarFilename)
 }
 
 // Path returns the on-disk path the State was loaded from.
+//
+// Expected: parameters for Path.
+// Returns: result of Path.
+// Side effects: None.
 func (s *State) Path() string { return s.path }
 
 // Get returns the recorded FileState for relPath, or false when absent.
@@ -125,6 +133,8 @@ func (s *State) NeedsReindex(relPath string, mtime time.Time) bool {
 //
 // Side effects:
 //   - Mutates the in-memory map; call Save to persist.
+//
+// Returns: result of Update.
 func (s *State) Update(relPath string, mtime time.Time, chunkCount int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

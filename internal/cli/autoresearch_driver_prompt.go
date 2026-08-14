@@ -143,6 +143,10 @@ func BuildDriverPrompt(
 // lower-case hex string. The harness records this on each trial record
 // so operators can detect stuck-prompt patterns post-hoc (LD1 in plan
 // § 6.2).
+//
+// Expected: parameters for driverPromptSHA.
+// Returns: result of driverPromptSHA.
+// Side effects: None.
 func driverPromptSHA(prompt []byte) string {
 	sum := sha256.Sum256(prompt)
 	return hex.EncodeToString(sum[:])
@@ -152,6 +156,10 @@ func driverPromptSHA(prompt []byte) string {
 // program body yields a literal "(empty program body)" placeholder so
 // drivers parsing the section can distinguish "no constraints" from a
 // section that was skipped.
+//
+// Expected: parameters for renderProgramSection.
+// Returns: result of renderProgramSection.
+// Side effects: None.
 func renderProgramSection(body string) string {
 	trimmed := strings.TrimSpace(body)
 	if trimmed == "" {
@@ -166,6 +174,10 @@ func renderProgramSection(body string) string {
 // for manifest (.md), skill-body (.md), and source (.go, .ts, etc)
 // surfaces; drivers do not branch on tag, they branch on the content
 // they generate.
+//
+// Expected: parameters for renderSurfaceSection.
+// Returns: result of renderSurfaceSection.
+// Side effects: None.
 func renderSurfaceSection(surfacePath string, surfaceBytes []byte) string {
 	body := strings.TrimRight(string(surfaceBytes), "\n")
 	return fmt.Sprintf("Path (relative to worktree): `%s`\n\n```text\n%s\n```",
@@ -177,6 +189,10 @@ func renderSurfaceSection(surfacePath string, surfaceBytes []byte) string {
 // number, score, kept flag, reason, and short candidate SHA so the
 // driver sees the full ratchet trajectory. Empty history (the
 // first-trial case) yields a literal "(no prior trials)" body.
+//
+// Expected: parameters for renderHistorySection.
+// Returns: result of renderHistorySection.
+// Side effects: None.
 func renderHistorySection(history []trialOutcome, window int) string {
 	if len(history) == 0 {
 		return "(no prior trials)"

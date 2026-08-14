@@ -18,6 +18,9 @@ type StreamCtx struct {
 //
 // The Stream stage pre-registers cross-cutting hooks such as logging,
 // timing, and failover. Custom pipelines can reorder or replace these.
+//
+// Returns: result of DefaultStream.
+// Side effects: None.
 func DefaultStream() LifecycleStage[StreamCtx] {
 	return LifecycleStage[StreamCtx]{
 		Name:    "stream",

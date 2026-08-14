@@ -23,6 +23,8 @@ import (
 //
 // Side effects:
 //   - Registers markdown-specific step patterns on the scenario context.
+//
+// Returns: result of RegisterMarkdownAgentSteps.
 func (s *StepDefinitions) RegisterMarkdownAgentSteps(ctx *godog.ScenarioContext) {
 	ctx.Before(func(c context.Context, _ *godog.Scenario) (context.Context, error) {
 		s.lastError = nil

@@ -448,6 +448,10 @@ func resolveAuthConfig(cfg *config.AppConfig) config.AuthConfig {
 // fallback. Empty / whitespace env values are treated as unset so an
 // operator can't accidentally clobber the config with an empty deploy
 // var.
+//
+// Expected: parameters for resolveString.
+// Returns: result of resolveString.
+// Side effects: None.
 func resolveString(envVar, cfgVal, fallback string) string {
 	if v := strings.TrimSpace(os.Getenv(envVar)); v != "" {
 		return v
@@ -502,6 +506,9 @@ func buildIdentitySource(mode string, cfg config.AuthConfig) (identity.Source, e
 // multiUserPath returns the canonical users.json path. Duplicates the
 // helper in auth_user.go intentionally to keep the auth-cli and the
 // auth-boot wiring independent; both read XDG_CONFIG_HOME the same way.
+//
+// Returns: result of multiUserPath.
+// Side effects: None.
 func multiUserPath() string {
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "flowstate", "users.json")

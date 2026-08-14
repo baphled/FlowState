@@ -43,6 +43,8 @@ func NewClear(s Store) *ClearTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *ClearTool) Name() string {
 	return "todo_clear"
 }
@@ -54,6 +56,8 @@ func (t *ClearTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *ClearTool) Description() string {
 	return "Clear the session's todo list so a fresh `todowrite` can create a new one once the current list is finished."
 }
@@ -66,6 +70,8 @@ func (t *ClearTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *ClearTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type:       "object",
@@ -75,6 +81,10 @@ func (t *ClearTool) Schema() tool.Schema {
 
 // IsStateModifying returns true because todo_clear replaces the stored
 // task list for the session with an empty slice.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *ClearTool) IsStateModifying() bool { return true }
 
 // Execute wipes the stored todo list for the session and returns an empty

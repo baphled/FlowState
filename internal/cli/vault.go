@@ -27,6 +27,8 @@ import (
 //
 // Returns:
 //   - A configured cobra.Command with index and sync subcommands.
+//
+// Side effects: None.
 func newVaultCmd(getApp func() *app.App) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "vault",
@@ -54,6 +56,8 @@ func newVaultCmd(getApp func() *app.App) *cobra.Command {
 // Returns:
 //   - A configured cobra.Command with --vault-root, --collection,
 //     --qdrant-url, --ollama-host, --embedding-model, and --reindex flags.
+//
+// Side effects: None.
 func newVaultIndexCmd(getApp func() *app.App) *cobra.Command {
 	var (
 		vaultRoot      string
@@ -91,6 +95,8 @@ func newVaultIndexCmd(getApp func() *app.App) *cobra.Command {
 // Returns:
 //   - A configured cobra.Command with --vault-root, --collection,
 //     --qdrant-url, --ollama-host, and --embedding-model flags.
+//
+// Side effects: None.
 func newVaultSyncCmd(getApp func() *app.App) *cobra.Command {
 	var (
 		vaultRoot      string
@@ -131,6 +137,10 @@ type vaultRunOptions struct {
 // resolveVaultRunOptions merges config-file defaults with flag overrides.
 //
 // Flag values (non-empty strings, true bool) take precedence over config.
+//
+// Expected: parameters for resolveVaultRunOptions.
+// Returns: result of resolveVaultRunOptions.
+// Side effects: None.
 func resolveVaultRunOptions(
 	cfg *config.AppConfig,
 	vaultRoot, collection, qdrantURL, ollamaHost, embeddingModel string,
@@ -210,6 +220,9 @@ func runVaultIndex(ctx context.Context, cmd *cobra.Command, opts vaultRunOptions
 }
 
 // addVaultFlags registers the shared vault flags onto cmd.
+//
+// Expected: parameters for addVaultFlags.
+// Side effects: None.
 func addVaultFlags(cmd *cobra.Command, vaultRoot, collection, qdrantURL, ollamaHost, embeddingModel *string) {
 	cmd.Flags().StringVar(vaultRoot, "vault-root", "", "Path to the Obsidian vault root (overrides vault_path in config)")
 	cmd.Flags().StringVar(collection, "collection", "", "Qdrant collection name (overrides vault_collection in config)")
@@ -219,6 +232,10 @@ func addVaultFlags(cmd *cobra.Command, vaultRoot, collection, qdrantURL, ollamaH
 }
 
 // firstNonEmpty returns the first non-empty string in vals.
+//
+// Expected: parameters for firstNonEmpty.
+// Returns: result of firstNonEmpty.
+// Side effects: None.
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
@@ -236,6 +253,10 @@ type vaultOllamaAdapter struct {
 }
 
 // Embed implements vaultindex.Embedder by delegating to the Ollama provider.
+//
+// Expected: parameters for Embed.
+// Returns: result of Embed.
+// Side effects: None.
 func (a vaultOllamaAdapter) Embed(ctx context.Context, text string) ([]float64, error) {
 	return a.provider.Embed(ctx, provider.EmbedRequest{Input: text, Model: a.model})
 }

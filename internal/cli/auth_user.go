@@ -57,6 +57,7 @@ type userJSON struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// usersFileJSON is the JSON container for persisting users to disk.
 type usersFileJSON struct {
 	Users []userJSON `json:"users"`
 }

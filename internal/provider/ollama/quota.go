@@ -14,6 +14,10 @@ import "github.com/baphled/flowstate/internal/provider/quota"
 // API key concept); the AccountHash field on the Snapshot is
 // preserved for the rare deployment that proxies Ollama through a
 // gateway with key auth.
+//
+// Expected: parameters for NewQuota.
+// Returns: result of NewQuota.
+// Side effects: None.
 func NewQuota(accountHash string) quota.Quota {
 	return quota.NewNotConfiguredAdapter("ollama", accountHash, "local-model")
 }

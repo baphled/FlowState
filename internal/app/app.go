@@ -251,6 +251,8 @@ func (a *App) BootstrapDeferred() bool {
 //
 // Side effects:
 //   - Mutates a.bootstrapDeferred to false.
+//
+// Returns: result of markBootstrapRan.
 func (a *App) markBootstrapRan() {
 	if a == nil {
 		return
@@ -268,6 +270,8 @@ func (a *App) markBootstrapRan() {
 //
 // Side effects:
 //   - Sets a.bootstrapDeferred to false.
+//
+// Returns: result of MarkBootstrapRan.
 func (a *App) MarkBootstrapRan() {
 	a.markBootstrapRan()
 }
@@ -1379,6 +1383,10 @@ func applyFailoverPreferences(failoverManager *failover.Manager, cfg *config.App
 // Returns nil when neither list is configured, leaving failover
 // capability-unfiltered (the legacy behaviour) rather than fail-closing
 // the entire tail.
+//
+// Expected: parameters for capabilityFilterFor.
+// Returns: result of capabilityFilterFor.
+// Side effects: None.
 func capabilityFilterFor(cfg *config.AppConfig) func(providerName, model string) bool {
 	if cfg == nil || (len(cfg.ToolCapableModels) == 0 && len(cfg.ToolIncapableModels) == 0) {
 		return nil
@@ -1473,6 +1481,9 @@ type sessionManagerHolder struct {
 //
 // Side effects:
 //   - Replaces the held manager pointer under the write lock.
+//
+// Expected: parameters for set.
+// Returns: result of set.
 func (h *sessionManagerHolder) set(mgr *session.Manager) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1493,6 +1504,9 @@ func (h *sessionManagerHolder) set(mgr *session.Manager) {
 // Side effects:
 //   - Acquires the holder's read lock for the projection.
 //   - Acquires the manager's read lock through GetSession.
+//
+// Expected: parameters for lookup.
+// Returns: result of lookup.
 func (h *sessionManagerHolder) lookup(sessionID string) (string, bool) {
 	h.mu.RLock()
 	mgr := h.mgr
@@ -1678,6 +1692,8 @@ func buildCreateEngineHookChain(
 //
 // Side effects:
 //   - Calls SetAgentOverrides on the engine with the prompt_append values from cfg.
+//
+// Returns: result of setAgentOverridesFromConfig.
 func (a *App) setAgentOverridesFromConfig(cfg *config.AppConfig, eng *engine.Engine) {
 	if cfg == nil || len(cfg.AgentOverrides) == 0 {
 		return
@@ -1733,6 +1749,10 @@ func (a *App) buildDelegateMaps(
 // lister (so abstract descriptors resolve to real model IDs) and the
 // cluster-wide tool-capability allow/deny lists (so tool-incapable models
 // are never assigned to a delegate engine).
+//
+// Expected: parameters for buildComplexityResolver.
+// Returns: result of buildComplexityResolver.
+// Side effects: None.
 func (a *App) buildComplexityResolver() *engine.CategoryResolver {
 	var overrides map[string]engine.CategoryConfig
 	var capableModels, incapableModels []string
@@ -1782,6 +1802,10 @@ func (a *App) buildComplexityResolver() *engine.CategoryResolver {
 // stamps the owning provider onto a lister-resolved abstract descriptor; the
 // model is never blindly paired with the lead's provider (which produced an
 // impossible zai+gpt-5 candidate).
+//
+// Expected: parameters for applyModelPreference.
+// Returns: result of applyModelPreference.
+// Side effects: None.
 func (a *App) applyModelPreference(
 	resolver *engine.CategoryResolver,
 	eng *engine.Engine,
@@ -1903,6 +1927,10 @@ func (a *App) providerServesModel(providerName, model string) bool {
 // formatPreferredModels renders a manifest's preferred_models as a compact
 // "provider/model, provider/model" string for the applyModelPreference
 // audit log. Empty input yields "<none>".
+//
+// Expected: parameters for formatPreferredModels.
+// Returns: result of formatPreferredModels.
+// Side effects: None.
 func formatPreferredModels(prefs []agent.ModelPreference) string {
 	if len(prefs) == 0 {
 		return "<none>"
@@ -1945,6 +1973,8 @@ func formatPreferredModels(prefs []agent.ModelPreference) string {
 //     exclusion on manifest swap — Anthropic rejects a request that
 //     advertises both with "400 Bad Request: tools: Tool names must be
 //     unique".
+//
+// Returns: result of wireDelegateToolIfEnabled.
 func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manifest) {
 	if !manifest.Delegation.CanDelegate {
 		// Mirror of the non-delegating branch in
@@ -2053,6 +2083,8 @@ func (a *App) wireDelegateToolIfEnabled(eng *engine.Engine, manifest agent.Manif
 // Side effects:
 //   - Adds or removes the coordination_store tool on eng based on the
 //     manifest's capabilities.tools declaration.
+//
+// Returns: result of wireCoordinationToolIfDeclared.
 func (a *App) wireCoordinationToolIfDeclared(
 	eng *engine.Engine,
 	manifest agent.Manifest,
@@ -2092,6 +2124,8 @@ func (a *App) wireCoordinationToolIfDeclared(
 //   - Subscribes a notifier callback that publishes onto eng's event
 //     bus when the resolver promotes an agent's model for capability
 //     reasons.
+//
+// Returns: result of configureDelegateTool.
 func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine) {
 	dt.WithRegistry(a.Registry)
 
@@ -2231,6 +2265,8 @@ func (a *App) configureDelegateTool(dt *engine.DelegateTool, eng *engine.Engine)
 // Side effects:
 //   - The evidence-grounding and artifact-published runners read from the
 //     filesystem at dispatch time; constructor-time only captures config.
+//
+// Expected: parameters for buildSwarmGateRunner.
 func buildSwarmGateRunner(planOutputDir string) swarm.GateRunner {
 	runner := swarm.NewMultiRunner()
 	runner.Register("builtin:result-schema", swarm.NewResultSchemaRunner())
@@ -2248,6 +2284,8 @@ func buildSwarmGateRunner(planOutputDir string) swarm.GateRunner {
 //
 // Side effects:
 //   - Reads permissions.yaml from disk.
+//
+// Returns: result of resolvePlanOutputDir.
 func resolvePlanOutputDir() string {
 	permsPath := filepath.Join(config.Dir(), "permissions.yaml")
 	perms, err := config.LoadPermissions(permsPath)
@@ -2303,6 +2341,10 @@ func buildCategorySwapNotifier(eng *engine.Engine) engine.SwapNotifier {
 // honours the addendum-A2/A3 defaults consistently with the manifest
 // helpers. A nil manifest falls back to all-defaults so the no-swarm-
 // context path still gets retry/breaker semantics.
+//
+// Expected: parameters for swarmRunnerFactory.
+// Returns: result of swarmRunnerFactory.
+// Side effects: None.
 func swarmRunnerFactory(m *swarm.Manifest) *swarm.Runner {
 	if m == nil {
 		return swarm.NewRunner(swarm.RetryPolicy{}, swarm.CircuitBreakerConfig{})
@@ -2333,6 +2375,8 @@ func swarmRunnerFactory(m *swarm.Manifest) *swarm.Runner {
 //     any SuggestDelegateTool left over from a prior non-delegating
 //     manifest. This enforces the delegate / suggest_delegate mutual
 //     exclusion on manifest swap.
+//
+// Returns: result of wireSuggestDelegateToolIfDisabled.
 func (a *App) wireSuggestDelegateToolIfDisabled(eng *engine.Engine, manifest agent.Manifest) {
 	if manifest.Delegation.CanDelegate {
 		// Mirror of the delegating branch in
@@ -2513,6 +2557,13 @@ func (a *App) createDelegateEngine(
 	return eng, str
 }
 
+// delegateTokenCounter ...
+//
+// Expected: parameters for delegateTokenCounter.
+//
+// Returns: result of delegateTokenCounter.
+//
+// Side effects: None.
 func (a *App) delegateTokenCounter() ctxstore.TokenCounter {
 	if a == nil {
 		return nil
@@ -2896,6 +2947,8 @@ func buildAgentsFileLoader() *agent.AgentsFileLoader {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for AgentsDir.
 func (a *App) AgentsDir() string {
 	return a.Config.AgentDir
 }
@@ -2907,6 +2960,8 @@ func (a *App) AgentsDir() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for SkillsDir.
 func (a *App) SkillsDir() string {
 	return a.Config.SkillDir
 }
@@ -2918,6 +2973,8 @@ func (a *App) SkillsDir() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for SessionsDir.
 func (a *App) SessionsDir() string {
 	return filepath.Join(a.Config.DataDir, "sessions")
 }
@@ -2938,6 +2995,8 @@ func (a *App) SessionsDir() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for SessionManager.
 func (a *App) SessionManager() *session.Manager {
 	if a == nil {
 		return nil
@@ -2957,6 +3016,10 @@ func (a *App) SessionManager() *session.Manager {
 //
 // No-op when no Tracker is configured or persistence is disabled
 // (refresh_interval = "0"). Plan §"Rollout Plan" PR6 row 430.
+//
+// Expected: parameters for ShutdownQuotaCache.
+// Returns: result of ShutdownQuotaCache.
+// Side effects: None.
 func (a *App) ShutdownQuotaCache(ctx context.Context) error {
 	if a == nil || a.quotaCacheController == nil {
 		return nil
@@ -2974,6 +3037,8 @@ func (a *App) ShutdownQuotaCache(ctx context.Context) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for delegateCompactionConfig.
 func (a *App) delegateCompactionConfig() compactionpkg.Config {
 	if a == nil || a.Config == nil {
 		return compactionpkg.Config{}
@@ -2991,6 +3056,8 @@ func (a *App) delegateCompactionConfig() compactionpkg.Config {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for delegateCompactionStoreDir.
 func (a *App) delegateCompactionStoreDir() string {
 	if a == nil || a.Config == nil {
 		return ""
@@ -3010,6 +3077,9 @@ const SessionOrphanGraceEnv = "FLOWSTATE_SESSION_ORPHAN_GRACE"
 // reading the env var when set. Zero means "use the default"; a
 // negative value means "disable the sweep". Invalid env strings fall
 // through to zero so the manager applies its default.
+//
+// Returns: result of resolveOrphanGrace.
+// Side effects: None.
 func resolveOrphanGrace() time.Duration {
 	v := os.Getenv(SessionOrphanGraceEnv)
 	if v == "" {
@@ -3065,6 +3135,8 @@ func (a *App) restorePersistedSessions() {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ConfigPath.
 func (a *App) ConfigPath() string {
 	return filepath.Join(config.Dir(), "config.yaml")
 }
@@ -3082,6 +3154,8 @@ func (a *App) ConfigPath() string {
 //   - Calls wireDelegateToolIfEnabled, adding or removing delegation tools
 //     (delegate, background_output, background_cancel) based on the
 //     manifest's delegation.can_delegate flag.
+//
+// Returns: result of ConfigureEngineForAgent.
 func (a *App) ConfigureEngineForAgent(manifest agent.Manifest) {
 	a.Engine.SetManifest(manifest)
 	a.wireDelegateToolIfEnabled(a.Engine, manifest)
@@ -3090,6 +3164,10 @@ func (a *App) ConfigureEngineForAgent(manifest agent.Manifest) {
 // modelListerFromRegistry returns an api.ModelLister-compatible closure that
 // enumerates models across every provider registered with reg, mirroring
 // App.ListModels so the HTTP and CLI surfaces share a single source of truth.
+//
+// Expected: parameters for modelListerFromRegistry.
+// Returns: result of modelListerFromRegistry.
+// Side effects: None.
 func modelListerFromRegistry(reg *provider.Registry) api.ModelLister {
 	return func() ([]provider.Model, error) {
 		if reg == nil {
@@ -3122,6 +3200,10 @@ func modelListerFromRegistry(reg *provider.Registry) api.ModelLister {
 // CurrentAgentID overrides AgentID per handleSessionMessage's fallback
 // at server.go:1313-1321 so a mid-session agent switch lands on the
 // agent the user actually selected, not the session's initial agent.
+//
+// Expected: parameters for newSessionLookupAdapter.
+// Returns: result of newSessionLookupAdapter.
+// Side effects: None.
 func newSessionLookupAdapter(sessionMgr *session.Manager) engine.SessionLookup {
 	if sessionMgr == nil {
 		return nil
@@ -3139,6 +3221,10 @@ type sessionLookupAdapter struct {
 // expects. Returns ok=false when the manager does not know the id (the
 // engine treats that as a clean ("", false) — no panic on a stale
 // slash-command URL).
+//
+// Expected: parameters for SnapshotForCompaction.
+// Returns: result of SnapshotForCompaction.
+// Side effects: None.
 func (a sessionLookupAdapter) SnapshotForCompaction(sessionID string) ([]provider.Message, string, string, string, bool) {
 	if a.mgr == nil || sessionID == "" {
 		return nil, "", "", "", false
@@ -3181,6 +3267,8 @@ func (a sessionLookupAdapter) SnapshotForCompaction(sessionID string) ([]provide
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ListModels.
 func (a *App) ListModels() ([]provider.Model, error) {
 	if a.providerRegistry == nil {
 		return []provider.Model{}, nil
@@ -3227,6 +3315,8 @@ func (a *App) SetProviderRegistry(registry *provider.Registry) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ProviderRegistry.
 func (a *App) ProviderRegistry() *provider.Registry {
 	return a.providerRegistry
 }
@@ -3240,6 +3330,8 @@ func (a *App) ProviderRegistry() *provider.Registry {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for MetricsHandler.
 func (a *App) MetricsHandler() http.Handler {
 	return promhttp.HandlerFor(a.metricsRegistry, promhttp.HandlerOpts{})
 }
@@ -3293,6 +3385,8 @@ func (a *App) SetModel(modelID string) error {
 //
 // Side effects:
 //   - Closes all MCP sessions managed by the client.
+//
+// Expected: parameters for DisconnectAll.
 func (a *App) DisconnectAll() error {
 	if a.mcpClient == nil {
 		return nil
@@ -3316,6 +3410,10 @@ func (a *App) DisconnectAll() error {
 //     legacy New(denied) constructor — never panics, never blocks
 //     startup. Missing files are already (nil, nil) from LoadPermissions
 //     so no warning is emitted in that path.
+//
+// Expected: parameters for buildPathGuard.
+// Returns: result of buildPathGuard.
+// Side effects: None.
 func (a *App) buildPathGuard() *pathguard.Guard {
 	return buildPathGuardFromConfig(a.Config)
 }
@@ -3679,6 +3777,10 @@ func wireFailoverManager(rt *pluginRuntime, providerRegistry *provider.Registry)
 // runtime, or nil when the runtime is not initialised. Call sites use
 // the nil-safe receiver pattern so app.New does not have to guard the
 // rt parameter explicitly.
+//
+// Expected: parameters for FailoverManager.
+// Returns: result of FailoverManager.
+// Side effects: None.
 func (rt *pluginRuntime) FailoverManager() *failover.Manager {
 	if rt == nil {
 		return nil
@@ -3688,6 +3790,10 @@ func (rt *pluginRuntime) FailoverManager() *failover.Manager {
 
 // FailoverHook returns the failover hook held by the plugin runtime,
 // or nil when the runtime is not initialised.
+//
+// Expected: parameters for FailoverHook.
+// Returns: result of FailoverHook.
+// Side effects: None.
 func (rt *pluginRuntime) FailoverHook() *failover.Hook {
 	if rt == nil {
 		return nil
@@ -3697,6 +3803,10 @@ func (rt *pluginRuntime) FailoverHook() *failover.Hook {
 
 // Dispatcher returns the external dispatcher held by the plugin
 // runtime, or nil when the runtime is not initialised.
+//
+// Expected: parameters for Dispatcher.
+// Returns: result of Dispatcher.
+// Side effects: None.
 func (rt *pluginRuntime) Dispatcher() *external.Dispatcher {
 	if rt == nil {
 		return nil
@@ -4781,6 +4891,10 @@ func qdrantURL(cfg *config.AppConfig) string {
 // buildMemoryClient constructs a VectorStoreMemoryClient backed by Qdrant
 // when cfg.Qdrant.URL is set. Returns nil when Qdrant is not configured;
 // callers treat nil as "memory tools disabled".
+//
+// Expected: parameters for buildMemoryClient.
+// Returns: result of buildMemoryClient.
+// Side effects: None.
 func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) learning.MemoryClient {
 	if cfg == nil || cfg.Qdrant.URL == "" {
 		return nil
@@ -4810,6 +4924,10 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 // lock-step on the canonical collection name. Both ultimately share the
 // `flowstate-vault` constant defined alongside DefaultVaultCollection in
 // internal/tool/toolset/app_tools.go.
+//
+// Expected: parameters for buildVaultQueryHandler.
+// Returns: result of buildVaultQueryHandler.
+// Side effects: None.
 func buildVaultQueryHandler(cfg *config.AppConfig, ollamaProvider embedRequester) toolsvault.Handler {
 	if cfg == nil || cfg.Qdrant.URL == "" {
 		return nil
@@ -5208,6 +5326,8 @@ type TestConfig struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for resolveEmbedder.
 func (a *App) resolveEmbedder() discovery.EmbeddingProvider {
 	if a.ollamaProvider != nil {
 		return a.ollamaProvider
@@ -5325,6 +5445,8 @@ func NewForTest(tc TestConfig) (*App, error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for PlanOutputDir.
 func (a *App) PlanOutputDir() string {
 	return a.planOutputDir
 }
@@ -5351,6 +5473,8 @@ func (a *App) BackgroundManager() *engine.BackgroundTaskManager {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for CompletionOrchestrator.
 func (a *App) CompletionOrchestrator() *engine.CompletionOrchestrator {
 	return a.completionOrchestrator
 }
@@ -5363,6 +5487,8 @@ func (a *App) CompletionOrchestrator() *engine.CompletionOrchestrator {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for PluginConfigForTest.
 func (a *App) PluginConfigForTest() config.PluginsConfig {
 	if a.plugins == nil {
 		return config.PluginsConfig{}
@@ -5377,6 +5503,8 @@ func (a *App) PluginConfigForTest() config.PluginsConfig {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for HasEventLogger.
 func (a *App) HasEventLogger() bool {
 	if a.plugins == nil || a.plugins.registry == nil {
 		return false
@@ -5392,6 +5520,8 @@ func (a *App) HasEventLogger() bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for HasFailoverHook.
 func (a *App) HasFailoverHook() bool {
 	return a.plugins != nil && a.plugins.failoverHook != nil
 }
@@ -5403,6 +5533,8 @@ func (a *App) HasFailoverHook() bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for HasDispatcher.
 func (a *App) HasDispatcher() bool {
 	return a.plugins != nil && a.plugins.dispatcher != nil
 }
@@ -5415,6 +5547,8 @@ func (a *App) HasDispatcher() bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ExternalPluginsStarted.
 func (a *App) ExternalPluginsStarted() bool {
 	return a.plugins != nil && a.plugins.externalStarted
 }
@@ -5428,6 +5562,8 @@ func (a *App) ExternalPluginsStarted() bool {
 // Side effects:
 //   - Stops all active external plugin processes via the lifecycle manager.
 //   - Closes the event logger file handle if present.
+//
+// Expected: parameters for ClosePlugins.
 func (a *App) ClosePlugins() error {
 	if a.plugins == nil {
 		return nil
@@ -5480,6 +5616,8 @@ func BuildHookChainForTestWithFailover(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for SessionMgr.
 func (a *App) SessionMgr() *session.Manager {
 	return a.sessionManager
 }
@@ -5535,6 +5673,10 @@ func (a *App) SetAutoresearchPruner(p runner.AutoresearchPruner) {
 // agentToProviderPreferences converts an agent manifest's preferred model
 // list to the failover manager's wire type, preserving the declared priority
 // order so the first healthy candidate is tried first.
+//
+// Expected: parameters for agentToProviderPreferences.
+// Returns: result of agentToProviderPreferences.
+// Side effects: None.
 func agentToProviderPreferences(prefs []agent.ModelPreference) []provider.ModelPreference {
 	out := make([]provider.ModelPreference, len(prefs))
 	for i, p := range prefs {

@@ -32,6 +32,10 @@ var ErrPathTraversal = errors.New("path traversal not allowed")
 //
 // It returns the cleaned path suitable for os.ReadFile / os.WriteFile,
 // or ErrPathTraversal when the path traverses a parent directory.
+//
+// Expected: parameters for ResolvePath.
+// Returns: result of ResolvePath.
+// Side effects: None.
 func ResolvePath(raw string) (string, error) {
 	cleaned := filepath.Clean(strings.TrimSpace(raw))
 	if strings.Contains(cleaned, "..") {

@@ -182,6 +182,10 @@ type ServerOption func(*Server)
 // (CLI, TUI, web) resolve through swarm.ResolveTarget and dispatch
 // through swarm.DispatchSwarm; this option is what makes that true on
 // the web side.
+//
+// Expected: parameters for WithSwarmRegistry.
+// Returns: result of WithSwarmRegistry.
+// Side effects: None.
 func WithSwarmRegistry(reg *swarm.Registry) ServerOption {
 	return func(s *Server) { s.swarmRegistry = reg }
 }
@@ -191,6 +195,10 @@ func WithSwarmRegistry(reg *swarm.Registry) ServerOption {
 // swarms (so error messages stay correct), but it cannot honour
 // post-swarm gates or context propagation. Production wires
 // *engine.Engine here; tests may pass a fake.
+//
+// Expected: parameters for WithDispatchEngine.
+// Returns: result of WithDispatchEngine.
+// Side effects: None.
 func WithDispatchEngine(eng swarm.DispatchEngine) ServerOption {
 	return func(s *Server) { s.dispatchEngine = eng }
 }
@@ -272,6 +280,8 @@ func WithPermissionRegistry(reg *permissionrequest.Registry) ServerOption {
 //
 // Returns:
 //   - A ServerOption that installs the writer.
+//
+// Side effects: None.
 func WithPermissionWriter(w *pathguard.Writer) ServerOption {
 	return func(s *Server) { s.permissionWriter = w }
 }
@@ -290,6 +300,9 @@ func WithPermissionWriter(w *pathguard.Writer) ServerOption {
 //
 // Returns:
 //   - A ServerOption that installs the flag value verbatim.
+//
+// Expected: parameters for WithPermissionGrantForeverEnabled.
+// Side effects: None.
 func WithPermissionGrantForeverEnabled(enabled bool) ServerOption {
 	return func(s *Server) { s.permissionGrantForeverEnabled = enabled }
 }
@@ -313,6 +326,9 @@ func WithPermissionGrantForeverEnabled(enabled bool) ServerOption {
 //
 // Returns:
 //   - A ServerOption that installs the flag value verbatim.
+//
+// Expected: parameters for WithPermissionGrantMCPEnabled.
+// Side effects: None.
 func WithPermissionGrantMCPEnabled(enabled bool) ServerOption {
 	return func(s *Server) { s.permissionGrantMCPEnabled = enabled }
 }
@@ -404,6 +420,10 @@ type ModelLister func() ([]provider.Model, error)
 // WithModelLister installs the model enumeration source used by
 // GET /api/v1/models. Without this option the endpoint returns 501 so
 // callers can distinguish "no model lister wired" from "no models found".
+//
+// Expected: parameters for WithModelLister.
+// Returns: result of WithModelLister.
+// Side effects: None.
 func WithModelLister(l ModelLister) ServerOption {
 	return func(s *Server) { s.modelLister = l }
 }
@@ -432,6 +452,10 @@ type ContextUsageProvider interface {
 // the next pre-send to land. Without this option the server still
 // works — it just cannot push fresh figures outside streamed events,
 // matching the pre-Phase-3 behaviour.
+//
+// Expected: parameters for WithContextUsageProvider.
+// Returns: result of WithContextUsageProvider.
+// Side effects: None.
 func WithContextUsageProvider(p ContextUsageProvider) ServerOption {
 	return func(s *Server) { s.contextUsageProvider = p }
 }
@@ -469,6 +493,10 @@ type CompactionController interface {
 // the compression endpoints. Without this option the server returns
 // 501 on /api/v1/config/compression and /api/v1/sessions/{id}/compact
 // — operators see "wired but disabled" rather than a 404 confusion.
+//
+// Expected: parameters for WithCompactionController.
+// Returns: result of WithCompactionController.
+// Side effects: None.
 func WithCompactionController(c CompactionController) ServerOption {
 	return func(s *Server) { s.compactionController = c }
 }
@@ -481,6 +509,10 @@ func WithCompactionController(c CompactionController) ServerOption {
 //
 // Production wires this from cfg.Auth.AllowedOrigins (TOML); tests may
 // pass an explicit list or omit the option entirely.
+//
+// Expected: parameters for WithOriginPatterns.
+// Returns: result of WithOriginPatterns.
+// Side effects: None.
 func WithOriginPatterns(patterns []string) ServerOption {
 	return func(s *Server) { s.originPatterns = patterns }
 }
@@ -528,6 +560,10 @@ type QuotaAggregatorRow struct {
 // the dashboard endpoints return 501 so the SPA can distinguish "no
 // quota tracker wired" (PR4 wiring incomplete) from "no providers
 // configured" (empty array).
+//
+// Expected: parameters for WithQuotaAggregator.
+// Returns: result of WithQuotaAggregator.
+// Side effects: None.
 func WithQuotaAggregator(a QuotaAggregator) ServerOption {
 	return func(s *Server) { s.quotaAggregator = a }
 }
@@ -575,6 +611,10 @@ func (s *Server) SetCompletionOrchestrator(orch *engine.CompletionOrchestrator) 
 // through to the historical no-Turn-channel behaviour at every
 // lifecycle site per D7 back-compat. Plans/Child Session Turn Registry
 // Plumbing (May 2026) §Item 2 + §S8.1.
+//
+// Expected: parameters for TurnRegistry.
+// Returns: result of TurnRegistry.
+// Side effects: None.
 func (s *Server) TurnRegistry() *turn.Registry {
 	if s.dispatcher == nil {
 		return nil
@@ -674,6 +714,9 @@ func NewServer(
 //   - Subscribes a closure to events.EventStreamingHeartbeat on the bus.
 //   - The closure reads turn_id from the running turn for the event's
 //     session_id and writes phase + token_count onto the Turn.
+//
+// Expected: parameters for subscribeTurnHeartbeat.
+// Returns: result of subscribeTurnHeartbeat.
 func (s *Server) subscribeTurnHeartbeat() {
 	if s.eventBus == nil || s.dispatcher == nil {
 		return
@@ -713,6 +756,10 @@ func (s *Server) subscribeTurnHeartbeat() {
 // No-op when either the eventBus or the dispatcher's Turn registry is
 // unwired — test fixtures that skip WithEventBus simply do not get the
 // projection.
+//
+// Expected: parameters for subscribeTurnContextCompacted.
+// Returns: result of subscribeTurnContextCompacted.
+// Side effects: None.
 func (s *Server) subscribeTurnContextCompacted() {
 	if s.eventBus == nil || s.dispatcher == nil {
 		return
@@ -748,6 +795,10 @@ func (s *Server) subscribeTurnContextCompacted() {
 // per Plans/Gate Bus Bridge — continue-class and warn-class never
 // reach this subscriber. The CoordStoreKeys slice is preserved verbatim
 // onto the Turn so the FE's banner expander has data to render.
+//
+// Expected: parameters for subscribeTurnGateFailed.
+// Returns: result of subscribeTurnGateFailed.
+// Side effects: None.
 func (s *Server) subscribeTurnGateFailed() {
 	if s.eventBus == nil || s.dispatcher == nil {
 		return
@@ -802,6 +853,10 @@ func (s *Server) subscribeTurnGateFailed() {
 //
 // No-op when either the eventBus or the dispatcher's Turn registry is
 // unwired (e.g. test fixtures that skip WithEventBus / WithDispatcher).
+//
+// Expected: parameters for subscribeTurnPermissionRequired.
+// Returns: result of subscribeTurnPermissionRequired.
+// Side effects: None.
 func (s *Server) subscribeTurnPermissionRequired() {
 	if s.eventBus == nil || s.dispatcher == nil {
 		return
@@ -852,6 +907,10 @@ func (s *Server) subscribeTurnPermissionRequired() {
 //
 // No-op when either the eventBus or the dispatcher's Turn registry is
 // unwired.
+//
+// Expected: parameters for subscribeTurnPermissionResolved.
+// Returns: result of subscribeTurnPermissionResolved.
+// Side effects: None.
 func (s *Server) subscribeTurnPermissionResolved() {
 	if s.eventBus == nil || s.dispatcher == nil {
 		return
@@ -906,6 +965,10 @@ func (s *Server) subscribeTurnPermissionResolved() {
 // payload from a bus message regardless of which of the three terminal
 // event constructors produced it. Returns (data, false) when msg is
 // neither shape — the subscriber drops silently rather than panic.
+//
+// Expected: parameters for extractResolutionData.
+// Returns: result of extractResolutionData.
+// Side effects: None.
 func extractResolutionData(msg any) (events.PermissionResolutionEventData, bool) {
 	switch ev := msg.(type) {
 	case *events.PermissionGrantedEvent:
@@ -928,6 +991,13 @@ type streamingAdapter struct {
 	inner Streamer
 }
 
+// Stream ...
+//
+// Expected: parameters for Stream.
+//
+// Returns: result of Stream.
+//
+// Side effects: None.
 func (a streamingAdapter) Stream(ctx context.Context, agentID, message string) (<-chan provider.StreamChunk, error) {
 	return a.inner.Stream(ctx, agentID, message)
 }
@@ -939,6 +1009,8 @@ func (a streamingAdapter) Stream(ctx context.Context, agentID, message string) (
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Handler.
 func (s *Server) Handler() http.Handler {
 	return securityHeaders(s.mux)
 }
@@ -1015,6 +1087,9 @@ func securityHeaders(next http.Handler) http.Handler {
 // Side effects:
 //   - Registers every API route on the internal mux.
 //   - Wraps protected routes through the auth chain when the flag is on.
+//
+// Expected: parameters for setupRoutes.
+// Returns: result of setupRoutes.
 func (s *Server) setupRoutes() {
 	// Public — read-only catalog / probe endpoints (no PII, no
 	// session-scoped state). Plan §"Endpoint Inventory" Public list.
@@ -1169,6 +1244,8 @@ func (s *Server) setupRoutes() {
 //
 // Side effects:
 //   - Writes HTTP 200 response with JSON-encoded agent manifests.
+//
+// Returns: result of handleListAgents.
 func (s *Server) handleListAgents(w http.ResponseWriter, _ *http.Request) {
 	manifests := s.registry.List()
 	if manifests == nil {
@@ -1185,6 +1262,8 @@ func (s *Server) handleListAgents(w http.ResponseWriter, _ *http.Request) {
 // Side effects:
 //   - Writes HTTP 200 with JSON-encoded manifest if found.
 //   - Writes HTTP 404 if agent not found.
+//
+// Returns: result of handleGetAgent.
 func (s *Server) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	manifest, ok := s.registry.Get(id)
@@ -1225,6 +1304,8 @@ type swarmListEntry struct {
 //     without WithSwarmRegistry — test surfaces, or a build that
 //     omitted the loader), returns `[]` so the web client never sees
 //     `null`. Matches GET /api/agents' empty-registry contract.
+//
+// Returns: result of handleListSwarms.
 func (s *Server) handleListSwarms(w http.ResponseWriter, _ *http.Request) {
 	if s.swarmRegistry == nil {
 		writeJSON(w, []swarmListEntry{})
@@ -1279,6 +1360,8 @@ type chatRequest struct {
 //   - Streams content chunks, errors, and completion marker as SSE data lines.
 //   - Writes HTTP 400 if request body is invalid JSON or agent_id is unknown.
 //   - Writes HTTP 500 if streaming is not supported.
+//
+// Returns: result of handleChat.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req chatRequest
@@ -1389,6 +1472,8 @@ func (s *Server) resolveDispatchTarget(id string) (string, *swarm.Context, error
 //
 // Side effects:
 //   - Writes HTTP 200 with JSON-encoded agent suggestions.
+//
+// Returns: result of handleDiscover.
 func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 	message := r.URL.Query().Get("message")
 	suggestions := s.discovery.Suggest(message)
@@ -1405,6 +1490,8 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 //
 // Side effects:
 //   - Writes HTTP 200 response with JSON-encoded skills list.
+//
+// Returns: result of handleListSkills.
 func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, s.skills)
 }
@@ -1417,6 +1504,8 @@ func (s *Server) handleListSkills(w http.ResponseWriter, _ *http.Request) {
 // Side effects:
 //   - Creates a session through the session manager.
 //   - Writes a JSON session summary response.
+//
+// Returns: result of handleCreateSession.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -1516,6 +1605,8 @@ func defaultModelPairForAgent(registry *agent.Registry, agentID string) (provide
 //     detector) continue to work because the wire field still flips
 //     across the same boundary — when the Turn ends and the registry
 //     no longer reports it as active.
+//
+// Returns: result of handleListV1Sessions.
 func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -1570,6 +1661,8 @@ func (s *Server) handleListV1Sessions(w http.ResponseWriter, _ *http.Request) {
 //   - Spawns the broker.Publish goroutine inside Dispatcher when the
 //     broker is configured.
 //   - Writes the updated session as JSON.
+//
+// Returns: result of handleSessionMessage.
 func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -1864,6 +1957,13 @@ type turnResponse struct {
 //	Turn-Based Post-Then-Poll Architecture (May 2026).md §4d Commit 1b.
 const longPollTimeout = 25 * time.Second
 
+// handleGetTurn ...
+//
+// Expected: parameters for handleGetTurn.
+//
+// Returns: result of handleGetTurn.
+//
+// Side effects: None.
 func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher == nil {
 		http.Error(w, "dispatcher not configured", http.StatusNotImplemented)
@@ -1946,31 +2046,7 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		if t.ID == "" {
 			return
 		}
-		msgs := t.MessagesAdded
-		if msgs == nil {
-			msgs = []session.Message{}
-		}
-		writeJSON(w, turnResponse{
-			TurnID:             t.ID,
-			SessionID:          t.SessionID,
-			Status:             string(t.Status),
-			StartedAt:          t.StartedAt,
-			CompletedAt:        t.CompletedAt,
-			DurationMs:         t.DurationMs,
-			Model:              t.Model,
-			Error:              t.Error,
-			Messages:           msgs,
-			Phase:              t.Phase,
-			TokenCount:         t.TokenCount,
-			CurrentProvider:    t.CurrentProvider,
-			CurrentModel:       t.CurrentModel,
-			ContextUsage:       t.ContextUsage,
-			ProviderQuotas:     t.ProviderQuotas,
-			CompactionEvents:   t.CompactionEvents,
-			GateFailures:       t.GateFailures,
-			CriticalError:      t.CriticalError,
-			PermissionRequests: t.PermissionRequests,
-		})
+		writeJSON(w, buildTurnResponse(t))
 		return
 	}
 
@@ -1983,11 +2059,27 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	writeJSON(w, buildTurnResponse(t))
+}
+
+// buildTurnResponse constructs the wire response for a given turn snapshot,
+// normalising nil message slices to an empty slice so the JSON encodes an
+// array rather than null.
+//
+// Expected:
+//   - t is the turn snapshot to project onto the wire shape.
+//
+// Returns:
+//   - A populated turnResponse with t's messages normalised.
+//
+// Side effects:
+//   - None.
+func buildTurnResponse(t turn.Turn) turnResponse {
 	msgs := t.MessagesAdded
 	if msgs == nil {
 		msgs = []session.Message{}
 	}
-	writeJSON(w, turnResponse{
+	return turnResponse{
 		TurnID:             t.ID,
 		SessionID:          t.SessionID,
 		Status:             string(t.Status),
@@ -2007,10 +2099,10 @@ func (s *Server) handleGetTurn(w http.ResponseWriter, r *http.Request) {
 		GateFailures:       t.GateFailures,
 		CriticalError:      t.CriticalError,
 		PermissionRequests: t.PermissionRequests,
-	})
+	}
 }
 
-// handleSessionTodos returns the todo list for the given session as JSON.
+// handleSessionTodos returns the todo list for the specified session.
 //
 // Expected:
 //   - Request path parameter "id" contains the session identifier.
@@ -2038,6 +2130,8 @@ func (s *Server) handleSessionTodos(w http.ResponseWriter, r *http.Request) {
 // Side effects:
 //   - Writes HTTP 200 response with JSON-encoded sessions list.
 //   - Returns empty list if session store is disabled.
+//
+// Returns: result of handleListSessions.
 func (s *Server) handleListSessions(w http.ResponseWriter, _ *http.Request) {
 	if s.sessions == nil {
 		writeJSON(w, []ctxstore.SessionInfo{})
@@ -2270,6 +2364,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // such that only events whose underlying SessionID (tool/background) or
 // Parent/Child SessionID (delegation, where the chain spans two surfaces)
 // matches the requested session reach the wire.
+//
+// Expected: parameters for handleSwarmEvents.
+// Returns: result of handleSwarmEvents.
+// Side effects: None.
 func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2413,6 +2511,10 @@ func (s *Server) handleSwarmEvents(w http.ResponseWriter, r *http.Request) {
 //
 // Unknown event types fall through to "no" rather than "yes" — the safer
 // default for a leak-fix predicate.
+//
+// Expected: parameters for eventBelongsToSession.
+// Returns: result of eventBelongsToSession.
+// Side effects: None.
 func eventBelongsToSession(msg any, sessionID string) bool {
 	switch e := msg.(type) {
 	case *events.ToolExecuteResultEvent:
@@ -2461,6 +2563,10 @@ func eventBelongsToSession(msg any, sessionID string) bool {
 // Every projected event is stamped with streaming.CurrentSchemaVersion — the
 // pre-bridge projector forgot to set this and shipped SchemaVersion: 0 events
 // to the wire; corrected here in passing.
+//
+// Expected: parameters for projectSwarmEvent.
+// Returns: result of projectSwarmEvent.
+// Side effects: None.
 func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 	switch e := ev.(type) {
 	case *events.ToolExecuteResultEvent:
@@ -2598,6 +2704,10 @@ func projectSwarmEvent(ev interface{}) streaming.SwarmEvent {
 // cross-tenant isolation (same pattern as handleSwarmEvents).
 //
 // ADR 002 — Provider Status SSE Side-Channel (July 2026).
+//
+// Expected: parameters for handleProviderStatusStream.
+// Returns: result of handleProviderStatusStream.
+// Side effects: None.
 func (s *Server) handleProviderStatusStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2876,6 +2986,8 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 //
 // Side effects:
 //   - Writes HTTP 200 with JSON-encoded messages.
+//
+// Returns: result of handleSessionMessages.
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -2932,6 +3044,13 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleCancelQueuedPrompt ...
+//
+// Expected: parameters for handleCancelQueuedPrompt.
+//
+// Returns: result of handleCancelQueuedPrompt.
+//
+// Side effects: None.
 func (s *Server) handleCancelQueuedPrompt(w http.ResponseWriter, r *http.Request) {
 	if s.dispatcher == nil {
 		http.Error(w, "dispatcher not configured", http.StatusNotImplemented)
@@ -2986,6 +3105,8 @@ func (s *Server) handleTruncateMessages(w http.ResponseWriter, r *http.Request) 
 //   - Sets the session's CurrentAgentID so subsequent SendMessage calls stream
 //     through the new agent rather than the agent the session was created with.
 //   - Writes the updated session as JSON.
+//
+// Returns: result of handleUpdateSessionAgent.
 func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -3050,6 +3171,8 @@ func (s *Server) handleUpdateSessionAgent(w http.ResponseWriter, r *http.Request
 //   - Sets the session's CurrentProviderID and CurrentModelID so subsequent
 //     SendMessage calls stream through the selected provider/model.
 //   - Writes the updated session as JSON via NewSessionResponse.
+//
+// Returns: result of handleUpdateSessionModel.
 func (s *Server) handleUpdateSessionModel(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -3131,6 +3254,8 @@ type permissionModeResponse struct {
 //   - Returns 400 for an unknown mode (closed vocabulary) or a
 //     malformed body, 404 for an unknown session id, 501 when the
 //     session manager has not been configured.
+//
+// Returns: result of handleUpdateSessionPermissionMode.
 func (s *Server) handleUpdateSessionPermissionMode(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -3313,7 +3438,7 @@ func (s *Server) handlePermissionGrant(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "permissions writer not configured", http.StatusNotImplemented)
 					return
 				}
-				if err := s.permissionWriter.AppendMCPGrant(pending.AgentName, pending.Resource); err != nil {
+				if err := s.permissionWriter.AppendMCPGrant(r.Context(), pending.AgentName, pending.Resource); err != nil {
 					http.Error(w, "permissions writer failed", http.StatusInternalServerError)
 					return
 				}
@@ -3337,7 +3462,7 @@ func (s *Server) handlePermissionGrant(w http.ResponseWriter, r *http.Request) {
 				// at exact-path granularity. A future UI surface
 				// can widen the glob via a "broaden to directory"
 				// affordance.
-				if err := s.permissionWriter.AppendAllow(pending.ToolName, pending.Resource); err != nil {
+				if err := s.permissionWriter.AppendAllow(r.Context(), pending.ToolName, pending.Resource); err != nil {
 					http.Error(w, "permissions writer failed", http.StatusInternalServerError)
 					return
 				}
@@ -3394,6 +3519,10 @@ func (s *Server) handlePermissionGrant(w http.ResponseWriter, r *http.Request) {
 // (app/permission_prompter.go) is the seam that translates Forever to
 // its effect — Slice 3 leaves it at Session-equivalent in-memory
 // semantics per plan §4 Slice 3 file changes addendum.
+//
+// Expected: parameters for parseGrantScope.
+// Returns: result of parseGrantScope.
+// Side effects: None.
 func parseGrantScope(raw string) (permissionrequest.Scope, bool) {
 	switch raw {
 	case string(permissionrequest.ScopeOnce):
@@ -3436,6 +3565,8 @@ type compressionConfigResponse struct {
 //   - Returns 501 when no controller is wired so callers can
 //     distinguish "feature not built" from "feature built but
 //     erroring".
+//
+// Returns: result of handleGetCompressionConfig.
 func (s *Server) handleGetCompressionConfig(w http.ResponseWriter, _ *http.Request) {
 	if s.compactionController == nil {
 		http.Error(w, `{"error":"compaction controller not configured"}`, http.StatusNotImplemented)
@@ -3460,6 +3591,8 @@ func (s *Server) handleGetCompressionConfig(w http.ResponseWriter, _ *http.Reque
 //     trigger evaluation reads the new value.
 //   - Writes the (now-current) threshold as JSON on success, or a
 //     400 + diagnostic message on validation failure.
+//
+// Returns: result of handleUpdateCompressionConfig.
 func (s *Server) handleUpdateCompressionConfig(w http.ResponseWriter, r *http.Request) {
 	if s.compactionController == nil {
 		http.Error(w, `{"error":"compaction controller not configured"}`, http.StatusNotImplemented)
@@ -3507,6 +3640,8 @@ type compactNowResponse struct {
 //   - Invokes CompactNow on the controller, which may issue one
 //     summariser LLM call and one ContextCompactedEvent bus emission.
 //   - Writes the fired discriminant + optional summary as JSON.
+//
+// Returns: result of handleCompactNow.
 func (s *Server) handleCompactNow(w http.ResponseWriter, r *http.Request) {
 	if s.compactionController == nil {
 		http.Error(w, `{"error":"compaction controller not configured"}`, http.StatusNotImplemented)
@@ -3549,6 +3684,8 @@ type modelsResponse struct {
 //   - Writes the providers list as JSON.
 //   - Returns 501 when no ModelLister is configured so callers can
 //     distinguish "not wired" from "wired but empty".
+//
+// Returns: result of handleListModels.
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	if s.modelLister == nil {
 		http.Error(w, `{"error":"model lister not configured"}`, http.StatusNotImplemented)

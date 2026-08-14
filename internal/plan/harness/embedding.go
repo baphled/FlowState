@@ -80,6 +80,8 @@ func (g *EmbeddingGrounder) InjectContext(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LastIndexed.
 func (g *EmbeddingGrounder) LastIndexed() int64 {
 	return 0
 }

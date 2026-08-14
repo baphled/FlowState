@@ -11,6 +11,10 @@ type ManifestBuilder struct {
 // NewManifestBuilder starts a fresh builder for a swarm with the given
 // id. Schema version is pinned to "1.0.0" to match the production
 // loader's expectation; override via WithSchemaVersion if needed.
+//
+// Expected: parameters for NewManifestBuilder.
+// Returns: result of NewManifestBuilder.
+// Side effects: None.
 func NewManifestBuilder(id string) *ManifestBuilder {
 	return &ManifestBuilder{manifest: Manifest{
 		SchemaVersion: SchemaVersionV1,
@@ -21,24 +25,40 @@ func NewManifestBuilder(id string) *ManifestBuilder {
 }
 
 // WithSchemaVersion overrides the default schema_version pin.
+//
+// Expected: parameters for WithSchemaVersion.
+// Returns: result of WithSchemaVersion.
+// Side effects: None.
 func (b *ManifestBuilder) WithSchemaVersion(v string) *ManifestBuilder {
 	b.manifest.SchemaVersion = v
 	return b
 }
 
 // WithDescription sets the manifest description.
+//
+// Expected: parameters for WithDescription.
+// Returns: result of WithDescription.
+// Side effects: None.
 func (b *ManifestBuilder) WithDescription(desc string) *ManifestBuilder {
 	b.manifest.Description = desc
 	return b
 }
 
 // WithLead sets the lead agent id.
+//
+// Expected: parameters for WithLead.
+// Returns: result of WithLead.
+// Side effects: None.
 func (b *ManifestBuilder) WithLead(lead string) *ManifestBuilder {
 	b.manifest.Lead = lead
 	return b
 }
 
 // WithMember appends a member id to the manifest's members list.
+//
+// Expected: parameters for WithMember.
+// Returns: result of WithMember.
+// Side effects: None.
 func (b *ManifestBuilder) WithMember(member string) *ManifestBuilder {
 	b.manifest.Members = append(b.manifest.Members, member)
 	return b
@@ -47,6 +67,10 @@ func (b *ManifestBuilder) WithMember(member string) *ManifestBuilder {
 // WithGate appends a GateSpec to the harness. when is one of the
 // Lifecycle* constants; target is the member id (empty for swarm-
 // scope gates).
+//
+// Expected: parameters for WithGate.
+// Returns: result of WithGate.
+// Side effects: None.
 func (b *ManifestBuilder) WithGate(name, kind, when, target string) *ManifestBuilder {
 	b.manifest.Harness.Gates = append(b.manifest.Harness.Gates, GateSpec{
 		Name: name, Kind: kind, When: when, Target: target,
@@ -55,6 +79,10 @@ func (b *ManifestBuilder) WithGate(name, kind, when, target string) *ManifestBui
 }
 
 // WithChainPrefix sets the swarm context's chain_prefix.
+//
+// Expected: parameters for WithChainPrefix.
+// Returns: result of WithChainPrefix.
+// Side effects: None.
 func (b *ManifestBuilder) WithChainPrefix(prefix string) *ManifestBuilder {
 	b.manifest.Context.ChainPrefix = prefix
 	return b
@@ -62,6 +90,10 @@ func (b *ManifestBuilder) WithChainPrefix(prefix string) *ManifestBuilder {
 
 // Build returns the composed Manifest by value. Subsequent calls to
 // builder methods do not mutate the returned value.
+//
+// Expected: parameters for Build.
+// Returns: result of Build.
+// Side effects: None.
 func (b *ManifestBuilder) Build() Manifest {
 	out := b.manifest
 	out.Members = append([]string{}, b.manifest.Members...)

@@ -36,6 +36,7 @@ import (
 // the all-failed mode discriminable.
 var ErrAllSourcesFailed = errors.New("recall: all configured sources failed")
 
+// dateRangeKey is the context key type for carrying a DateRange.
 type dateRangeKey struct{}
 
 // DateRange specifies an optional time window for filtering recall results.
@@ -46,11 +47,19 @@ type DateRange struct {
 }
 
 // WithDateRange returns a context carrying the given DateRange for recall queries.
+//
+// Expected: parameters for WithDateRange.
+// Returns: result of WithDateRange.
+// Side effects: None.
 func WithDateRange(ctx context.Context, dr DateRange) context.Context {
 	return context.WithValue(ctx, dateRangeKey{}, dr)
 }
 
 // dateRangeFromContext extracts any DateRange attached to the context.
+//
+// Expected: parameters for dateRangeFromContext.
+// Returns: result of dateRangeFromContext.
+// Side effects: None.
 func dateRangeFromContext(ctx context.Context) (DateRange, bool) {
 	v := ctx.Value(dateRangeKey{})
 	if v == nil {
@@ -238,6 +247,13 @@ func (b *broker) limitResults(merged []Observation, limit int) []Observation {
 	return merged
 }
 
+// filterByDateRange ...
+//
+// Expected: parameters for filterByDateRange.
+//
+// Returns: result of filterByDateRange.
+//
+// Side effects: None.
 func (b *broker) filterByDateRange(merged []Observation, dr DateRange) []Observation {
 	filtered := make([]Observation, 0, len(merged))
 	for _, obs := range merged {

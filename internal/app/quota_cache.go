@@ -62,6 +62,10 @@ const defaultQuotaCacheRefresh = 10 * time.Second
 //  3. $HOME/.cache/flowstate/provider-quota.json
 //
 // Plan §"Rollout Plan" PR6 row 430 default location.
+//
+// Expected: parameters for resolveQuotaCachePath.
+// Returns: result of resolveQuotaCachePath.
+// Side effects: None.
 func resolveQuotaCachePath(cfg *config.AppConfig, logger *slog.Logger) string {
 	if cfg == nil {
 		return ""
@@ -97,6 +101,10 @@ func resolveQuotaCachePath(cfg *config.AppConfig, logger *slog.Logger) string {
 // ensureCacheDir creates dir at 0o700 if missing, idempotent. Used by
 // resolveQuotaCachePath; surface area kept narrow so the test suite
 // can drive it via a temp-dir fixture without touching $HOME.
+//
+// Expected: parameters for ensureCacheDir.
+// Returns: result of ensureCacheDir.
+// Side effects: None.
 func ensureCacheDir(dir string) error {
 	if dir == "" {
 		return errors.New("empty cache directory")
@@ -112,6 +120,10 @@ func ensureCacheDir(dir string) error {
 // Returns the parsed duration and a flag indicating whether the
 // caller should start the ticker. Defensive on parse failure: log a
 // warn and fall back to the default rather than fail-start.
+//
+// Expected: parameters for resolveQuotaRefreshInterval.
+// Returns: result of resolveQuotaRefreshInterval.
+// Side effects: None.
 func resolveQuotaRefreshInterval(raw string, logger *slog.Logger) (interval time.Duration, enabled bool) {
 	if raw == "" {
 		return defaultQuotaCacheRefresh, true
@@ -145,6 +157,9 @@ func resolveQuotaRefreshInterval(raw string, logger *slog.Logger) (interval time
 // Mirrors HealthManager.LoadState's posture
 // (failover/healthmanager.go:220-260) — log + degrade rather than
 // crash-on-corrupt-state.
+//
+// Expected: parameters for loadQuotaCacheFromDisk.
+// Side effects: None.
 func loadQuotaCacheFromDisk(
 	ctx context.Context,
 	tracker *quota.Tracker,
@@ -202,6 +217,9 @@ func loadQuotaCacheFromDisk(
 //     last few seconds of spend deltas are not lost on SIGTERM.
 //   - All times via the supplied clock.Now so the SavedAt stamp is
 //     deterministically testable.
+//
+// Expected: parameters for quotaPersistLoop.
+// Side effects: None.
 func quotaPersistLoop(
 	ctx context.Context,
 	tracker *quota.Tracker,
@@ -252,9 +270,9 @@ func quotaPersistLoop(
 			// survive across restart. Uses a fresh background context
 			// because the loop's ctx is already cancelled by
 			// definition; the Tracker's List path is non-blocking.
-			flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second) //nolint:lll // intentional detached context: loop ctx is already cancelled on shutdown flush
 			defer cancel()
-			finalEntries, err := tracker.Snapshots(flushCtx)
+			finalEntries, err := tracker.Snapshots(flushCtx) //nolint:contextcheck // intentional detached context: loop ctx is already cancelled on shutdown flush
 			if err == nil {
 				if data, mErr := quota.MarshalCache(finalEntries, nowFunc()); mErr == nil {
 					sig := fingerprintCacheBody(data)
@@ -298,6 +316,10 @@ func quotaPersistLoop(
 // next tick after period end) and RecordSpend mutate the persisted
 // shape. So the sig diffs naturally on real state changes and the
 // fingerprint optimisation does its job under steady-state idleness.
+//
+// Expected: parameters for fingerprintCacheBody.
+// Returns: result of fingerprintCacheBody.
+// Side effects: None.
 func fingerprintCacheBody(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -320,6 +342,10 @@ type quotaCacheController struct {
 // shutdown. Returns nil when interval is non-positive (the
 // "persistence disabled" path); callers gate cleanly on the return
 // value.
+//
+// Expected: parameters for startQuotaCacheController.
+// Returns: result of startQuotaCacheController.
+// Side effects: None.
 func startQuotaCacheController(
 	tracker *quota.Tracker,
 	path string,
@@ -346,6 +372,10 @@ func startQuotaCacheController(
 // within the deadline. The caller (App.ShutdownQuotaCache, invoked
 // from runServe before engine.Shutdown) logs but does not promote
 // timeout to a fatal error — the engine drain still proceeds.
+//
+// Expected: parameters for Stop.
+// Returns: result of Stop.
+// Side effects: None.
 func (c *quotaCacheController) Stop(ctx context.Context) error {
 	if c == nil {
 		return nil

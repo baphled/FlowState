@@ -153,6 +153,8 @@ func isUnderProjectRoot(absPath, projRootAbs string) bool {
 //
 // Side effects:
 //   - Modifies result by setting the Valid field and Score.
+//
+// Returns: result of calculateScore.
 func (v *ReferenceValidator) calculateScore(result *plan.ValidationResult, validRefs, totalRefs int) {
 	if validRefs < totalRefs {
 		result.Valid = false

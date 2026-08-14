@@ -74,6 +74,9 @@ const (
 )
 
 // writeAttachmentError emits the structured JSON error envelope.
+//
+// Expected: parameters for writeAttachmentError.
+// Side effects: None.
 func writeAttachmentError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -123,6 +126,8 @@ type stagedFile struct {
 // DetectContentType is the source of truth, the wire Content-Type
 // header is only used to short-circuit obviously-wrong uploads
 // before reading the bytes.
+//
+// Returns: result of handleUploadAttachments.
 func (s *Server) handleUploadAttachments(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -348,6 +353,9 @@ func (s *Server) handleUploadAttachments(w http.ResponseWriter, r *http.Request)
 // writeAttachmentStoreErrorStructured maps storage-layer errors to the
 // structured JSON envelope. Used post-gate to cover races where Put
 // rejects an upload that passed the upfront cap-precedence ladder.
+//
+// Expected: parameters for writeAttachmentStoreErrorStructured.
+// Side effects: None.
 func writeAttachmentStoreErrorStructured(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, session.ErrAttachmentTooLarge):
@@ -390,6 +398,8 @@ func writeAttachmentStoreErrorStructured(w http.ResponseWriter, err error) {
 // Side effects:
 //   - Reads the attachment bytes from disk via the session's
 //     AttachmentStore. No write paths.
+//
+// Returns: result of handleGetAttachment.
 func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	if s.sessionManager == nil {
 		http.Error(w, errSessionManagerNotConfigured, http.StatusNotImplemented)
@@ -440,6 +450,9 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeAttachmentParseError maps multipart parse failures to HTTP codes.
+//
+// Expected: parameters for writeAttachmentParseError.
+// Side effects: None.
 func writeAttachmentParseError(w http.ResponseWriter, err error) {
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {

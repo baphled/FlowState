@@ -12,6 +12,10 @@ import (
 )
 
 // BuildSystemPrompt returns the system prompt for the engine's active manifest.
+//
+// Expected: parameters for BuildSystemPrompt.
+// Returns: result of BuildSystemPrompt.
+// Side effects: None.
 func (e *Engine) BuildSystemPrompt() string {
 	return e.BuildSystemPromptCtx(context.Background())
 }
@@ -163,6 +167,13 @@ func (e *Engine) assembleSystemPromptLocked(manifest agent.Manifest, skills []sk
 	return base
 }
 
+// resolveSwarmPromptAppendFor ...
+//
+// Expected: parameters for resolveSwarmPromptAppendFor.
+//
+// Returns: result of resolveSwarmPromptAppendFor.
+//
+// Side effects: None.
 func (e *Engine) resolveSwarmPromptAppendFor(ctx context.Context, manifest agent.Manifest) string {
 	swarmManifest, swarmCtx, ok := e.activeSwarmManifestForPrompt(ctx)
 	if !ok {
@@ -185,6 +196,13 @@ func (e *Engine) resolveSwarmPromptAppendFor(ctx context.Context, manifest agent
 	return "\n\n# Swarm Prompt Injection\n\n" + strings.Join(appends, "\n\n")
 }
 
+// activeSwarmManifestForPrompt ...
+//
+// Expected: parameters for activeSwarmManifestForPrompt.
+//
+// Returns: result of activeSwarmManifestForPrompt.
+//
+// Side effects: None.
 func (e *Engine) activeSwarmManifestForPrompt(ctx context.Context) (*swarm.Manifest, *swarm.Context, bool) {
 	swarmCtx := e.swarmContext
 	if scoped, present := swarm.ScopeFromContext(ctx); present {
@@ -200,6 +218,13 @@ func (e *Engine) activeSwarmManifestForPrompt(ctx context.Context) (*swarm.Manif
 	return manifest, swarmCtx, true
 }
 
+// resolveSwarmPromptAppend ...
+//
+// Expected: parameters for resolveSwarmPromptAppend.
+//
+// Returns: result of resolveSwarmPromptAppend.
+//
+// Side effects: None.
 func resolveSwarmPromptAppend(sourceDir string, inline string, file string) string {
 	parts := make([]string, 0, 2)
 	if trimmed := strings.TrimSpace(inline); trimmed != "" {
@@ -219,6 +244,13 @@ func resolveSwarmPromptAppend(sourceDir string, inline string, file string) stri
 	return strings.Join(parts, "\n\n")
 }
 
+// buildToolUsageRequirement ...
+//
+// Expected: parameters for buildToolUsageRequirement.
+//
+// Returns: result of buildToolUsageRequirement.
+//
+// Side effects: None.
 func buildToolUsageRequirement(manifest agent.Manifest) string {
 	for _, t := range manifest.Capabilities.Tools {
 		if t != "coordination_store" {

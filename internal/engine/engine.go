@@ -1253,6 +1253,13 @@ func resolveFactService(cfg Config) *factstore.Service {
 	return cfg.FactService
 }
 
+// resolveNowFunc ...
+//
+// Expected: parameters for resolveNowFunc.
+//
+// Returns: result of resolveNowFunc.
+//
+// Side effects: None.
 func resolveNowFunc(cfg Config) func() time.Time {
 	if cfg.NowFunc != nil {
 		return cfg.NowFunc
@@ -1508,6 +1515,8 @@ func (e *Engine) handleSessionEnded(evt any) {
 //
 // Side effects:
 //   - Starts one goroutine bound to a context that Shutdown cancels.
+//
+// Returns: result of startIdleSweeper.
 func (e *Engine) startIdleSweeper(idleTTL time.Duration) {
 	stop := make(chan struct{})
 	done := make(chan struct{})
@@ -1548,6 +1557,8 @@ func (e *Engine) startIdleSweeper(idleTTL time.Duration) {
 //   - Closes done exactly once on exit.
 //   - Stops the internal ticker.
 //   - Invokes sweepIdleSplitters on every tick.
+//
+// Returns: result of runIdleSweeper.
 func (e *Engine) runIdleSweeper(stop <-chan struct{}, done chan<- struct{}, idleTTL, interval time.Duration) {
 	defer close(done)
 
@@ -1579,6 +1590,8 @@ func (e *Engine) runIdleSweeper(stop <-chan struct{}, done chan<- struct{}, idle
 //   - Calls Stop on each evicted splitter outside splitterMu so the
 //     lock hold is proportional to map operations, not persist-worker
 //     drain time.
+//
+// Returns: result of sweepIdleSplitters.
 func (e *Engine) sweepIdleSplitters(idleTTL time.Duration) {
 	cutoff := time.Now().Add(-idleTTL)
 
@@ -1992,6 +2005,8 @@ func (e *Engine) ensureSessionSplitter(ctx context.Context, sessionID string) *c
 // Side effects:
 //   - Modifies e.agentOverrides in place, replacing any existing overrides.
 //   - Invalidates the cached system prompt.
+//
+// Returns: result of SetAgentOverrides.
 func (e *Engine) SetAgentOverrides(overrides map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -2008,6 +2023,8 @@ func (e *Engine) SetAgentOverrides(overrides map[string]string) {
 //
 // Side effects:
 //   - Invalidates the cached system prompt.
+//
+// Returns: result of SetSkipAgentFiles.
 func (e *Engine) SetSkipAgentFiles(skip bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -2023,6 +2040,8 @@ func (e *Engine) SetSkipAgentFiles(skip bool) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for SkipAgentFiles.
 func (e *Engine) SkipAgentFiles() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -2036,11 +2055,17 @@ func (e *Engine) SkipAgentFiles() bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for FailoverManager.
 func (e *Engine) FailoverManager() *failover.Manager {
 	return e.failoverManager
 }
 
 // SoonestProviderRetry returns the earliest provider cooldown when every configured provider/model pair is rate-limited.
+//
+// Expected: parameters for SoonestProviderRetry.
+// Returns: result of SoonestProviderRetry.
+// Side effects: None.
 func (e *Engine) SoonestProviderRetry() (time.Time, bool) {
 	if e.failoverManager == nil {
 		return time.Time{}, false
@@ -2110,6 +2135,9 @@ func (e *Engine) SoonestProviderRetry() (time.Time, bool) {
 //     override to the manifest head and clears any stale startup override.
 //   - Captures the config base chain AND the primary-preference baseline
 //     on first invocation (under mu).
+//
+// Expected: parameters for ReseedFailoverBasePreferences.
+// Returns: result of ReseedFailoverBasePreferences.
 func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, providerName, modelName string) {
 	if e.failoverManager == nil {
 		return
@@ -2244,6 +2272,8 @@ func (e *Engine) ReseedFailoverBasePreferences(manifest agent.Manifest, provider
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for EventBus.
 func (e *Engine) EventBus() *eventbus.EventBus {
 	return e.bus
 }
@@ -2255,6 +2285,8 @@ func (e *Engine) EventBus() *eventbus.EventBus {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LastProvider.
 func (e *Engine) LastProvider() string {
 	// Check the failover manager's last-used provider first — this reflects
 	// the actual winner after a failover cascade (e.g. Z.AI after Anthropic
@@ -2290,6 +2322,8 @@ func (e *Engine) LastProvider() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LastModel.
 func (e *Engine) LastModel() string {
 	// Check the failover manager's last-used model first — mirrors
 	// LastProvider() so the model always reflects the actual winner
@@ -2318,6 +2352,10 @@ func (e *Engine) LastModel() string {
 // LastProvider(). This seals the cross-session provider bleed where a
 // concurrent Stream() calling SetManifest overwrites
 // e.preferredProvider mid-flight.
+//
+// Expected: parameters for lastProviderCtx.
+// Returns: result of lastProviderCtx.
+// Side effects: None.
 func (e *Engine) lastProviderCtx(ctx context.Context) string {
 	if prov, _, ok := providerModelFromContext(ctx); ok && prov != "" {
 		return prov
@@ -2327,6 +2365,10 @@ func (e *Engine) lastProviderCtx(ctx context.Context) string {
 
 // lastModelCtx resolves the model for the in-flight stream, checking
 // the ctx-bound pair first before falling back to LastModel().
+//
+// Expected: parameters for lastModelCtx.
+// Returns: result of lastModelCtx.
+// Side effects: None.
 func (e *Engine) lastModelCtx(ctx context.Context) string {
 	if _, model, ok := providerModelFromContext(ctx); ok && model != "" {
 		return model
@@ -2342,6 +2384,8 @@ func (e *Engine) lastModelCtx(ctx context.Context) string {
 //
 // Side effects:
 //   - Modifies the failover manager's preferences to use the specified model first.
+//
+// Returns: result of SetModelPreference.
 func (e *Engine) SetModelPreference(providerName string, modelName string) {
 	e.mu.Lock()
 	e.preferredProvider = providerName
@@ -2411,6 +2455,8 @@ func (e *Engine) providerServesModel(providerName, model string) bool {
 //     time stick and the session sidecar records stale loaded_skills.
 //     When SkillsResolver is nil the skills slice is left untouched,
 //     matching historical behaviour.
+//
+// Returns: result of SetManifest.
 func (e *Engine) SetManifest(manifest agent.Manifest) {
 	e.mu.Lock()
 	oldID := e.manifest.ID
@@ -2456,6 +2502,8 @@ func (e *Engine) SetManifest(manifest agent.Manifest) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Manifest.
 func (e *Engine) Manifest() agent.Manifest {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -2472,6 +2520,8 @@ func (e *Engine) Manifest() agent.Manifest {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ManifestSnapshot.
 func (e *Engine) ManifestSnapshot() any {
 	return e.Manifest()
 }
@@ -2517,6 +2567,8 @@ func (e *Engine) RestoreManifest(snapshot any) {
 //   - Replaces the engine's swarmContext under the write lock.
 //   - Invalidates the cached system prompt so the next BuildSystemPrompt
 //     call re-runs appendSwarmLeadSection against the new context.
+//
+// Returns: result of SetSwarmContext.
 func (e *Engine) SetSwarmContext(swarmCtx *swarm.Context) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -2534,6 +2586,8 @@ func (e *Engine) SetSwarmContext(swarmCtx *swarm.Context) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for SwarmContext.
 func (e *Engine) SwarmContext() *swarm.Context {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -2548,6 +2602,8 @@ func (e *Engine) SwarmContext() *swarm.Context {
 //
 // Side effects:
 //   - May make network calls to providers to fetch model lists.
+//
+// Expected: parameters for ListAvailableModels.
 func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 	if e.failoverManager != nil {
 		return e.failoverManager.ListModels()
@@ -2575,7 +2631,7 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 // Side effects:
 //   - Caches the built prompt and loaded agent files for subsequent calls
 //     when no per-context manifest binding is active.
-//
+
 // buildAllowedToolSetFor returns the set of tool names allowed by
 // the supplied manifest. The ctx-bound build path calls this so
 // each concurrent stream's tool schemas are derived from its own
@@ -2610,6 +2666,8 @@ func (e *Engine) ListAvailableModels() ([]provider.Model, error) {
 //     server name has its tools merged into the allowed set. Unknown
 //     server names are silently ignored. See ADR - MCP Tool Gating
 //     by Agent Manifest for the full contract.
+//
+// buildAllowedToolSetFor computes the allowed tool set for the given manifest.
 //
 // Side effects:
 //   - None.
@@ -2753,6 +2811,10 @@ func BuildAllowedToolSet(manifest agent.Manifest, mcpServerTools map[string][]st
 // dispatch under ModeAskUser.
 //
 // Permission Mode ModeAskUser Extension plan (May 2026) Slice 5.
+//
+// Expected: parameters for mcpServerForTool.
+// Returns: result of mcpServerForTool.
+// Side effects: None.
 func mcpServerForTool(mcpServerTools map[string][]string, toolName string) string {
 	for serverName, names := range mcpServerTools {
 		for _, name := range names {
@@ -3083,6 +3145,8 @@ func buildPropertyMap(properties map[string]tool.Property) map[string]interface{
 // Side effects:
 //   - Caches the built schemas for subsequent calls when no
 //     per-context binding is active.
+//
+// Expected: parameters for buildToolSchemas.
 func (e *Engine) buildToolSchemas() []provider.Tool {
 	return e.buildToolSchemasCtx(context.Background())
 }
@@ -3201,6 +3265,8 @@ func (e *Engine) assembleToolSchemasLocked(ctx context.Context) []provider.Tool 
 //
 // Side effects:
 //   - May cache the schemas internally for subsequent calls.
+//
+// Expected: parameters for ToolSchemas.
 func (e *Engine) ToolSchemas() []provider.Tool {
 	return e.buildToolSchemas()
 }
@@ -3235,6 +3301,8 @@ func (e *Engine) ToolSchemasCtx(ctx context.Context) []provider.Tool {
 // Side effects:
 //   - Stores the lookup under the engine's write lock so a concurrent
 //     CompactNow caller sees a consistent value.
+//
+// Returns: result of SetSessionLookup.
 func (e *Engine) SetSessionLookup(lookup SessionLookup) {
 	if e == nil {
 		return
@@ -3254,6 +3322,8 @@ func (e *Engine) SetSessionLookup(lookup SessionLookup) {
 // Side effects:
 //   - Replaces any previously set onStreamCancel callback under the engine
 //     write lock.
+//
+// Returns: result of SetOnStreamCancel.
 func (e *Engine) SetOnStreamCancel(fn func(sessionID string)) {
 	if e == nil {
 		return
@@ -3274,6 +3344,8 @@ func (e *Engine) SetOnStreamCancel(fn func(sessionID string)) {
 // Side effects:
 //   - Appends messages to e.store on the first call per sessionID.
 //   - Subsequent calls for the same sessionID are no-ops (idempotent).
+//
+// Returns: result of SeedHistory.
 func (e *Engine) SeedHistory(sessionID string, messages []provider.Message) {
 	if e.store == nil || sessionID == "" || len(messages) == 0 {
 		return
@@ -3515,7 +3587,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 		e.lifecycle.PostProcess.Execute(lifecycle.PostProcessCtx{
 			SessionID: sessionID,
 			Messages:  messages,
-		}) //nolint:errcheck
+		})
 		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
 		e.dispatchKnowledgeExtraction(sessionID, messages)
 	}()
@@ -3537,6 +3609,9 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 //
 // Side effects:
 //   - Publishes EventStreamingHeartbeat on e.bus per tick.
+//
+// Expected: parameters for runStreamingHeartbeat.
+// Returns: result of runStreamingHeartbeat.
 func (e *Engine) runStreamingHeartbeat(ctx context.Context, sessionID, agentID string) {
 	ticker := time.NewTicker(e.heartbeatInterval)
 	defer ticker.Stop()
@@ -3565,6 +3640,9 @@ func (e *Engine) runStreamingHeartbeat(ctx context.Context, sessionID, agentID s
 //
 // Side effects:
 //   - Publishes EventStreamingHeartbeat when e.bus is non-nil.
+//
+// Expected: parameters for publishStreamingHeartbeat.
+// Returns: result of publishStreamingHeartbeat.
 func (e *Engine) publishStreamingHeartbeat(sessionID, agentID, phase string) {
 	if e.bus == nil {
 		return
@@ -3598,6 +3676,8 @@ func (e *Engine) publishStreamingHeartbeat(sessionID, agentID, phase string) {
 //
 // Side effects:
 //   - Writes to e.sessionOutputTokens under e.sessionOutputTokensMu.
+//
+// Returns: result of recordSessionOutputTokens.
 func (e *Engine) recordSessionOutputTokens(sessionID string, tokens int64) {
 	if sessionID == "" {
 		return
@@ -3622,6 +3702,8 @@ func (e *Engine) recordSessionOutputTokens(sessionID string, tokens int64) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for sessionOutputTokensSnapshot.
 func (e *Engine) sessionOutputTokensSnapshot(sessionID string) int64 {
 	if sessionID == "" {
 		return 0
@@ -4271,6 +4353,8 @@ func (e *Engine) overflowRefusalChannel(pErr *provider.Error) <-chan provider.St
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for baseStreamHandler.
 func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 		if req.Provider != "" && e.providerRegistry != nil {
@@ -4298,6 +4382,8 @@ func (e *Engine) baseStreamHandler() hook.HandlerFunc {
 //   - Sends chunks to outChan.
 //   - Executes tool calls and appends results to messages.
 //   - Stores responses in the context store.
+//
+// Returns: result of streamWithToolLoop.
 func (e *Engine) streamWithToolLoop(
 	ctx context.Context, sessionID string, messages []provider.Message,
 	providerChunks <-chan provider.StreamChunk, outChan chan<- provider.StreamChunk,
@@ -5549,6 +5635,7 @@ func (e *Engine) streamWithToolLoop(
 	}
 }
 
+// deliveryFailureEnvelope is the JSON shape for a delivery failure event payload.
 type deliveryFailureEnvelope struct {
 	Status                  string   `json:"status"`
 	SessionID               string   `json:"session_id"`
@@ -5563,6 +5650,13 @@ type deliveryFailureEnvelope struct {
 	Timestamp               string   `json:"timestamp"`
 }
 
+// persistDeliveryFailureFallback ...
+//
+// Expected: parameters for persistDeliveryFailureFallback.
+//
+// Returns: result of persistDeliveryFailureFallback.
+//
+// Side effects: None.
 func (e *Engine) persistDeliveryFailureFallback(ctx context.Context, sessionID string, messages []provider.Message, cause error) {
 	if e == nil || cause == nil || !isTerminalDeliveryProviderFailure(cause) {
 		return
@@ -5626,6 +5720,13 @@ func (e *Engine) persistDeliveryFailureFallback(ctx context.Context, sessionID s
 		"key", reservedKey)
 }
 
+// deliveryFallbackContext ...
+//
+// Expected: parameters for deliveryFallbackContext.
+//
+// Returns: result of deliveryFallbackContext.
+//
+// Side effects: None.
 func (e *Engine) deliveryFallbackContext(ctx context.Context) (string, []string) {
 	if m, ok := manifestFromContext(ctx); ok {
 		return m.ID, append([]string(nil), m.Capabilities.DeliveryTools...)
@@ -5635,6 +5736,13 @@ func (e *Engine) deliveryFallbackContext(ctx context.Context) (string, []string)
 	return e.manifest.ID, append([]string(nil), e.manifest.Capabilities.DeliveryTools...)
 }
 
+// lookupTool ...
+//
+// Expected: parameters for lookupTool.
+//
+// Returns: result of lookupTool.
+//
+// Side effects: None.
 func (e *Engine) lookupTool(name string) tool.Tool {
 	for _, t := range e.tools {
 		if t.Name() == name {
@@ -5644,6 +5752,13 @@ func (e *Engine) lookupTool(name string) tool.Tool {
 	return nil
 }
 
+// isTerminalDeliveryProviderFailure ...
+//
+// Expected: parameters for isTerminalDeliveryProviderFailure.
+//
+// Returns: result of isTerminalDeliveryProviderFailure.
+//
+// Side effects: None.
 func isTerminalDeliveryProviderFailure(err error) bool {
 	if err == nil {
 		return false
@@ -5652,6 +5767,13 @@ func isTerminalDeliveryProviderFailure(err error) bool {
 	return strings.Contains(msg, "all providers failed") || strings.Contains(msg, "no healthy providers available")
 }
 
+// estimateMessageBytes ...
+//
+// Expected: parameters for estimateMessageBytes.
+//
+// Returns: result of estimateMessageBytes.
+//
+// Side effects: None.
 func estimateMessageBytes(messages []provider.Message) int {
 	total := 0
 	for _, msg := range messages {
@@ -5666,6 +5788,13 @@ func estimateMessageBytes(messages []provider.Message) int {
 	return total
 }
 
+// lastAssistantText ...
+//
+// Expected: parameters for lastAssistantText.
+//
+// Returns: result of lastAssistantText.
+//
+// Side effects: None.
 func lastAssistantText(messages []provider.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "assistant" && strings.TrimSpace(messages[i].Content) != "" {
@@ -5675,6 +5804,13 @@ func lastAssistantText(messages []provider.Message) string {
 	return ""
 }
 
+// coalesceToolError ...
+//
+// Expected: parameters for coalesceToolError.
+//
+// Returns: result of coalesceToolError.
+//
+// Side effects: None.
 func coalesceToolError(execErr error, result tool.Result) error {
 	if execErr != nil {
 		return execErr
@@ -5701,6 +5837,10 @@ func coalesceToolError(execErr error, result tool.Result) error {
 // re-emitting a single call. An empty batch returns "" — the caller treats a
 // blank fingerprint as "cannot fingerprint", never matching the previous run
 // (the absolute backstop still bounds those turns).
+//
+// Expected: parameters for fingerprintToolBatch.
+// Returns: result of fingerprintToolBatch.
+// Side effects: None.
 func fingerprintToolBatch(toolCalls []*provider.ToolCall) string {
 	if len(toolCalls) == 0 {
 		return ""
@@ -5731,6 +5871,10 @@ func fingerprintToolBatch(toolCalls []*provider.ToolCall) string {
 // "delegate" call. Used by the grace round to detect whether the model
 // delegated work in its last turn and should be given another round to
 // receive the results.
+//
+// Expected: parameters for batchContainsDelegate.
+// Returns: result of batchContainsDelegate.
+// Side effects: None.
 func batchContainsDelegate(toolCalls []*provider.ToolCall) bool {
 	for _, tc := range toolCalls {
 		if tc != nil && tc.Name == "delegate" {
@@ -5743,6 +5887,9 @@ func batchContainsDelegate(toolCalls []*provider.ToolCall) bool {
 // buildGraceRoundMessage renders a user-role message telling the model that
 // the tool loop budget is exhausted but a delegation grace round has been
 // granted so it can check back on delegated work.
+//
+// Returns: result of buildGraceRoundMessage.
+// Side effects: None.
 func buildGraceRoundMessage() provider.Message {
 	return provider.Message{
 		Role:    "user",
@@ -5755,6 +5902,9 @@ func buildGraceRoundMessage() provider.Message {
 // the model has been making tool calls without producing user-visible
 // response text. This gives the model one last turn to synthesise what
 // it accomplished before the session terminates.
+//
+// Returns: result of buildFinalResponseMessage.
+// Side effects: None.
 func buildFinalResponseMessage() provider.Message {
 	return provider.Message{
 		Role:    "user",
@@ -5780,6 +5930,9 @@ func buildFinalResponseMessage() provider.Message {
 //
 // An empty input returns empty slices. Input with no duplicates returns unique
 // as a copy of the input and mapping as [0, 1, 2, ..., n-1].
+//
+// Expected: parameters for deduplicateToolCalls.
+// Side effects: None.
 func deduplicateToolCalls(toolCalls []*provider.ToolCall) (unique []*provider.ToolCall, mapping []int) {
 	if len(toolCalls) == 0 {
 		return nil, nil
@@ -5831,6 +5984,10 @@ type toolCallExecResult struct {
 // call with its correct ID. This prevents wasted executions when a provider
 // emits multiple identical tool calls in a single turn (observed with Z.AI
 // glm-5.2 generating 9 identical todo_update calls).
+//
+// Expected: parameters for executeDeduplicatedToolCalls.
+// Returns: result of executeDeduplicatedToolCalls.
+// Side effects: None.
 func (e *Engine) executeDeduplicatedToolCalls(
 	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
 ) []toolCallExecResult {
@@ -5860,6 +6017,10 @@ func (e *Engine) executeDeduplicatedToolCalls(
 // executeToolCallBatch runs all tool calls concurrently and returns results in
 // the same order as the input slice. A single-element batch still goes through
 // this path so the message-assembly code is uniform.
+//
+// Expected: parameters for executeToolCallBatch.
+// Returns: result of executeToolCallBatch.
+// Side effects: None.
 func (e *Engine) executeToolCallBatch(
 	ctx context.Context, sessionID string, toolCalls []*provider.ToolCall, outChan chan<- provider.StreamChunk,
 ) []toolCallExecResult {
@@ -5896,6 +6057,10 @@ func (e *Engine) executeToolCallBatch(
 // tool that implements tool.StateModifier with IsStateModifying returning true.
 // When this returns true the caller must execute the batch sequentially to
 // prevent race conditions between concurrent state mutations.
+//
+// Expected: parameters for batchHasStateModifier.
+// Returns: result of batchHasStateModifier.
+// Side effects: None.
 func batchHasStateModifier(tools []tool.Tool, toolCalls []*provider.ToolCall) bool {
 	for _, tc := range toolCalls {
 		for _, t := range tools {
@@ -5918,6 +6083,9 @@ func batchHasStateModifier(tools []tool.Tool, toolCalls []*provider.ToolCall) bo
 //
 // Side effects:
 //   - Removes terminal tasks from the background task manager if a delegate tool is present.
+//
+// Expected: parameters for evictCompletedBackgroundTasks.
+// Returns: result of evictCompletedBackgroundTasks.
 func (e *Engine) evictCompletedBackgroundTasks() {
 	dt, ok := e.GetDelegateTool()
 	if !ok {
@@ -5943,11 +6111,20 @@ func (e *Engine) evictCompletedBackgroundTasks() {
 //
 // Side effects:
 //   - Publishes provider.request.retry and provider.request events on the bus.
-//
+
 // retryStreamForToolResultWithTools is the internal implementation
 // shared by retryStreamForToolResult and retryStreamForToolResultNoSchemas.
 // The caller supplies the tool schemas directly; passing nil or an empty
 // slice produces a text-only retry with no tools advertised.
+//
+// Expected: ctx is a non-cancelled context; sessionID identifies the
+// active session; messages contains the full conversation history for the
+// retry; attempt is the 1-based retry number; tools is nil for manifest
+// schemas, a non-nil slice for caller-supplied schemas.
+// Returns: a stream chunk channel and nil error on success, or nil channel
+// and error if the provider request fails.
+// Side effects: publishes a ProviderRequestRetry event before sending the
+// request to the provider.
 func (e *Engine) retryStreamForToolResultWithTools(
 	ctx context.Context, sessionID string, messages []provider.Message, attempt int, tools []provider.Tool,
 ) (<-chan provider.StreamChunk, error) {
@@ -6002,6 +6179,10 @@ func (e *Engine) retryStreamForToolResultWithTools(
 // retryStreamForToolResult retries the provider stream with the full tool
 // schema from the active manifest. This is the standard retry path used by
 // all tool-loop continuation call sites.
+//
+// Expected: parameters for retryStreamForToolResult.
+// Returns: result of retryStreamForToolResult.
+// Side effects: None.
 func (e *Engine) retryStreamForToolResult(
 	ctx context.Context, sessionID string, messages []provider.Message, attempt int,
 ) (<-chan provider.StreamChunk, error) {
@@ -6012,6 +6193,10 @@ func (e *Engine) retryStreamForToolResult(
 // schemas advertised. The model can only produce text, making this suitable
 // for the forced-summary step that fires when the tool-loop budget is exhausted
 // and all other grace paths have been tried.
+//
+// Expected: parameters for retryStreamForToolResultNoSchemas.
+// Returns: result of retryStreamForToolResultNoSchemas.
+// Side effects: None.
 func (e *Engine) retryStreamForToolResultNoSchemas(
 	ctx context.Context, sessionID string, messages []provider.Message, attempt int,
 ) (<-chan provider.StreamChunk, error) {
@@ -6373,6 +6558,8 @@ func (e *Engine) processStreamChunks(
 //
 // Side effects:
 //   - Publishes EventToolReasoning on e.bus when reasoning is non-empty.
+//
+// Returns: result of publishToolReasoningEvent.
 func (e *Engine) publishToolReasoningEvent(ctx context.Context, sessionID, toolName, reasoning string) {
 	if e.bus == nil || reasoning == "" {
 		return
@@ -6402,6 +6589,8 @@ func (e *Engine) publishToolReasoningEvent(ctx context.Context, sessionID, toolN
 //     marker to thinkingContent so the completeResponse path sees the
 //     flushed payload.
 //   - Forwards chunk (with InternalToolCallID stamped) to outChan.
+//
+// Returns: result of forwardToolCallChunk.
 func (e *Engine) forwardToolCallChunk(
 	sessionID string, chunk provider.StreamChunk, thinkingContent *strings.Builder,
 	sawTextOrThinking bool, outChan chan<- provider.StreamChunk,
@@ -6484,6 +6673,10 @@ func (e *Engine) deriveToolCtx(parent context.Context, t tool.Tool) (context.Con
 //   - When toolName is a todo tool: reset the counter to 0.
 //   - Otherwise: increment the counter.
 //   - Always returns (zero Result, false) — never blocks.
+//
+// Expected: parameters for todoStrictGate.
+// Returns: result of todoStrictGate.
+// Side effects: None.
 func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -6506,6 +6699,10 @@ func (e *Engine) todoStrictGate(sessionID, toolName string) (tool.Result, bool) 
 // incomplete anyway. This prevents the model from marking everything
 // done via todo_update calls without doing any actual work, which would
 // otherwise short-circuit the continuation loop.
+//
+// Expected: parameters for hasIncompleteTodos.
+// Returns: result of hasIncompleteTodos.
+// Side effects: None.
 func (e *Engine) hasIncompleteTodos(sessionID string) (bool, []todo.Item) {
 	if e.todoStore == nil {
 		return false, nil
@@ -6537,6 +6734,10 @@ func (e *Engine) hasIncompleteTodos(sessionID string) (bool, []todo.Item) {
 // hasActiveBackgroundTasks reports whether any background (delegated) tasks
 // are still running for the given session. A background task is a subagent
 // spawned by a delegate tool call that has not yet completed.
+//
+// Expected: parameters for hasActiveBackgroundTasks.
+// Returns: result of hasActiveBackgroundTasks.
+// Side effects: None.
 func (e *Engine) hasActiveBackgroundTasks(sessionID string) bool {
 	dt, ok := e.GetDelegateTool()
 	if !ok {
@@ -6548,6 +6749,10 @@ func (e *Engine) hasActiveBackgroundTasks(sessionID string) bool {
 // activeBackgroundTaskCount returns the number of background tasks still
 // running for the given session. Callers use this to decide between a
 // background-task continuation and a hard stop.
+//
+// Expected: parameters for activeBackgroundTaskCount.
+// Returns: result of activeBackgroundTaskCount.
+// Side effects: None.
 func (e *Engine) activeBackgroundTaskCount(sessionID string) int {
 	dt, ok := e.GetDelegateTool()
 	if !ok {
@@ -6569,6 +6774,10 @@ func (e *Engine) activeBackgroundTaskCount(sessionID string) int {
 // (completed or cancelled). Used to distinguish stale-continuation retries
 // from real pending-work retries when hasIncompleteTodos returns hasMore=true
 // but all items are already resolved.
+//
+// Expected: parameters for allTodosTerminal.
+// Returns: result of allTodosTerminal.
+// Side effects: None.
 func allTodosTerminal(items []todo.Item) bool {
 	if len(items) == 0 {
 		return false
@@ -6580,6 +6789,14 @@ func allTodosTerminal(items []todo.Item) bool {
 	}
 	return true
 }
+
+// isContinuationStale ...
+//
+// Expected: parameters for isContinuationStale.
+//
+// Returns: result of isContinuationStale.
+//
+// Side effects: None.
 func (e *Engine) isContinuationStale(sessionID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -6589,6 +6806,10 @@ func (e *Engine) isContinuationStale(sessionID string) bool {
 // resetContinuationState resets the stale-continuation detection state
 // for a session. Called when a new continuation is injected (prepares
 // for the next detection cycle).
+//
+// Expected: parameters for resetContinuationState.
+// Returns: result of resetContinuationState.
+// Side effects: None.
 func (e *Engine) resetContinuationState(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -6608,6 +6829,10 @@ func (e *Engine) resetContinuationState(sessionID string) {
 // actually doing it. This is a known failure mode where models produce prose
 // like "I will now do X" without calling tools, causing stale-continuation
 // loops.
+//
+// Expected: parameters for buildTodoContinuationMessage.
+// Returns: result of buildTodoContinuationMessage.
+// Side effects: None.
 func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 	hasActive := false
 	for _, it := range incomplete {
@@ -6664,6 +6889,10 @@ func buildTodoContinuationMessage(incomplete []todo.Item) provider.Message {
 // buildBackgroundTaskContinuationMessage renders a user-role message telling
 // the model that background tasks are still running and it should wait for
 // them to complete.
+//
+// Expected: parameters for buildBackgroundTaskContinuationMessage.
+// Returns: result of buildBackgroundTaskContinuationMessage.
+// Side effects: None.
 func buildBackgroundTaskContinuationMessage(activeTasks int) provider.Message {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "You have %d background task(s) still running:\n", activeTasks)
@@ -6705,6 +6934,10 @@ func (e *Engine) buildTodoContextMessage(sessionID string) *provider.Message {
 
 // renderTodoSystemMessage formats the todo list as a system-role message
 // with a clear header and per-item status indicators.
+//
+// Expected: parameters for renderTodoSystemMessage.
+// Returns: result of renderTodoSystemMessage.
+// Side effects: None.
 func renderTodoSystemMessage(items []todo.Item, toolCallCount int, complexity TaskComplexity) provider.Message {
 	var sb strings.Builder
 	sb.WriteString("# Current Task List\n\n")
@@ -6736,6 +6969,10 @@ func renderTodoSystemMessage(items []todo.Item, toolCallCount int, complexity Ta
 // immediately after the first system prompt in messages, when a todo
 // store is configured and the session has todos. Returns messages
 // unchanged when there is nothing to inject.
+//
+// Expected: parameters for appendTodoContext.
+// Returns: result of appendTodoContext.
+// Side effects: None.
 func (e *Engine) appendTodoContext(messages []provider.Message, sessionID string) []provider.Message {
 	todoMsg := e.buildTodoContextMessage(sessionID)
 	if todoMsg == nil {
@@ -6766,10 +7003,13 @@ func (e *Engine) appendTodoContext(messages []provider.Message, sessionID string
 //   - When TodoStrictMode is enabled (D9), maintains a per-session
 //     counter of non-todowrite tool calls and rejects calls that
 //     cross the >3 threshold with a structured tool_result error.
-//
+
 // skillsLoadRequired returns true when the agent configuration includes
 // always-active skills that must be loaded via skill_load before any
 // other tool call can proceed.
+//
+// Returns: true if knownSkillsFunc is set and returns a non-empty slice.
+// Side effects: None.
 func (e *Engine) skillsLoadRequired() bool {
 	if e.knownSkillsFunc == nil {
 		return false
@@ -6780,6 +7020,10 @@ func (e *Engine) skillsLoadRequired() bool {
 // skillLoadCompleted returns true if skill_load has been called at
 // least once for the given session, indicating the skills-first gate
 // should be bypassed for subsequent tool calls.
+//
+// Expected: parameters for skillLoadCompleted.
+// Returns: result of skillLoadCompleted.
+// Side effects: None.
 func (e *Engine) skillLoadCompleted(sessionID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -6789,6 +7033,10 @@ func (e *Engine) skillLoadCompleted(sessionID string) bool {
 // markSkillLoadCalled records that skill_load has been invoked for the
 // session, allowing subsequent non-skill_load tool calls to proceed
 // through the skills-first gate.
+//
+// Expected: parameters for markSkillLoadCalled.
+// Returns: result of markSkillLoadCalled.
+// Side effects: None.
 func (e *Engine) markSkillLoadCalled(sessionID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -6797,6 +7045,10 @@ func (e *Engine) markSkillLoadCalled(sessionID string) {
 
 // requiresDeliveryTool reports whether the active manifest declares any
 // delivery tools that must be called before session completion.
+//
+// Expected: parameters for requiresDeliveryTool.
+// Returns: result of requiresDeliveryTool.
+// Side effects: None.
 func (e *Engine) requiresDeliveryTool() bool {
 	return len(e.manifest.Capabilities.DeliveryTools) > 0
 }
@@ -6804,6 +7056,10 @@ func (e *Engine) requiresDeliveryTool() bool {
 // requiresDeliveryToolCtx is the ctx-aware variant. It checks the
 // bound manifest first, falling back to e.manifest when no binding
 // is present.
+//
+// Expected: parameters for requiresDeliveryToolCtx.
+// Returns: result of requiresDeliveryToolCtx.
+// Side effects: None.
 func (e *Engine) requiresDeliveryToolCtx(ctx context.Context) bool {
 	if m, ok := manifestFromContext(ctx); ok {
 		return len(m.Capabilities.DeliveryTools) > 0
@@ -6813,6 +7069,10 @@ func (e *Engine) requiresDeliveryToolCtx(ctx context.Context) bool {
 
 // deliveryToolsForCtx returns the bound manifest's delivery tools when
 // present, falling back to the engine manifest otherwise.
+//
+// Expected: parameters for deliveryToolsForCtx.
+// Returns: result of deliveryToolsForCtx.
+// Side effects: None.
 func (e *Engine) deliveryToolsForCtx(ctx context.Context) []string {
 	if m, ok := manifestFromContext(ctx); ok {
 		return append([]string(nil), m.Capabilities.DeliveryTools...)
@@ -6824,6 +7084,10 @@ func (e *Engine) deliveryToolsForCtx(ctx context.Context) []string {
 
 // deliveryToolCompleted reports whether a delivery tool was successfully
 // called during the session identified by sessionID.
+//
+// Expected: parameters for deliveryToolCompleted.
+// Returns: result of deliveryToolCompleted.
+// Side effects: None.
 func (e *Engine) deliveryToolCompleted(sessionID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -6839,6 +7103,10 @@ func (e *Engine) deliveryToolCompleted(sessionID string) bool {
 // The args parameter is inspected for tool-specific delivery semantics:
 //   - coordination_store: only counts as delivery when operation=set (write).
 //     Calls for get/list/delete are not delivery actions.
+//
+// Expected: parameters for markDeliveryToolCalledCtx.
+// Returns: result of markDeliveryToolCalledCtx.
+// Side effects: None.
 func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string, toolName string, args map[string]any) {
 	var deliveryTools []string
 	// Prioritise session-scoped manifest (child sessions in delegation)
@@ -6873,6 +7141,10 @@ func (e *Engine) markDeliveryToolCalledCtx(ctx context.Context, sessionID string
 // based on its arguments. For tools where any call is a delivery (e.g.,
 // write, edit), this returns true unconditionally. For tools with read/write
 // semantics (e.g., coordination_store), only write operations count.
+//
+// Expected: parameters for isDeliveryCall.
+// Returns: result of isDeliveryCall.
+// Side effects: None.
 func (e *Engine) isDeliveryCall(toolName string, args map[string]any) bool {
 	switch toolName {
 	case "coordination_store":
@@ -6886,6 +7158,10 @@ func (e *Engine) isDeliveryCall(toolName string, args map[string]any) bool {
 // warnDeliveryToolBypassCtx logs a prominent warning when a session is about to
 // complete without having called any of its declared delivery tools.
 // Resolves the manifest from the ctx binding to prevent cross-session bleed.
+//
+// Expected: parameters for warnDeliveryToolBypassCtx.
+// Returns: result of warnDeliveryToolBypassCtx.
+// Side effects: None.
 func (e *Engine) warnDeliveryToolBypassCtx(ctx context.Context, sessionID string) {
 	var agentID string
 	var deliveryTools []string
@@ -6925,6 +7201,10 @@ func (e *Engine) warnDeliveryToolBypassCtx(ctx context.Context, sessionID string
 // Slice 1: the stage handler delegates directly to executeToolCall, preserving
 // existing behaviour. When hooks are registered (future slices) they wrap this
 // call.
+//
+// Expected: parameters for executeToolExecStage.
+// Returns: result of executeToolExecStage.
+// Side effects: None.
 func (e *Engine) executeToolExecStage(
 	baseCtx context.Context,
 	sessionID string,
@@ -6933,6 +7213,13 @@ func (e *Engine) executeToolExecStage(
 	return e.executeToolCall(baseCtx, sessionID, toolCall)
 }
 
+// executeToolCall ...
+//
+// Expected: parameters for executeToolCall.
+//
+// Returns: result of executeToolCall.
+//
+// Side effects: None.
 func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall *provider.ToolCall) (tool.Result, error) {
 	if gate, blocked := e.todoStrictGate(sessionID, toolCall.Name); blocked {
 		return gate, nil
@@ -7110,11 +7397,10 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 		}
 		input.Arguments = validated
 
-		// Track non-todo work calls for stale-continuation detection.
-		// Only todowrite and todo_update are excluded — all other
-		// tool calls (bash, read, write, web, skill_load, etc.)
-		// count as "real work" that legitimises completion.
-		if !isTodoTool(toolCall.Name) {
+		// Track work calls for stale-continuation detection.
+		// Handoff-only tools do not count as implementation work that
+		// legitimises todo completion.
+		if isTodoWorkTool(toolCall.Name) {
 			e.mu.Lock()
 			e.workToolCallsSinceContinuation[sessionID]++
 			e.workCallsSinceLastTodoCompletion[sessionID]++
@@ -7135,7 +7421,7 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 					e.mu.Unlock()
 					if seen {
 						return tool.Result{
-							Output:  "You cannot complete this todo item without doing any work since the last one. Call a non-todo tool (bash, read, write, search_nodes, coordination_store, etc.) to accomplish the task before marking it complete.",
+							Output:  "You cannot complete this todo item without doing any work since the last one. Call a work tool (bash, read, write, search_nodes, etc.) to accomplish the task before marking it complete.",
 							IsError: true,
 							Error:   fmt.Errorf("todo completion rejected: no work done since last completion"),
 						}, nil
@@ -7271,6 +7557,8 @@ func (e *Engine) executeToolCall(ctx context.Context, sessionID string, toolCall
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for availableToolNames.
 func (e *Engine) availableToolNames() []string {
 	names := make([]string, 0, len(e.tools))
 	for _, t := range e.tools {
@@ -7314,6 +7602,10 @@ func suggestTool(available []string, requested string) string {
 }
 
 // levenshtein computes the Levenshtein distance between two strings.
+//
+// Expected: parameters for levenshtein.
+// Returns: result of levenshtein.
+// Side effects: None.
 func levenshtein(a, b string) int {
 	la, lb := len(a), len(b)
 	if la == 0 {
@@ -7420,6 +7712,10 @@ func (e *Engine) handleAskPermission(toolCall *provider.ToolCall, outChan chan<-
 
 // storeAssistantToolUseBatch appends a single assistant message that contains
 // all tool_use blocks from a parallel dispatch turn.
+//
+// Expected: parameters for storeAssistantToolUseBatch.
+// Returns: result of storeAssistantToolUseBatch.
+// Side effects: None.
 func (e *Engine) storeAssistantToolUseBatch(toolCalls []*provider.ToolCall, content string) {
 	if e.store == nil || len(toolCalls) == 0 {
 		return
@@ -7451,6 +7747,8 @@ func (e *Engine) storeAssistantToolUseBatch(toolCalls []*provider.ToolCall, cont
 // Side effects:
 //   - Appends a message to the context store if configured, carrying both
 //     the tool_use ID and the tool name on the persisted ToolCall.
+//
+// Returns: result of storeToolResult.
 func (e *Engine) storeToolResult(toolCall *provider.ToolCall, result tool.Result) {
 	if e.store == nil {
 		return
@@ -7497,6 +7795,10 @@ func (e *Engine) storeToolResult(toolCall *provider.ToolCall, result tool.Result
 //
 // This is defence-in-depth that complements (does not replace) provider-side
 // tool-result size caps.
+//
+// Expected: parameters for appendToolResultsBatchToMessages.
+// Returns: result of appendToolResultsBatchToMessages.
+// Side effects: None.
 func (e *Engine) appendToolResultsBatchToMessages(
 	messages []provider.Message, toolCalls []*provider.ToolCall, results []tool.Result,
 ) []provider.Message {
@@ -7571,6 +7873,10 @@ const anchorReminderUserPromptCap = 500
 // for the most recent user-role message and quotes a truncated form of that
 // content. Returns ok=false when no user-role message can be found — there is
 // nothing to anchor on, so the function declines to inject noise.
+//
+// Expected: parameters for buildContextAnchorReminder.
+// Returns: result of buildContextAnchorReminder.
+// Side effects: None.
 func buildContextAnchorReminder(messages []provider.Message) (provider.Message, bool) {
 	userPrompt := ""
 	for i := len(messages) - 1; i >= 0; i-- {
@@ -7665,7 +7971,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 			manifestCopy = e.manifest
 		}
 		manifestCopy.Instructions.SystemPrompt = systemPrompt
-		tools := e.assembleToolSchemasLocked(context.Background())
+		tools := e.assembleToolSchemasLocked(ctx)
 		e.mu.RUnlock()
 
 		// Determine trigger for L2 auto-compaction: gate-proximity
@@ -7780,7 +8086,7 @@ func (e *Engine) buildContextWindow(ctx context.Context, sessionID string, userM
 	// through outputReserveFor with no MaxTokens override — matching
 	// the production seam where Stream() callers seldom set
 	// MaxTokens explicitly.
-	forceCompactForGate := e.gateProximityForceCompact(&manifestCopy, userMessage, tokenBudget, e.assembleToolSchemasLocked(context.Background()))
+	forceCompactForGate := e.gateProximityForceCompact(&manifestCopy, userMessage, tokenBudget, e.assembleToolSchemasLocked(ctx))
 	// Translate the bool into the trigger discriminant string the
 	// downstream emit site stamps on the bus event. "gate_proximity"
 	// is the canonical name for Slice 6a's force tier; empty means
@@ -7899,7 +8205,7 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 		return ""
 	}
 
-	recent, recentTokens, fullWindowTokens, fire := e.autoCompactionCandidates(manifest, tokenBudget, threshold, forceFire)
+	recent, recentTokens, fullWindowTokens, fire := e.autoCompactionCandidates(ctx, manifest, tokenBudget, threshold, forceFire)
 	if !fire {
 		// Below threshold — clear the cross-session pointer as
 		// before. Same per-session-memo retention rationale applies.
@@ -8054,6 +8360,10 @@ func (e *Engine) maybeAutoCompact(ctx context.Context, sessionID string, manifes
 
 // NaiveTruncateMessages keeps the system prompt and the most recent keep messages,
 // replacing the dropped middle with a single placeholder message.
+//
+// Expected: parameters for NaiveTruncateMessages.
+// Returns: result of NaiveTruncateMessages.
+// Side effects: None.
 func (e *Engine) NaiveTruncateMessages(messages []provider.Message, keep int) []provider.Message {
 	if len(messages) == 0 || len(messages) <= keep+1 {
 		return messages
@@ -8237,6 +8547,10 @@ func (e *Engine) maybeAutoCompactExplicit(ctx context.Context, sessionID string,
 // ContextCompactedEvent. Empty force-trigger means the ratio tier
 // drove the decision; the explicit string preserves the cause
 // attribution operators want.
+//
+// Expected: parameters for ratioOrForceTrigger.
+// Returns: result of ratioOrForceTrigger.
+// Side effects: None.
 func ratioOrForceTrigger(forceTrigger string) string {
 	if forceTrigger == "" {
 		return "ratio"
@@ -8473,6 +8787,9 @@ func (e *Engine) applyFactRecall(ctx context.Context, sessionID, userMessage str
 // Returns:
 //   - A multi-line string starting with "[recalled facts]" and one
 //     "- <text>" per fact.
+//
+// Expected: parameters for formatFactRecallBlock.
+// Side effects: None.
 func formatFactRecallBlock(facts []factstore.Fact) string {
 	var b strings.Builder
 	b.WriteString("[recalled facts]\n")
@@ -8494,6 +8811,8 @@ func formatFactRecallBlock(facts []factstore.Fact) string {
 //
 // Returns:
 //   - A new slice with the recall block inserted.
+//
+// Side effects: None.
 func insertFactRecallBlock(msgs []provider.Message, body string) []provider.Message {
 	block := provider.Message{Role: "system", Content: body}
 	if len(msgs) > 0 && msgs[0].Role == "system" {
@@ -8520,6 +8839,8 @@ func insertFactRecallBlock(msgs []provider.Message, body string) []provider.Mess
 //
 // Returns:
 //   - A non-nil error only when the underlying service propagates one.
+//
+// Side effects: None.
 func (e *Engine) IngestForFactsForTest(ctx context.Context, sessionID string, msgs []provider.Message) error {
 	if e.factService == nil {
 		return nil
@@ -8905,7 +9226,7 @@ func (e *Engine) autoCompactionThreshold(manifest *agent.Manifest, tokenBudget i
 //
 // Side effects:
 //   - None.
-func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, int, bool) {
+func (e *Engine) autoCompactionCandidates(ctx context.Context, manifest *agent.Manifest, tokenBudget int, threshold float64, forceFire bool) ([]provider.Message, int, int, bool) {
 	slidingWindowSize := manifest.ContextManagement.SlidingWindowSize
 	if slidingWindowSize <= 0 {
 		slidingWindowSize = 50
@@ -8944,7 +9265,7 @@ func (e *Engine) autoCompactionCandidates(manifest *agent.Manifest, tokenBudget 
 	// same scope the chip and gate use.
 	syntheticAll := &provider.ChatRequest{
 		Messages: e.store.AllMessages(),
-		Tools:    e.assembleToolSchemasLocked(context.Background()),
+		Tools:    e.assembleToolSchemasLocked(ctx),
 	}
 	fullWindowTokens := e.estimateRequestTokens(syntheticAll)
 	ratio := float64(fullWindowTokens) / float64(tokenBudget)
@@ -9188,7 +9509,7 @@ func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, o
 	modelID := e.LastModel()
 	manifestCopy := e.Manifest()
 	tokenBudget := e.ModelContextLimit()
-	tools := e.ToolSchemas()
+	tools := e.ToolSchemasCtx(ctx)
 
 	if liveMessages != nil {
 		return e.emitMidToolLoopRefreshExplicit(ctx, sessionID, outChan, providerID, modelID, &manifestCopy, tokenBudget, tools, liveMessages)
@@ -9226,6 +9547,10 @@ func (e *Engine) emitMidToolLoopRefresh(ctx context.Context, sessionID string, o
 // maybeAutoCompactExplicit is force-fire only, so the ratio tier is
 // evaluated inline here (exactly as buildContextWindow does) rather
 // than delegated.
+//
+// Expected: parameters for emitMidToolLoopRefreshExplicit.
+// Returns: result of emitMidToolLoopRefreshExplicit.
+// Side effects: None.
 func (e *Engine) emitMidToolLoopRefreshExplicit(
 	ctx context.Context,
 	sessionID string,
@@ -9290,6 +9615,8 @@ func (e *Engine) emitMidToolLoopRefreshExplicit(
 // Side effects:
 //   - Writes at most one context_usage StreamChunk to outChan.
 //   - Updates lastUsagePayload[sessionID] on a successful write.
+//
+// Returns: result of tryEmitContextUsage.
 func (e *Engine) tryEmitContextUsage(sessionID, body string, outChan chan<- provider.StreamChunk) {
 	if outChan == nil || body == "" {
 		return
@@ -9332,11 +9659,13 @@ func (e *Engine) tryEmitContextUsage(sessionID, body string, outChan chan<- prov
 //
 // Side effects:
 //   - Writes at most one context_usage StreamChunk to outChan.
-func (e *Engine) emitPostRetryContextUsage(_ context.Context, sessionID string, messages []provider.Message, outChan chan<- provider.StreamChunk) {
+//
+// Returns: result of emitPostRetryContextUsage.
+func (e *Engine) emitPostRetryContextUsage(ctx context.Context, sessionID string, messages []provider.Message, outChan chan<- provider.StreamChunk) {
 	if e == nil || outChan == nil {
 		return
 	}
-	tools := e.ToolSchemas()
+	tools := e.ToolSchemasCtx(ctx)
 	body, ok := e.buildContextUsagePayload(e.LastProvider(), e.LastModel(), messages, tools, 0)
 	if !ok {
 		return
@@ -9775,6 +10104,8 @@ func (e *Engine) SetAutoCompactionThreshold(threshold float64) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for AutoCompactionThreshold.
 func (e *Engine) AutoCompactionThreshold() float64 {
 	if e == nil {
 		return 0
@@ -9792,6 +10123,9 @@ func (e *Engine) AutoCompactionThreshold() float64 {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for preferredProviderModel.
+// Returns: result of preferredProviderModel.
 func preferredProviderModel(manifest *agent.Manifest) (string, string) {
 	if manifest == nil || len(manifest.PreferredModels) == 0 {
 		return "", ""
@@ -9832,6 +10166,8 @@ func preferredProviderModel(manifest *agent.Manifest) (string, string) {
 //
 // Side effects:
 //   - Publishes one event on the engine bus if non-nil; otherwise no-op.
+//
+// Returns: result of publishContextCompactedEvent.
 func (e *Engine) publishContextCompactedEvent(sessionID, agentID string, recentTokens int, summaryText string, latency time.Duration, trigger string, prunedToolOutputs int, summaryGenerated bool) {
 	summaryTokens := e.tokenCounter.Count(summaryText)
 	delta := recentTokens - summaryTokens
@@ -9983,6 +10319,8 @@ func (e *Engine) SessionCompressionMetrics(sessionID string) ctxstore.Compressio
 // Side effects:
 //   - Allocates a CompressionMetrics under the supplied sessionID on
 //     first use.
+//
+// Returns: result of recordSessionAutoCompaction.
 func (e *Engine) recordSessionAutoCompaction(sessionID string, delta int) {
 	e.sessionCompressionMetricsMu.Lock()
 	defer e.sessionCompressionMetricsMu.Unlock()
@@ -10016,6 +10354,8 @@ func (e *Engine) recordSessionAutoCompaction(sessionID string, delta int) {
 // Side effects:
 //   - Allocates a CompressionMetrics under the supplied sessionID on
 //     first use.
+//
+// Returns: result of recordSessionMicroCompaction.
 func (e *Engine) recordSessionMicroCompaction(sessionID string, delta int) {
 	if delta <= 0 {
 		return
@@ -10152,6 +10492,8 @@ func (e *Engine) snapshotAggregateMicroCount() int {
 // Side effects:
 //   - May allocate a per-session CompressionMetrics entry via
 //     recordSessionMicroCompaction.
+//
+// Returns: result of attributeMicroCompactionToSession.
 func (e *Engine) attributeMicroCompactionToSession(sessionID string, microBefore int) {
 	if e.compressionMetrics == nil {
 		return
@@ -10175,6 +10517,8 @@ func (e *Engine) attributeMicroCompactionToSession(sessionID string, microBefore
 //
 // Side effects:
 //   - Writes one slog.Info record at default level when metrics are set.
+//
+// Returns: result of logSessionCompressionMetrics.
 func (e *Engine) logSessionCompressionMetrics(sessionID string) {
 	if e.compressionMetrics == nil {
 		return
@@ -10237,6 +10581,8 @@ func (e *Engine) dispatchContextAssemblyHooks(
 //
 // Side effects:
 //   - Publishes EventPromptGenerated and EventContextWindowBuilt if bus is non-nil.
+//
+// Returns: result of publishContextWindowEvents.
 func (e *Engine) publishContextWindowEvents(ctx context.Context, sessionID string, systemPrompt string, tokenBudget int, result ctxstore.BuildResult) {
 	if e.bus == nil {
 		return
@@ -10270,6 +10616,8 @@ func (e *Engine) publishContextWindowEvents(ctx context.Context, sessionID strin
 // Side effects:
 //   - Calls the embedding provider if configured and stores the vector.
 //   - Publishes a recall.embedding.stored event if the event bus is configured.
+//
+// Returns: result of embedMessage.
 func (e *Engine) embedMessage(ctx context.Context, content string, msgID string) {
 	if e.embeddingProvider == nil || e.store == nil {
 		return
@@ -10304,6 +10652,8 @@ func (e *Engine) embedMessage(ctx context.Context, content string, msgID string)
 //   - Appends a message to the context store if configured.
 //   - Dual-writes to the chain store if one is configured (assistant messages only).
 //   - Embeds the response if an embedding provider is configured.
+//
+// Returns: result of storeResponse.
 func (e *Engine) storeResponse(ctx context.Context, content, thinking string) {
 	if e.store == nil || (content == "" && thinking == "") {
 		return
@@ -10350,6 +10700,8 @@ func (e *Engine) completeResponse(ctx context.Context, sessionID string, content
 // Side effects:
 //   - Appends msg to chainStore if non-nil.
 //   - Logs a warning if the chain store append fails.
+//
+// Returns: result of dualWriteToChainStore.
 func (e *Engine) dualWriteToChainStore(ctx context.Context, msg provider.Message) {
 	if e.chainStore == nil {
 		return
@@ -10370,6 +10722,8 @@ func (e *Engine) dualWriteToChainStore(ctx context.Context, msg provider.Message
 //   - Replaces the engine's current context store reference.
 //   - Publishes session.created when store is non-nil.
 //   - Publishes session.ended when store is nil and a previous store existed.
+//
+// Returns: result of SetContextStore.
 func (e *Engine) SetContextStore(store *recall.FileContextStore, sessionID string) {
 	hadStore := e.store != nil
 	e.store = store
@@ -10387,6 +10741,8 @@ func (e *Engine) SetContextStore(store *recall.FileContextStore, sessionID strin
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ContextStore.
 func (e *Engine) ContextStore() *recall.FileContextStore {
 	return e.store
 }
@@ -10398,11 +10754,17 @@ func (e *Engine) ContextStore() *recall.FileContextStore {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ChainStore.
 func (e *Engine) ChainStore() recall.ChainContextStore {
 	return e.chainStore
 }
 
 // TokenCounter returns the engine's configured token counter.
+//
+// Expected: parameters for TokenCounter.
+// Returns: result of TokenCounter.
+// Side effects: None.
 func (e *Engine) TokenCounter() ctxstore.TokenCounter {
 	if e == nil {
 		return nil
@@ -10417,6 +10779,8 @@ func (e *Engine) TokenCounter() ctxstore.TokenCounter {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LoadedSkills.
 func (e *Engine) LoadedSkills() []skill.Skill {
 	return e.skills
 }
@@ -10428,6 +10792,8 @@ func (e *Engine) LoadedSkills() []skill.Skill {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LastContextResult.
 func (e *Engine) LastContextResult() ctxstore.BuildResult {
 	e.buildStateMu.Lock()
 	defer e.buildStateMu.Unlock()
@@ -10446,6 +10812,8 @@ func (e *Engine) LastContextResult() ctxstore.BuildResult {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ModelContextLimit.
 func (e *Engine) ModelContextLimit() int {
 	if e.failoverManager != nil {
 		prefs := e.failoverManager.Preferences()
@@ -10515,6 +10883,9 @@ func (e *Engine) ResolveOutputLimit(providerName, model string) int {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for resolvedSystemPromptBudget.
+// Returns: result of resolvedSystemPromptBudget.
 func (e *Engine) resolvedSystemPromptBudget() int {
 	if e.systemPromptBudget > 0 {
 		return e.systemPromptBudget
@@ -10599,6 +10970,8 @@ func (e *Engine) RemoveTool(name string) bool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for GetDelegateTool.
 func (e *Engine) GetDelegateTool() (*DelegateTool, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -10639,6 +11012,8 @@ func (e *Engine) FlushSwarmLifecycle(ctx context.Context) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for getDelegateToolLocked.
 func (e *Engine) getDelegateToolLocked() (*DelegateTool, bool) {
 	for _, t := range e.tools {
 		if dt, ok := t.(*DelegateTool); ok {
@@ -10656,6 +11031,8 @@ func (e *Engine) getDelegateToolLocked() (*DelegateTool, bool) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for getSuggestDelegateToolLocked.
 func (e *Engine) getSuggestDelegateToolLocked() (*SuggestDelegateTool, bool) {
 	for _, t := range e.tools {
 		if st, ok := t.(*SuggestDelegateTool); ok {
@@ -10736,7 +11113,7 @@ func (e *Engine) publishToolBeforeEvent(sessionID string, toolName string, args 
 //
 // Side effects:
 //   - Publishes a tool execution completion event on the engine bus.
-//
+
 // publishToolArgsValidationFailedEvent publishes a tool-args validation
 // failure event to the engine bus. Recommendation E from the May 2026
 // codebase-explorer investigation of the glm-4.6 `librarian` mis-call —
@@ -10780,6 +11157,13 @@ func (e *Engine) publishToolArgsValidationFailedEvent(ctx context.Context, sessi
 	e.bus.Publish(events.EventToolArgsValidationFailed, events.NewToolArgsValidationFailedEvent(data))
 }
 
+// publishToolAfterEvent ...
+//
+// Expected: parameters for publishToolAfterEvent.
+//
+// Returns: result of publishToolAfterEvent.
+//
+// Side effects: None.
 func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args map[string]interface{}, result string, execErr error, toolCallID string, internalToolCallID string) {
 	e.bus.Publish(events.EventToolExecuteAfter, events.NewToolEvent(events.ToolEventData{
 		SessionID:          sessionID,
@@ -10815,6 +11199,10 @@ func (e *Engine) publishToolAfterEvent(sessionID string, toolName string, args m
 // publishProviderErrorEvent. Uses the in-flight stream's bound
 // manifest (when present) for AgentID stamping so concurrent
 // streams' error events stay correctly attributed.
+//
+// Expected: parameters for publishProviderErrorEventCtx.
+// Returns: result of publishProviderErrorEventCtx.
+// Side effects: None.
 func (e *Engine) publishProviderErrorEventCtx(ctx context.Context, sessionID string, phase string, req *provider.ChatRequest, err error) {
 	stats := provider.RequestDebugStats{}
 	estimatedTokens := 0
@@ -10870,6 +11258,13 @@ func (e *Engine) publishProviderErrorEventCtx(ctx context.Context, sessionID str
 	}
 }
 
+// currentProviderConcurrencyStats ...
+//
+// Expected: parameters for currentProviderConcurrencyStats.
+//
+// Returns: result of currentProviderConcurrencyStats.
+//
+// Side effects: None.
 func (e *Engine) currentProviderConcurrencyStats(providerName string) (provider.ConcurrencyDebugStats, bool) {
 	if e == nil || e.providerRegistry == nil || providerName == "" {
 		return provider.ConcurrencyDebugStats{}, false
@@ -10933,6 +11328,10 @@ func (e *Engine) applyCategoryParams(req *provider.ChatRequest) {
 // locked read of the engine's active manifest otherwise — so
 // concurrent streams stamp their own agent on their own events
 // instead of racing on the shared engine field.
+//
+// Expected: parameters for publishProviderRequestEventCtx.
+// Returns: result of publishProviderRequestEventCtx.
+// Side effects: None.
 func (e *Engine) publishProviderRequestEventCtx(ctx context.Context, sessionID string, req provider.ChatRequest) {
 	if e.bus == nil {
 		return
@@ -10974,6 +11373,10 @@ func (e *Engine) activeAgentID(ctx context.Context) string {
 // publishProviderResponseEventCtx is the ctx-aware variant of
 // publishProviderResponseEvent. Uses the in-flight stream's
 // bound manifest for AgentID stamping when present.
+//
+// Expected: parameters for publishProviderResponseEventCtx.
+// Returns: result of publishProviderResponseEventCtx.
+// Side effects: None.
 func (e *Engine) publishProviderResponseEventCtx(ctx context.Context, sessionID string, responseContent string) {
 	if e.bus == nil {
 		return

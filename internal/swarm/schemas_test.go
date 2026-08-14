@@ -96,7 +96,6 @@ var _ = Describe("planning-loop schemas", func() {
 	})
 
 	for _, tc := range planningSchemaCases() {
-		tc := tc
 		Describe(tc.schema, func() {
 			It("accepts a representative valid payload", func() {
 				Expect(mustValidate(tc.schema, tc.valid)).To(Succeed())

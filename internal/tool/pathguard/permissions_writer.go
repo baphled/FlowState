@@ -73,6 +73,7 @@ type permissionsYAMLSchema struct {
 	Agents map[string]permissionsAgentRule `yaml:"agents,omitempty"`
 }
 
+// permissionsToolRule mirrors config.ToolPermissions for the writer's internal schema.
 type permissionsToolRule struct {
 	Allow []string `yaml:"allow,omitempty"`
 	Deny  []string `yaml:"deny,omitempty"`
@@ -135,6 +136,10 @@ type Writer struct {
 // lazily on the first AppendAllow call. This keeps the boot path
 // allocation-cheap and lets tests construct a Writer for a not-yet-
 // created file (the writer creates it on first append).
+//
+// Expected: parameters for NewWriter.
+// Returns: result of NewWriter.
+// Side effects: None.
 func NewWriter(path string, reloader PermissionsReloader) *Writer {
 	return &Writer{
 		path:        path,
@@ -146,6 +151,10 @@ func NewWriter(path string, reloader PermissionsReloader) *Writer {
 // NewWriterWithLockTimeout is NewWriter plus an explicit lock-
 // acquisition timeout override. Used by tests that want a tight
 // deadline so contention specs fail fast.
+//
+// Expected: parameters for NewWriterWithLockTimeout.
+// Returns: result of NewWriterWithLockTimeout.
+// Side effects: None.
 func NewWriterWithLockTimeout(path string, reloader PermissionsReloader, lockTimeout time.Duration) *Writer {
 	return &Writer{
 		path:        path,
@@ -181,7 +190,10 @@ func NewWriterWithLockTimeout(path string, reloader PermissionsReloader, lockTim
 //   - reloader.Reload() is invoked (best-effort; a reloader error is
 //     logged but does NOT make the write fail — the YAML is already
 //     persisted).
-func (w *Writer) AppendAllow(tool, glob string) error {
+//
+// Expected: parameters for AppendAllow.
+// Side effects: None.
+func (w *Writer) AppendAllow(ctx context.Context, tool, glob string) error {
 	if tool == "" {
 		return errors.New("permissions writer: tool is required")
 	}
@@ -192,7 +204,7 @@ func (w *Writer) AppendAllow(tool, glob string) error {
 		return errors.New("permissions writer: path is unconfigured")
 	}
 
-	return w.runLockedMutation(func(current *permissionsYAMLSchema) (mutated bool, err error) {
+	return w.runLockedMutation(ctx, func(current *permissionsYAMLSchema) (mutated bool, err error) {
 		// Idempotency check — if the glob is already present, no
 		// write. This is the cheap path; the operator may click
 		// "forever" twice on the same prompt without producing
@@ -245,7 +257,10 @@ func (w *Writer) AppendAllow(tool, glob string) error {
 //   - A wrapped error on lock timeout, read failure, validation
 //     failure, write failure, or rename failure. The original file is
 //     left untouched on every error path.
-func (w *Writer) AppendMCPGrant(agent, mcpServer string) error {
+//
+// Expected: parameters for AppendMCPGrant.
+// Side effects: None.
+func (w *Writer) AppendMCPGrant(ctx context.Context, agent, mcpServer string) error {
 	if agent == "" {
 		return errors.New("permissions writer: agent is required")
 	}
@@ -256,7 +271,7 @@ func (w *Writer) AppendMCPGrant(agent, mcpServer string) error {
 		return errors.New("permissions writer: path is unconfigured")
 	}
 
-	return w.runLockedMutation(func(current *permissionsYAMLSchema) (mutated bool, err error) {
+	return w.runLockedMutation(ctx, func(current *permissionsYAMLSchema) (mutated bool, err error) {
 		if rule, ok := current.Agents[agent]; ok {
 			for _, existing := range rule.MCPServersGrant {
 				if existing == mcpServer {
@@ -290,7 +305,11 @@ func (w *Writer) AppendMCPGrant(agent, mcpServer string) error {
 // The mutex / flock / atomic-write / reload sequence lives here so
 // every future writer entry point inherits the same guarantees by
 // construction. Memory: feedback_atomicity_awareness_uneven.
-func (w *Writer) runLockedMutation(mutate func(*permissionsYAMLSchema) (bool, error)) error {
+//
+// Expected: parameters for runLockedMutation.
+// Returns: result of runLockedMutation.
+// Side effects: None.
+func (w *Writer) runLockedMutation(ctx context.Context, mutate func(*permissionsYAMLSchema) (bool, error)) error {
 	// Acquire the cross-process exclusive lock. The lock file IS the
 	// permissions.yaml path itself — flock on the path is the same
 	// inode the writer is about to mutate, so a concurrent daemon +
@@ -298,7 +317,7 @@ func (w *Writer) runLockedMutation(mutate func(*permissionsYAMLSchema) (bool, er
 	// first. gofrs/flock handles macOS + Linux without per-OS build
 	// tags (plan §17.4).
 	lock := flock.New(w.path)
-	lockCtx, cancel := context.WithTimeout(context.Background(), w.lockTimeout)
+	lockCtx, cancel := context.WithTimeout(ctx, w.lockTimeout)
 	defer cancel()
 	locked, err := lock.TryLockContext(lockCtx, 25*time.Millisecond)
 	if err != nil {
@@ -429,6 +448,10 @@ func (w *Writer) runLockedMutation(mutate func(*permissionsYAMLSchema) (bool, er
 //
 // Caller MUST hold the flock — this is the read side of the atomic
 // read-modify-write triplet.
+//
+// Expected: parameters for readSchemaLocked.
+// Returns: result of readSchemaLocked.
+// Side effects: None.
 func (w *Writer) readSchemaLocked() (*permissionsYAMLSchema, error) {
 	data, err := os.ReadFile(w.path)
 	if err != nil {

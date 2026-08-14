@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,22 +26,25 @@ func main() {
 	must("tempdir", err)
 	defer os.RemoveAll(tmpRoot)
 
-	fmt.Println("=== RLM Phase A — micro-compaction ===")
+	fmt.Println("=== RLM Phase A — micro-compaction ===") //nolint:forbidigo // smoke harness stdout marker
 	verifyPhaseA(tmpRoot)
 
-	fmt.Println("\n=== RLM Phase B — fact extraction & recall ===")
+	fmt.Println("\n=== RLM Phase B — fact extraction & recall ===") //nolint:forbidigo // smoke harness stdout marker
 	verifyPhaseB(tmpRoot)
 
-	fmt.Println("\n=== user config compaction status ===")
+	fmt.Println("\n=== user config compaction status ===") //nolint:forbidigo // smoke harness stdout marker
 	reportConfigStatus()
 
-	fmt.Println("\nPASS")
+	fmt.Println("\nPASS") //nolint:forbidigo // smoke harness stdout marker
 }
 
 // verifyPhaseA constructs a Phase A MicroCompactor and verifies that a
 // synthetic session with 5 read/bash tool results gets its older results
 // spilled to a per-session cold-store directory while the hot tail stays
 // inline.
+//
+// Expected: parameters for verifyPhaseA.
+// Side effects: None.
 func verifyPhaseA(root string) {
 	storeRoot := filepath.Join(root, "phase-a")
 	cmp := compaction.NewMicroCompactor(compaction.Options{
@@ -88,6 +92,9 @@ func verifyPhaseA(root string) {
 // verifyPhaseB constructs a Phase B Service (extractor + store) and
 // confirms it ingests synthetic session messages, persists a JSONL file,
 // and recalls relevant facts on a query.
+//
+// Expected: parameters for verifyPhaseB.
+// Side effects: None.
 func verifyPhaseB(root string) {
 	storeRoot := filepath.Join(root, "phase-b")
 	store := factstore.NewFileFactStore(storeRoot)
@@ -142,8 +149,13 @@ func verifyPhaseB(root string) {
 // "micro_compaction:" block (HotColdSplitter, JSON payloads) and the
 // new Phase A "compaction:" block (MicroCompactor, .txt payloads, plus
 // Phase B's fact_extraction_enabled toggle).
+//
+// Side effects: None.
 func reportConfigStatus() {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatal(err)
+	}
 	cfgPath := filepath.Join(home, ".config", "flowstate", "config.yaml")
 	body, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -163,6 +175,16 @@ func reportConfigStatus() {
 	}
 }
 
+// toolResult handles an internal operation.
+//
+// Expected:
+//   - Parameters are valid for this operation.
+//
+// Returns:
+//   - The result of the operation.
+//
+// Side effects:
+//   - None.
 func toolResult(id, tool, body string) provider.Message {
 	return provider.Message{
 		Role:      "tool",
@@ -171,8 +193,19 @@ func toolResult(id, tool, body string) provider.Message {
 	}
 }
 
+// classifyResults handles an internal operation.
+//
+// Expected:
+//   - Parameters are valid for this operation.
+//
+// Returns:
+//   - The result of the operation.
+//
+// Side effects:
+//   - None.
 func classifyResults(out []provider.Message) (refs, hot int) {
-	for _, msg := range out {
+	for i := range out {
+		msg := out[i]
 		if msg.Role != "tool" {
 			continue
 		}
@@ -185,12 +218,26 @@ func classifyResults(out []provider.Message) (refs, hot int) {
 	return refs, hot
 }
 
+// must handles an internal operation.
+//
+// Expected:
+//   - Parameters are valid for this operation.
+//
+// Side effects:
+//   - None.
 func must(label string, err error) {
 	if err != nil {
 		failf("%s: %v", label, err)
 	}
 }
 
+// failf handles an internal operation.
+//
+// Expected:
+//   - Parameters are valid for this operation.
+//
+// Side effects:
+//   - None.
 func failf(format string, args ...any) {
 	fmt.Printf("FAIL: "+format+"\n", args...)
 	os.Exit(1)

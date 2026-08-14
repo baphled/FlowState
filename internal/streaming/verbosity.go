@@ -57,6 +57,8 @@ func (f *VerbosityFilter) WriteChunk(content string) error {
 //
 // Side effects:
 //   - Delegates the error to the wrapped consumer.
+//
+// Returns: result of WriteError.
 func (f *VerbosityFilter) WriteError(err error) {
 	f.consumer.WriteError(err)
 }
@@ -68,6 +70,8 @@ func (f *VerbosityFilter) WriteError(err error) {
 //
 // Side effects:
 //   - Signals completion to the wrapped consumer.
+//
+// Returns: result of Done.
 func (f *VerbosityFilter) Done() {
 	f.consumer.Done()
 }
@@ -90,6 +94,8 @@ func (f *VerbosityFilter) Done() {
 // Side effects:
 //   - If the wrapped consumer implements ToolCallConsumer, forwards the
 //     call. Otherwise no-op.
+//
+// Returns: result of WriteToolCall.
 func (f *VerbosityFilter) WriteToolCall(name string) {
 	if tcc, ok := f.consumer.(ToolCallConsumer); ok {
 		tcc.WriteToolCall(name)
@@ -107,6 +113,8 @@ func (f *VerbosityFilter) WriteToolCall(name string) {
 // Side effects:
 //   - If the wrapped consumer implements ToolResultConsumer, forwards the
 //     result. Otherwise no-op.
+//
+// Returns: result of WriteToolResult.
 func (f *VerbosityFilter) WriteToolResult(content string) {
 	if trc, ok := f.consumer.(ToolResultConsumer); ok {
 		trc.WriteToolResult(content)
@@ -127,6 +135,8 @@ func (f *VerbosityFilter) WriteToolResult(content string) {
 // Side effects:
 //   - If the wrapped consumer implements ToolErrorConsumer, forwards the
 //     error. Otherwise no-op.
+//
+// Returns: result of WriteToolError.
 func (f *VerbosityFilter) WriteToolError(content string) {
 	if tec, ok := f.consumer.(ToolErrorConsumer); ok {
 		tec.WriteToolError(content)

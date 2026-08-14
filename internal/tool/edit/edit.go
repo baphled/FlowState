@@ -37,6 +37,10 @@ func New() *Tool {
 // The guard is consulted with the resolved path before the file is read
 // or written, mirroring read.NewWithGuard and write.NewWithGuard so the
 // agent surface remains consistent across mutating file tools.
+//
+// Expected: parameters for NewWithGuard.
+// Returns: result of NewWithGuard.
+// Side effects: None.
 func NewWithGuard(g *pathguard.Guard) *Tool {
 	return &Tool{guard: g}
 }
@@ -102,6 +106,10 @@ func (t *Tool) Schema() tool.Schema {
 
 // IsStateModifying returns true because edit modifies a file on the
 // filesystem.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute performs the edit operation.

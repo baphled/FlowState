@@ -42,6 +42,8 @@ type regexFactExtractor struct {
 //   - A FactExtractor that captures explicit always/never/remember
 //     statements and naming/identifier definitions ("the X is named Y",
 //     "the X id is Y"). Tool-result messages are NEVER scanned.
+//
+// Side effects: None.
 func NewRegexFactExtractor() FactExtractor {
 	return &regexFactExtractor{
 		patterns: []regexPattern{
@@ -70,6 +72,8 @@ func NewRegexFactExtractor() FactExtractor {
 //   - The extracted facts in the order they appear in msgs.
 //   - A nil error today; reserved for future implementations whose
 //     extraction can fail (LLM call timeouts, etc.).
+//
+// Side effects: None.
 func (e *regexFactExtractor) Extract(_ context.Context, sessionID string, msgs []provider.Message) ([]Fact, error) {
 	out := make([]Fact, 0, 8)
 	for i, m := range msgs {
@@ -106,6 +110,10 @@ func (e *regexFactExtractor) Extract(_ context.Context, sessionID string, msgs [
 // ids win when present so re-extracting a session-on-disk produces
 // identical SourceMessageIDs across runs; otherwise a positional
 // fallback ("msg-<i>-<role>") keeps the field non-empty for dedup.
+//
+// Expected: parameters for messageSourceID.
+// Returns: result of messageSourceID.
+// Side effects: None.
 func messageSourceID(msg provider.Message, i int) string {
 	if len(msg.ToolCalls) > 0 && msg.ToolCalls[0].ID != "" {
 		return msg.ToolCalls[0].ID

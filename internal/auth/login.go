@@ -53,6 +53,10 @@ type LoginPrincipalView struct {
 // require an inbound X-CSRF-Token. SameSite=Lax + Origin allowlist close
 // the cross-origin attack vector at the perimeter (RequireOrigin runs
 // before HandleLogin in the route wiring).
+//
+// Expected: parameters for HandleLogin.
+// Returns: result of HandleLogin.
+// Side effects: None.
 func HandleLogin(source identity.Source, sessionMgr *SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -168,6 +172,9 @@ type CSRFPrefetchResponse struct {
 // Single field by design — the unmasked Record-bound token only exists
 // post-login (login response surfaces it). Prefetch is the pre-login
 // path so there is nothing else to return.
+//
+// Returns: result of HandleCSRFPrefetch.
+// Side effects: None.
 func HandleCSRFPrefetch() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -198,6 +205,10 @@ func HandleCSRFPrefetch() http.HandlerFunc {
 // sessionMgr.End to drop the Record + clear the cookie. Idempotent —
 // returns 200 even when no session was attached (matches the SPA's
 // best-effort logout semantics).
+//
+// Expected: parameters for HandleLogout.
+// Returns: result of HandleLogout.
+// Side effects: None.
 func HandleLogout(sessionMgr *SessionManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -235,6 +246,10 @@ func HandleLogout(sessionMgr *SessionManager) http.HandlerFunc {
 //
 // Unrecognised modes return an error (defensive — should never happen at
 // runtime because Source.Mode() is one of three constants).
+//
+// Expected: parameters for parseCredentials.
+// Returns: result of parseCredentials.
+// Side effects: None.
 func parseCredentials(r *http.Request, mode string) (identity.Credentials, error) {
 	dec := json.NewDecoder(r.Body)
 	// DisallowUnknownFields is DELIBERATELY NOT set — see plan B8 (line 482).
@@ -260,12 +275,22 @@ func parseCredentials(r *http.Request, mode string) (identity.Credentials, error
 // writeLoginError writes the uniform B8 401 invalid_credentials response.
 // Centralised so every login failure path produces a byte-identical wire
 // shape — probers cannot fingerprint the mode by response variation.
+//
+// Expected: parameters for writeLoginError.
+// Side effects: None.
 func writeLoginError(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"error":"invalid_credentials"}`))
 }
 
+// errString ...
+//
+// Expected: parameters for errString.
+//
+// Returns: result of errString.
+//
+// Side effects: None.
 func errString(err error) string {
 	if err == nil {
 		return ""
@@ -278,6 +303,10 @@ func errString(err error) string {
 // response composition. Internal — not part of the SessionManager's
 // public API because callers outside HandleLogin should never need
 // post-mint store lookup.
+//
+// Expected: parameters for lookupForLogin.
+// Returns: result of lookupForLogin.
+// Side effects: None.
 func (m *SessionManager) lookupForLogin(r *http.Request, token string) (*store.Record, error) {
 	return m.store.Get(r.Context(), token)
 }

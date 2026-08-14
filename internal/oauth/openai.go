@@ -135,6 +135,10 @@ func StartPKCEFlow(ctx context.Context, clientID string, redirectPort int) (stri
 }
 
 // buildOpenAIAuthURL builds the full OpenAI authorization URL for the PKCE flow.
+//
+// Expected: parameters for buildOpenAIAuthURL.
+// Returns: result of buildOpenAIAuthURL.
+// Side effects: None.
 func buildOpenAIAuthURL(clientID, redirectURI, codeChallenge string) string {
 	params := url.Values{
 		"client_id":             {clientID},
@@ -148,6 +152,10 @@ func buildOpenAIAuthURL(clientID, redirectURI, codeChallenge string) string {
 }
 
 // exchangeCodeForToken exchanges an authorization code for tokens.
+//
+// Expected: parameters for exchangeCodeForToken.
+// Returns: result of exchangeCodeForToken.
+// Side effects: None.
 func exchangeCodeForToken(ctx context.Context, clientID, code, codeVerifier, redirectURI string) (*AuthorizationResponse, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},

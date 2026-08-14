@@ -26,6 +26,8 @@ import (
 //
 // Side effects:
 //   - Publishes a delegation.progress event every 30s onto the bus.
+//
+// Returns: result of emitProgressHeartbeat.
 func (d *DelegateTool) emitProgressHeartbeat(
 	ctx context.Context,
 	baseInfo provider.DelegationInfo,

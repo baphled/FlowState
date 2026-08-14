@@ -67,6 +67,8 @@ type FileFactStore struct {
 //
 // Returns:
 //   - A configured *FileFactStore; never nil.
+//
+// Side effects: None.
 func NewFileFactStore(root string) *FileFactStore {
 	return &FileFactStore{
 		root:     root,
@@ -141,6 +143,10 @@ func (s *FileFactStore) Append(_ context.Context, sessionID string, facts ...Fac
 // List returns the session's persisted facts in disk order. An unknown
 // session yields an empty slice (not an error) so the engine can call
 // List on every build without first checking existence.
+//
+// Expected: parameters for List.
+// Returns: result of List.
+// Side effects: None.
 func (s *FileFactStore) List(_ context.Context, sessionID string) ([]Fact, error) {
 	if sessionID == "" || s.root == "" {
 		return nil, nil
@@ -178,6 +184,10 @@ func (s *FileFactStore) List(_ context.Context, sessionID string) ([]Fact, error
 // Recall returns the top-K facts for sessionID ranked by overlap with
 // query. topK<=0 returns nil so callers can guard the inclusion site
 // with a single `if len(hits) == 0` check.
+//
+// Expected: parameters for Recall.
+// Returns: result of Recall.
+// Side effects: None.
 func (s *FileFactStore) Recall(ctx context.Context, sessionID string, query string, topK int) ([]Fact, error) {
 	if topK <= 0 {
 		return nil, nil
@@ -192,6 +202,10 @@ func (s *FileFactStore) Recall(ctx context.Context, sessionID string, query stri
 // Path returns the absolute path of the session's facts.jsonl. Useful
 // for tests that assert persistence and for telemetry that exposes
 // where a session's facts live on disk.
+//
+// Expected: parameters for Path.
+// Returns: result of Path.
+// Side effects: None.
 func (s *FileFactStore) Path(sessionID string) string {
 	if sessionID == "" || s.root == "" {
 		return ""
@@ -201,6 +215,10 @@ func (s *FileFactStore) Path(sessionID string) string {
 
 // readIDs returns the set of fact IDs already present in the session's
 // JSONL. Missing files yield an empty set with a nil error.
+//
+// Expected: parameters for readIDs.
+// Returns: result of readIDs.
+// Side effects: None.
 func (s *FileFactStore) readIDs(sessionID string) (map[string]struct{}, error) {
 	out := make(map[string]struct{})
 	if s.root == "" {
@@ -238,6 +256,10 @@ func (s *FileFactStore) readIDs(sessionID string) (map[string]struct{}, error) {
 }
 
 // sessionLock returns the per-session mutex, creating one on first use.
+//
+// Expected: parameters for sessionLock.
+// Returns: result of sessionLock.
+// Side effects: None.
 func (s *FileFactStore) sessionLock(sessionID string) *sync.Mutex {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -252,6 +274,10 @@ func (s *FileFactStore) sessionLock(sessionID string) *sync.Mutex {
 // isValidFact reports whether fact carries enough content to be worth
 // persisting. Empty Text is the only disqualifier today; the rest of
 // the fields self-heal in stampFact.
+//
+// Expected: parameters for isValidFact.
+// Returns: result of isValidFact.
+// Side effects: None.
 func isValidFact(fact Fact) bool {
 	return strings.TrimSpace(fact.Text) != ""
 }
@@ -260,6 +286,10 @@ func isValidFact(fact Fact) bool {
 // caller has not set them. ID is content-derived so dedup is natural
 // across replays; CreatedAt defaults to time.Now() so recency
 // tie-breaking has a usable signal.
+//
+// Expected: parameters for stampFact.
+// Returns: result of stampFact.
+// Side effects: None.
 func stampFact(fact Fact) Fact {
 	fact.Text = strings.TrimSpace(fact.Text)
 	if fact.CreatedAt.IsZero() {
@@ -273,6 +303,10 @@ func stampFact(fact Fact) Fact {
 
 // factID returns a stable id derived from Text and SourceMessageID.
 // 16 hex chars; never collides with itself for identical inputs.
+//
+// Expected: parameters for factID.
+// Returns: result of factID.
+// Side effects: None.
 func factID(fact Fact) string {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(fact.Text))
@@ -284,6 +318,10 @@ func factID(fact Fact) string {
 // rankByOverlap scores each fact by the keyword-overlap formula
 // |query ∩ fact| / sqrt(max(1, |fact|)) with a recency tie-breaker
 // (newer wins). Returns the top-K in descending score order.
+//
+// Expected: parameters for rankByOverlap.
+// Returns: result of rankByOverlap.
+// Side effects: None.
 func rankByOverlap(facts []Fact, query string, topK int) []Fact {
 	if len(facts) == 0 || topK <= 0 {
 		return nil

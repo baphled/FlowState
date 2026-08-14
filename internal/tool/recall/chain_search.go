@@ -38,6 +38,8 @@ func NewChainSearchTool(store chainrecall.ChainContextStore) *ChainSearchTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *ChainSearchTool) Name() string {
 	return "chain_search_context"
 }
@@ -49,6 +51,8 @@ func (t *ChainSearchTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *ChainSearchTool) Description() string {
 	return "Search the shared chain context semantically across all agents in the delegation chain"
 }
@@ -60,6 +64,8 @@ func (t *ChainSearchTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *ChainSearchTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

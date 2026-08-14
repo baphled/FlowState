@@ -63,6 +63,8 @@ type Manager struct {
 //
 // Side effects:
 //   - Mutates the receiver under its write lock.
+//
+// Returns: result of SetContextFallback.
 func (m *Manager) SetContextFallback(limit int) {
 	if limit <= 0 {
 		return
@@ -95,6 +97,8 @@ func (m *Manager) SetContextFallback(limit int) {
 //
 // Side effects:
 //   - Mutates the receiver under its write lock.
+//
+// Returns: result of SetCapabilityFilter.
 func (m *Manager) SetCapabilityFilter(filter func(providerName, model string) bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -177,6 +181,9 @@ func (m *Manager) ResolveOutputLimit(providerName, model string) int {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for resolvedFallback.
+// Returns: result of resolvedFallback.
 func (m *Manager) resolvedFallback() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -214,6 +221,8 @@ func NewManager(registry *provider.Registry, health *HealthManager, timeout time
 //
 // Side effects:
 //   - Replaces the current base preferences (thread-safe).
+//
+// Returns: result of SetBasePreferences.
 func (m *Manager) SetBasePreferences(prefs []provider.ModelPreference) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -222,6 +231,10 @@ func (m *Manager) SetBasePreferences(prefs []provider.ModelPreference) {
 
 // SetModelTiers replaces the tier lookup used to keep equivalent candidates
 // grouped without rotating across tier boundaries.
+//
+// Expected: parameters for SetModelTiers.
+// Returns: result of SetModelTiers.
+// Side effects: None.
 func (m *Manager) SetModelTiers(tiers map[string]string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -244,6 +257,8 @@ func (m *Manager) SetModelTiers(tiers map[string]string) {
 //
 // Side effects:
 //   - Replaces any existing override (thread-safe).
+//
+// Returns: result of SetOverride.
 func (m *Manager) SetOverride(pref provider.ModelPreference) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -254,6 +269,9 @@ func (m *Manager) SetOverride(pref provider.ModelPreference) {
 //
 // Side effects:
 //   - Clears the override field (thread-safe).
+//
+// Expected: parameters for ClearOverride.
+// Returns: result of ClearOverride.
 func (m *Manager) ClearOverride() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -267,6 +285,8 @@ func (m *Manager) ClearOverride() {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Preferences.
 func (m *Manager) Preferences() []provider.ModelPreference {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -282,6 +302,8 @@ func (m *Manager) Preferences() []provider.ModelPreference {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Candidates.
 func (m *Manager) Candidates() []provider.ModelPreference {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -295,6 +317,8 @@ func (m *Manager) Candidates() []provider.ModelPreference {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LastProvider.
 func (m *Manager) LastProvider() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -308,6 +332,8 @@ func (m *Manager) LastProvider() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for LastModel.
 func (m *Manager) LastModel() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -323,6 +349,8 @@ func (m *Manager) LastModel() string {
 //
 // Side effects:
 //   - Updates last-used state (thread-safe).
+//
+// Returns: result of SetLast.
 func (m *Manager) SetLast(providerName, model string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -333,6 +361,10 @@ func (m *Manager) SetLast(providerName, model string) {
 
 // RecordAttempt records an attempted provider/model pair so equivalent
 // candidates can rotate by least-recently-used order.
+//
+// Expected: parameters for RecordAttempt.
+// Returns: result of RecordAttempt.
+// Side effects: None.
 func (m *Manager) RecordAttempt(providerName, model string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -347,6 +379,8 @@ func (m *Manager) RecordAttempt(providerName, model string) {
 //
 // Side effects:
 //   - May make network calls to providers to fetch model lists.
+//
+// Expected: parameters for ListModels.
 func (m *Manager) ListModels() ([]provider.Model, error) {
 	var allModels []provider.Model
 	for _, providerName := range m.registry.List() {
@@ -373,6 +407,8 @@ func (m *Manager) ListModels() ([]provider.Model, error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for StreamTimeout.
 func (m *Manager) StreamTimeout() time.Duration {
 	return m.timeout
 }
@@ -384,6 +420,8 @@ func (m *Manager) StreamTimeout() time.Duration {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Health.
 func (m *Manager) Health() *HealthManager {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -424,6 +462,13 @@ func (m *Manager) healthyCandidates() []provider.ModelPreference {
 	return rankCandidatesByHealth(m.health, m.modelTiers, m.attempts, m.capabilityFilteredPreferences())
 }
 
+// rankCandidates ...
+//
+// Expected: parameters for rankCandidates.
+//
+// Returns: result of rankCandidates.
+//
+// Side effects: None.
 func (m *Manager) rankCandidates(candidates []provider.ModelPreference) []provider.ModelPreference {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -480,6 +525,13 @@ func (m *Manager) capabilityFilteredBase() []provider.ModelPreference {
 	return filtered
 }
 
+// rankCandidatesByHealth ...
+//
+// Expected: parameters for rankCandidatesByHealth.
+//
+// Returns: result of rankCandidatesByHealth.
+//
+// Side effects: None.
 func rankCandidatesByHealth(
 	health *HealthManager,
 	tiers map[string]string,
@@ -493,10 +545,12 @@ func rankCandidatesByHealth(
 	return rankCandidatesWithTiers(health, tiers, attempts, candidates)
 }
 
+// attemptRecord tracks the last attempt timestamp for a candidate.
 type attemptRecord struct {
 	lastAttemptAt time.Time
 }
 
+// rankedCandidate pairs a provider model preference with its failover rank score.
 type rankedCandidate struct {
 	candidate provider.ModelPreference
 	score     uint64
@@ -505,6 +559,13 @@ type rankedCandidate struct {
 	attempt   attemptRecord
 }
 
+// recordAttemptLocked ...
+//
+// Expected: parameters for recordAttemptLocked.
+//
+// Returns: result of recordAttemptLocked.
+//
+// Side effects: None.
 func (m *Manager) recordAttemptLocked(providerName, model string) {
 	if m.attempts == nil {
 		m.attempts = make(map[ProviderModel]attemptRecord)
@@ -514,6 +575,13 @@ func (m *Manager) recordAttemptLocked(providerName, model string) {
 	}
 }
 
+// rankCandidatesWithTiers ...
+//
+// Expected: parameters for rankCandidatesWithTiers.
+//
+// Returns: result of rankCandidatesWithTiers.
+//
+// Side effects: None.
 func rankCandidatesWithTiers(
 	health *HealthManager,
 	tiers map[string]string,
@@ -559,6 +627,13 @@ func rankCandidatesWithTiers(
 	return ordered
 }
 
+// rankedCandidatesToPreferences ...
+//
+// Expected: parameters for rankedCandidatesToPreferences.
+//
+// Returns: result of rankedCandidatesToPreferences.
+//
+// Side effects: None.
 func rankedCandidatesToPreferences(candidates []rankedCandidate) []provider.ModelPreference {
 	result := make([]provider.ModelPreference, len(candidates))
 	for i, candidate := range candidates {
@@ -567,6 +642,13 @@ func rankedCandidatesToPreferences(candidates []rankedCandidate) []provider.Mode
 	return result
 }
 
+// orderEquivalentCandidates ...
+//
+// Expected: parameters for orderEquivalentCandidates.
+//
+// Returns: result of orderEquivalentCandidates.
+//
+// Side effects: None.
 func orderEquivalentCandidates(candidates []rankedCandidate) []provider.ModelPreference {
 	if len(candidates) < 2 {
 		return rankedCandidatesToPreferences(candidates)
@@ -582,6 +664,13 @@ func orderEquivalentCandidates(candidates []rankedCandidate) []provider.ModelPre
 	return ordered
 }
 
+// groupEquivalentCandidates ...
+//
+// Expected: parameters for groupEquivalentCandidates.
+//
+// Returns: result of groupEquivalentCandidates.
+//
+// Side effects: None.
 func groupEquivalentCandidates(candidates []rankedCandidate) [][]rankedCandidate {
 	groups := make([][]rankedCandidate, 0, len(candidates))
 	groupIndexes := make(map[string]int, len(candidates))
@@ -596,6 +685,11 @@ func groupEquivalentCandidates(candidates []rankedCandidate) [][]rankedCandidate
 	return groups
 }
 
+// sortEquivalentGroup ...
+//
+// Expected: parameters for sortEquivalentGroup.
+//
+// Side effects: None.
 func sortEquivalentGroup(candidates []rankedCandidate) {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := candidates[i].attempt
@@ -615,6 +709,13 @@ func sortEquivalentGroup(candidates []rankedCandidate) {
 	})
 }
 
+// equivalentTierForCandidate ...
+//
+// Expected: parameters for equivalentTierForCandidate.
+//
+// Returns: result of equivalentTierForCandidate.
+//
+// Side effects: None.
 func equivalentTierForCandidate(tiers map[string]string, candidate provider.ModelPreference) string {
 	if tier, ok := tiers[candidate.Model]; ok {
 		return tier

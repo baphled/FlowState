@@ -64,6 +64,8 @@ func NewWithClient(client *http.Client) *Tool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *Tool) Name() string {
 	return "web"
 }
@@ -75,6 +77,8 @@ func (t *Tool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *Tool) Description() string {
 	return "Fetch content from a URL via HTTP GET, returning extracted text for HTML pages. Truncated to 10KB."
 }
@@ -86,6 +90,8 @@ func (t *Tool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -151,6 +157,10 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 // isHTML reports whether a response should be treated as HTML for text
 // extraction. It returns true when the Content-Type header names text/html or
 // the body opens with an HTML document marker, matching case-insensitively.
+//
+// Expected: parameters for isHTML.
+// Returns: result of isHTML.
+// Side effects: None.
 func isHTML(contentType, body string) bool {
 	if strings.Contains(strings.ToLower(contentType), "text/html") {
 		return true
@@ -164,6 +174,10 @@ func isHTML(contentType, body string) bool {
 // head section other than the title; HTML comments and all remaining tags are
 // removed. Excessive whitespace is collapsed so consecutive blank lines become
 // a single blank line and each line is trimmed.
+//
+// Expected: parameters for extractTextFromHTML.
+// Returns: result of extractTextFromHTML.
+// Side effects: None.
 func extractTextFromHTML(raw string) string {
 	tokenizer := html.NewTokenizer(strings.NewReader(raw))
 	var buf strings.Builder
@@ -208,6 +222,10 @@ func extractTextFromHTML(raw string) string {
 }
 
 // tagName returns the name of the current tag token.
+//
+// Expected: parameters for tagName.
+// Returns: result of tagName.
+// Side effects: None.
 func tagName(t *html.Tokenizer) []byte {
 	name, _ := t.TagName()
 	return name
@@ -215,6 +233,10 @@ func tagName(t *html.Tokenizer) []byte {
 
 // collapseWhitespace trims each line and reduces runs of blank lines to a
 // single blank line, removing leading and trailing blank lines entirely.
+//
+// Expected: parameters for collapseWhitespace.
+// Returns: result of collapseWhitespace.
+// Side effects: None.
 func collapseWhitespace(s string) string {
 	lines := strings.Split(s, "\n")
 	var out []string

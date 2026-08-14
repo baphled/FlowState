@@ -29,19 +29,35 @@ type IndexVaultTool struct {
 }
 
 // NewIndexVaultTool creates an IndexVaultTool with the supplied config.
+//
+// Expected: parameters for NewIndexVaultTool.
+// Returns: result of NewIndexVaultTool.
+// Side effects: None.
 func NewIndexVaultTool(cfg IndexerConfig) *IndexVaultTool {
 	return &IndexVaultTool{cfg: cfg}
 }
 
 // Name returns the tool name used by agents.
+//
+// Expected: parameters for Name.
+// Returns: result of Name.
+// Side effects: None.
 func (t *IndexVaultTool) Name() string { return "vault_index" }
 
 // Description summarises the tool for the model.
+//
+// Expected: parameters for Description.
+// Returns: result of Description.
+// Side effects: None.
 func (t *IndexVaultTool) Description() string {
 	return "Index (or re-index) the Obsidian vault into Qdrant so agents can query up-to-date knowledge"
 }
 
 // Schema returns the input schema for the tool.
+//
+// Expected: parameters for Schema.
+// Returns: result of Schema.
+// Side effects: None.
 func (t *IndexVaultTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -53,6 +69,10 @@ func (t *IndexVaultTool) Schema() tool.Schema {
 }
 
 // Execute runs the full vault index pass and returns a summary.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *IndexVaultTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	cfg := t.cfg
 	if v, ok := input.Arguments["vault_root"].(string); ok && v != "" {
@@ -79,19 +99,35 @@ type SyncVaultTool struct {
 }
 
 // NewSyncVaultTool creates a SyncVaultTool with the supplied config.
+//
+// Expected: parameters for NewSyncVaultTool.
+// Returns: result of NewSyncVaultTool.
+// Side effects: None.
 func NewSyncVaultTool(cfg IndexerConfig) *SyncVaultTool {
 	return &SyncVaultTool{cfg: cfg}
 }
 
 // Name returns the tool name used by agents.
+//
+// Expected: parameters for Name.
+// Returns: result of Name.
+// Side effects: None.
 func (t *SyncVaultTool) Name() string { return "vault_sync" }
 
 // Description summarises the tool for the model.
+//
+// Expected: parameters for Description.
+// Returns: result of Description.
+// Side effects: None.
 func (t *SyncVaultTool) Description() string {
 	return "Sync changed vault files into Qdrant (incremental — skips files whose mtime has not advanced)"
 }
 
 // Schema returns the input schema for the tool.
+//
+// Expected: parameters for Schema.
+// Returns: result of Schema.
+// Side effects: None.
 func (t *SyncVaultTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -102,6 +138,10 @@ func (t *SyncVaultTool) Schema() tool.Schema {
 }
 
 // Execute runs an incremental vault sync pass and returns a summary.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *SyncVaultTool) Execute(ctx context.Context, input tool.Input) (tool.Result, error) {
 	cfg := t.cfg
 	if v, ok := input.Arguments["vault_root"].(string); ok && v != "" {
@@ -120,6 +160,10 @@ func (t *SyncVaultTool) Execute(ctx context.Context, input tool.Input) (tool.Res
 }
 
 // runVaultIndexerTool wires the indexer from cfg and runs a single pass.
+//
+// Expected: parameters for runVaultIndexerTool.
+// Returns: result of runVaultIndexerTool.
+// Side effects: None.
 func runVaultIndexerTool(ctx context.Context, cfg IndexerConfig) (vaultindex.Summary, error) {
 	if cfg.VaultRoot == "" {
 		return vaultindex.Summary{}, fmt.Errorf("vault_root is required")
@@ -165,6 +209,10 @@ type vaultToolOllamaAdapter struct {
 }
 
 // Embed implements vaultindex.Embedder.
+//
+// Expected: parameters for Embed.
+// Returns: result of Embed.
+// Side effects: None.
 func (a vaultToolOllamaAdapter) Embed(ctx context.Context, text string) ([]float64, error) {
 	return a.provider.Embed(ctx, provider.EmbedRequest{Input: text, Model: a.model})
 }

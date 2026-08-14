@@ -41,6 +41,8 @@ func NewAppend(s Store) *AppendTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *AppendTool) Name() string {
 	return "todo_append"
 }
@@ -52,6 +54,8 @@ func (t *AppendTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *AppendTool) Description() string {
 	return "Append a single task item to the end of the current list. " +
 		"Use this when you discover an additional subtask mid-work and need to grow the list without replacing it."
@@ -65,6 +69,8 @@ func (t *AppendTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *AppendTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -88,6 +94,10 @@ func (t *AppendTool) Schema() tool.Schema {
 
 // IsStateModifying returns true because todo_append appends an item to
 // the stored todo list for the session.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *AppendTool) IsStateModifying() bool { return true }
 
 // Execute appends a single todo item to the stored list and returns the

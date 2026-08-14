@@ -70,6 +70,10 @@ func NewSuggestDelegateTool(reg *agent.Registry, sourceAgentID string) *SuggestD
 //
 // A nil swarmReg makes this constructor functionally identical to
 // NewSuggestDelegateTool.
+//
+// Expected: parameters for NewSuggestDelegateToolWithSwarms.
+// Returns: result of NewSuggestDelegateToolWithSwarms.
+// Side effects: None.
 func NewSuggestDelegateToolWithSwarms(reg *agent.Registry, swarmReg *swarm.Registry, sourceAgentID string) *SuggestDelegateTool {
 	return &SuggestDelegateTool{registry: reg, swarmRegistry: swarmReg, sourceAgentID: sourceAgentID}
 }
@@ -109,6 +113,8 @@ var errSuggestDelegateLeadSelfDispatch = errors.New(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (s *SuggestDelegateTool) Name() string {
 	return "suggest_delegate"
 }
@@ -120,6 +126,8 @@ func (s *SuggestDelegateTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (s *SuggestDelegateTool) Description() string {
 	return "Surface a suggestion that the user switch to a delegating agent to reach the requested " +
 		"target. Use this when the user's prompt references @<agent> and this agent cannot delegate " +
@@ -133,6 +141,8 @@ func (s *SuggestDelegateTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (s *SuggestDelegateTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -203,6 +213,10 @@ func (s *SuggestDelegateTool) Execute(_ context.Context, input tool.Input) (tool
 // lookupSwarm reports whether id resolves to a registered swarm. nil
 // swarmRegistry is treated as an empty registry so the historical
 // agent-only constructor still works.
+//
+// Expected: parameters for lookupSwarm.
+// Returns: result of lookupSwarm.
+// Side effects: None.
 func (s *SuggestDelegateTool) lookupSwarm(id string) (*swarm.Manifest, bool) {
 	if s.swarmRegistry == nil {
 		return nil, false
@@ -217,6 +231,10 @@ func (s *SuggestDelegateTool) lookupSwarm(id string) (*swarm.Manifest, bool) {
 // buildAgentSuggestion is the agent-target payload path: resolves a
 // router via resolveRouter and emits target_kind="agent". Preserves
 // the historical payload shape; target_kind is additive.
+//
+// Expected: parameters for buildAgentSuggestion.
+// Returns: result of buildAgentSuggestion.
+// Side effects: None.
 func (s *SuggestDelegateTool) buildAgentSuggestion(targetManifest *agent.Manifest, reason string) (tool.Result, error) {
 	routerID := s.resolveRouter()
 	if routerID == "" {
@@ -251,6 +269,10 @@ func (s *SuggestDelegateTool) buildAgentSuggestion(targetManifest *agent.Manifes
 // target_lead point at the swarm's lead so the user sees which agent
 // will receive the prompt; target_swarm carries the swarm id so the
 // chat layer can construct an `@<swarm-id>` re-prompt verbatim.
+//
+// Expected: parameters for buildSwarmSuggestion.
+// Returns: result of buildSwarmSuggestion.
+// Side effects: None.
 func (s *SuggestDelegateTool) buildSwarmSuggestion(swarmManifest *swarm.Manifest, reason string) (tool.Result, error) {
 	leadID := swarmManifest.Lead
 	if leadID == "" {

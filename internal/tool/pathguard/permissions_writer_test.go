@@ -1,6 +1,7 @@
 package pathguard_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -129,7 +130,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			Expect(decision).To(BeEmpty())
 
 			// Append the operator's "forever" grant.
-			Expect(writer.AppendAllow("read", "/secrets/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/secrets/**")).To(Succeed())
 
 			// Post-append: the matcher returns "allow" because we
 			// reloaded in-place after the write — proves the wire is
@@ -146,7 +147,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("creates the tools[tool] entry when the tool has no prior rules", func() {
-			Expect(writer.AppendAllow("write", "/tmp/scratch/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "write", "/tmp/scratch/**")).To(Succeed())
 
 			loaded, err := config.LoadPermissions(permsPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -158,7 +159,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			// Pre-state: version=1 from seed. Post-state must still be
 			// v1; future schema bumps (Slice 5 v2) require an explicit
 			// migration step, not a silent rewrite.
-			Expect(writer.AppendAllow("read", "/anywhere/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/anywhere/**")).To(Succeed())
 
 			loaded, err := config.LoadPermissions(permsPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -183,7 +184,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			// Wait a tick so a write would visibly change mtime.
 			time.Sleep(20 * time.Millisecond)
 
-			Expect(writer.AppendAllow("read", "/already/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/already/**")).To(Succeed())
 
 			after, err := os.ReadFile(permsPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -194,9 +195,9 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("does not duplicate an existing glob even across multiple appends", func() {
-			Expect(writer.AppendAllow("read", "/already/**")).To(Succeed())
-			Expect(writer.AppendAllow("read", "/already/**")).To(Succeed())
-			Expect(writer.AppendAllow("read", "/already/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/already/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/already/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/already/**")).To(Succeed())
 
 			loaded, err := config.LoadPermissions(permsPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -223,7 +224,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			writer = pathguard.NewWriter(permsPath, reloader)
 			originalBytes, _ := os.ReadFile(permsPath)
 
-			err := writer.AppendAllow("read", "/new/**")
+			err := writer.AppendAllow(context.Background(), "read", "/new/**")
 			Expect(err).To(HaveOccurred(),
 				"a writable-directory failure must surface as an error")
 
@@ -240,7 +241,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			DeferCleanup(func() { _ = os.Chmod(dir, 0o755) })
 
 			writer = pathguard.NewWriter(permsPath, reloader)
-			_ = writer.AppendAllow("read", "/new/**")
+			_ = writer.AppendAllow(context.Background(), "read", "/new/**")
 
 			// Restore write so we can list — defer-cleanup hasn't fired yet.
 			Expect(os.Chmod(dir, 0o755)).To(Succeed())
@@ -273,7 +274,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			// precedence rule (config/permissions.go:131-141) ensures
 			// deny still wins on the next consultation. Pin per plan
 			// §4 Slice 4 cross-grant precedence guard.
-			Expect(writer.AppendAllow("read", "/secrets/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/secrets/**")).To(Succeed())
 
 			decision, matched := reloader.Match("read", "/secrets/api-key.txt")
 			Expect(matched).To(BeTrue())
@@ -298,21 +299,21 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("invokes Reload exactly once on a successful append", func() {
-			Expect(writer.AppendAllow("read", "/new/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/new/**")).To(Succeed())
 			Expect(reloaderSpyImpl.Calls()).To(Equal(1),
 				"the writer must invoke the matcher's Reload after a successful write")
 		})
 
 		It("does NOT invoke Reload on an idempotent no-write", func() {
 			// The seeded file already has /seed/** under read.allow.
-			Expect(writer.AppendAllow("read", "/seed/**")).To(Succeed())
+			Expect(writer.AppendAllow(context.Background(), "read", "/seed/**")).To(Succeed())
 			Expect(reloaderSpyImpl.Calls()).To(Equal(0),
 				"idempotent appends must skip the reload (the file did not change)")
 		})
 
 		It("surfaces reload errors but does NOT roll back the file write", func() {
 			reloaderSpyImpl.loadErr = errors.New("reload exploded")
-			err := writer.AppendAllow("read", "/new/**")
+			err := writer.AppendAllow(context.Background(), "read", "/new/**")
 			Expect(err).To(HaveOccurred(),
 				"a reload error must be visible to the caller")
 
@@ -326,7 +327,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 
 		It("succeeds with no reloader wired (nil-tolerant)", func() {
 			noReloadWriter := pathguard.NewWriter(permsPath, nil)
-			Expect(noReloadWriter.AppendAllow("read", "/no-reload/**")).To(Succeed())
+			Expect(noReloadWriter.AppendAllow(context.Background(), "read", "/no-reload/**")).To(Succeed())
 		})
 	})
 
@@ -337,11 +338,11 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("errors on empty tool", func() {
-			Expect(writer.AppendAllow("", "/anywhere/**")).To(HaveOccurred())
+			Expect(writer.AppendAllow(context.Background(), "", "/anywhere/**")).To(HaveOccurred())
 		})
 
 		It("errors on empty glob", func() {
-			Expect(writer.AppendAllow("read", "")).To(HaveOccurred())
+			Expect(writer.AppendAllow(context.Background(), "read", "")).To(HaveOccurred())
 		})
 	})
 
@@ -367,11 +368,10 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 
 			wg.Add(2)
 			for i := 0; i < 2; i++ {
-				i := i
 				go func() {
 					defer GinkgoRecover()
 					defer wg.Done()
-					errs[i] = writer.AppendAllow("read", globs[i])
+					errs[i] = writer.AppendAllow(context.Background(), "read", globs[i])
 				}()
 			}
 			wg.Wait()
@@ -406,12 +406,12 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			go func() {
 				defer GinkgoRecover()
 				defer wg.Done()
-				errAllow = writerX.AppendAllow("read", "/cross/contention/**")
+				errAllow = writerX.AppendAllow(context.Background(), "read", "/cross/contention/**")
 			}()
 			go func() {
 				defer GinkgoRecover()
 				defer wg.Done()
-				errMCP = writerX.AppendMCPGrant("coordinator", "vault-rag")
+				errMCP = writerX.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")
 			}()
 			wg.Wait()
 
@@ -463,13 +463,12 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			var errCount atomic.Int32
 			wg.Add(goroutines)
 			for g := 0; g < goroutines; g++ {
-				g := g
 				go func() {
 					defer GinkgoRecover()
 					defer wg.Done()
 					for k := 0; k < appendsPerGo; k++ {
 						glob := globForRound(g, k)
-						if err := writerA.AppendAllow("read", glob); err != nil {
+						if err := writerA.AppendAllow(context.Background(), "read", glob); err != nil {
 							errCount.Add(1)
 						}
 					}
@@ -503,7 +502,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("appends agents.<agent>.mcp_servers_grant and stamps version: 2", func() {
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
 
 			loaded, err := config.LoadPermissions(permsPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -522,7 +521,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 
 		It("creates the agents section when no prior agent grants exist", func() {
 			// Fresh file with NO agents section.
-			Expect(writer.AppendMCPGrant("explorer", "mem0")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "explorer", "mem0")).To(Succeed())
 
 			loaded, err := config.LoadPermissions(permsPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -531,13 +530,13 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("is idempotent on repeated (agent, server) pairs", func() {
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
 			before, _ := os.ReadFile(permsPath)
 			beforeMtime := mustStat(permsPath).ModTime()
 			time.Sleep(20 * time.Millisecond)
 
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
 
 			after, _ := os.ReadFile(permsPath)
 			Expect(after).To(Equal(before),
@@ -553,9 +552,9 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("accumulates distinct MCP servers under the same agent without duplication", func() {
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
-			Expect(writer.AppendMCPGrant("coordinator", "mem0")).To(Succeed())
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "mem0")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
 
 			loaded, err := config.LoadPermissions(permsPath)
 			Expect(err).NotTo(HaveOccurred())
@@ -569,8 +568,8 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			// restart." The restart is modelled by constructing a
 			// FRESH Writer + matcher against the same file — the
 			// daemon-restart equivalent in-process.
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
-			Expect(writer.AppendMCPGrant("explorer", "mem0")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "explorer", "mem0")).To(Succeed())
 
 			// "Restart" — construct a new matcher from the same path.
 			reloaded, err := config.LoadPermissions(permsPath)
@@ -582,8 +581,8 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 		})
 
 		It("errors on empty agent or empty mcp_server", func() {
-			Expect(writer.AppendMCPGrant("", "vault-rag")).To(HaveOccurred())
-			Expect(writer.AppendMCPGrant("coordinator", "")).To(HaveOccurred())
+			Expect(writer.AppendMCPGrant(context.Background(), "", "vault-rag")).To(HaveOccurred())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "")).To(HaveOccurred())
 		})
 
 		It("leaves the file untouched on a validation failure path (atomicity)", func() {
@@ -595,7 +594,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 			DeferCleanup(func() { _ = os.Chmod(dir, 0o755) })
 
 			originalBytes, _ := os.ReadFile(permsPath)
-			err := writer.AppendMCPGrant("coordinator", "vault-rag")
+			err := writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")
 			Expect(err).To(HaveOccurred(),
 				"a write failure on AppendMCPGrant must surface as an error")
 
@@ -628,7 +627,7 @@ var _ = Describe("Pathguard Writer (Slice 4 — permissions.yaml AppendAllow)", 
 	Describe("schema v1 ↔ v2 round-trip (Slice 5 §12 R3 / §14)", func() {
 		It("v2 file round-trips through the v2 LoadPermissions reader without panic", func() {
 			writer := pathguard.NewWriter(permsPath, nil)
-			Expect(writer.AppendMCPGrant("coordinator", "vault-rag")).To(Succeed())
+			Expect(writer.AppendMCPGrant(context.Background(), "coordinator", "vault-rag")).To(Succeed())
 
 			loaded, err := config.LoadPermissions(permsPath)
 			Expect(err).NotTo(HaveOccurred(),

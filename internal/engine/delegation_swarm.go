@@ -54,6 +54,10 @@ func (d *DelegateTool) runnerForSwarm(swarmID string, manifest *swarm.Manifest) 
 // wiring tests can pin runner-cache identity (P0.1 verification).
 // Production code never calls this; it is intentionally a thin
 // pointer accessor.
+//
+// Expected: parameters for RunnerForSwarmIDForTest.
+// Returns: result of RunnerForSwarmIDForTest.
+// Side effects: None.
 func (d *DelegateTool) RunnerForSwarmIDForTest(swarmID string) *swarm.Runner {
 	if cached, ok := d.runnerCache.Load(swarmID); ok {
 		if runner, isRunner := cached.(*swarm.Runner); isRunner {
@@ -67,6 +71,10 @@ func (d *DelegateTool) RunnerForSwarmIDForTest(swarmID string) *swarm.Runner {
 // installed registry, or nil when no registry is wired or no manifest
 // is registered. Pulled into a helper so the runner-cache lookup can
 // stay focused on the cache contract.
+//
+// Expected: parameters for manifestForSwarm.
+// Returns: result of manifestForSwarm.
+// Side effects: None.
 func (d *DelegateTool) manifestForSwarm(swarmID string) *swarm.Manifest {
 	if d.swarmRegistry == nil {
 		return nil
@@ -620,6 +628,8 @@ func (d *DelegateTool) bootstrapMemberSession(
 //   - May call d.turnRegistry.Fail when handle.ownedByCaller is false
 //     AND the registry is wired AND the handle carries a non-empty
 //     turnID. Every other case short-circuits silently.
+//
+// Returns: result of failMemberTurnIfOwned.
 func (d *DelegateTool) failMemberTurnIfOwned(handle *memberTurnHandle, cause error) {
 	if handle == nil || handle.ownedByCaller {
 		return
@@ -667,6 +677,8 @@ func (d *DelegateTool) memberTimeoutForSwarm(swarmID string) time.Duration {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for activeMemberTimeout.
 func (d *DelegateTool) activeMemberTimeout() time.Duration {
 	swarmCtx, ok := d.activeSwarmContext()
 	if !ok || swarmCtx == nil {
@@ -718,6 +730,8 @@ func (d *DelegateTool) resolveSubSwarm(memberID string) *swarm.Manifest {
 //
 // Side effects:
 //   - On invocation: calls dispatchPostMemberGates on the engine.
+//
+// Expected: parameters for buildPostMemberHook.
 func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
 	if d.gateRunner == nil {
 		return nil
@@ -775,6 +789,8 @@ func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
 // Side effects:
 //   - At most one Set on the coordination store, only when the guards
 //     above all pass and the resolved key is currently empty.
+//
+// Returns: result of salvageMemberOutputIfMissing.
 func (d *DelegateTool) salvageMemberOutputIfMissing(ctx context.Context, memberID, chainID, reply string) {
 	if d.gateRunner == nil || d.coordinationStore == nil {
 		return
@@ -832,6 +848,10 @@ func (d *DelegateTool) salvageMemberOutputIfMissing(ctx context.Context, memberI
 // content, as opposed to being empty, whitespace-only, or a bare empty
 // JSON object/array. Mirrors the result-schema gate's non-empty predicate
 // so the salvage slot stays in sync with the gate read key.
+//
+// Expected: parameters for hasSubstantiveOutput.
+// Returns: result of hasSubstantiveOutput.
+// Side effects: None.
 func hasSubstantiveOutput(val []byte) bool {
 	trimmed := strings.TrimSpace(string(val))
 	return trimmed != "" && trimmed != "{}" && trimmed != "[]"
@@ -941,6 +961,10 @@ func (d *DelegateTool) dispatchMemberGates(ctx context.Context, when, memberID, 
 // gate.failed (published once on budget exhaustion) instead of one per
 // attempt. Side effects and nil-return conditions otherwise match
 // dispatchMemberGates.
+//
+// Expected: parameters for dispatchMemberGatesSilent.
+// Returns: result of dispatchMemberGatesSilent.
+// Side effects: None.
 func (d *DelegateTool) dispatchMemberGatesSilent(ctx context.Context, when, memberID, chainID string) error {
 	_, err := d.dispatchMemberGatesSilentCtx(ctx, when, memberID, chainID)
 	return err
@@ -951,6 +975,10 @@ func (d *DelegateTool) dispatchMemberGatesSilent(ctx context.Context, when, memb
 // wrapper (dispatchMemberGates) can attribute a gate.failed without
 // re-resolving the context. The returned context is non-nil whenever the
 // error is non-nil; both are nil/zero on the no-op and pass paths.
+//
+// Expected: parameters for dispatchMemberGatesSilentCtx.
+// Returns: result of dispatchMemberGatesSilentCtx.
+// Side effects: None.
 func (d *DelegateTool) dispatchMemberGatesSilentCtx(ctx context.Context, when, memberID, chainID string) (*swarm.Context, error) {
 	if d.gateRunner == nil {
 		return nil, nil
@@ -1252,6 +1280,8 @@ func (d *DelegateTool) markPreSwarmFiring(swarmID string) bool {
 //
 // Side effects:
 //   - Mutates prefiredSwarmIDs under swarmLifecycleMu.
+//
+// Returns: result of unmarkPreSwarmFiring.
 func (d *DelegateTool) unmarkPreSwarmFiring(swarmID string) {
 	d.swarmLifecycleMu.Lock()
 	defer d.swarmLifecycleMu.Unlock()
@@ -1301,6 +1331,9 @@ func (d *DelegateTool) unmarkPreSwarmFiring(swarmID string) {
 //
 // Side effects:
 //   - None (reads the ctx-scoped swarm context).
+//
+// Expected: parameters for resolveSwarmChainNamespace.
+// Returns: result of resolveSwarmChainNamespace.
 func (d *DelegateTool) resolveSwarmChainNamespace(ctx context.Context, callerChainID string, staticPrefixFallback bool) (chainID string, owned bool) {
 	swarmCtx, inSwarm := d.activeSwarmContextForCtx(ctx)
 	if inSwarm && swarmCtx != nil && swarmCtx.ChainIDAssigned && swarmCtx.ChainPrefix != "" {
@@ -1334,6 +1367,9 @@ func (d *DelegateTool) resolveSwarmChainNamespace(ctx context.Context, callerCha
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for resolveMemberChainID.
+// Returns: result of resolveMemberChainID.
 func (d *DelegateTool) resolveMemberChainID(ctx context.Context, callerChainID string) (chainID string, fromCaller bool) {
 	if resolved, owned := d.resolveSwarmChainNamespace(ctx, callerChainID, true); owned {
 		return resolved, true
@@ -1356,6 +1392,8 @@ func (d *DelegateTool) resolveMemberChainID(ctx context.Context, callerChainID s
 //
 // Side effects:
 //   - Mutates swarmChainIDs under swarmLifecycleMu (lazy-init).
+//
+// Returns: result of recordSwarmChainID.
 func (d *DelegateTool) recordSwarmChainID(swarmID, chainID string) {
 	if swarmID == "" || strings.TrimSpace(chainID) == "" {
 		return
@@ -1502,6 +1540,8 @@ func (d *DelegateTool) activeSwarmContextForCtx(ctx context.Context) (*swarm.Con
 //   - Attempts a non-blocking send to the output channel if it's still open.
 //   - Silently drops events if the channel is full or closed (common when parent context is cancelled).
 //   - Recovers from panic if the channel was closed by the parent context.
+//
+// Returns: result of emitDelegationEvent.
 func (d *DelegateTool) emitDelegationEvent(
 	outChan chan<- provider.StreamChunk, hasOutput bool,
 	base provider.DelegationInfo, status string,

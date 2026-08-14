@@ -36,6 +36,8 @@ func New(s Store) *Tool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *Tool) Name() string {
 	return "todowrite"
 }
@@ -47,6 +49,8 @@ func (t *Tool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *Tool) Description() string {
 	return "Create and manage a structured task list for tracking progress on multi-step work"
 }
@@ -58,6 +62,8 @@ func (t *Tool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -92,6 +98,10 @@ func (t *Tool) Schema() tool.Schema {
 
 // IsStateModifying returns true because todowrite replaces the stored
 // task list for the session.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute stores the provided todo list for the current session and returns it as JSON.

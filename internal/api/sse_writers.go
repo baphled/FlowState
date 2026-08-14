@@ -88,6 +88,9 @@ type sseCriticFeedback struct {
 }
 
 // writeSSEContent marshals content as a JSON chunk and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSEContent.
+// Side effects: None.
 func writeSSEContent(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseChunk{Content: content}
 	jsonData, err := json.Marshal(data)
@@ -98,11 +101,17 @@ func writeSSEContent(w http.ResponseWriter, flusher http.Flusher, content string
 }
 
 // writeSSEDone writes the completion marker as a server-sent event.
+//
+// Expected: parameters for writeSSEDone.
+// Side effects: None.
 func writeSSEDone(w http.ResponseWriter, flusher http.Flusher) {
 	writeSSE(w, flusher, "[DONE]")
 }
 
 // writeSSEToolCall marshals a tool call as a JSON event and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSEToolCall.
+// Side effects: None.
 func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name, input string) {
 	data := sseToolCall{Type: "tool_call", Name: name, Status: "running", Input: input}
 	jsonData, err := json.Marshal(data)
@@ -113,6 +122,9 @@ func writeSSEToolCall(w http.ResponseWriter, flusher http.Flusher, name, input s
 }
 
 // writeSSESkillLoad marshals a skill load as a JSON event and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSESkillLoad.
+// Side effects: None.
 func writeSSESkillLoad(w http.ResponseWriter, flusher http.Flusher, name string) {
 	data := sseSkillLoad{Type: "skill_load", Name: name}
 	jsonData, err := json.Marshal(data)
@@ -123,6 +135,9 @@ func writeSSESkillLoad(w http.ResponseWriter, flusher http.Flusher, name string)
 }
 
 // writeSSEToolResult marshals a tool result as a JSON event and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSEToolResult.
+// Side effects: None.
 func writeSSEToolResult(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseToolResult{Type: "tool_result", Content: content}
 	jsonData, err := json.Marshal(data)
@@ -138,6 +153,9 @@ func writeSSEToolResult(w http.ResponseWriter, flusher http.Flusher, content str
 // the type discriminant; the chatStore handler (chatStore.ts:3450) routes
 // it through handleToolErrorEvent which flips the matching running
 // tool_result row to status='error'.
+//
+// Expected: parameters for writeSSEToolError.
+// Side effects: None.
 func writeSSEToolError(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseToolError{Type: "tool_error", Content: content}
 	jsonData, err := json.Marshal(data)
@@ -148,6 +166,9 @@ func writeSSEToolError(w http.ResponseWriter, flusher http.Flusher, content stri
 }
 
 // writeSSEHarnessRetry marshals a harness retry as a JSON event and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSEHarnessRetry.
+// Side effects: None.
 func writeSSEHarnessRetry(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseHarnessRetry{Type: "harness_retry", Content: content}
 	jsonData, err := json.Marshal(data)
@@ -158,6 +179,9 @@ func writeSSEHarnessRetry(w http.ResponseWriter, flusher http.Flusher, content s
 }
 
 // writeSSEAttemptStart marshals a harness attempt start as a JSON event and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSEAttemptStart.
+// Side effects: None.
 func writeSSEAttemptStart(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseAttemptStart{Type: "harness_attempt_start", Content: content}
 	jsonData, err := json.Marshal(data)
@@ -168,6 +192,9 @@ func writeSSEAttemptStart(w http.ResponseWriter, flusher http.Flusher, content s
 }
 
 // writeSSEHarnessComplete marshals a harness completion as a JSON event and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSEHarnessComplete.
+// Side effects: None.
 func writeSSEHarnessComplete(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseHarnessComplete{Type: "harness_complete", Content: content}
 	jsonData, err := json.Marshal(data)
@@ -178,6 +205,9 @@ func writeSSEHarnessComplete(w http.ResponseWriter, flusher http.Flusher, conten
 }
 
 // writeSSECriticFeedback marshals harness critic feedback as a JSON event and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSECriticFeedback.
+// Side effects: None.
 func writeSSECriticFeedback(w http.ResponseWriter, flusher http.Flusher, content string) {
 	data := sseCriticFeedback{Type: "harness_critic_feedback", Content: content}
 	jsonData, err := json.Marshal(data)
@@ -188,6 +218,9 @@ func writeSSECriticFeedback(w http.ResponseWriter, flusher http.Flusher, content
 }
 
 // writeSSEDelegation marshals a delegation event as JSON and writes it as a server-sent event.
+//
+// Expected: parameters for writeSSEDelegation.
+// Side effects: None.
 func writeSSEDelegation(w http.ResponseWriter, flusher http.Flusher, event streaming.DelegationEvent) {
 	jsonData, err := json.Marshal(event)
 	if err != nil {
@@ -197,6 +230,9 @@ func writeSSEDelegation(w http.ResponseWriter, flusher http.Flusher, event strea
 }
 
 // writeSSE writes a server-sent event data line and flushes the response buffer.
+//
+// Expected: parameters for writeSSE.
+// Side effects: None.
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, data string) {
 	if _, err := w.Write([]byte("data: " + data + "\n\n")); err != nil {
 		return

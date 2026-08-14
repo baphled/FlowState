@@ -158,6 +158,10 @@ func PrimaryArgValue(name string, args map[string]any) (string, bool) {
 //
 // Returns ok=false when neither subagent_type nor message is a usable string,
 // allowing the caller to fall through to the generic resolution path.
+//
+// Expected: parameters for delegateDisplayValue.
+// Returns: result of delegateDisplayValue.
+// Side effects: None.
 func delegateDisplayValue(args map[string]any) (string, bool) {
 	subagent, _ := args["subagent_type"].(string)
 	message, _ := args["message"].(string)
@@ -185,6 +189,10 @@ func delegateDisplayValue(args map[string]any) (string, bool) {
 // Returns ok=false when args["todos"] is absent so callers can fall through.
 // An empty list returns "0 todos" and ok=true — explicit empty-state rendering
 // is preferable to a blank card.
+//
+// Expected: parameters for todoListDisplayValue.
+// Returns: result of todoListDisplayValue.
+// Side effects: None.
 func todoListDisplayValue(args map[string]any) (string, bool) {
 	raw, present := args["todos"]
 	if !present {
@@ -230,6 +238,10 @@ func todoListDisplayValue(args map[string]any) (string, bool) {
 //
 // Returns ok=false when neither status, id, nor content yields a usable string,
 // so the caller can fall through to the generic resolution path.
+//
+// Expected: parameters for todoUpdateDisplayValue.
+// Returns: result of todoUpdateDisplayValue.
+// Side effects: None.
 func todoUpdateDisplayValue(args map[string]any) (string, bool) {
 	status, _ := args["status"].(string)
 	id, _ := args["id"].(string)
@@ -275,6 +287,10 @@ func Summary(name string, args map[string]any) string {
 
 // truncate caps s at truncateLen characters, appending "..." when truncation
 // occurs. Returns s unchanged when within the limit.
+//
+// Expected: parameters for truncate.
+// Returns: result of truncate.
+// Side effects: None.
 func truncate(s string) string {
 	if len(s) <= truncateLen {
 		return s
@@ -285,6 +301,10 @@ func truncate(s string) string {
 // redactIfSensitive returns redactedPlaceholder when key matches any
 // sensitiveKeySubstrings entry (case-insensitive); otherwise returns value
 // unchanged.
+//
+// Expected: parameters for redactIfSensitive.
+// Returns: result of redactIfSensitive.
+// Side effects: None.
 func redactIfSensitive(key, value string) string {
 	lower := strings.ToLower(key)
 	for _, sub := range sensitiveKeySubstrings {
@@ -314,6 +334,10 @@ func redactIfSensitive(key, value string) string {
 // Determinism matters because a non-deterministic fallback would render
 // different values across reloads of the same session, so keys are sorted
 // before encoding.
+//
+// Expected: parameters for compactJSONFallback.
+// Returns: result of compactJSONFallback.
+// Side effects: None.
 func compactJSONFallback(args map[string]any) (string, bool) {
 	if len(args) == 0 {
 		return "", false
@@ -386,6 +410,10 @@ func compactJSONFallback(args map[string]any) (string, bool) {
 // isSensitiveKey returns true when key matches any sensitiveKeySubstrings
 // entry case-insensitively. Used to gate non-string values, which can't go
 // through redactIfSensitive (that helper operates on string values only).
+//
+// Expected: parameters for isSensitiveKey.
+// Returns: result of isSensitiveKey.
+// Side effects: None.
 func isSensitiveKey(key string) bool {
 	lower := strings.ToLower(key)
 	for _, sub := range sensitiveKeySubstrings {

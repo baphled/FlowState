@@ -152,6 +152,10 @@ type MemoryStoreOption func(*MemoryStore)
 // expiry without manipulating wall-clock state.
 //
 // Passing a nil now is a no-op (preserves the time.Now default).
+//
+// Expected: parameters for WithNow.
+// Returns: result of WithNow.
+// Side effects: None.
 func WithNow(now func() time.Time) MemoryStoreOption {
 	return func(m *MemoryStore) {
 		if now != nil {
@@ -164,6 +168,10 @@ func WithNow(now func() time.Time) MemoryStoreOption {
 // options (WithNow) configure clock injection for deterministic tests.
 // The zero-option call site preserves the prior shape so existing
 // callers compile unchanged.
+//
+// Expected: parameters for NewMemoryStore.
+// Returns: result of NewMemoryStore.
+// Side effects: None.
 func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 	m := &MemoryStore{now: time.Now}
 	for _, opt := range opts {
@@ -175,6 +183,10 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 // Get returns the Record for token, or ErrSessionNotFound if missing,
 // expired, or the token is empty. Honours ctx cancellation up-front
 // (cheap check; no long-running work in this impl).
+//
+// Expected: parameters for Get.
+// Returns: result of Get.
+// Side effects: None.
 func (m *MemoryStore) Get(ctx context.Context, token string) (*Record, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -204,6 +216,10 @@ func (m *MemoryStore) Get(ctx context.Context, token string) (*Record, error) {
 
 // Put stores rec, overwriting any prior record under the same token.
 // Empty rec.Token returns ErrInvalidToken (plan ladder row 7).
+//
+// Expected: parameters for Put.
+// Returns: result of Put.
+// Side effects: None.
 func (m *MemoryStore) Put(ctx context.Context, rec *Record) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -218,6 +234,10 @@ func (m *MemoryStore) Put(ctx context.Context, rec *Record) error {
 // Delete removes the record for token. Idempotent: deleting a
 // non-existent token returns nil (plan ladder row 2 — Delete is NOT
 // a sentinel-returning operation).
+//
+// Expected: parameters for Delete.
+// Returns: result of Delete.
+// Side effects: None.
 func (m *MemoryStore) Delete(ctx context.Context, token string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -229,6 +249,10 @@ func (m *MemoryStore) Delete(ctx context.Context, token string) error {
 // Cleanup sweeps records with ExpiresAt strictly before `before`.
 // Idempotent (plan ladder row 4) and honours ctx cancellation between
 // records (plan ladder row 8).
+//
+// Expected: parameters for Cleanup.
+// Returns: result of Cleanup.
+// Side effects: None.
 func (m *MemoryStore) Cleanup(ctx context.Context, before time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -264,21 +288,40 @@ type RedisStore struct{}
 // exists so callers can wire `auth.store.backend = redis` in v1 config
 // for forward compatibility; the first method call surfaces
 // ErrNotImplemented.
+//
+// Returns: result of NewRedisStore.
+// Side effects: None.
 func NewRedisStore() *RedisStore { return &RedisStore{} }
 
 // Get returns ErrNotImplemented. v3 swap-in.
+//
+// Expected: parameters for Get.
+// Returns: result of Get.
+// Side effects: None.
 func (*RedisStore) Get(context.Context, string) (*Record, error) {
 	return nil, ErrNotImplemented
 }
 
 // Put returns ErrNotImplemented. v3 swap-in.
+//
+// Expected: parameters for Put.
+// Returns: result of Put.
+// Side effects: None.
 func (*RedisStore) Put(context.Context, *Record) error { return ErrNotImplemented }
 
 // Delete returns ErrNotImplemented. v3 swap-in.
+//
+// Expected: parameters for Delete.
+// Returns: result of Delete.
+// Side effects: None.
 func (*RedisStore) Delete(context.Context, string) error { return ErrNotImplemented }
 
 // Cleanup returns ErrNotImplemented. v3 swap-in (Redis may no-op once
 // native TTL is enabled).
+//
+// Expected: parameters for Cleanup.
+// Returns: result of Cleanup.
+// Side effects: None.
 func (*RedisStore) Cleanup(context.Context, time.Time) error { return ErrNotImplemented }
 
 // PostgresStore is the v1 stub for the Postgres backend, identical in
@@ -286,20 +329,39 @@ func (*RedisStore) Cleanup(context.Context, time.Time) error { return ErrNotImpl
 type PostgresStore struct{}
 
 // NewPostgresStore constructs an empty PostgresStore stub.
+//
+// Returns: result of NewPostgresStore.
+// Side effects: None.
 func NewPostgresStore() *PostgresStore { return &PostgresStore{} }
 
 // Get returns ErrNotImplemented. v3 swap-in.
+//
+// Expected: parameters for Get.
+// Returns: result of Get.
+// Side effects: None.
 func (*PostgresStore) Get(context.Context, string) (*Record, error) {
 	return nil, ErrNotImplemented
 }
 
 // Put returns ErrNotImplemented. v3 swap-in.
+//
+// Expected: parameters for Put.
+// Returns: result of Put.
+// Side effects: None.
 func (*PostgresStore) Put(context.Context, *Record) error { return ErrNotImplemented }
 
 // Delete returns ErrNotImplemented. v3 swap-in.
+//
+// Expected: parameters for Delete.
+// Returns: result of Delete.
+// Side effects: None.
 func (*PostgresStore) Delete(context.Context, string) error { return ErrNotImplemented }
 
 // Cleanup returns ErrNotImplemented. v3 swap-in.
+//
+// Expected: parameters for Cleanup.
+// Returns: result of Cleanup.
+// Side effects: None.
 func (*PostgresStore) Cleanup(context.Context, time.Time) error { return ErrNotImplemented }
 
 // IsStub reports whether s is a v1 stub implementation (RedisStore /
@@ -310,6 +372,10 @@ func (*PostgresStore) Cleanup(context.Context, time.Time) error { return ErrNotI
 // v3 impls MUST return false from IsStub so the contract ladder runs.
 // The check is by concrete type rather than a method on Store so the
 // interface surface stays minimal (the four CRUD methods).
+//
+// Expected: parameters for IsStub.
+// Returns: result of IsStub.
+// Side effects: None.
 func IsStub(s Store) bool {
 	switch s.(type) {
 	case *RedisStore, *PostgresStore:

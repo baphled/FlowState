@@ -28,6 +28,8 @@ import (
 // Side effects:
 //   - Publishes `gate.evaluating` on the bus when wired; otherwise
 //     a no-op.
+//
+// Returns: result of publishGateEvaluating.
 func (d *DelegateTool) publishGateEvaluating(ctx context.Context, swarmCtx *swarm.Context, when, memberID string, count int) {
 	if d.eventBus == nil {
 		return
@@ -57,6 +59,8 @@ func (d *DelegateTool) publishGateEvaluating(ctx context.Context, swarmCtx *swar
 //
 // Side effects:
 //   - Publishes `gate.passed` on the bus when wired; otherwise a no-op.
+//
+// Returns: result of publishGatePassed.
 func (d *DelegateTool) publishGatePassed(ctx context.Context, swarmCtx *swarm.Context, when, memberID string, count int) {
 	if d.eventBus == nil {
 		return
@@ -94,6 +98,8 @@ func (d *DelegateTool) publishGatePassed(ctx context.Context, swarmCtx *swarm.Co
 //
 // Side effects:
 //   - Publishes `gate.failed` on the bus when wired; otherwise a no-op.
+//
+// Returns: result of publishGateFailed.
 func (d *DelegateTool) publishGateFailed(ctx context.Context, swarmCtx *swarm.Context, when, memberID string, err error) {
 	if d.eventBus == nil || err == nil {
 		return
@@ -137,6 +143,10 @@ const gateExtKindPrefix = "ext:"
 // declared them. Returns nil for legacy single-key gates and for
 // builtin gates that have no Inputs registered. The keys carry the
 // "what was checked?" affordance to surfaces.
+//
+// Expected: parameters for gateCoordStoreKeys.
+// Returns: result of gateCoordStoreKeys.
+// Side effects: None.
 func gateCoordStoreKeys(gateErr *swarm.GateError, chainPrefix string) []string {
 	if gateErr == nil {
 		return nil
@@ -166,6 +176,10 @@ func gateCoordStoreKeys(gateErr *swarm.GateError, chainPrefix string) []string {
 // payload's CoordStoreKeys formatting matches the gate-runner's
 // lookup formatting verbatim. Re-declared rather than exported because
 // the helper is shared only at this seam.
+//
+// Expected: parameters for joinGateKey.
+// Returns: result of joinGateKey.
+// Side effects: None.
 func joinGateKey(parts ...string) string {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -188,6 +202,8 @@ func joinGateKey(parts ...string) string {
 //
 // Side effects:
 //   - Publishes onto the bus when wired; otherwise a no-op.
+//
+// Returns: result of publishDelegationEvent.
 func (d *DelegateTool) publishDelegationEvent(status string, data events.DelegationEventData) {
 	if d.eventBus == nil {
 		return
@@ -220,6 +236,10 @@ type RunnerFactory func(*swarm.Manifest) *swarm.Runner
 // or, when manifest is nil, a Runner from zero-value RetryPolicy /
 // CircuitBreakerConfig that the swarm package fills in with its own
 // defaults.
+//
+// Expected: parameters for defaultRunnerFactory.
+// Returns: result of defaultRunnerFactory.
+// Side effects: None.
 func defaultRunnerFactory(m *swarm.Manifest) *swarm.Runner {
 	if m == nil {
 		return swarm.NewRunner(swarm.RetryPolicy{}, swarm.CircuitBreakerConfig{})

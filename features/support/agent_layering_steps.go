@@ -23,6 +23,8 @@ import (
 //
 // Side effects:
 //   - Registers agent layering step patterns on the scenario context.
+//
+// Returns: result of RegisterAgentLayeringSteps.
 func (s *StepDefinitions) RegisterAgentLayeringSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^an agent registry already contains an agent with ID "([^"]*)"$`,
 		s.anAgentRegistryAlreadyContainsAnAgentWithID)

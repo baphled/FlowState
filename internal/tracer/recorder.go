@@ -85,6 +85,8 @@ type NoopRecorder struct{}
 //
 // Side effects:
 //   - None.
+//
+// Returns: result of RecordRetry.
 func (n *NoopRecorder) RecordRetry(_ string) {}
 
 // RecordValidationScore discards the validation score.
@@ -95,6 +97,8 @@ func (n *NoopRecorder) RecordRetry(_ string) {}
 //
 // Side effects:
 //   - None.
+//
+// Returns: result of RecordValidationScore.
 func (n *NoopRecorder) RecordValidationScore(_ string, _ float64) {}
 
 // RecordCriticResult discards the critic result.
@@ -105,6 +109,8 @@ func (n *NoopRecorder) RecordValidationScore(_ string, _ float64) {}
 //
 // Side effects:
 //   - None.
+//
+// Returns: result of RecordCriticResult.
 func (n *NoopRecorder) RecordCriticResult(_ string, _ bool) {}
 
 // RecordProviderLatency discards the provider latency.
@@ -116,6 +122,8 @@ func (n *NoopRecorder) RecordCriticResult(_ string, _ bool) {}
 //
 // Side effects:
 //   - None.
+//
+// Returns: result of RecordProviderLatency.
 func (n *NoopRecorder) RecordProviderLatency(_, _ string, _ float64) {}
 
 // RecordContextWindowTokens discards the context window gauge update.
@@ -126,6 +134,8 @@ func (n *NoopRecorder) RecordProviderLatency(_, _ string, _ float64) {}
 //
 // Side effects:
 //   - None.
+//
+// Returns: result of RecordContextWindowTokens.
 func (n *NoopRecorder) RecordContextWindowTokens(_ string, _ int) {}
 
 // RecordCompressionTokensSaved discards the compression savings delta.
@@ -140,6 +150,8 @@ func (n *NoopRecorder) RecordContextWindowTokens(_ string, _ int) {}
 //
 // Side effects:
 //   - None.
+//
+// Returns: result of RecordCompressionTokensSaved.
 func (n *NoopRecorder) RecordCompressionTokensSaved(_ string, _ int) {}
 
 // RecordCompressionOverheadTokens discards the compression overhead delta.
@@ -153,12 +165,20 @@ func (n *NoopRecorder) RecordCompressionTokensSaved(_ string, _ int) {}
 //
 // Side effects:
 //   - None.
+//
+// Returns: result of RecordCompressionOverheadTokens.
 func (n *NoopRecorder) RecordCompressionOverheadTokens(_ string, _ int) {}
 
 // IncPermissionPending discards the permission-pending increment.
 // Side effects: none.
+//
+// Expected: parameters for IncPermissionPending.
+// Returns: result of IncPermissionPending.
 func (n *NoopRecorder) IncPermissionPending() {}
 
 // DecPermissionPending discards the permission-pending decrement.
 // Side effects: none.
+//
+// Expected: parameters for DecPermissionPending.
+// Returns: result of DecPermissionPending.
 func (n *NoopRecorder) DecPermissionPending() {}

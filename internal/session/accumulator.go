@@ -95,6 +95,10 @@ func WithTurnRecorder(parent context.Context, rec TurnMessageRecorder) context.C
 // WithTurnRecorder. Returns (nil, false) when no recorder is set OR
 // when a nil recorder was stored (treated as absent for symmetry
 // with the no-value path).
+//
+// Expected: parameters for TurnRecorderFromContext.
+// Returns: result of TurnRecorderFromContext.
+// Side effects: None.
 func TurnRecorderFromContext(ctx context.Context) (TurnMessageRecorder, bool) {
 	if ctx == nil {
 		return nil, false
@@ -114,12 +118,20 @@ func TurnRecorderFromContext(ctx context.Context) (TurnMessageRecorder, bool) {
 // The Dispatcher writes BOTH this key AND internal/turn's turnIDKey
 // so consumers in both packages can read the value without taking
 // the cycling import. The accumulator reads this key.
+//
+// Expected: parameters for WithAccumulatorTurnID.
+// Returns: result of WithAccumulatorTurnID.
+// Side effects: None.
 func WithAccumulatorTurnID(parent context.Context, id string) context.Context {
 	return context.WithValue(parent, turnIDCtxKey{}, id)
 }
 
 // AccumulatorTurnIDFromContext extracts the turn id stored under
 // turnIDCtxKey{}. Returns ("", false) when absent or empty.
+//
+// Expected: parameters for AccumulatorTurnIDFromContext.
+// Returns: result of AccumulatorTurnIDFromContext.
+// Side effects: None.
 func AccumulatorTurnIDFromContext(ctx context.Context) (string, bool) {
 	if ctx == nil {
 		return "", false
@@ -151,6 +163,13 @@ type turnAwareAppender struct {
 	recorder TurnMessageRecorder
 }
 
+// AppendMessage ...
+//
+// Expected: parameters for AppendMessage.
+//
+// Returns: result of AppendMessage.
+//
+// Side effects: None.
 func (t *turnAwareAppender) AppendMessage(sessionID string, msg Message) {
 	// Pre-assign id + timestamp so the Turn.MessagesAdded record
 	// agrees with the session-stored copy. The inner appender used to
@@ -171,6 +190,13 @@ func (t *turnAwareAppender) AppendMessage(sessionID string, msg Message) {
 	}
 }
 
+// UpdateDelegation ...
+//
+// Expected: parameters for UpdateDelegation.
+//
+// Returns: result of UpdateDelegation.
+//
+// Side effects: None.
 func (t *turnAwareAppender) UpdateDelegation(sessionID, chainID string, mutate func(*Message)) {
 	// Capture the post-mutate snapshot so the Turn registry sees the
 	// live state of the delegation row, not the frozen
@@ -227,6 +253,8 @@ func (m *Manager) AppendMessage(sessionID string, msg Message) {
 // Side effects:
 //   - Acquires the Manager lock, mutates the message in place, and re-persists
 //     the session. No-op when the session or matching message is absent.
+//
+// Returns: result of UpdateDelegation.
 func (m *Manager) UpdateDelegation(sessionID, chainID string, mutate func(*Message)) {
 	m.mu.Lock()
 	sess, ok := m.sessions[sessionID]
@@ -390,6 +418,10 @@ type streamAccumState struct {
 // (does the provider's tool-use finish always carry a real call) that
 // resolves to a different provider set. Keeping them apart prevents the
 // trust allowlist from silently changing placeholder-synthesis behaviour.
+//
+// Expected: parameters for providerProducesUnifiedAssistant.
+// Returns: result of providerProducesUnifiedAssistant.
+// Side effects: None.
 func providerProducesUnifiedAssistant(providerID string) bool {
 	return providerID == "anthropic"
 }
@@ -442,6 +474,10 @@ func providerProducesUnifiedAssistant(providerID string) bool {
 // unreliable glm-class models, and "default to false" keeps catching real
 // violations until a provider is proven trustworthy. Extending the set is
 // safe and additive once a false-positive on that provider is observed.
+//
+// Expected: parameters for providerToolUseFinishIsTrustworthy.
+// Returns: result of providerToolUseFinishIsTrustworthy.
+// Side effects: None.
 func providerToolUseFinishIsTrustworthy(providerID string) bool {
 	switch providerID {
 	case "anthropic", "openai":
@@ -642,6 +678,9 @@ func applyChunk(appender MessageAppender, s *streamAccumState, chunk provider.St
 //   - When a chunk carries thinking text but no signature, accumulate
 //     into the buffer — this is a legacy/test-only shape; the buffer is
 //     drained by flushThinking at Done time.
+//
+// Expected: parameters for applyThinkingAndContent.
+// Side effects: None.
 func applyThinkingAndContent(
 	appender MessageAppender, s *streamAccumState, chunk provider.StreamChunk,
 ) {
@@ -808,6 +847,9 @@ func applyDelegation(appender MessageAppender, s *streamAccumState, info *provid
 
 // applyDelegationFields copies structured progress fields from info onto m and
 // refreshes the human-readable Content summary.
+//
+// Expected: parameters for applyDelegationFields.
+// Side effects: None.
 func applyDelegationFields(m *Message, info *provider.DelegationInfo) {
 	m.TargetAgent = info.TargetAgent
 	m.TargetSessionID = info.TargetSessionID
@@ -1277,6 +1319,10 @@ var fabricationPhrases = []string{
 // matchesFabricationSignature reports whether content matches any phrase
 // in fabricationPhrases (case-insensitive for ASCII phrases; the literal
 // ✅ glyph is compared byte-for-byte since case-folding does not apply).
+//
+// Expected: parameters for matchesFabricationSignature.
+// Returns: result of matchesFabricationSignature.
+// Side effects: None.
 func matchesFabricationSignature(content string) bool {
 	if content == "" {
 		return false

@@ -235,6 +235,10 @@ func (r *Runner) Dispatch(ctx context.Context, memberID string, fn DispatchFunc)
 // downstream see the full trace. Plain errors are wrapped in a
 // fresh CategorisedError; existing CategorisedError values get the
 // path filled in if they don't already carry one.
+//
+// Expected: parameters for attachPath.
+// Returns: result of attachPath.
+// Side effects: None.
 func (r *Runner) attachPath(err error, memberID string) error {
 	if err == nil {
 		return nil
@@ -259,6 +263,10 @@ func (r *Runner) attachPath(err error, memberID string) error {
 
 // asCategorised mirrors errors.As for the local CategorisedError.
 // Pulled into a helper for readability inside attachPath.
+//
+// Expected: parameters for asCategorised.
+// Returns: result of asCategorised.
+// Side effects: None.
 func asCategorised(err error, target **CategorisedError) bool {
 	for current := err; current != nil; {
 		if ce, ok := current.(*CategorisedError); ok {
@@ -277,6 +285,10 @@ func asCategorised(err error, target **CategorisedError) bool {
 // checkBreakerBeforeDispatch consults the breaker state and returns a
 // non-nil error when the dispatch must be short-circuited.
 // CooldownElapsed transitions Open -> HalfOpen so a probe can fire.
+//
+// Expected: parameters for checkBreakerBeforeDispatch.
+// Returns: result of checkBreakerBeforeDispatch.
+// Side effects: None.
 func (r *Runner) checkBreakerBeforeDispatch() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -303,6 +315,10 @@ func (r *Runner) checkBreakerBeforeDispatch() error {
 }
 
 // recordSuccess closes the breaker and zeroes the failure counter.
+//
+// Expected: parameters for recordSuccess.
+// Returns: result of recordSuccess.
+// Side effects: None.
 func (r *Runner) recordSuccess() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -314,6 +330,10 @@ func (r *Runner) recordSuccess() {
 // recordTerminal leaves the breaker untouched — terminal errors
 // indicate user / config faults rather than transient flakiness, so
 // they should not trip the breaker against the wider system.
+//
+// Expected: parameters for recordTerminal.
+// Returns: result of recordTerminal.
+// Side effects: None.
 func (r *Runner) recordTerminal() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -324,6 +344,10 @@ func (r *Runner) recordTerminal() {
 
 // recordRetryableFailure increments the consecutive-failure counter
 // and trips the breaker open when the threshold is hit.
+//
+// Expected: parameters for recordRetryableFailure.
+// Returns: result of recordRetryableFailure.
+// Side effects: None.
 func (r *Runner) recordRetryableFailure() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -344,6 +368,10 @@ func (r *Runner) recordRetryableFailure() {
 // computeBackoff returns the per-attempt wait per the manifest's
 // retry policy. attempt is zero-based (0 = wait between attempt 1
 // and attempt 2).
+//
+// Expected: parameters for computeBackoff.
+// Returns: result of computeBackoff.
+// Side effects: None.
 func (r *Runner) computeBackoff(attempt int, policy RetryPolicy) time.Duration {
 	base := policy.InitialBackoff
 	if base <= 0 {
@@ -373,6 +401,10 @@ func (r *Runner) computeBackoff(attempt int, policy RetryPolicy) time.Duration {
 
 // applyJitter applies a ±25% random offset to wait. The 25% bound
 // matches §7 A2's example "jitter: 0.25".
+//
+// Expected: parameters for applyJitter.
+// Returns: result of applyJitter.
+// Side effects: None.
 func applyJitter(rng *rand.Rand, wait float64) float64 {
 	delta := wait * 0.25
 	offset := (rng.Float64() * 2 * delta) - delta
@@ -383,6 +415,13 @@ func applyJitter(rng *rand.Rand, wait float64) float64 {
 	return out
 }
 
+// effectiveThreshold ...
+//
+// Expected: parameters for effectiveThreshold.
+//
+// Returns: result of effectiveThreshold.
+//
+// Side effects: None.
 func (r *Runner) effectiveThreshold() int {
 	if r.breaker.Threshold > 0 {
 		return r.breaker.Threshold
@@ -390,6 +429,13 @@ func (r *Runner) effectiveThreshold() int {
 	return DefaultBreakerThreshold
 }
 
+// effectiveCooldown ...
+//
+// Expected: parameters for effectiveCooldown.
+//
+// Returns: result of effectiveCooldown.
+//
+// Side effects: None.
 func (r *Runner) effectiveCooldown() time.Duration {
 	if r.breaker.Cooldown > 0 {
 		return r.breaker.Cooldown
@@ -397,6 +443,13 @@ func (r *Runner) effectiveCooldown() time.Duration {
 	return DefaultBreakerCooldown
 }
 
+// effectiveHalfOpenAttempts ...
+//
+// Expected: parameters for effectiveHalfOpenAttempts.
+//
+// Returns: result of effectiveHalfOpenAttempts.
+//
+// Side effects: None.
 func (r *Runner) effectiveHalfOpenAttempts() int {
 	if r.breaker.HalfOpenAttempts > 0 {
 		return r.breaker.HalfOpenAttempts

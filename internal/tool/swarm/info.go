@@ -15,13 +15,39 @@ type SwarmInfoTool struct {
 }
 
 // NewSwarmInfoTool creates a SwarmInfoTool backed by the given registry.
+//
+// Expected: parameters for NewSwarmInfoTool.
+// Returns: result of NewSwarmInfoTool.
+// Side effects: None.
 func NewSwarmInfoTool(registry SwarmReader) *SwarmInfoTool {
 	return &SwarmInfoTool{registry: registry}
 }
 
-func (t *SwarmInfoTool) Name() string        { return "swarm_info" }
+// Name ...
+//
+// Expected: parameters for Name.
+//
+// Returns: result of Name.
+//
+// Side effects: None.
+func (t *SwarmInfoTool) Name() string { return "swarm_info" }
+
+// Description ...
+//
+// Expected: parameters for Description.
+//
+// Returns: result of Description.
+//
+// Side effects: None.
 func (t *SwarmInfoTool) Description() string { return "Get full details of a registered swarm" }
 
+// Schema ...
+//
+// Expected: parameters for Schema.
+//
+// Returns: result of Schema.
+//
+// Side effects: None.
 func (t *SwarmInfoTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -33,6 +59,10 @@ func (t *SwarmInfoTool) Schema() tool.Schema {
 }
 
 // Execute returns a formatted description of the named swarm's lead, members, and gates.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *SwarmInfoTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
 	id, ok := input.Arguments["id"].(string)
 	if !ok || id == "" {

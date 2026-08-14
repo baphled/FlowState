@@ -78,6 +78,10 @@ func File(path string, data []byte, perm os.FileMode) error {
 // it, fsync's the contents, and returns the temp file path. Permission
 // bits are applied via chmod after creation so behaviour does not depend
 // on the caller's umask.
+//
+// Expected: parameters for writeTempFile.
+// Returns: result of writeTempFile.
+// Side effects: None.
 func writeTempFile(
 	dir, base string,
 	data []byte,
@@ -128,6 +132,9 @@ func writeTempFile(
 
 // randomSuffix returns 8 hex characters of cryptographic randomness, used
 // to disambiguate concurrent temp files writing to the same target path.
+//
+// Returns: result of randomSuffix.
+// Side effects: None.
 func randomSuffix() (string, error) {
 	buf := make([]byte, 4)
 	if _, err := rand.Read(buf); err != nil {

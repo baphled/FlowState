@@ -44,6 +44,10 @@ const (
 // String renders the category for log output. Matches the §7 A3
 // "severity" strings on the manifest schema so structured logs can
 // equality-match.
+//
+// Expected: parameters for String.
+// Returns: result of String.
+// Side effects: None.
 func (c ErrorCategory) String() string {
 	switch c {
 	case CategoryRecoverable:
@@ -116,6 +120,10 @@ func NewCategorisedError(category ErrorCategory, cause error, memberID string) *
 // Error renders the error in a stable shape so log readers can pin
 // the format. Includes the category, the path / member context, and
 // the underlying cause's message.
+//
+// Expected: parameters for Error.
+// Returns: result of Error.
+// Side effects: None.
 func (e *CategorisedError) Error() string {
 	if e == nil {
 		return "<nil CategorisedError>"
@@ -128,6 +136,10 @@ func (e *CategorisedError) Error() string {
 }
 
 // Unwrap exposes the cause for errors.Is / errors.As traversal.
+//
+// Expected: parameters for Unwrap.
+// Returns: result of Unwrap.
+// Side effects: None.
 func (e *CategorisedError) Unwrap() error {
 	if e == nil {
 		return nil
@@ -139,6 +151,10 @@ func (e *CategorisedError) Unwrap() error {
 // CategoryRetryable. Uncategorised errors and CategoryUnknown values
 // return false so a plain errors.New value never silently triggers a
 // retry — explicit categorisation is required.
+//
+// Expected: parameters for IsRetryable.
+// Returns: result of IsRetryable.
+// Side effects: None.
 func IsRetryable(err error) bool {
 	return CategoryOf(err) == CategoryRetryable
 }
@@ -147,6 +163,10 @@ func IsRetryable(err error) bool {
 // errors.As chain so a CategorisedError nested under a fmt.Errorf
 // wrapper is still discoverable. Returns CategoryUnknown when no
 // CategorisedError is found in the chain.
+//
+// Expected: parameters for CategoryOf.
+// Returns: result of CategoryOf.
+// Side effects: None.
 func CategoryOf(err error) ErrorCategory {
 	if err == nil {
 		return CategoryUnknown
@@ -161,6 +181,10 @@ func CategoryOf(err error) ErrorCategory {
 // pathScope renders the SubSwarmPath/MemberID pair as a slash-joined
 // scope string, omitting either side when empty. Centralised so
 // Error() and the runner share the same formatting.
+//
+// Expected: parameters for pathScope.
+// Returns: result of pathScope.
+// Side effects: None.
 func pathScope(path, member string) string {
 	switch {
 	case path != "" && member != "":

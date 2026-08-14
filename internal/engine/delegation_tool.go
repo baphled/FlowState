@@ -380,6 +380,8 @@ func NewDelegateToolWithBackground(
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (d *DelegateTool) Name() string {
 	return "delegate"
 }
@@ -391,6 +393,8 @@ func (d *DelegateTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (d *DelegateTool) Description() string {
 	return "Delegate a task to another agent based on task type"
 }
@@ -410,6 +414,8 @@ func (d *DelegateTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Timeout.
 func (d *DelegateTool) Timeout() time.Duration {
 	return 0
 }
@@ -422,6 +428,8 @@ func (d *DelegateTool) Timeout() time.Duration {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (d *DelegateTool) Schema() tool.Schema {
 	schema := buildDelegateSchema(delegateCategoryOptions())
 	applyRegistryEnum(&schema, d.registry)

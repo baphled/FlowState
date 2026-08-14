@@ -60,6 +60,8 @@ func New(s store.Store) *Tool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *Tool) Name() string {
 	return toolName
 }
@@ -71,6 +73,8 @@ func (t *Tool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *Tool) Description() string {
 	return toolDescription
 }
@@ -82,6 +86,8 @@ func (t *Tool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *Tool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -117,12 +123,18 @@ func (t *Tool) Schema() tool.Schema {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Timeout.
 func (t *Tool) Timeout() time.Duration {
 	return toolTimeout
 }
 
 // IsStateModifying returns true because coordination_store can write
 // to or delete from the shared coordination key-value store.
+//
+// Expected: parameters for IsStateModifying.
+// Returns: result of IsStateModifying.
+// Side effects: None.
 func (t *Tool) IsStateModifying() bool { return true }
 
 // Execute runs the specified coordination store operation.

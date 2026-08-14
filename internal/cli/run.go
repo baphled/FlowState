@@ -176,7 +176,7 @@ func runPromptCtx(ctx context.Context, cmd *cobra.Command, application *app.App,
 	// was the root cause of the 136-byte `.meta.json` only footprint
 	// observed for long-running planner sessions that got killed by
 	// outer timeouts.
-	defer saveSession(cmd, application, sessionID)
+	defer saveSession(ctx, cmd, application, sessionID)
 
 	wrappedStreamer := streaming.NewSessionContextStreamer(
 		application.Streamer,
@@ -382,6 +382,8 @@ func validateRunOptions(opts *RunOptions) error {
 // Side effects:
 //   - None. The caller is responsible for installing swarmCtx on the
 //     engine — keeping this helper pure makes it trivial to unit-test.
+//
+// Returns: result of resolveAgentOrSwarm.
 func resolveAgentOrSwarm(application *app.App, id string) (string, *swarm.Context, error) {
 	if application == nil {
 		return id, nil, nil
@@ -405,6 +407,10 @@ func resolveAgentOrSwarm(application *app.App, id string) (string, *swarm.Contex
 // runPrompt against a partial App where Config is nil. Returning ""
 // in those cases lets resolveAgentName fall through to the historical
 // "worker" sentinel without crashing.
+//
+// Expected: parameters for configDefaultAgent.
+// Returns: result of configDefaultAgent.
+// Side effects: None.
 func configDefaultAgent(application *app.App) string {
 	if application == nil || application.Config == nil {
 		return ""
@@ -420,6 +426,10 @@ func configDefaultAgent(application *app.App) string {
 //
 // The two-argument shape lets the CLI run command honour the
 // operator's config.default_agent.
+//
+// Expected: parameters for resolveAgentName.
+// Returns: result of resolveAgentName.
+// Side effects: None.
 func resolveAgentName(agent, defaultAgent string) string {
 	name := strings.TrimSpace(agent)
 	if name != "" {
@@ -543,7 +553,7 @@ func streamResponse(
 //
 // Side effects:
 //   - Saves session to the store if available, writes warning to stderr on failure.
-func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
+func saveSession(ctx context.Context, cmd *cobra.Command, application *app.App, sessionID string) {
 	if application.Sessions == nil || application.Engine == nil {
 		return
 	}
@@ -570,7 +580,7 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 		// orchestrator (test fixtures). Mirrors the pre-lift inline path.
 		metadata := ctxstore.SessionMetadata{
 			AgentID:      application.Engine.Manifest().ID,
-			SystemPrompt: application.Engine.BuildSystemPrompt(),
+			SystemPrompt: application.Engine.BuildSystemPromptCtx(ctx),
 			LoadedSkills: skillNames,
 		}
 		if err := application.Sessions.Save(sessionID, store, metadata); err != nil {
@@ -587,10 +597,10 @@ func saveSession(cmd *cobra.Command, application *app.App, sessionID string) {
 	snapshot := orchestrator.TurnSnapshot{
 		Store:        store,
 		AgentID:      application.Engine.Manifest().ID,
-		SystemPrompt: application.Engine.BuildSystemPrompt(),
+		SystemPrompt: application.Engine.BuildSystemPromptCtx(ctx),
 		LoadedSkills: skillNames,
 	}
-	if err := orch.SaveTurnEnd(cmd.Context(), sessionID, snapshot); err != nil {
+	if err := orch.SaveTurnEnd(ctx, sessionID, snapshot); err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: failed to save session: %v\n", err)
 	}
 

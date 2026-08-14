@@ -85,6 +85,8 @@ func NewManifestWriter(dir string) *ManifestWriter {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Dir.
 func (w *ManifestWriter) Dir() string {
 	return w.dir
 }

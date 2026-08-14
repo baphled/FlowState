@@ -262,6 +262,8 @@ type AppConfig struct {
 //
 // Side effects:
 //   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedStreamTimeout.
 func (c *AppConfig) ParsedStreamTimeout() time.Duration {
 	if c == nil {
 		return 0
@@ -277,6 +279,8 @@ func (c *AppConfig) ParsedStreamTimeout() time.Duration {
 //
 // Side effects:
 //   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedToolTimeout.
 func (c *AppConfig) ParsedToolTimeout() time.Duration {
 	if c == nil {
 		return 0
@@ -293,6 +297,8 @@ func (c *AppConfig) ParsedToolTimeout() time.Duration {
 //
 // Side effects:
 //   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedBackgroundOutputTimeout.
 func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 	if c == nil {
 		return 0
@@ -308,6 +314,8 @@ func (c *AppConfig) ParsedBackgroundOutputTimeout() time.Duration {
 //
 // Side effects:
 //   - Logs a WARN once when the configured value fails to parse.
+//
+// Expected: parameters for ParsedToolLoopDuration.
 func (c *AppConfig) ParsedToolLoopDuration() time.Duration {
 	if c == nil {
 		return 0
@@ -324,6 +332,8 @@ func (c *AppConfig) ParsedToolLoopDuration() time.Duration {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ParsedToolLoopIterations.
 func (c *AppConfig) ParsedToolLoopIterations() int {
 	if c == nil {
 		return 0
@@ -339,6 +349,9 @@ func (c *AppConfig) ParsedToolLoopIterations() int {
 //
 // Returns:
 //   - true when Features.TodoStrictMode is set; false when unset or nil receiver.
+//
+// Expected: parameters for TodoStrictModeEnabled.
+// Side effects: None.
 func (c *AppConfig) TodoStrictModeEnabled() bool {
 	if c == nil {
 		return false
@@ -366,6 +379,8 @@ const SystemPromptBudgetEnv = "FLOWSTATE_SYSTEM_PROMPT_BUDGET"
 // Side effects:
 //   - Reads the FLOWSTATE_SYSTEM_PROMPT_BUDGET environment variable.
 //   - Logs a single WARN slog line when the env value fails to parse.
+//
+// Expected: parameters for ResolvedSystemPromptBudget.
 func (c *AppConfig) ResolvedSystemPromptBudget() int {
 	if v := os.Getenv(SystemPromptBudgetEnv); v != "" {
 		if parsed, err := parsePositiveInt(v); err == nil {
@@ -435,6 +450,10 @@ func parsePositiveInt(s string) (int, error) {
 //
 // A nil receiver returns the empty string. App test fixtures construct
 // App with Config=nil and exercise paths that consult this helper.
+//
+// Expected: parameters for ResolvedPlanLocation.
+// Returns: result of ResolvedPlanLocation.
+// Side effects: None.
 func (c *AppConfig) ResolvedPlanLocation() string {
 	if c == nil {
 		return ""
@@ -458,6 +477,8 @@ func (c *AppConfig) ResolvedPlanLocation() string {
 //
 // Side effects:
 //   - Reads os.Getwd() and stat()s candidate parents.
+//
+// Returns: result of findProjectFlowstateDir.
 func findProjectFlowstateDir() string {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -480,6 +501,9 @@ func findProjectFlowstateDir() string {
 // findGitWorktreeRoot walks parents of the current working directory looking
 // for a `.git` file or directory. Returns the directory that contains the Git
 // entry, or the empty string when no Git root is found.
+//
+// Returns: result of findGitWorktreeRoot.
+// Side effects: None.
 func findGitWorktreeRoot() string {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -535,6 +559,10 @@ const DefaultEmbeddingModel = "nomic-embed-text"
 // historical default `nomic-embed-text`. A nil receiver returns the default
 // so test fixtures that construct App with Config=nil still produce
 // well-formed vectors.
+//
+// Expected: parameters for ResolvedEmbeddingModel.
+// Returns: result of ResolvedEmbeddingModel.
+// Side effects: None.
 func (c *AppConfig) ResolvedEmbeddingModel() string {
 	if c == nil || c.EmbeddingModel == "" {
 		return DefaultEmbeddingModel
@@ -587,6 +615,8 @@ const QdrantURLEnv = "QDRANT_URL"
 //
 // Side effects:
 //   - Reads the QDRANT_URL environment variable.
+//
+// Expected: parameters for ResolvedQdrantURL.
 func (c *AppConfig) ResolvedQdrantURL() string {
 	if c != nil {
 		if u := strings.TrimSpace(c.Qdrant.URL); u != "" {
@@ -1073,6 +1103,10 @@ type ProviderQuotaConfig struct {
 // v1 currencies named in OD-6 all use the 100-minor-units-per-major
 // convention; future currencies with different exponents would need
 // per-currency handling.
+//
+// Expected: parameters for ParseCap.
+// Returns: result of ParseCap.
+// Side effects: None.
 func ParseCap(cap string) (amountMinor int64, currency string, err error) {
 	cap = strings.TrimSpace(cap)
 	if cap == "" {
@@ -1146,6 +1180,9 @@ func ParseCap(cap string) (amountMinor int64, currency string, err error) {
 //   - Pricing.Registry.Enabled = false (v1 baseline is embedded; B5
 //     closure — no aspirational URL provisioned).
 //   - Providers map empty (no caps configured).
+//
+// Returns: result of DefaultQuotaConfig.
+// Side effects: None.
 func DefaultQuotaConfig() QuotaConfig {
 	return QuotaConfig{
 		Store: QuotaStoreConfig{
@@ -1170,6 +1207,10 @@ func DefaultQuotaConfig() QuotaConfig {
 // Out-of-range values (negative, > 100, amber >= red) are rejected
 // via ValidateThresholds at boot; ResolveThresholds is the in-engine
 // getter that assumes the config has already been validated.
+//
+// Expected: parameters for ResolveThresholds.
+// Returns: result of ResolveThresholds.
+// Side effects: None.
 func (p ProviderQuotaConfig) ResolveThresholds() (amber, red int) {
 	amber = p.ThresholdAmber
 	red = p.ThresholdRed
@@ -1184,6 +1225,10 @@ func (p ProviderQuotaConfig) ResolveThresholds() (amber, red int) {
 
 // ResolvePeriod returns the period field with the "monthly" default
 // applied. Plan §"OD-9" lines 519 + ProviderQuotaConfig.Period.
+//
+// Expected: parameters for ResolvePeriod.
+// Returns: result of ResolvePeriod.
+// Side effects: None.
 func (p ProviderQuotaConfig) ResolvePeriod() string {
 	if p.Period == "" {
 		return "monthly"
@@ -1203,6 +1248,10 @@ func (p ProviderQuotaConfig) ResolvePeriod() string {
 //     "apply default"; values > 100 reject).
 //   - When BOTH thresholds are set, amber < red (an amber threshold
 //     at or above the red threshold is a misconfiguration).
+//
+// Expected: parameters for ValidateProviderQuota.
+// Returns: result of ValidateProviderQuota.
+// Side effects: None.
 func ValidateProviderQuota(providerID string, p ProviderQuotaConfig) error {
 	if p.Cap != "" {
 		if _, _, err := ParseCap(p.Cap); err != nil {
@@ -1236,6 +1285,10 @@ func ValidateProviderQuota(providerID string, p ProviderQuotaConfig) error {
 // informational only.
 //
 // Plan §"Pricing table" line 345 (B5 closure).
+//
+// Expected: parameters for ValidatePricingRegistry.
+// Returns: result of ValidatePricingRegistry.
+// Side effects: None.
 func ValidatePricingRegistry(p QuotaPricingRegistryConfig) error {
 	if p.Enabled && strings.TrimSpace(p.URL) == "" {
 		return errors.New(
@@ -1260,6 +1313,9 @@ func ValidatePricingRegistry(p QuotaPricingRegistryConfig) error {
 // Other fields are zero-valued; installAuthFromConfig fills in
 // implementation defaults (e.g. AllowedOrigins defaults to localhost:*
 // when both config and env are empty).
+//
+// Returns: result of DefaultAuthConfig.
+// Side effects: None.
 func DefaultAuthConfig() AuthConfig {
 	return AuthConfig{
 		Enabled:       true,
@@ -1423,6 +1479,9 @@ func DefaultConfig() *AppConfig {
 
 // DefaultDelegationConfig returns the default delegation configuration with TeeChildContent disabled; the child session plus
 // tool_result is the canonical surface unless callers explicitly opt in.
+//
+// Returns: result of DefaultDelegationConfig.
+// Side effects: None.
 func DefaultDelegationConfig() DelegationConfig {
 	return DelegationConfig{
 		TeeChildContent: false,
@@ -1456,6 +1515,9 @@ func DefaultDelegationConfig() DelegationConfig {
 //     glm-5-turbo, glm-5.1 all verified live in FlowState
 //     (the broken `glm-4.7` is on the deny list and takes
 //     precedence).
+//
+// Returns: result of defaultToolCapableModels.
+// Side effects: None.
 func defaultToolCapableModels() []string {
 	return []string{
 		"claude-*",
@@ -1514,6 +1576,9 @@ func defaultToolCapableModels() []string {
 //   - gpt-*-nano       — same reasoning as *-mini: nano-tier models trade
 //     tool-call reliability for latency/cost. Preventive
 //     deny so future *-nano releases are captured.
+//
+// Returns: result of defaultToolIncapableModels.
+// Side effects: None.
 func defaultToolIncapableModels() []string {
 	return []string{
 		"llama3.2*",
@@ -1635,6 +1700,13 @@ func validateConfig(cfg *AppConfig) error {
 	return nil
 }
 
+// validateDefaultProvider ...
+//
+// Expected: parameters for validateDefaultProvider.
+//
+// Returns: result of validateDefaultProvider.
+//
+// Side effects: None.
 func validateDefaultProvider(cfg *AppConfig) error {
 	defaultName := strings.TrimSpace(cfg.Providers.Default)
 	if defaultName == "" {
@@ -1649,6 +1721,13 @@ func validateDefaultProvider(cfg *AppConfig) error {
 	return nil
 }
 
+// providerEligibleForDefault ...
+//
+// Expected: parameters for providerEligibleForDefault.
+//
+// Returns: result of providerEligibleForDefault.
+//
+// Side effects: None.
 func providerEligibleForDefault(cfg *AppConfig, name string) bool {
 	checker, ok := providerEligibilityChecks[name]
 	if !ok {
@@ -1687,14 +1766,35 @@ var providerEligibilityChecks = map[string]func(*AppConfig) bool{
 	},
 }
 
+// providerModelAndCredentialConfigured ...
+//
+// Expected: parameters for providerModelAndCredentialConfigured.
+//
+// Returns: result of providerModelAndCredentialConfigured.
+//
+// Side effects: None.
 func providerModelAndCredentialConfigured(model, cfgValue, envVar string) bool {
 	return model != "" && providerCredentialConfigured(cfgValue, envVar)
 }
 
+// providerCredentialConfigured ...
+//
+// Expected: parameters for providerCredentialConfigured.
+//
+// Returns: result of providerCredentialConfigured.
+//
+// Side effects: None.
 func providerCredentialConfigured(cfgValue, envVar string) bool {
 	return strings.TrimSpace(cfgValue) != "" || strings.TrimSpace(os.Getenv(envVar)) != ""
 }
 
+// knownProviderName ...
+//
+// Expected: parameters for knownProviderName.
+//
+// Returns: result of knownProviderName.
+//
+// Side effects: None.
 func knownProviderName(name string) bool {
 	switch name {
 	case "anthropic", "openai", "zai", "copilot", "openzen", "opencode-go", "ollamacloud", "ollama":

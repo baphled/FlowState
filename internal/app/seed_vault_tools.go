@@ -159,7 +159,7 @@ func installSingleVaultTool(srcFS fs.FS, filename, destPath string, opts VaultTo
 	}
 	entry.NewSize = int64(len(srcBytes))
 
-	existing, readErr := os.ReadFile(destPath) //nolint:gosec // destPath is a filename joined onto a caller-provided destDir
+	existing, readErr := os.ReadFile(destPath)
 	switch {
 	case os.IsNotExist(readErr):
 		entry.Status = VaultToolStatusCreated

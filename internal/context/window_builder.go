@@ -563,6 +563,8 @@ func (b *WindowBuilder) buildInternal(
 // Side effects:
 //   - Invokes recorder.RecordContextWindowTokens when the recorder is
 //     non-nil; otherwise no-op.
+//
+// Returns: result of emitContextWindowGauge.
 func (b *WindowBuilder) emitContextWindowGauge(manifest *agent.Manifest, tokensUsed int) {
 	if b.recorder == nil || manifest == nil {
 		return

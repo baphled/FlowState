@@ -21,6 +21,10 @@ import (
 // clientError maps an internal error to a safe client-facing message and a
 // random correlation ID for log lookup. The raw error is logged server-side
 // only; it is never included in the returned safeMsg.
+//
+// Expected: parameters for clientError.
+// Returns: result of clientError.
+// Side effects: None.
 func clientError(err error, category string) (safeMsg string, correlationID string) {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
@@ -75,6 +79,9 @@ func clientError(err error, category string) (safeMsg string, correlationID stri
 //
 // The raw error is logged server-side with the correlation ID; callers can use
 // the ID to locate the log entry.
+//
+// Expected: parameters for writeJSONError.
+// Side effects: None.
 func writeJSONError(w http.ResponseWriter, err error, category string, statusCode int) {
 	safeMsg, cid := clientError(err, category)
 	w.Header().Set("Content-Type", "application/json")
@@ -86,6 +93,9 @@ func writeJSONError(w http.ResponseWriter, err error, category string, statusCod
 // writeSSEClientError emits a sanitized SSE error event. The raw error is
 // logged server-side; only the canonical message and correlation ID are sent
 // to the client.
+//
+// Expected: parameters for writeSSEClientError.
+// Side effects: None.
 func writeSSEClientError(w http.ResponseWriter, flusher http.Flusher, err error, category string) {
 	safeMsg, cid := clientError(err, category)
 	writeSSEErrorMsg(w, flusher, safeMsg, cid)
@@ -95,6 +105,9 @@ func writeSSEClientError(w http.ResponseWriter, flusher http.Flusher, err error,
 // error event. It is the low-level variant used by writeSSEClientError; callers
 // that already hold a safe message (e.g. after calling clientError directly)
 // should use this function instead of writeSSEError.
+//
+// Expected: parameters for writeSSEErrorMsg.
+// Side effects: None.
 func writeSSEErrorMsg(w http.ResponseWriter, flusher http.Flusher, safeMsg, correlationID string) {
 	type sseClientError struct {
 		Error         string `json:"error"`
@@ -112,6 +125,10 @@ func writeSSEErrorMsg(w http.ResponseWriter, flusher http.Flusher, safeMsg, corr
 // quotes). It uses encoding/json.Marshal so all special characters are properly
 // escaped, preventing JSON injection when the value is embedded in a manually
 // constructed JSON body.
+//
+// Expected: parameters for jsonString.
+// Returns: result of jsonString.
+// Side effects: None.
 func jsonString(s string) string {
 	b, err := json.Marshal(s)
 	if err != nil {

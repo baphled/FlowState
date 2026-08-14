@@ -33,6 +33,9 @@ func init() {
 }
 
 // RegisterVaultIndexSyncSteps wires the vault index/sync BDD steps.
+//
+// Expected: parameters for RegisterVaultIndexSyncSteps.
+// Side effects: None.
 func RegisterVaultIndexSyncSteps(ctx *godog.ScenarioContext) {
 	s := &vaultIndexSyncState{}
 
@@ -64,6 +67,12 @@ func RegisterVaultIndexSyncSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^the result should include a summary with "([^"]*)" count$`, s.resultShouldIncludeSummaryWith)
 }
 
+// reset ...
+//
+// Side effects: None.
+//
+// Expected: parameters for reset.
+// Returns: result of reset.
 func (s *vaultIndexSyncState) reset() {
 	s.vaultRoot = ""
 	s.collection = "test-vault-collection"
@@ -73,6 +82,13 @@ func (s *vaultIndexSyncState) reset() {
 	s.output = ""
 }
 
+// aTempVaultWithMarkdownFiles ...
+//
+// Returns: result of aTempVaultWithMarkdownFiles.
+//
+// Side effects: None.
+//
+// Expected: parameters for aTempVaultWithMarkdownFiles.
 func (s *vaultIndexSyncState) aTempVaultWithMarkdownFiles() error {
 	dir, err := os.MkdirTemp("", "flowstate-vault-*")
 	if err != nil {
@@ -97,6 +113,13 @@ func (s *vaultIndexSyncState) aTempVaultWithMarkdownFiles() error {
 	return nil
 }
 
+// theVaultHasBeenIndexedOnce ...
+//
+// Returns: result of theVaultHasBeenIndexedOnce.
+//
+// Side effects: None.
+//
+// Expected: parameters for theVaultHasBeenIndexedOnce.
 func (s *vaultIndexSyncState) theVaultHasBeenIndexedOnce() error {
 	if s.vaultRoot == "" {
 		if err := s.aTempVaultWithMarkdownFiles(); err != nil {
@@ -107,6 +130,13 @@ func (s *vaultIndexSyncState) theVaultHasBeenIndexedOnce() error {
 	return err
 }
 
+// aVaultFileHasBeenModified ...
+//
+// Returns: result of aVaultFileHasBeenModified.
+//
+// Side effects: None.
+//
+// Expected: parameters for aVaultFileHasBeenModified.
 func (s *vaultIndexSyncState) aVaultFileHasBeenModified() error {
 	if s.vaultRoot == "" {
 		return fmt.Errorf("vault root not initialised")
@@ -120,10 +150,24 @@ func (s *vaultIndexSyncState) aVaultFileHasBeenModified() error {
 	return os.Chtimes(target, future, future)
 }
 
+// flowstateConfiguredWithVaultRAG ...
+//
+// Returns: result of flowstateConfiguredWithVaultRAG.
+//
+// Side effects: None.
+//
+// Expected: parameters for flowstateConfiguredWithVaultRAG.
 func (s *vaultIndexSyncState) flowstateConfiguredWithVaultRAG() error {
 	return s.aTempVaultWithMarkdownFiles()
 }
 
+// iRunVaultIndex ...
+//
+// Returns: result of iRunVaultIndex.
+//
+// Side effects: None.
+//
+// Expected: parameters for iRunVaultIndex.
 func (s *vaultIndexSyncState) iRunVaultIndex() error {
 	summary, err := s.runIndexer(false)
 	s.lastSummary = summary
@@ -138,15 +182,36 @@ func (s *vaultIndexSyncState) iRunVaultIndex() error {
 	return nil
 }
 
+// iRunVaultIndexWithVaultRoot ...
+//
+// Returns: result of iRunVaultIndexWithVaultRoot.
+//
+// Side effects: None.
+//
+// Expected: parameters for iRunVaultIndexWithVaultRoot.
 func (s *vaultIndexSyncState) iRunVaultIndexWithVaultRoot() error {
 	return s.iRunVaultIndex()
 }
 
+// iRunVaultIndexWithCollection ...
+//
+// Expected: parameters for iRunVaultIndexWithCollection.
+//
+// Returns: result of iRunVaultIndexWithCollection.
+//
+// Side effects: None.
 func (s *vaultIndexSyncState) iRunVaultIndexWithCollection(collection string) error {
 	s.collection = collection
 	return s.iRunVaultIndex()
 }
 
+// iRunVaultIndexWithVaultRootPath ...
+//
+// Expected: parameters for iRunVaultIndexWithVaultRootPath.
+//
+// Returns: result of iRunVaultIndexWithVaultRootPath.
+//
+// Side effects: None.
 func (s *vaultIndexSyncState) iRunVaultIndexWithVaultRootPath(path string) error {
 	saved := s.vaultRoot
 	s.vaultRoot = path
@@ -159,6 +224,13 @@ func (s *vaultIndexSyncState) iRunVaultIndexWithVaultRootPath(path string) error
 	return err
 }
 
+// iRunVaultIndexWithReindex ...
+//
+// Returns: result of iRunVaultIndexWithReindex.
+//
+// Side effects: None.
+//
+// Expected: parameters for iRunVaultIndexWithReindex.
 func (s *vaultIndexSyncState) iRunVaultIndexWithReindex() error {
 	summary, err := s.runIndexerReindex(true)
 	s.lastSummary = summary
@@ -173,6 +245,13 @@ func (s *vaultIndexSyncState) iRunVaultIndexWithReindex() error {
 	return nil
 }
 
+// iRunVaultSync ...
+//
+// Returns: result of iRunVaultSync.
+//
+// Side effects: None.
+//
+// Expected: parameters for iRunVaultSync.
 func (s *vaultIndexSyncState) iRunVaultSync() error {
 	summary, err := s.runIndexer(false)
 	s.lastSummary = summary
@@ -187,10 +266,24 @@ func (s *vaultIndexSyncState) iRunVaultSync() error {
 	return nil
 }
 
+// iRunVaultSyncWithVaultRoot ...
+//
+// Returns: result of iRunVaultSyncWithVaultRoot.
+//
+// Side effects: None.
+//
+// Expected: parameters for iRunVaultSyncWithVaultRoot.
 func (s *vaultIndexSyncState) iRunVaultSyncWithVaultRoot() error {
 	return s.iRunVaultSync()
 }
 
+// exitCodeShouldBeZero ...
+//
+// Returns: result of exitCodeShouldBeZero.
+//
+// Side effects: None.
+//
+// Expected: parameters for exitCodeShouldBeZero.
 func (s *vaultIndexSyncState) exitCodeShouldBeZero() error {
 	if s.exitCode != 0 {
 		return fmt.Errorf("expected exit code 0, got %d (output: %s)", s.exitCode, s.output)
@@ -198,6 +291,13 @@ func (s *vaultIndexSyncState) exitCodeShouldBeZero() error {
 	return nil
 }
 
+// exitCodeShouldBeNonZero ...
+//
+// Returns: result of exitCodeShouldBeNonZero.
+//
+// Side effects: None.
+//
+// Expected: parameters for exitCodeShouldBeNonZero.
 func (s *vaultIndexSyncState) exitCodeShouldBeNonZero() error {
 	if s.exitCode == 0 {
 		return fmt.Errorf("expected non-zero exit code, got 0")
@@ -205,6 +305,13 @@ func (s *vaultIndexSyncState) exitCodeShouldBeNonZero() error {
 	return nil
 }
 
+// outputShouldContain ...
+//
+// Expected: parameters for outputShouldContain.
+//
+// Returns: result of outputShouldContain.
+//
+// Side effects: None.
 func (s *vaultIndexSyncState) outputShouldContain(substr string) error {
 	if !strings.Contains(s.output, substr) {
 		return fmt.Errorf("output %q does not contain %q", s.output, substr)
@@ -212,6 +319,13 @@ func (s *vaultIndexSyncState) outputShouldContain(substr string) error {
 	return nil
 }
 
+// sidecarStateShouldExist ...
+//
+// Returns: result of sidecarStateShouldExist.
+//
+// Side effects: None.
+//
+// Expected: parameters for sidecarStateShouldExist.
 func (s *vaultIndexSyncState) sidecarStateShouldExist() error {
 	if s.vaultRoot == "" {
 		return fmt.Errorf("vault root not set")
@@ -223,6 +337,13 @@ func (s *vaultIndexSyncState) sidecarStateShouldExist() error {
 	return nil
 }
 
+// agentCallsVaultTool ...
+//
+// Expected: parameters for agentCallsVaultTool.
+//
+// Returns: result of agentCallsVaultTool.
+//
+// Side effects: None.
 func (s *vaultIndexSyncState) agentCallsVaultTool(toolName string) error {
 	switch toolName {
 	case "vault_index":
@@ -234,19 +355,44 @@ func (s *vaultIndexSyncState) agentCallsVaultTool(toolName string) error {
 	}
 }
 
+// toolResultShouldIndicateSuccess ...
+//
+// Returns: result of toolResultShouldIndicateSuccess.
+//
+// Side effects: None.
+//
+// Expected: parameters for toolResultShouldIndicateSuccess.
 func (s *vaultIndexSyncState) toolResultShouldIndicateSuccess() error {
 	return s.exitCodeShouldBeZero()
 }
 
+// resultShouldIncludeSummaryWith ...
+//
+// Expected: parameters for resultShouldIncludeSummaryWith.
+//
+// Returns: result of resultShouldIncludeSummaryWith.
+//
+// Side effects: None.
 func (s *vaultIndexSyncState) resultShouldIncludeSummaryWith(key string) error {
 	return s.outputShouldContain(key + "=")
 }
 
 // runIndexer builds a stub indexer and runs IndexAll.
+//
+// Expected: parameters for runIndexer.
+// Returns: result of runIndexer.
+// Side effects: None.
 func (s *vaultIndexSyncState) runIndexer(reindex bool) (vaultindex.Summary, error) {
 	return s.runIndexerReindex(reindex)
 }
 
+// runIndexerReindex ...
+//
+// Expected: parameters for runIndexerReindex.
+//
+// Returns: result of runIndexerReindex.
+//
+// Side effects: None.
 func (s *vaultIndexSyncState) runIndexerReindex(reindex bool) (vaultindex.Summary, error) {
 	root := s.vaultRoot
 	if root == "" {
@@ -285,6 +431,10 @@ func (s *vaultIndexSyncState) runIndexerReindex(reindex bool) (vaultindex.Summar
 }
 
 // formatSummary renders the indexer summary into a string the CLI would print.
+//
+// Expected: parameters for formatSummary.
+// Returns: result of formatSummary.
+// Side effects: None.
 func formatSummary(s vaultindex.Summary) string {
 	return fmt.Sprintf("total=%d indexed=%d skipped=%d chunks=%d",
 		s.Total, s.Indexed, s.Skipped, s.Chunks)
@@ -293,6 +443,13 @@ func formatSummary(s vaultindex.Summary) string {
 // stubEmbedder always returns a fixed 768-dim zero vector.
 type stubEmbedder struct{}
 
+// Embed ...
+//
+// Expected: parameters for Embed.
+//
+// Returns: result of Embed.
+//
+// Side effects: None.
 func (stubEmbedder) Embed(_ context.Context, _ string) ([]float64, error) {
 	vec := make([]float64, vaultindex.DefaultEmbeddingDim)
 	return vec, nil
@@ -304,6 +461,11 @@ type stubVectorStore struct {
 	points      map[string][]qdrant.Point
 }
 
+// newStubVectorStore ...
+//
+// Returns: result of newStubVectorStore.
+//
+// Side effects: None.
 func newStubVectorStore() *stubVectorStore {
 	return &stubVectorStore{
 		collections: make(map[string]bool),
@@ -311,15 +473,36 @@ func newStubVectorStore() *stubVectorStore {
 	}
 }
 
+// CollectionExists ...
+//
+// Expected: parameters for CollectionExists.
+//
+// Returns: result of CollectionExists.
+//
+// Side effects: None.
 func (s *stubVectorStore) CollectionExists(_ context.Context, name string) (bool, error) {
 	return s.collections[name], nil
 }
 
+// CreateCollection ...
+//
+// Expected: parameters for CreateCollection.
+//
+// Returns: result of CreateCollection.
+//
+// Side effects: None.
 func (s *stubVectorStore) CreateCollection(_ context.Context, name string, _ qdrant.CollectionConfig) error {
 	s.collections[name] = true
 	return nil
 }
 
+// Upsert ...
+//
+// Expected: parameters for Upsert.
+//
+// Returns: result of Upsert.
+//
+// Side effects: None.
 func (s *stubVectorStore) Upsert(_ context.Context, collection string, points []qdrant.Point, _ bool) error {
 	s.points[collection] = append(s.points[collection], points...)
 	return nil

@@ -130,6 +130,10 @@ type SharedSecretSource struct {
 // NewSharedSecretSource constructs a SharedSecretSource bound to the
 // configured secret. Pass cfg.Auth.SharedSecret.Secret here (plan
 // §"Config shape" line 189-190).
+//
+// Expected: parameters for NewSharedSecretSource.
+// Returns: result of NewSharedSecretSource.
+// Side effects: None.
 func NewSharedSecretSource(secret string) *SharedSecretSource {
 	return &SharedSecretSource{secret: secret}
 }
@@ -141,6 +145,10 @@ func NewSharedSecretSource(secret string) *SharedSecretSource {
 // Empty configured secret means "no login possible in this mode" — every
 // call returns ErrInvalidCredentials. This is the safe failure mode
 // when bootstrap UX (plan line 700-703) hasn't been completed.
+//
+// Expected: parameters for Authenticate.
+// Returns: result of Authenticate.
+// Side effects: None.
 func (s *SharedSecretSource) Authenticate(ctx context.Context, creds Credentials) (Principal, error) {
 	if err := ctx.Err(); err != nil {
 		return Principal{}, err
@@ -159,6 +167,10 @@ func (s *SharedSecretSource) Authenticate(ctx context.Context, creds Credentials
 }
 
 // Mode returns ModeSharedSecret.
+//
+// Expected: parameters for Mode.
+// Returns: result of Mode.
+// Side effects: None.
 func (s *SharedSecretSource) Mode() string { return ModeSharedSecret }
 
 // DeploymentLoginSource is the default online single-operator mode (plan
@@ -175,6 +187,10 @@ type DeploymentLoginSource struct {
 // NewDeploymentLoginSource constructs a DeploymentLoginSource. Pass
 // cfg.Auth.DeploymentLogin.Secret/PrincipalID/(optional DisplayName) here
 // (plan §"Config shape" line 192-195).
+//
+// Expected: parameters for NewDeploymentLoginSource.
+// Returns: result of NewDeploymentLoginSource.
+// Side effects: None.
 func NewDeploymentLoginSource(secret, principalID, displayName string) *DeploymentLoginSource {
 	return &DeploymentLoginSource{
 		secret:      secret,
@@ -191,6 +207,10 @@ func NewDeploymentLoginSource(secret, principalID, displayName string) *Deployme
 // principal_id with a non-empty secret would let the deployer ship
 // a credential with no identity. Defensive: empty principal_id ALSO
 // returns ErrInvalidCredentials so a misconfig fails closed.
+//
+// Expected: parameters for Authenticate.
+// Returns: result of Authenticate.
+// Side effects: None.
 func (d *DeploymentLoginSource) Authenticate(ctx context.Context, creds Credentials) (Principal, error) {
 	if err := ctx.Err(); err != nil {
 		return Principal{}, err
@@ -213,6 +233,10 @@ func (d *DeploymentLoginSource) Authenticate(ctx context.Context, creds Credenti
 }
 
 // Mode returns ModeDeploymentLogin.
+//
+// Expected: parameters for Mode.
+// Returns: result of Mode.
+// Side effects: None.
 func (d *DeploymentLoginSource) Mode() string { return ModeDeploymentLogin }
 
 // MultiUserSource is the multi-user identity source (plan §"Deployment Modes"
@@ -291,6 +315,10 @@ type usersFile struct {
 // Concurrent-safe for Authenticate. Provisioning (add / remove via the
 // cobra commands) writes via atomicwrite.File; in-process the source
 // re-reads via Reload (PR4/C9).
+//
+// Expected: parameters for NewMultiUserSource.
+// Returns: result of NewMultiUserSource.
+// Side effects: None.
 func NewMultiUserSource(path string) (*MultiUserSource, error) {
 	m := &MultiUserSource{
 		path:  path,
@@ -310,6 +338,10 @@ func NewMultiUserSource(path string) (*MultiUserSource, error) {
 //
 // World-readable check: stat the file; if perm bits beyond 0o600, log a
 // slog.Warn (advisory — the operator may have chosen to share the file).
+//
+// Expected: parameters for load.
+// Returns: result of load.
+// Side effects: None.
 func (m *MultiUserSource) load() error {
 	info, statErr := os.Stat(m.path)
 	if statErr != nil {
@@ -370,6 +402,10 @@ func (m *MultiUserSource) load() error {
 //
 // Returns the same errors as the constructor's load step. Concurrent with
 // Authenticate via m.mu.
+//
+// Expected: parameters for Reload.
+// Returns: result of Reload.
+// Side effects: None.
 func (m *MultiUserSource) Reload() error {
 	if m.path == "" {
 		return nil
@@ -381,6 +417,10 @@ func (m *MultiUserSource) Reload() error {
 // Cobra subcommands use this to locate the file when the source is
 // already constructed (e.g. when sharing one source between the serve
 // process and an admin command via Reload).
+//
+// Expected: parameters for Path.
+// Returns: result of Path.
+// Side effects: None.
 func (m *MultiUserSource) Path() string { return m.path }
 
 // Authenticate validates creds.Username + creds.Password against the
@@ -399,6 +439,10 @@ func (m *MultiUserSource) Path() string { return m.path }
 // (memory feedback_published_unsubscribed_events_dead_surface notwithstanding
 // — this is the B8 fingerprint defence). Distinguishing the two would
 // leak user-existence to probers.
+//
+// Expected: parameters for Authenticate.
+// Returns: result of Authenticate.
+// Side effects: None.
 func (m *MultiUserSource) Authenticate(ctx context.Context, creds Credentials) (Principal, error) {
 	if err := ctx.Err(); err != nil {
 		return Principal{}, err
@@ -443,6 +487,10 @@ func (m *MultiUserSource) Authenticate(ctx context.Context, creds Credentials) (
 }
 
 // Mode returns ModeMultiUser.
+//
+// Expected: parameters for Mode.
+// Returns: result of Mode.
+// Side effects: None.
 func (m *MultiUserSource) Mode() string { return ModeMultiUser }
 
 // constantTimeEqual is a constant-time string compare wrapping
@@ -455,6 +503,10 @@ func (m *MultiUserSource) Mode() string { return ModeMultiUser }
 //
 // Centralised in one named function so the spec can audit the
 // timing-attack defence in one place.
+//
+// Expected: parameters for constantTimeEqual.
+// Returns: result of constantTimeEqual.
+// Side effects: None.
 func constantTimeEqual(a, b string) bool {
 	if len(a) != len(b) {
 		return false

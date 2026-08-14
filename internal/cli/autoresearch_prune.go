@@ -168,6 +168,8 @@ func runAutoresearchPrune(in io.Reader, w io.Writer, application *app.App, opts 
 //
 // Returns:
 //   - A slice of run IDs eligible for pruning (may be empty).
+//
+// Side effects: None.
 func pruneEligibleRuns(store coordination.Store, runIDs []string, all bool, cutoff time.Time) []string {
 	var eligible []string
 	for _, runID := range runIDs {
@@ -198,6 +200,8 @@ func pruneEligibleRuns(store coordination.Store, runIDs []string, all bool, cuto
 // Returns:
 //   - The parsed time.Time and true on success.
 //   - Zero time and false when the manifest is unreadable or unparseable.
+//
+// Side effects: None.
 func readRunStartedAt(store coordination.Store, runID string) (time.Time, bool) {
 	raw, err := store.Get(manifestKey(runID))
 	if err != nil {
@@ -229,6 +233,8 @@ func readRunStartedAt(store coordination.Store, runID string) (time.Time, bool) 
 //
 // Returns:
 //   - A slice of keys that exist in the store for this run.
+//
+// Side effects: None.
 func keysForRun(store coordination.Store, runID string) []string {
 	prefix := "autoresearch/" + runID + "/"
 	allKeys, _ := store.List(prefix)
@@ -248,6 +254,8 @@ func keysForRun(store coordination.Store, runID string) []string {
 // Returns:
 //   - true when the operator confirmed, false otherwise.
 //   - non-nil error on read failure.
+//
+// Side effects: None.
 func confirmPruneAll(in io.Reader, w io.Writer, count int) (bool, error) {
 	_, _ = fmt.Fprintf(w, "About to prune ALL %d autoresearch run(s). This cannot be undone.\nContinue? [y/N] ", count)
 	scanner := bufio.NewScanner(in)
@@ -266,6 +274,8 @@ func confirmPruneAll(in io.Reader, w io.Writer, count int) (bool, error) {
 //
 // Returns:
 //   - nil on success.
+//
+// Side effects: None.
 func printDryRunPlan(w io.Writer, plan []runKeys) error {
 	totalKeys := 0
 	for _, rk := range plan {
@@ -292,6 +302,8 @@ func printDryRunPlan(w io.Writer, plan []runKeys) error {
 // Returns:
 //   - nil on success.
 //   - non-nil error if any deletion fails.
+//
+// Side effects: None.
 func executePrune(w io.Writer, store coordination.Store, plan []runKeys) error {
 	totalKeys := 0
 	for _, rk := range plan {

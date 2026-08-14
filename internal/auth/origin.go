@@ -33,6 +33,10 @@ type OriginConfig struct {
 //
 // Exported so the WebSocket handler and HTTP middleware share the same
 // definition.
+//
+// Expected: parameters for IsSafeMethod.
+// Returns: result of IsSafeMethod.
+// Side effects: None.
 func IsSafeMethod(method string) bool {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -48,6 +52,10 @@ func IsSafeMethod(method string) bool {
 //
 // path.Match returns an error only on malformed patterns; we treat that as
 // a non-match (defensive: a malformed config should reject, not panic).
+//
+// Expected: parameters for MatchOrigin.
+// Returns: result of MatchOrigin.
+// Side effects: None.
 func MatchOrigin(origin string, allowed []string) bool {
 	if origin == "" {
 		return false
@@ -86,6 +94,10 @@ func MatchOrigin(origin string, allowed []string) bool {
 // origin via the same AllowedOrigins list passed through to
 // websocket.AcceptOptions.OriginPatterns; that path is exercised by the
 // existing websocket_test.go suite.
+//
+// Expected: parameters for RequireOrigin.
+// Returns: result of RequireOrigin.
+// Side effects: None.
 func RequireOrigin(cfg OriginConfig, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if IsSafeMethod(r.Method) {

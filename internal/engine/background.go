@@ -86,6 +86,8 @@ type atomicValue struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Load.
 func (a *atomicValue) Load() string {
 	if v, ok := a.v.Load().(string); ok {
 		return v
@@ -100,6 +102,8 @@ func (a *atomicValue) Load() string {
 //
 // Side effects:
 //   - Updates the underlying atomic value.
+//
+// Returns: result of store.
 func (a *atomicValue) store(s string) {
 	a.v.Store(s)
 }
@@ -181,6 +185,8 @@ func (m *BackgroundTaskManager) SetEventBus(bus *eventbus.EventBus) {
 //
 // Side effects:
 //   - Stores the channel reference for later use in handleTaskCompletion.
+//
+// Returns: result of SetCompletionSubscriber.
 func (m *BackgroundTaskManager) SetCompletionSubscriber(ch chan<- streaming.CompletionNotificationEvent) {
 	m.completionSub = ch
 }
@@ -193,6 +199,8 @@ func (m *BackgroundTaskManager) SetCompletionSubscriber(ch chan<- streaming.Comp
 //
 // Side effects:
 //   - Publishes a background task started event when an event bus is configured.
+//
+// Returns: result of emitTaskStarted.
 func (m *BackgroundTaskManager) emitTaskStarted(task *BackgroundTask) {
 	if m.eventBus == nil {
 		return
@@ -214,6 +222,8 @@ func (m *BackgroundTaskManager) emitTaskStarted(task *BackgroundTask) {
 //
 // Side effects:
 //   - Publishes a background task completed event when an event bus is configured.
+//
+// Returns: result of emitTaskCompleted.
 func (m *BackgroundTaskManager) emitTaskCompleted(task *BackgroundTask) {
 	if m.eventBus == nil {
 		return
@@ -235,6 +245,8 @@ func (m *BackgroundTaskManager) emitTaskCompleted(task *BackgroundTask) {
 //
 // Side effects:
 //   - Publishes a background task failed event when an event bus is configured.
+//
+// Returns: result of emitTaskFailed.
 func (m *BackgroundTaskManager) emitTaskFailed(task *BackgroundTask) {
 	if m.eventBus == nil {
 		return
@@ -261,6 +273,8 @@ func (m *BackgroundTaskManager) emitTaskFailed(task *BackgroundTask) {
 //
 // Side effects:
 //   - Publishes a background task cancelled event when an event bus is configured.
+//
+// Returns: result of emitTaskCancelled.
 func (m *BackgroundTaskManager) emitTaskCancelled(task *BackgroundTask) {
 	if m.eventBus == nil {
 		return
@@ -283,6 +297,8 @@ func (m *BackgroundTaskManager) emitTaskCancelled(task *BackgroundTask) {
 //
 // Side effects:
 //   - Calls the session manager's InjectNotification method if configured.
+//
+// Returns: result of injectCompletionNotification.
 func (m *BackgroundTaskManager) injectCompletionNotification(sessionID string, notification streaming.CompletionNotificationEvent) {
 	if m.sessionMgr != nil {
 		if err := m.sessionMgr.InjectNotification(sessionID, notification); err != nil {
@@ -422,6 +438,8 @@ func (m *BackgroundTaskManager) executeTask(
 // Ordering: notifications are injected before the EventBus event is emitted so
 // that any synchronous EventBus handler (e.g. CompletionOrchestrator) can
 // retrieve the stored notifications immediately.
+//
+// Returns: result of handleTaskCompletion.
 func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ string, err error, completedAt time.Time) {
 	if task.ParentSessionID != "" {
 		notification := streaming.CompletionNotificationEvent{
@@ -460,6 +478,8 @@ func (m *BackgroundTaskManager) handleTaskCompletion(task *BackgroundTask, _ str
 //
 // Side effects:
 //   - Sends the notification on the subscriber channel (blocking).
+//
+// Returns: result of notifyCompletionSubscriber.
 func (m *BackgroundTaskManager) notifyCompletionSubscriber(notification streaming.CompletionNotificationEvent) {
 	if m.completionSub == nil {
 		return
@@ -556,6 +576,8 @@ func (m *BackgroundTaskManager) FindByIDOrPrefix(id string) (BackgroundTask, []s
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ListIDs.
 func (m *BackgroundTaskManager) ListIDs() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -606,6 +628,8 @@ func (m *BackgroundTaskManager) Cancel(id string) error {
 //
 // Side effects:
 //   - Calls the context cancel function for each active task.
+//
+// Expected: parameters for CancelAll.
 func (m *BackgroundTaskManager) CancelAll() []string {
 	m.mu.Lock()
 
@@ -692,6 +716,8 @@ func (m *BackgroundTaskManager) MarkAccessed(taskID string) {
 // Side effects:
 //   - Deletes accessed terminal tasks past their grace window from the
 //     tasks map under write lock.
+//
+// Expected: parameters for EvictCompleted.
 func (m *BackgroundTaskManager) EvictCompleted() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -720,6 +746,8 @@ func (m *BackgroundTaskManager) EvictCompleted() {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ActiveCount.
 func (m *BackgroundTaskManager) ActiveCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -771,6 +799,8 @@ func (m *BackgroundTaskManager) ActiveCountForSession(sessionID string) int {
 //
 // Side effects:
 //   - Calls the context cancel function for each matching task.
+//
+// Expected: parameters for CancelAllForSession.
 func (m *BackgroundTaskManager) CancelAllForSession(sessionID string) []string {
 	m.mu.Lock()
 

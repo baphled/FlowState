@@ -50,6 +50,8 @@ func NewAutoresearchRunTool(mgr *BackgroundTaskManager, r runner.AutoresearchRun
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *AutoresearchRunTool) Name() string { return "autoresearch_run" }
 
 // CanDelegate reports whether this tool can be used in a delegation context.
@@ -59,6 +61,8 @@ func (t *AutoresearchRunTool) Name() string { return "autoresearch_run" }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for CanDelegate.
 func (t *AutoresearchRunTool) CanDelegate() bool { return true }
 
 // Description returns a human-readable description of the tool.
@@ -68,6 +72,8 @@ func (t *AutoresearchRunTool) CanDelegate() bool { return true }
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *AutoresearchRunTool) Description() string {
 	return "Launch an autoresearch optimisation run as a background task. " +
 		"Returns task_id immediately; poll background_output for results."
@@ -80,6 +86,8 @@ func (t *AutoresearchRunTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *AutoresearchRunTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

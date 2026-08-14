@@ -43,6 +43,8 @@ func NewAgentsFileLoader(configDir, workingDir string) *AgentsFileLoader {
 //
 // Side effects:
 //   - Reads from the filesystem.
+//
+// Expected: parameters for LoadFiles.
 func (l *AgentsFileLoader) LoadFiles() []InstructionFile {
 	var files []InstructionFile
 
@@ -70,6 +72,8 @@ func (l *AgentsFileLoader) LoadFiles() []InstructionFile {
 //
 // Side effects:
 //   - Reads from the filesystem.
+//
+// Expected: parameters for Load.
 func (l *AgentsFileLoader) Load() string {
 	files := l.LoadFiles()
 	parts := make([]string, 0, len(files))
@@ -113,6 +117,8 @@ func (l *AgentsFileLoader) readFileWithPath(dir string) (string, string) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for isSameDirectory.
 func (l *AgentsFileLoader) isSameDirectory() bool {
 	if l.configDir == "" || l.workingDir == "" {
 		return false

@@ -36,6 +36,10 @@ const (
 )
 
 // String returns a human-readable name for the complexity tier.
+//
+// Expected: parameters for String.
+// Returns: result of String.
+// Side effects: None.
 func (c TaskComplexity) String() string {
 	switch c {
 	case ComplexitySimple:
@@ -97,6 +101,8 @@ type ComplexitySignals struct {
 //
 // Returns:
 //   - A TaskComplexity tier and the ComplexitySignals used to derive it.
+//
+// Side effects: None.
 func EstimateComplexity(message string) (TaskComplexity, ComplexitySignals) {
 	signals := ComplexitySignals{
 		Length:    len(message),
@@ -124,13 +130,16 @@ func EstimateComplexity(message string) (TaskComplexity, ComplexitySignals) {
 // EnforcesTodoGate reports whether the given complexity tier should enforce
 // the hard todo gate (TodoStrictMode semantics). Only Complex tasks trigger
 // the hard gate; Simple and Moderate tasks rely on soft nudges.
+//
+// Expected: parameters for EnforcesTodoGate.
+// Returns: result of EnforcesTodoGate.
+// Side effects: None.
 func (c TaskComplexity) EnforcesTodoGate() bool {
 	return c == ComplexityComplex
 }
 
 // todoToolNames is the closed set of tool names that count as "todo tools"
-// for strict-gate counter resets and work-call tracking exclusion. Any tool
-// not in this set is considered a "work" tool call.
+// for strict-gate counter resets.
 var todoToolNames = map[string]struct{}{
 	"todowrite":   {},
 	"todo_update": {},
@@ -143,7 +152,22 @@ var todoToolNames = map[string]struct{}{
 // (todowrite, todo_update, todo_append, todo_insert, or todo_clear). Used by
 // the strict gate and the stale-continuation work-call counter to distinguish
 // todo operations from "real work" tool calls.
+//
+// Expected: parameters for isTodoTool.
+// Returns: result of isTodoTool.
+// Side effects: None.
 func isTodoTool(name string) bool {
 	_, ok := todoToolNames[name]
 	return ok
+}
+
+// isTodoWorkTool reports whether a tool call counts as work for todo progress
+// enforcement. Coordination-store calls persist state for delegation but do not
+// prove task work happened between todo completions.
+//
+// Expected: name is a non-empty tool name string.
+// Returns: true if the tool is not a todo tool or coordination_store.
+// Side effects: None.
+func isTodoWorkTool(name string) bool {
+	return !isTodoTool(name) && name != "coordination_store"
 }

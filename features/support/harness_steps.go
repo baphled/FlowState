@@ -108,6 +108,8 @@ func RegisterHarnessSteps(ctx *godog.ScenarioContext) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for aPlannerAgentIsConfiguredWithHarnessEnabled.
 func (h *HarnessStepDefinitions) aPlannerAgentIsConfiguredWithHarnessEnabled() error {
 	if h.harness == nil {
 		return errors.New("harness not initialised")
@@ -122,6 +124,8 @@ func (h *HarnessStepDefinitions) aPlannerAgentIsConfiguredWithHarnessEnabled() e
 //
 // Side effects:
 //   - Sets h.evaluationResult with the harness output.
+//
+// Expected: parameters for thePlannerGeneratesAValidPlan.
 func (h *HarnessStepDefinitions) thePlannerGeneratesAValidPlan() error {
 	validPlan, err := loadValidPlanFromProject(h.projectRoot)
 	if err != nil {
@@ -143,6 +147,8 @@ func (h *HarnessStepDefinitions) thePlannerGeneratesAValidPlan() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theHarnessAcceptsThePlanWithoutRetry.
 func (h *HarnessStepDefinitions) theHarnessAcceptsThePlanWithoutRetry() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -186,6 +192,8 @@ func (h *HarnessStepDefinitions) theValidationScoreIsAbove(threshold float64) er
 //
 // Side effects:
 //   - Sets h.evaluationResult with the harness output from the retry cycle.
+//
+// Expected: parameters for thePlannerGeneratesAnInvalidPlanMissingFrontmatter.
 func (h *HarnessStepDefinitions) thePlannerGeneratesAnInvalidPlanMissingFrontmatter() error {
 	invalidPlan := "---\nid: invalid-plan\ntitle: Invalid Plan\n---\n"
 	validPlan, err := loadValidPlanFromProject(h.projectRoot)
@@ -208,6 +216,8 @@ func (h *HarnessStepDefinitions) thePlannerGeneratesAnInvalidPlanMissingFrontmat
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theHarnessRetriesWithSpecificErrorFeedback.
 func (h *HarnessStepDefinitions) theHarnessRetriesWithSpecificErrorFeedback() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -248,6 +258,8 @@ func (h *HarnessStepDefinitions) theAttemptCountIsGreaterThan(count int) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for aPlannerAgentIsInInterviewPhase.
 func (h *HarnessStepDefinitions) aPlannerAgentIsInInterviewPhase() error {
 	return h.aPlannerAgentIsConfiguredWithHarnessEnabled()
 }
@@ -259,6 +271,8 @@ func (h *HarnessStepDefinitions) aPlannerAgentIsInInterviewPhase() error {
 //
 // Side effects:
 //   - Sets h.evaluationResult with the harness output.
+//
+// Expected: parameters for theUserSendsAPlanningQuestion.
 func (h *HarnessStepDefinitions) theUserSendsAPlanningQuestion() error {
 	interviewResponse := "Can you tell me more about your project requirements and goals?"
 	streamer := &harnessTestStreamer{responses: []string{interviewResponse}}
@@ -277,6 +291,8 @@ func (h *HarnessStepDefinitions) theUserSendsAPlanningQuestion() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theHarnessDoesNotValidateTheResponse.
 func (h *HarnessStepDefinitions) theHarnessDoesNotValidateTheResponse() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -294,6 +310,8 @@ func (h *HarnessStepDefinitions) theHarnessDoesNotValidateTheResponse() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theResponseIsReturnedAsIs.
 func (h *HarnessStepDefinitions) theResponseIsReturnedAsIs() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -311,6 +329,8 @@ func (h *HarnessStepDefinitions) theResponseIsReturnedAsIs() error {
 //
 // Side effects:
 //   - Sets h.evaluationResult with the harness output from repeated invalid plans.
+//
+// Expected: parameters for thePlannerConsistentlyGeneratesInvalidPlans.
 func (h *HarnessStepDefinitions) thePlannerConsistentlyGeneratesInvalidPlans() error {
 	invalidPlan := "---\nid: invalid-plan\ntitle: Invalid Plan\n---\n"
 	streamer := &harnessTestStreamer{responses: []string{invalidPlan, invalidPlan, invalidPlan}}
@@ -349,6 +369,8 @@ func (h *HarnessStepDefinitions) theHarnessCapsRetriesAt(maxRetries int) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for returnsTheBestEffortPlanWithWarnings.
 func (h *HarnessStepDefinitions) returnsTheBestEffortPlanWithWarnings() error {
 	if h.evaluationResult == nil {
 		return errors.New("no evaluation result")
@@ -372,6 +394,8 @@ func (h *HarnessStepDefinitions) returnsTheBestEffortPlanWithWarnings() error {
 //
 // Side effects:
 //   - Sets h.planText to a plain text string without frontmatter.
+//
+// Expected: parameters for aPlanDocumentWithoutYAMLFrontmatter.
 func (h *HarnessStepDefinitions) aPlanDocumentWithoutYAMLFrontmatter() error {
 	h.planText = "This is just plain text without frontmatter"
 	return nil
@@ -384,6 +408,8 @@ func (h *HarnessStepDefinitions) aPlanDocumentWithoutYAMLFrontmatter() error {
 //
 // Side effects:
 //   - Sets h.validationResult with the schema validation output.
+//
+// Expected: parameters for theSchemaValidatorProcessesThePlan.
 func (h *HarnessStepDefinitions) theSchemaValidatorProcessesThePlan() error {
 	if h.planText == "" {
 		return errors.New("no plan text configured — Given step must set up the plan document first")
@@ -401,6 +427,8 @@ func (h *HarnessStepDefinitions) theSchemaValidatorProcessesThePlan() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theValidationFailsWithMissingFrontmatterError.
 func (h *HarnessStepDefinitions) theValidationFailsWithMissingFrontmatterError() error {
 	if h.validationResult == nil {
 		return errors.New("no validation result")

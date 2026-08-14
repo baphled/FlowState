@@ -209,6 +209,8 @@ func (s *FileSessionStore) LoadWithModel(sessionID string, model string) (*recal
 //
 // Side effects:
 //   - Reads all JSON session files from the base directory.
+//
+// Expected: parameters for List.
 func (s *FileSessionStore) List() []SessionInfo {
 	pattern := filepath.Join(s.baseDir, "*.json")
 	matches, err := filepath.Glob(pattern)

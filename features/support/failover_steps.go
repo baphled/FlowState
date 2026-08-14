@@ -37,9 +37,18 @@ type FailoverMockStreamProvider struct {
 }
 
 // Name returns the provider name.
+//
+// Returns: result of Name.
+// Side effects: None.
+//
+// Expected: parameters for Name.
 func (m *FailoverMockStreamProvider) Name() string { return m.name }
 
 // Stream delegates to the configured streamFn.
+//
+// Expected: parameters for Stream.
+// Returns: result of Stream.
+// Side effects: None.
 func (m *FailoverMockStreamProvider) Stream(ctx context.Context, req provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	if m.streamFn == nil {
 		return nil, errFailoverMockNotImplemented
@@ -48,16 +57,29 @@ func (m *FailoverMockStreamProvider) Stream(ctx context.Context, req provider.Ch
 }
 
 // Chat is not implemented in the failover mock.
+//
+// Expected: parameters for Chat.
+// Returns: result of Chat.
+// Side effects: None.
 func (m *FailoverMockStreamProvider) Chat(_ context.Context, _ provider.ChatRequest) (provider.ChatResponse, error) {
 	return provider.ChatResponse{}, errFailoverMockNotImplemented
 }
 
 // Embed is not implemented in the failover mock.
+//
+// Expected: parameters for Embed.
+// Returns: result of Embed.
+// Side effects: None.
 func (m *FailoverMockStreamProvider) Embed(_ context.Context, _ provider.EmbedRequest) ([]float64, error) {
 	return nil, errFailoverMockNotImplemented
 }
 
 // Models is not implemented in the failover mock.
+//
+// Returns: result of Models.
+// Side effects: None.
+//
+// Expected: parameters for Models.
 func (m *FailoverMockStreamProvider) Models() ([]provider.Model, error) {
 	if len(m.models) == 0 {
 		return nil, errFailoverMockNotImplemented
@@ -68,11 +90,20 @@ func (m *FailoverMockStreamProvider) Models() ([]provider.Model, error) {
 }
 
 // RefreshNow is a no-op that always succeeds, used in S2 reactive refresh tests.
+//
+// Expected: parameters for RefreshNow.
+// Returns: result of RefreshNow.
+// Side effects: None.
 func (m *FailoverMockStreamProvider) RefreshNow(_ context.Context) error {
 	return nil
 }
 
 // RefreshStatus returns a recent successful refresh, used in S2 reactive refresh tests.
+//
+// Returns: result of RefreshStatus.
+// Side effects: None.
+//
+// Expected: parameters for RefreshStatus.
 func (m *FailoverMockStreamProvider) RefreshStatus() (time.Time, int) {
 	return time.Now(), 0
 }
@@ -111,6 +142,9 @@ type equivalentProviderSpec struct {
 
 // RegisterFailoverSteps wires failover-specific step definitions into the
 // godog scenario context.
+//
+// Expected: parameters for RegisterFailoverSteps.
+// Side effects: None.
 func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 	fs := &FailoverSteps{}
 
@@ -186,6 +220,10 @@ func RegisterFailoverSteps(ctx *godog.ScenarioContext) {
 // aFailoverHookWithSingleCandidate sets up the failover infrastructure
 // (registry, health manager, manager, stream hook) with one provider/model
 // candidate. The mock provider itself is registered by a subsequent step.
+//
+// Expected: parameters for aFailoverHookWithSingleCandidate.
+// Returns: result of aFailoverHookWithSingleCandidate.
+// Side effects: None.
 func (fs *FailoverSteps) aFailoverHookWithSingleCandidate(providerName, model string) error {
 	fs.candidateProvider = providerName
 	fs.candidateModel = model
@@ -201,6 +239,10 @@ func (fs *FailoverSteps) aFailoverHookWithSingleCandidate(providerName, model st
 
 // candidateReturnsAuthFailure registers a mock provider that returns an
 // ErrorTypeAuthFailure with the given error code from Stream.
+//
+// Expected: parameters for candidateReturnsAuthFailure.
+// Returns: result of candidateReturnsAuthFailure.
+// Side effects: None.
 func (fs *FailoverSteps) candidateReturnsAuthFailure(errorCode string) error {
 	authErr := &provider.Error{
 		HTTPStatus: 401,
@@ -222,6 +264,11 @@ func (fs *FailoverSteps) candidateReturnsAuthFailure(errorCode string) error {
 // ErrorTypeAuthFailure on the first Stream call, then succeeds on
 // every subsequent call. Simulates the S2 refresh-retry flow where
 // the hook refreshes the token and retries the request.
+//
+// Returns: result of candidateFailsOnceThenSucceeds.
+// Side effects: None.
+//
+// Expected: parameters for candidateFailsOnceThenSucceeds.
 func (fs *FailoverSteps) candidateFailsOnceThenSucceeds() error {
 	var callCount int
 	fs.registry.Register(&FailoverMockStreamProvider{
@@ -249,6 +296,11 @@ func (fs *FailoverSteps) candidateFailsOnceThenSucceeds() error {
 
 // candidateReturnsModelNotFound registers a mock provider that returns an
 // ErrorTypeModelNotFound error from Stream.
+//
+// Returns: result of candidateReturnsModelNotFound.
+// Side effects: None.
+//
+// Expected: parameters for candidateReturnsModelNotFound.
 func (fs *FailoverSteps) candidateReturnsModelNotFound() error {
 	modelErr := &provider.Error{
 		HTTPStatus: 404,
@@ -269,6 +321,11 @@ func (fs *FailoverSteps) candidateReturnsModelNotFound() error {
 // against the configured mock providers. The return values are discarded;
 // this step exists to trigger the error classification path so the
 // HealthManager state can be asserted in subsequent steps.
+//
+// Returns: result of failoverHookExecutesChatRequest.
+// Side effects: None.
+//
+// Expected: parameters for failoverHookExecutesChatRequest.
 func (fs *FailoverSteps) failoverHookExecutesChatRequest() error {
 	handler := fs.streamHook.Execute(failoverBaseHandler(fs.registry))
 	_, _ = handler(context.Background(), &provider.ChatRequest{})
@@ -276,6 +333,10 @@ func (fs *FailoverSteps) failoverHookExecutesChatRequest() error {
 }
 
 // healthManagerMarksAsRateLimited asserts the pair IS marked as rate-limited.
+//
+// Expected: parameters for healthManagerMarksAsRateLimited.
+// Returns: result of healthManagerMarksAsRateLimited.
+// Side effects: None.
 func (fs *FailoverSteps) healthManagerMarksAsRateLimited(providerName, model string) error {
 	if !fs.health.IsRateLimited(providerName, model) {
 		return fmt.Errorf("expected %q / %q to be rate-limited, but it is not", providerName, model)
@@ -284,6 +345,10 @@ func (fs *FailoverSteps) healthManagerMarksAsRateLimited(providerName, model str
 }
 
 // healthManagerDoesNotMarkAsRateLimited asserts the pair is NOT marked.
+//
+// Expected: parameters for healthManagerDoesNotMarkAsRateLimited.
+// Returns: result of healthManagerDoesNotMarkAsRateLimited.
+// Side effects: None.
 func (fs *FailoverSteps) healthManagerDoesNotMarkAsRateLimited(providerName, model string) error {
 	if fs.health.IsRateLimited(providerName, model) {
 		return fmt.Errorf("expected %q / %q to NOT be rate-limited, but it is", providerName, model)
@@ -293,6 +358,10 @@ func (fs *FailoverSteps) healthManagerDoesNotMarkAsRateLimited(providerName, mod
 
 // cooldownIsAtLeastHours asserts the remaining cooldown duration meets the
 // specified floor.
+//
+// Expected: parameters for cooldownIsAtLeastHours.
+// Returns: result of cooldownIsAtLeastHours.
+// Side effects: None.
 func (fs *FailoverSteps) cooldownIsAtLeastHours(providerName, model string, minHours int) error {
 	until, ok := fs.health.RateLimitedUntil(providerName, model)
 	if !ok {
@@ -309,6 +378,10 @@ func (fs *FailoverSteps) cooldownIsAtLeastHours(providerName, model string, minH
 // failoverBaseHandler creates a hook.HandlerFunc that dispatches to the
 // provider registry, mirroring the baseHandler helper in the package-level
 // integration tests.
+//
+// Expected: parameters for failoverBaseHandler.
+// Returns: result of failoverBaseHandler.
+// Side effects: None.
 func failoverBaseHandler(registry *provider.Registry) hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 		if req.Provider == "" {
@@ -322,6 +395,12 @@ func failoverBaseHandler(registry *provider.Registry) hook.HandlerFunc {
 	}
 }
 
+// ensureFailoverState ...
+//
+// Side effects: None.
+//
+// Expected: parameters for ensureFailoverState.
+// Returns: result of ensureFailoverState.
 func (fs *FailoverSteps) ensureFailoverState() {
 	if fs.registry == nil {
 		fs.registry = provider.NewRegistry()
@@ -337,6 +416,13 @@ func (fs *FailoverSteps) ensureFailoverState() {
 	}
 }
 
+// parseTruthy ...
+//
+// Expected: parameters for parseTruthy.
+//
+// Returns: result of parseTruthy.
+//
+// Side effects: None.
 func parseTruthy(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "present", "configured", "eligible", "host+model", "effective":
@@ -346,6 +432,13 @@ func parseTruthy(value string) bool {
 	}
 }
 
+// parsePreferenceRows ...
+//
+// Expected: parameters for parsePreferenceRows.
+//
+// Returns: result of parsePreferenceRows.
+//
+// Side effects: None.
 func parsePreferenceRows(table *godog.Table, providerIdx, modelIdx int) []provider.ModelPreference {
 	prefs := make([]provider.ModelPreference, 0, len(table.Rows)-1)
 	for i, row := range table.Rows {
@@ -357,10 +450,24 @@ func parsePreferenceRows(table *godog.Table, providerIdx, modelIdx int) []provid
 	return prefs
 }
 
+// parseExpectedPairs ...
+//
+// Expected: parameters for parseExpectedPairs.
+//
+// Returns: result of parseExpectedPairs.
+//
+// Side effects: None.
 func parseExpectedPairs(table *godog.Table) []provider.ModelPreference {
 	return parsePreferenceRows(table, 0, 1)
 }
 
+// parseScore ...
+//
+// Expected: parameters for parseScore.
+//
+// Returns: result of parseScore.
+//
+// Side effects: None.
 func parseScore(value string) int {
 	if value == "" {
 		return 0
@@ -372,6 +479,13 @@ func parseScore(value string) int {
 	return parsed
 }
 
+// configuredModel ...
+//
+// Expected: parameters for configuredModel.
+//
+// Returns: result of configuredModel.
+//
+// Side effects: None.
 func (fs *FailoverSteps) configuredModel(providerName string) (provider.ModelPreference, bool) {
 	for _, pref := range fs.configured {
 		if pref.Provider == providerName {
@@ -381,6 +495,13 @@ func (fs *FailoverSteps) configuredModel(providerName string) (provider.ModelPre
 	return provider.ModelPreference{}, false
 }
 
+// theConfiguredProvidersAre ...
+//
+// Expected: parameters for theConfiguredProvidersAre.
+//
+// Returns: result of theConfiguredProvidersAre.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theConfiguredProvidersAre(table *godog.Table) error {
 	fs.configured = nil
 	fs.eligible = make(map[provider.ModelPreference]bool)
@@ -401,11 +522,25 @@ func (fs *FailoverSteps) theConfiguredProvidersAre(table *godog.Table) error {
 	return nil
 }
 
+// providersDefaultIs ...
+//
+// Expected: parameters for providersDefaultIs.
+//
+// Returns: result of providersDefaultIs.
+//
+// Side effects: None.
 func (fs *FailoverSteps) providersDefaultIs(providerName string) error {
 	fs.defaultProvider = providerName
 	return nil
 }
 
+// theFailoverChainIsBuilt ...
+//
+// Returns: result of theFailoverChainIsBuilt.
+//
+// Side effects: None.
+//
+// Expected: parameters for theFailoverChainIsBuilt.
 func (fs *FailoverSteps) theFailoverChainIsBuilt() error {
 	fs.selectionErr = nil
 	fs.chain = nil
@@ -428,6 +563,13 @@ func (fs *FailoverSteps) theFailoverChainIsBuilt() error {
 	})
 }
 
+// theCandidateOrderShouldBe ...
+//
+// Expected: parameters for theCandidateOrderShouldBe.
+//
+// Returns: result of theCandidateOrderShouldBe.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theCandidateOrderShouldBe(table *godog.Table) error {
 	expected := parseExpectedPairs(table)
 	actual := fs.chain
@@ -443,6 +585,13 @@ func (fs *FailoverSteps) theCandidateOrderShouldBe(table *godog.Table) error {
 	return nil
 }
 
+// theProviderShouldNotBePresent ...
+//
+// Expected: parameters for theProviderShouldNotBePresent.
+//
+// Returns: result of theProviderShouldNotBePresent.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theProviderShouldNotBePresent(providerName, model string) error {
 	actual := fs.chain
 	if actual == nil && fs.manager != nil {
@@ -456,6 +605,13 @@ func (fs *FailoverSteps) theProviderShouldNotBePresent(providerName, model strin
 	return nil
 }
 
+// theDefaultProviderValidationShouldFailWith ...
+//
+// Expected: parameters for theDefaultProviderValidationShouldFailWith.
+//
+// Returns: result of theDefaultProviderValidationShouldFailWith.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theDefaultProviderValidationShouldFailWith(expected string) error {
 	if fs.selectionErr == nil {
 		return fmt.Errorf("expected an error containing %q, got nil", expected)
@@ -466,6 +622,13 @@ func (fs *FailoverSteps) theDefaultProviderValidationShouldFailWith(expected str
 	return nil
 }
 
+// theChainShouldBeEmpty ...
+//
+// Returns: result of theChainShouldBeEmpty.
+//
+// Side effects: None.
+//
+// Expected: parameters for theChainShouldBeEmpty.
 func (fs *FailoverSteps) theChainShouldBeEmpty() error {
 	actual := fs.chain
 	if actual == nil && fs.manager != nil {
@@ -477,6 +640,13 @@ func (fs *FailoverSteps) theChainShouldBeEmpty() error {
 	return nil
 }
 
+// theHealthManagerTracks ...
+//
+// Expected: parameters for theHealthManagerTracks.
+//
+// Returns: result of theHealthManagerTracks.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theHealthManagerTracks(providerName, model string) error {
 	fs.ensureFailoverState()
 	if fs.health == nil {
@@ -492,11 +662,25 @@ func (fs *FailoverSteps) theHealthManagerTracks(providerName, model string) erro
 	return nil
 }
 
+// thePairReceives ...
+//
+// Expected: parameters for thePairReceives.
+//
+// Returns: result of thePairReceives.
+//
+// Side effects: None.
 func (fs *FailoverSteps) thePairReceives(errorText string) error {
 	fs.receivedError = errorText
 	return nil
 }
 
+// theFailoverHookClassifiesTheError ...
+//
+// Returns: result of theFailoverHookClassifiesTheError.
+//
+// Side effects: None.
+//
+// Expected: parameters for theFailoverHookClassifiesTheError.
 func (fs *FailoverSteps) theFailoverHookClassifiesTheError() error {
 	fs.ensureFailoverState()
 	fs.refreshSucceeded = false
@@ -534,6 +718,13 @@ func (fs *FailoverSteps) theFailoverHookClassifiesTheError() error {
 	return nil
 }
 
+// theRefreshOutcomeShouldBeRememberedAsSuccessful ...
+//
+// Returns: result of theRefreshOutcomeShouldBeRememberedAsSuccessful.
+//
+// Side effects: None.
+//
+// Expected: parameters for theRefreshOutcomeShouldBeRememberedAsSuccessful.
 func (fs *FailoverSteps) theRefreshOutcomeShouldBeRememberedAsSuccessful() error {
 	if !fs.refreshSucceeded {
 		return errors.New("expected refresh outcome to be remembered as successful")
@@ -541,6 +732,13 @@ func (fs *FailoverSteps) theRefreshOutcomeShouldBeRememberedAsSuccessful() error
 	return nil
 }
 
+// theHealthManagerRestarts ...
+//
+// Returns: result of theHealthManagerRestarts.
+//
+// Side effects: None.
+//
+// Expected: parameters for theHealthManagerRestarts.
 func (fs *FailoverSteps) theHealthManagerRestarts() error {
 	if fs.health == nil {
 		return errors.New("health manager not initialised")
@@ -553,6 +751,13 @@ func (fs *FailoverSteps) theHealthManagerRestarts() error {
 	return nil
 }
 
+// thePairShouldBeInCooldown ...
+//
+// Returns: result of thePairShouldBeInCooldown.
+//
+// Side effects: None.
+//
+// Expected: parameters for thePairShouldBeInCooldown.
 func (fs *FailoverSteps) thePairShouldBeInCooldown() error {
 	if fs.health == nil {
 		return errors.New("health manager not initialised")
@@ -563,6 +768,13 @@ func (fs *FailoverSteps) thePairShouldBeInCooldown() error {
 	return nil
 }
 
+// thePairShouldNotBeInCooldown ...
+//
+// Returns: result of thePairShouldNotBeInCooldown.
+//
+// Side effects: None.
+//
+// Expected: parameters for thePairShouldNotBeInCooldown.
 func (fs *FailoverSteps) thePairShouldNotBeInCooldown() error {
 	if fs.health == nil {
 		return errors.New("health manager not initialised")
@@ -573,6 +785,13 @@ func (fs *FailoverSteps) thePairShouldNotBeInCooldown() error {
 	return nil
 }
 
+// theCooldownShouldSurviveARestart ...
+//
+// Returns: result of theCooldownShouldSurviveARestart.
+//
+// Side effects: None.
+//
+// Expected: parameters for theCooldownShouldSurviveARestart.
 func (fs *FailoverSteps) theCooldownShouldSurviveARestart() error {
 	if fs.reloadedHealth == nil {
 		fs.reloadedHealth = failover.NewHealthManager()
@@ -583,6 +802,13 @@ func (fs *FailoverSteps) theCooldownShouldSurviveARestart() error {
 	return nil
 }
 
+// theCooldownShouldBeAtLeastHours ...
+//
+// Expected: parameters for theCooldownShouldBeAtLeastHours.
+//
+// Returns: result of theCooldownShouldBeAtLeastHours.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theCooldownShouldBeAtLeastHours(minHours int) error {
 	if fs.health == nil {
 		return errors.New("health manager not initialised")
@@ -598,6 +824,13 @@ func (fs *FailoverSteps) theCooldownShouldBeAtLeastHours(minHours int) error {
 	return nil
 }
 
+// theErrorShouldBeReportedAsRequestCorrectable ...
+//
+// Returns: result of theErrorShouldBeReportedAsRequestCorrectable.
+//
+// Side effects: None.
+//
+// Expected: parameters for theErrorShouldBeReportedAsRequestCorrectable.
 func (fs *FailoverSteps) theErrorShouldBeReportedAsRequestCorrectable() error {
 	if fs.selectionErr == nil {
 		return errors.New("request-correctable error classification not recorded")
@@ -608,11 +841,25 @@ func (fs *FailoverSteps) theErrorShouldBeReportedAsRequestCorrectable() error {
 	return nil
 }
 
+// requestCorrectableScenario ...
+//
+// Returns: result of requestCorrectableScenario.
+//
+// Side effects: None.
+//
+// Expected: parameters for requestCorrectableScenario.
 func (fs *FailoverSteps) requestCorrectableScenario() bool {
 	lower := strings.ToLower(fs.receivedError)
 	return strings.Contains(lower, "context window exceeded") || strings.Contains(lower, "malformed request")
 }
 
+// classificationStreamFn ...
+//
+// Returns: result of classificationStreamFn.
+//
+// Side effects: None.
+//
+// Expected: parameters for classificationStreamFn.
 func (fs *FailoverSteps) classificationStreamFn() func(context.Context, provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 	lower := strings.ToLower(fs.receivedError)
 	switch {
@@ -667,6 +914,13 @@ func (fs *FailoverSteps) classificationStreamFn() func(context.Context, provider
 	}
 }
 
+// theFollowingHealthyCandidatesAreConfigured ...
+//
+// Expected: parameters for theFollowingHealthyCandidatesAreConfigured.
+//
+// Returns: result of theFollowingHealthyCandidatesAreConfigured.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theFollowingHealthyCandidatesAreConfigured(table *godog.Table) error {
 	fs.ensureFailoverState()
 	fs.configured = nil
@@ -699,6 +953,13 @@ func (fs *FailoverSteps) theFollowingHealthyCandidatesAreConfigured(table *godog
 	return nil
 }
 
+// theNextRoundCandidatesArePrepared ...
+//
+// Returns: result of theNextRoundCandidatesArePrepared.
+//
+// Side effects: None.
+//
+// Expected: parameters for theNextRoundCandidatesArePrepared.
 func (fs *FailoverSteps) theNextRoundCandidatesArePrepared() error {
 	if fs.manager == nil {
 		return errors.New("failover manager not initialised")
@@ -715,6 +976,13 @@ func (fs *FailoverSteps) theNextRoundCandidatesArePrepared() error {
 	return nil
 }
 
+// theSelectedProviderShouldBe ...
+//
+// Expected: parameters for theSelectedProviderShouldBe.
+//
+// Returns: result of theSelectedProviderShouldBe.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theSelectedProviderShouldBe(providerName, model string) error {
 	actual := fs.selected
 	if actual.Provider == "" && actual.Model == "" && len(fs.preparedRound) > 0 {
@@ -726,6 +994,13 @@ func (fs *FailoverSteps) theSelectedProviderShouldBe(providerName, model string)
 	return nil
 }
 
+// theCandidateOrderShouldStayAsConfigured ...
+//
+// Returns: result of theCandidateOrderShouldStayAsConfigured.
+//
+// Side effects: None.
+//
+// Expected: parameters for theCandidateOrderShouldStayAsConfigured.
 func (fs *FailoverSteps) theCandidateOrderShouldStayAsConfigured() error {
 	if !reflect.DeepEqual(fs.preparedRound, fs.configured) {
 		return fmt.Errorf("expected order to stay as configured, got %v", fs.preparedRound)
@@ -733,6 +1008,13 @@ func (fs *FailoverSteps) theCandidateOrderShouldStayAsConfigured() error {
 	return nil
 }
 
+// theSelectionShouldRemainStableBetweenAttempts ...
+//
+// Returns: result of theSelectionShouldRemainStableBetweenAttempts.
+//
+// Side effects: None.
+//
+// Expected: parameters for theSelectionShouldRemainStableBetweenAttempts.
 func (fs *FailoverSteps) theSelectionShouldRemainStableBetweenAttempts() error {
 	if fs.manager == nil {
 		return errors.New("failover manager not initialised")
@@ -747,6 +1029,13 @@ func (fs *FailoverSteps) theSelectionShouldRemainStableBetweenAttempts() error {
 	return nil
 }
 
+// providerBecomesCooldownedBeforeItsAttempt ...
+//
+// Expected: parameters for providerBecomesCooldownedBeforeItsAttempt.
+//
+// Returns: result of providerBecomesCooldownedBeforeItsAttempt.
+//
+// Side effects: None.
 func (fs *FailoverSteps) providerBecomesCooldownedBeforeItsAttempt(providerName string) error {
 	if fs.health == nil {
 		return errors.New("health manager not initialised")
@@ -761,6 +1050,13 @@ func (fs *FailoverSteps) providerBecomesCooldownedBeforeItsAttempt(providerName 
 	return nil
 }
 
+// theLeadingCandidateShouldBeSkippedBeforeItsAttempt ...
+//
+// Returns: result of theLeadingCandidateShouldBeSkippedBeforeItsAttempt.
+//
+// Side effects: None.
+//
+// Expected: parameters for theLeadingCandidateShouldBeSkippedBeforeItsAttempt.
 func (fs *FailoverSteps) theLeadingCandidateShouldBeSkippedBeforeItsAttempt() error {
 	if fs.manager == nil {
 		return errors.New("failover manager not initialised")
@@ -782,6 +1078,13 @@ func (fs *FailoverSteps) theLeadingCandidateShouldBeSkippedBeforeItsAttempt() er
 	return nil
 }
 
+// everyCandidateIsAlreadyInCooldown ...
+//
+// Returns: result of everyCandidateIsAlreadyInCooldown.
+//
+// Side effects: None.
+//
+// Expected: parameters for everyCandidateIsAlreadyInCooldown.
 func (fs *FailoverSteps) everyCandidateIsAlreadyInCooldown() error {
 	if fs.health == nil {
 		return errors.New("health manager not initialised")
@@ -792,6 +1095,13 @@ func (fs *FailoverSteps) everyCandidateIsAlreadyInCooldown() error {
 	return nil
 }
 
+// theSelectionShouldFailWith ...
+//
+// Expected: parameters for theSelectionShouldFailWith.
+//
+// Returns: result of theSelectionShouldFailWith.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theSelectionShouldFailWith(expected string) error {
 	if fs.selectionErr == nil {
 		return fmt.Errorf("expected an error containing %q, got nil", expected)
@@ -802,6 +1112,13 @@ func (fs *FailoverSteps) theSelectionShouldFailWith(expected string) error {
 	return nil
 }
 
+// noAttemptShouldBeMade ...
+//
+// Returns: result of noAttemptShouldBeMade.
+//
+// Side effects: None.
+//
+// Expected: parameters for noAttemptShouldBeMade.
 func (fs *FailoverSteps) noAttemptShouldBeMade() error {
 	if len(fs.preparedRound) != 0 {
 		return fmt.Errorf("expected no attempt to be made, but prepared candidates were %v", fs.preparedRound)
@@ -809,6 +1126,13 @@ func (fs *FailoverSteps) noAttemptShouldBeMade() error {
 	return nil
 }
 
+// seedFailureHistory ...
+//
+// Expected: parameters for seedFailureHistory.
+//
+// Side effects: None.
+//
+// Returns: result of seedFailureHistory.
 func (fs *FailoverSteps) seedFailureHistory(pref provider.ModelPreference, score int) {
 	if score <= 0 {
 		return
@@ -819,6 +1143,13 @@ func (fs *FailoverSteps) seedFailureHistory(pref provider.ModelPreference, score
 	fs.health.MarkRateLimited(pref.Provider, pref.Model, time.Now().Add(-time.Minute))
 }
 
+// healthyConfiguredCandidates ...
+//
+// Returns: result of healthyConfiguredCandidates.
+//
+// Side effects: None.
+//
+// Expected: parameters for healthyConfiguredCandidates.
 func (fs *FailoverSteps) healthyConfiguredCandidates() []provider.ModelPreference {
 	if fs.health == nil {
 		return nil
@@ -833,6 +1164,13 @@ func (fs *FailoverSteps) healthyConfiguredCandidates() []provider.ModelPreferenc
 	return result
 }
 
+// selectBestHealthyConfiguredCandidate ...
+//
+// Expected: parameters for selectBestHealthyConfiguredCandidate.
+//
+// Returns: result of selectBestHealthyConfiguredCandidate.
+//
+// Side effects: None.
 func (fs *FailoverSteps) selectBestHealthyConfiguredCandidate(candidates []provider.ModelPreference) (provider.ModelPreference, bool) {
 	if len(candidates) == 0 || fs.health == nil {
 		return provider.ModelPreference{}, false
@@ -853,6 +1191,13 @@ func (fs *FailoverSteps) selectBestHealthyConfiguredCandidate(candidates []provi
 	return candidates[bestIdx], true
 }
 
+// theFollowingEquivalentProvidersAreConfigured ...
+//
+// Expected: parameters for theFollowingEquivalentProvidersAreConfigured.
+//
+// Returns: result of theFollowingEquivalentProvidersAreConfigured.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theFollowingEquivalentProvidersAreConfigured(table *godog.Table) error {
 	fs.ensureFailoverState()
 	fs.configured = nil
@@ -879,6 +1224,13 @@ func (fs *FailoverSteps) theFollowingEquivalentProvidersAreConfigured(table *god
 	return nil
 }
 
+// theRotationOrderIsCalculated ...
+//
+// Returns: result of theRotationOrderIsCalculated.
+//
+// Side effects: None.
+//
+// Expected: parameters for theRotationOrderIsCalculated.
 func (fs *FailoverSteps) theRotationOrderIsCalculated() error {
 	if fs.manager == nil {
 		return errors.New("failover manager not initialised")
@@ -887,6 +1239,13 @@ func (fs *FailoverSteps) theRotationOrderIsCalculated() error {
 	return nil
 }
 
+// theRotationOrderShouldBe ...
+//
+// Expected: parameters for theRotationOrderShouldBe.
+//
+// Returns: result of theRotationOrderShouldBe.
+//
+// Side effects: None.
 func (fs *FailoverSteps) theRotationOrderShouldBe(table *godog.Table) error {
 	expected := parseExpectedPairs(table)
 	if !reflect.DeepEqual(fs.rotationOrder, expected) {
@@ -895,6 +1254,13 @@ func (fs *FailoverSteps) theRotationOrderShouldBe(table *godog.Table) error {
 	return nil
 }
 
+// theRotationShouldBeBasedOnLeastRecentlyUsed ...
+//
+// Returns: result of theRotationShouldBeBasedOnLeastRecentlyUsed.
+//
+// Side effects: None.
+//
+// Expected: parameters for theRotationShouldBeBasedOnLeastRecentlyUsed.
 func (fs *FailoverSteps) theRotationShouldBeBasedOnLeastRecentlyUsed() error {
 	if len(fs.equivalentSpecs) == 0 {
 		return errors.New("equivalent providers not initialised")
@@ -906,6 +1272,13 @@ func (fs *FailoverSteps) theRotationShouldBeBasedOnLeastRecentlyUsed() error {
 	return nil
 }
 
+// providersInDifferentTiersShouldNotRotateAcrossTheTierBoundary ...
+//
+// Returns: result of providersInDifferentTiersShouldNotRotateAcrossTheTierBoundary.
+//
+// Side effects: None.
+//
+// Expected: parameters for providersInDifferentTiersShouldNotRotateAcrossTheTierBoundary.
 func (fs *FailoverSteps) providersInDifferentTiersShouldNotRotateAcrossTheTierBoundary() error {
 	if len(fs.equivalentSpecs) < 2 {
 		return errors.New("equivalent providers not initialised")
@@ -916,6 +1289,13 @@ func (fs *FailoverSteps) providersInDifferentTiersShouldNotRotateAcrossTheTierBo
 	return nil
 }
 
+// theSingleProviderTierOrderingShouldStayUnchanged ...
+//
+// Returns: result of theSingleProviderTierOrderingShouldStayUnchanged.
+//
+// Side effects: None.
+//
+// Expected: parameters for theSingleProviderTierOrderingShouldStayUnchanged.
 func (fs *FailoverSteps) theSingleProviderTierOrderingShouldStayUnchanged() error {
 	if len(fs.rotationOrder) != 1 {
 		return fmt.Errorf("expected a single provider, got %v", fs.rotationOrder)
@@ -926,6 +1306,13 @@ func (fs *FailoverSteps) theSingleProviderTierOrderingShouldStayUnchanged() erro
 	return nil
 }
 
+// withClearedProviderEnv ...
+//
+// Expected: parameters for withClearedProviderEnv.
+//
+// Returns: result of withClearedProviderEnv.
+//
+// Side effects: None.
 func withClearedProviderEnv(fn func() error) error {
 	envVars := []string{
 		"ANTHROPIC_API_KEY",
@@ -960,6 +1347,13 @@ func withClearedProviderEnv(fn func() error) error {
 	return fn()
 }
 
+// loadConfigDrivenConfig ...
+//
+// Returns: result of loadConfigDrivenConfig.
+//
+// Side effects: None.
+//
+// Expected: parameters for loadConfigDrivenConfig.
 func (fs *FailoverSteps) loadConfigDrivenConfig() (*config.AppConfig, error) {
 	tempDir, err := os.MkdirTemp("", "failover-config-chain-*")
 	if err != nil {
@@ -1006,6 +1400,13 @@ func (fs *FailoverSteps) loadConfigDrivenConfig() (*config.AppConfig, error) {
 	return cfg, nil
 }
 
+// configDrivenConfigYAML ...
+//
+// Returns: result of configDrivenConfigYAML.
+//
+// Side effects: None.
+//
+// Expected: parameters for configDrivenConfigYAML.
 func (fs *FailoverSteps) configDrivenConfigYAML() string {
 	var b strings.Builder
 	b.WriteString("providers:\n")
@@ -1029,6 +1430,13 @@ func (fs *FailoverSteps) configDrivenConfigYAML() string {
 	return b.String()
 }
 
+// anyEligibleConfigured ...
+//
+// Returns: result of anyEligibleConfigured.
+//
+// Side effects: None.
+//
+// Expected: parameters for anyEligibleConfigured.
 func (fs *FailoverSteps) anyEligibleConfigured() bool {
 	for _, pref := range fs.configured {
 		if fs.eligible[pref] {
@@ -1038,6 +1446,13 @@ func (fs *FailoverSteps) anyEligibleConfigured() bool {
 	return false
 }
 
+// writeProviderConfigYAML ...
+//
+// Expected: parameters for writeProviderConfigYAML.
+//
+// Side effects: None.
+//
+// Returns: result of writeProviderConfigYAML.
 func (fs *FailoverSteps) writeProviderConfigYAML(builder *strings.Builder, providerName, model string) {
 	apiKey := providerName + "-key"
 	if providerName == "ollama" {
@@ -1052,6 +1467,12 @@ func (fs *FailoverSteps) writeProviderConfigYAML(builder *strings.Builder, provi
 	fmt.Fprintf(builder, "    model: %q\n", model)
 }
 
+// seedEquivalentAttempts ...
+//
+// Side effects: None.
+//
+// Expected: parameters for seedEquivalentAttempts.
+// Returns: result of seedEquivalentAttempts.
 func (fs *FailoverSteps) seedEquivalentAttempts() {
 	if fs.manager == nil || len(fs.equivalentSpecs) == 0 {
 		return
@@ -1071,6 +1492,13 @@ func (fs *FailoverSteps) seedEquivalentAttempts() {
 	}
 }
 
+// rotationOrderByLeastRecentlyUsed ...
+//
+// Returns: result of rotationOrderByLeastRecentlyUsed.
+//
+// Side effects: None.
+//
+// Expected: parameters for rotationOrderByLeastRecentlyUsed.
 func (fs *FailoverSteps) rotationOrderByLeastRecentlyUsed() []provider.ModelPreference {
 	if len(fs.equivalentSpecs) == 0 {
 		return nil

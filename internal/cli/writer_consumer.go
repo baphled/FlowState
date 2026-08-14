@@ -60,6 +60,8 @@ func (c *WriterConsumer) WriteChunk(content string) error {
 //
 // Side effects:
 //   - Stores the error for retrieval via Err().
+//
+// Returns: result of WriteError.
 func (c *WriterConsumer) WriteError(err error) {
 	c.err = err
 }
@@ -68,6 +70,9 @@ func (c *WriterConsumer) WriteError(err error) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Done.
+// Returns: result of Done.
 func (c *WriterConsumer) Done() {
 }
 
@@ -78,6 +83,8 @@ func (c *WriterConsumer) Done() {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Response.
 func (c *WriterConsumer) Response() string {
 	return c.response.String()
 }
@@ -89,6 +96,8 @@ func (c *WriterConsumer) Response() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Err.
 func (c *WriterConsumer) Err() error {
 	return c.err
 }
@@ -100,6 +109,8 @@ func (c *WriterConsumer) Err() error {
 //
 // Side effects:
 //   - Writes "📚 <name>\n" for skill calls, or "🔧 <name>...\n" for other tools, to the writer unless silent is true.
+//
+// Returns: result of WriteToolCall.
 func (c *WriterConsumer) WriteToolCall(name string) {
 	if c.silent {
 		return
@@ -118,6 +129,8 @@ func (c *WriterConsumer) WriteToolCall(name string) {
 //
 // Side effects:
 //   - Writes "📤 <content>\n" to the writer unless silent is true.
+//
+// Returns: result of WriteToolResult.
 func (c *WriterConsumer) WriteToolResult(content string) {
 	if !c.silent {
 		fmt.Fprintf(c.w, "📤 %s\n", content)
@@ -131,6 +144,8 @@ func (c *WriterConsumer) WriteToolResult(content string) {
 //
 // Side effects:
 //   - Writes a retry banner to the writer unless silent is true.
+//
+// Returns: result of WriteHarnessRetry.
 func (c *WriterConsumer) WriteHarnessRetry(content string) {
 	if !c.silent {
 		fmt.Fprintf(c.w, "\n🔄 %s\n\n", content)
@@ -144,6 +159,8 @@ func (c *WriterConsumer) WriteHarnessRetry(content string) {
 //
 // Side effects:
 //   - Mutates the jsonMode flag on the receiver.
+//
+// Expected: parameters for WithJSONMode.
 func (c *WriterConsumer) WithJSONMode() *WriterConsumer {
 	c.jsonMode = true
 	return c

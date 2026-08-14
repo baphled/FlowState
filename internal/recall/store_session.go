@@ -7,6 +7,8 @@ package recall
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for GetStoredMessages.
 func (s *FileContextStore) GetStoredMessages() []StoredMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -23,6 +25,8 @@ func (s *FileContextStore) GetStoredMessages() []StoredMessage {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for GetEmbeddings.
 func (s *FileContextStore) GetEmbeddings() []EmbeddingEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -39,6 +43,8 @@ func (s *FileContextStore) GetEmbeddings() []EmbeddingEntry {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for GetModel.
 func (s *FileContextStore) GetModel() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -55,6 +61,8 @@ func (s *FileContextStore) GetModel() string {
 // Side effects:
 //   - Replaces the current messages and embeddings with the provided data.
 //   - Discards embeddings if the model does not match the store's configured model.
+//
+// Returns: result of LoadFromSession.
 func (s *FileContextStore) LoadFromSession(messages []StoredMessage, embeddings []EmbeddingEntry, model string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -112,6 +112,8 @@ func NewBufferedEventWriter(path string, cfg BufferedEventWriterConfig) *Buffere
 //     threshold is hit.
 //   - Starts or resets the flush timer when the buffer is non-empty
 //     and below the batch threshold.
+//
+// Returns: result of Append.
 func (w *BufferedEventWriter) Append(ev SwarmEvent) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -162,6 +164,9 @@ func (w *BufferedEventWriter) Append(ev SwarmEvent) {
 //   - Opens the file on first flush (lazy open).
 //   - Writes buffered data, fsyncs, and resets state.
 //   - Invokes the package-level syncHook if set (for test assertions).
+//
+// Expected: parameters for flushLocked.
+// Returns: result of flushLocked.
 func (w *BufferedEventWriter) flushLocked() {
 	if w.count == 0 && w.buf.Len() == 0 {
 		return
@@ -220,6 +225,9 @@ func (w *BufferedEventWriter) flushLocked() {
 // Side effects:
 //   - Writes buffered data to disk and fsyncs.
 //   - Stops the flush timer.
+//
+// Expected: parameters for Flush.
+// Returns: result of Flush.
 func (w *BufferedEventWriter) Flush() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -234,6 +242,9 @@ func (w *BufferedEventWriter) Flush() {
 //   - Flushes buffered data.
 //   - Closes the file handle.
 //   - Marks the writer as closed.
+//
+// Expected: parameters for Close.
+// Returns: result of Close.
 func (w *BufferedEventWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

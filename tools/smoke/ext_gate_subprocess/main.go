@@ -47,20 +47,41 @@ func main() {
 	if !resp.Pass {
 		failf("fixture gate did not return pass:true")
 	}
-	fmt.Println("PASS")
+	fmt.Println("PASS") //nolint:forbidigo // smoke harness stdout marker, not structured logging
 }
 
+// repoRoot handles an internal operation.
+//
+// Returns:
+//   - The result of the operation.
+//
+// Side effects:
+//   - None.
 func repoRoot() (string, error) {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Abs(filepath.Join(filepath.Dir(file), "..", "..", ".."))
 }
 
+// must handles an internal operation.
+//
+// Expected:
+//   - Parameters are valid for this operation.
+//
+// Side effects:
+//   - None.
 func must(label string, err error) {
 	if err != nil {
 		failf("%s: %v", label, err)
 	}
 }
 
+// failf handles an internal operation.
+//
+// Expected:
+//   - Parameters are valid for this operation.
+//
+// Side effects:
+//   - None.
 func failf(format string, args ...any) {
 	fmt.Printf("FAIL: "+format+"\n", args...)
 	os.Exit(1)

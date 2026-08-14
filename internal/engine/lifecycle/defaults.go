@@ -8,6 +8,9 @@ package lifecycle
 // Callers override individual stages by replacing the LifecycleStage value
 // on the returned struct. The field order is the execution order and must
 // not be changed at runtime.
+//
+// Returns: result of DefaultTurnLifecycle.
+// Side effects: None.
 func DefaultTurnLifecycle() TurnLifecycle {
 	return TurnLifecycle{
 		ContextAssembly: LifecycleStage[ContextAssemblyCtx]{

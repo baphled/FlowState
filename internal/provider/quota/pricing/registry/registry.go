@@ -174,6 +174,9 @@ type LoadOptions struct {
 //
 // Exposed so the boot-time validator can assert the directory exists
 // before the first Load call.
+//
+// Returns: result of DefaultCachePath.
+// Side effects: None.
 func DefaultCachePath() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
@@ -201,6 +204,10 @@ func DefaultCachePath() (string, error) {
 // via the refresh ticker's single-goroutine discipline.
 //
 // Plan §"Pricing table" lines 338-388 (full algorithm).
+//
+// Expected: parameters for Load.
+// Returns: result of Load.
+// Side effects: None.
 func Load(ctx context.Context, opts LoadOptions) LoadResult {
 	if opts.URL == "" {
 		// "Registry not configured" — no error, no warning. The
@@ -369,6 +376,10 @@ func Load(ctx context.Context, opts LoadOptions) LoadResult {
 // if present, otherwise return Unreachable" branch the plan
 // prescribes at lines 381-385. Emits the structured warning the plan
 // names ("pricing_registry_unreachable").
+//
+// Expected: parameters for fallbackToCache.
+// Returns: result of fallbackToCache.
+// Side effects: None.
 func fallbackToCache(logger *slog.Logger, url, cachePath string, cached CacheEnvelope, cacheReadErr error, fetchErr error) LoadResult {
 	logger.Warn("pricing_registry_unreachable",
 		slog.String("registry_url", url),
@@ -403,11 +414,15 @@ func fallbackToCache(logger *slog.Logger, url, cachePath string, cached CacheEnv
 // envelope and a nil error on success. Returns the zero envelope and
 // an error when the file is missing, unreadable, or malformed —
 // callers treat any error as "no cache".
+//
+// Expected: parameters for readCache.
+// Returns: result of readCache.
+// Side effects: None.
 func readCache(path string) (CacheEnvelope, error) {
 	if path == "" {
 		return CacheEnvelope{}, errors.New("registry: empty cache path")
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // operator-configured cache path is intentional
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return CacheEnvelope{}, err
 	}

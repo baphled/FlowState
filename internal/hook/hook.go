@@ -45,6 +45,8 @@ func NewChain(hooks ...Hook) *Chain {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Len.
 func (c *Chain) Len() int {
 	return len(c.hooks)
 }

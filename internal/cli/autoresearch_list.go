@@ -154,6 +154,10 @@ func runAutoresearchList(w io.Writer, application *app.App) error {
 
 // uniqueAutoresearchRunIDs returns the deduplicated set of run IDs
 // derived from coord-store keys of shape `autoresearch/<runID>/...`.
+//
+// Expected: parameters for uniqueAutoresearchRunIDs.
+// Returns: result of uniqueAutoresearchRunIDs.
+// Side effects: None.
 func uniqueAutoresearchRunIDs(keys []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0)
@@ -179,6 +183,10 @@ func uniqueAutoresearchRunIDs(keys []string) []string {
 // buildRunListEntry assembles one row from the coord-store records
 // associated with a run. Returns false when the manifest record is
 // absent or unparseable — the row is skipped rather than crashing.
+//
+// Expected: parameters for buildRunListEntry.
+// Returns: result of buildRunListEntry.
+// Side effects: None.
 func buildRunListEntry(store coordination.Store, runID string) (runListEntry, bool) {
 	manifestRaw, err := store.Get(manifestKey(runID))
 	if err != nil {
@@ -231,6 +239,10 @@ func buildRunListEntry(store coordination.Store, runID string) (runListEntry, bo
 
 // shortenRunID returns the first 8 characters of a run-id (matching
 // the branch-naming convention). Shorter IDs are returned verbatim.
+//
+// Expected: parameters for shortenRunID.
+// Returns: result of shortenRunID.
+// Side effects: None.
 func shortenRunID(runID string) string {
 	if len(runID) <= 8 {
 		return runID
@@ -249,6 +261,10 @@ type worktreeInfo struct {
 // parseWorktreeList shells `git worktree list --porcelain` against
 // repoRoot and returns a map keyed by absolute worktree path. Best-
 // effort: git failures yield an empty map so the list still renders.
+//
+// Expected: parameters for parseWorktreeList.
+// Returns: result of parseWorktreeList.
+// Side effects: None.
 func parseWorktreeList(repoRoot string) map[string]worktreeInfo {
 	out := map[string]worktreeInfo{}
 	cmd := observedCommand("git", "-C", repoRoot, "worktree", "list", "--porcelain")
@@ -284,6 +300,10 @@ func parseWorktreeList(repoRoot string) map[string]worktreeInfo {
 // parseAutoresearchBranches returns the set of branch ref names that
 // match `autoresearch/*` in repoRoot. Best-effort: git failures yield
 // an empty map.
+//
+// Expected: parameters for parseAutoresearchBranches.
+// Returns: result of parseAutoresearchBranches.
+// Side effects: None.
 func parseAutoresearchBranches(repoRoot string) map[string]struct{} {
 	out := map[string]struct{}{}
 	cmd := observedCommand("git", "-C", repoRoot, "branch", "--list", "autoresearch/*", "--format=%(refname:short)")
@@ -304,6 +324,10 @@ func parseAutoresearchBranches(repoRoot string) map[string]struct{} {
 // joined view of (a) the run's coord-store-recorded worktree path,
 // (b) the surface repo's `git worktree list`, and (c) the surface
 // repo's `autoresearch/*` branch refs.
+//
+// Expected: parameters for classifyWorktreeStatus.
+// Returns: result of classifyWorktreeStatus.
+// Side effects: None.
 func classifyWorktreeStatus(entry runListEntry, worktrees map[string]worktreeInfo, branches map[string]struct{}) string {
 	info, present := worktrees[entry.WorktreeAt]
 	_, branchPresent := branches[entry.BranchName]
@@ -321,6 +345,9 @@ func classifyWorktreeStatus(entry runListEntry, worktrees map[string]worktreeInf
 
 // renderRunListTable writes a header line and one row per entry to w.
 // The columns mirror `flowstate session list`'s readability shape.
+//
+// Expected: parameters for renderRunListTable.
+// Side effects: None.
 func renderRunListTable(w io.Writer, entries []runListEntry) {
 	_, _ = fmt.Fprintf(w, "%-9s  %-50s  %-25s  %-10s  %-10s  %-12s  %s\n",
 		"RUN-ID", "SURFACE", "STARTED-AT", "LAST-TRIAL", "KEPT", "BEST-SCORE", "STATUS")

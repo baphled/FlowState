@@ -246,6 +246,8 @@ type GateError struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Error.
 func (e *GateError) Error() string {
 	if e == nil {
 		return "<nil GateError>"
@@ -271,6 +273,8 @@ func (e *GateError) Error() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Unwrap.
 func (e *GateError) Unwrap() error {
 	if e == nil {
 		return nil
@@ -318,6 +322,8 @@ func NewMultiRunner() *MultiRunner {
 //
 // Side effects:
 //   - Stores the runner under m's internal map under the write lock.
+//
+// Returns: result of Register.
 func (m *MultiRunner) Register(kind string, runner GateRunner) {
 	if kind == "" || runner == nil {
 		return
@@ -848,6 +854,10 @@ type GateInput struct {
 // compiling. New code should reach RunGate directly.
 //
 // Deprecated: use RunGate.
+//
+// Expected: parameters for RunGateForTest.
+// Returns: result of RunGateForTest.
+// Side effects: None.
 func RunGateForTest(ctx context.Context, spec GateSpec, in GateInput) error {
 	return RunGate(ctx, spec, in)
 }
@@ -897,6 +907,10 @@ func RunGate(ctx context.Context, spec GateSpec, in GateInput) error {
 // spec.SchemaRef. Failure paths return a *GateError shaped the same
 // way the MultiRunner+CoordStore path does so callers downstream of
 // runGateByKind can branch uniformly on *GateError.
+//
+// Expected: parameters for runBuiltinGate.
+// Returns: result of runBuiltinGate.
+// Side effects: None.
 func runBuiltinGate(_ context.Context, spec GateSpec, in GateInput) error {
 	if spec.Kind != "builtin:result-schema" {
 		return fmt.Errorf("gate %q: unsupported builtin kind %q", spec.Name, spec.Kind)

@@ -93,6 +93,10 @@ type SpendCacheEntry struct {
 //
 // Returns the JSON-encoded envelope ready for atomic-write to disk.
 // `now` is stamped into SavedAt; pass time.Now() in production.
+//
+// Expected: parameters for MarshalCache.
+// Returns: result of MarshalCache.
+// Side effects: None.
 func MarshalCache(entries []SpendStoreEntry, now time.Time) ([]byte, error) {
 	out := make([]SpendCacheEntry, 0, len(entries))
 	for _, e := range entries {
@@ -126,6 +130,9 @@ func MarshalCache(entries []SpendStoreEntry, now time.Time) ([]byte, error) {
 //
 // Empty input data returns (nil, nil) — an empty cache file is a
 // valid "no spend yet" state.
+//
+// Expected: parameters for UnmarshalCache.
+// Side effects: None.
 func UnmarshalCache(data []byte) ([]SpendStoreEntry, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -172,6 +179,10 @@ func UnmarshalCache(data []byte) ([]SpendStoreEntry, error) {
 // (constructed via NewTracker / NewTrackerWithPricing rather than
 // NewTrackerWithSpend) — callers don't need to gate on tracker
 // configuration.
+//
+// Expected: parameters for LoadSpend.
+// Returns: result of LoadSpend.
+// Side effects: None.
 func (t *Tracker) LoadSpend(ctx context.Context, entries []SpendStoreEntry) error {
 	if t == nil || t.spend == nil || t.spend.storeBackend == nil {
 		return nil

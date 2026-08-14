@@ -144,8 +144,8 @@ func RestoreStdinIsTerminal() {
 // persistRootSessionMetadata had stamped at session creation. The
 // regression spec drives saveSession directly so it doesn't have to
 // stand up a full provider stream.
-func SaveSessionForTest(cmd *cobra.Command, application *app.App, sessionID string) {
-	saveSession(cmd, application, sessionID)
+func SaveSessionForTest(ctx context.Context, cmd *cobra.Command, application *app.App, sessionID string) {
+	saveSession(ctx, cmd, application, sessionID)
 }
 
 // PersistRootSessionMetadataForTest exposes the session-creation-time

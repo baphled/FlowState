@@ -326,6 +326,9 @@ func NewManager(streamer streaming.Streamer) *Manager {
 //
 // Side effects:
 //   - Appends mcpServer to mcpGrants[sessionID] under the write lock.
+//
+// Expected: parameters for AppendSessionMCPGrant.
+// Returns: result of AppendSessionMCPGrant.
 func (m *Manager) AppendSessionMCPGrant(sessionID, mcpServer string) error {
 	m.mu.RLock()
 	_, ok := m.sessions[sessionID]
@@ -352,6 +355,10 @@ func (m *Manager) AppendSessionMCPGrant(sessionID, mcpServer string) error {
 // exist for the session — never returns nil.
 //
 // Concurrency: read-only — takes mcpGrantsMu under RLock.
+//
+// Expected: parameters for SessionMCPGrants.
+// Returns: result of SessionMCPGrants.
+// Side effects: None.
 func (m *Manager) SessionMCPGrants(sessionID string) []string {
 	m.mcpGrantsMu.RLock()
 	defer m.mcpGrantsMu.RUnlock()
@@ -389,6 +396,8 @@ func (m *Manager) SessionMCPGrants(sessionID string) []string {
 // Side effects:
 //   - Updates the matching session's Status and UpdatedAt under write
 //     lock when a flip applies.
+//
+// Returns: result of MarkEndedFromEvent.
 func (m *Manager) MarkEndedFromEvent(sessionID string) {
 	if sessionID == "" {
 		return
@@ -444,6 +453,8 @@ func (m *Manager) SetRecorder(r Recorder) {
 // Side effects:
 //   - Subsequent message appends will write the session's *.meta.json
 //     file under dir so chat history survives a restart.
+//
+// Returns: result of SetSessionsDir.
 func (m *Manager) SetSessionsDir(dir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -464,6 +475,10 @@ func (m *Manager) SetSessionsDir(dir string) {
 //
 // Goroutine-safe via the manager's write lock during init; subsequent
 // reads are lock-free since the store's mutex guards its own state.
+//
+// Expected: parameters for AttachmentStore.
+// Returns: result of AttachmentStore.
+// Side effects: None.
 func (m *Manager) AttachmentStore() *AttachmentStore {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -498,6 +513,8 @@ func (m *Manager) AttachmentStore() *AttachmentStore {
 //
 // Side effects:
 //   - Updates the manager's embeddingModel field under the write lock.
+//
+// Returns: result of SetEmbeddingModel.
 func (m *Manager) SetEmbeddingModel(model string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -516,6 +533,8 @@ func (m *Manager) SetEmbeddingModel(model string) {
 //
 // Side effects:
 //   - Updates the manager's orphan-grace field under the write lock.
+//
+// Returns: result of SetOrphanGrace.
 func (m *Manager) SetOrphanGrace(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -525,6 +544,10 @@ func (m *Manager) SetOrphanGrace(d time.Duration) {
 // persistLocked writes the session to disk when sessionsDir is set.
 // The caller MUST hold m.mu (read or write). Errors are swallowed to
 // avoid blocking the message hot path; persistence is best-effort.
+//
+// Expected: parameters for persistLocked.
+// Returns: result of persistLocked.
+// Side effects: None.
 func (m *Manager) persistLocked(sess *Session) {
 	if m.sessionsDir == "" || sess == nil {
 		return
@@ -916,6 +939,8 @@ func (m *Manager) SnapshotSession(id string) (Session, error) {
 //
 // Side effects:
 //   - Acquires a read lock while iterating over the session store.
+//
+// Expected: parameters for ListSessions.
 func (m *Manager) ListSessions() []*Summary {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -958,6 +983,10 @@ func (m *Manager) ListSessions() []*Summary {
 // It prefers the first user message content (truncated) and falls back to a
 // short identifier derived from the session ID so the frontend never sees an
 // empty title.
+//
+// Expected: parameters for deriveSummaryTitle.
+// Returns: result of deriveSummaryTitle.
+// Side effects: None.
 func deriveSummaryTitle(sess *Session) string {
 	const maxTitleLen = 60
 	for _, msg := range sess.Messages {
@@ -1038,6 +1067,8 @@ func (m *Manager) RestoreSessions(sessions []*Session) {
 //     stale-active criteria.
 //   - Writes each swept session's .meta.json sidecar via persistLocked
 //     when sessionsDir is configured.
+//
+// Returns: result of sweepOrphansLocked.
 func (m *Manager) sweepOrphansLocked() {
 	grace := m.orphanGrace
 	if grace == 0 {
@@ -1082,6 +1113,8 @@ func (m *Manager) sweepOrphansLocked() {
 //
 // Side effects:
 //   - Acquires a read lock while scanning the session store.
+//
+// Expected: parameters for AllSessions.
 func (m *Manager) AllSessions() ([]*Session, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -1131,6 +1164,9 @@ func (m *Manager) ChildSessions(parentID string) ([]*Session, error) {
 // back delegation pair could swap positions between two AllSessions
 // calls — exactly the symptom the user reported as "delegated agent
 // listing doesn't honour creation order".
+//
+// Expected: parameters for sortSessionsByCreatedAt.
+// Side effects: None.
 func sortSessionsByCreatedAt(sessions []*Session) {
 	sort.SliceStable(sessions, func(i, j int) bool {
 		if sessions[i].CreatedAt.Equal(sessions[j].CreatedAt) {
@@ -1350,6 +1386,7 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 //   - session.ErrAttachmentNotFound when any id is not present in
 //     the session's attachment index.
 //
+
 // PrepareSendWithAttachments resolves attachments, reserves them, appends
 // the user message via PrepareSend, and promotes reservations to permanent
 // references. Returns the prepared context and agent ID for StartStream.
@@ -1431,6 +1468,10 @@ func (m *Manager) PrepareSendWithAttachments(
 //
 // Convenience wrapper around PrepareSendWithAttachments + StartStream for
 // callers that need the synchronous (blocking) shape.
+//
+// Expected: parameters for SendMessageWithAttachments.
+// Returns: result of SendMessageWithAttachments.
+// Side effects: None.
 func (m *Manager) SendMessageWithAttachments(
 	ctx context.Context, sessionID, message string, attachmentIDs []string,
 ) (<-chan provider.StreamChunk, error) {
@@ -1460,6 +1501,10 @@ func (m *Manager) SendMessageWithAttachments(
 //	thinking           -> assistant
 //	delegation         -> assistant
 //	delegation_started -> assistant
+//
+// Expected: parameters for SendMessage.
+// Returns: result of SendMessage.
+// Side effects: None.
 func (m *Manager) SendMessage(ctx context.Context, sessionID string, message string) (<-chan provider.StreamChunk, error) {
 	preparedCtx, agentID, err := m.PrepareSend(ctx, sessionID, message)
 	if err != nil {
@@ -2118,6 +2163,8 @@ func (m *Manager) ReapOrphanDelegations() {
 // Side effects:
 //   - Mutates sess.Messages in place.
 //   - Calls persistLocked when any message was modified.
+//
+// Returns: result of reapOrphanDelegationsLocked.
 func (m *Manager) reapOrphanDelegationsLocked(sess *Session) {
 	if sess == nil || len(sess.Messages) == 0 {
 		return

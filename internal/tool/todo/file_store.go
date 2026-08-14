@@ -108,6 +108,10 @@ func (s *FileStore) Get(sessionID string) []Item {
 
 // persistLocked writes the todo list for sessionID to disk. The caller
 // must hold s.mu.
+//
+// Expected: parameters for persistLocked.
+// Returns: result of persistLocked.
+// Side effects: None.
 func (s *FileStore) persistLocked(sessionID string, todos []Item) error {
 	path := s.pathFor(sessionID)
 	data, err := json.MarshalIndent(todos, "", "  ")
@@ -123,6 +127,10 @@ func (s *FileStore) persistLocked(sessionID string, todos []Item) error {
 
 // loadLocked reads the todo list for sessionID from disk. The caller
 // must hold s.mu.
+//
+// Expected: parameters for loadLocked.
+// Returns: result of loadLocked.
+// Side effects: None.
 func (s *FileStore) loadLocked(sessionID string) ([]Item, error) {
 	path := s.pathFor(sessionID)
 	data, err := os.ReadFile(path)
@@ -140,6 +148,10 @@ func (s *FileStore) loadLocked(sessionID string) ([]Item, error) {
 }
 
 // pathFor returns the on-disk path for a session's todo file.
+//
+// Expected: parameters for pathFor.
+// Returns: result of pathFor.
+// Side effects: None.
 func (s *FileStore) pathFor(sessionID string) string {
 	return filepath.Join(s.baseDir, sessionID+".json")
 }
@@ -147,6 +159,10 @@ func (s *FileStore) pathFor(sessionID string) string {
 // Apply atomically reads, transforms, and writes the todo list for
 // sessionID under a single write lock, persisting the result to disk.
 // See Store.Apply for the full contract.
+//
+// Expected: parameters for Apply.
+// Returns: result of Apply.
+// Side effects: None.
 func (s *FileStore) Apply(sessionID string, fn func(current []Item) (next []Item, err error)) ([]Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

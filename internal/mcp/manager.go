@@ -365,6 +365,8 @@ func (m *Manager) Disconnect(name string) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for ListServers.
 func (m *Manager) ListServers() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -386,6 +388,8 @@ func (m *Manager) ListServers() []string {
 //   - Closes all MCP sessions.
 //   - Cancels all connection contexts.
 //   - Removes all servers from the manager's connection map.
+//
+// Expected: parameters for DisconnectAll.
 func (m *Manager) DisconnectAll() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

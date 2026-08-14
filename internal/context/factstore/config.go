@@ -23,6 +23,8 @@ type Config struct {
 // Returns:
 //   - MaxFactsPerSession: 1024
 //   - RecallTopK:         5
+//
+// Side effects: None.
 func DefaultConfig() Config {
 	return Config{
 		MaxFactsPerSession: 1024,

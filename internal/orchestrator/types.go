@@ -138,6 +138,10 @@ var errStoreNotConfigured = errors.New("session orchestrator: session store not 
 // fields onto contextpkg.SessionMetadata so SaveTurnEnd can call
 // SessionStore.Save without exposing the contextpkg package surface
 // to the snapshot type.
+//
+// Expected: parameters for contextMetadataFromSnapshot.
+// Returns: result of contextMetadataFromSnapshot.
+// Side effects: None.
 func contextMetadataFromSnapshot(s TurnSnapshot) contextpkg.SessionMetadata {
 	return contextpkg.SessionMetadata{
 		AgentID:      s.AgentID,

@@ -93,6 +93,8 @@ func (r *Registry) Get(id string) (*Manifest, bool) {
 //
 // Side effects:
 //   - None (read-only access under the registry's RLock).
+//
+// Expected: parameters for List.
 func (r *Registry) List() []*Manifest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

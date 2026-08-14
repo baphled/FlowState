@@ -150,6 +150,10 @@ func extractBuildIdentity(info *debug.BuildInfo, versionVar, commitVar, dateVar 
 // readVCSSettings pulls the three VCS keys out of debug.BuildInfo
 // settings. Returns ("", "", false) when any key is missing so the
 // caller's fallback logic kicks in field-by-field.
+//
+// Expected: parameters for readVCSSettings.
+// Returns: result of readVCSSettings.
+// Side effects: None.
 func readVCSSettings(info *debug.BuildInfo) (revision, buildTime string, dirty bool) {
 	for _, s := range info.Settings {
 		switch s.Key {
@@ -168,6 +172,10 @@ func readVCSSettings(info *debug.BuildInfo) (revision, buildTime string, dirty b
 // commit wins when it isn't the cmd/flowstate/main.go default;
 // otherwise the first 7 chars of the VCS revision; otherwise
 // "unknown".
+//
+// Expected: parameters for pickRevision.
+// Returns: result of pickRevision.
+// Side effects: None.
 func pickRevision(ldflagsCommit, vcsRevision string) string {
 	if ldflagsCommit != "" && ldflagsCommit != defaultLdflagCommit {
 		return ldflagsCommit
@@ -184,6 +192,10 @@ func pickRevision(ldflagsCommit, vcsRevision string) string {
 // pickBuildTime returns the ISO-8601 build timestamp. ldflags date
 // wins when it isn't the cmd/flowstate/main.go default; otherwise
 // the VCS time; otherwise "unknown".
+//
+// Expected: parameters for pickBuildTime.
+// Returns: result of pickBuildTime.
+// Side effects: None.
 func pickBuildTime(ldflagsDate, vcsTime string) string {
 	if ldflagsDate != "" && ldflagsDate != defaultLdflagDate {
 		return ldflagsDate

@@ -160,6 +160,10 @@ func (tm *TokenManager) EnsureToken(ctx context.Context) (string, error) {
 }
 
 // needsRefresh reports whether the access token is within 5 minutes of expiry.
+//
+// Expected: parameters for needsRefresh.
+// Returns: result of needsRefresh.
+// Side effects: None.
 func (tm *TokenManager) needsRefresh() bool {
 	return time.Now().UnixMilli() >= tm.expiresAt-5*60*1000
 }
@@ -177,6 +181,8 @@ func (tm *TokenManager) needsRefresh() bool {
 // Concurrency:
 //   - Acquires and releases the internal mutex.
 //   - May perform an HTTP token refresh.
+//
+// Side effects: None.
 func (tm *TokenManager) RefreshNow(ctx context.Context) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -210,6 +216,9 @@ func (tm *TokenManager) RefreshNow(ctx context.Context) error {
 //     attempt has been made since process start.
 //   - consecutiveFailures is the number of consecutive refresh
 //     failures since the last successful refresh.
+//
+// Expected: parameters for RefreshStatus.
+// Side effects: None.
 func (tm *TokenManager) RefreshStatus() (time.Time, int) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -248,6 +257,10 @@ type Provider struct {
 // Concurrency: in v1 the observer is set once at boot and never
 // changes during a session, so no locking is needed. v2 hot-reload
 // work will need to revisit this seam.
+//
+// Expected: parameters for SetResponseObserver.
+// Returns: result of SetResponseObserver.
+// Side effects: None.
 func (p *Provider) SetResponseObserver(fn func(http.Header)) {
 	p.responseObserver = fn
 }
@@ -257,6 +270,10 @@ func (p *Provider) SetResponseObserver(fn func(http.Header)) {
 // raw response pointer is non-nil (defensive — SDK contract is to
 // populate it before returning, but a nil here would crash the
 // happy path).
+//
+// Expected: parameters for notifyResponseObserver.
+// Returns: result of notifyResponseObserver.
+// Side effects: None.
 func (p *Provider) notifyResponseObserver(raw *http.Response) {
 	if p.responseObserver == nil || raw == nil {
 		return
@@ -452,6 +469,8 @@ func (p *Provider) refreshClientIfNeeded(ctx context.Context) error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *Provider) Name() string {
 	return "openai"
 }
@@ -577,6 +596,8 @@ func (p *Provider) Embed(ctx context.Context, req provider.EmbedRequest) ([]floa
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Models.
 func (p *Provider) Models() ([]provider.Model, error) {
 	// OutputLimit values from OpenAI's published model documentation
 	// (gpt-4o family ships 16384-token max output; gpt-3.5-turbo ships

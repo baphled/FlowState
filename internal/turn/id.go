@@ -7,6 +7,9 @@ import "github.com/google/uuid"
 // fallback can reference it without leaking the import into the
 // public surface. Production callers go through NewRegistry which
 // passes this function in.
+//
+// Returns: result of defaultIDGen.
+// Side effects: None.
 func defaultIDGen() string {
 	return uuid.NewString()
 }

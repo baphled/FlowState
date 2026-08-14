@@ -37,6 +37,8 @@ func NewFileSkillLoader(basePath string) *FileSkillLoader {
 //
 // Side effects:
 //   - Reads SKILL.md files from each subdirectory under the base path.
+//
+// Expected: parameters for LoadAll.
 func (l *FileSkillLoader) LoadAll() ([]Skill, error) {
 	var skills []Skill
 	entries, err := os.ReadDir(l.basePath)

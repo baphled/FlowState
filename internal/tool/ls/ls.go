@@ -144,6 +144,10 @@ func (t *Tool) Execute(ctx context.Context, input tool.Input) (tool.Result, erro
 // capOutput applies the shared truncation envelope using the session ID
 // from ctx so oversized directory listings never blow up the model
 // context.
+//
+// Expected: parameters for capOutput.
+// Returns: result of capOutput.
+// Side effects: None.
 func capOutput(ctx context.Context, output string) string {
 	sessionID, _ := ctx.Value(session.IDKey{}).(string)
 	r := truncate.Apply(output, truncate.Options{

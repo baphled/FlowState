@@ -234,6 +234,8 @@ type PromptAppendConfig struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for EffectiveRetryPolicy.
 func (m *Manifest) EffectiveRetryPolicy() RetryPolicy {
 	if m.Retry == nil {
 		return RetryPolicy{
@@ -269,6 +271,8 @@ func (m *Manifest) EffectiveRetryPolicy() RetryPolicy {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for EffectiveCircuitBreaker.
 func (m *Manifest) EffectiveCircuitBreaker() CircuitBreakerConfig {
 	if m.CircuitBreaker == nil {
 		return CircuitBreakerConfig{
@@ -557,6 +561,8 @@ type ValidationWarning struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for String.
 func (w ValidationWarning) String() string {
 	return w.Field + ": " + w.Message
 }
@@ -658,6 +664,8 @@ type ValidationError struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Error.
 func (e *ValidationError) Error() string {
 	return e.Field + ": " + e.Message
 }
@@ -737,6 +745,13 @@ func (m *Manifest) Validate(v Validator) error {
 	return m.validateResilience()
 }
 
+// validatePrompt ...
+//
+// Expected: parameters for validatePrompt.
+//
+// Returns: result of validatePrompt.
+//
+// Side effects: None.
 func (m *Manifest) validatePrompt() error {
 	if err := validatePromptAppendConfig(m.Prompt.LeadAppend, m.Prompt.LeadAppendFile, m.SourceDir, "prompt.lead_append"); err != nil {
 		return err
@@ -753,6 +768,13 @@ func (m *Manifest) validatePrompt() error {
 	return nil
 }
 
+// validatePromptAppendConfig ...
+//
+// Expected: parameters for validatePromptAppendConfig.
+//
+// Returns: result of validatePromptAppendConfig.
+//
+// Side effects: None.
 func validatePromptAppendConfig(inline string, file string, sourceDir string, field string) error {
 	if strings.TrimSpace(inline) == "" && strings.TrimSpace(file) == "" {
 		return nil
@@ -808,6 +830,10 @@ func (m *Manifest) validateHarness() error {
 // (defaults apply via EffectiveRetryPolicy / EffectiveCircuitBreaker);
 // when they include a block, every populated field must be sensible
 // (no zero-or-negative attempts, no negative thresholds, etc).
+//
+// Expected: parameters for validateResilience.
+// Returns: result of validateResilience.
+// Side effects: None.
 func (m *Manifest) validateResilience() error {
 	if err := validateRetryBlock(m.Retry); err != nil {
 		return err
@@ -818,6 +844,10 @@ func (m *Manifest) validateResilience() error {
 // validateRetryBlock enforces the per-field invariants on a present
 // retry block. A nil receiver short-circuits to nil because "block
 // omitted" inherits package defaults.
+//
+// Expected: parameters for validateRetryBlock.
+// Returns: result of validateRetryBlock.
+// Side effects: None.
 func validateRetryBlock(r *RetryPolicy) error {
 	if r == nil {
 		return nil
@@ -840,6 +870,10 @@ func validateRetryBlock(r *RetryPolicy) error {
 // validateBreakerBlock enforces the per-field invariants on a present
 // circuit-breaker block. A nil receiver short-circuits to nil for the
 // same reason as validateRetryBlock.
+//
+// Expected: parameters for validateBreakerBlock.
+// Returns: result of validateBreakerBlock.
+// Side effects: None.
 func validateBreakerBlock(b *CircuitBreakerConfig) error {
 	if b == nil {
 		return nil
@@ -1073,6 +1107,10 @@ func validateGateScalars(i int, gate GateSpec) error {
 
 // validateDeferFields rejects negative DeferInterval or DeferTimeout
 // values and warns when defer fields are set on a non-defer gate.
+//
+// Expected: parameters for validateDeferFields.
+// Returns: result of validateDeferFields.
+// Side effects: None.
 func validateDeferFields(i int, gate GateSpec) error {
 	if gate.DeferInterval < 0 {
 		return &ValidationError{

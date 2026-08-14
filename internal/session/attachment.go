@@ -175,6 +175,10 @@ type AttachmentRecord struct {
 // effectiveKind returns the record's Kind discriminant, defaulting to
 // AttachmentKindImage for backwards-compat with PR1-era records that
 // omitted the field. See AC-14-Detect-CallSites-Preserved.
+//
+// Expected: parameters for effectiveKind.
+// Returns: result of effectiveKind.
+// Side effects: None.
 func (r *AttachmentRecord) effectiveKind() string {
 	if r.Kind == "" {
 		return AttachmentKindImage
@@ -388,6 +392,10 @@ func (s *AttachmentStore) Put(sessionID, mediaType string, data []byte, original
 // using the per-kind allow-lists. Returns ok=false for off-allow-list
 // types. Safe to call without holding s.mu — reads happen against
 // allow-list maps that are immutable after construction.
+//
+// Expected: parameters for classifyMediaTypeLocked.
+// Returns: result of classifyMediaTypeLocked.
+// Side effects: None.
 func (s *AttachmentStore) classifyMediaTypeLocked(
 	mediaType string,
 ) (kind, ext string, fileCap int64, ok bool) {
@@ -402,6 +410,10 @@ func (s *AttachmentStore) classifyMediaTypeLocked(
 
 // addToBudgetLocked mutates the per-session per-kind byte counter by
 // delta (positive on add, negative on remove). Caller must hold s.mu.
+//
+// Expected: parameters for addToBudgetLocked.
+// Returns: result of addToBudgetLocked.
+// Side effects: None.
 func (s *AttachmentStore) addToBudgetLocked(sessionID, kind string, delta int64) {
 	switch kind {
 	case AttachmentKindDocument:
@@ -421,6 +433,10 @@ func (s *AttachmentStore) addToBudgetLocked(sessionID, kind string, delta int64)
 // ImageBytesUsed reports the cumulative bytes of image attachments
 // persisted for the session. Returns zero for unknown sessions.
 // Lazy-loads the sidecar.
+//
+// Expected: parameters for ImageBytesUsed.
+// Returns: result of ImageBytesUsed.
+// Side effects: None.
 func (s *AttachmentStore) ImageBytesUsed(sessionID string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -433,6 +449,10 @@ func (s *AttachmentStore) ImageBytesUsed(sessionID string) int64 {
 // DocumentBytesUsed reports the cumulative bytes of document
 // attachments persisted for the session. Returns zero for unknown
 // sessions. Lazy-loads the sidecar.
+//
+// Expected: parameters for DocumentBytesUsed.
+// Returns: result of DocumentBytesUsed.
+// Side effects: None.
 func (s *AttachmentStore) DocumentBytesUsed(sessionID string) int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -452,6 +472,8 @@ func (s *AttachmentStore) DocumentBytesUsed(sessionID string) int64 {
 //   - The record and the on-disk bytes on success.
 //   - ErrAttachmentNotFound when the id is not in the session's index
 //     or the binary is missing.
+//
+// Side effects: None.
 func (s *AttachmentStore) Get(sessionID, attachmentID string) (*AttachmentRecord, []byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -477,6 +499,10 @@ func (s *AttachmentStore) Get(sessionID, attachmentID string) (*AttachmentRecord
 // List returns the records currently indexed for the session in
 // upload-order (oldest first). Returns an empty slice when the session
 // has no attachments or no on-disk state.
+//
+// Expected: parameters for List.
+// Returns: result of List.
+// Side effects: None.
 func (s *AttachmentStore) List(sessionID string) ([]*AttachmentRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -508,6 +534,10 @@ func (s *AttachmentStore) List(sessionID string) ([]*AttachmentRecord, error) {
 // then the slice goes out of scope on turn completion. We deliberately
 // do NOT cache decoded bytes on the in-memory record (memory cost
 // would scale with session length).
+//
+// Expected: parameters for Resolve.
+// Returns: result of Resolve.
+// Side effects: None.
 func (s *AttachmentStore) Resolve(sessionID string, ids []string) ([]AttachmentMaterialised, error) {
 	out := make([]AttachmentMaterialised, 0, len(ids))
 	for _, id := range ids {
@@ -531,6 +561,10 @@ type AttachmentMaterialised struct {
 // RemoveSession deletes the entire <sessionID>/attachments tree from
 // disk and clears the in-memory index. Idempotent and tolerant of a
 // never-persisted session (no directory exists yet).
+//
+// Expected: parameters for RemoveSession.
+// Returns: result of RemoveSession.
+// Side effects: None.
 func (s *AttachmentStore) RemoveSession(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -568,6 +602,10 @@ func (s *AttachmentStore) RemoveSession(sessionID string) {
 // Idempotent on unknown ids — the call is silently a no-op so the
 // handler doesn't have to round-trip errors for stale id refs that
 // were swept between handler entry and dispatch.
+//
+// Expected: parameters for MarkReserved.
+// Returns: result of MarkReserved.
+// Side effects: None.
 func (s *AttachmentStore) MarkReserved(sessionID, attachmentID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -586,6 +624,10 @@ func (s *AttachmentStore) MarkReserved(sessionID, attachmentID string) {
 // pair (decrement floors at zero via the atomic Int32 semantics; we
 // guard against negative drift by only persisting when the message id
 // is new).
+//
+// Expected: parameters for MarkReferenced.
+// Returns: result of MarkReferenced.
+// Side effects: None.
 func (s *AttachmentStore) MarkReferenced(sessionID, attachmentID, messageID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -624,6 +666,10 @@ func (s *AttachmentStore) MarkReferenced(sessionID, attachmentID, messageID stri
 // ReleaseReservation decrements the in-flight counter without
 // persisting a permanent reference. Called on failure paths (the
 // provider call did not produce a persisted user message).
+//
+// Expected: parameters for ReleaseReservation.
+// Returns: result of ReleaseReservation.
+// Side effects: None.
 func (s *AttachmentStore) ReleaseReservation(sessionID, attachmentID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -651,6 +697,10 @@ func (s *AttachmentStore) ReleaseReservation(sessionID, attachmentID string) {
 // records removed. Called from the sweeper goroutine.
 //
 // `now` is parameterised so tests can inject a fake clock.
+//
+// Expected: parameters for SweepOrphans.
+// Returns: result of SweepOrphans.
+// Side effects: None.
 func (s *AttachmentStore) SweepOrphans(now time.Time, ttl time.Duration) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -669,6 +719,10 @@ func (s *AttachmentStore) SweepOrphans(now time.Time, ttl time.Duration) int {
 //
 // Idempotent and tolerant of a missing rootDir (returns zero with no
 // error).
+//
+// Expected: parameters for ColdStartSweep.
+// Returns: result of ColdStartSweep.
+// Side effects: None.
 func (s *AttachmentStore) ColdStartSweep(now time.Time, ttl time.Duration) (int, error) {
 	if s.rootDir == "" {
 		return 0, nil
@@ -696,6 +750,10 @@ func (s *AttachmentStore) ColdStartSweep(now time.Time, ttl time.Duration) (int,
 // given media type, or "" when the type is not on the allow-list.
 // Exposed so the upload handler can build the on-the-wire response
 // metadata without re-deriving from the wire string.
+//
+// Expected: parameters for ExtensionForMediaType.
+// Returns: result of ExtensionForMediaType.
+// Side effects: None.
 func (s *AttachmentStore) ExtensionForMediaType(mediaType string) string {
 	return s.allowList[mediaType]
 }
@@ -703,6 +761,10 @@ func (s *AttachmentStore) ExtensionForMediaType(mediaType string) string {
 // IsAllowedMediaType reports whether the given media type is on the
 // PR1 allow-list. Used by the upload handler to short-circuit content
 // sniff failures before the storage path runs.
+//
+// Expected: parameters for IsAllowedMediaType.
+// Returns: result of IsAllowedMediaType.
+// Side effects: None.
 func (s *AttachmentStore) IsAllowedMediaType(mediaType string) bool {
 	_, ok := s.allowList[mediaType]
 	return ok
@@ -711,6 +773,10 @@ func (s *AttachmentStore) IsAllowedMediaType(mediaType string) bool {
 // AllowedMediaTypes returns a snapshot copy of the media-type allow-list
 // (lower-case keys, "." prefixed extension values). Order is not
 // guaranteed.
+//
+// Expected: parameters for AllowedMediaTypes.
+// Returns: result of AllowedMediaTypes.
+// Side effects: None.
 func (s *AttachmentStore) AllowedMediaTypes() map[string]string {
 	out := make(map[string]string, len(s.allowList))
 	for k, v := range s.allowList {
@@ -745,6 +811,8 @@ func (s *AttachmentStore) AllowedMediaTypes() map[string]string {
 //   - ext: the canonical file extension (e.g. ".png", ".pdf").
 //   - err: nil on success; ErrAttachmentUnsupportedType when the
 //     bytes do not match any allowed type.
+//
+// Side effects: None.
 func DetectMediaType(data []byte) (kind, mediaType, ext string, err error) {
 	sniff := http.DetectContentType(data)
 	if ext, ok := allowedImageMediaTypes[sniff]; ok {
@@ -770,6 +838,10 @@ func DetectMediaType(data []byte) (kind, mediaType, ext string, err error) {
 // image-only contract.
 //
 // AC-14-Detect-CallSites-Preserved.
+//
+// Expected: parameters for DetectImageMediaType.
+// Returns: result of DetectImageMediaType.
+// Side effects: None.
 func DetectImageMediaType(data []byte) (string, bool) {
 	kind, mt, _, err := DetectMediaType(data)
 	if err != nil || kind != AttachmentKindImage {
@@ -780,14 +852,35 @@ func DetectImageMediaType(data []byte) (string, bool) {
 
 // --- internal helpers ----------------------------------------------------
 
+// sessionDirParent ...
+//
+// Expected: parameters for sessionDirParent.
+//
+// Returns: result of sessionDirParent.
+//
+// Side effects: None.
 func (s *AttachmentStore) sessionDirParent(sessionID string) string {
 	return filepath.Join(s.rootDir, sessionID)
 }
 
+// sessionDirPath ...
+//
+// Expected: parameters for sessionDirPath.
+//
+// Returns: result of sessionDirPath.
+//
+// Side effects: None.
 func (s *AttachmentStore) sessionDirPath(sessionID string) string {
 	return filepath.Join(s.rootDir, sessionID, "attachments")
 }
 
+// ensureSessionDirLocked ...
+//
+// Expected: parameters for ensureSessionDirLocked.
+//
+// Returns: result of ensureSessionDirLocked.
+//
+// Side effects: None.
 func (s *AttachmentStore) ensureSessionDirLocked(sessionID string) (string, error) {
 	dir := s.sessionDirPath(sessionID)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -796,6 +889,13 @@ func (s *AttachmentStore) ensureSessionDirLocked(sessionID string) (string, erro
 	return dir, nil
 }
 
+// ensureLoadedLocked ...
+//
+// Expected: parameters for ensureLoadedLocked.
+//
+// Returns: result of ensureLoadedLocked.
+//
+// Side effects: None.
 func (s *AttachmentStore) ensureLoadedLocked(sessionID string) error {
 	if s.loaded[sessionID] {
 		return nil
@@ -845,6 +945,13 @@ func (s *AttachmentStore) ensureLoadedLocked(sessionID string) error {
 	return nil
 }
 
+// persistIndexLocked ...
+//
+// Expected: parameters for persistIndexLocked.
+//
+// Returns: result of persistIndexLocked.
+//
+// Side effects: None.
 func (s *AttachmentStore) persistIndexLocked(sessionID string) error {
 	if s.rootDir == "" {
 		return errors.New("attachment: store not configured")
@@ -873,6 +980,10 @@ func (s *AttachmentStore) persistIndexLocked(sessionID string) error {
 // cumulativeBytesLocked sums sizes of records of a given kind currently
 // in the session. Kinds are tracked independently per
 // AC-14-Budget-Counters-Introduced. Caller must hold s.mu.
+//
+// Expected: parameters for cumulativeBytesLocked.
+// Returns: result of cumulativeBytesLocked.
+// Side effects: None.
 func (s *AttachmentStore) cumulativeBytesLocked(sessionID, kind string) int64 {
 	switch kind {
 	case AttachmentKindDocument:
@@ -883,6 +994,10 @@ func (s *AttachmentStore) cumulativeBytesLocked(sessionID, kind string) int64 {
 }
 
 // budgetForKind returns the per-session cap for the given kind.
+//
+// Expected: parameters for budgetForKind.
+// Returns: result of budgetForKind.
+// Side effects: None.
 func budgetForKind(kind string) int64 {
 	switch kind {
 	case AttachmentKindDocument:
@@ -898,6 +1013,10 @@ func budgetForKind(kind string) int64 {
 // destroying referenced data. Cross-kind eviction never occurs — a
 // PDF upload over the document budget will not evict images, and vice
 // versa (AC-14-Budget-Counters-Introduced).
+//
+// Expected: parameters for makeRoomLocked.
+// Returns: result of makeRoomLocked.
+// Side effects: None.
 func (s *AttachmentStore) makeRoomLocked(sessionID, kind string, incoming int64) error {
 	cap := budgetForKind(kind)
 	if incoming > cap {
@@ -942,6 +1061,10 @@ func (s *AttachmentStore) makeRoomLocked(sessionID, kind string, incoming int64)
 // binary file from disk and decrements the per-kind budget counter.
 // Persistence of the new index shape is the caller's responsibility
 // (typically batched with another mutation).
+//
+// Expected: parameters for removeRecordLocked.
+// Returns: result of removeRecordLocked.
+// Side effects: None.
 func (s *AttachmentStore) removeRecordLocked(sessionID string, rec *AttachmentRecord) {
 	delete(s.sessions[sessionID], rec.ID)
 	s.addToBudgetLocked(sessionID, rec.effectiveKind(), -rec.SizeBytes)
@@ -953,6 +1076,10 @@ func (s *AttachmentStore) removeRecordLocked(sessionID string, rec *AttachmentRe
 
 // sweepSessionLocked applies the orphan policy to a single session.
 // Returns the number of records removed. Caller must hold s.mu.
+//
+// Expected: parameters for sweepSessionLocked.
+// Returns: result of sweepSessionLocked.
+// Side effects: None.
 func (s *AttachmentStore) sweepSessionLocked(sessionID string, now time.Time, ttl time.Duration) int {
 	records := make([]*AttachmentRecord, 0, len(s.sessions[sessionID]))
 	for _, rec := range s.sessions[sessionID] {
@@ -979,6 +1106,9 @@ func (s *AttachmentStore) sweepSessionLocked(sessionID string, now time.Time, tt
 }
 
 // sortRecordsByUploadedAt sorts oldest-first in place. Stable on ties.
+//
+// Expected: parameters for sortRecordsByUploadedAt.
+// Side effects: None.
 func sortRecordsByUploadedAt(recs []*AttachmentRecord) {
 	// Simple O(n^2) sort — fine for the n<=tens we expect per session
 	// (a 50 MB cap with a 5 MB per-file cap gives n<=10 in practice).

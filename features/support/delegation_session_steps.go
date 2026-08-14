@@ -29,6 +29,8 @@ type delegationSessionProvider struct {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (p *delegationSessionProvider) Name() string { return "mock-delegation-session" }
 
 // Stream returns a single content chunk and closes the channel.
@@ -94,6 +96,8 @@ func (p *delegationSessionProvider) Embed(_ context.Context, _ provider.EmbedReq
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Models.
 func (p *delegationSessionProvider) Models() ([]provider.Model, error) {
 	return []provider.Model{{ID: "mock-model", Provider: "mock-delegation-session", ContextLength: 8192}}, nil
 }

@@ -14,13 +14,39 @@ type SwarmValidateTool struct {
 }
 
 // NewSwarmValidateTool creates a SwarmValidateTool backed by the given registry.
+//
+// Expected: parameters for NewSwarmValidateTool.
+// Returns: result of NewSwarmValidateTool.
+// Side effects: None.
 func NewSwarmValidateTool(registry SwarmReader) *SwarmValidateTool {
 	return &SwarmValidateTool{registry: registry}
 }
 
-func (t *SwarmValidateTool) Name() string        { return "swarm_validate" }
+// Name ...
+//
+// Expected: parameters for Name.
+//
+// Returns: result of Name.
+//
+// Side effects: None.
+func (t *SwarmValidateTool) Name() string { return "swarm_validate" }
+
+// Description ...
+//
+// Expected: parameters for Description.
+//
+// Returns: result of Description.
+//
+// Side effects: None.
 func (t *SwarmValidateTool) Description() string { return "Validate a swarm manifest by id" }
 
+// Schema ...
+//
+// Expected: parameters for Schema.
+//
+// Returns: result of Schema.
+//
+// Side effects: None.
 func (t *SwarmValidateTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -32,6 +58,10 @@ func (t *SwarmValidateTool) Schema() tool.Schema {
 }
 
 // Execute validates the named swarm and returns PASS/FAIL with any validation error.
+//
+// Expected: parameters for Execute.
+// Returns: result of Execute.
+// Side effects: None.
 func (t *SwarmValidateTool) Execute(_ context.Context, input tool.Input) (tool.Result, error) {
 	id, ok := input.Arguments["id"].(string)
 	if !ok || id == "" {

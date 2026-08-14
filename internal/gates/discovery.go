@@ -17,6 +17,10 @@ const manifestFilename = "manifest.yml"
 // wrapped with the offending path so the operator can locate it. If
 // load-and-skip-malformed-entries is desired later, switch this to
 // accumulate via errors.Join.
+//
+// Expected: parameters for Discover.
+// Returns: result of Discover.
+// Side effects: None.
 func Discover(gatesDir string) ([]Manifest, error) {
 	entries, err := readGatesDir(gatesDir)
 	if err != nil {
@@ -43,6 +47,10 @@ func Discover(gatesDir string) ([]Manifest, error) {
 // readGatesDir is the missing-dir-tolerant directory read used by
 // Discover. Returns (nil, nil) when gatesDir does not exist; any other
 // stat error propagates.
+//
+// Expected: parameters for readGatesDir.
+// Returns: result of readGatesDir.
+// Side effects: None.
 func readGatesDir(gatesDir string) ([]os.DirEntry, error) {
 	entries, err := os.ReadDir(gatesDir)
 	if err != nil {

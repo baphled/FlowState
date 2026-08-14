@@ -28,8 +28,10 @@ type QueuedPrompt struct {
 	Consumer  streaming.StreamConsumer
 }
 
+// queuedPrompt is an alias for QueuedPrompt used internally by the session queue.
 type queuedPrompt = QueuedPrompt
 
+// SessionQueue is a concurrency-safe FIFO queue of dispatch prompts for a single session.
 type SessionQueue struct {
 	mu       sync.Mutex
 	prompts  []queuedPrompt
@@ -37,16 +39,34 @@ type SessionQueue struct {
 	draining bool
 }
 
+// sessionQueue is an alias for SessionQueue used by internal constructors.
 type sessionQueue = SessionQueue
 
+// newSessionQueue ...
+//
+// Returns: result of newSessionQueue.
+//
+// Side effects: None.
 func newSessionQueue() *sessionQueue {
 	return &SessionQueue{}
 }
 
+// NewSessionQueue ...
+//
+// Returns: result of NewSessionQueue.
+//
+// Side effects: None.
 func NewSessionQueue() *SessionQueue {
 	return &SessionQueue{}
 }
 
+// Enqueue ...
+//
+// Expected: parameters for Enqueue.
+//
+// Returns: result of Enqueue.
+//
+// Side effects: None.
 func (q *SessionQueue) Enqueue(prompt queuedPrompt) (int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -63,10 +83,24 @@ func (q *SessionQueue) Enqueue(prompt queuedPrompt) (int, error) {
 	return len(q.prompts), nil
 }
 
+// enqueue ...
+//
+// Expected: parameters for enqueue.
+//
+// Returns: result of enqueue.
+//
+// Side effects: None.
 func (q *SessionQueue) enqueue(prompt queuedPrompt) (int, error) {
 	return q.Enqueue(prompt)
 }
 
+// Dequeue ...
+//
+// Expected: parameters for Dequeue.
+//
+// Returns: result of Dequeue.
+//
+// Side effects: None.
 func (q *SessionQueue) Dequeue() *queuedPrompt {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -79,10 +113,24 @@ func (q *SessionQueue) Dequeue() *queuedPrompt {
 	return &prompt
 }
 
+// dequeue ...
+//
+// Expected: parameters for dequeue.
+//
+// Returns: result of dequeue.
+//
+// Side effects: None.
 func (q *SessionQueue) dequeue() *queuedPrompt {
 	return q.Dequeue()
 }
 
+// Cancel ...
+//
+// Expected: parameters for Cancel.
+//
+// Returns: result of Cancel.
+//
+// Side effects: None.
 func (q *SessionQueue) Cancel(promptID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -98,16 +146,37 @@ func (q *SessionQueue) Cancel(promptID string) bool {
 	return false
 }
 
+// cancel ...
+//
+// Expected: parameters for cancel.
+//
+// Returns: result of cancel.
+//
+// Side effects: None.
 func (q *SessionQueue) cancel(promptID string) bool {
 	return q.Cancel(promptID)
 }
 
+// Len ...
+//
+// Expected: parameters for Len.
+//
+// Returns: result of Len.
+//
+// Side effects: None.
 func (q *SessionQueue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.prompts)
 }
 
+// Close ...
+//
+// Expected: parameters for Close.
+//
+// Returns: result of Close.
+//
+// Side effects: None.
 func (q *SessionQueue) Close() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -119,10 +188,24 @@ func (q *SessionQueue) Close() {
 	q.prompts = nil
 }
 
+// close ...
+//
+// Expected: parameters for close.
+//
+// Returns: result of close.
+//
+// Side effects: None.
 func (q *SessionQueue) close() {
 	q.Close()
 }
 
+// BeginDrain ...
+//
+// Expected: parameters for BeginDrain.
+//
+// Returns: result of BeginDrain.
+//
+// Side effects: None.
 func (q *SessionQueue) BeginDrain() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -133,16 +216,37 @@ func (q *SessionQueue) BeginDrain() bool {
 	return true
 }
 
+// beginDrain ...
+//
+// Expected: parameters for beginDrain.
+//
+// Returns: result of beginDrain.
+//
+// Side effects: None.
 func (q *SessionQueue) beginDrain() bool {
 	return q.BeginDrain()
 }
 
+// EndDrain ...
+//
+// Expected: parameters for EndDrain.
+//
+// Returns: result of EndDrain.
+//
+// Side effects: None.
 func (q *SessionQueue) EndDrain() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.draining = false
 }
 
+// endDrain ...
+//
+// Expected: parameters for endDrain.
+//
+// Returns: result of endDrain.
+//
+// Side effects: None.
 func (q *SessionQueue) endDrain() {
 	q.EndDrain()
 }

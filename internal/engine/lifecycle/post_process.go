@@ -15,6 +15,9 @@ type PostProcessCtx struct {
 //
 // The PostProcess stage pre-registers hooks for knowledge extraction,
 // learning pipeline triggers, and analytics emission.
+//
+// Returns: result of DefaultPostProcess.
+// Side effects: None.
 func DefaultPostProcess() LifecycleStage[PostProcessCtx] {
 	return LifecycleStage[PostProcessCtx]{
 		Name:    "post_process",

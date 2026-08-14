@@ -160,6 +160,8 @@ func (s *SessionEnrichmentSteps) theSessionShouldContainAgentID(expected string)
 //
 // Side effects:
 //   - Creates a temporary directory with a minimal JSON session file.
+//
+// Expected: parameters for anExistingSessionFileWithoutEnrichmentFields.
 func (s *SessionEnrichmentSteps) anExistingSessionFileWithoutEnrichmentFields() error {
 	tmpDir, err := os.MkdirTemp("", "flowstate-legacy-session-*")
 	if err != nil {
@@ -208,6 +210,8 @@ func (s *SessionEnrichmentSteps) anExistingSessionFileWithoutEnrichmentFields() 
 //
 // Side effects:
 //   - Sets s.reloadedContextStore and s.loadError, and populates s.sessionInfo.
+//
+// Expected: parameters for iLoadTheLegacySession.
 func (s *SessionEnrichmentSteps) iLoadTheLegacySession() error {
 	store, err := s.sessionStore.Load(s.legacySessionID)
 	s.reloadedContextStore = store
@@ -223,6 +227,8 @@ func (s *SessionEnrichmentSteps) iLoadTheLegacySession() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theSessionShouldLoadSuccessfully.
 func (s *SessionEnrichmentSteps) theSessionShouldLoadSuccessfully() error {
 	if s.loadError != nil {
 		return fmt.Errorf("expected session to load successfully, got: %w", s.loadError)
@@ -240,6 +246,8 @@ func (s *SessionEnrichmentSteps) theSessionShouldLoadSuccessfully() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theSystemPromptShouldBeEmpty.
 func (s *SessionEnrichmentSteps) theSystemPromptShouldBeEmpty() error {
 	info := s.findSessionInfo(s.legacySessionID)
 	if info == nil {
@@ -258,6 +266,8 @@ func (s *SessionEnrichmentSteps) theSystemPromptShouldBeEmpty() error {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for theLoadedSkillsShouldBeEmpty.
 func (s *SessionEnrichmentSteps) theLoadedSkillsShouldBeEmpty() error {
 	info := s.findSessionInfo(s.legacySessionID)
 	if info == nil {

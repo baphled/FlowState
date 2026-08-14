@@ -105,6 +105,10 @@ func BuildAppTools(skillLoader *skill.FileSkillLoader, todoStore todotool.Store,
 
 // AppendSwarmTools appends swarm_list, swarm_info, and swarm_validate when
 // a swarm registry is available. Returns base unchanged when reg is nil.
+//
+// Expected: parameters for AppendSwarmTools.
+// Returns: result of AppendSwarmTools.
+// Side effects: None.
 func AppendSwarmTools(base []tool.Tool, reg *swarm.Registry) []tool.Tool {
 	if reg == nil {
 		return base
@@ -119,6 +123,10 @@ func AppendSwarmTools(base []tool.Tool, reg *swarm.Registry) []tool.Tool {
 // AppendMemoryTools appends the native mcp_memory_search_nodes and
 // mcp_memory_open_nodes tools when a MemoryClient is available. Returns
 // base unchanged when client is nil (Qdrant not configured).
+//
+// Expected: parameters for AppendMemoryTools.
+// Returns: result of AppendMemoryTools.
+// Side effects: None.
 func AppendMemoryTools(base []tool.Tool, client learning.MemoryClient) []tool.Tool {
 	if client == nil {
 		return base
@@ -132,6 +140,10 @@ func AppendMemoryTools(base []tool.Tool, client learning.MemoryClient) []tool.To
 // AppendVaultTools appends the native mcp_vault-rag_query_vault tool when
 // a vault Handler is available. Returns base unchanged when handler is nil
 // (Qdrant not configured or vault collection unavailable).
+//
+// Expected: parameters for AppendVaultTools.
+// Returns: result of AppendVaultTools.
+// Side effects: None.
 func AppendVaultTools(base []tool.Tool, handler toolsvault.Handler) []tool.Tool {
 	if handler == nil {
 		return base
@@ -142,6 +154,10 @@ func AppendVaultTools(base []tool.Tool, handler toolsvault.Handler) []tool.Tool 
 // AppendVaultIndexTools appends the vault_index and vault_sync tools when
 // the app config has both a vault path and a Qdrant URL configured.
 // Returns base unchanged when either is absent.
+//
+// Expected: parameters for AppendVaultIndexTools.
+// Returns: result of AppendVaultIndexTools.
+// Side effects: None.
 func AppendVaultIndexTools(base []tool.Tool, cfg *config.AppConfig) []tool.Tool {
 	if cfg == nil || cfg.VaultPath == "" || cfg.Qdrant.URL == "" {
 		return base
@@ -170,6 +186,10 @@ func AppendVaultIndexTools(base []tool.Tool, cfg *config.AppConfig) []tool.Tool 
 // AppendChainTools appends the chain_search and chain_get_messages tools
 // when a chain context store is available. Returns base unchanged when cs
 // is nil (recall pipeline disabled).
+//
+// Expected: parameters for AppendChainTools.
+// Returns: result of AppendChainTools.
+// Side effects: None.
 func AppendChainTools(base []tool.Tool, cs recall.ChainContextStore) []tool.Tool {
 	if cs == nil {
 		return base

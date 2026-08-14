@@ -61,6 +61,8 @@ func (b *BackgroundOutputTool) WithDefaultTimeout(d time.Duration) *BackgroundOu
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (b *BackgroundOutputTool) Name() string {
 	return "background_output"
 }
@@ -72,6 +74,8 @@ func (b *BackgroundOutputTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (b *BackgroundOutputTool) Description() string {
 	return "Retrieve background task results by task ID"
 }
@@ -83,6 +87,8 @@ func (b *BackgroundOutputTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (b *BackgroundOutputTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

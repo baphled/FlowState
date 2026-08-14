@@ -57,6 +57,9 @@ type permissionPrompter struct {
 //
 // Side effects:
 //   - None — returns the field directly.
+//
+// Expected: parameters for Registry.
+// Returns: result of Registry.
 func (p *permissionPrompter) Registry() *permissionrequest.Registry {
 	if p == nil {
 		return nil
@@ -68,6 +71,10 @@ func (p *permissionPrompter) Registry() *permissionrequest.Registry {
 // shared registry, bus, and recorder. nil registry / bus is a wiring
 // bug; recorder may be nil (the prompter falls back to a noop counter
 // path). timeout <= 0 falls back to defaultPermissionTimeout.
+//
+// Expected: parameters for newPermissionPrompter.
+// Returns: result of newPermissionPrompter.
+// Side effects: None.
 func newPermissionPrompter(
 	registry *permissionrequest.Registry,
 	bus *eventbus.EventBus,
@@ -91,6 +98,10 @@ func newPermissionPrompter(
 // RequestPermission implements pathguard.PermissionPrompter. Drives
 // the path-denied seam — Resource is a filesystem path; AgentName is
 // the per-turn agent override.
+//
+// Expected: parameters for RequestPermission.
+// Returns: result of RequestPermission.
+// Side effects: None.
 func (p *permissionPrompter) RequestPermission(ctx context.Context, req pathguard.PermissionRequest) pathguard.PermissionGrant {
 	requestID := uuid.NewString()
 	storedReq := permissionrequest.PermissionRequest{
@@ -116,6 +127,10 @@ func (p *permissionPrompter) RequestPermission(ctx context.Context, req pathguar
 // (ResourceKind="mcp_server") per Slice 5 of the Permission Mode
 // ModeAskUser Extension plan (May 2026). The engine gate populates the
 // kind based on its mcpServerTools map lookup before calling here.
+//
+// Expected: parameters for RequestToolPermission.
+// Returns: result of RequestToolPermission.
+// Side effects: None.
 func (p *permissionPrompter) RequestToolPermission(ctx context.Context, req engine.EnginePermissionRequest) engine.EnginePermissionGrant {
 	requestID := uuid.NewString()
 	kind := req.ResourceKind
@@ -153,6 +168,10 @@ func (p *permissionPrompter) RequestToolPermission(ctx context.Context, req engi
 // (memory: project_flowstate_streamer_request_lifetime_coupling).
 // The only termination paths are (a) Registry.Resolve from the
 // operator-grant HTTP handler (Slice 3) and (b) the timeout timer.
+//
+// Expected: parameters for suspendAndWait.
+// Returns: result of suspendAndWait.
+// Side effects: None.
 func (p *permissionPrompter) suspendAndWait(parent context.Context, req permissionrequest.PermissionRequest) permissionrequest.PermissionGrant {
 	if err := p.registry.Register(req); err != nil {
 		// Duplicate request_id is exceedingly rare with UUID v4 but
@@ -193,6 +212,10 @@ func (p *permissionPrompter) suspendAndWait(parent context.Context, req permissi
 // request's metadata. Slice 3 will hook the SSE bridge to this event
 // for the inline UI prompt; Slice 2 leaves the prompt rendering
 // surface out of scope — the bus event is the wire-shape contract.
+//
+// Expected: parameters for publishRequired.
+// Returns: result of publishRequired.
+// Side effects: None.
 func (p *permissionPrompter) publishRequired(req permissionrequest.PermissionRequest) {
 	if p.bus == nil {
 		return
@@ -214,6 +237,10 @@ func (p *permissionPrompter) publishRequired(req permissionrequest.PermissionReq
 // in subscribePermissionGaugeHook decrements the permission_pending
 // gauge on receipt so a timed-out request does not leave the gauge
 // stuck above zero.
+//
+// Expected: parameters for publishTimeout.
+// Returns: result of publishTimeout.
+// Side effects: None.
 func (p *permissionPrompter) publishTimeout(req permissionrequest.PermissionRequest) {
 	if p.bus == nil {
 		return
@@ -232,6 +259,10 @@ func (p *permissionPrompter) publishTimeout(req permissionrequest.PermissionRequ
 // layer GrantScope enum. The two vocabularies are intentionally
 // distinct so the registry stays consumer-agnostic, but the values
 // align one-to-one.
+//
+// Expected: parameters for pathguardScope.
+// Returns: result of pathguardScope.
+// Side effects: None.
 func pathguardScope(s permissionrequest.Scope) pathguard.GrantScope {
 	switch s {
 	case permissionrequest.ScopeOnce:
@@ -261,6 +292,9 @@ func pathguardScope(s permissionrequest.Scope) pathguard.GrantScope {
 // Memory: feedback_eventlogger_catalog_subscriber_is_dead_comment.
 // The catalog claims subscribers for the three resolution events;
 // this is the matching wire-up.
+//
+// Expected: parameters for subscribePermissionGaugeHook.
+// Side effects: None.
 func subscribePermissionGaugeHook(bus *eventbus.EventBus, recorder tracer.Recorder) {
 	if bus == nil || recorder == nil {
 		return

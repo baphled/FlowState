@@ -1854,6 +1854,10 @@ type PermissionRequiredEventData struct {
 // MarshalJSON serialises PermissionRequiredEventData for the
 // eventlogger JSONL stream. Field shapes mirror the other tool /
 // provider event payloads for consistency in recordings.
+//
+// Expected: parameters for MarshalJSON.
+// Returns: result of MarshalJSON.
+// Side effects: None.
 func (d PermissionRequiredEventData) MarshalJSON() ([]byte, error) {
 	type payload struct {
 		RequestID    string `json:"request_id"`
@@ -1881,6 +1885,10 @@ type PermissionRequiredEvent struct {
 // NewPermissionRequiredEvent constructs a PermissionRequiredEvent
 // stamped with the canonical event-type constant. Optional timestamp
 // argument follows the same shape as the sibling event constructors.
+//
+// Expected: parameters for NewPermissionRequiredEvent.
+// Returns: result of NewPermissionRequiredEvent.
+// Side effects: None.
 func NewPermissionRequiredEvent(data PermissionRequiredEventData, ts ...time.Time) *PermissionRequiredEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -1916,6 +1924,10 @@ type PermissionResolutionEventData struct {
 // MarshalJSON serialises PermissionResolutionEventData for the JSONL
 // recording stream. Field shapes mirror PermissionRequiredEventData
 // so dashboards can pair the request and the resolution.
+//
+// Expected: parameters for MarshalJSON.
+// Returns: result of MarshalJSON.
+// Side effects: None.
 func (d PermissionResolutionEventData) MarshalJSON() ([]byte, error) {
 	type payload struct {
 		RequestID string `json:"request_id"`
@@ -1940,6 +1952,10 @@ type PermissionGrantedEvent struct {
 }
 
 // NewPermissionGrantedEvent constructs a PermissionGrantedEvent.
+//
+// Expected: parameters for NewPermissionGrantedEvent.
+// Returns: result of NewPermissionGrantedEvent.
+// Side effects: None.
 func NewPermissionGrantedEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionGrantedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -1960,6 +1976,10 @@ type PermissionDeniedEvent struct {
 }
 
 // NewPermissionDeniedEvent constructs a PermissionDeniedEvent.
+//
+// Expected: parameters for NewPermissionDeniedEvent.
+// Returns: result of NewPermissionDeniedEvent.
+// Side effects: None.
 func NewPermissionDeniedEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionDeniedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -2008,6 +2028,10 @@ type ProviderStatusChangedEvent struct {
 }
 
 // NewProviderStatusChangedEvent creates a new ProviderStatusChangedEvent.
+//
+// Expected: parameters for NewProviderStatusChangedEvent.
+// Returns: result of NewProviderStatusChangedEvent.
+// Side effects: None.
 func NewProviderStatusChangedEvent(data ProviderStatusChangedEventData, ts ...time.Time) *ProviderStatusChangedEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {
@@ -2029,6 +2053,10 @@ type PermissionTimeoutEvent struct {
 }
 
 // NewPermissionTimeoutEvent constructs a PermissionTimeoutEvent.
+//
+// Expected: parameters for NewPermissionTimeoutEvent.
+// Returns: result of NewPermissionTimeoutEvent.
+// Side effects: None.
 func NewPermissionTimeoutEvent(data PermissionResolutionEventData, ts ...time.Time) *PermissionTimeoutEvent {
 	t := time.Now()
 	if len(ts) > 0 && !ts[0].IsZero() {

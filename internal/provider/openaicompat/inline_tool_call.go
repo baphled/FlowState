@@ -101,6 +101,10 @@ type FeedResult struct {
 // Feed appends a reasoning fragment to the buffer and returns whatever
 // is now safe to emit downstream (Thinking text and/or closed tool
 // calls).
+//
+// Expected: parameters for Feed.
+// Returns: result of Feed.
+// Side effects: None.
 func (e *inlineToolCallExtractor) Feed(fragment string) FeedResult {
 	if fragment == "" {
 		return FeedResult{}
@@ -113,6 +117,10 @@ func (e *inlineToolCallExtractor) Feed(fragment string) FeedResult {
 // returns whatever is left in the buffer as plain Thinking text. Any
 // unclosed `<tool_call>` block at this point is preserved verbatim so
 // the soft-error affordance can still surface the failure to the user.
+//
+// Expected: parameters for Flush.
+// Returns: result of Flush.
+// Side effects: None.
 func (e *inlineToolCallExtractor) Flush() string {
 	remaining := e.buffer.String()
 	e.buffer.Reset()
@@ -130,6 +138,10 @@ func (e *inlineToolCallExtractor) Flush() string {
 //     before the open, parse the block, drop the markup, repeat.
 //  3. `<tool_call>` open without matching close — emit text before the
 //     open, hold the rest pending more fragments.
+//
+// Expected: parameters for drain.
+// Returns: result of drain.
+// Side effects: None.
 func (e *inlineToolCallExtractor) drain() FeedResult {
 	var out FeedResult
 	for {
@@ -182,6 +194,10 @@ func (e *inlineToolCallExtractor) drain() FeedResult {
 // the buffer because it could be the prefix of one. This is what
 // keeps Thinking streaming in real time while still buffering
 // potential markup.
+//
+// Expected: parameters for splitOnPartialOpenSuffix.
+// Returns: result of splitOnPartialOpenSuffix.
+// Side effects: None.
 func splitOnPartialOpenSuffix(buf string) (emit string, hold string) {
 	// Walk back from the end of the buffer looking for the longest
 	// suffix that is also a prefix of `<tool_call>`.
@@ -221,6 +237,10 @@ func splitOnPartialOpenSuffix(buf string) (emit string, hold string) {
 //
 // Returns false when the body does not yield a usable tool name — the
 // soft-error path takes over for that case.
+//
+// Expected: parameters for parseInlineToolCallBody.
+// Returns: result of parseInlineToolCallBody.
+// Side effects: None.
 func parseInlineToolCallBody(body string) (provider.ToolCall, bool) {
 	name, argsRegion := splitNameAndArgs(body)
 	if name == "" {
@@ -237,6 +257,10 @@ func parseInlineToolCallBody(body string) (provider.ToolCall, bool) {
 // splitNameAndArgs splits a tool_call body into the leading tool name
 // and the trailing region that contains any `<arg_key>/<arg_value>`
 // pairs.
+//
+// Expected: parameters for splitNameAndArgs.
+// Returns: result of splitNameAndArgs.
+// Side effects: None.
 func splitNameAndArgs(body string) (name string, argsRegion string) {
 	argsStart := strings.Index(body, inlineArgKeyOpen)
 	var nameRegion string
@@ -254,6 +278,10 @@ func splitNameAndArgs(body string) (name string, argsRegion string) {
 // `<arg_key>K</arg_key><arg_value>V</arg_value>` pair, in order. Pairs
 // without a closing tag for either half are skipped — better to drop
 // a single malformed arg than to emit a half-formed tool call.
+//
+// Expected: parameters for parseInlineArgs.
+// Returns: result of parseInlineArgs.
+// Side effects: None.
 func parseInlineArgs(region string) map[string]any {
 	args := map[string]any{}
 	for {
@@ -297,6 +325,9 @@ func parseInlineArgs(region string) map[string]any {
 // for a recovered call. The `call_inline_` prefix mirrors OpenAI's
 // `call_*` id shape so downstream id-translation paths
 // (shared.TranslateToolCallID) treat it identically.
+//
+// Returns: result of newInlineToolCallID.
+// Side effects: None.
 func newInlineToolCallID() string {
 	return fmt.Sprintf("%s%s", inlineToolCallIDPrefix, uuid.NewString())
 }

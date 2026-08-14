@@ -135,6 +135,8 @@ func (c *ToolCallCorrelator) InternalID(sessionID, providerID, toolName string, 
 // Side effects:
 //   - Deletes direct and fuzzy map entries whose key begins with
 //     "sessionID|".
+//
+// Returns: result of ForgetSession.
 func (c *ToolCallCorrelator) ForgetSession(sessionID string) {
 	if sessionID == "" {
 		return

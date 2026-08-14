@@ -18,6 +18,13 @@ import (
 	"github.com/baphled/flowstate/internal/swarm"
 )
 
+// resolveCriticModel ...
+//
+// Expected: parameters for resolveCriticModel.
+//
+// Returns: result of resolveCriticModel.
+//
+// Side effects: None.
 func resolveCriticModel(criticOverride string) string {
 	return criticOverride
 }
@@ -329,6 +336,10 @@ type coordWaveValidator struct {
 // circuit to ChainPrefix: it falls through to session.IDKey, then the
 // suffix-scan backstop, exactly as the publisher's fallback does, so
 // seeded-chain runs are unaffected.
+//
+// Expected: parameters for resolveChainID.
+// Returns: result of resolveChainID.
+// Side effects: None.
 func (v *coordWaveValidator) resolveChainID(ctx context.Context) string {
 	if sc, scoped := swarm.ScopeFromContext(ctx); scoped && sc != nil &&
 		sc.ChainIDAssigned && sc.ChainPrefix != "" {
@@ -347,6 +358,10 @@ func (v *coordWaveValidator) resolveChainID(ctx context.Context) string {
 
 // MissingForChain implements harness.WaveValidator. See
 // coordWaveValidator's doc comment for the resolution rules.
+//
+// Expected: parameters for MissingForChain.
+// Returns: result of MissingForChain.
+// Side effects: None.
 func (v *coordWaveValidator) MissingForChain(
 	ctx context.Context, _ string, wave harness.WaveStage,
 ) ([]string, error) {
@@ -391,6 +406,13 @@ func (v *coordWaveValidator) MissingForChain(
 	return missing, nil
 }
 
+// suffixPresent ...
+//
+// Expected: parameters for suffixPresent.
+//
+// Returns: result of suffixPresent.
+//
+// Side effects: None.
 func (v *coordWaveValidator) suffixPresent(suffix string) (bool, error) {
 	keys, err := v.store.List("")
 	if err != nil {
@@ -413,6 +435,10 @@ func (v *coordWaveValidator) suffixPresent(suffix string) (bool, error) {
 //
 // Returns nil when no agent declares waves; the harness adapter then
 // skips wiring the validator entirely.
+//
+// Expected: parameters for collectAgentWaves.
+// Returns: result of collectAgentWaves.
+// Side effects: None.
 func collectAgentWaves(registry *agent.Registry) []harness.WaveStage {
 	if registry == nil {
 		return nil

@@ -258,6 +258,10 @@ func (v *VectorStoreMemoryClient) OpenNodes(ctx context.Context, names []string)
 // entityFromPoint converts a ScoredVectorPoint to an Entity, preferring source_id over the
 // UUID point ID as the entity name, and handling both entity-style payloads
 // (entityType + observations) and learning-record payloads (agent_id + content/response/outcome).
+//
+// Expected: parameters for entityFromPoint.
+// Returns: result of entityFromPoint.
+// Side effects: None.
 func entityFromPoint(p ScoredVectorPoint) Entity {
 	name, ok := p.Payload["source_id"].(string)
 	if !ok {

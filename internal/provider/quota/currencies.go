@@ -68,6 +68,9 @@ type ConversionTable struct {
 //
 // Plan OD-6: this is the v1 baseline; operators override via JSON
 // file at quota.currency.conversion_table.
+//
+// Returns: result of DefaultConversionTable.
+// Side effects: None.
 func DefaultConversionTable() ConversionTable {
 	rates := make(map[string]float64, len(defaultCurrencyRates))
 	for k, v := range defaultCurrencyRates {
@@ -86,11 +89,15 @@ func DefaultConversionTable() ConversionTable {
 // Returns an error on filesystem read failure, malformed JSON, or a
 // missing/non-unity USD rate (the identity entry — a table without
 // USD=1.0 would break the SpentUSD computation silently).
+//
+// Expected: parameters for LoadCurrencyOverride.
+// Returns: result of LoadCurrencyOverride.
+// Side effects: None.
 func LoadCurrencyOverride(path string) (ConversionTable, error) {
 	if path == "" {
 		return DefaultConversionTable(), nil
 	}
-	data, err := os.ReadFile(path) //nolint:gosec // operator-supplied path is intentional
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ConversionTable{}, fmt.Errorf("quota: reading currency conversion override %q: %w", path, err)
 	}
@@ -125,6 +132,10 @@ func LoadCurrencyOverride(path string) (ConversionTable, error) {
 // (cents for USD, fen for CNY) throughout. Float arithmetic is
 // confined to the rate division; the result is rounded to the nearest
 // integer minor unit.
+//
+// Expected: parameters for ConvertToUSD.
+// Returns: result of ConvertToUSD.
+// Side effects: None.
 func (t ConversionTable) ConvertToUSD(amountMinor int64, currency string) (int64, error) {
 	currency = strings.ToUpper(strings.TrimSpace(currency))
 	if currency == "USD" {
@@ -145,6 +156,10 @@ func (t ConversionTable) ConvertToUSD(amountMinor int64, currency string) (int64
 // SupportedCurrencies returns the sorted list of currency codes the
 // table supports. Exposed for tests and for the panel's "supported
 // currencies" tooltip.
+//
+// Expected: parameters for SupportedCurrencies.
+// Returns: result of SupportedCurrencies.
+// Side effects: None.
 func (t ConversionTable) SupportedCurrencies() []string {
 	out := make([]string, 0, len(t.Rates))
 	for k := range t.Rates {
@@ -160,6 +175,9 @@ func (t ConversionTable) SupportedCurrencies() []string {
 // sortStrings is a tiny shim to avoid importing "sort" just for this
 // one call (and to keep currencies.go self-contained against future
 // refactors that might decimate the imports).
+//
+// Expected: parameters for sortStrings.
+// Side effects: None.
 func sortStrings(s []string) {
 	for i := 1; i < len(s); i++ {
 		for j := i; j > 0 && s[j-1] > s[j]; j-- {

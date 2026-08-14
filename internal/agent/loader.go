@@ -20,6 +20,9 @@ import (
 // empty declared toolset usually signals operator intent gone missing
 // (engineering agent shipping without bash/read/write/edit), and the
 // loader is the earliest place we can flag that.
+//
+// Expected: parameters for warnIfNoTools.
+// Side effects: None.
 func warnIfNoTools(m *Manifest, path string) {
 	if m == nil || len(m.Capabilities.Tools) > 0 {
 		return

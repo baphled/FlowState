@@ -38,6 +38,10 @@ type Quota struct {
 // returns IsValid()==true before the first response flows. The
 // first success-path response from Chat or streamMessages flips the
 // variant to RateLimit.
+//
+// Expected: parameters for NewQuota.
+// Returns: result of NewQuota.
+// Side effects: None.
 func NewQuota(accountHash string) *Quota {
 	return &Quota{
 		accountHash: accountHash,
@@ -64,6 +68,10 @@ func NewQuota(accountHash string) *Quota {
 //
 // Idempotent: calling Bind a second time replaces the observer (the
 // engine's reconfigure path may rewire).
+//
+// Expected: parameters for Bind.
+// Returns: result of Bind.
+// Side effects: None.
 func (q *Quota) Bind(p *Provider) {
 	if p == nil {
 		return
@@ -91,6 +99,10 @@ func (q *Quota) Bind(p *Provider) {
 // true: it carries either a RateLimit variant (after the first
 // successful response) or a NotConfigured variant (before the
 // first response, with Reason "awaiting-first-response").
+//
+// Expected: parameters for Remaining.
+// Returns: result of Remaining.
+// Side effects: None.
 func (q *Quota) Remaining(_ context.Context, _, modelID string) (quota.Snapshot, error) {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
@@ -119,6 +131,10 @@ func (q *Quota) Remaining(_ context.Context, _, modelID string) (quota.Snapshot,
 // Concurrent-safe: holds the write lock for the duration of the
 // snap replacement; readers see either the prior or new snapshot,
 // never a torn read.
+//
+// Expected: parameters for RecordResponse.
+// Returns: result of RecordResponse.
+// Side effects: None.
 func (q *Quota) RecordResponse(_, modelID string, headers http.Header, _ provider.Usage) {
 	rl := extractRateLimitHeadersFromResponse(headers, "")
 	if rl == nil {
@@ -146,6 +162,10 @@ func (q *Quota) RecordResponse(_, modelID string, headers http.Header, _ provide
 // shape has eleven flat fields; the variant has four Window structs
 // + a tightest-percentage summary. The adapter also computes the
 // TightestPercentRemaining the chip renders.
+//
+// Expected: parameters for rateLimitToVariant.
+// Returns: result of rateLimitToVariant.
+// Side effects: None.
 func rateLimitToVariant(rl *provider.RateLimit) *quota.RateLimitVariant {
 	v := &quota.RateLimitVariant{
 		Requests: quota.Window{
@@ -180,6 +200,10 @@ func rateLimitToVariant(rl *provider.RateLimit) *quota.RateLimitVariant {
 // alongside.
 //
 // Returns (-1, zero time) when no window has both signals.
+//
+// Expected: parameters for tightestWindow.
+// Returns: result of tightestWindow.
+// Side effects: None.
 func tightestWindow(v *quota.RateLimitVariant) (int, time.Time) {
 	type windowPct struct {
 		pct   int

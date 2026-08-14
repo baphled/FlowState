@@ -72,6 +72,10 @@ type AuthConfig struct {
 // shape is uniform — no information leakage about why the session was
 // rejected (matches B8's mode-fingerprint discipline applied to the
 // session check).
+//
+// Expected: parameters for RequireSession.
+// Returns: result of RequireSession.
+// Side effects: None.
 func RequireSession(sessionMgr *SessionManager, cfg AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +127,10 @@ func RequireSession(sessionMgr *SessionManager, cfg AuthConfig) func(http.Handle
 // Callers that need a different shape (e.g. login.go's "Origin + CSRF
 // only, no Session" path) construct the composition manually — see
 // LoginChain below.
+//
+// Expected: parameters for Protected.
+// Returns: result of Protected.
+// Side effects: None.
 func Protected(
 	originCfg OriginConfig,
 	sessionMgr *SessionManager,
@@ -147,6 +155,10 @@ func Protected(
 //
 // SameSite=Lax on the session cookie + Origin allowlist close the
 // cross-origin attack vector on login.
+//
+// Expected: parameters for LoginChain.
+// Returns: result of LoginChain.
+// Side effects: None.
 func LoginChain(
 	originCfg OriginConfig,
 	csrfCfg CSRFConfig,

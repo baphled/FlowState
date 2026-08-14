@@ -51,6 +51,8 @@ func NewSearchContextTool(store *FileContextStore, embedder provider.Provider, t
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *SearchContextTool) Name() string {
 	return "search_context"
 }
@@ -62,6 +64,8 @@ func (t *SearchContextTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *SearchContextTool) Description() string {
 	return "Search conversation history semantically"
 }
@@ -73,6 +77,8 @@ func (t *SearchContextTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *SearchContextTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -133,6 +139,8 @@ func (t *SearchContextTool) Execute(ctx context.Context, input tool.Input) (tool
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for fallbackToRecent.
 func (t *SearchContextTool) fallbackToRecent() (tool.Result, error) {
 	messages := t.store.GetRecent(t.topK)
 	if len(messages) == 0 {
@@ -203,6 +211,8 @@ func NewGetMessagesTool(store *FileContextStore) *GetMessagesTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *GetMessagesTool) Name() string {
 	return "get_messages"
 }
@@ -214,6 +224,8 @@ func (t *GetMessagesTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *GetMessagesTool) Description() string {
 	return "Retrieve messages by range or recent count"
 }
@@ -225,6 +237,8 @@ func (t *GetMessagesTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *GetMessagesTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -292,6 +306,8 @@ func NewTruncateContextTool(store *FileContextStore) *TruncateContextTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *TruncateContextTool) Name() string {
 	return "truncate_context"
 }
@@ -303,6 +319,8 @@ func (t *TruncateContextTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *TruncateContextTool) Description() string {
 	return "Truncate oldest unpinned messages until token budget is met"
 }
@@ -314,6 +332,8 @@ func (t *TruncateContextTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *TruncateContextTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -374,6 +394,8 @@ func NewPinMessageTool(store *FileContextStore) *PinMessageTool {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *PinMessageTool) Name() string {
 	return "pin_message"
 }
@@ -385,6 +407,8 @@ func (t *PinMessageTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *PinMessageTool) Description() string {
 	return "Pin or unpin a message by index to protect from truncation"
 }
@@ -396,6 +420,8 @@ func (t *PinMessageTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *PinMessageTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",
@@ -523,6 +549,8 @@ func NewSummarizeContextTool(
 // Side effects:
 //   - Replaces the tool's bus reference; subsequent summarisation
 //     observations will fan out through this bus.
+//
+// Returns: result of SetEventBus.
 func (t *SummarizeContextTool) SetEventBus(bus *eventbus.EventBus) {
 	t.bus = bus
 }
@@ -534,6 +562,8 @@ func (t *SummarizeContextTool) SetEventBus(bus *eventbus.EventBus) {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Name.
 func (t *SummarizeContextTool) Name() string {
 	return "summarize_context"
 }
@@ -545,6 +575,8 @@ func (t *SummarizeContextTool) Name() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Description.
 func (t *SummarizeContextTool) Description() string {
 	return "Recursively summarize conversation history"
 }
@@ -556,6 +588,8 @@ func (t *SummarizeContextTool) Description() string {
 //
 // Side effects:
 //   - None.
+//
+// Expected: parameters for Schema.
 func (t *SummarizeContextTool) Schema() tool.Schema {
 	return tool.Schema{
 		Type: "object",

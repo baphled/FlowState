@@ -56,6 +56,7 @@ type providerQuotaPayload struct {
 	Status string `json:"status,omitempty"`
 }
 
+// providerQuotaRateLimitPayload is the wire payload for rate-limit quota status.
 type providerQuotaRateLimitPayload struct {
 	Requests                 providerQuotaWindow `json:"requests"`
 	Tokens                   providerQuotaWindow `json:"tokens"`
@@ -65,12 +66,14 @@ type providerQuotaRateLimitPayload struct {
 	TightestResetAt          string              `json:"tightest_reset_at,omitempty"`
 }
 
+// providerQuotaWindow describes a single rate-limit window dimension.
 type providerQuotaWindow struct {
 	Limit     int    `json:"limit"`
 	Remaining int    `json:"remaining"`
 	Reset     string `json:"reset,omitempty"`
 }
 
+// providerQuotaTokenSpendPayload is the wire payload for token spend quota status.
 type providerQuotaTokenSpendPayload struct {
 	SpentMinor     int64  `json:"spent_minor"`
 	SpentCurrency  string `json:"spent_currency"`
@@ -84,6 +87,7 @@ type providerQuotaTokenSpendPayload struct {
 	ThresholdRed   int    `json:"threshold_red"`
 }
 
+// providerQuotaNotConfigPayload is the wire payload used when quota is not configured.
 type providerQuotaNotConfigPayload struct {
 	Reason string `json:"reason"`
 }
@@ -96,6 +100,10 @@ type providerQuotaNotConfigPayload struct {
 //
 // Times are serialised as RFC 3339 strings so the JS Date parser at
 // the Vue side handles them with no extra glue.
+//
+// Expected: parameters for snapshotToPayload.
+// Returns: result of snapshotToPayload.
+// Side effects: None.
 func snapshotToPayload(snap quota.Snapshot) (providerQuotaPayload, bool) {
 	if !snap.IsValid() {
 		return providerQuotaPayload{}, false
@@ -145,6 +153,10 @@ func snapshotToPayload(snap quota.Snapshot) (providerQuotaPayload, bool) {
 //     (the window is bone-dry but no failover cooldown).
 //  3. "spent"        — token-spend variant where Spent >= Cap (cap is set).
 //  4. "healthy"      — none of the above.
+//
+// Expected: parameters for synthesiseQuotaStatus.
+// Returns: result of synthesiseQuotaStatus.
+// Side effects: None.
 func synthesiseQuotaStatus(snap quota.Snapshot) string {
 	if !snap.RateLimitedUntil.IsZero() && snap.RateLimitedUntil.After(time.Now()) {
 		return "rate_limited"
@@ -159,6 +171,13 @@ func synthesiseQuotaStatus(snap quota.Snapshot) string {
 	return "healthy"
 }
 
+// rateLimitToPayload ...
+//
+// Expected: parameters for rateLimitToPayload.
+//
+// Returns: result of rateLimitToPayload.
+//
+// Side effects: None.
 func rateLimitToPayload(rl *quota.RateLimitVariant) *providerQuotaRateLimitPayload {
 	p := &providerQuotaRateLimitPayload{
 		Requests:                 windowToPayload(rl.Requests),
@@ -173,6 +192,13 @@ func rateLimitToPayload(rl *quota.RateLimitVariant) *providerQuotaRateLimitPaylo
 	return p
 }
 
+// windowToPayload ...
+//
+// Expected: parameters for windowToPayload.
+//
+// Returns: result of windowToPayload.
+//
+// Side effects: None.
 func windowToPayload(w quota.Window) providerQuotaWindow {
 	out := providerQuotaWindow{Limit: w.Limit, Remaining: w.Remaining}
 	if !w.Reset.IsZero() {
@@ -181,6 +207,13 @@ func windowToPayload(w quota.Window) providerQuotaWindow {
 	return out
 }
 
+// tokenSpendToPayload ...
+//
+// Expected: parameters for tokenSpendToPayload.
+//
+// Returns: result of tokenSpendToPayload.
+//
+// Side effects: None.
 func tokenSpendToPayload(ts *quota.TokenSpendVariant) *providerQuotaTokenSpendPayload {
 	return &providerQuotaTokenSpendPayload{
 		SpentMinor:     ts.Spent.Amount,
@@ -211,6 +244,9 @@ func tokenSpendToPayload(ts *quota.TokenSpendVariant) *providerQuotaTokenSpendPa
 //     trigger an auto-reset-on-read write to the SpendStore per OD-8;
 //     that is the Tracker's contract, not a side effect of this
 //     function.
+//
+// Expected: parameters for buildProviderQuotaChunk.
+// Returns: result of buildProviderQuotaChunk.
 func (e *Engine) buildProviderQuotaChunk(ctx context.Context, req *provider.ChatRequest) (provider.StreamChunk, bool) {
 	if e == nil || req == nil || e.quotaTracker == nil {
 		return provider.StreamChunk{}, false
@@ -272,6 +308,10 @@ func (e *Engine) buildProviderQuotaChunk(ctx context.Context, req *provider.Chat
 // emission target. AccountHash is read from e.quotaAccountHashes at
 // emit time so a hot key-rotation visible via SetConfig (PR5/PR6) is
 // reflected on the very next chip update.
+//
+// Expected: parameters for makePostTurnQuotaEmitter.
+// Returns: result of makePostTurnQuotaEmitter.
+// Side effects: None.
 func (e *Engine) makePostTurnQuotaEmitter(req *provider.ChatRequest) postTurnQuotaEmitter {
 	if e == nil || e.quotaTracker == nil || req == nil {
 		return nil
@@ -300,6 +340,10 @@ type postTurnQuotaEmitter func(ctx context.Context, outChan chan<- provider.Stre
 // buildProviderQuotaChunk for the post-turn emitter (which captured
 // providerID + modelID at construction time rather than holding a
 // req pointer). Same body, different parameter shape.
+//
+// Expected: parameters for buildProviderQuotaChunkExplicit.
+// Returns: result of buildProviderQuotaChunkExplicit.
+// Side effects: None.
 func (e *Engine) buildProviderQuotaChunkExplicit(ctx context.Context, providerID, modelID string) (provider.StreamChunk, bool) {
 	if e == nil || e.quotaTracker == nil || providerID == "" || modelID == "" {
 		return provider.StreamChunk{}, false
@@ -347,6 +391,10 @@ func (e *Engine) buildProviderQuotaChunkExplicit(ctx context.Context, providerID
 //
 // Plan §"Engine integration / spend accumulation rules
 // (A4 resolution)" lines 299-318.
+//
+// Expected: parameters for recordQuotaSpend.
+// Returns: result of recordQuotaSpend.
+// Side effects: None.
 func (e *Engine) recordQuotaSpend(ctx context.Context, providerID, modelID string, usage *provider.UsageDelta) {
 	if e == nil || e.quotaTracker == nil || usage == nil || providerID == "" || modelID == "" {
 		return
@@ -384,6 +432,10 @@ type QuotaAggregatorRow struct {
 // PR5 dashboard aggregator entry point — the api package's
 // quota_dashboard.go handler iterates the result and projects each
 // Snapshot into the wire shape.
+//
+// Expected: parameters for QuotaSnapshots.
+// Returns: result of QuotaSnapshots.
+// Side effects: None.
 func (e *Engine) QuotaSnapshots(ctx context.Context) []QuotaAggregatorRow {
 	if e == nil || e.quotaTracker == nil {
 		return nil
@@ -422,6 +474,10 @@ func (e *Engine) QuotaSnapshots(ctx context.Context) []QuotaAggregatorRow {
 //
 // PR5 dashboard "Reset spend counter" button — backs
 // POST /api/v1/providers/quota/reset.
+//
+// Expected: parameters for ResetQuotaSpend.
+// Returns: result of ResetQuotaSpend.
+// Side effects: None.
 func (e *Engine) ResetQuotaSpend(ctx context.Context, providerID, accountHash, modelID string) (bool, error) {
 	if e == nil || e.quotaTracker == nil {
 		return false, nil
@@ -435,6 +491,9 @@ func (e *Engine) ResetQuotaSpend(ctx context.Context, providerID, accountHash, m
 // wired or when the HealthManager reports no active rate-limit.
 //
 // ADR 001: Converge Failover Health State with Quota Tracker.
+//
+// Expected: parameters for stampRateLimitedUntil.
+// Side effects: None.
 func stampRateLimitedUntil(snap *quota.Snapshot, e *Engine, provider, model string) {
 	if e == nil || e.failoverManager == nil {
 		return
@@ -456,6 +515,10 @@ func stampRateLimitedUntil(snap *quota.Snapshot, e *Engine, provider, model stri
 //
 // No-op when the engine has no bus wired or when the status has not
 // changed from the last tracked value.
+//
+// Expected: parameters for trackAndPublishStatusChange.
+// Returns: result of trackAndPublishStatusChange.
+// Side effects: None.
 func (e *Engine) trackAndPublishStatusChange(provider, model, status string, rateLimitedUntil time.Time) {
 	if e == nil || e.bus == nil {
 		return
@@ -496,6 +559,10 @@ func (e *Engine) trackAndPublishStatusChange(provider, model, status string, rat
 //
 // Caller is the Stream goroutine; outChan is the per-Stream channel
 // the api SSE bridge subscribes to. Suppression key is sessionID.
+//
+// Expected: parameters for tryEmitProviderQuotaInline.
+// Returns: result of tryEmitProviderQuotaInline.
+// Side effects: None.
 func (e *Engine) tryEmitProviderQuotaInline(
 	sessionID string,
 	chunk provider.StreamChunk,

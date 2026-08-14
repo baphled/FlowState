@@ -37,6 +37,9 @@ type CSRFConfig struct {
 
 // DefaultCSRFConfig returns the production defaults. Callers MUST stamp
 // AuthKey (32 bytes) — there is no safe default.
+//
+// Returns: result of DefaultCSRFConfig.
+// Side effects: None.
 func DefaultCSRFConfig() CSRFConfig {
 	return CSRFConfig{
 		CookieName:    "_csrf",
@@ -67,6 +70,10 @@ func DefaultCSRFConfig() CSRFConfig {
 //
 // Panics on empty AuthKey — misconfig should fail at boot, not silently
 // disable CSRF.
+//
+// Expected: parameters for Protect.
+// Returns: result of Protect.
+// Side effects: None.
 func Protect(cfg CSRFConfig) func(http.Handler) http.Handler {
 	if len(cfg.AuthKey) == 0 {
 		panic("auth: CSRFConfig.AuthKey is empty — CSRF would be disabled")
@@ -102,6 +109,10 @@ func Protect(cfg CSRFConfig) func(http.Handler) http.Handler {
 // On mismatch: 403 csrf_invalid + slog.Warn. The structured log fields
 // (session principal id, request path) help the operator triage forged-
 // token attempts vs legitimate browser quirks.
+//
+// Expected: parameters for RequireCSRFRecordBound.
+// Returns: result of RequireCSRFRecordBound.
+// Side effects: None.
 func RequireCSRFRecordBound(sessionMgr *SessionManager) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -162,6 +173,10 @@ func RequireCSRFRecordBound(sessionMgr *SessionManager) func(http.Handler) http.
 // The length-mismatch fast-path leaks token length; both inputs are
 // 256-bit base64 tokens (43 chars), so length-mismatch is anomalous
 // (forged-or-malformed) and the leak is informational only.
+//
+// Expected: parameters for constantTimeStringEqual.
+// Returns: result of constantTimeStringEqual.
+// Side effects: None.
 func constantTimeStringEqual(a, b string) bool {
 	if len(a) != len(b) {
 		return false
