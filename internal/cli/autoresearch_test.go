@@ -25,6 +25,18 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// mustGitDir fails fast on an empty git target directory and returns
+// its cleaned path. An empty Dir makes exec.Cmd inherit the process
+// working directory, and an empty `git -C ""` operand falls back to
+// repository discovery — either way a git call escapes its temp
+// sandbox and can commit into the live FlowState worktree (the
+// 2026-08-14/15 make-check self-poisoning vector). Every git
+// invocation in this file routes its target through this guard.
+func mustGitDir(dir string) string {
+	ExpectWithOffset(1, dir).NotTo(BeEmpty(), "git target directory must be a non-empty temp repo path")
+	return filepath.Clean(dir)
+}
+
 // These specs pin the surface and behaviour contract of
 // `flowstate autoresearch run` — the MVP loop spine landed across
 // Slices 1a–1d of the autoresearch plan v3.1. The shape mirrors
@@ -59,6 +71,7 @@ var _ = Describe("autoresearch run command", func() {
 	// in autoresearch.go and the //go:embed bundle layout in
 	// internal/app/embed_skills.go.
 	initRepo := func(repo, manifestBody string) {
+		repo = mustGitDir(repo)
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		manifestPath := filepath.Join(repo, "internal", "app", "agents", "planner.md")
 		Expect(os.WriteFile(manifestPath, []byte(manifestBody), 0o600)).To(Succeed())
@@ -431,13 +444,13 @@ planner body
 				// HEAD inside the worktree must resolve to the named
 				// branch, not the literal "HEAD" symbolic ref produced
 				// by --detach.
-				headCmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "HEAD")
+				headCmd := exec.Command("git", "-C", mustGitDir(worktreePath), "rev-parse", "--abbrev-ref", "HEAD")
 				headOut, headErr := headCmd.CombinedOutput()
 				Expect(headErr).NotTo(HaveOccurred(), "git rev-parse: %s", string(headOut))
 				Expect(strings.TrimSpace(string(headOut))).To(Equal("autoresearch/fixrunaa"))
 
 				// And the branch must exist as a parent-repo branch ref.
-				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/fixrunaa")
+				branchCmd := exec.Command("git", "-C", mustGitDir(repoDir), "branch", "--list", "autoresearch/fixrunaa")
 				branchOut, branchErr := branchCmd.CombinedOutput()
 				Expect(branchErr).NotTo(HaveOccurred(), "git branch --list: %s", string(branchOut))
 				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
@@ -459,7 +472,7 @@ planner body
 				)
 				Expect(err).NotTo(HaveOccurred(), "out: %s", out.String())
 
-				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/deadbeef")
+				branchCmd := exec.Command("git", "-C", mustGitDir(repoDir), "branch", "--list", "autoresearch/deadbeef")
 				branchOut, branchErr := branchCmd.CombinedOutput()
 				Expect(branchErr).NotTo(HaveOccurred(), "git branch --list: %s", string(branchOut))
 				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
@@ -585,7 +598,7 @@ planner body
 				Expect(record).To(HaveKeyWithValue("allow_dirty", true))
 
 				// No leftover harness-tagged stash entry.
-				stashList := exec.Command("git", "-C", repoDir, "stash", "list")
+				stashList := exec.Command("git", "-C", mustGitDir(repoDir), "stash", "list")
 				stashOut, _ := stashList.CombinedOutput()
 				Expect(string(stashOut)).NotTo(ContainSubstring("flowstate-autoresearch-allow-dirty"))
 			})
@@ -620,7 +633,7 @@ planner body
 
 				// Operator's edit must still be restored despite the error.
 				Expect(parentWorkingState()).To(Equal("uncommitted-by-operator"))
-				stashList := exec.Command("git", "-C", repoDir, "stash", "list")
+				stashList := exec.Command("git", "-C", mustGitDir(repoDir), "stash", "list")
 				stashOut, _ := stashList.CombinedOutput()
 				Expect(string(stashOut)).NotTo(ContainSubstring("flowstate-autoresearch-allow-dirty"))
 			})
@@ -666,13 +679,13 @@ planner body
 					"worktree should be removed; got stat err: %v\nout: %s", statErr, out.String())
 
 				// `git worktree list` must not mention the path.
-				listCmd := exec.Command("git", "-C", repoDir, "worktree", "list")
+				listCmd := exec.Command("git", "-C", mustGitDir(repoDir), "worktree", "list")
 				listOut, listErr := listCmd.CombinedOutput()
 				Expect(listErr).NotTo(HaveOccurred(), "git worktree list: %s", string(listOut))
 				Expect(string(listOut)).NotTo(ContainSubstring(worktreePath))
 
 				// Branch must remain.
-				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/cleanrun")
+				branchCmd := exec.Command("git", "-C", mustGitDir(repoDir), "branch", "--list", "autoresearch/cleanrun")
 				branchOut, branchErr := branchCmd.CombinedOutput()
 				Expect(branchErr).NotTo(HaveOccurred(), "git branch --list: %s", string(branchOut))
 				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
@@ -694,7 +707,7 @@ planner body
 				Expect(info.IsDir()).To(BeTrue())
 
 				// Branch must remain (always preserved).
-				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/keeprunn")
+				branchCmd := exec.Command("git", "-C", mustGitDir(repoDir), "branch", "--list", "autoresearch/keeprunn")
 				branchOut, _ := branchCmd.CombinedOutput()
 				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty())
 
@@ -807,7 +820,7 @@ exit 0
 				Expect(out.String()).To(ContainSubstring("removal failed"))
 
 				// Branch must still exist regardless.
-				branchCmd := exec.Command("git", "-C", repoDir, "branch", "--list", "autoresearch/cleanupf")
+				branchCmd := exec.Command("git", "-C", mustGitDir(repoDir), "branch", "--list", "autoresearch/cleanupf")
 				branchOut, _ := branchCmd.CombinedOutput()
 				Expect(strings.TrimSpace(string(branchOut))).NotTo(BeEmpty(),
 					"branch must be preserved even when worktree removal fails")
@@ -816,8 +829,8 @@ exit 0
 				// proceed without git complaining.
 				worktreePath := filepath.Join(worktreeBase, "cleanupf-rest-of-id", "worktree")
 				DeferCleanup(func() {
-					_ = exec.Command("git", "-C", repoDir, "worktree", "unlock", worktreePath).Run()
-					_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", worktreePath).Run()
+					_ = exec.Command("git", "-C", mustGitDir(repoDir), "worktree", "unlock", worktreePath).Run()
+					_ = exec.Command("git", "-C", mustGitDir(repoDir), "worktree", "remove", "--force", worktreePath).Run()
 				})
 			})
 		})
@@ -1663,7 +1676,7 @@ broken candidate body
 
 			run := func(args ...string) {
 				c := exec.Command("git", args...)
-				c.Dir = repoDir
+				c.Dir = mustGitDir(repoDir)
 				c.Env = append(os.Environ(),
 					"GIT_AUTHOR_NAME=test",
 					"GIT_AUTHOR_EMAIL=test@example.com",
@@ -1820,7 +1833,7 @@ Prose only — no manifest keys.
 
 			run := func(args ...string) {
 				c := exec.Command("git", args...)
-				c.Dir = repoDir
+				c.Dir = mustGitDir(repoDir)
 				c.Env = append(os.Environ(),
 					"GIT_AUTHOR_NAME=test",
 					"GIT_AUTHOR_EMAIL=test@example.com",
@@ -2503,7 +2516,7 @@ exec %q
 			// Re-stage and re-commit so the worktree starts clean.
 			gitCmd := func(args ...string) {
 				c := exec.Command("git", args...)
-				c.Dir = repoDir
+				c.Dir = mustGitDir(repoDir)
 				c.Env = append(os.Environ(),
 					"GIT_AUTHOR_NAME=test",
 					"GIT_AUTHOR_EMAIL=test@example.com",
@@ -3365,6 +3378,7 @@ var _ = Describe("autoresearch promote command", func() {
 	)
 
 	initRepo := func(repo string) {
+		repo = mustGitDir(repo)
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		manifestPath := filepath.Join(repo, "internal", "app", "agents", "planner.md")
 		body := `---
@@ -3496,7 +3510,7 @@ planner body improved
 		out.Reset()
 
 		// Capture parent HEAD before promote.
-		preCmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+		preCmd := exec.Command("git", "-C", mustGitDir(repoDir), "rev-parse", "HEAD")
 		preOut, err := preCmd.Output()
 		Expect(err).NotTo(HaveOccurred())
 		preHead := strings.TrimSpace(string(preOut))
@@ -3506,7 +3520,7 @@ planner body improved
 		Expect(out.String()).To(ContainSubstring("cherry-picked"))
 
 		// Parent HEAD must have advanced.
-		postCmd := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD")
+		postCmd := exec.Command("git", "-C", mustGitDir(repoDir), "rev-parse", "HEAD")
 		postOut, err := postCmd.Output()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(string(postOut))).NotTo(Equal(preHead),
@@ -3524,10 +3538,10 @@ planner body improved
 		out.Reset()
 
 		// Detach the parent HEAD.
-		detach := exec.Command("git", "-C", repoDir, "checkout", "--detach", "HEAD")
+		detach := exec.Command("git", "-C", mustGitDir(repoDir), "checkout", "--detach", "HEAD")
 		Expect(detach.Run()).To(Succeed())
 		DeferCleanup(func() {
-			_ = exec.Command("git", "-C", repoDir, "checkout", "main").Run()
+			_ = exec.Command("git", "-C", mustGitDir(repoDir), "checkout", "main").Run()
 		})
 
 		err := runCmd("autoresearch", "promote", "promotedt-rest-of-id", "--apply")
@@ -3542,12 +3556,12 @@ planner body improved
 
 		// Create a sibling branch and detach so plain promote would
 		// refuse; --target must succeed.
-		createBranch := exec.Command("git", "-C", repoDir, "branch", "feature-target", "main")
+		createBranch := exec.Command("git", "-C", mustGitDir(repoDir), "branch", "feature-target", "main")
 		Expect(createBranch.Run()).To(Succeed())
-		detach := exec.Command("git", "-C", repoDir, "checkout", "--detach", "HEAD")
+		detach := exec.Command("git", "-C", mustGitDir(repoDir), "checkout", "--detach", "HEAD")
 		Expect(detach.Run()).To(Succeed())
 		DeferCleanup(func() {
-			_ = exec.Command("git", "-C", repoDir, "checkout", "main").Run()
+			_ = exec.Command("git", "-C", mustGitDir(repoDir), "checkout", "main").Run()
 		})
 
 		Expect(runCmd("autoresearch", "promote", "promotett-rest-of-id",
@@ -3555,10 +3569,10 @@ planner body improved
 			To(Succeed(), "out: %s", out.String())
 
 		// feature-target HEAD must differ from main now.
-		featCmd := exec.Command("git", "-C", repoDir, "rev-parse", "feature-target")
+		featCmd := exec.Command("git", "-C", mustGitDir(repoDir), "rev-parse", "feature-target")
 		featOut, err := featCmd.Output()
 		Expect(err).NotTo(HaveOccurred())
-		mainCmd := exec.Command("git", "-C", repoDir, "rev-parse", "main")
+		mainCmd := exec.Command("git", "-C", mustGitDir(repoDir), "rev-parse", "main")
 		mainOut, err := mainCmd.Output()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(strings.TrimSpace(string(featOut))).NotTo(Equal(strings.TrimSpace(string(mainOut))))
@@ -3584,6 +3598,7 @@ var _ = Describe("autoresearch apply command", func() {
 	)
 
 	initRepo := func(repo string) {
+		repo = mustGitDir(repo)
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		manifestPath := filepath.Join(repo, "internal", "app", "agents", "planner.md")
 		body := `---
@@ -3899,6 +3914,7 @@ capabilities:
 planner body
 `
 	initRepo := func(repo string) {
+		repo = mustGitDir(repo)
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "agents", "planner.md"),
 			[]byte(defaultManifestBody), 0o600)).To(Succeed())
@@ -4024,7 +4040,7 @@ updated body
 		// directly — the worktree's HEAD becomes a stale name pointer
 		// (the exact "missing-branch" inconsistency the list command
 		// is meant to surface).
-		out2, err := exec.Command("git", "-C", repoDir, "update-ref", "-d",
+		out2, err := exec.Command("git", "-C", mustGitDir(repoDir), "update-ref", "-d",
 			"refs/heads/autoresearch/missingb").CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), "git update-ref: %s", string(out2))
 
@@ -4039,10 +4055,10 @@ updated body
 		legacyRunID := "legacydt-rest-of-id"
 		legacyWorktree := filepath.Join(dataDir, "legacy-wt", legacyRunID, "worktree")
 		Expect(os.MkdirAll(filepath.Dir(legacyWorktree), 0o755)).To(Succeed())
-		Expect(exec.Command("git", "-C", repoDir, "worktree", "add", "--detach",
+		Expect(exec.Command("git", "-C", mustGitDir(repoDir), "worktree", "add", "--detach",
 			legacyWorktree, "HEAD").Run()).To(Succeed())
 		DeferCleanup(func() {
-			_ = exec.Command("git", "-C", repoDir, "worktree", "remove", "--force", legacyWorktree).Run()
+			_ = exec.Command("git", "-C", mustGitDir(repoDir), "worktree", "remove", "--force", legacyWorktree).Run()
 		})
 
 		// Synthesise the manifest record by hand — exercises the list
@@ -4092,6 +4108,7 @@ capabilities:
 planner body
 `
 	initRepoPrune := func(repo string) {
+		repo = mustGitDir(repo)
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "agents", "planner.md"),
 			[]byte(defaultManifestBodyPrune), 0o600)).To(Succeed())
@@ -4347,6 +4364,7 @@ capabilities:
 planner body
 `
 	initRepoPruneBridge := func(repo string) {
+		repo = mustGitDir(repo)
 		Expect(os.MkdirAll(filepath.Join(repo, "internal", "app", "agents"), 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(repo, "internal", "app", "agents", "planner.md"),
 			[]byte(defaultManifestBodyPruneBridge), 0o600)).To(Succeed())
