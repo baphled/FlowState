@@ -97,8 +97,8 @@ func (s *vaultIndexSyncState) aTempVaultWithMarkdownFiles() error {
 	s.vaultRoot = dir
 
 	files := map[string]string{
-		"note-a.md": "# Note A\n\nThis is the first test note.",
-		"note-b.md": "# Note B\n\nThis is the second test note.",
+		"note-a.md":                       "# Note A\n\nThis is the first test note.",
+		"note-b.md":                       "# Note B\n\nThis is the second test note.",
 		filepath.Join("sub", "note-c.md"): "# Note C\n\nThis is a nested note.",
 	}
 	for rel, body := range files {
