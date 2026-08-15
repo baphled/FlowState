@@ -4441,7 +4441,6 @@ var _ = Describe("AttachmentStore", func() {
 			res, err := store.Put("sess-cap", "image/png", blob, "")
 			Expect(err).NotTo(HaveOccurred())
 			store.MarkReserved("sess-cap", res.Record.ID)
-			cumulative += blobSize
 			i++
 
 			// Now overflow: all entries reserved, sweep cannot reclaim.

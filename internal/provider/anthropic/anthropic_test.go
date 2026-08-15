@@ -2554,7 +2554,7 @@ var _ = Describe("buildRequestParams conversation cache breakpoint", func() {
 
 		// Earlier blocks of the same assistant turn must NOT carry a
 		// duplicate breakpoint.
-		for i := 0; i < len(assistant.Content)-1; i++ {
+		for i := range assistant.Content[:len(assistant.Content)-1] {
 			blk := assistant.Content[i]
 			if blk.OfText != nil {
 				Expect(string(blk.OfText.CacheControl.Type)).To(BeEmpty(),

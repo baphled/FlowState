@@ -74,9 +74,9 @@ func (t *SwarmValidateTool) Execute(_ context.Context, input tool.Input) (tool.R
 	}
 
 	if err := m.Validate(nil); err != nil {
-		return tool.Result{Output: fmt.Sprintf("FAIL\t%s", id)},
+		return tool.Result{Output: "FAIL\t" + id},
 			fmt.Errorf("swarm %q validation failed: %w", id, err)
 	}
 
-	return tool.Result{Output: fmt.Sprintf("PASS\t%s", id)}, nil
+	return tool.Result{Output: "PASS\t" + id}, nil
 }

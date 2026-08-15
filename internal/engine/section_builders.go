@@ -1,8 +1,8 @@
 package engine
 
 import (
-	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -236,7 +236,7 @@ func buildSwarmSection(reg *swarm.Registry) string {
 		}
 		desc = strings.ReplaceAll(desc, "\n", " ")
 		desc = strings.TrimSpace(desc)
-		sb.WriteString(fmt.Sprintf("%d", len(m.Members)))
+		sb.WriteString(strconv.Itoa(len(m.Members)))
 		sb.WriteString(" | ")
 		sb.WriteString(desc)
 		sb.WriteString(" |\n")

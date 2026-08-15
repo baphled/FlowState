@@ -114,7 +114,7 @@ func (r *evidenceGroundingRunner) Run(_ context.Context, gate GateSpec, args Gat
 
 	var doc bugFindingsDoc
 	if err := json.Unmarshal(payload, &doc); err != nil {
-		return newGateFailure(gate, args, fmt.Sprintf("decoding bug-findings payload: %s", err.Error()), err)
+		return newGateFailure(gate, args, "decoding bug-findings payload: "+err.Error(), err)
 	}
 
 	mismatches := r.checkFindings(doc.Findings)
@@ -183,7 +183,7 @@ func (r *evidenceGroundingRunner) checkFindings(findings []bugFinding) []evidenc
 				index:    i,
 				file:     f.File,
 				line:     f.Line,
-				reason:   fmt.Sprintf("file unreadable: %s", err.Error()),
+				reason:   "file unreadable: " + err.Error(),
 				evidence: f.Evidence,
 			})
 			continue

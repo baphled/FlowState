@@ -469,7 +469,6 @@ func runOneTrial(
 	// produce byte-identical prompts (operators see this via the
 	// recorded `prompt_sha`).
 	promptFilePath := ""
-	promptSHA := ""
 	if resolved.driverScript != "" {
 		surfaceBytes, err := os.ReadFile(worktreeSurface)
 		if err != nil {
@@ -493,9 +492,8 @@ func runOneTrial(
 		if wErr := os.WriteFile(promptFilePath, promptBytes, 0o600); wErr != nil {
 			return outcome, fmt.Errorf("writing prompt file: %w", wErr)
 		}
-		promptSHA = driverPromptSHA(promptBytes)
+		outcome.PromptSHA = driverPromptSHA(promptBytes)
 		outcome.PromptFile = promptFilePath
-		outcome.PromptSHA = promptSHA
 	}
 
 	timedOut, dErr := runDriverScript(ctx, driverInvocation{

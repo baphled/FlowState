@@ -704,11 +704,13 @@ func (d *DelegateTool) executeSync(
 		if forcedToolChoice != "" {
 			if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
 				if prov != "" {
-					attemptCtx = context.WithValue(attemptCtx, session.ProviderOverrideKey{}, prov)
+					overrideCtx := context.WithValue(attemptCtx, session.ProviderOverrideKey{}, prov)
+					attemptCtx = overrideCtx
 					childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ProviderOverrideKey{}, prov)
 				}
 				if model != "" {
-					attemptCtx = context.WithValue(attemptCtx, session.ModelOverrideKey{}, model)
+					overrideCtx := context.WithValue(attemptCtx, session.ModelOverrideKey{}, model)
+					attemptCtx = overrideCtx
 					childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ModelOverrideKey{}, model)
 				}
 			}

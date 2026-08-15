@@ -152,7 +152,7 @@ var _ = Describe("Runner circuit breaker", func() {
 
 		runner := swarm.NewRunner(policy, breaker)
 		dispatches := make([]*scriptedDispatch, 5)
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			dispatches[i] = newScriptedDispatch("m", makeRetryableFlake(1)...)
 			_ = runner.Dispatch(context.Background(), "m", dispatches[i].dispatch)
 		}
@@ -176,7 +176,7 @@ var _ = Describe("Runner circuit breaker", func() {
 
 		runner := swarm.NewRunner(policy, breaker)
 
-		for i := 0; i < 2; i++ {
+		for range 2 {
 			d := newScriptedDispatch("m", retryableErr("flake", "m"))
 			_ = runner.Dispatch(context.Background(), "m", d.dispatch)
 		}

@@ -61,11 +61,11 @@ func (f *fakeCompactionController) SetAutoCompactionThreshold(t float64) error {
 // errOutOfRangeThreshold mirrors engine.SetAutoCompactionThreshold's
 // out-of-range error so the api-side handler's 400-mapping branch is
 // exercised end-to-end through the fake.
-var errOutOfRangeThreshold = errFakeOutOfRange{}
+var errOutOfRangeThreshold = fakeOutOfRangeError{}
 
-type errFakeOutOfRange struct{}
+type fakeOutOfRangeError struct{}
 
-func (errFakeOutOfRange) Error() string {
+func (fakeOutOfRangeError) Error() string {
 	return "compression: threshold must be in the (0.0, 1.0] interval"
 }
 
