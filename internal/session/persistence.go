@@ -48,8 +48,12 @@ type Metadata struct {
 	// stay byte-identical to their previous shape. A missing key on
 	// load is interpreted as "default" by permissionmode.FromContext.
 	// See Session.PermissionMode for the canonical vocabulary.
-	PermissionMode string    `json:"permission_mode,omitempty"`
-	Messages       []Message `json:"messages,omitempty"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	// ModelPinned mirrors Session.ModelPinned and surfaces in the
+	// .meta.json sidecar as "model_pinned". Omitted when false so legacy
+	// sidecars stay byte-identical; a missing key on load reads as unpinned.
+	ModelPinned bool      `json:"model_pinned,omitempty"`
+	Messages    []Message `json:"messages,omitempty"`
 }
 
 // PersistSession writes session metadata to a .meta.json file in sessionsDir.
@@ -77,6 +81,7 @@ func PersistSession(sessionsDir string, sess *Session) error {
 		EmbeddingModel:    sess.EmbeddingModel,
 		ChainID:           sess.ChainID,
 		PermissionMode:    sess.PermissionMode,
+		ModelPinned:       sess.ModelPinned,
 		Messages:          sess.Messages,
 	}
 
@@ -148,14 +153,15 @@ func LoadSessionsFromDirectory(sessionsDir string) ([]*Session, error) {
 // Side effects:
 //   - Reads at most one file from disk.
 func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
+	var absent *Session
 	if sessionsDir == "" || sessionID == "" {
-		return nil, nil
+		return absent, nil
 	}
 	path := filepath.Join(sessionsDir, sessionID+metaFileSuffix)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return absent, nil
 		}
 		return nil, err
 	}
@@ -175,6 +181,7 @@ func LoadSessionMetadata(sessionsDir, sessionID string) (*Session, error) {
 		EmbeddingModel:    meta.EmbeddingModel,
 		ChainID:           meta.ChainID,
 		PermissionMode:    meta.PermissionMode,
+		ModelPinned:       meta.ModelPinned,
 		Messages:          meta.Messages,
 	}, nil
 }
@@ -212,6 +219,7 @@ func loadMetaFile(path string) *Session {
 		EmbeddingModel:    meta.EmbeddingModel,
 		ChainID:           meta.ChainID,
 		PermissionMode:    meta.PermissionMode,
+		ModelPinned:       meta.ModelPinned,
 		Messages:          meta.Messages,
 	}
 }

@@ -102,11 +102,16 @@ type Message struct {
 // Session represents a planning session with conversation history,
 // coordination store, and delegation chain status.
 type Session struct {
-	ID                string                    `json:"id"`
-	AgentID           string                    `json:"agent_id"`
-	CurrentAgentID    string                    `json:"current_agent_id,omitempty"` // actively selected agent; overrides AgentID when set
-	CurrentModelID    string                    `json:"current_model_id,omitempty"`
-	CurrentProviderID string                    `json:"current_provider_id,omitempty"`
+	ID                string `json:"id"`
+	AgentID           string `json:"agent_id"`
+	CurrentAgentID    string `json:"current_agent_id,omitempty"` // actively selected agent; overrides AgentID when set
+	CurrentModelID    string `json:"current_model_id,omitempty"`
+	CurrentProviderID string `json:"current_provider_id,omitempty"`
+	// ModelPinned marks the Current* pair as an explicit user selection
+	// (UI model switch). Pinned pairs outrank manifest and config defaults
+	// everywhere, survive failover flushes, and are inherited by delegated
+	// child sessions.
+	ModelPinned       bool                      `json:"model_pinned,omitempty"`
 	Status            string                    `json:"status"`
 	ParentID          string                    `json:"parent_id"`
 	ParentSessionID   string                    `json:"parent_session_id"`
@@ -1246,11 +1251,13 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	sess.Messages = append(sess.Messages, msg)
 
 	if msg.Role == "assistant" {
-		if msg.ModelName != "" {
-			sess.CurrentModelID = msg.ModelName
-		}
-		if msg.ProviderName != "" {
-			sess.CurrentProviderID = msg.ProviderName
+		if !sess.ModelPinned {
+			if msg.ModelName != "" {
+				sess.CurrentModelID = msg.ModelName
+			}
+			if msg.ProviderName != "" {
+				sess.CurrentProviderID = msg.ProviderName
+			}
 		}
 		// Surfaced-failure flip (Bugs E, F and G, May 2026). When the
 		// accumulator stamps a surfaced-failure sentinel on the flushed
@@ -1777,6 +1784,7 @@ func (m *Manager) UpdateSessionModel(sessionID, providerID, modelID string) erro
 
 	sess.CurrentProviderID = providerID
 	sess.CurrentModelID = modelID
+	sess.ModelPinned = true
 	sessionsDir := m.sessionsDir
 	persistFn := m.persistFn
 	var snapshot *Session

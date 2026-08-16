@@ -571,6 +571,44 @@ var _ = Describe("Manager", func() {
 			Expect(loaded.CurrentModelID).To(Equal("claude-sonnet-4-6"))
 		})
 
+		It("keeps the user's pinned selection when a failover flush reports a different pair", func() {
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mgr.UpdateSessionModel(sess.ID, "zai", "glm-5.2")).To(Succeed())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "assistant",
+				Content:      "served by the failover escape",
+				ModelName:    "claude-sonnet-4-6",
+				ProviderName: "anthropic",
+			})
+
+			loaded, err := mgr.GetSession(sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded.CurrentProviderID).To(Equal("zai"),
+				"an explicit user selection is pinned — a mid-turn failover detour must not hijack the session")
+			Expect(loaded.CurrentModelID).To(Equal("glm-5.2"))
+			Expect(loaded.ModelPinned).To(BeTrue())
+		})
+
+		It("round-trips model_pinned through the .meta.json sidecar so the selection survives a restart", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr.SetSessionsDir(tmpDir)
+
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(mgr.UpdateSessionModel(sess.ID, "zai", "glm-5.2")).To(Succeed())
+
+			loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.ModelPinned).To(BeTrue(),
+				"pinning must survive a restart or children re-inherit the wrong pair after a backend reboot")
+			Expect(loaded.CurrentProviderID).To(Equal("zai"))
+			Expect(loaded.CurrentModelID).To(Equal("glm-5.2"))
+		})
+
 		It("sticks to the failover winner when the assistant message reports a different pair than the seeded default", func() {
 			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
 			Expect(err).NotTo(HaveOccurred())

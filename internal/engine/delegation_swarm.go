@@ -548,7 +548,8 @@ func (d *DelegateTool) bootstrapMemberSession(
 	// when the member has no preferred_models. Without this, swarm
 	// members silently ran on the engine's global default regardless of
 	// what their manifests declared.
-	memberProv, memberModel := d.resolveChildModelOverride(target)
+	swarmParentSessionID, _ := ctx.Value(session.IDKey{}).(string)
+	memberProv, memberModel := d.resolveChildModelOverride(swarmParentSessionID, target)
 	dispatchCtx = context.WithValue(dispatchCtx, session.ProviderOverrideKey{}, memberProv)
 	dispatchCtx = context.WithValue(dispatchCtx, session.ModelOverrideKey{}, memberModel)
 	// Thread the member's FULL preferred_models chain so failover walks
@@ -558,7 +559,7 @@ func (d *DelegateTool) bootstrapMemberSession(
 	// instead of the global default (zai/glm-4.5), so the post-member
 	// gate's structured write succeeds. No-op when the member declares
 	// no chain.
-	dispatchCtx = session.WithPreferredModels(dispatchCtx, d.resolveChildModelChain(target))
+	dispatchCtx = session.WithPreferredModels(dispatchCtx, d.resolveChildModelChain(swarmParentSessionID, target))
 
 	// Plans/Child Session Turn Registry Plumbing (May 2026) §Item 2d —
 	// mint a per-member child Turn keyed on the spawned childID
@@ -987,16 +988,17 @@ func (d *DelegateTool) dispatchMemberGatesSilent(ctx context.Context, when, memb
 // Returns: result of dispatchMemberGatesSilentCtx.
 // Side effects: None.
 func (d *DelegateTool) dispatchMemberGatesSilentCtx(ctx context.Context, when, memberID, chainID string) (*swarm.Context, error) {
+	var none *swarm.Context
 	if d.gateRunner == nil {
-		return nil, nil
+		return none, nil
 	}
 	swarmCtx, ok := d.activeSwarmContextForCtx(ctx)
 	if !ok {
-		return nil, nil
+		return none, nil
 	}
 	matches := swarm.MemberGatesFor(swarmCtx.Gates, when, memberID)
 	if len(matches) == 0 {
-		return nil, nil
+		return none, nil
 	}
 	args := swarm.GateArgs{
 		SwarmID:     swarmCtx.SwarmID,

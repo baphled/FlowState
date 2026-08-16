@@ -162,13 +162,14 @@ func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, targe
 	}
 	s.turnOwnedByWrap = false
 	d.persistChildBrief(sessionID, target.agentID, message)
+	parentSessionID, _ := baseCtx.Value(session.IDKey{}).(string)
 	delegateCtx := context.WithValue(baseCtx, session.IDKey{}, sessionID)
 	delegateCtx = swarm.WithScope(delegateCtx, nil)
 	delegateCtx = session.WithPriorMessages(delegateCtx, nil)
-	delegateProv, delegateModel := d.resolveChildModelOverride(target)
+	delegateProv, delegateModel := d.resolveChildModelOverride(parentSessionID, target)
 	delegateCtx = context.WithValue(delegateCtx, session.ProviderOverrideKey{}, delegateProv)
 	delegateCtx = context.WithValue(delegateCtx, session.ModelOverrideKey{}, delegateModel)
-	delegateCtx = session.WithPreferredModels(delegateCtx, d.resolveChildModelChain(target))
+	delegateCtx = session.WithPreferredModels(delegateCtx, d.resolveChildModelChain(parentSessionID, target))
 	if d.turnRegistry != nil && s.childTurnID != "" {
 		delegateCtx = turn.WithTurnID(delegateCtx, s.childTurnID)
 		delegateCtx = session.WithAccumulatorTurnID(delegateCtx, s.childTurnID)
@@ -1139,8 +1140,8 @@ func (d *DelegateTool) executeAsync(
 	// carries the populated ChildSessionID (== taskID for the async path).
 	d.publishDelegationEvent("started", buildDelegationEventData(baseInfo, parentSessionID, taskID, "", target.loadSkills))
 
-	bgProv, bgModel := d.resolveChildModelOverride(target)
-	bgChain := d.resolveChildModelChain(target)
+	bgProv, bgModel := d.resolveChildModelOverride(parentSessionID, target)
+	bgChain := d.resolveChildModelChain(parentSessionID, target)
 	d.backgroundManager.Launch(context.WithoutCancel(ctx), taskID, target.agentID, target.message, func(ctx context.Context) (string, error) {
 		delegateCtx := context.WithValue(ctx, session.IDKey{}, taskID)
 		delegateCtx = swarm.WithScope(delegateCtx, nil)

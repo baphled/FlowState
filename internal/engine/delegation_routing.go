@@ -159,19 +159,23 @@ func resolveTargetProviderModel(target delegationTarget) (string, string) {
 
 // resolveChildModelOverride resolves the (provider, model) override pair
 // that a fresh delegate / swarm-member session should carry. Implements
-// the manifest tier of the cascade UI > manifest > global for child
-// sessions — the UI tier is intentionally NOT inherited from the parent
-// (the parent's ProviderOverrideKey / ModelOverrideKey are not consulted
-// here; the call sites override them with this helper's result so the
-// parent's choice cannot leak into the child).
+// the cascade user-selection > category > manifest > global for child
+// sessions (operator decision, Aug 2026 — supersedes the earlier
+// "UI tier is intentionally NOT inherited" contract).
 //
 // Resolution order:
-//  1. target.resolvedProvider / resolvedModel — set by category routing
+//  1. The parent session's PINNED pair — set when the user explicitly
+//     switched models via the UI (Session.ModelPinned). An explicit user
+//     selection outranks everything, including the child's own manifest,
+//     and IS inherited by delegated children. Only pinned selections
+//     propagate: raw ctx override keys still never leak, and inferred
+//     (failover-winner) pairs stay parent-scoped.
+//  2. target.resolvedProvider / resolvedModel — set by category routing
 //     when the parent's delegate call carried a category argument. This
 //     is an explicit per-call selection and outranks the manifest.
-//  2. The target agent's manifest PreferredModels[0] — the agent's
+//  3. The target agent's manifest PreferredModels[0] — the agent's
 //     declared default pairing.
-//  3. Empty strings — falls through to the engine's global default
+//  4. Empty strings — falls through to the engine's global default
 //     (LastProvider / LastModel, which the failover manager populates).
 //
 // Empty returns are explicit "no override" and map to the engine.go
@@ -190,7 +194,11 @@ func resolveTargetProviderModel(target delegationTarget) (string, string) {
 //
 // Side effects:
 //   - None.
-func (d *DelegateTool) resolveChildModelOverride(target delegationTarget) (string, string) {
+func (d *DelegateTool) resolveChildModelOverride(parentSessionID string, target delegationTarget) (string, string) {
+	// Tier 0: the user's pinned selection on the parent session.
+	if prov, model := d.parentPinnedModelPair(parentSessionID); prov != "" || model != "" {
+		return prov, model
+	}
 	// Tier 1: category routing already resolved an explicit pair.
 	if target.resolvedProvider != "" || target.resolvedModel != "" {
 		return target.resolvedProvider, target.resolvedModel
@@ -239,7 +247,23 @@ func (d *DelegateTool) resolveChildModelOverride(target delegationTarget) (strin
 //
 // Expected: parameters for resolveChildModelChain.
 // Returns: result of resolveChildModelChain.
-func (d *DelegateTool) resolveChildModelChain(target delegationTarget) []provider.ModelPreference {
+func (d *DelegateTool) resolveChildModelChain(parentSessionID string, target delegationTarget) []provider.ModelPreference {
+	if pinnedProv, pinnedModel := d.parentPinnedModelPair(parentSessionID); pinnedProv != "" || pinnedModel != "" {
+		pinned := provider.ModelPreference{Provider: pinnedProv, Model: pinnedModel}
+		rest := d.resolveChildModelChain("", target)
+		if len(rest) == 0 {
+			return []provider.ModelPreference{pinned}
+		}
+		chain := make([]provider.ModelPreference, 0, len(rest)+1)
+		chain = append(chain, pinned)
+		for _, pref := range rest {
+			if pref.Provider == pinned.Provider && pref.Model == pinned.Model {
+				continue
+			}
+			chain = append(chain, pref)
+		}
+		return chain
+	}
 	manifestChain := d.fetchManifestChain(target)
 	if target.resolvedProvider == "" && target.resolvedModel == "" {
 		return manifestChain
@@ -257,6 +281,31 @@ func (d *DelegateTool) resolveChildModelChain(target delegationTarget) []provide
 		chain = append(chain, pref)
 	}
 	return chain
+}
+
+// parentPinnedModelPair returns the parent session's explicitly pinned
+// (user-selected) provider+model pair, or empty strings when the parent
+// is unknown, unpinned, or carries no pair. Only pinned selections are
+// returned — inferred failover winners stay parent-scoped so child
+// agents keep their own manifest chains.
+//
+// Expected:
+//   - parentSessionID may be empty (no parent scope); short-circuits.
+//   - d.sessionManager may be nil (legacy surfaces); short-circuits.
+//
+// Returns:
+//   - The pinned (provider, model) pair, or empty strings.
+//
+// Side effects: none.
+func (d *DelegateTool) parentPinnedModelPair(parentSessionID string) (string, string) {
+	if d.sessionManager == nil || parentSessionID == "" {
+		return "", ""
+	}
+	sess, err := d.sessionManager.GetSession(parentSessionID)
+	if err != nil || sess == nil || !sess.ModelPinned {
+		return "", ""
+	}
+	return sess.CurrentProviderID, sess.CurrentModelID
 }
 
 // fetchManifestChain returns the agent manifest's PreferredModels list
@@ -335,7 +384,7 @@ func (d *DelegateTool) fetchManifestChain(target delegationTarget) []provider.Mo
 // Returns: result of correctiveRetryModel.
 func (d *DelegateTool) correctiveRetryModel(target delegationTarget) (string, string) {
 	// Primary: escalate onto the member's capable preferred-tier head.
-	if chain := d.resolveChildModelChain(target); len(chain) > 0 {
+	if chain := d.resolveChildModelChain("", target); len(chain) > 0 {
 		head := chain[0]
 		if head.Provider != "" || head.Model != "" {
 			return head.Provider, head.Model

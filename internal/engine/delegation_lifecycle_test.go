@@ -1006,6 +1006,77 @@ var _ = Describe("ResolveChildModelOverride (helper unit)", func() {
 		Expect(model).To(BeEmpty())
 	})
 
+	It("pinned parent selection outranks the child manifest head", func() {
+		manifest := agent.Manifest{
+			ID:              "librarian",
+			Name:            "Librarian",
+			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4-7"}},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+
+		mgr := session.NewManager(nil)
+		parent, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mgr.UpdateSessionModel(parent.ID, "zai", "glm-5.2")).To(Succeed())
+
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg).WithSessionManager(mgr)
+		prov, model := tool.ResolveChildModelOverrideWithParentForTest(parent.ID, "librarian", "", "")
+		Expect(prov).To(Equal("zai"),
+			"user selection > agent manifest > config — the operator's stated precedence")
+		Expect(model).To(Equal("glm-5.2"))
+	})
+
+	It("pinned parent selection heads the child failover chain ahead of manifest tiers", func() {
+		manifest := agent.Manifest{
+			ID:   "librarian",
+			Name: "Librarian",
+			PreferredModels: []agent.ModelPreference{
+				{Provider: "anthropic", Model: "claude-sonnet-4-7"},
+				{Provider: "openai", Model: "gpt-5"},
+			},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+
+		mgr := session.NewManager(nil)
+		parent, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mgr.UpdateSessionModel(parent.ID, "zai", "glm-5.2")).To(Succeed())
+
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg).WithSessionManager(mgr)
+		chain := tool.ResolveChildModelChainWithParentForTest(parent.ID, "librarian", "", "")
+		Expect(chain).To(HaveLen(3))
+		Expect(chain[0]).To(Equal(provider.ModelPreference{Provider: "zai", Model: "glm-5.2"}))
+		Expect(chain[1]).To(Equal(provider.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-4-7"}))
+	})
+
+	It("unpinned parent pair is not inherited — the child manifest head wins", func() {
+		manifest := agent.Manifest{
+			ID:              "librarian",
+			Name:            "Librarian",
+			PreferredModels: []agent.ModelPreference{{Provider: "anthropic", Model: "claude-sonnet-4-7"}},
+		}
+		reg := agent.NewRegistry()
+		reg.Register(&manifest)
+
+		mgr := session.NewManager(nil)
+		parent, err := mgr.CreateSession("coordinator")
+		Expect(err).NotTo(HaveOccurred())
+		mgr.AppendMessage(parent.ID, session.Message{
+			Role:         "assistant",
+			Content:      "inferred winner, not a user selection",
+			ModelName:    "glm-5.2",
+			ProviderName: "zai",
+		})
+
+		tool := engine.NewDelegateTool(nil, agent.Delegation{}, "x").WithRegistry(reg).WithSessionManager(mgr)
+		prov, model := tool.ResolveChildModelOverrideWithParentForTest(parent.ID, "librarian", "", "")
+		Expect(prov).To(Equal("anthropic"),
+			"only explicit user selections propagate to children — inferred failover winners stay parent-scoped")
+		Expect(model).To(Equal("claude-sonnet-4-7"))
+	})
+
 	It("category-routed values outrank manifest", func() {
 		manifest := agent.Manifest{
 			ID:              "x",

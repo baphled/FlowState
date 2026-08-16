@@ -401,7 +401,19 @@ func ContainsAgentForTest(allowlist []string, agentID string) bool {
 // inside the engine package and pass the resolved override via ctx
 // keys, matching engine.go:3005-3009's read site.
 func (d *DelegateTool) ResolveChildModelOverrideForTest(agentID, categoryProvider, categoryModel string) (string, string) {
-	return d.resolveChildModelOverride(delegationTarget{
+	return d.resolveChildModelOverride("", delegationTarget{
+		agentID:          agentID,
+		resolvedProvider: categoryProvider,
+		resolvedModel:    categoryModel,
+	})
+}
+
+// ResolveChildModelOverrideWithParentForTest exposes the parent-aware
+// override resolution so the pinned-selection cascade specs can drive
+// tier 0 (user selection inheritance) without standing up a full
+// delegation dispatch. Test-only export.
+func (d *DelegateTool) ResolveChildModelOverrideWithParentForTest(parentSessionID, agentID, categoryProvider, categoryModel string) (string, string) {
+	return d.resolveChildModelOverride(parentSessionID, delegationTarget{
 		agentID:          agentID,
 		resolvedProvider: categoryProvider,
 		resolvedModel:    categoryModel,
@@ -414,7 +426,18 @@ func (d *DelegateTool) ResolveChildModelOverrideForTest(agentID, categoryProvide
 // plumbing. Test-only export; production call sites stamp the result
 // via session.WithPreferredModels at the three delegate dispatch sites.
 func (d *DelegateTool) ResolveChildModelChainForTest(agentID, categoryProvider, categoryModel string) []provider.ModelPreference {
-	return d.resolveChildModelChain(delegationTarget{
+	return d.resolveChildModelChain("", delegationTarget{
+		agentID:          agentID,
+		resolvedProvider: categoryProvider,
+		resolvedModel:    categoryModel,
+	})
+}
+
+// ResolveChildModelChainWithParentForTest exposes the parent-aware chain
+// resolution so the pinned-selection specs can assert the pinned pair
+// heads the child's failover chain. Test-only export.
+func (d *DelegateTool) ResolveChildModelChainWithParentForTest(parentSessionID, agentID, categoryProvider, categoryModel string) []provider.ModelPreference {
+	return d.resolveChildModelChain(parentSessionID, delegationTarget{
 		agentID:          agentID,
 		resolvedProvider: categoryProvider,
 		resolvedModel:    categoryModel,
