@@ -31,7 +31,7 @@ func main() {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return fmt.Errorf("fixdocblocks: reading %s: %w", path, err)
 		}
 		lines := strings.Split(string(data), "\n")
 		changed := false
