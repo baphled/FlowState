@@ -107,7 +107,7 @@ func (s *Server) registerProtected(pattern string, h http.HandlerFunc) {
 		s.auth.Session,
 		s.auth.Auth,
 		s.auth.CSRF,
-		http.HandlerFunc(h),
+		h,
 	)
 	s.mux.Handle(pattern, wrapped)
 }
@@ -154,7 +154,7 @@ func (s *Server) registerLogin(pattern string, h http.HandlerFunc) {
 	wrapped := auth.LoginChain(
 		s.auth.Origin,
 		s.auth.CSRF,
-		http.HandlerFunc(h),
+		h,
 	)
 	s.mux.Handle(pattern, wrapped)
 }

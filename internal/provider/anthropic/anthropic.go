@@ -1861,7 +1861,7 @@ func (p *Provider) buildRequestParams(
 	}
 
 	params := anthropicAPI.MessageNewParams{
-		Model:    anthropicAPI.Model(req.Model),
+		Model:    req.Model,
 		Messages: buildMessages(req.Messages),
 	}
 
