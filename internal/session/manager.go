@@ -1288,7 +1288,8 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 			sess.Status != string(StatusAbandoned) {
 			sess.Status = string(StatusFailed)
 			// Capture the stop reason as the failure reason, truncated to 256 chars.
-			reason := string(msg.StopReason)
+			// msg.StopReason is a plain string field, so no conversion is needed.
+			reason := msg.StopReason
 			if len(reason) > 256 {
 				reason = reason[:256]
 			}

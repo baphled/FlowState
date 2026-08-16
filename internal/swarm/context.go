@@ -188,7 +188,10 @@ func runChainIDSuffix(runID string) string {
 //   - None.
 //
 // Expected: parameters for SubSwarmPath.
-func (c Context) SubSwarmPath() string {
+func (c *Context) SubSwarmPath() string {
+	if c == nil {
+		return ""
+	}
 	return c.ChainPrefix
 }
 
@@ -206,8 +209,8 @@ func (c Context) SubSwarmPath() string {
 //
 // Side effects:
 //   - None.
-func (c Context) NestSubSwarm(childID string) Context {
-	out := c
+func (c *Context) NestSubSwarm(childID string) Context {
+	out := *c
 	switch {
 	case c.ChainPrefix == "":
 		out.ChainPrefix = childID
@@ -239,7 +242,10 @@ func (c Context) NestSubSwarm(childID string) Context {
 //
 // Side effects:
 //   - None.
-func (c Context) AllowlistMembers() []string {
+func (c *Context) AllowlistMembers() []string {
+	if c == nil {
+		return []string{}
+	}
 	out := make([]string, len(c.Members))
 	copy(out, c.Members)
 	return out
