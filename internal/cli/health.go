@@ -55,11 +55,11 @@ func newHealthStatusCmd() *cobra.Command {
 		Short: "Show provider health state",
 		Long:  "Display current provider/model health state including cooldowns and consecutive failures.",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			hm := failover.NewHealthManager()
 			if err := hm.LoadState(hm.PersistPath()); err != nil {
 				if os.IsNotExist(err) {
-					fmt.Println("No health state found (file does not exist yet)")
+					fmt.Fprintln(cmd.OutOrStdout(), "No health state found (file does not exist yet)")
 					return nil
 				}
 				return fmt.Errorf("loading health state: %w", err)
@@ -67,7 +67,7 @@ func newHealthStatusCmd() *cobra.Command {
 
 			entries := hm.GetHealthStateEntries()
 			if len(entries) == 0 {
-				fmt.Println("No providers are currently rate-limited.")
+				fmt.Fprintln(cmd.OutOrStdout(), "No providers are currently rate-limited.")
 				return nil
 			}
 
@@ -111,7 +111,7 @@ func newHealthResetCmd() *cobra.Command {
 		Short: "Reset provider health state",
 		Long:  "Clear cooldown state for a specific provider/model pair, or all pairs when no argument is given.",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			hm := failover.NewHealthManager()
 			// Load existing state so we can do targeted resets.
 			_ = hm.LoadState(hm.PersistPath())
@@ -130,9 +130,9 @@ func newHealthResetCmd() *cobra.Command {
 			}
 
 			if provider == "" && model == "" {
-				fmt.Println("Cleared all provider health state.")
+				fmt.Fprintln(cmd.OutOrStdout(), "Cleared all provider health state.")
 			} else {
-				fmt.Printf("Cleared health state for %s/%s.\n", provider, model)
+				fmt.Fprintf(cmd.OutOrStdout(), "Cleared health state for %s/%s.\n", provider, model)
 			}
 			return nil
 		},
@@ -152,9 +152,9 @@ func newHealthPathCmd() *cobra.Command {
 		Short: "Show health state file path",
 		Long:  "Print the path to the provider-health.json persist file.",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			hm := failover.NewHealthManager()
-			fmt.Println(hm.PersistPath())
+			fmt.Fprintln(cmd.OutOrStdout(), hm.PersistPath())
 			return nil
 		},
 	}
