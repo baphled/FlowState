@@ -696,12 +696,12 @@ func sortEquivalentGroup(candidates []rankedCandidate) {
 		right := candidates[j].attempt
 		switch {
 		case left.lastAttemptAt.IsZero() && !right.lastAttemptAt.IsZero():
-			return true
-		case !left.lastAttemptAt.IsZero() && right.lastAttemptAt.IsZero():
 			return false
-		case left.lastAttemptAt.Before(right.lastAttemptAt):
+		case !left.lastAttemptAt.IsZero() && right.lastAttemptAt.IsZero():
 			return true
-		case right.lastAttemptAt.Before(left.lastAttemptAt):
+		case left.lastAttemptAt.After(right.lastAttemptAt):
+			return true
+		case right.lastAttemptAt.After(left.lastAttemptAt):
 			return false
 		default:
 			return candidates[i].index < candidates[j].index

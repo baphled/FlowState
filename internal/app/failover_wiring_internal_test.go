@@ -69,8 +69,8 @@ var _ = Describe("applyFailoverPreferences", func() {
 		mgr.RecordAttempt("anthropic", "claude-a")
 
 		Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
-			{Provider: "copilot", Model: "claude-a"},
 			{Provider: "anthropic", Model: "claude-a"},
+			{Provider: "copilot", Model: "claude-a"},
 			{Provider: "openai", Model: "gpt-4o"},
 		}))
 	})

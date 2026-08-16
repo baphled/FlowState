@@ -209,8 +209,8 @@ var _ = Describe("Manager", func() {
 		})
 	})
 
-	Describe("Equivalent provider rotation", func() {
-		It("rotates same-tier equal-score candidates by least recently used attempt order", func() {
+	Describe("Equivalent provider affinity", func() {
+		It("keeps the last successful same-tier candidate first while it remains healthy", func() {
 			mgr.SetModelTiers(map[string]string{
 				"claude-a":  failover.Tier0,
 				"anthropic": failover.Tier1,
@@ -232,16 +232,16 @@ var _ = Describe("Manager", func() {
 			mgr.RecordAttempt("anthropic", "claude-a")
 
 			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
-				{Provider: "copilot", Model: "claude-a"},
 				{Provider: "anthropic", Model: "claude-a"},
+				{Provider: "copilot", Model: "claude-a"},
 				{Provider: "openai", Model: "gpt-4o"},
 			}))
 
 			mgr.SetLast("copilot", "claude-a")
 
 			Expect(mgr.Candidates()).To(Equal([]provider.ModelPreference{
-				{Provider: "anthropic", Model: "claude-a"},
 				{Provider: "copilot", Model: "claude-a"},
+				{Provider: "anthropic", Model: "claude-a"},
 				{Provider: "openai", Model: "gpt-4o"},
 			}))
 		})
