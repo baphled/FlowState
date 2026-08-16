@@ -350,13 +350,16 @@ func guardInsideRepo(writePath, surfacePath string, force bool) error {
 	if err != nil {
 		return fmt.Errorf("resolving --write path %q: %w", writePath, err)
 	}
-	surfaceRepo, err := surfaceRepoRoot(surfacePath)
-	if err != nil {
-		// If the surface itself is no longer in a git repo, there is
-		// nothing to guard against; allow the write.
-		return nil
+	// A surface that is no longer inside a git repo has nothing to
+	// guard against, so surfaceRepoRoot failing degrades to an empty
+	// repo root and the write is allowed (same behaviour as the
+	// previous early return, restructured so the terminal return is
+	// not reached from inside the error branch).
+	surfaceRepo, rerr := surfaceRepoRoot(surfacePath)
+	if rerr != nil {
+		surfaceRepo = ""
 	}
-	if pathContains(surfaceRepo, absDest) {
+	if surfaceRepo != "" && pathContains(surfaceRepo, absDest) {
 		return fmt.Errorf(
 			"--write %q is inside the surface repo at %s; pass --force-inside-repo to override (the content substrate keeps the project tree untouched by default)",
 			writePath, surfaceRepo)

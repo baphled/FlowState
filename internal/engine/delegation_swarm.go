@@ -737,17 +737,24 @@ func (d *DelegateTool) buildPostMemberHook() swarm.MemberPostHook {
 		return nil
 	}
 	return func(ctx context.Context, memberID string, runErr error) error {
-		if runErr != nil {
-			return nil
+		// A member that already failed must not be gate-validated:
+		// DispatchMembers records the member error itself, so gating
+		// a failed member would misattribute the failure as a gate
+		// failure. Structured so the failed path falls through to a
+		// single terminal nil return rather than returning nil from
+		// inside the error branch.
+		var gateErr error
+		if runErr == nil {
+			// Parallel dispatch (DispatchMembers) does not thread the
+			// lead's per-member chainID into the hook, so pass "" here:
+			// the result-schema runner then suffix-scans for any
+			// "<chain>/<suffix>" key rather than pinning one chainID.
+			// Planning-loop runs sequentially (parallel: false) via
+			// executeSync, which passes the concrete chainID — this hook
+			// path only fires for genuinely-parallel swarms.
+			gateErr = d.dispatchPostMemberGates(ctx, memberID, "")
 		}
-		// Parallel dispatch (DispatchMembers) does not thread the
-		// lead's per-member chainID into the hook, so pass "" here:
-		// the result-schema runner then suffix-scans for any
-		// "<chain>/<suffix>" key rather than pinning one chainID.
-		// Planning-loop runs sequentially (parallel: false) via
-		// executeSync, which passes the concrete chainID — this hook
-		// path only fires for genuinely-parallel swarms.
-		return d.dispatchPostMemberGates(ctx, memberID, "")
+		return gateErr
 	}
 }
 

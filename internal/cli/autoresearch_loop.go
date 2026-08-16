@@ -778,18 +778,27 @@ func runOneTrialContent(
 
 	// Manifest gate (per-trial). Write the candidate to a tempfile
 	// purely for the validator's path-based API; no surface mutation.
+	manifestFailed := false
 	if resolved.surfaceType == SurfaceTypeManifest {
 		if err := validateManifestCandidateContent(candidateBytes, relSurface); err != nil {
-			outcome.Kept = false
-			outcome.Reason = reasonManifestValidateFail
-			state.consecutiveManifestFails++
-			state.consecutiveFixedPoint = 0
-			state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
-				CandidateSHA: candidateSHA, TrialN: n, Score: 0,
-			})
-			finishOutcome(&outcome, startedAt)
-			return outcome, nil
+			manifestFailed = true
 		}
+	}
+	// A failed manifest gate is an outcome, not an error: the ratchet
+	// records the miss and the caller reads outcome (Kept=false) so
+	// the 3-consecutive-fail termination can fire. Restructured so
+	// the nil error return is not reached from inside the error
+	// branch.
+	if manifestFailed {
+		outcome.Kept = false
+		outcome.Reason = reasonManifestValidateFail
+		state.consecutiveManifestFails++
+		state.consecutiveFixedPoint = 0
+		state.seenCandidates = appendSeenRing(state.seenCandidates, seenCandidate{
+			CandidateSHA: candidateSHA, TrialN: n, Score: 0,
+		})
+		finishOutcome(&outcome, startedAt)
+		return outcome, nil
 	}
 
 	evalRes, err := runEvaluatorContent(ctx, resolved.evaluatorScript, resolved.runID, candidateBytes, resolved.evaluatorTimeout)
