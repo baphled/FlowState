@@ -42,3 +42,11 @@ Feature: Context-window overflow recovery
     When the engine streams a turn
     Then the todo-continuation is attempted
     And the final response indicates completion
+
+  @wip
+  Scenario: Over-budget continuation is refused locally instead of blind-sent to the provider
+    Given the session context is over budget after a todo continuation
+    And compaction is unavailable
+    When the engine attempts the continuation retry
+    Then the provider does not receive the over-budget request
+    And a local context-window error is surfaced

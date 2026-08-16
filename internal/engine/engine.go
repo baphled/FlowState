@@ -4458,15 +4458,17 @@ func (e *Engine) streamWithToolLoop(
 	consecutiveSameToolContinuations := 0
 	const maxRejectedToolCalls = 3
 	consecutiveRejectedToolCalls := 0
+	workedSinceContinuation := false
 	delegationGraceUsed := false
 	finalResponseGraceUsed := false
 	forcedSummaryUsed := false
 	updateTodoContinuationProgress := func(current []todo.Item) {
-		if slices.Equal(lastTodoContinuationSnapshot, current) {
+		if !workedSinceContinuation && slices.Equal(lastTodoContinuationSnapshot, current) {
 			noProgressContinuations++
 		} else {
 			noProgressContinuations = 0
 		}
+		workedSinceContinuation = false
 		lastTodoContinuationSnapshot = append([]todo.Item(nil), current...)
 	}
 	checkIncompleteTodosBeforeComplete := func(
@@ -4957,7 +4959,6 @@ func (e *Engine) streamWithToolLoop(
 				)
 				contMsg := buildTodoContinuationMessage(incompletes)
 				messages = append(messages, contMsg)
-				retryCtx = session.WithSkipContextWindowOverflowCheck(retryCtx)
 				maybeCompactForRetry("todo continuation retry")
 				e.resetContinuationState(sessionID)
 				if allTodosTerminal(incompletes) {
@@ -5087,7 +5088,6 @@ func (e *Engine) streamWithToolLoop(
 				)
 				contMsg := buildTodoContinuationMessage(incompletes)
 				messages = append(messages, contMsg)
-				retryCtx = session.WithSkipContextWindowOverflowCheck(retryCtx)
 				maybeCompactForRetry("todo continuation retry")
 				e.resetContinuationState(sessionID)
 				if allTodosTerminal(incompletes) {
@@ -5130,6 +5130,9 @@ func (e *Engine) streamWithToolLoop(
 		// when execution is skipped — otherwise the persisted session is
 		// indistinguishable from the model having replied with no tool use at
 		// all (session-1776623141279480382).
+		if len(result.toolCalls) > 0 {
+			workedSinceContinuation = true
+		}
 		e.storeAssistantToolUseBatch(result.toolCalls, result.responseContent)
 
 		// Permission checks are sequential and fast — run them before launching

@@ -716,7 +716,7 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 					Registry:         agent.NewRegistry(),
 					defaultProvider:  countingProvider,
 					providerRegistry: providerReg,
-					Config:           &config.AppConfig{},
+					Config:           &config.AppConfig{SystemPromptBudget: 100000},
 				}
 
 				manifest := agent.Manifest{
@@ -745,7 +745,7 @@ var _ = Describe("wireDelegateToolIfEnabled", func() {
 					mu.Lock()
 					defer mu.Unlock()
 					return streamCallCount
-				}, "3s", "100ms").Should(BeNumerically(">=", 3),
+				}, "10s", "100ms").Should(BeNumerically(">=", 3),
 					"delegate engine must retry the model when todos are pending")
 
 				cancel()

@@ -165,6 +165,79 @@ var _ = Describe("Engine todo-completion continuation", func() {
 			Expect(hasCompletionContent).To(BeTrue(),
 				"engine should have retried and received the provider's default completion response")
 		})
+
+		It("treats executed tool calls as progress when the todo list is unchanged", func() {
+			alpha := &executableMockTool{name: "alpha", execResult: tool.Result{Output: "a"}}
+			beta := &executableMockTool{name: "beta", execResult: tool.Result{Output: "b"}}
+			registry := tool.NewRegistry()
+			for _, t := range []tool.Tool{alpha, beta} {
+				registry.Register(t)
+				registry.SetPermission(t.Name(), tool.Allow)
+			}
+			manifestWithTools := manifest
+			manifestWithTools.Capabilities.Tools = []string{"alpha", "beta", "todowrite"}
+
+			prov := &scriptedTodoProvider{
+				name: "tool-work-progress-prov",
+				script: []todoProviderTurn{
+					{toolCalls: []*provider.ToolCall{{ID: "c1", Name: "alpha", Arguments: map[string]any{}}}},
+					{content: "checking state..."},
+					{toolCalls: []*provider.ToolCall{{ID: "c2", Name: "beta", Arguments: map[string]any{}}}},
+					{content: "still working..."},
+					{toolCalls: []*provider.ToolCall{{ID: "c3", Name: "alpha", Arguments: map[string]any{}}}},
+					{content: "nearly there..."},
+					{toolCalls: []*provider.ToolCall{{ID: "c4", Name: "beta", Arguments: map[string]any{}}}},
+					{content: "finalising..."},
+				},
+			}
+
+			todoStore.Set(sessionID, []todo.Item{
+				{Content: "finish step one", Status: "pending", Priority: "high"},
+			})
+
+			specSession := "test-session-toolwork"
+			todoStore.Set(specSession, []todo.Item{
+				{Content: "finish step one", Status: "pending", Priority: "high"},
+			})
+			eng := engine.New(engine.Config{
+				ChatProvider: prov,
+				Manifest:     manifestWithTools,
+				Tools:        []tool.Tool{alpha, beta},
+				ToolRegistry: registry,
+			})
+			eng.SetTodoStoreForTest(todoStore)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			DeferCleanup(cancel)
+			ctx = context.WithValue(ctx, session.IDKey{}, specSession)
+			chunks, err := eng.Stream(ctx, specSession, "Go")
+			Expect(err).NotTo(HaveOccurred())
+
+			var received []provider.StreamChunk
+			drained := make(chan bool)
+			go func() {
+				for c := range chunks {
+					received = append(received, c)
+				}
+				drained <- true
+			}()
+
+			Eventually(func() int { return prov.callCount() }, "5s", "100ms").Should(BeNumerically(">=", 10),
+				"tool-working turns between stalls must reset the no-progress counter — the three-stall gate must not trip while the model keeps executing tools")
+
+			closed := false
+			select {
+			case <-drained:
+				closed = true
+			case <-time.After(5 * time.Second):
+				closed = false
+			}
+			Expect(closed).To(BeTrue(),
+				"channel must close after the post-script stalls exhaust")
+			for _, c := range received {
+				Expect(c.StopReason).NotTo(Equal(session.StopReasonToolLoopExceeded))
+			}
+		})
 	})
 
 	Context("when there are no todos in the session", func() {

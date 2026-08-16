@@ -38,3 +38,11 @@ Feature: Session Persistence
     When I save the session
     And I reload the session
     Then all messages should be restored
+
+  @wip
+  Scenario: Session sticks to the provider+model that actually served the first turn
+    Given a session created with a seeded default provider+model pair
+    And the first turn fails over to a different provider before completing
+    When the assistant message flushes with the failover winner
+    Then the session's current provider+model reflect the winner
+    And subsequent turns are sent to the winning pair

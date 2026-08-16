@@ -1211,6 +1211,16 @@ func (m *Manager) SessionTree(rootID string) ([]*Session, error) {
 //   - Acquires the manager write lock only for the in-memory append; releases
 //     it before calling persist so that concurrent GetSession readers are not
 //     blocked for the duration of disk I/O.
+//
+// appendSessionMessage appends msg to the session under the manager lock
+// and applies assistant-flush promotion: the message's ModelName and
+// ProviderName — the pair that actually served the turn, including after a
+// failover cascade — become the session's CurrentModelID/CurrentProviderID
+// whenever non-empty. The recorded pair feeds PrepareSend's per-turn
+// override, so a session sticks to the provider+model that last succeeded
+// instead of re-attempting a dead create-time default every turn. Empty
+// fields never clobber the recorded pair, and non-assistant roles are
+// ignored. The updated pair persists via the standard append persistence.
 func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	m.mu.Lock()
 	sess, ok := m.sessions[sessionID]
@@ -1236,10 +1246,10 @@ func (m *Manager) appendSessionMessage(sessionID string, msg Message) {
 	sess.Messages = append(sess.Messages, msg)
 
 	if msg.Role == "assistant" {
-		if msg.ModelName != "" && sess.CurrentModelID == "" {
+		if msg.ModelName != "" {
 			sess.CurrentModelID = msg.ModelName
 		}
-		if msg.ProviderName != "" && sess.CurrentProviderID == "" {
+		if msg.ProviderName != "" {
 			sess.CurrentProviderID = msg.ProviderName
 		}
 		// Surfaced-failure flip (Bugs E, F and G, May 2026). When the

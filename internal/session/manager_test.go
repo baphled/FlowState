@@ -571,7 +571,7 @@ var _ = Describe("Manager", func() {
 			Expect(loaded.CurrentModelID).To(Equal("claude-sonnet-4-6"))
 		})
 
-		It("keeps a seeded session provider+model when the assistant message reports a different failover pair", func() {
+		It("sticks to the failover winner when the assistant message reports a different pair than the seeded default", func() {
 			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
 			Expect(err).NotTo(HaveOccurred())
 
@@ -584,8 +584,32 @@ var _ = Describe("Manager", func() {
 
 			loaded, err := mgr.GetSession(sess.ID)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(loaded.CurrentProviderID).To(Equal("anthropic"))
-			Expect(loaded.CurrentModelID).To(Equal("claude-sonnet-4-6"))
+			Expect(loaded.CurrentProviderID).To(Equal("zai"),
+				"the pair that actually served the turn must become the session's sticky choice — a seeded create-time default is a guess, not a success")
+			Expect(loaded.CurrentModelID).To(Equal("glm-4.6"),
+				"otherwise every subsequent turn re-overrides to the dead default and re-cascades")
+		})
+
+		It("persists the failover winner to the .meta.json sidecar so stickiness survives a restart", func() {
+			tmpDir := GinkgoT().TempDir()
+			mgr.SetSessionsDir(tmpDir)
+
+			sess, err := mgr.CreateSessionWithDefaults("agent-x", "anthropic", "claude-sonnet-4-6")
+			Expect(err).NotTo(HaveOccurred())
+
+			mgr.AppendMessage(sess.ID, session.Message{
+				Role:         "assistant",
+				Content:      "fallback answer",
+				ModelName:    "glm-4.6",
+				ProviderName: "zai",
+			})
+
+			loaded, err := session.LoadSessionMetadata(tmpDir, sess.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loaded).NotTo(BeNil())
+			Expect(loaded.CurrentProviderID).To(Equal("zai"),
+				"the sidecar must carry the winning pair — the model chip and PrepareSend overrides read it after a restart")
+			Expect(loaded.CurrentModelID).To(Equal("glm-4.6"))
 		})
 
 		It("does not promote model/provider on non-assistant message roles", func() {

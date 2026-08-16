@@ -48,3 +48,11 @@ Feature: Todo completion continuation
     Given the engine has no todo store configured
     When the model ends its turn cleanly
     Then the engine should complete normally without any retry logic
+
+  @wip
+  Scenario: Tool work counts as progress even when the todo list is unchanged
+    Given an agent has a pending todo "long running task"
+    And the model executes tool calls between stalls without updating the todo list
+    When the engine checks continuation progress
+    Then the no-progress counter resets on each tool-working turn
+    And the engine keeps injecting continuations past three stalls
