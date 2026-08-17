@@ -2723,3 +2723,149 @@ var _ = Describe("StreamHook transient-error backoff retry", func() {
 		})
 	})
 })
+
+var _ = Describe("StreamHook wait-for-recovery", func() {
+	var (
+		manager  *failover.Manager
+		registry *provider.Registry
+		health   *failover.HealthManager
+		sh       *failover.StreamHook
+	)
+
+	BeforeEach(func() {
+		registry = provider.NewRegistry()
+		health = failover.NewHealthManager()
+		manager = failover.NewManager(registry, health, 2*time.Second)
+		sh = failover.NewStreamHook(manager, nil, "")
+	})
+
+	Context("when the only provider is cooling down at request entry", func() {
+		var sleepDurations []time.Duration
+
+		BeforeEach(func() {
+			sleepDurations = nil
+			registry.Register(&mockStreamProvider{
+				name: "zai",
+				streamFn: successStreamFn(
+					provider.StreamChunk{Content: "Recovered", Done: true},
+				),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.2"},
+			})
+			health.MarkRateLimited("zai", "glm-5.2", time.Now().Add(50*time.Millisecond))
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    2,
+				MaxTotalWait: time.Second,
+				Sleep: func(_ context.Context, d time.Duration) error {
+					sleepDurations = append(sleepDurations, d)
+					health.MarkRateLimited("zai", "glm-5.2", time.Now().Add(-time.Second))
+					return nil
+				},
+			})
+		})
+
+		It("waits for the cooldown to lapse instead of failing instantly", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred(),
+				"a short cooldown on the only provider must hold the request briefly, not fail it instantly")
+			var chunks []provider.StreamChunk
+			for chunk := range ch {
+				chunks = append(chunks, chunk)
+			}
+			chunks = stripTransitionChunks(chunks)
+			Expect(chunks).To(HaveLen(1))
+			Expect(chunks[0].Content).To(Equal("Recovered"))
+			Expect(sleepDurations).To(HaveLen(1))
+			Expect(sleepDurations[0]).To(BeNumerically(">=", 40*time.Millisecond))
+		})
+	})
+
+	Context("when the cooldown outlives the wait budget", func() {
+		var sleepDurations []time.Duration
+
+		BeforeEach(func() {
+			sleepDurations = nil
+			registry.Register(&mockStreamProvider{
+				name:     "zai",
+				streamFn: successStreamFn(provider.StreamChunk{Content: "unused", Done: true}),
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.2"},
+			})
+			health.MarkRateLimited("zai", "glm-5.2", time.Now().Add(time.Hour))
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    2,
+				MaxTotalWait: 250 * time.Millisecond,
+				Sleep: func(_ context.Context, d time.Duration) error {
+					sleepDurations = append(sleepDurations, d)
+					return nil
+				},
+			})
+		})
+
+		It("fails fast without sleeping", func() {
+			handler := sh.Execute(baseHandler(registry))
+			_, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("no healthy providers available"))
+			Expect(sleepDurations).To(BeEmpty(),
+				"waiting out a cooldown that outlives the budget is futile; fail immediately")
+		})
+	})
+
+	Context("when a retry round finds the pool empty but recovery is within budget", func() {
+		var (
+			calls          int32
+			sleepDurations []time.Duration
+		)
+
+		BeforeEach(func() {
+			calls = 0
+			sleepDurations = nil
+			registry.Register(&mockStreamProvider{
+				name: "zai",
+				streamFn: func(_ context.Context, _ provider.ChatRequest) (<-chan provider.StreamChunk, error) {
+					n := atomic.AddInt32(&calls, 1)
+					if n == 1 {
+						return nil, transientRateLimitError("zai", 90*time.Second)
+					}
+					return successStreamFn(
+						provider.StreamChunk{Content: "After recovery", Done: true},
+					)(context.Background(), provider.ChatRequest{})
+				},
+			})
+			manager.SetBasePreferences([]provider.ModelPreference{
+				{Provider: "zai", Model: "glm-5.2"},
+			})
+			sh.SetRetryBackoff(failover.RetryBackoffConfig{
+				MaxRounds:    3,
+				MaxTotalWait: 200 * time.Second,
+				Sleep: func(_ context.Context, d time.Duration) error {
+					sleepDurations = append(sleepDurations, d)
+					if len(sleepDurations) >= 2 {
+						health.MarkRateLimited("zai", "glm-5.2", time.Now().Add(-time.Second))
+					}
+					return nil
+				},
+			})
+		})
+
+		It("keeps waiting through the empty round and retries", func() {
+			handler := sh.Execute(baseHandler(registry))
+			ch, err := handler(context.Background(), &provider.ChatRequest{})
+			Expect(err).NotTo(HaveOccurred(),
+				"an empty retry round with budget left and a cooldown lapsing within it must wait, not give up")
+			var chunks []provider.StreamChunk
+			for chunk := range ch {
+				chunks = append(chunks, chunk)
+			}
+			chunks = stripTransitionChunks(chunks)
+			Expect(chunks).To(HaveLen(1))
+			Expect(chunks[0].Content).To(Equal("After recovery"))
+			Expect(atomic.LoadInt32(&calls)).To(Equal(int32(2)))
+			Expect(sleepDurations).To(HaveLen(2))
+		})
+	})
+})

@@ -170,7 +170,12 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 	return func(ctx context.Context, req *provider.ChatRequest) (<-chan provider.StreamChunk, error) {
 		candidates := sh.manager.Candidates()
 		if len(candidates) == 0 {
-			return nil, errors.New("no healthy providers available")
+			if _, recovered := sh.waitForCandidateRecovery(ctx, req, 0); recovered {
+				candidates = sh.manager.Candidates()
+			}
+			if len(candidates) == 0 {
+				return nil, errors.New("no healthy providers available")
+			}
 		}
 
 		// Thread the agent's OWN ordered preferred_models chain ahead of
@@ -262,6 +267,12 @@ func (sh *StreamHook) Execute(next hook.HandlerFunc) hook.HandlerFunc {
 		for round := range sh.retry.MaxRounds {
 			if round > 0 {
 				candidates = sh.nextRoundCandidates(ctx, req, &state)
+				if len(candidates) == 0 {
+					if recovered, ok := sh.waitForCandidateRecovery(ctx, req, totalWaited); ok {
+						totalWaited += recovered
+						candidates = sh.nextRoundCandidates(ctx, req, &state)
+					}
+				}
 				if len(candidates) == 0 {
 					break
 				}
@@ -389,6 +400,138 @@ func (sh *StreamHook) backoffBeforeRetry(
 		return 0, false
 	}
 	return wait, true
+}
+
+// waitForCandidateRecovery blocks in bounded slices until a cooled-down
+// candidate re-enters the healthy pool, mirroring the wait-for-recovery
+// behaviour operators expect from a pinned provider: a short cooldown holds
+// the request briefly instead of failing it instantly with "no healthy
+// providers available". The wait draws on the same MaxTotalWait budget as
+// the retry loop, gives up immediately when the soonest cooldown outlives
+// the whole budget (a 24h billing cooldown must not stall the request for
+// 90s first), and never waits when no known pair is rate-limited — an empty
+// pool for other reasons cannot recover by sleeping.
+//
+// Expected:
+//   - ctx bounds the wait; cancellation aborts it between slices.
+//   - req carries the caller-pinned provider/model (if any) whose recovery
+//     matters even when the manager's base preferences omit it.
+//   - totalWaited is the sleep budget already consumed by the retry loop.
+//
+// Returns:
+//   - The duration slept and true when at least one candidate recovered.
+//   - The partial duration and false when recovery is impossible within the
+//     budget, nothing is rate-limited, or ctx was cancelled.
+//
+// Side effects:
+//   - Sleeps via the configured Sleep func.
+func (sh *StreamHook) waitForCandidateRecovery(ctx context.Context, req *provider.ChatRequest, totalWaited time.Duration) (time.Duration, bool) {
+	budget := sh.retry.MaxTotalWait
+	remaining := budget - totalWaited
+	if remaining <= 0 {
+		return 0, false
+	}
+	pairs := recoveryPairs(sh.manager.Preferences(), req)
+	if len(pairs) == 0 {
+		return 0, false
+	}
+	hm := sh.manager.Health()
+	if hm == nil {
+		return 0, false
+	}
+	var waited time.Duration
+	for {
+		if len(sh.manager.Candidates()) > 0 {
+			return waited, true
+		}
+		if err := ctx.Err(); err != nil {
+			return waited, false
+		}
+		soonest, rateLimited := soonestRateLimitedUntil(hm, pairs)
+		if !rateLimited {
+			return waited, false
+		}
+		until := time.Until(soonest)
+		if until+waited > budget {
+			return waited, false
+		}
+		wait := until
+		if wait < minBackoffWait {
+			wait = minBackoffWait
+		}
+		if wait > maxPerRoundWait {
+			wait = maxPerRoundWait
+		}
+		if allowance := remaining - waited; wait > allowance {
+			wait = allowance
+		}
+		if wait <= 0 {
+			return waited, false
+		}
+		if err := sh.retry.Sleep(ctx, wait); err != nil {
+			return waited, false
+		}
+		waited += wait
+	}
+}
+
+// recoveryPairs assembles the (provider, model) pairs whose cooldown
+// recovery the wait loop should observe: the caller-pinned pair first (a
+// strict single-model chain pins req.Provider/req.Model), then the
+// manager's base preferences, deduplicated.
+//
+// Expected:
+//   - prefs is the manager's base preference chain (may be empty).
+//   - req carries the caller-pinned provider/model, or none.
+//
+// Returns:
+//   - The deduplicated pair slice, possibly empty.
+//
+// Side effects:
+//   - None.
+func recoveryPairs(prefs []provider.ModelPreference, req *provider.ChatRequest) []provider.ModelPreference {
+	pairs := make([]provider.ModelPreference, 0, len(prefs)+1)
+	seen := make(map[string]bool, len(prefs)+1)
+	if req != nil && req.Provider != "" && req.Model != "" {
+		seen[req.Provider+"/"+req.Model] = true
+		pairs = append(pairs, provider.ModelPreference{Provider: req.Provider, Model: req.Model})
+	}
+	for _, p := range prefs {
+		key := p.Provider + "/" + p.Model
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		pairs = append(pairs, p)
+	}
+	return pairs
+}
+
+// soonestRateLimitedUntil reports the earliest cooldown expiry across the
+// given pairs, ignoring pairs that are not currently rate-limited.
+//
+// Expected:
+//   - hm is a non-nil HealthManager.
+//   - pairs is the candidate pair slice to inspect.
+//
+// Returns:
+//   - The earliest future expiry and true when at least one pair is
+//     rate-limited; the zero time and false otherwise.
+//
+// Side effects:
+//   - None.
+func soonestRateLimitedUntil(hm *HealthManager, pairs []provider.ModelPreference) (time.Time, bool) {
+	var soonest time.Time
+	for _, p := range pairs {
+		until, ok := hm.RateLimitedUntil(p.Provider, p.Model)
+		if !ok {
+			continue
+		}
+		if soonest.IsZero() || until.Before(soonest) {
+			soonest = until
+		}
+	}
+	return soonest, !soonest.IsZero()
 }
 
 // roundOutcome summarises one pass over the candidate chain for the retry
