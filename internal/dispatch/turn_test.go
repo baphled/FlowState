@@ -131,7 +131,8 @@ func (m *turnSessionManager) StartStream(
 	m.mu.Unlock()
 
 	if streamer == nil {
-		return nil, nil
+		var none <-chan provider.StreamChunk
+		return none, nil
 	}
 	return streamer.Stream(ctx, "fake-agent", message)
 }

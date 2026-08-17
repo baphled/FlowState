@@ -33,6 +33,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 
 	"github.com/baphled/flowstate/internal/agent"
@@ -310,11 +311,17 @@ func (d *Dispatcher) TurnRegistry() *turn.Registry {
 // Side effects: None.
 func (d *Dispatcher) queueForSession(sessionID string) *sessionQueue {
 	if existing, ok := d.sessionQueues.Load(sessionID); ok {
-		return existing.(*sessionQueue)
+		if queue, ok := existing.(*sessionQueue); ok {
+			return queue
+		}
 	}
 	queue := newSessionQueue()
 	actual, _ := d.sessionQueues.LoadOrStore(sessionID, queue)
-	return actual.(*sessionQueue)
+	won, ok := actual.(*sessionQueue)
+	if ok {
+		return won
+	}
+	return queue
 }
 
 // CloseSessionQueue removes the queued prompts for a session and drops
@@ -325,7 +332,9 @@ func (d *Dispatcher) queueForSession(sessionID string) *sessionQueue {
 // Side effects: None.
 func (d *Dispatcher) CloseSessionQueue(sessionID string) {
 	if existing, ok := d.sessionQueues.LoadAndDelete(sessionID); ok {
-		existing.(*sessionQueue).close()
+		if queue, ok := existing.(*sessionQueue); ok {
+			queue.close()
+		}
 	}
 }
 
@@ -339,7 +348,11 @@ func (d *Dispatcher) CancelQueuedPrompt(sessionID, promptID string) bool {
 	if !ok {
 		return false
 	}
-	return existing.(*sessionQueue).cancel(promptID)
+	queue, ok := existing.(*sessionQueue)
+	if !ok {
+		return false
+	}
+	return queue.cancel(promptID)
 }
 
 // enqueueSessionPrompt ...
@@ -383,7 +396,10 @@ func (d *Dispatcher) drainQueue(sessionID string) {
 	if !ok {
 		return
 	}
-	queue := existing.(*sessionQueue)
+	queue, ok := existing.(*sessionQueue)
+	if !ok {
+		return
+	}
 	if !queue.beginDrain() {
 		return
 	}
@@ -392,7 +408,30 @@ func (d *Dispatcher) drainQueue(sessionID string) {
 	if prompt == nil {
 		return
 	}
-	_, _ = d.DispatchSessioned(prompt.Ctx, prompt.Request, prompt.Consumer)
+	if _, err := d.DispatchSessioned(prompt.Ctx, prompt.Request, prompt.Consumer); err != nil {
+		slog.Warn("dispatch: queued prompt failed",
+			"session", sessionID,
+			"error", err,
+		)
+	}
+}
+
+// logTurnRegistryError reports a Turn-registry call failure that is
+// not the benign terminal-conflict case. ErrTurnTerminal means the
+// turn already reached its terminal state, so only genuine registry
+// faults are logged.
+//
+// Expected: parameters for logTurnRegistryError.
+// Returns: result of logTurnRegistryError.
+// Side effects: None.
+func (d *Dispatcher) logTurnRegistryError(op string, err error, turnID string) {
+	if err != nil && !errors.Is(err, turn.ErrTurnTerminal) {
+		slog.Warn("dispatch: turn registry call failed",
+			"op", op,
+			"turn", turnID,
+			"error", err,
+		)
+	}
 }
 
 // errNoTarget fires when DispatchEphemeral is called without a usable
@@ -716,7 +755,7 @@ func (d *Dispatcher) DispatchSessioned(
 	turnOwnedByWrap := false
 	failTurnIfOwned := func(cause error) {
 		if !turnOwnedByWrap {
-			_ = d.turnRegistry.Fail(turnID, cause)
+			d.logTurnRegistryError("Fail", d.turnRegistry.Fail(turnID, cause), turnID)
 		}
 	}
 
@@ -788,7 +827,7 @@ func (d *Dispatcher) DispatchSessioned(
 	streamCtx = turn.WithTurnID(streamCtx, turnID)
 	streamCtx = session.WithAccumulatorTurnID(streamCtx, turnID)
 	streamCtx = session.WithTurnRecorder(streamCtx, func(id string, msg session.Message) {
-		_ = d.turnRegistry.Append(id, msg)
+		d.logTurnRegistryError("Append", d.turnRegistry.Append(id, msg), id)
 	})
 
 	// Resolution: in-content @<swarm-id> mention wins over auto-dispatch.
@@ -960,7 +999,7 @@ func (d *Dispatcher) DispatchSessioned(
 				d.engineMu.Unlock()
 			}
 			releaseGateSync()
-			_ = d.turnRegistry.Fail(turnID, streamErr)
+			d.logTurnRegistryError("Fail", d.turnRegistry.Fail(turnID, streamErr), turnID)
 			d.drainQueue(req.SessionID)
 			return
 		}
@@ -980,7 +1019,7 @@ func (d *Dispatcher) DispatchSessioned(
 				d.dispatchEngine.RestoreManifest(engineSnap)
 			}
 			releaseGateSync()
-			_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{})
+			d.logTurnRegistryError("Complete", d.turnRegistry.Complete(turnID, turn.ModelInfo{}), turnID)
 		}
 		d.drainQueue(req.SessionID)
 	}()
@@ -1173,13 +1212,13 @@ func (d *Dispatcher) wrapWithTurnLifecycle(
 		// the turn (e.g. a future test injecting a Complete) and is not
 		// actionable from this seam.
 		if terminalErr != nil {
-			_ = d.turnRegistry.Fail(turnID, terminalErr)
+			d.logTurnRegistryError("Fail", d.turnRegistry.Fail(turnID, terminalErr), turnID)
 			return
 		}
-		_ = d.turnRegistry.Complete(turnID, turn.ModelInfo{
+		d.logTurnRegistryError("Complete", d.turnRegistry.Complete(turnID, turn.ModelInfo{
 			Provider: lastProviderID,
 			Model:    lastModelID,
-		})
+		}), turnID)
 	}()
 	return out
 }
@@ -1262,7 +1301,10 @@ func (d *Dispatcher) acquireSessionLifecycleGate(sessionID string) chan struct{}
 	fresh := make(chan struct{}, 1)
 	fresh <- struct{}{}
 	actual, loaded := d.sessionLifecycleGates.LoadOrStore(sessionID, fresh)
-	gate := actual.(chan struct{})
+	gate, ok := actual.(chan struct{})
+	if !ok {
+		gate = fresh
+	}
 	if loaded {
 		// The pre-charged channel we built was thrown away; the existing
 		// channel may have its baton in flight if another turn for this
@@ -1367,7 +1409,11 @@ func (d *Dispatcher) wrapWithSwarmLifecycle(
 				// swarm gates' own observers (event bus, logs) surface
 				// failures; the SSE-side consumer cannot act on a flush
 				// error anyway. RestoreManifest is no-error.
-				_ = d.dispatchEngine.FlushSwarmLifecycle(ctx)
+				if err := d.dispatchEngine.FlushSwarmLifecycle(ctx); err != nil {
+					slog.Warn("dispatch: swarm lifecycle flush failed",
+						"error", err,
+					)
+				}
 			}()
 		}
 		for chunk := range src {
@@ -1476,7 +1522,11 @@ func (d *Dispatcher) deliverChunkToConsumer(chunk provider.StreamChunk, consumer
 	streaming.DeliverToolCall(consumer, chunk.ToolCall)
 	streaming.DeliverToolResult(consumer, chunk.ToolResult)
 	if chunk.Content != "" {
-		_ = consumer.WriteChunk(chunk.Content)
+		if err := consumer.WriteChunk(chunk.Content); err != nil {
+			slog.Warn("dispatch: consumer chunk write failed",
+				"error", err,
+			)
+		}
 	}
 	if chunk.Done {
 		consumer.Done()

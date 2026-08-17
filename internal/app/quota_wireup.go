@@ -24,6 +24,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -424,5 +425,5 @@ func (m *memorySpendStoreAdapter) List(ctx context.Context) ([]quota.SpendStoreE
 //
 // Side effects: None.
 func isStoreNotFound(err error) bool {
-	return err == quotastore.ErrSnapshotNotFound
+	return errors.Is(err, quotastore.ErrSnapshotNotFound)
 }

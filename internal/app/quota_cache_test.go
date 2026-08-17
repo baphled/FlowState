@@ -20,6 +20,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -49,7 +50,7 @@ func newTestStoreAdapter() *testStoreAdapter {
 func (m *testStoreAdapter) Get(ctx context.Context, k quota.SpendStoreKey) (quota.Snapshot, error) {
 	snap, err := m.inner.Get(ctx, quotastore.Key{ProviderID: k.ProviderID, AccountHash: k.AccountHash, ModelID: k.ModelID})
 	if err != nil {
-		if err == quotastore.ErrSnapshotNotFound {
+		if errors.Is(err, quotastore.ErrSnapshotNotFound) {
 			return quota.Snapshot{}, quota.ErrSpendStoreNotFound
 		}
 		return quota.Snapshot{}, err

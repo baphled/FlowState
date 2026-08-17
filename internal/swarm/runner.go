@@ -2,6 +2,7 @@ package swarm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -261,25 +262,15 @@ func (r *Runner) attachPath(err error, memberID string) error {
 	}
 }
 
-// asCategorised mirrors errors.As for the local CategorisedError.
-// Pulled into a helper for readability inside attachPath.
+// asCategorised resolves the first CategorisedError in err's chain,
+// mirroring errors.As semantics for the local type. Kept as a named
+// helper so attachPath reads as intent rather than reflection.
 //
 // Expected: parameters for asCategorised.
 // Returns: result of asCategorised.
 // Side effects: None.
 func asCategorised(err error, target **CategorisedError) bool {
-	for current := err; current != nil; {
-		if ce, ok := current.(*CategorisedError); ok {
-			*target = ce
-			return true
-		}
-		unwrapped, ok := current.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		current = unwrapped.Unwrap()
-	}
-	return false
+	return errors.As(err, target)
 }
 
 // checkBreakerBeforeDispatch consults the breaker state and returns a

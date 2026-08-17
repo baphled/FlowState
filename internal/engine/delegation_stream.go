@@ -214,6 +214,24 @@ func (s *childAttemptState) attemptContext(forcedToolChoice string, finisherTool
 	return attemptCtx
 }
 
+// applyCorrectiveOverrides stamps the corrective provider and model
+// overrides onto the child's delegate context and rebuilds the attempt
+// context from the stamped state, so subsequent attempts inherit the
+// escalated pair instead of re-wrapping the prior attempt's context.
+//
+// Expected: parameters for applyCorrectiveOverrides.
+// Returns: the rebuilt attempt context carrying the overrides.
+// Side effects: mutates s.delegateCtx with the supplied overrides.
+func (s *childAttemptState) applyCorrectiveOverrides(prov, model, forcedToolChoice string, finisherToolsAllowlist []string) context.Context {
+	if prov != "" {
+		s.delegateCtx = context.WithValue(s.delegateCtx, session.ProviderOverrideKey{}, prov)
+	}
+	if model != "" {
+		s.delegateCtx = context.WithValue(s.delegateCtx, session.ModelOverrideKey{}, model)
+	}
+	return s.attemptContext(forcedToolChoice, finisherToolsAllowlist)
+}
+
 // failIfOwned ...
 //
 // Expected: parameters for failIfOwned.
@@ -704,16 +722,7 @@ func (d *DelegateTool) executeSync(
 		// manifest-tier override resolveChildModelOverride already stamped.
 		if forcedToolChoice != "" {
 			if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
-				if prov != "" {
-					overrideCtx := context.WithValue(attemptCtx, session.ProviderOverrideKey{}, prov)
-					attemptCtx = overrideCtx
-					childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ProviderOverrideKey{}, prov)
-				}
-				if model != "" {
-					overrideCtx := context.WithValue(attemptCtx, session.ModelOverrideKey{}, model)
-					attemptCtx = overrideCtx
-					childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ModelOverrideKey{}, model)
-				}
+				attemptCtx = childState.applyCorrectiveOverrides(prov, model, forcedToolChoice, finisherToolsAllowlist)
 			}
 		}
 		result = delegationResult{}
@@ -820,12 +829,7 @@ func (d *DelegateTool) executeSync(
 			if d.gateRunner == nil && !hasSubstantiveOutput([]byte(result.response)) {
 				if attempt < PostMemberGateMaxAttempts {
 					if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
-						if prov != "" {
-							childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ProviderOverrideKey{}, prov)
-						}
-						if model != "" {
-							childState.delegateCtx = context.WithValue(childState.delegateCtx, session.ModelOverrideKey{}, model)
-						}
+						childState.applyCorrectiveOverrides(prov, model, "", nil)
 					}
 					target.message = appendPlainDirective(target.message)
 					forcedToolChoice = ""

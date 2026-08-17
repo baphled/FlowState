@@ -328,18 +328,6 @@ func sanitiseSegment(s string) string {
 	return strings.Map(mapper, s)
 }
 
-// errOverflowFailed signals a spill-write failure. Currently unused at
-// the public API surface — Apply swallows IO errors so truncation
-// remains a non-fatal envelope. Exported so future callers that want
-// to surface spill failures can do so.
-var errOverflowFailed = errors.New("truncate: failed to write overflow spill")
-
-// OverflowError returns the sentinel for spill-write failures.
-//
-// Returns: result of OverflowError.
-// Side effects: None.
-func OverflowError() error { return errOverflowFailed }
-
 // Default scheduler knobs for the spill-file cleanup goroutine.
 // Match OpenCode's tool/truncation.ts:14-15 (HOUR_MS / RETENTION_MS).
 const (

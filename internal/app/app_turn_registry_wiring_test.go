@@ -41,7 +41,8 @@ import (
 type fakeAPIStreamer struct{}
 
 func (fakeAPIStreamer) Stream(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
-	return nil, nil
+	var none <-chan provider.StreamChunk
+	return none, nil
 }
 
 var _ = Describe("App-side Turn registry wiring (S8.1)", func() {

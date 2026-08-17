@@ -99,10 +99,11 @@ const supportedPermissionsVersion = 2
 // Returns: result of LoadPermissions.
 // Side effects: None.
 func LoadPermissions(path string) (*Permissions, error) {
+	var absent *Permissions
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
+			return absent, nil
 		}
 		return nil, fmt.Errorf("read permissions: %w", err)
 	}
@@ -117,7 +118,7 @@ func LoadPermissions(path string) (*Permissions, error) {
 			"version", perms.Version,
 			"supported", supportedPermissionsVersion,
 		)
-		return nil, nil
+		return absent, nil
 	}
 	return perms, nil
 }

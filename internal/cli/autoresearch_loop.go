@@ -515,7 +515,7 @@ func runOneTrial(
 		// no-improve-window; the loop carries on so a transient
 		// provider blip does not prematurely converge the run.
 		if rErr := gitCheckoutSurface(worktreePath, relSurface); rErr != nil {
-			return outcome, fmt.Errorf("reverting after driver failure: %w (driver error: %v)", rErr, dErr)
+			return outcome, fmt.Errorf("reverting after driver failure: %w (driver error: %w)", rErr, dErr)
 		}
 		outcome.Kept = false
 		outcome.Reason = reasonValidatorIOError
@@ -1044,7 +1044,7 @@ func runDriverContent(ctx context.Context, inv driverInvocation, prompt []byte) 
 		// before consuming the full prompt); surface only if the
 		// command itself failed.
 		if waitErr != nil {
-			return nil, false, fmt.Errorf("driver %q stdin: %w (wait: %v) (stderr: %s)",
+			return nil, false, fmt.Errorf("driver %q stdin: %w (wait: %w) (stderr: %s)",
 				inv.driverPath, wErr, waitErr, strings.TrimSpace(stderrBuf.String()))
 		}
 	}
