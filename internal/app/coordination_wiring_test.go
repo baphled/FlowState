@@ -57,7 +57,7 @@ var _ = Describe("Coordination tool wiring", func() {
 
 		Expect(coordTool.Name()).To(Equal("coordination_store"))
 		Expect(coordTool.Description()).To(Equal(
-			"Read and write shared key-value context during agent delegation chains"))
+			"Inter-agent handoff store for delegation chains: publish contracted outputs for other agents and read theirs. Not general storage and never user-facing output — write user-requested content to files with the write tool"))
 	})
 
 	// MemoryStoreSharing: round-trip a single key through the in-memory

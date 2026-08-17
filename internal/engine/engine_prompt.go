@@ -258,9 +258,15 @@ func buildToolUsageRequirement(manifest agent.Manifest) string {
 		}
 
 		return "\n\n## Tool-Usage Requirement\n\n" +
-			"When operating as part of a swarm, you MUST write your final output " +
-			"using the `coordination_store` tool rather than narrating it as text. " +
-			"The system validates that the tool call occurred.\n"
+			"`coordination_store` is the inter-agent handoff channel for delegation " +
+			"chains and swarms: use it to publish contracted outputs for other " +
+			"agents and to read theirs. It is not general storage and it is never " +
+			"the destination for user-facing output. When operating as part of a " +
+			"swarm, you MUST write your contracted output key via the " +
+			"`coordination_store` tool — the system validates that the tool call " +
+			"occurred. Outside a delegation chain, do not use `coordination_store`. " +
+			"When asked to write something, use the `write` tool: writing means " +
+			"writing to a file.\n"
 	}
 
 	return ""
@@ -361,7 +367,9 @@ func (e *Engine) appendSwarmLeadSectionFor(base string, manifest agent.Manifest)
 	b.WriteString("After all members return their results, synthesise the findings into a final report. ")
 	b.WriteString("Before delivering your final response to the user, you MUST write the complete report ")
 	b.WriteString("to coordination_store key `" + chainPrefix + "/" + manifest.ID + "/output`. ")
-	b.WriteString("This is mandatory — the report must be persisted, not just narrated.\n")
+	b.WriteString("This is mandatory — the report must be persisted, not just narrated. ")
+	b.WriteString("That key is the inter-agent handoff for the publisher; the user-facing summary still goes in your reply. ")
+	b.WriteString("While the swarm runs, keep reporting progress in this thread — do not detach into coordination-store polling or silent waiting loops.\n")
 
 	return b.String()
 }

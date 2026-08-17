@@ -414,3 +414,18 @@ var _ = Describe("Engine swarm-lead system prompt", func() {
 		})
 	})
 })
+
+var _ = Describe("Engine swarm-lead Final Output contract", func() {
+	It("keeps the main thread and scopes the coord-store write to the publisher handoff", func() {
+		eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+		ctx := newBugHuntContext()
+
+		eng.SetSwarmContext(&ctx)
+
+		prompt := eng.BuildSystemPrompt()
+
+		Expect(prompt).To(ContainSubstring("bug-hunt/senior-engineer/output"))
+		Expect(prompt).To(ContainSubstring("inter-agent handoff for the publisher"))
+		Expect(prompt).To(ContainSubstring("keep reporting progress in this thread"))
+	})
+})
