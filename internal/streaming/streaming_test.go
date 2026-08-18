@@ -12,24 +12,8 @@ import (
 	"github.com/baphled/flowstate/internal/plan"
 	"github.com/baphled/flowstate/internal/provider"
 	"github.com/baphled/flowstate/internal/streaming"
+	"github.com/baphled/flowstate/internal/testutils"
 )
-
-type mockStreamer struct {
-	chunks []provider.StreamChunk
-	err    error
-}
-
-func (m *mockStreamer) Stream(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
-	if m.err != nil {
-		return nil, m.err
-	}
-	ch := make(chan provider.StreamChunk, len(m.chunks))
-	for i := range m.chunks {
-		ch <- m.chunks[i]
-	}
-	close(ch)
-	return ch, nil
-}
 
 type mockConsumer struct {
 	chunks       []string
@@ -268,19 +252,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockConsumer{}
 		})
 
 		Context("when streaming succeeds with content chunks", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "hello "},
 					{Content: "world"},
 					{Done: true},
@@ -302,7 +286,7 @@ var _ = Describe("Streaming", func() {
 
 		Context("when Stream returns an error", func() {
 			BeforeEach(func() {
-				streamer.err = errors.New("stream failed")
+				streamer.Err = errors.New("stream failed")
 			})
 
 			It("calls WriteError and returns the error", func() {
@@ -320,7 +304,7 @@ var _ = Describe("Streaming", func() {
 
 		Context("when a chunk carries an error", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "partial"},
 					{Error: errors.New("chunk error"), Done: true},
 				}
@@ -338,7 +322,7 @@ var _ = Describe("Streaming", func() {
 		Context("when WriteChunk returns an error", func() {
 			BeforeEach(func() {
 				consumer.writeErr = errors.New("write failed")
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "data"},
 					{Done: true},
 				}
@@ -358,7 +342,7 @@ var _ = Describe("Streaming", func() {
 		Context("when a chunk carries a tool call", func() {
 			BeforeEach(func() {
 				consumer.enableTool = true
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{ToolCall: &provider.ToolCall{ID: "call1", Name: "bash"}},
 					{Content: "result", Done: true},
 				}
@@ -374,7 +358,7 @@ var _ = Describe("Streaming", func() {
 		Context("when a chunk carries a skill_load tool call", func() {
 			BeforeEach(func() {
 				consumer.enableTool = true
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{ToolCall: &provider.ToolCall{
 						ID:   "call1",
 						Name: "skill_load",
@@ -396,7 +380,7 @@ var _ = Describe("Streaming", func() {
 		Context("when a chunk carries a skill_load without name argument", func() {
 			BeforeEach(func() {
 				consumer.enableTool = true
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{ToolCall: &provider.ToolCall{
 						ID:        "call1",
 						Name:      "skill_load",
@@ -416,7 +400,7 @@ var _ = Describe("Streaming", func() {
 		Context("when a chunk carries a tool result", func() {
 			BeforeEach(func() {
 				consumer.enableResult = true
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{EventType: "tool_result", ToolResult: &provider.ToolResultInfo{Content: "output"}},
 					{Content: "final", Done: true},
 				}
@@ -450,7 +434,7 @@ var _ = Describe("Streaming", func() {
 			BeforeEach(func() {
 				consumer.enableResult = true
 				consumer.enableError = true
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{
 						EventType: "tool_result",
 						ToolResult: &provider.ToolResultInfo{
@@ -492,7 +476,7 @@ var _ = Describe("Streaming", func() {
 
 			BeforeEach(func() {
 				resultOnlyConsumer = &resultOnlyMockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{
 						EventType: "tool_result",
 						ToolResult: &provider.ToolResultInfo{
@@ -518,14 +502,14 @@ var _ = Describe("Streaming", func() {
 	Describe("HarnessStreamer", func() {
 		var (
 			ctx      context.Context
-			inner    *mockStreamer
+			inner    *testutils.MockStreamer
 			registry *mockRegistry
 			harness  *mockHarness
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			inner = &mockStreamer{}
+			inner = &testutils.MockStreamer{}
 			registry = &mockRegistry{manifests: make(map[string]*agent.Manifest)}
 			harness = &mockHarness{}
 		})
@@ -537,7 +521,7 @@ var _ = Describe("Streaming", func() {
 					Name:           "Test Agent",
 					HarnessEnabled: false,
 				}
-				inner.chunks = []provider.StreamChunk{
+				inner.Chunks = []provider.StreamChunk{
 					{Content: "passthrough"},
 					{Done: true},
 				}
@@ -589,7 +573,7 @@ var _ = Describe("Streaming", func() {
 
 		Context("when agent is not found in registry", func() {
 			BeforeEach(func() {
-				inner.chunks = []provider.StreamChunk{
+				inner.Chunks = []provider.StreamChunk{
 					{Content: "fallback"},
 					{Done: true},
 				}
@@ -657,7 +641,7 @@ var _ = Describe("Streaming", func() {
 			})
 
 			It("does not delegate to the inner streamer", func() {
-				inner.chunks = []provider.StreamChunk{
+				inner.Chunks = []provider.StreamChunk{
 					{Content: "should-not-appear"},
 					{Done: true},
 				}
@@ -679,19 +663,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with harness_retry events", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockHarnessConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockHarnessConsumer{}
 		})
 
 		Context("when the stream contains a harness_retry event", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "initial "},
 					{EventType: "harness_retry", Content: "schema validation failed: missing title"},
 					{Content: "retried output"},
@@ -722,7 +706,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement HarnessEventConsumer", func() {
 			It("silently skips harness_retry events", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{EventType: "harness_retry", Content: "retry info"},
 					{Content: "after"},
@@ -736,7 +720,7 @@ var _ = Describe("Streaming", func() {
 
 		Context("when multiple harness_retry events occur", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "attempt-1 "},
 					{EventType: "harness_retry", Content: "retry-1: missing field"},
 					{Content: "attempt-2 "},
@@ -770,19 +754,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with harness_attempt_start events", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockHarnessConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockHarnessConsumer{}
 		})
 
 		Context("when the stream contains a harness_attempt_start event", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{EventType: "harness_attempt_start", Content: "attempt 2 of 3"},
 					{Content: "plan output"},
 					{Done: true},
@@ -806,7 +790,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement HarnessEventConsumer", func() {
 			It("silently skips harness_attempt_start events", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{EventType: "harness_attempt_start", Content: "attempt 1"},
 					{Content: "after"},
@@ -822,19 +806,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with harness_complete events", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockHarnessConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockHarnessConsumer{}
 		})
 
 		Context("when the stream contains a harness_complete event", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "plan text "},
 					{EventType: "harness_complete", Content: "score: 0.95, attempts: 2"},
 					{Done: true},
@@ -858,7 +842,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement HarnessEventConsumer", func() {
 			It("silently skips harness_complete events", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{EventType: "harness_complete", Content: "done"},
 					{Content: "after"},
@@ -874,19 +858,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with harness_critic_feedback events", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockHarnessConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockHarnessConsumer{}
 		})
 
 		Context("when the stream contains a harness_critic_feedback event", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "plan draft "},
 					{EventType: "harness_critic_feedback", Content: "missing error handling section"},
 					{Content: "revised plan"},
@@ -911,7 +895,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement HarnessEventConsumer", func() {
 			It("silently skips harness_critic_feedback events", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{EventType: "harness_critic_feedback", Content: "feedback"},
 					{Content: "after"},
@@ -925,7 +909,7 @@ var _ = Describe("Streaming", func() {
 
 		Context("when multiple harness event types occur in one stream", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{EventType: "harness_attempt_start", Content: "attempt 1"},
 					{Content: "draft "},
 					{EventType: "harness_critic_feedback", Content: "needs improvement"},
@@ -952,19 +936,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with plan_artifact events", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockEventConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockEventConsumer{}
 		})
 
 		Context("when the stream contains a plan_artifact event", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{EventType: "plan_artifact", Content: "# My Plan\nDo the work."},
 					{Done: true},
 				}
@@ -990,7 +974,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement EventConsumer", func() {
 			It("silently skips plan_artifact events", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{EventType: "plan_artifact", Content: "plan content"},
 					{Content: "after"},
@@ -1006,19 +990,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with review_verdict events", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockEventConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockEventConsumer{}
 		})
 
 		Context("when the stream contains a review_verdict event", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{EventType: "review_verdict", Content: `{"verdict":"pass","confidence":0.9,"issues":[]}`},
 					{Done: true},
 				}
@@ -1043,7 +1027,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement EventConsumer", func() {
 			It("silently skips review_verdict events", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{EventType: "review_verdict", Content: "verdict content"},
 					{Content: "after"},
@@ -1059,19 +1043,19 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with status_transition events", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 			consumer *mockEventConsumer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 			consumer = &mockEventConsumer{}
 		})
 
 		Context("when the stream contains a status_transition event", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{EventType: "status_transition", Content: `{"from":"interview","to":"generation","agentId":"planner"}`},
 					{Done: true},
 				}
@@ -1096,7 +1080,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement EventConsumer", func() {
 			It("silently skips status_transition events", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{EventType: "status_transition", Content: "transition content"},
 					{Content: "after"},
@@ -1150,17 +1134,17 @@ var _ = Describe("Streaming", func() {
 	Describe("Run with DelegationInfo chunks", func() {
 		var (
 			ctx      context.Context
-			streamer *mockStreamer
+			streamer *testutils.MockStreamer
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			streamer = &mockStreamer{}
+			streamer = &testutils.MockStreamer{}
 		})
 
 		Context("when the stream contains a DelegationInfo chunk", func() {
 			BeforeEach(func() {
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent:  "orchestrator",
 						TargetAgent:  "qa-agent",
@@ -1221,7 +1205,7 @@ var _ = Describe("Streaming", func() {
 		Context("when the consumer does not implement DelegationConsumer", func() {
 			It("silently skips DelegationInfo chunks", func() {
 				plainConsumer := &mockConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{Content: "before "},
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent: "src",
@@ -1241,7 +1225,7 @@ var _ = Describe("Streaming", func() {
 		Context("when a DelegationInfo chunk has status failed", func() {
 			It("delivers the failed event to the consumer", func() {
 				consumer := &mockDelegationConsumer{}
-				streamer.chunks = []provider.StreamChunk{
+				streamer.Chunks = []provider.StreamChunk{
 					{DelegationInfo: &provider.DelegationInfo{
 						SourceAgent: "orchestrator",
 						TargetAgent: "qa-agent",

@@ -39,6 +39,7 @@ import (
 	"github.com/baphled/flowstate/internal/skill"
 	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
+	"github.com/baphled/flowstate/internal/testutils"
 	"github.com/baphled/flowstate/internal/tool/pathguard"
 	todo "github.com/baphled/flowstate/internal/tool/todo"
 	"github.com/baphled/flowstate/internal/turn"
@@ -47,34 +48,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-type mockStreamer struct {
-	chunks          []provider.StreamChunk
-	err             error
-	mu              sync.Mutex
-	capturedAgentID string
-	capturedMessage string
-}
-
-func (m *mockStreamer) Stream(_ context.Context, agentID string, message string) (<-chan provider.StreamChunk, error) {
-	// Capture under mu so the sibling-race specs (which fan out
-	// concurrent POSTs through this same fixture) do not race on the
-	// bookkeeping fields. The non-concurrent specs continue to read
-	// CapturedAgentID/CapturedMessage via the accessors below.
-	m.mu.Lock()
-	m.capturedAgentID = agentID
-	m.capturedMessage = message
-	m.mu.Unlock()
-	if m.err != nil {
-		return nil, m.err
-	}
-	ch := make(chan provider.StreamChunk, len(m.chunks))
-	for i := range m.chunks {
-		ch <- m.chunks[i]
-	}
-	close(ch)
-	return ch, nil
-}
 
 // dripStreamer mimics the real engine streamer: it returns the chunks
 // channel IMMEDIATELY (before all chunks have been emitted), drips chunks
@@ -282,7 +255,7 @@ var _ = Describe("Server", func() {
 		server          *api.Server
 		recorder        *httptest.ResponseRecorder
 		registry        *agent.Registry
-		streamer        *mockStreamer
+		streamer        *testutils.MockStreamer
 		disc            *discovery.AgentDiscovery
 		skills          []skill.Skill
 		testManifest    agent.Manifest
@@ -322,8 +295,8 @@ var _ = Describe("Server", func() {
 
 		registry = agent.NewRegistry()
 
-		streamer = &mockStreamer{
-			chunks: []provider.StreamChunk{
+		streamer = &testutils.MockStreamer{
+			Chunks: []provider.StreamChunk{
 				{Content: "Hello"},
 				{Content: " there!"},
 				{Content: "", Done: true},
@@ -572,7 +545,7 @@ var _ = Describe("Server", func() {
 
 		Context("when streamer returns an error", func() {
 			BeforeEach(func() {
-				streamer.err = errors.New("stream failed")
+				streamer.Err = errors.New("stream failed")
 			})
 
 			It("writes SSE error and DONE", func() {
@@ -627,8 +600,8 @@ var _ = Describe("Server", func() {
 				server.Handler().ServeHTTP(recorder, req)
 
 				Expect(recorder.Code).To(Equal(http.StatusOK))
-				Expect(streamer.capturedAgentID).To(Equal("test-lead"))
-				Expect(streamer.capturedMessage).To(Equal("trace please"))
+				Expect(streamer.LastAgentID()).To(Equal("test-lead"))
+				Expect(streamer.LastMessage()).To(Equal("trace please"))
 			})
 
 			It("installs a swarm context on the engine and flushes the lifecycle", func() {
@@ -649,7 +622,7 @@ var _ = Describe("Server", func() {
 				req.Header.Set("Content-Type", "application/json")
 				server.Handler().ServeHTTP(recorder, req)
 
-				Expect(streamer.capturedAgentID).To(Equal("test-lead"))
+				Expect(streamer.LastAgentID()).To(Equal("test-lead"))
 				// SetSwarmContext is still called — with nil — so the engine
 				// reverts to single-agent shape if a previous swarm dispatch
 				// left context behind. Flush still runs to keep the wind-down
@@ -665,7 +638,7 @@ var _ = Describe("Server", func() {
 				server.Handler().ServeHTTP(recorder, req)
 
 				Expect(recorder.Code).To(Equal(http.StatusBadRequest))
-				Expect(streamer.capturedAgentID).To(Equal(""))
+				Expect(streamer.LastAgentID()).To(Equal(""))
 				Expect(engStub.installedContext).To(BeNil())
 				Expect(engStub.flushCalls).To(Equal(0))
 			})
@@ -750,7 +723,7 @@ var _ = Describe("GET /api/v1/sessions/{id}/todos", func() {
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			[]skill.Skill{},
@@ -779,7 +752,7 @@ var _ = Describe("GET /api/v1/sessions/{id}/todos", func() {
 			registry := agent.NewRegistry()
 			disc := discovery.NewAgentDiscovery(nil)
 			srv = api.NewServer(
-				&mockStreamer{chunks: []provider.StreamChunk{}},
+				&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 				registry,
 				disc,
 				[]skill.Skill{},
@@ -864,7 +837,7 @@ var _ = Describe("GetSession-deref-after-lock-release sibling races", func() {
 	// one session. Returned closer must be invoked. Phase-4-Commit-2
 	// retired the SessionBroker — race specs no longer require it.
 	raceSetup := func() (*session.Manager, *httptest.Server, func()) {
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{
 			{Content: "ack"},
 			{Done: true},
 		}}
@@ -1031,7 +1004,7 @@ var _ = Describe("Session hierarchy endpoints", func() {
 	)
 
 	BeforeEach(func() {
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 		mgr = session.NewManager(streamer)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
@@ -1160,7 +1133,7 @@ var _ = Describe("Background task endpoints", func() {
 
 	BeforeEach(func() {
 		mgr = engine.NewBackgroundTaskManager()
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		sessionMgr := session.NewManager(streamer)
@@ -1187,7 +1160,7 @@ var _ = Describe("Background task endpoints", func() {
 		})
 
 		It("returns 501 when no background manager is configured", func() {
-			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 			registry := agent.NewRegistry()
 			disc := discovery.NewAgentDiscovery(nil)
 			sessionMgr := session.NewManager(streamer)
@@ -1215,7 +1188,7 @@ var _ = Describe("Background task endpoints", func() {
 		})
 
 		It("returns 501 when no background manager is configured", func() {
-			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 			registry := agent.NewRegistry()
 			disc := discovery.NewAgentDiscovery(nil)
 			sessionMgr := session.NewManager(streamer)
@@ -1243,7 +1216,7 @@ var _ = Describe("Background task endpoints", func() {
 		})
 
 		It("returns 501 when no background manager is configured", func() {
-			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 			registry := agent.NewRegistry()
 			disc := discovery.NewAgentDiscovery(nil)
 			sessionMgr := session.NewManager(streamer)
@@ -1278,7 +1251,7 @@ var _ = Describe("Background task endpoints", func() {
 		})
 
 		It("returns 501 when no background manager is configured", func() {
-			streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+			streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 			registry := agent.NewRegistry()
 			disc := discovery.NewAgentDiscovery(nil)
 			sessionMgr := session.NewManager(streamer)
@@ -1302,7 +1275,7 @@ var _ = Describe("Session manager nil-safety", func() {
 	var server *api.Server
 
 	BeforeEach(func() {
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		server = api.NewServer(streamer, registry, disc, nil)
@@ -1357,7 +1330,7 @@ var _ = Describe("GET /health", func() {
 	var server *api.Server
 
 	BeforeEach(func() {
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		server = api.NewServer(streamer, registry, disc, nil)
@@ -1382,7 +1355,7 @@ var _ = Describe("GET /metrics", func() {
 		reg := prometheus.NewRegistry()
 		metricsHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		server := api.NewServer(
@@ -1398,7 +1371,7 @@ var _ = Describe("GET /metrics", func() {
 	})
 
 	It("does not serve metrics when no handler is configured", func() {
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{}}
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{}}
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		server := api.NewServer(streamer, registry, disc, nil)
@@ -1420,11 +1393,11 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -1493,7 +1466,7 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 		It("returns HTTP 501", func() {
 			registry := agent.NewRegistry()
 			disc := discovery.NewAgentDiscovery(nil)
-			bare := api.NewServer(&mockStreamer{}, registry, disc, nil)
+			bare := api.NewServer(&testutils.MockStreamer{}, registry, disc, nil)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", http.NoBody)
 			bare.Handler().ServeHTTP(recorder, req)
@@ -1598,11 +1571,11 @@ var _ = Describe("GET /api/v1/sessions/{id}/messages JSON contract", func() {
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -1651,11 +1624,11 @@ var _ = Describe("POST /api/v1/sessions JSON contract", func() {
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -1706,11 +1679,11 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages JSON contract", func() {
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -1758,7 +1731,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 	//       (b) including the §AC#13 and §AC#11 SLOs.
 	It("includes the user message in the POST response snapshot synchronously", func() {
 		recorder := httptest.NewRecorder()
-		streamer := &mockStreamer{chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
+		streamer := &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
 		mgr := session.NewManager(streamer)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
@@ -1802,7 +1775,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/messages assistant reply contract",
 var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 	var (
 		recorder *httptest.ResponseRecorder
-		streamer *mockStreamer
+		streamer *testutils.MockStreamer
 		mgr      *session.Manager
 		srv      *api.Server
 		eng      *fakeDispatchEngine
@@ -1811,7 +1784,7 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
+		streamer = &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok"}, {Done: true}}}
 		mgr = session.NewManager(streamer)
 		registry = agent.NewRegistry()
 		// Register the target agent so the orchestrator's SwitchAgent
@@ -1881,7 +1854,7 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 		srv.Handler().ServeHTTP(httptest.NewRecorder(), msgReq)
 
 		Eventually(func() string {
-			return streamer.capturedAgentID
+			return streamer.LastAgentID()
 		}, "2s").Should(Equal("plan-writer"), "the streamer must be invoked with the agent the user selected, not the original session agent")
 	})
 
@@ -1906,7 +1879,7 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/agent JSON contract", func() {
 var _ = Describe("PATCH /api/v1/sessions/{id}/model JSON contract", func() {
 	var (
 		recorder *httptest.ResponseRecorder
-		streamer *mockStreamer
+		streamer *testutils.MockStreamer
 		mgr      *session.Manager
 		srv      *api.Server
 		eng      *fakeDispatchEngine
@@ -1914,7 +1887,7 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/model JSON contract", func() {
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		streamer = &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}}
 		mgr = session.NewManager(streamer)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
@@ -2009,14 +1982,14 @@ var _ = Describe("PATCH /api/v1/sessions/{id}/model JSON contract", func() {
 var _ = Describe("POST /api/v1/sessions/{id}/permission-mode JSON contract", func() {
 	var (
 		recorder *httptest.ResponseRecorder
-		streamer *mockStreamer
+		streamer *testutils.MockStreamer
 		mgr      *session.Manager
 		srv      *api.Server
 	)
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		streamer = &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}}
 		mgr = session.NewManager(streamer)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
@@ -2150,7 +2123,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-mode JSON contract", fun
 var _ = Describe("POST /api/v1/sessions/{id}/permission-grant JSON contract", func() {
 	var (
 		recorder *httptest.ResponseRecorder
-		streamer *mockStreamer
+		streamer *testutils.MockStreamer
 		mgr      *session.Manager
 		reg      *permissionrequest.Registry
 		srv      *api.Server
@@ -2158,7 +2131,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant JSON contract", fu
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		streamer = &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}}
 		mgr = session.NewManager(streamer)
 		reg = permissionrequest.NewRegistry()
 		agentRegistry := agent.NewRegistry()
@@ -2334,7 +2307,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant JSON contract", fu
 var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — scope=forever wiring (Slice 4)", func() {
 	var (
 		recorder  *httptest.ResponseRecorder
-		streamer  *mockStreamer
+		streamer  *testutils.MockStreamer
 		mgr       *session.Manager
 		reg       *permissionrequest.Registry
 		permsPath string
@@ -2342,7 +2315,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — scope=forever 
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		streamer = &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}}
 		mgr = session.NewManager(streamer)
 		reg = permissionrequest.NewRegistry()
 
@@ -2567,7 +2540,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — scope=forever 
 var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — MCP server resource (Slice 5)", func() {
 	var (
 		recorder  *httptest.ResponseRecorder
-		streamer  *mockStreamer
+		streamer  *testutils.MockStreamer
 		mgr       *session.Manager
 		reg       *permissionrequest.Registry
 		permsPath string
@@ -2575,7 +2548,7 @@ var _ = Describe("POST /api/v1/sessions/{id}/permission-grant — MCP server res
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		streamer = &mockStreamer{chunks: []provider.StreamChunk{{Done: true}}}
+		streamer = &testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}}
 		mgr = session.NewManager(streamer)
 		reg = permissionrequest.NewRegistry()
 
@@ -2863,7 +2836,7 @@ var _ = Describe("GET /api/v1/models", func() {
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv := api.NewServer(
-			&mockStreamer{},
+			&testutils.MockStreamer{},
 			registry,
 			disc,
 			nil,
@@ -2905,7 +2878,7 @@ var _ = Describe("GET /api/v1/models", func() {
 	It("returns 501 when no ModelLister is configured", func() {
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
-		srv := api.NewServer(&mockStreamer{}, registry, disc, nil)
+		srv := api.NewServer(&testutils.MockStreamer{}, registry, disc, nil)
 
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/models", nil)
@@ -3913,11 +3886,11 @@ var _ = Describe("POST /api/v1/sessions seeds default model from agent manifest"
 
 	BeforeEach(func() {
 		recorder = httptest.NewRecorder()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Content: "ok", Done: true}}})
 		registry = agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -3988,7 +3961,7 @@ var _ = Describe("POST /api/v1/sessions persists default model+provider to the m
 	// pair the create response advertised.
 
 	It("writes CurrentProviderID and CurrentModelID onto the session in the manager", func() {
-		mgr := session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
+		mgr := session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{}})
 		registry := agent.NewRegistry()
 		registry.Register(&agent.Manifest{
 			ID: "code-reviewer",
@@ -3998,7 +3971,7 @@ var _ = Describe("POST /api/v1/sessions persists default model+provider to the m
 		})
 		disc := discovery.NewAgentDiscovery(nil)
 		srv := api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -4039,7 +4012,7 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 	var (
 		recorder *httptest.ResponseRecorder
 		registry *agent.Registry
-		streamer *mockStreamer
+		streamer *testutils.MockStreamer
 		swarmReg *swarm.Registry
 		engStub  *fakeDispatchEngine
 		server   *api.Server
@@ -4068,8 +4041,8 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 			Members:       []string{},
 		})
 
-		streamer = &mockStreamer{
-			chunks: []provider.StreamChunk{
+		streamer = &testutils.MockStreamer{
+			Chunks: []provider.StreamChunk{
 				{Content: "ack"},
 				{Content: "", Done: true},
 			},
@@ -4153,7 +4126,7 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 			server.Handler().ServeHTTP(recorder, req)
 
 			Expect(recorder.Code).To(Equal(http.StatusOK))
-			Expect(streamer.capturedAgentID).To(Equal("lead-one"),
+			Expect(streamer.LastAgentID()).To(Equal("lead-one"),
 				"the @swarm mention must override agent_id, dispatching from the swarm's lead")
 			Expect(engStub.installedContext).NotTo(BeNil(),
 				"a swarm context must be installed on the engine when the mention resolves")
@@ -4168,7 +4141,7 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 			server.Handler().ServeHTTP(recorder, req)
 
 			Expect(recorder.Code).To(Equal(http.StatusOK))
-			Expect(streamer.capturedAgentID).To(Equal("default-assistant"),
+			Expect(streamer.LastAgentID()).To(Equal("default-assistant"),
 				"absent a swarm @-mention the default agent_id still drives the stream")
 			Expect(engStub.installedContext).To(BeNil(),
 				"no swarm context when the message contains no swarm mention")
@@ -4181,7 +4154,7 @@ var _ = Describe("Web Swarm Mention Parity", func() {
 			server.Handler().ServeHTTP(recorder, req)
 
 			Expect(recorder.Code).To(Equal(http.StatusOK))
-			Expect(streamer.capturedAgentID).To(Equal("default-assistant"),
+			Expect(streamer.LastAgentID()).To(Equal("default-assistant"),
 				"agent @-mentions don't redirect — only swarm mentions do (orchestrator parity contract)")
 			Expect(engStub.installedContext).To(BeNil())
 		})
@@ -4249,7 +4222,7 @@ var _ = Describe("Phase 3 — context_usage cadence parity", func() {
 
 		BeforeEach(func() {
 			recorder = httptest.NewRecorder()
-			mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+			mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}})
 			usage = &fakeContextUsageProvider{
 				hasUsage: true,
 				staticPayload: `{"input_tokens":2222,"output_reserve":4096,"limit":200000,` +
@@ -4264,7 +4237,7 @@ var _ = Describe("Phase 3 — context_usage cadence parity", func() {
 			registry.Register(&agent.Manifest{ID: "plan-writer", Name: "Plan Writer"})
 			disc := discovery.NewAgentDiscovery(nil)
 			srv = api.NewServer(
-				&mockStreamer{chunks: []provider.StreamChunk{}},
+				&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 				registry,
 				disc,
 				nil,
@@ -4305,7 +4278,7 @@ var _ = Describe("Phase 3 — context_usage cadence parity", func() {
 
 		BeforeEach(func() {
 			recorder = httptest.NewRecorder()
-			mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+			mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}})
 			usage = &fakeContextUsageProvider{
 				hasUsage: true,
 				staticPayload: `{"input_tokens":1500,"output_reserve":4096,"limit":100000,` +
@@ -4314,7 +4287,7 @@ var _ = Describe("Phase 3 — context_usage cadence parity", func() {
 			registry := agent.NewRegistry()
 			disc := discovery.NewAgentDiscovery(nil)
 			srv = api.NewServer(
-				&mockStreamer{chunks: []provider.StreamChunk{}},
+				&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 				registry,
 				disc,
 				nil,
@@ -4367,12 +4340,12 @@ var _ = Describe("POST /api/v1/sessions/{id}/attachments", func() {
 
 	BeforeEach(func() {
 		dir = GinkgoT().TempDir()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{}})
 		mgr.SetSessionsDir(dir)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -4795,12 +4768,12 @@ var _ = Describe("GET /api/v1/sessions/{id}/attachments/{aid}", func() {
 
 	BeforeEach(func() {
 		dir = GinkgoT().TempDir()
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{}})
 		mgr.SetSessionsDir(dir)
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -4939,7 +4912,7 @@ var _ = Describe("Content-Security-Policy header (task-09)", func() {
 		registry := agent.NewRegistry()
 		disc := discovery.NewAgentDiscovery(nil)
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			registry,
 			disc,
 			nil,
@@ -6489,11 +6462,11 @@ var _ = Describe("Phase-4-Commit-2 — retired SSE / WebSocket routes return 404
 	)
 
 	BeforeEach(func() {
-		mgr = session.NewManager(&mockStreamer{chunks: []provider.StreamChunk{{Done: true}}})
+		mgr = session.NewManager(&testutils.MockStreamer{Chunks: []provider.StreamChunk{{Done: true}}})
 		reg := agent.NewRegistry()
 		reg.Register(&agent.Manifest{ID: "default-assistant", Name: "Default Assistant"})
 		srv = api.NewServer(
-			&mockStreamer{chunks: []provider.StreamChunk{}},
+			&testutils.MockStreamer{Chunks: []provider.StreamChunk{}},
 			reg,
 			discovery.NewAgentDiscovery(nil),
 			nil,
