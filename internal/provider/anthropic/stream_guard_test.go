@@ -3,45 +3,14 @@ package anthropic
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/baphled/flowstate/internal/provider"
+
+	"github.com/baphled/flowstate/internal/testutils"
 )
-
-// blackholeServer accepts the request but never writes response headers,
-// self-returning after a hard cap so httptest.Server.Close drains cleanly.
-// This is the provider-flap signature reproduced live: the connection is
-// accepted, but no first byte ever arrives.
-func blackholeServer() *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		select {
-		case <-r.Context().Done():
-		case <-time.After(8 * time.Second):
-		}
-	}))
-}
-
-func assertStreamTerminatesWithin(t *testing.T, start func() (<-chan provider.StreamChunk, error), within time.Duration) {
-	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		ch, err := start()
-		if err == nil {
-			for range ch {
-			}
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(within):
-		t.Fatalf("stream did not terminate within %s — stream-guard not bounding the no-headers window", within)
-	}
-}
 
 // TestStreamGuardWiredIntoConstructor proves the stream-guard client is wired
 // into the production constructor: a default-built provider (NO explicit
@@ -52,7 +21,7 @@ func TestStreamGuardWiredIntoConstructor(t *testing.T) {
 	restore := SetStreamGuardHeaderTimeoutForTest(700 * time.Millisecond)
 	defer restore()
 
-	srv := blackholeServer()
+	srv := testutils.BlackholeServer(8 * time.Second)
 	defer srv.Close()
 
 	p, err := NewWithOptions(
@@ -67,7 +36,7 @@ func TestStreamGuardWiredIntoConstructor(t *testing.T) {
 		t.Fatalf("NewWithOptions: %v", err)
 	}
 
-	assertStreamTerminatesWithin(t, func() (<-chan provider.StreamChunk, error) {
+	testutils.AssertStreamTerminatesWithin(t, func() (<-chan provider.StreamChunk, error) {
 		return p.Stream(context.Background(), provider.ChatRequest{
 			Model:    "claude-3-5-sonnet-20241022",
 			Messages: []provider.Message{{Role: "user", Content: "hello"}},
@@ -87,7 +56,7 @@ func TestStreamGuardTimeoutClassifiedAsRetriableNetworkError(t *testing.T) {
 	restore := SetStreamGuardHeaderTimeoutForTest(700 * time.Millisecond)
 	defer restore()
 
-	srv := blackholeServer()
+	srv := testutils.BlackholeServer(8 * time.Second)
 	defer srv.Close()
 
 	p, err := NewWithOptions("sk-ant-test-key", option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
@@ -130,7 +99,7 @@ func TestChatTransportErrorClassifiedAsRetriableNetworkError(t *testing.T) {
 	restore := SetStreamGuardHeaderTimeoutForTest(700 * time.Millisecond)
 	defer restore()
 
-	srv := blackholeServer()
+	srv := testutils.BlackholeServer(8 * time.Second)
 	defer srv.Close()
 
 	p, err := NewWithOptions("sk-ant-test-key", option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
