@@ -32,6 +32,7 @@ import (
 	"github.com/baphled/flowstate/internal/provider"
 	ollamaprovider "github.com/baphled/flowstate/internal/provider/ollama"
 	"github.com/baphled/flowstate/internal/recall"
+	"github.com/baphled/flowstate/internal/session"
 	"github.com/baphled/flowstate/internal/tool/truncate"
 )
 
@@ -267,6 +268,8 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I reload the session$`, s.iReloadTheSession)
 	ctx.Step(`^all messages should be restored$`, s.allMessagesShouldBeRestored)
 	ctx.Step(`^embedding vectors should be preserved$`, s.embeddingVectorsShouldBePreserved)
+	ctx.Step(`^no temporary sidecar files remain in the sessions directory$`, s.noTemporarySidecarFilesRemain)
+	ctx.Step(`^the session metadata file contains a single valid JSON object$`, s.theSessionMetadataFileContainsASingleValidJSONObject)
 
 	// Config steps
 	ctx.Step(`^no FlowState configuration file exists$`, s.noFlowStateConfigurationFileExists)
@@ -1234,6 +1237,52 @@ func (s *StepDefinitions) embeddingVectorsShouldBePreserved() error {
 		return errors.New("no embeddings preserved")
 	}
 
+	return nil
+}
+
+// noTemporarySidecarFilesRemain verifies that an atomic metadata
+// persist leaves no staging files behind in the sessions directory.
+//
+// Expected: A prior sidecar persist ran via session.PersistSession.
+// Returns: An error when a .meta.json.tmp file is present.
+// Side effects: Runs session.PersistSession on a scratch directory.
+func (s *StepDefinitions) noTemporarySidecarFilesRemain() error {
+	dir := filepath.Join(s.tempDir, "meta-sessions")
+	sess := &session.Session{ID: "atomic-check", Status: "active"}
+	if err := session.PersistSession(dir, sess); err != nil {
+		return fmt.Errorf("persisting session metadata: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading sessions directory: %w", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".meta.json.tmp") {
+			return fmt.Errorf("temporary sidecar file remains: %s", e.Name())
+		}
+	}
+	return nil
+}
+
+// theSessionMetadataFileContainsASingleValidJSONObject asserts the
+// persisted sidecar decodes as exactly one JSON document.
+//
+// Expected: A prior step persisted the atomic-check session sidecar.
+// Returns: An error when the file is missing, invalid, or contains extra data.
+// Side effects: None.
+func (s *StepDefinitions) theSessionMetadataFileContainsASingleValidJSONObject() error {
+	path := filepath.Join(s.tempDir, "meta-sessions", "atomic-check.meta.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading sidecar: %w", err)
+	}
+	var probe map[string]any
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return fmt.Errorf("sidecar is not valid JSON: %w", err)
+	}
+	if err := json.Unmarshal(data, new(json.RawMessage)); err != nil {
+		return fmt.Errorf("sidecar contains extra data: %w", err)
+	}
 	return nil
 }
 

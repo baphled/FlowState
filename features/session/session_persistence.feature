@@ -33,6 +33,12 @@ Feature: Session Persistence
     And I reload the session
     Then all messages should be restored
 
+  Scenario: Session sidecar write is atomic
+    Given I have an active session with messages
+    When I save the session
+    Then no temporary sidecar files remain in the sessions directory
+    And the session metadata file contains a single valid JSON object
+
   Scenario: Session handles corrupted file gracefully
     Given I have an active session with messages
     When I save the session

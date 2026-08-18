@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"time"
@@ -91,6 +92,32 @@ var _ = Describe("Session persistence", func() {
 				data, err := os.ReadFile(filepath.Join(sessionsDir, "no-current-agent.meta.json"))
 				Expect(err).NotTo(HaveOccurred())
 				Expect(string(data)).NotTo(ContainSubstring("current_agent_id"))
+			})
+
+			It("leaves no staging file behind after an atomic write", func() {
+				sess := &session.Session{ID: "atomic-sess", AgentID: "agent-x", Status: "active"}
+
+				Expect(session.PersistSession(sessionsDir, sess)).To(Succeed())
+
+				entries, err := os.ReadDir(sessionsDir)
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range entries {
+					Expect(e.Name()).NotTo(HaveSuffix(".meta.json.tmp"))
+				}
+			})
+
+			It("replaces a prior sidecar with a single valid JSON object on rewrite", func() {
+				sess := &session.Session{ID: "rewrite-sess", AgentID: "agent-x", Status: "active"}
+
+				Expect(session.PersistSession(sessionsDir, sess)).To(Succeed())
+				sess.Status = "completed"
+				Expect(session.PersistSession(sessionsDir, sess)).To(Succeed())
+
+				data, err := os.ReadFile(filepath.Join(sessionsDir, "rewrite-sess.meta.json"))
+				Expect(err).NotTo(HaveOccurred())
+				var decoded map[string]any
+				Expect(json.Unmarshal(data, &decoded)).To(Succeed())
+				Expect(decoded).NotTo(BeEmpty())
 			})
 		})
 	})

@@ -12,6 +12,11 @@ import (
 
 const metaFileSuffix = ".meta.json"
 
+// metaTmpFileSuffix is appended to the sidecar path to stage the atomic
+// write. The loader ignores files with this suffix, so a crash mid-persist
+// leaves at worst an ignorable staging file rather than a corrupt sidecar.
+const metaTmpFileSuffix = ".tmp"
+
 // Metadata holds the subset of Session fields needed for persistence.
 //
 // Messages is persisted alongside the structural fields so that chat
@@ -58,6 +63,14 @@ type Metadata struct {
 
 // PersistSession writes session metadata to a .meta.json file in sessionsDir.
 //
+// Durability: the write is atomic — the metadata is staged to a sibling
+// temporary file in the same directory, fsynced, and renamed over the
+// final path. An abrupt death mid-persist can therefore never leave a
+// truncated or concatenated sidecar (the "Extra data" JSONDecodeError
+// class of corruption seen across dogfood sessions in August 2026); the
+// worst case is a leftover .meta.json.tmp staging file, which the loader
+// ignores because it does not match the sidecar suffix.
+//
 // Expected:
 //   - sessionsDir is the directory to write the metadata file into (created if absent).
 //   - sess is a non-nil Session whose ID, ParentID, AgentID, Status, and CreatedAt are persisted.
@@ -67,7 +80,8 @@ type Metadata struct {
 //
 // Side effects:
 //   - Creates sessionsDir (including parents) when it does not exist.
-//   - Writes <sessionsDir>/<sess.ID>.meta.json to disk.
+//   - Writes <sessionsDir>/<sess.ID>.meta.json.tmp then renames it onto
+//     <sessionsDir>/<sess.ID>.meta.json.
 func PersistSession(sessionsDir string, sess *Session) error {
 	meta := Metadata{
 		ID:                sess.ID,
@@ -95,7 +109,35 @@ func PersistSession(sessionsDir string, sess *Session) error {
 	}
 
 	path := filepath.Join(sessionsDir, sess.ID+metaFileSuffix)
-	return os.WriteFile(path, data, 0o600)
+	tmpPath := path + metaTmpFileSuffix
+
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	renamed = true
+	return nil
 }
 
 // LoadSessionsFromDirectory scans sessionsDir for .meta.json files and returns
