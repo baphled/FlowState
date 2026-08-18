@@ -65,6 +65,7 @@ var _ = Describe("flowstate auth user (multi-user provisioning — Auth Track C9
 		} else {
 			Expect(os.Unsetenv("XDG_CONFIG_HOME")).To(Succeed())
 		}
+		Expect(testApp.Shutdown()).To(Succeed())
 		Expect(os.RemoveAll(tmpDir)).To(Succeed())
 	})
 

@@ -3377,6 +3377,19 @@ func (a *App) SetModel(modelID string) error {
 	return nil
 }
 
+// Shutdown releases resources held by the App, closing all MCP client
+// connections. Safe to call multiple times and on a nil mcpClient.
+//
+// Returns:
+//   - An error if disconnection fails, nil otherwise.
+//   - nil if no MCP client is configured.
+//
+// Side effects:
+//   - Closes all MCP sessions managed by the client.
+func (a *App) Shutdown() error {
+	return a.DisconnectAll()
+}
+
 // DisconnectAll closes all connected MCP server connections.
 //
 // Returns:
