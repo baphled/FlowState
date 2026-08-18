@@ -52,7 +52,7 @@ func TestStreamGuard_BoundsHTTP2NoHeaders(t *testing.T) {
 	tr := hc.Transport.(*http.Transport)
 	certpool := x509.NewCertPool()
 	certpool.AddCert(blackhole.Certificate())
-	tr.TLSClientConfig = &tls.Config{RootCAs: certpool} //nolint:gosec // test cert pool
+	tr.TLSClientConfig = &tls.Config{RootCAs: certpool}
 	tr.ForceAttemptHTTP2 = true
 
 	client := openaiAPI.NewClient(
@@ -69,7 +69,7 @@ func TestStreamGuard_BoundsHTTP2NoHeaders(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		ch := openaicompat.RunStream(context.Background(), client, params, "stream-guard-h2")
-		for range ch { //nolint:revive // drain to terminal/close
+		for range ch {
 		}
 		close(done)
 	}()

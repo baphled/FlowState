@@ -224,7 +224,7 @@ func (b *WindowBuilder) Build(manifest *agent.Manifest, store *recall.FileContex
 // Note: Item 3 dropped the unused context.Context parameter (it was
 // discarded via `_ = ctx`) so the variadic BuildOption slot brings
 // the argument count to exactly 5, satisfying the project's
-// argument-limit lint rule without a nolint escape hatch.
+// argument-limit lint rule.
 func (b *WindowBuilder) BuildContext(
 	manifest *agent.Manifest,
 	userMessage string,

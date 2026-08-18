@@ -59,7 +59,7 @@ var _ = Describe("AccumulateStream cancellation (D2)", func() {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			//nolint:revive // intentional empty drain — we only care that the channel closes.
+
 			for range out {
 			}
 		}()

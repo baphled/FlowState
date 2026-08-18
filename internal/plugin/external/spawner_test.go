@@ -29,7 +29,7 @@ var _ = Describe("Spawner and PluginProcess", func() {
 	)
 
 	BeforeEach(func() {
-		//nolint:fatcontext
+
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 		spawner = external.NewSpawner()
 	})

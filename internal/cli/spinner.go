@@ -63,20 +63,6 @@ func NewSpinner(out io.Writer, msg string) *Spinner {
 	}
 }
 
-// IsTTY reports whether the spinner detected a terminal writer at
-// construction time. False means Start prints once and skips animation.
-//
-// Returns:
-//   - true when the writer is a character device.
-//
-// Side effects:
-//   - None.
-//
-// Expected: parameters for IsTTY.
-func (s *Spinner) IsTTY() bool {
-	return s.isTTY
-}
-
 // Start begins the spinner animation on a background goroutine. On
 // non-TTY writers it prints msg + newline and returns immediately.
 //

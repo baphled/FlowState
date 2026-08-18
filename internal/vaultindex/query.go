@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-
 	"github.com/baphled/flowstate/internal/recall/qdrant"
 )
 
@@ -103,33 +101,6 @@ func (q *QueryHandler) Handle(ctx context.Context, args QueryArgs) (QueryRespons
 		chunks = append(chunks, chunkFromPayload(p.Payload))
 	}
 	return QueryResponse{Chunks: chunks}, nil
-}
-
-// RegisterQueryTool registers query_vault on the supplied MCP server.
-//
-// Expected:
-//   - server is an initialised MCP server.
-//   - handler is non-nil.
-//
-// Side effects:
-//   - Registers a tool handler on the server.
-func RegisterQueryTool(server *mcp.Server, handler *QueryHandler) {
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "query_vault",
-		Description: "Search the indexed Obsidian vault and return relevant chunks.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, args QueryArgs) (*mcp.CallToolResult, any, error) {
-		resp, err := handler.Handle(ctx, args)
-		if err != nil {
-			return nil, nil, err
-		}
-		encoded, err := json.Marshal(resp)
-		if err != nil {
-			return nil, nil, fmt.Errorf("marshalling query_vault response: %w", err)
-		}
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
-		}, nil, nil
-	})
 }
 
 // chunkFromPayload extracts a Chunk from a Qdrant payload map.

@@ -1,14 +1,6 @@
-// Package-level suppression for the duplicated header block (imports +
-// package decl + leading constants) between the per-provider auth files.
-// The package declaration and imports are structural boilerplate that dupl
-// flags across sibling files; a directive on the package line suppresses it
-// without touching function bodies.
-package cli //nolint:dupl // per-provider auth files share package boilerplate by design
+package cli
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
@@ -56,31 +48,19 @@ func newAuthOllamaCloudCmd(getApp func() *app.App) *cobra.Command {
 //   - Outputs success/error message to stdout/stderr.
 func runAuthOllamaCloud(cmd *cobra.Command, application *app.App) error {
 	cfg := application.Config
-
-	if cfg.Providers.OllamaCloud.APIKey != "" {
-		if !confirmOverwrite(cmd, "ollamacloud") {
-			fmt.Fprintln(cmd.OutOrStdout(), "Aborted; existing Ollama Cloud API key kept.")
-			return nil
-		}
-	}
-
-	apiKey := readAPIKey(cmd, envOllamaCloudAPIKey, "Enter your Ollama Cloud API key: ")
-	if apiKey == "" {
-		return errors.New("reading ollama cloud api key")
-	}
-	if !isValidOllamaCloudKey(apiKey) {
-		fmt.Fprintln(cmd.OutOrStderr(), "✗ Invalid API key format")
-		fmt.Fprintln(cmd.OutOrStderr(), "Expected a non-empty Ollama Cloud key")
-		return errors.New("invalid ollama cloud api key format")
-	}
-
-	cfg.Providers.OllamaCloud.APIKey = apiKey
-	if err := writeConfig(cfg); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-
-	fmt.Fprintln(cmd.OutOrStdout(), "✓ Ollama Cloud API key saved")
-	return nil
+	return runAPIKeyAuth(
+		cmd,
+		envOllamaCloudAPIKey,
+		"Ollama Cloud",
+		"Enter your Ollama Cloud API key: ",
+		cfg.Providers.OllamaCloud.APIKey,
+		func(key string) error {
+			cfg.Providers.OllamaCloud.APIKey = key
+			return writeConfig(cfg)
+		},
+		isValidOllamaCloudKey,
+		"Expected a non-empty Ollama Cloud key",
+	)
 }
 
 // isValidOllamaCloudKey checks that an Ollama Cloud credential is plausibly

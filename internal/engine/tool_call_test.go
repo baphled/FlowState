@@ -1204,7 +1204,7 @@ var _ = Describe("Engine Tool Call Loop", func() {
 
 				chunks, err := eng.Stream(ctx, "test-agent", "Please use the tool")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain the stream to completion
+				for range chunks {
 				}
 
 				// Two provider calls: turn 1 (initial) + turn 2 (continuation).

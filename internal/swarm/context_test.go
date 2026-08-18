@@ -209,9 +209,11 @@ var _ = Describe("swarm.Context", func() {
 			Expect(got).To(BeNil())
 		})
 
-		It("tolerates a nil context.Context", func() {
-			//lint:ignore SA1012 intentionally passing nil to pin defensive nil-handling in FromContext.
-			got, ok := swarm.FromContext(nil)
+		It("returns (nil, false) on a cancelled context", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			got, ok := swarm.FromContext(ctx)
 
 			Expect(ok).To(BeFalse())
 			Expect(got).To(BeNil())
@@ -268,9 +270,11 @@ var _ = Describe("swarm.Context", func() {
 			Expect(got).To(BeNil())
 		})
 
-		It("tolerates a nil context.Context", func() {
-			//lint:ignore SA1012 intentionally passing nil to pin defensive nil-handling.
-			got, scoped := swarm.ScopeFromContext(nil)
+		It("returns (nil, false) on a cancelled context", func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			got, scoped := swarm.ScopeFromContext(ctx)
 
 			Expect(scoped).To(BeFalse())
 			Expect(got).To(BeNil())

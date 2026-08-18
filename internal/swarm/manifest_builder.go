@@ -24,16 +24,6 @@ func NewManifestBuilder(id string) *ManifestBuilder {
 	}}
 }
 
-// WithSchemaVersion overrides the default schema_version pin.
-//
-// Expected: parameters for WithSchemaVersion.
-// Returns: result of WithSchemaVersion.
-// Side effects: None.
-func (b *ManifestBuilder) WithSchemaVersion(v string) *ManifestBuilder {
-	b.manifest.SchemaVersion = v
-	return b
-}
-
 // WithDescription sets the manifest description.
 //
 // Expected: parameters for WithDescription.
@@ -75,16 +65,6 @@ func (b *ManifestBuilder) WithGate(name, kind, when, target string) *ManifestBui
 	b.manifest.Harness.Gates = append(b.manifest.Harness.Gates, GateSpec{
 		Name: name, Kind: kind, When: when, Target: target,
 	})
-	return b
-}
-
-// WithChainPrefix sets the swarm context's chain_prefix.
-//
-// Expected: parameters for WithChainPrefix.
-// Returns: result of WithChainPrefix.
-// Side effects: None.
-func (b *ManifestBuilder) WithChainPrefix(prefix string) *ManifestBuilder {
-	b.manifest.Context.ChainPrefix = prefix
 	return b
 }
 

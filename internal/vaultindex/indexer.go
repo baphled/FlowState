@@ -36,15 +36,6 @@ type Embedder interface {
 // EmbedderFunc adapts a plain function to Embedder.
 type EmbedderFunc func(ctx context.Context, text string) ([]float64, error)
 
-// Embed implements Embedder by invoking the wrapped function.
-//
-// Expected: parameters for Embed.
-// Returns: result of Embed.
-// Side effects: None.
-func (f EmbedderFunc) Embed(ctx context.Context, text string) ([]float64, error) {
-	return f(ctx, text)
-}
-
 // VectorStore is the subset of qdrant.VectorStore the indexer requires.
 type VectorStore interface {
 	CollectionExists(ctx context.Context, name string) (bool, error)

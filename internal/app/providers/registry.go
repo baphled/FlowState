@@ -2,7 +2,6 @@ package providers
 
 import (
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"os"
@@ -265,21 +264,6 @@ func hoistDefaultProvider(prefs []provider.ModelPreference, defaultName string) 
 		return hoisted
 	}
 	return prefs
-}
-
-// ResolveDefault validates that the configured default provider exists in the registry.
-//
-// Expected: parameters for ResolveDefault.
-// Returns: result of ResolveDefault.
-// Side effects: None.
-func ResolveDefault(registry *provider.Registry, failures map[string]error, defaultName string) error {
-	if _, err := registry.Get(defaultName); err != nil {
-		if failure, ok := failures[defaultName]; ok && failure != nil {
-			return fmt.Errorf("default provider %q unavailable: %w", defaultName, failure)
-		}
-		return fmt.Errorf("default provider %q unavailable: %w", defaultName, err)
-	}
-	return nil
 }
 
 // buildOpenAIProvider constructs the OpenAI provider from the configured

@@ -45,7 +45,7 @@ func FullyDocumented(x int) int { return x * 2 }
 func VoidNoParams() {
 }
 
-//lint:ignore U1000 test fixture for analyser - intentionally unused
+// does something undocumented.
 func unexportedNoDoc() {} // want `doc comment for unexportedNoDoc should start with "unexportedNoDoc"` `unexported function unexportedNoDoc missing Side effects: section`
 
 // This does something.
@@ -53,7 +53,6 @@ func unexportedNoDoc() {} // want `doc comment for unexportedNoDoc should start 
 // Side effects:
 //   - None.
 //
-//lint:ignore U1000 test fixture for analyser - intentionally unused
 func unexportedBadNameStart() {} // want `doc comment for unexportedBadNameStart should start with "unexportedBadNameStart"`
 
 // unexportedReturnsValue does nothing special.
@@ -61,7 +60,6 @@ func unexportedBadNameStart() {} // want `doc comment for unexportedBadNameStart
 // Side effects:
 //   - None.
 //
-//lint:ignore U1000 test fixture for analyser - intentionally unused
 func unexportedReturnsValue() int { return 0 } // want `unexported function unexportedReturnsValue missing Returns: section`
 
 // unexportedTakesParams does something with input.
@@ -69,12 +67,10 @@ func unexportedReturnsValue() int { return 0 } // want `unexported function unex
 // Side effects:
 //   - None.
 //
-//lint:ignore U1000 test fixture for analyser - intentionally unused
 func unexportedTakesParams(x int) {} // want `unexported function unexportedTakesParams missing Expected: section`
 
 // unexportedNoSideEffects does something.
 //
-//lint:ignore U1000 test fixture for analyser - intentionally unused
 func unexportedNoSideEffects() {} // want `unexported function unexportedNoSideEffects missing Side effects: section`
 
 // unexportedFullyDocumented validates all sections are present.
@@ -88,5 +84,4 @@ func unexportedNoSideEffects() {} // want `unexported function unexportedNoSideE
 // Side effects:
 //   - None.
 //
-//lint:ignore U1000 test fixture for analyser - intentionally unused
 func unexportedFullyDocumented(x int) int { return x * 2 }

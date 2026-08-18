@@ -75,25 +75,6 @@ func NewSchemaDirLoader(dir string) *SchemaDirLoader {
 	return &SchemaDirLoader{dir: dir}
 }
 
-// WithFS overrides the filesystem the loader reads from. Used by tests
-// to inject a deterministic in-memory tree without touching the
-// operator's real filesystem.
-//
-// Expected:
-//   - fsys is a non-nil fs.FS rooted at the same logical "dir" as the
-//     loader was constructed with. Production callers leave the
-//     default os.DirFS in place by NOT calling this method.
-//
-// Returns:
-//   - The loader for chaining.
-//
-// Side effects:
-//   - None.
-func (l *SchemaDirLoader) WithFS(fsys fs.FS) *SchemaDirLoader {
-	l.fs = fsys
-	return l
-}
-
 // SchemaLoadSummary is the return shape from SchemaDirLoader.Load. The
 // caller logs the counts at INFO so operators see how many drop-in
 // schemas were picked up, and inspects Failed for a count of skipped

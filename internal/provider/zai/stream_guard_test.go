@@ -29,7 +29,7 @@ func assertStreamTerminatesWithin(t *testing.T, start func() (<-chan provider.St
 	go func() {
 		ch, err := start()
 		if err == nil {
-			for range ch { //nolint:revive // drain to terminal/close
+			for range ch {
 			}
 		}
 		close(done)

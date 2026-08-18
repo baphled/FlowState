@@ -1551,7 +1551,7 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Fire a POST /messages — this Starts the Turn in the registry.
-			postResp, err := http.Post( //nolint:noctx
+			postResp, err := http.Post(
 				localHTTP.URL+"/api/v1/sessions/"+sess.ID+"/messages",
 				"application/json",
 				strings.NewReader(`{"content":"hi"}`),
@@ -1563,7 +1563,7 @@ var _ = Describe("GET /api/v1/sessions JSON contract", func() {
 			// Eventually the GET returns isStreaming: true while the
 			// Turn is still Running.
 			Eventually(func() bool {
-				getResp, getErr := http.Get(localHTTP.URL + "/api/v1/sessions") //nolint:noctx
+				getResp, getErr := http.Get(localHTTP.URL + "/api/v1/sessions")
 				if getErr != nil {
 					return false
 				}
@@ -5032,7 +5032,7 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 	// (statusCode, decoded-body, raw-body) so individual specs can
 	// assert on whichever shape they care about.
 	postMessage := func(sessionID, content string) (int, map[string]any, []byte) {
-		resp, err := http.Post( //nolint:noctx
+		resp, err := http.Post(
 			httpSrv.URL+"/api/v1/sessions/"+sessionID+"/messages",
 			"application/json",
 			strings.NewReader(`{"content":"`+content+`"}`),
@@ -5049,7 +5049,7 @@ var _ = Describe("Turn-based poll endpoints (POST /messages + GET /turns/{turn_i
 	}
 
 	getTurn := func(sessionID, turnID string) (int, map[string]any, []byte) {
-		resp, err := http.Get( //nolint:noctx
+		resp, err := http.Get(
 			httpSrv.URL + "/api/v1/sessions/" + sessionID + "/turns/" + turnID,
 		)
 		Expect(err).NotTo(HaveOccurred())
@@ -5530,7 +5530,7 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 	})
 
 	postMessage := func(sessionID, content string) (int, map[string]any, []byte) {
-		resp, err := http.Post( //nolint:noctx
+		resp, err := http.Post(
 			httpSrv.URL+"/api/v1/sessions/"+sessionID+"/messages",
 			"application/json",
 			strings.NewReader(`{"content":"`+content+`"}`),
@@ -5547,7 +5547,7 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 	}
 
 	getTurn := func(sessionID, turnID string) (int, map[string]any, []byte) {
-		resp, err := http.Get( //nolint:noctx
+		resp, err := http.Get(
 			httpSrv.URL + "/api/v1/sessions/" + sessionID + "/turns/" + turnID,
 		)
 		Expect(err).NotTo(HaveOccurred())
@@ -5562,7 +5562,7 @@ var _ = Describe("Phase-4-Commit-1 — activeTurnId + heartbeat-on-turn", func()
 	}
 
 	listSessions := func() (int, []map[string]any, []byte) {
-		resp, err := http.Get(httpSrv.URL + "/api/v1/sessions") //nolint:noctx
+		resp, err := http.Get(httpSrv.URL + "/api/v1/sessions")
 		Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
 		raw, err := io.ReadAll(resp.Body)
@@ -6185,7 +6185,7 @@ var _ = Describe("Phase-4-Commit-1b — long-poll Turn endpoint (wait=true)", fu
 	})
 
 	postMessage := func(sessionID, content string) (int, map[string]any, []byte) {
-		resp, err := http.Post( //nolint:noctx
+		resp, err := http.Post(
 			httpSrv.URL+"/api/v1/sessions/"+sessionID+"/messages",
 			"application/json",
 			strings.NewReader(`{"content":"`+content+`"}`),
@@ -6444,7 +6444,7 @@ var _ = Describe("Phase-4-Commit-1b — long-poll Turn endpoint (wait=true)", fu
 		// doesn't hold the request).
 		start := time.Now()
 		url := fmt.Sprintf("%s/api/v1/sessions/%s/turns/%s", httpSrv.URL, sess.ID, turnID)
-		resp, err := http.Get(url) //nolint:noctx
+		resp, err := http.Get(url)
 		Expect(err).NotTo(HaveOccurred())
 		raw, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()

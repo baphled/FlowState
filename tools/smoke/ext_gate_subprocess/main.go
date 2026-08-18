@@ -47,7 +47,7 @@ func main() {
 	if !resp.Pass {
 		failf("fixture gate did not return pass:true")
 	}
-	fmt.Println("PASS") //nolint:forbidigo // smoke harness stdout marker, not structured logging
+	fmt.Println("PASS")
 }
 
 // repoRoot handles an internal operation.

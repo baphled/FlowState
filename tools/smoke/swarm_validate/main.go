@@ -86,7 +86,7 @@ func main() {
 	if failures > 0 {
 		os.Exit(1)
 	}
-	fmt.Println("PASS") //nolint:forbidigo // smoke harness stdout marker
+	fmt.Println("PASS")
 }
 
 // must handles an internal operation.

@@ -389,7 +389,6 @@ func NewHotColdSplitter(opts HotColdSplitterOptions) *HotColdSplitter {
 //   - Spawns one goroutine. Creates storageDir/sessionID/ on demand.
 func (s *HotColdSplitter) StartPersistWorker(parentCtx context.Context) {
 	s.startOnce.Do(func() {
-		//nolint:gosec // cancel is invoked by Stop() which is the pair operation.
 		s.workerCtx, s.cancel = context.WithCancel(parentCtx)
 		s.workerWG.Add(1)
 		go s.runWorker()

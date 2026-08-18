@@ -48,35 +48,6 @@ type Content struct {
 	Body     string
 }
 
-// GetPromptWithMetadata returns the prompt content with parsed frontmatter metadata.
-//
-// Expected:
-//   - agentID is a non-empty string matching a file in prompts/{agentID}.md.
-//
-// Returns:
-//   - A Content struct containing parsed metadata (if present) and the prompt body.
-//   - Error if the prompt file does not exist or YAML parsing fails.
-//
-// Side effects:
-//   - None.
-func GetPromptWithMetadata(agentID string) (*Content, error) {
-	data, err := promptFS.ReadFile("prompts/" + agentID + ".md")
-	if err != nil {
-		return nil, fmt.Errorf("prompt not found: %s", agentID)
-	}
-
-	content := string(data)
-	metadata, body, err := ParseFrontmatter(content)
-	if err != nil {
-		return nil, fmt.Errorf("parsing prompt metadata: %w", err)
-	}
-
-	return &Content{
-		Metadata: metadata,
-		Body:     body,
-	}, nil
-}
-
 // ListPrompts returns the agent IDs of all embedded prompt files.
 //
 // Returns:

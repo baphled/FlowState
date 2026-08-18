@@ -74,23 +74,6 @@ func NewManifestWriter(dir string) *ManifestWriter {
 	return &ManifestWriter{dir: dir}
 }
 
-// Dir returns the directory the writer is configured to persist into.
-// Used by callers that need to surface the path in user-facing
-// completion messages (the wizard's "Wrote swarm manifest to ..."
-// blurb is the canonical example).
-//
-// Returns:
-//   - The configured directory; may be empty when the writer was
-//     constructed without one.
-//
-// Side effects:
-//   - None.
-//
-// Expected: parameters for Dir.
-func (w *ManifestWriter) Dir() string {
-	return w.dir
-}
-
 // Path returns the absolute filesystem path Write would target for
 // name. Useful for callers that need the path before deciding
 // whether to call Write (e.g. the wizard's overwrite-confirmation

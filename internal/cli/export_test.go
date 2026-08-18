@@ -101,20 +101,6 @@ func RunPromptCtxForTest(ctx context.Context, cmd *cobra.Command, application *a
 	return runPromptCtx(ctx, cmd, application, opts)
 }
 
-// NewToolsCmdForTest exposes the unexported tools command constructor so
-// external test packages can drive its wiring without living inside the cli
-// package.
-func NewToolsCmdForTest(getApp func() *app.App) *cobra.Command {
-	return newToolsCmd(getApp)
-}
-
-// NewToolsListCmdForTest exposes the unexported tools list subcommand so
-// external test packages can drive flag wiring and output assertions without
-// living inside the cli package.
-func NewToolsListCmdForTest(getApp func() *app.App) *cobra.Command {
-	return newToolsListCmd(getApp)
-}
-
 // SetStdinIsTerminal substitutes the package-level TTY probe used by the
 // `flowstate auth reset` --force guard. Tests drive both branches
 // (TTY-attached and not) deterministically through this hook.

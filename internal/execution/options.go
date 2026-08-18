@@ -21,24 +21,6 @@ func WithValidator(v harness.Validator) Option {
 	}
 }
 
-// WithCritic sets the critic and LLM provider used for quality review.
-//
-// Expected:
-//   - c is a non-nil harness.Critic.
-//   - p is a non-nil criticProvider (satisfies provider.Provider); if nil, critic review is skipped.
-//
-// Returns:
-//   - An Option that applies the critic to the loop.
-//
-// Side effects:
-//   - None.
-func WithCritic(c harness.Critic, p criticProvider) Option {
-	return func(l *Loop) {
-		l.critic = c
-		l.criticProvider = p
-	}
-}
-
 // WithMaxRetries sets the maximum number of evaluation attempts before the loop gives up.
 //
 // Expected:

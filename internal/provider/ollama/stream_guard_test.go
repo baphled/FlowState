@@ -42,7 +42,7 @@ func TestStreamGuardWiredIntoConstructor(t *testing.T) {
 			Messages: []provider.Message{{Role: "user", Content: "hello"}},
 		})
 		if serr == nil {
-			for range ch { //nolint:revive // drain to terminal/close
+			for range ch {
 			}
 		}
 		close(done)

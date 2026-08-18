@@ -3588,8 +3588,7 @@ func (e *Engine) Stream(ctx context.Context, agentID string, message string) (<-
 			SessionID: sessionID,
 			Messages:  messages,
 		})
-		//nolint:contextcheck // intentional: extraction uses fresh Background so stream ctx cancellation does not cut it short
-		e.dispatchKnowledgeExtraction(sessionID, messages)
+		e.dispatchKnowledgeExtraction(streamCtx, sessionID, messages)
 	}()
 
 	return outChan, nil
@@ -3792,7 +3791,7 @@ func (e *Engine) makePostTurnUsageEmitter(req *provider.ChatRequest, hasUsage bo
 //
 // Side effects:
 //   - Spawns a goroutine when the extractor is wired and enabled.
-func (e *Engine) dispatchKnowledgeExtraction(sessionID string, messages []provider.Message) {
+func (e *Engine) dispatchKnowledgeExtraction(baseCtx context.Context, sessionID string, messages []provider.Message) {
 	if !e.compressionConfig.SessionMemory.Enabled {
 		return
 	}
@@ -3808,7 +3807,7 @@ func (e *Engine) dispatchKnowledgeExtraction(sessionID string, messages []provid
 	e.extractionWG.Add(1)
 	go func() {
 		defer e.extractionWG.Done()
-		runKnowledgeExtraction(extractor, msgsCopy)
+		runKnowledgeExtraction(baseCtx, extractor, msgsCopy)
 	}()
 }
 
@@ -3904,8 +3903,8 @@ func (e *Engine) resolveKnowledgeExtractor(sessionID string) *recall.KnowledgeEx
 //
 // Side effects:
 //   - One LLM call and at most one store save through the extractor.
-func runKnowledgeExtraction(extractor *recall.KnowledgeExtractor, msgs []provider.Message) {
-	extractCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func runKnowledgeExtraction(parent context.Context, extractor *recall.KnowledgeExtractor, msgs []provider.Message) {
+	extractCtx, cancel := context.WithTimeout(context.WithoutCancel(parent), 30*time.Second)
 	defer cancel()
 	if err := extractor.Extract(extractCtx, msgs); err != nil {
 		slog.Warn("engine knowledge extraction failed",

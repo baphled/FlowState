@@ -897,14 +897,14 @@ func chmodGateExec(bundleDir string) error {
 	if rel, err := filepath.Rel(bundleDir, execPath); err != nil || rel == "" || strings.HasPrefix(rel, "..") {
 		return fmt.Errorf("exec %s escapes bundle %s", execPath, bundleDir)
 	}
-	info, err := os.Stat(execPath) //nolint:gosec // execPath is confined to bundleDir by the Rel check above.
+	info, err := os.Stat(execPath)
 	if err != nil {
 		return fmt.Errorf("stat exec %s: %w", execPath, err)
 	}
 	if info.Mode().Perm()&0o111 != 0 {
 		return nil
 	}
-	if err := os.Chmod(execPath, 0o755); err != nil { //nolint:gosec // execPath is confined to bundleDir by the Rel check above.
+	if err := os.Chmod(execPath, 0o755); err != nil {
 		return fmt.Errorf("chmod exec %s: %w", execPath, err)
 	}
 	return nil

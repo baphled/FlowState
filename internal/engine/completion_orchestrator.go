@@ -412,7 +412,7 @@ func (o *CompletionOrchestrator) publishOrDrain(sessionID string, chunks <-chan 
 	if o.broker != nil {
 		o.broker.Publish(sessionID, chunks)
 	} else {
-		for range chunks { //nolint:revive // intentional drain
+		for range chunks {
 		}
 	}
 }

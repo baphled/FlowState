@@ -46,7 +46,6 @@ type TokenManager struct {
 	refreshToken string
 	expiresAt    int64
 	refresher    TokenRefresher
-	authFilePath string
 	mu           sync.Mutex
 
 	// consecutiveFailures is the number of consecutive token refresh
@@ -70,36 +69,6 @@ type RefreshResult struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    int64
-}
-
-// NewTokenManager creates a TokenManager for OAuth token refresh.
-//
-// Expected:
-//   - accessToken is a non-empty OpenAI OAuth access token.
-//   - refreshToken is a non-empty refresh token (may be empty when refresh is unsupported).
-//   - expiresAt is Unix milliseconds when the access token expires.
-//   - refresher is a valid TokenRefresher implementation (may be nil for direct tokens).
-//   - tokenFilePath is a FlowState-owned JSON file for persisting refreshed credentials.
-//
-// Returns:
-//   - A configured TokenManager.
-//
-// Side effects:
-//   - None.
-func NewTokenManager(
-	accessToken string,
-	refreshToken string,
-	expiresAt int64,
-	refresher TokenRefresher,
-	tokenFilePath string,
-) *TokenManager {
-	return &TokenManager{
-		accessToken:  accessToken,
-		refreshToken: refreshToken,
-		expiresAt:    expiresAt,
-		refresher:    refresher,
-		authFilePath: tokenFilePath,
-	}
 }
 
 // NewDirectTokenManager creates a TokenManager that never refreshes.
@@ -361,34 +330,6 @@ func NewOAuth(token string) (*Provider, error) {
 		client:       newOAuthClient(token),
 		isOAuth:      true,
 		tokenManager: NewDirectTokenManager(token),
-		currentToken: token,
-	}, nil
-}
-
-// NewOAuthWithRefresh creates an OAuth provider with automatic token refresh.
-//
-// Expected:
-//   - tm is a non-nil TokenManager with valid credentials.
-//
-// Returns:
-//   - A configured Provider that refreshes tokens automatically.
-//   - An error if the initial token cannot be obtained.
-//
-// Side effects:
-//   - May perform an HTTP token refresh.
-func NewOAuthWithRefresh(tm *TokenManager) (*Provider, error) {
-	token, err := tm.EnsureToken(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf(
-			"openai OAuth token refresh failed "+
-				"(re-authenticate via `flowstate auth openai`): %w",
-			err,
-		)
-	}
-	return &Provider{
-		client:       newOAuthClient(token),
-		isOAuth:      true,
-		tokenManager: tm,
 		currentToken: token,
 	}, nil
 }

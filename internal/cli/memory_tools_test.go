@@ -67,7 +67,7 @@ var _ = Describe("memory-tools install command", func() {
 				// Content must match the embedded payload byte-for-byte
 				// — verbatim copy is the v1 contract; templating is a
 				// follow-up.
-				gotBytes, readErr := os.ReadFile(path) //nolint:gosec // path is a tempdir join
+				gotBytes, readErr := os.ReadFile(path)
 				Expect(readErr).NotTo(HaveOccurred())
 				wantBytes, embedErr := fs.ReadFile(app.EmbeddedMemoryToolsFS(), "memory_tools/"+name)
 				Expect(embedErr).NotTo(HaveOccurred())
@@ -109,7 +109,7 @@ var _ = Describe("memory-tools install command", func() {
 			Expect(out.String()).To(ContainSubstring("skipped"))
 			Expect(out.String()).To(ContainSubstring("mcp-mem0-server.js"))
 
-			content, readErr := os.ReadFile(filepath.Join(toolsDir, "mcp-mem0-server.js")) //nolint:gosec // tempdir join
+			content, readErr := os.ReadFile(filepath.Join(toolsDir, "mcp-mem0-server.js"))
 			Expect(readErr).NotTo(HaveOccurred())
 			Expect(string(content)).To(ContainSubstring("operator edited"),
 				"default install must not clobber operator edits")
@@ -122,7 +122,7 @@ var _ = Describe("memory-tools install command", func() {
 
 			Expect(out.String()).To(ContainSubstring("updated"))
 
-			content, readErr := os.ReadFile(filepath.Join(toolsDir, "mcp-mem0-server.js")) //nolint:gosec // tempdir join
+			content, readErr := os.ReadFile(filepath.Join(toolsDir, "mcp-mem0-server.js"))
 			Expect(readErr).NotTo(HaveOccurred())
 			Expect(string(content)).NotTo(ContainSubstring("operator edited"))
 

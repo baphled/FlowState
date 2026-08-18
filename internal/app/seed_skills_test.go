@@ -74,7 +74,7 @@ var _ = Describe("SeedSkillsDir", func() {
 				Expect(path).To(BeAnExistingFile(),
 					"SeedSkillsDir must copy %s/SKILL.md into the destination", name)
 
-				data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a tempdir + a constant
+				data, err := os.ReadFile(path)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(data)).To(BeNumerically(">", 0),
 					"seeded SKILL.md for %s must have non-empty content", name)
@@ -91,7 +91,7 @@ var _ = Describe("SeedSkillsDir", func() {
 			err := app.SeedSkillsDir(app.EmbeddedSkillsFS(), skillsDest)
 			Expect(err).NotTo(HaveOccurred())
 
-			content, err := os.ReadFile(filepath.Join(preActionDir, "SKILL.md")) //nolint:gosec // tempdir + constant
+			content, err := os.ReadFile(filepath.Join(preActionDir, "SKILL.md"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(content)).To(Equal(customBody),
 				"SeedSkillsDir must skip existing SKILL.md so user customisations survive an upgrade")

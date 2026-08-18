@@ -155,7 +155,7 @@ func discoverSwarmManifestPaths(dir string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("glob *.yaml in %q: %w", dir, err)
 	}
-	combined := append(ymlMatches, yamlMatches...) //nolint:gocritic // appendAssign is acceptable here; we want a fresh slice
+	combined := append(append([]string{}, ymlMatches...), yamlMatches...)
 	sort.Strings(combined)
 	return combined, nil
 }

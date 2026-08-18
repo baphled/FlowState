@@ -270,9 +270,10 @@ func quotaPersistLoop(
 			// survive across restart. Uses a fresh background context
 			// because the loop's ctx is already cancelled by
 			// definition; the Tracker's List path is non-blocking.
-			flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second) //nolint:lll // intentional detached context: loop ctx is already cancelled on shutdown flush
+			flushCtx, cancel := context.WithTimeout(
+				context.WithoutCancel(ctx), 2*time.Second)
 			defer cancel()
-			finalEntries, err := tracker.Snapshots(flushCtx) //nolint:contextcheck // intentional detached context: loop ctx is already cancelled on shutdown flush
+			finalEntries, err := tracker.Snapshots(flushCtx)
 			if err == nil {
 				if data, mErr := quota.MarshalCache(finalEntries, nowFunc()); mErr == nil {
 					sig := fingerprintCacheBody(data)

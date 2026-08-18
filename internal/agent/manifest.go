@@ -370,15 +370,6 @@ func SetDefaultEmbeddingModel(model string) {
 	defaultEmbeddingModel = model
 }
 
-// DefaultEmbeddingModel returns the current package-level embedding-model
-// fallback. Useful for tests that want to assert the wiring took effect.
-//
-// Returns: result of DefaultEmbeddingModel.
-// Side effects: None.
-func DefaultEmbeddingModel() string {
-	return defaultEmbeddingModel
-}
-
 // DefaultContextManagement returns sensible default context management settings.
 //
 // EmbeddingModel is sourced from the package-level fallback (see

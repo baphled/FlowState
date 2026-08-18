@@ -150,7 +150,7 @@ func newChildAttemptState() *childAttemptState {
 // Returns: result of bind.
 //
 // Side effects: None.
-func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, target delegationTarget, sessionID, message string) {
+func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, target delegationTarget, sessionID, message string) context.Context {
 	s.closeStore()
 	s.childCancel()
 	s.closeStore = d.attachSessionStore(target.engine, sessionID)
@@ -183,6 +183,7 @@ func (s *childAttemptState) bind(baseCtx context.Context, d *DelegateTool, targe
 		s.childCancel = func() {}
 	}
 	s.delegateCtx = delegateCtx
+	return delegateCtx
 }
 
 // startFreshRetry ...
@@ -199,37 +200,23 @@ func (s *childAttemptState) startFreshRetry(baseCtx context.Context, d *Delegate
 	return delegateSessionID
 }
 
-// attemptContext ...
+// stampCorrectiveOverrides stamps the corrective provider and model
+// overrides onto the supplied delegate context so subsequent attempts
+// inherit the escalated pair instead of re-wrapping the prior attempt's
+// context.
 //
-// Expected: parameters for attemptContext.
-//
-// Returns: result of attemptContext.
-//
-// Side effects: None.
-func (s *childAttemptState) attemptContext(forcedToolChoice string, finisherToolsAllowlist []string) context.Context {
-	attemptCtx := session.WithToolChoiceOverride(s.delegateCtx, forcedToolChoice)
-	if len(finisherToolsAllowlist) > 0 {
-		attemptCtx = session.WithToolsAllowlistOverride(attemptCtx, finisherToolsAllowlist)
-	}
-	return attemptCtx
-}
-
-// applyCorrectiveOverrides stamps the corrective provider and model
-// overrides onto the child's delegate context and rebuilds the attempt
-// context from the stamped state, so subsequent attempts inherit the
-// escalated pair instead of re-wrapping the prior attempt's context.
-//
-// Expected: parameters for applyCorrectiveOverrides.
-// Returns: the rebuilt attempt context carrying the overrides.
+// Expected: delegate context plus corrective provider/model pair.
+// Returns: the derived context carrying the overrides.
 // Side effects: mutates s.delegateCtx with the supplied overrides.
-func (s *childAttemptState) applyCorrectiveOverrides(prov, model, forcedToolChoice string, finisherToolsAllowlist []string) context.Context {
+func (s *childAttemptState) stampCorrectiveOverrides(base context.Context, prov, model string) context.Context {
 	if prov != "" {
-		s.delegateCtx = context.WithValue(s.delegateCtx, session.ProviderOverrideKey{}, prov)
+		base = context.WithValue(base, session.ProviderOverrideKey{}, prov)
 	}
 	if model != "" {
-		s.delegateCtx = context.WithValue(s.delegateCtx, session.ModelOverrideKey{}, model)
+		base = context.WithValue(base, session.ModelOverrideKey{}, model)
 	}
-	return s.attemptContext(forcedToolChoice, finisherToolsAllowlist)
+	s.delegateCtx = base
+	return base
 }
 
 // failIfOwned ...
@@ -627,7 +614,7 @@ func (d *DelegateTool) executeSync(
 	// anthropic/claude-sonnet-4-7 but delegated librarian/explorer
 	// children silently dropping to zai/glm-4.6, which then emitted
 	// malformed delegate tool args.
-	childState.bind(ctx, d, target, delegateSessionID, target.message)
+	delegateCtx := childState.bind(ctx, d, target, delegateSessionID, target.message)
 	defer childState.teardown()
 	startFreshChildRetry := func(message string) {
 		delegateSessionID = childState.startFreshRetry(ctx, d, target, baseInfo.ChainID, message, &baseInfo)
@@ -701,7 +688,10 @@ func (d *DelegateTool) executeSync(
 		// The engine reads it off ctx and stamps it onto the outbound
 		// ChatRequest.ToolChoice; per-turn so the first attempt and any
 		// later attempts that didn't decide to force stay unconstrained.
-		attemptCtx := childState.attemptContext(forcedToolChoice, finisherToolsAllowlist)
+		attemptCtx := session.WithToolChoiceOverride(delegateCtx, forcedToolChoice)
+		if len(finisherToolsAllowlist) > 0 {
+			attemptCtx = session.WithToolsAllowlistOverride(attemptCtx, finisherToolsAllowlist)
+		}
 		// Pair the forced tool_choice with a capable-model override on the
 		// SAME corrective retry. Forcing tool_choice made the marginal model
 		// (zai/glm-4.5) EMIT the coordination_store write — but glm-4.5 cannot
@@ -722,11 +712,15 @@ func (d *DelegateTool) executeSync(
 		// manifest-tier override resolveChildModelOverride already stamped.
 		if forcedToolChoice != "" {
 			if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
-				attemptCtx = childState.applyCorrectiveOverrides(prov, model, forcedToolChoice, finisherToolsAllowlist)
+				delegateCtx = childState.stampCorrectiveOverrides(delegateCtx, prov, model)
+				attemptCtx = session.WithToolChoiceOverride(delegateCtx, forcedToolChoice)
+				if len(finisherToolsAllowlist) > 0 {
+					attemptCtx = session.WithToolsAllowlistOverride(attemptCtx, finisherToolsAllowlist)
+				}
 			}
 		}
 		result = delegationResult{}
-		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childState.childTurnID) //nolint:contextcheck // attemptCtx derived from delegateCtx via closure chain
+		dispatchErr := d.runStreamThroughRunner(attemptCtx, target, &result, childState.childTurnID)
 		if dispatchErr != nil {
 			completedAt = time.Now().UTC()
 			baseInfo.ToolCalls = result.toolCalls
@@ -829,7 +823,7 @@ func (d *DelegateTool) executeSync(
 			if d.gateRunner == nil && !hasSubstantiveOutput([]byte(result.response)) {
 				if attempt < PostMemberGateMaxAttempts {
 					if prov, model := d.correctiveRetryModel(target); prov != "" || model != "" {
-						childState.applyCorrectiveOverrides(prov, model, "", nil)
+						delegateCtx = childState.stampCorrectiveOverrides(delegateCtx, prov, model)
 					}
 					target.message = appendPlainDirective(target.message)
 					forcedToolChoice = ""

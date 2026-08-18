@@ -26,16 +26,16 @@ func main() {
 	must("tempdir", err)
 	defer os.RemoveAll(tmpRoot)
 
-	fmt.Println("=== RLM Phase A — micro-compaction ===") //nolint:forbidigo // smoke harness stdout marker
+	fmt.Println("=== RLM Phase A — micro-compaction ===")
 	verifyPhaseA(tmpRoot)
 
-	fmt.Println("\n=== RLM Phase B — fact extraction & recall ===") //nolint:forbidigo // smoke harness stdout marker
+	fmt.Println("\n=== RLM Phase B — fact extraction & recall ===")
 	verifyPhaseB(tmpRoot)
 
-	fmt.Println("\n=== user config compaction status ===") //nolint:forbidigo // smoke harness stdout marker
+	fmt.Println("\n=== user config compaction status ===")
 	reportConfigStatus()
 
-	fmt.Println("\nPASS") //nolint:forbidigo // smoke harness stdout marker
+	fmt.Println("\nPASS")
 }
 
 // verifyPhaseA constructs a Phase A MicroCompactor and verifies that a

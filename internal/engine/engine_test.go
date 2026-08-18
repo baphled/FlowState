@@ -435,7 +435,7 @@ var _ = Describe("Engine", func() {
 				// is the spec contract — exercising the error path
 				// would only assert on slog output, which is out of
 				// scope for the launch/shutdown pinning specs.
-				stubCleaner = func(_ string, _ time.Duration) error { //nolint:unparam // signature must match Config.ToolOutputCleaner
+				stubCleaner = func(_ string, _ time.Duration) error {
 					cleanerCalls.Add(1)
 					return nil
 				}

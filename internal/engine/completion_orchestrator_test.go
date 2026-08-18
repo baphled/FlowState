@@ -24,7 +24,7 @@ type fakeSessionSender struct {
 	notifications   map[string][]streaming.CompletionNotificationEvent
 	ensuredSessions []string
 	hangBySession   map[string]chan struct{}
-	ctxBySession    map[string]context.Context //nolint:containedctx // test-only fixture for inspecting the deadline triggerRePrompt picked
+	ctxBySession    map[string]context.Context
 }
 
 func newFakeSessionSender() *fakeSessionSender {
@@ -110,7 +110,7 @@ func (b *fakeBroker) Publish(sessionID string, chunks <-chan provider.StreamChun
 	b.sessions = append(b.sessions, sessionID)
 	b.mu.Unlock()
 
-	for range chunks { //nolint:revive // intentional drain
+	for range chunks {
 	}
 }
 
@@ -134,7 +134,7 @@ func (b *blockingFakeBroker) Publish(sessionID string, chunks <-chan provider.St
 	b.mu.Unlock()
 
 	go func() {
-		for range chunks { //nolint:revive // intentional drain
+		for range chunks {
 		}
 	}()
 

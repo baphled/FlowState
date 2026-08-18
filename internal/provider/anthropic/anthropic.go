@@ -271,34 +271,6 @@ func NewOAuth(token string) (*Provider, error) {
 	}, nil
 }
 
-// NewOAuthWithRefresh creates an OAuth provider with automatic token refresh.
-//
-// Expected:
-//   - tm is a non-nil TokenManager with valid credentials.
-//
-// Returns:
-//   - A configured Provider that refreshes tokens automatically.
-//   - An error if the initial token cannot be obtained.
-//
-// Side effects:
-//   - May perform an HTTP token refresh.
-func NewOAuthWithRefresh(tm *TokenManager) (*Provider, error) {
-	token, err := tm.EnsureToken(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf(
-			"anthropic OAuth token refresh failed "+
-				"(re-authenticate via `flowstate auth anthropic`): %w",
-			err,
-		)
-	}
-	return &Provider{
-		client:       newOAuthClient(token),
-		isOAuth:      true,
-		tokenManager: tm,
-		currentToken: token,
-	}, nil
-}
-
 // newOAuthClient creates an Anthropic API client configured for OAuth bearer authentication.
 //
 // Expected:

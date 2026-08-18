@@ -1585,7 +1585,7 @@ func markProviderHealth(health RateLimitAware, providerName, model string, err e
 // Side effects:
 //   - None.
 func isUserCorrectableError(t provider.ErrorType) bool {
-	switch t { //nolint:exhaustive // user-correctable subset by design.
+	switch t {
 	case provider.ErrorTypeContextWindowExceeded:
 		return true
 	default:

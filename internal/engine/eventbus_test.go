@@ -213,7 +213,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -235,7 +235,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -262,7 +262,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -278,7 +278,7 @@ var _ = Describe("EventBus Integration", func() {
 			eng.EventBus().Subscribe("tool.execute.after", func(_ any) { mu.Lock(); order = append(order, "after"); mu.Unlock() })
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -306,7 +306,7 @@ var _ = Describe("EventBus Integration", func() {
 				})
 				chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain channel
+				for range chunks {
 				}
 				mu.Lock()
 				defer mu.Unlock()
@@ -339,7 +339,7 @@ var _ = Describe("EventBus Integration", func() {
 				})
 				chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain channel
+				for range chunks {
 				}
 				mu.Lock()
 				defer mu.Unlock()
@@ -373,7 +373,7 @@ var _ = Describe("EventBus Integration", func() {
 				})
 				chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain channel
+				for range chunks {
 				}
 				mu.Lock()
 				defer mu.Unlock()
@@ -457,7 +457,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -485,7 +485,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			Expect(validatingTool.execCalled).To(BeFalse(),
 				"silent-strip behaviour (the April 2026 regression 235d321 fixed) would have "+
@@ -557,7 +557,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -580,7 +580,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Hello")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -614,7 +614,7 @@ var _ = Describe("EventBus Integration", func() {
 			})
 			chunks, err := eng.Stream(context.Background(), "test-agent", "Use the tool")
 			Expect(err).NotTo(HaveOccurred())
-			for range chunks { //nolint:revive // drain channel
+			for range chunks {
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -667,7 +667,7 @@ var _ = Describe("EventBus Integration", func() {
 				ctx := context.WithValue(context.Background(), session.IDKey{}, "test-session-id")
 				chunks, err := eng.Stream(ctx, "switched-agent", "Hello")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain channel
+				for range chunks {
 				}
 
 				mu.Lock()
@@ -716,7 +716,7 @@ var _ = Describe("EventBus Integration", func() {
 				ctx := context.WithValue(context.Background(), session.IDKey{}, "established-session-id")
 				chunks, err := eng.Stream(ctx, "", "Hello")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain channel
+				for range chunks {
 				}
 
 				eng.SetManifest(newManifest)

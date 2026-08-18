@@ -1,14 +1,6 @@
-// Package-level suppression for the duplicated header block (imports +
-// package decl + leading constants) between the per-provider auth files.
-// The package declaration and imports are structural boilerplate that dupl
-// flags across sibling files; a directive on the package line suppresses it
-// without touching function bodies.
-package cli //nolint:dupl // per-provider auth files share package boilerplate by design
+package cli
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/baphled/flowstate/internal/app"
 	"github.com/spf13/cobra"
 )
@@ -56,31 +48,19 @@ func newAuthOpenZenCmd(getApp func() *app.App) *cobra.Command {
 //   - Outputs success/error message to stdout/stderr.
 func runAuthOpenZen(cmd *cobra.Command, application *app.App) error {
 	cfg := application.Config
-
-	if cfg.Providers.OpenZen.APIKey != "" {
-		if !confirmOverwrite(cmd, "openzen") {
-			fmt.Fprintln(cmd.OutOrStdout(), "Aborted; existing OpenZen API key kept.")
-			return nil
-		}
-	}
-
-	apiKey := readAPIKey(cmd, envOpenZenAPIKey, "Enter your OpenZen API key: ")
-	if apiKey == "" {
-		return errors.New("reading openzen api key")
-	}
-	if !isValidOpenZenKey(apiKey) {
-		fmt.Fprintln(cmd.OutOrStderr(), "✗ Invalid API key format")
-		fmt.Fprintln(cmd.OutOrStderr(), "Expected a non-empty OpenZen key (typically a 16+ character string)")
-		return errors.New("invalid openzen api key format")
-	}
-
-	cfg.Providers.OpenZen.APIKey = apiKey
-	if err := writeConfig(cfg); err != nil {
-		return fmt.Errorf("writing config: %w", err)
-	}
-
-	fmt.Fprintln(cmd.OutOrStdout(), "✓ OpenZen API key saved")
-	return nil
+	return runAPIKeyAuth(
+		cmd,
+		envOpenZenAPIKey,
+		"OpenZen",
+		"Enter your OpenZen API key: ",
+		cfg.Providers.OpenZen.APIKey,
+		func(key string) error {
+			cfg.Providers.OpenZen.APIKey = key
+			return writeConfig(cfg)
+		},
+		isValidOpenZenKey,
+		"Expected a non-empty OpenZen key (typically a 16+ character string)",
+	)
 }
 
 // isValidOpenZenKey checks that an OpenZen credential is plausibly

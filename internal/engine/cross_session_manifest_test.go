@@ -261,7 +261,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				defer wg.Done()
 				chunks, err := eng.Stream(ctxA, "planner", "hello A")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}()
 
@@ -274,7 +274,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				defer wg.Done()
 				chunks, err := eng.Stream(ctxB, "tech-lead", "hello B")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}()
 
@@ -361,7 +361,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				defer wg.Done()
 				chunks, err := eng.Stream(ctxAlpha, "", "hello alpha")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}()
 
@@ -375,7 +375,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				defer wg.Done()
 				chunks, err := eng.Stream(ctxBeta, "", "hello beta")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}()
 
@@ -502,7 +502,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				calls.Add(1)
 				chunks, err := eng.Stream(ctx, "", "hello solo")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}
 			Expect(calls.Load()).To(Equal(int32(3)))
@@ -571,7 +571,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				defer wg.Done()
 				chunks, err := eng.Stream(ctxAlpha, "", "hello alpha")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}()
 
@@ -662,7 +662,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				defer wg.Done()
 				chunks, err := eng.Stream(ctxPlanner, "planner", "plan it")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}()
 			gp.waitForCaptures(1)
@@ -670,7 +670,7 @@ var _ = Describe("Cross-session manifest binding", func() {
 				defer wg.Done()
 				chunks, err := eng.Stream(ctxLead, "tech-lead", "lead it")
 				Expect(err).NotTo(HaveOccurred())
-				for range chunks { //nolint:revive // drain
+				for range chunks {
 				}
 			}()
 			gp.waitForCaptures(2)

@@ -325,13 +325,6 @@ func SetRePromptTimeout(o *CompletionOrchestrator, d time.Duration) {
 	o.rePromptTimeout = d
 }
 
-// SetRePromptConcurrency overrides the bound on concurrent re-prompts. Tests
-// use this to validate semaphore behaviour without waiting on production
-// settings.
-func SetRePromptConcurrency(o *CompletionOrchestrator, n int) {
-	o.rePromptSem = make(chan struct{}, n)
-}
-
 // TeeToParentStreamForTest exposes teeToParentStream for white-box testing
 // of the goroutine lifecycle on ctx cancel. The production wrapper reads
 // streamOutputFromContext for parentOut; tests inject that via

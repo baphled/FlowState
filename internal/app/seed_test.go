@@ -294,7 +294,7 @@ var _ = Describe("RefreshAgentManifests", func() {
 //
 // Side effects:
 //   - None.
-func findEntry(report app.RefreshReport, name string) *app.RefreshEntry { //nolint:unparam // helper is generic; current specs all query "general.md" but the parameter documents intent for future tests
+func findEntry(report app.RefreshReport, name string) *app.RefreshEntry {
 	for i := range report {
 		if report[i].Name == name {
 			return &report[i]
