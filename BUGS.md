@@ -12,7 +12,19 @@ HEAD=f968fc3f
 
 ## Open bugs
 
-(none)
+### Learning-hook subscriber misattributes tool results to the session ID
+
+- File: `internal/app/app.go` — `handleToolExecuteResult` builds the learning
+  context with `learning.AgentIDKey` set to `toolEvt.Data.SessionID`.
+- Symptom: every persisted learning record carries the session ID in the
+  AgentID field; per-agent learning aggregation groups by session, not agent.
+- Suspected cause: `ToolExecuteResultEventData` carries `SessionID` and the
+  event has no dedicated agent field in this subscriber path; the wiring
+  assumes they coincide, which only holds for single-agent sessions.
+- Severity: low — no data loss, records are persisted; downstream knowledge
+  graph granularity is coarser than intended. Discovered while writing specs
+  for the subscriber (commit 9753daf7); not fixed pending a data-model
+  decision (add an AgentID field to the event vs. look the agent up).
 
 ## Resolved bugs
 
