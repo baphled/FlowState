@@ -7,7 +7,7 @@ HEAD=f968fc3f
 - engine: 82.2%
 - provider: ~86–92% (zai 86.0, shared 92.3)
 - session: 84.4%
-- app: 76.8% (was 73.8% after internal model/seed-vault tests; 71.3% at baseline)
+- app: 76.7%
 - lint: 0 issues
 
 ## Open bugs
