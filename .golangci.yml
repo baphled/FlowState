@@ -54,6 +54,12 @@ linters:
     # Context (clean)
     - contextcheck
 
+    # Function length (ratchet since 2026-08-19). Existing violating files
+    # are excluded below in the funlen-debt exclusion block; the exclusion
+    # list is a SHRINKING ratchet — remove a path once its functions are
+    # refactored under 50 lines / 40 statements. Never add new paths.
+    - funlen
+
     # Comment Hygiene (clean)
     - nolintlint
 
@@ -142,7 +148,7 @@ linters:
       min-complexity: 20
 
     funlen:
-      lines: 60
+      lines: 50
       statements: 40
       ignore-comments: true
 
@@ -370,6 +376,15 @@ linters:
         linters:
           - gosec
         text: '(G204|G703)'
+
+      # funlen-debt ratchet (dated 2026-08-19): these files carry
+      # pre-existing functions over 50 lines / 40 statements. Paths must
+      # only ever be REMOVED from this list as functions are refactored
+      # and the fixed file is committed. Never add new paths. Tracked in
+      # BUGS.md.
+      - path: 'internal/(app/app\.go|auth/login\.go|cli/(auth_csrf_key|auth_openai|auth_user|autoresearch|autoresearch_apply|autoresearch_loop|autoresearch_promote|autoresearch_prune|autoresearch_prune_runner|coordination|root|serve)\.go|config/config\.go|context/compression_config\.go|dispatch/dispatcher\.go|engine/(autoresearch_run_tool|compaction|completion_orchestrator|delegation_stream|delegation_swarm|delegation_target|delegation_tool|engine|engine_prompt|events|stream|toolloop|tool_validation)\.go|oauth/openai\.go|plan/(harness/(harness|incremental|voter)|parse)\.go|plan/validation/(chain|schema_validator)\.go|plugin/external/lifecycle\.go|plugin/failover/(healthmanager|stream_hook)\.go|provider/anthropic/model_constraints\.go|provider/openaicompat/openaicompat\.go|provider/quota/(spend|pricing/registry/registry)\.go|recall/query_tools\.go|session/(accumulator|attachment|manager|persistence)\.go|swarm/gates\.go|tool/(edit/edit|batch/batch|display/display|grep/grep|multiedit/multiedit|pathguard/pathguard|pathguard/permissions_writer|plan/plan)\.go|tracer/prometheus\.go|turn/turn\.go|api/attachments\.go|api/server\.go|app/(harness_adapter|mcp/wire|quota_cache|quota_wireup)\.go)$|tools/(fixdocblocks/main|smoke/auto_persist/main|smoke/swarm_validate/main)\.go$'
+        linters:
+          - funlen
 
       # Test files - relaxed requirements
       - path: '(.+)_test\.go'

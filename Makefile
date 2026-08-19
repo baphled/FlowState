@@ -153,7 +153,11 @@ check-swarm-manifests: build ## Validate embedded swarm manifests and surface ch
 	@echo "Validating embedded swarm manifests..."
 	@./build/flowstate swarm validate --swarm-dir internal/app/swarms
 
-check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-agent-manifests check-swarm-manifests ## Run all checks
+check: build fmt lint test coverage-check check-docblocks check-untested-packages check-note-comments check-keyword-adr check-gating-drift check-agent-manifests check-swarm-manifests check-test-file-convention ## Run all checks
+
+.PHONY: check-test-file-convention
+check-test-file-convention: ## Enforce test-file convention ratchet (2-test cap, no new orphan test files)
+	@bash scripts/check-test-file-convention.sh
 
 #
 # Dependencies
