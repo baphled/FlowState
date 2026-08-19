@@ -339,11 +339,14 @@ func newMemorySpendStoreAdapter(inner *quotastore.MemoryStore) *memorySpendStore
 	return &memorySpendStoreAdapter{inner: inner}
 }
 
-// Get ...
+// Get retrieves the spend snapshot for key from the wrapped memory
+// store, mapping a not-found error onto quota.ErrSpendStoreNotFound so
+// the tracker's lazy-reset path can distinguish "never recorded" from a
+// genuine store failure.
 //
-// Expected: parameters for Get.
+// Expected: key identifies a (provider, account, model) triple.
 //
-// Returns: result of Get.
+// Returns: the stored snapshot; ErrSpendStoreNotFound when absent.
 //
 // Side effects: None.
 func (m *memorySpendStoreAdapter) Get(ctx context.Context, key quota.SpendStoreKey) (quota.Snapshot, error) {
@@ -361,13 +364,14 @@ func (m *memorySpendStoreAdapter) Get(ctx context.Context, key quota.SpendStoreK
 	return snap, nil
 }
 
-// Put ...
+// Put writes snap under key, translating the quota-package key into
+// the store-package key shape.
 //
-// Expected: parameters for Put.
+// Expected: key identifies the snapshot's partition; snap is complete.
 //
-// Returns: result of Put.
+// Returns: an error when the underlying store write fails.
 //
-// Side effects: None.
+// Side effects: Persists the snapshot in the memory store.
 func (m *memorySpendStoreAdapter) Put(ctx context.Context, key quota.SpendStoreKey, snap quota.Snapshot) error {
 	return m.inner.Put(ctx, quotastore.Key{
 		ProviderID:  key.ProviderID,
@@ -376,13 +380,14 @@ func (m *memorySpendStoreAdapter) Put(ctx context.Context, key quota.SpendStoreK
 	}, snap)
 }
 
-// Reset ...
+// Reset clears the snapshot for key. Idempotent — resetting a key
+// that was never written is a no-op.
 //
-// Expected: parameters for Reset.
+// Expected: key identifies the entry to clear.
 //
-// Returns: result of Reset.
+// Returns: an error when the underlying store reset fails.
 //
-// Side effects: None.
+// Side effects: Removes the entry from the memory store.
 func (m *memorySpendStoreAdapter) Reset(ctx context.Context, key quota.SpendStoreKey) error {
 	return m.inner.Reset(ctx, quotastore.Key{
 		ProviderID:  key.ProviderID,
@@ -391,11 +396,12 @@ func (m *memorySpendStoreAdapter) Reset(ctx context.Context, key quota.SpendStor
 	})
 }
 
-// List ...
+// List enumerates every (key, snapshot) pair in the store, translating
+// each row into the quota-package entry shape the dashboard consumes.
 //
-// Expected: parameters for List.
+// Expected: the store has been initialised.
 //
-// Returns: result of List.
+// Returns: all stored entries; order is unspecified.
 //
 // Side effects: None.
 func (m *memorySpendStoreAdapter) List(ctx context.Context) ([]quota.SpendStoreEntry, error) {
@@ -417,11 +423,13 @@ func (m *memorySpendStoreAdapter) List(ctx context.Context) ([]quota.SpendStoreE
 	return out, nil
 }
 
-// isStoreNotFound ...
+// isStoreNotFound reports whether err is the store package's
+// snapshot-not-found sentinel, so Get can re-map it onto the
+// quota package's own sentinel.
 //
-// Expected: parameters for isStoreNotFound.
+// Expected: err may be nil.
 //
-// Returns: result of isStoreNotFound.
+// Returns: true when err is quotastore.ErrSnapshotNotFound.
 //
 // Side effects: None.
 func isStoreNotFound(err error) bool {
