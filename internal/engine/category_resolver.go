@@ -259,7 +259,7 @@ func (r *CategoryResolver) resolveAbstract(category string, cfg CategoryConfig) 
 //
 // Capability is "soft" at this layer: when the filter would empty the
 // candidate list (e.g. the user has zero capable models in the active
-// provider's catalog), we fall through to the unfiltered pick rather
+// provider's catalogue), we fall through to the unfiltered pick rather
 // than returning empty. The downstream DelegateTool gate still
 // fail-closes — this layer only OPTIMISES the happy path.
 //

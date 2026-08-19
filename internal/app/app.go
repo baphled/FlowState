@@ -1,4 +1,4 @@
-// Package app provides the main application container and initialization.
+// Package app provides the main application container and initialisation.
 package app
 
 import (
@@ -78,7 +78,7 @@ import (
 // sub-package.
 type MCPConnectionResult = appmcp.ConnectionResult
 
-// App is the main application container holding all initialized components.
+// App is the main application container holding all initialised components.
 type App struct {
 	Config   *config.AppConfig
 	Registry *agent.Registry
@@ -4641,7 +4641,7 @@ func selectDefaultManifest(registry *agent.Registry, defaultAgentID string) agen
 // into and loads from. Per the addendum §1, swarm manifests live under
 // XDG_CONFIG_HOME/flowstate/swarms/ (NOT under XDG_DATA_HOME/flowstate
 // alongside agent manifests) — they are user-edited config, not
-// app-managed catalog data. Resolved at startup so the seed and the
+// app-managed catalogue data. Resolved at startup so the seed and the
 // load both target the same path.
 //
 // Expected:

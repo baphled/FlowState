@@ -290,7 +290,7 @@ func pathguardScope(s permissionrequest.Scope) pathguard.GrantScope {
 // the recorder method is idempotent and side-effect-free.
 //
 // Memory: feedback_eventlogger_catalog_subscriber_is_dead_comment.
-// The catalog claims subscribers for the three resolution events;
+// The catalogue claims subscribers for the three resolution events;
 // this is the matching wire-up.
 //
 // Expected: parameters for subscribePermissionGaugeHook.

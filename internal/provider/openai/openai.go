@@ -551,7 +551,7 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	// ctxstore.DefaultModelContextFallback (16K) and forced spurious
 	// overflow refusals.
 	//
-	// gpt-5.x context-truncation fix: the static catalog enumerated only
+	// gpt-5.x context-truncation fix: the static catalogue enumerated only
 	// the bare "gpt-5" id, so every point-release and size variant
 	// (gpt-5.5, gpt-5-mini, …) fell through to the fallback. A planning-
 	// swarm plan-writer on gpt-5.5 hit limit=32768 (SystemPromptBudget),
@@ -559,7 +559,7 @@ func (p *Provider) Models() ([]provider.Model, error) {
 	// failed the swarm's plan gate. The gpt-5 family ships the same
 	// 400K-context / 128K-max-output budget (OpenAI published specs), so
 	// enumerate the family explicitly — mirroring zai.go's hardcoded
-	// defaultContextLength catalog — rather than leaning on the fallback.
+	// defaultContextLength catalogue — rather than leaning on the fallback.
 	// gpt5ContextLength / gpt5OutputLimit name the shared family budget so
 	// future point-releases inherit it from a single source of truth.
 	const (

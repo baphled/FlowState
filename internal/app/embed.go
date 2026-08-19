@@ -1,4 +1,4 @@
-// Package app provides the main application container and initialization.
+// Package app provides the main application container and initialisation.
 package app
 
 import (
