@@ -2,6 +2,7 @@ package execution
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 
@@ -128,9 +129,12 @@ func (l *Loop) StreamEvaluate(
 // runLoop executes the evaluation loop with retries and streaming.
 //
 // Returns: loopResult containing the final result, stop reason, and attempt count, or an error.
-// Expected: context may be cancelled.
+// Expected: context may be cancelled; streamer must not be nil.
 // Side effects: may call streamer multiple times if validation fails.
 func (l *Loop) runLoop(ctx context.Context, streamer harness.Streamer, agentID, message string) (loopResult, error) {
+	if streamer == nil {
+		return loopResult{}, fmt.Errorf("execution loop: streamer is nil for agent %q", agentID)
+	}
 	var (
 		result   *harness.EvaluationResult
 		attempts int

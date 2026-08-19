@@ -67,6 +67,17 @@ var _ = Describe("Loop", func() {
 	})
 
 	Describe("Evaluate", func() {
+		Context("when the streamer is nil", func() {
+			It("returns an error instead of panicking", func() {
+				loop := execution.NewLoop()
+
+				result, err := loop.Evaluate(context.Background(), nil, "agent1", "msg")
+
+				Expect(err).To(MatchError(ContainSubstring("streamer is nil")))
+				Expect(result).To(BeNil())
+			})
+		})
+
 		Context("when no validator is set", func() {
 			It("passes on the first attempt with a perfect score", func() {
 				streamer := &fakeStreamer{responses: []string{"hello"}}
