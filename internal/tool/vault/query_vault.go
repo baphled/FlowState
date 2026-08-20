@@ -62,7 +62,7 @@ func (t *QueryVaultTool) Schema() tool.Schema {
 		Type: "object",
 		Properties: map[string]tool.Property{
 			"question": {Type: "string", Description: "Question or query to search the vault for"},
-			"vault":    {Type: "string", Description: "Vault path scope (optional)"},
+			"vault":    {Type: "string", Description: "Vault name (e.g. \"baphled\") whose per-vault collection to search; omit to search the shared default collection"},
 			"top_k":    {Type: "integer", Description: "Maximum number of chunks to return (default 5)"},
 		},
 		Required: []string{"question"},

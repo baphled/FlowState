@@ -134,4 +134,64 @@ var _ = Describe("QueryHandler", func() {
 		Expect(resp.Chunks).To(HaveLen(1))
 		Expect(resp.Chunks[0]).To(Equal(vaultindex.Chunk{}))
 	})
+
+	It("searches the per-vault collection when the vault argument names a known vault", func() {
+		_, err := handler.Handle(context.Background(), vaultindex.QueryArgs{Question: "q", Vault: "Book Of YoNix"})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(searcher.col).To(Equal("flowstate-vault-book-of-yonix"))
+	})
+
+	It("searches the configured collection when the vault argument is empty", func() {
+		_, err := handler.Handle(context.Background(), vaultindex.QueryArgs{Question: "q", Vault: ""})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(searcher.col).To(Equal("vault-test"))
+	})
+
+	It("searches the configured collection when the vault argument is unknown", func() {
+		_, err := handler.Handle(context.Background(), vaultindex.QueryArgs{Question: "q", Vault: "Not A Known Vault"})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(searcher.col).To(Equal("vault-test"))
+	})
+})
+
+var _ = Describe("ResolveQueryCollection", func() {
+	It("maps canonical vault names to their per-vault collections", func() {
+		cases := []struct{ vault, want string }{
+			{"baphled", "flowstate-vault-baphled"},
+			{"Personal", "flowstate-vault-personal"},
+			{"Book Of YoNix", "flowstate-vault-book-of-yonix"},
+			{"Boodah Cooks", "flowstate-vault-boodah-cooks"},
+			{"n-vyro.io", "flowstate-vault-n-vyro-io"},
+			{"Boodah Consulting", "flowstate-vault-boodah-consulting"},
+			{"Colledge", "flowstate-vault-colledge"},
+			{"FullSpektrum®", "flowstate-vault-fullspektrum"},
+			{"FlowState", "flowstate-vault-flowstate"},
+		}
+		for _, c := range cases {
+			Expect(vaultindex.ResolveQueryCollection(c.vault, "flowstate-vault")).To(Equal(c.want), "vault %q", c.vault)
+		}
+	})
+
+	It("accepts any casing for known vault names", func() {
+		Expect(vaultindex.ResolveQueryCollection("BAPHLED", "flowstate-vault")).To(Equal("flowstate-vault-baphled"))
+	})
+
+	It("falls back to the default collection for empty and separator-only vault names", func() {
+		Expect(vaultindex.ResolveQueryCollection("", "flowstate-vault")).To(Equal("flowstate-vault"))
+		Expect(vaultindex.ResolveQueryCollection("  ", "flowstate-vault")).To(Equal("flowstate-vault"))
+		Expect(vaultindex.ResolveQueryCollection("!!!", "flowstate-vault")).To(Equal("flowstate-vault"))
+	})
+
+	It("falls back to the default collection for unknown vault names", func() {
+		Expect(vaultindex.ResolveQueryCollection("Not A Known Vault", "flowstate-vault")).To(Equal("flowstate-vault"))
+	})
+
+	It("honours a configured default collection override for unscoped queries", func() {
+		Expect(vaultindex.ResolveQueryCollection("", "custom-vault-index")).To(Equal("custom-vault-index"))
+		Expect(vaultindex.ResolveQueryCollection("Unknown Vault", "custom-vault-index")).To(Equal("custom-vault-index"))
+	})
+
+	It("still targets the canonical per-vault collection when the default is overridden", func() {
+		Expect(vaultindex.ResolveQueryCollection("Colledge", "custom-vault-index")).To(Equal("flowstate-vault-colledge"))
+	})
 })

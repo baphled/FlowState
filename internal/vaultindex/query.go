@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/baphled/flowstate/internal/recall/qdrant"
 )
@@ -11,11 +13,41 @@ import (
 // DefaultTopK is the default number of chunks returned by query_vault.
 const DefaultTopK = 5
 
+// VaultCollectionPrefix is the canonical stem for vault Qdrant
+// collections. The default shared collection equals the bare prefix and
+// each per-vault collection appends "-<slug>" to it, matching the
+// collections the `flowstate vault index --collection` CLI creates. It is
+// aliased by toolset.DefaultVaultCollection so every site that names a
+// collection resolves the same stem.
+const VaultCollectionPrefix = "flowstate-vault"
+
+// vaultSlugSeparators matches every run of characters that is not a
+// lowercase ASCII alphanumeric, so vault names collapse onto a
+// dash-separated slug.
+var vaultSlugSeparators = regexp.MustCompile(`[^a-z0-9]+`)
+
+// knownVaultSlugs is the canonical set of vault-name slugs that resolve to
+// a per-vault collection. Vault arguments whose slug falls outside this
+// set fall back to the default collection so agent-supplied garbage never
+// targets a collection that cannot exist.
+var knownVaultSlugs = map[string]struct{}{
+	"baphled":           {},
+	"personal":          {},
+	"book-of-yonix":     {},
+	"boodah-cooks":      {},
+	"n-vyro-io":         {},
+	"boodah-consulting": {},
+	"colledge":          {},
+	"fullspektrum":      {},
+	"flowstate":         {},
+}
+
 // QueryArgs is the input schema for the query_vault MCP tool.
 //
-// Vault is accepted for forward compatibility with multi-vault setups; the
-// current server is single-collection so the field is recorded but
-// unused.
+// Vault optionally scopes the query to a per-vault collection: when the
+// slug derived from the vault name matches a known vault, the search
+// targets flowstate-vault-<slug>; otherwise the handler's default
+// collection is used.
 type QueryArgs struct {
 	Question string `json:"question"`
 	TopK     int    `json:"top_k,omitempty"`
@@ -44,7 +76,9 @@ type Searcher interface {
 }
 
 // QueryHandler answers query_vault MCP calls by embedding the question and
-// running a Qdrant vector search against the configured collection.
+// running a Qdrant vector search against the configured collection, or the
+// per-vault collection derived from the request's vault argument when one
+// is supplied.
 type QueryHandler struct {
 	embedder   Embedder
 	searcher   Searcher
@@ -56,7 +90,8 @@ type QueryHandler struct {
 // Expected:
 //   - embedder is non-nil; it embeds the question text.
 //   - searcher is non-nil; it runs the vector search.
-//   - collection is the Qdrant collection name to query.
+//   - collection is the Qdrant collection name to query when no vault
+//     scope is supplied.
 //
 // Returns:
 //   - A configured *QueryHandler.
@@ -67,12 +102,55 @@ func NewQueryHandler(embedder Embedder, searcher Searcher, collection string) *Q
 	return &QueryHandler{embedder: embedder, searcher: searcher, collection: collection}
 }
 
+// ResolveQueryCollection returns the Qdrant collection a query_vault
+// request should search. A vault whose slug appears in the canonical
+// vault table resolves to flowstate-vault-<slug>; empty, whitespace-only,
+// and unknown vault names fall back to defaultCollection so callers never
+// error or target a collection that cannot exist.
+//
+// Expected:
+//   - vault is the raw vault argument from the tool call; any casing is
+//     accepted.
+//   - defaultCollection is the configured default collection
+//     (cfg.VaultCollection or VaultCollectionPrefix).
+//
+// Returns:
+//   - The per-vault collection name for a known vault.
+//   - defaultCollection otherwise.
+//
+// Side effects:
+//   - None.
+func ResolveQueryCollection(vault, defaultCollection string) string {
+	slug := slugifyVault(vault)
+	if slug == "" {
+		return defaultCollection
+	}
+	if _, ok := knownVaultSlugs[slug]; !ok {
+		return defaultCollection
+	}
+	return VaultCollectionPrefix + "-" + slug
+}
+
+// slugifyVault derives the collection slug for a vault name: lowercase,
+// every run of non-alphanumeric characters collapsed to a single dash,
+// with leading and trailing dashes trimmed.
+//
+// Expected: name is the raw vault argument.
+// Returns: result of slugifyVault.
+// Side effects: None.
+func slugifyVault(name string) string {
+	slugged := vaultSlugSeparators.ReplaceAllString(strings.ToLower(name), "-")
+	return strings.Trim(slugged, "-")
+}
+
 // Handle resolves a single query_vault request.
 //
 // Expected:
 //   - args.Question is non-empty; empty questions return an empty result
 //     without invoking the embedder.
 //   - args.TopK defaults to DefaultTopK when zero or negative.
+//   - args.Vault, when it slugifies to a known vault, redirects the
+//     search to that vault's per-vault collection.
 //
 // Returns:
 //   - A QueryResponse populated from the search hits.
@@ -88,13 +166,14 @@ func (q *QueryHandler) Handle(ctx context.Context, args QueryArgs) (QueryRespons
 	if topK <= 0 {
 		topK = DefaultTopK
 	}
+	collection := ResolveQueryCollection(args.Vault, q.collection)
 	vec, err := q.embedder.Embed(ctx, args.Question)
 	if err != nil {
 		return QueryResponse{}, fmt.Errorf("embedding query: %w", err)
 	}
-	points, err := q.searcher.Search(ctx, q.collection, vec, topK)
+	points, err := q.searcher.Search(ctx, collection, vec, topK)
 	if err != nil {
-		return QueryResponse{}, fmt.Errorf("searching collection %s: %w", q.collection, err)
+		return QueryResponse{}, fmt.Errorf("searching collection %s: %w", collection, err)
 	}
 	chunks := make([]Chunk, 0, len(points))
 	for _, p := range points {

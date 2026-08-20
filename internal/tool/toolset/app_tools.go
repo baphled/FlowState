@@ -19,16 +19,19 @@ import (
 	toolsvault "github.com/baphled/flowstate/internal/tool/vault"
 	"github.com/baphled/flowstate/internal/tool/web"
 	"github.com/baphled/flowstate/internal/tool/write"
+	"github.com/baphled/flowstate/internal/vaultindex"
 )
 
 // DefaultVaultCollection is the canonical Qdrant collection name for
 // vault-rag indices. It is consumed by buildVaultQueryHandler (the
 // in-process mcp_vault-rag_query_vault read tool) and by the
 // vault_index / vault_sync admin tools registered through
-// AppendVaultIndexTools. Exposed as a package-level constant so every
-// site that names a collection resolves the same fallback when the
-// operator has not overridden cfg.VaultCollection.
-const DefaultVaultCollection = "flowstate-vault"
+// AppendVaultIndexTools. It aliases vaultindex.VaultCollectionPrefix so
+// the shared default collection and the per-vault collections derived
+// from it stay in lock-step, and every site that names a collection
+// resolves the same fallback when the operator has not overridden
+// cfg.VaultCollection.
+const DefaultVaultCollection = vaultindex.VaultCollectionPrefix
 
 // BuildAppTools returns the base tool slice the FlowState engine starts
 // with: bash, read, write, web, the skill loader, the five todo tools
