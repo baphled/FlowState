@@ -48,7 +48,7 @@ func ConnectServers(
 	var results []ConnectionResult
 	serverToolNames := make(map[string][]string)
 	for _, serverCfg := range servers {
-		if !serverCfg.Enabled {
+		if !serverCfg.EnabledOrDefault() {
 			continue
 		}
 		mcpServerConfig := mcpclient.ServerConfig{

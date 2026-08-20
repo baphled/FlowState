@@ -50,7 +50,7 @@ var _ = Describe("DiscoverMCPServers default Enabled values", Label("integration
 			for _, s := range servers {
 				if s.Name == "memory" {
 					found = true
-					Expect(s.Enabled).To(BeTrue())
+					Expect(s.EnabledOrDefault()).To(BeTrue())
 				}
 			}
 			Expect(found).To(BeTrue())
@@ -72,7 +72,7 @@ var _ = Describe("DiscoverMCPServers default Enabled values", Label("integration
 			for _, s := range servers {
 				if s.Name == "vault-rag" {
 					found = true
-					Expect(s.Enabled).To(BeTrue())
+					Expect(s.EnabledOrDefault()).To(BeTrue())
 				}
 			}
 			Expect(found).To(BeTrue())
@@ -105,7 +105,7 @@ var _ = Describe("DiscoverMCPServers default Enabled values", Label("integration
 
 			Expect(servers).NotTo(BeEmpty())
 			for _, s := range servers {
-				Expect(s.Enabled).To(BeTrue())
+				Expect(s.EnabledOrDefault()).To(BeTrue())
 			}
 		})
 

@@ -50,7 +50,7 @@ var _ = Describe("DiscoverMCPServers", func() {
 				if s.Name == "memory" {
 					found = true
 					Expect(s.Command).To(ContainSubstring("mcp-mem0-server"))
-					Expect(s.Enabled).To(BeTrue())
+					Expect(s.EnabledOrDefault()).To(BeTrue())
 				}
 			}
 			Expect(found).To(BeTrue())
@@ -106,7 +106,7 @@ var _ = Describe("DiscoverMCPServers", func() {
 				if s.Name == "memory" {
 					found = true
 					Expect(s.Command).To(ContainSubstring(filepath.Join(".local", "share", "flowstate", "memory-tools", "mcp-mem0-server")))
-					Expect(s.Enabled).To(BeTrue())
+					Expect(s.EnabledOrDefault()).To(BeTrue())
 				}
 			}
 			Expect(found).To(BeTrue(),

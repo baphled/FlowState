@@ -27,7 +27,8 @@ var memoryServerInstallSubpath = filepath.Join(".local", "share", "flowstate", "
 // the binary on PATH continue to work unchanged.
 //
 // Returns:
-//   - A slice of MCPServerConfig with Enabled=false for discovered servers.
+//   - A slice of MCPServerConfig with Enabled left nil for discovered
+//     servers, which EnabledOrDefault resolves to enabled-by-default.
 //
 // Side effects:
 //   - None.
@@ -38,7 +39,6 @@ func DiscoverMCPServers() []MCPServerConfig {
 		servers = append(servers, MCPServerConfig{
 			Name:    "memory",
 			Command: path,
-			Enabled: true,
 		})
 	}
 
@@ -46,7 +46,6 @@ func DiscoverMCPServers() []MCPServerConfig {
 		servers = append(servers, MCPServerConfig{
 			Name:    "vault-rag",
 			Command: path,
-			Enabled: true,
 		})
 	}
 
@@ -59,7 +58,6 @@ func DiscoverMCPServers() []MCPServerConfig {
 			Name:    "filesystem",
 			Command: "npx",
 			Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", home},
-			Enabled: true,
 		})
 	}
 

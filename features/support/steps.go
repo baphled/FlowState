@@ -390,7 +390,6 @@ func (s *StepDefinitions) RegisterSteps(ctx *godog.ScenarioContext) {
 	ctx.Step(`^I am in directory "([^"]*)"$`, s.iAmInDirectory)
 	ctx.Step(`^the output should show "([^"]*)"$`, s.theOutputShouldShow)
 
-	ctx.Step(`^tool output truncation is configured with max_bytes (\d+) and max_lines (\d+)$`, s.toolOutputTruncationConfigured)
 	ctx.Step(`^the AI runs a bash command producing output above the default cap$`, s.theAIRunsABashCommandProducingOutputAboveDefaultCap)
 	ctx.Step(`^the bash output should be delivered verbatim without truncation$`, s.theBashOutputShouldBeDeliveredVerbatim)
 	ctx.Step(`^no overflow spill file should be written$`, s.noOverflowSpillFileShouldBeWritten)
@@ -3043,23 +3042,6 @@ func (s *StepDefinitions) theOutputShouldShow(expected string) error {
 	if !strings.Contains(s.bashOutput, expected) {
 		return fmt.Errorf("expected output %q, got %q", expected, s.bashOutput)
 	}
-	return nil
-}
-
-// toolOutputTruncationConfigured threads the configured tool-output limits
-// into the truncate package so the bash envelope inherits them at Apply time.
-//
-// Expected:
-//   - maxBytes is the configured byte cap (0 means unlimited).
-//   - maxLines is the configured line cap (0 means unlimited).
-//
-// Returns:
-//   - nil on success.
-//
-// Side effects:
-//   - Calls truncate.SetToolOutputLimits, mutating package-level state.
-func (s *StepDefinitions) toolOutputTruncationConfigured(maxBytes, maxLines int) error {
-	truncate.SetToolOutputLimits(maxBytes, maxLines)
 	return nil
 }
 

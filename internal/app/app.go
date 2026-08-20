@@ -183,6 +183,12 @@ type App struct {
 	// app.New's case) or polluting a test's isolated agentsDir (in
 	// NewForTest's case).
 	bootstrapDeferred bool
+	// construction records the NewOptions this App was built with so a
+	// caller that reconstructs the App (the cli root's post-bootstrap
+	// rebuild) can reuse them via ConstructionOptions instead of
+	// silently dropping test-injected seams such as MCPClientFactory.
+	// The zero value covers Apps built outside NewWithOptions.
+	construction NewOptions
 	// permissionPrompter is the shared ModeAskUser prompter wired by
 	// createEngine. Retained on the App so delegate engines spawned
 	// via createDelegateEngine receive the same prompter — keeps the
@@ -308,6 +314,15 @@ type NewOptions struct {
 	// agents from `${XDG_CONFIG_HOME}/flowstate/agents` — keep their
 	// historical behaviour.
 	SkipBootstrap bool
+	// MCPClientFactory, when non-nil, replaces the default per-App MCP
+	// manager construction in buildToolPipeline. Each App construction
+	// invokes the factory once, so callers that rebuild an App (the cli
+	// root's post-bootstrap reconstruction) obtain a fresh client per
+	// instance — mirroring production, where every App owns its own
+	// Manager and its own subprocess pairs. Reserved for tests and
+	// embeddings that need to observe Connect/DisconnectAll traffic;
+	// nil (the default) keeps the production mcpclient.NewManager.
+	MCPClientFactory func() mcpclient.Client
 }
 
 // New creates a new App instance with all components initialised. It is a
@@ -401,6 +416,7 @@ func NewWithOptions(cfg *config.AppConfig, opts NewOptions) (*App, error) {
 		failoverHook:       pluginRT.FailoverHook(),
 		failoverManager:    pluginRT.FailoverManager(),
 		dispatcher:         pluginRT.Dispatcher(),
+		mcpClientFactory:   opts.MCPClientFactory,
 	})
 	if err != nil {
 		return nil, err
@@ -424,6 +440,7 @@ func NewWithOptions(cfg *config.AppConfig, opts NewOptions) (*App, error) {
 	})
 	configureApplicationAfterBuild(app, cfg, runtime, defaultManifest, pluginRT)
 	app.bootstrapDeferred = opts.SkipBootstrap
+	app.construction = opts
 	return app, nil
 }
 
@@ -890,7 +907,7 @@ func setupEngine(params setupEngineParams) (*runtimeComponents, error) {
 		return nil, err
 	}
 	registerProviderConcurrencyGauges(traced.metrics, params.providerRegistry)
-	tp := buildToolPipeline(params.cfg)
+	tp := buildToolPipeline(params.cfg, params.mcpClientFactory)
 	applyFailoverPreferences(params.failoverManager, params.cfg)
 	contextStore := createContextStore(params.cfg)
 	chainStore := createChainStore(params.cfg)
@@ -1290,14 +1307,19 @@ type toolPipelineResult struct {
 //
 // Expected:
 //   - cfg is a non-nil AppConfig.
+//   - mcpClientFactory may be nil; nil selects the production
+//     mcpclient.NewManager.
 //
 // Returns:
 //   - A toolPipelineResult containing all assembled dependencies.
 //
 // Side effects:
 //   - Connects to configured MCP servers.
-func buildToolPipeline(cfg *config.AppConfig) toolPipelineResult {
-	mcpMgr := mcpclient.NewManager()
+func buildToolPipeline(cfg *config.AppConfig, mcpClientFactory func() mcpclient.Client) toolPipelineResult {
+	var mcpMgr mcpclient.Client = mcpclient.NewManager()
+	if mcpClientFactory != nil {
+		mcpMgr = mcpClientFactory()
+	}
 	todoDir := filepath.Join(cfg.DataDir, "todos")
 	fileStore, ferr := todotool.NewFileStore(todoDir)
 	if ferr != nil {
@@ -1415,6 +1437,7 @@ type setupEngineParams struct {
 	failoverHook       *failover.Hook
 	failoverManager    *failover.Manager
 	dispatcher         *external.Dispatcher
+	mcpClientFactory   func() mcpclient.Client
 }
 
 // runtimeComponents groups the runtime values created during engine setup.
@@ -3377,6 +3400,22 @@ func (a *App) SetModel(modelID string) error {
 	return nil
 }
 
+// ConstructionOptions returns the NewOptions this App was constructed
+// with. Callers that rebuild an App after bootstrap (the cli root's
+// reconstruction path) reuse these options so construction-time seams —
+// SkipBootstrap aside, which the rebuild forces — survive the swap
+// instead of resetting to defaults.
+//
+// Returns:
+//   - The NewOptions passed to NewWithOptions; the zero value for Apps
+//     built via other constructors (NewForTest).
+//
+// Side effects:
+//   - None.
+func (a *App) ConstructionOptions() NewOptions {
+	return a.construction
+}
+
 // Shutdown releases resources held by the App, closing all MCP client
 // connections. Safe to call multiple times and on a nil mcpClient.
 //
@@ -4936,7 +4975,10 @@ func buildMemoryClient(cfg *config.AppConfig, ollamaProvider embedRequester) lea
 // two callers (this handler and toolset.AppendVaultIndexTools) stay in
 // lock-step on the canonical collection name. Both ultimately share the
 // `flowstate-vault` constant defined alongside DefaultVaultCollection in
-// internal/tool/toolset/app_tools.go.
+// internal/tool/toolset/app_tools.go. The constructed handler additionally
+// resolves per-vault collections: a query_vault call whose vault argument
+// slugifies to a known vault is redirected to flowstate-vault-<slug>
+// (vaultindex.ResolveQueryCollection) instead of this default.
 //
 // Expected: parameters for buildVaultQueryHandler.
 // Returns: result of buildVaultQueryHandler.

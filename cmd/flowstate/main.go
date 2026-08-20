@@ -71,7 +71,7 @@ func run() int {
 		}
 	}()
 
-	rootCmd := cli.NewRootCmd(application)
+	rootCmd := cli.NewRootCmdFromAppPointer(&application)
 	cli.SetVersion(rootCmd, version, commit, date)
 
 	if err := rootCmd.Execute(); err != nil {

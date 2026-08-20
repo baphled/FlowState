@@ -69,6 +69,12 @@ func (m *mockMCPClient) DisconnectAll() error {
 	return nil
 }
 
+// mcpEnabled builds an explicit MCPServerConfig.Enabled pointer for
+// specs that must pin a non-default enabled state (nil already means
+// enabled-by-default, so only explicit-false and explicit-true pins
+// need this helper).
+func mcpEnabled(v bool) *bool { return &v }
+
 var _ = Describe("App", func() {
 	var tempDir string
 
@@ -384,7 +390,7 @@ When to use: Testing purposes
 				}
 
 				servers := []config.MCPServerConfig{
-					{Name: "test-server", Command: "test-cmd", Enabled: true},
+					{Name: "test-server", Command: "test-cmd"},
 				}
 
 				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
@@ -403,9 +409,9 @@ When to use: Testing purposes
 		})
 
 		Context("with disabled MCP servers", func() {
-			It("skips disabled servers", func() {
+			It("skips servers whose Enabled resolves to false", func() {
 				servers := []config.MCPServerConfig{
-					{Name: "disabled-server", Command: "test-cmd", Enabled: false},
+					{Name: "disabled-server", Command: "test-cmd", Enabled: mcpEnabled(false)},
 				}
 
 				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
@@ -431,8 +437,8 @@ When to use: Testing purposes
 				}
 
 				servers := []config.MCPServerConfig{
-					{Name: "bad-server", Command: "bad-cmd", Enabled: true},
-					{Name: "good-server", Command: "good-cmd", Enabled: true},
+					{Name: "bad-server", Command: "bad-cmd"},
+					{Name: "good-server", Command: "good-cmd"},
 				}
 
 				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
@@ -466,8 +472,8 @@ When to use: Testing purposes
 				}
 
 				servers := []config.MCPServerConfig{
-					{Name: "broken-server", Command: "cmd1", Enabled: true},
-					{Name: "ok-server", Command: "cmd2", Enabled: true},
+					{Name: "broken-server", Command: "cmd1"},
+					{Name: "ok-server", Command: "cmd2"},
 				}
 
 				tools, results, _ := app.ConnectMCPServers(context.Background(), client, servers)
@@ -577,7 +583,7 @@ When to use: Testing purposes
 				cfg.AgentDir = agentsDir
 				cfg.SkillDir = skillsDir
 				cfg.MCPServers = []config.MCPServerConfig{
-					{Name: "disabled-server", Command: "cmd", Enabled: false},
+					{Name: "disabled-server", Command: "cmd", Enabled: mcpEnabled(false)},
 				}
 
 				application, err := app.New(cfg)

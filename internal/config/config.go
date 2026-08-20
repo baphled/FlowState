@@ -743,12 +743,34 @@ type MCPToolPermission struct {
 
 // MCPServerConfig holds configuration for a single MCP server connection.
 // Name and Command are required fields.
+//
+// Enabled is a pointer so an omitted `enabled` key stays distinguishable
+// from an explicit `enabled: false`: omission resolves to enabled via
+// EnabledOrDefault, while an explicit false survives config load and
+// suppresses the server (including against PATH-discovered copies of the
+// same name, which MergeServers resolves in the configured entry's favour).
 type MCPServerConfig struct {
 	Name    string            `yaml:"name"`
 	Command string            `yaml:"command"`
 	Args    []string          `yaml:"args,omitempty"`
 	Env     map[string]string `yaml:"env,omitempty"`
-	Enabled bool              `yaml:"enabled"`
+	Enabled *bool             `yaml:"enabled,omitempty"`
+}
+
+// EnabledOrDefault resolves the server's effective enabled state. A nil
+// Enabled pointer (key omitted from YAML, or constructed without the
+// field, as PATH discovery does) means enabled by default; an explicit
+// pointer — true or false — is honoured verbatim.
+//
+// Returns:
+//   - false only when Enabled is a non-nil pointer to false.
+//
+// Side effects:
+//   - None.
+//
+// Expected: parameters for EnabledOrDefault.
+func (s MCPServerConfig) EnabledOrDefault() bool {
+	return s.Enabled == nil || *s.Enabled
 }
 
 // HarnessConfig holds configuration for the planning harness.
@@ -1884,12 +1906,6 @@ func applyDefaults(cfg *AppConfig) {
 	}
 	if cfg.Harness.MaxRetries == 0 {
 		cfg.Harness.MaxRetries = defaults.Harness.MaxRetries
-	}
-
-	for i := range cfg.MCPServers {
-		if !cfg.MCPServers[i].Enabled {
-			cfg.MCPServers[i].Enabled = true
-		}
 	}
 
 	applyCompressionDefaults(&cfg.Compression, defaults.Compression)

@@ -434,7 +434,8 @@ mcp_servers:
 				Expect(cfg.MCPServers[0].Command).To(Equal("/usr/bin/test"))
 				Expect(cfg.MCPServers[0].Args).To(Equal([]string{"--flag"}))
 				Expect(cfg.MCPServers[0].Env).To(HaveKeyWithValue("TEST_VAR", "value"))
-				Expect(cfg.MCPServers[0].Enabled).To(BeTrue())
+				Expect(*cfg.MCPServers[0].Enabled).To(BeTrue())
+				Expect(cfg.MCPServers[0].EnabledOrDefault()).To(BeTrue())
 			})
 
 			It("defaults Enabled to true when not set", func() {
@@ -450,7 +451,51 @@ mcp_servers:
 				cfg, err := config.LoadConfigFromPath(configPath)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(cfg.MCPServers[0].Enabled).To(BeTrue())
+				Expect(cfg.MCPServers[0].Enabled).To(BeNil(),
+					"an omitted enabled key must stay nil so it remains distinguishable from an explicit value")
+				Expect(cfg.MCPServers[0].EnabledOrDefault()).To(BeTrue())
+			})
+
+			It("preserves an explicit enabled false through config load", func() {
+				configContent := `
+mcp_servers:
+  - name: legacy-vault
+    command: /usr/bin/vault-rag-mcp
+    enabled: false
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.MCPServers).To(HaveLen(1))
+				Expect(cfg.MCPServers[0].Enabled).NotTo(BeNil(),
+					"an explicit enabled: false must survive load as a non-nil pointer")
+				Expect(*cfg.MCPServers[0].Enabled).To(BeFalse())
+				Expect(cfg.MCPServers[0].EnabledOrDefault()).To(BeFalse(),
+					"the operator's explicit enabled: false must not be force-flipped to true by applyDefaults")
+			})
+
+			It("keeps an explicit enabled false disabled even after a reload", func() {
+				configContent := `
+mcp_servers:
+  - name: legacy-vault
+    command: /usr/bin/vault-rag-mcp
+    enabled: false
+  - name: memory
+    command: /usr/bin/mcp-mem0-server
+`
+				configPath := filepath.Join(tempDir, "config.yaml")
+				err := os.WriteFile(configPath, []byte(configContent), 0o600)
+				Expect(err).NotTo(HaveOccurred())
+
+				cfg, err := config.LoadConfigFromPath(configPath)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(cfg.MCPServers[0].EnabledOrDefault()).To(BeFalse())
+				Expect(cfg.MCPServers[1].EnabledOrDefault()).To(BeTrue())
 			})
 		})
 	})

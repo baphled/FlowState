@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -34,6 +35,11 @@ func SetVersion(cmd *cobra.Command, version, commit, date string) {
 
 // NewRootCmd creates the root command for the FlowState CLI.
 //
+// The application pointer is captured by value: the command tree sees
+// any later app swaps through its internal pointer, but the CALLER's
+// variable is not updated. Binary entry points that need the swap to be
+// visible to a deferred shutdown must use NewRootCmdFromAppPointer.
+//
 // Expected:
 //   - application is a non-nil initialised App instance.
 //
@@ -43,7 +49,41 @@ func SetVersion(cmd *cobra.Command, version, commit, date string) {
 // Side effects:
 //   - Registers persistent flags for config, agents-dir, skills-dir, and sessions-dir.
 func NewRootCmd(application *app.App) *cobra.Command {
-	var appPtr = application
+	appPtr := application
+	return newRootCmd(&appPtr)
+}
+
+// NewRootCmdFromAppPointer creates the root command bound to an App
+// pointer owned by the caller. The PersistentPreRunE app swaps (flag
+// overrides, post-bootstrap reconstruction) write through appPtr, so the
+// caller observes the FINAL live App — cmd/flowstate/main.go relies on
+// this so its deferred DisconnectAll tears down the rebuilt App's MCP
+// subprocess pairs rather than only the pre-bootstrap original.
+//
+// Expected:
+//   - appPtr is a non-nil pointer to an initialised App.
+//
+// Returns:
+//   - A configured cobra.Command with all subcommands registered.
+//
+// Side effects:
+//   - Registers persistent flags for config, agents-dir, skills-dir, and sessions-dir.
+func NewRootCmdFromAppPointer(appPtr **app.App) *cobra.Command {
+	return newRootCmd(appPtr)
+}
+
+// newRootCmd assembles the command tree against a mutable App pointer.
+//
+// Expected:
+//   - appPtr is a non-nil pointer to a non-nil App.
+//
+// Returns:
+//   - A configured cobra.Command with all subcommands registered.
+//
+// Side effects:
+//   - Injects the autoresearch runners onto the initial App.
+func newRootCmd(appPtr **app.App) *cobra.Command {
+	application := *appPtr
 
 	// Inject the autoresearch runner so wireDelegateToolIfEnabled can
 	// register the autoresearch_run engine tool. This breaks the
@@ -91,26 +131,26 @@ func NewRootCmd(application *app.App) *cobra.Command {
 			// inherently bootstrap-free; the annotation check covers
 			// the RunE-bearing read-only commands (`models`, `session
 			// list`, `config show`, ...) the brief carves out.
-			if needsBootstrap(cmd) && appPtr.BootstrapDeferred() {
-				app.Bootstrap(appPtr.Config)
-				if err := rebuildAppAfterBootstrap(cmd, cfg, &appPtr); err != nil {
+			if needsBootstrap(cmd) && (*appPtr).BootstrapDeferred() {
+				app.Bootstrap((*appPtr).Config)
+				if err := rebuildAppAfterBootstrap(cmd, cfg, appPtr); err != nil {
 					return err
 				}
-				appPtr.MarkBootstrapRan()
-			} else if err := initApp(cmd, cfg, &appPtr); err != nil {
+				(*appPtr).MarkBootstrapRan()
+			} else if err := initApp(cmd, cfg, appPtr); err != nil {
 				return err
 			}
 			// Re-inject after a potential app reinitialisation so the
 			// runner's app pointer stays in sync.
-			appPtr.SetAutoresearchRunner(NewAutoresearchAppRunner(appPtr))
-			appPtr.SetAutoresearchPruner(NewAutoresearchPruneAppRunner(appPtr))
+			(*appPtr).SetAutoresearchRunner(NewAutoresearchAppRunner(*appPtr))
+			(*appPtr).SetAutoresearchPruner(NewAutoresearchPruneAppRunner(*appPtr))
 			if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
 				app.ConfigureLogging("debug", os.Stderr)
 			}
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRoot(cmd, appPtr)
+			return runRoot(cmd, *appPtr)
 		},
 	}
 
@@ -121,7 +161,7 @@ func NewRootCmd(application *app.App) *cobra.Command {
 	flags.String("sessions-dir", application.SessionsDir(), "Path to the sessions directory")
 	flags.BoolP("verbose", "v", false, "Enable debug-level logging to stderr")
 
-	getApp := func() *app.App { return appPtr }
+	getApp := func() *app.App { return *appPtr }
 
 	// Commands that exercise the engine (chat/run/serve), the agent or
 	// swarm registries (agent/agents/swarm/discover/coordination), the
@@ -196,11 +236,11 @@ func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) er
 	// preserved this way; pre-this skip, reinit's app.New ran all eight
 	// side effects unconditionally and re-introduced the hazard the
 	// outer SkipBootstrap was meant to close.
-	newApp, err := app.NewWithOptions(cfg, app.NewOptions{SkipBootstrap: true})
+	newApp, err := app.NewWithOptions(cfg, constructionOptionsForRebuild(*appPtr))
 	if err != nil {
 		return fmt.Errorf("reinitialising app with flags: %w", err)
 	}
-	*appPtr = newApp
+	swapApp(appPtr, newApp)
 	return nil
 }
 
@@ -218,12 +258,19 @@ func initApp(cmd *cobra.Command, baseCfg *config.AppConfig, appPtr **app.App) er
 // stays consistent — Bootstrap already ran above this call; PersistentPre
 // RunE marks it ran via MarkBootstrapRan once the rebuild returns clean.
 //
+// The superseded App's MCP server manager is torn down via swapApp
+// before the swap lands: both Apps connected their own subprocess pairs
+// at construction, and without the disconnect the pre-bootstrap pair
+// stays alive for the whole `flowstate serve` lifetime alongside the
+// rebuilt pair (every MCP server effectively spawned twice).
+//
 // Expected:
 //   - cmd is a non-nil cobra.Command.
 //   - baseCfg is a non-nil AppConfig.
 //   - appPtr is a non-nil pointer to an App pointer.
 //
 // Side effects:
+//   - Disconnects the previous App's MCP connections.
 //   - Reassigns *appPtr to the freshly-constructed App with populated
 //     registries.
 //
@@ -233,12 +280,55 @@ func rebuildAppAfterBootstrap(cmd *cobra.Command, baseCfg *config.AppConfig, app
 	if err != nil {
 		return err
 	}
-	newApp, err := app.NewWithOptions(cfg, app.NewOptions{SkipBootstrap: true})
+	newApp, err := app.NewWithOptions(cfg, constructionOptionsForRebuild(*appPtr))
 	if err != nil {
 		return fmt.Errorf("reconstructing app after bootstrap: %w", err)
 	}
-	*appPtr = newApp
+	swapApp(appPtr, newApp)
 	return nil
+}
+
+// constructionOptionsForRebuild derives the NewOptions a reconstructed
+// App should use: the previous App's construction options (so injected
+// seams survive the swap) with SkipBootstrap forced true, since the
+// rebuild only ever runs after app.Bootstrap has fired.
+//
+// Expected:
+//   - previous may be nil; nil yields the bare SkipBootstrap option.
+//
+// Returns:
+//   - NewOptions for the replacement App.
+//
+// Side effects:
+//   - None.
+func constructionOptionsForRebuild(previous *app.App) app.NewOptions {
+	if previous == nil {
+		return app.NewOptions{SkipBootstrap: true}
+	}
+	opts := previous.ConstructionOptions()
+	opts.SkipBootstrap = true
+	return opts
+}
+
+// swapApp tears down the outgoing App's MCP server connections and
+// installs the replacement behind appPtr. Disconnect failures are logged
+// as warnings — a stuck subprocess must never abort the command that
+// triggered the swap.
+//
+// Expected:
+//   - appPtr is a non-nil pointer to an App pointer.
+//   - newApp is a non-nil replacement App.
+//
+// Side effects:
+//   - Calls DisconnectAll on the outgoing App when one exists.
+//   - Reassigns *appPtr to newApp.
+func swapApp(appPtr **app.App, newApp *app.App) {
+	if outgoing := *appPtr; outgoing != nil {
+		if disconnectErr := outgoing.DisconnectAll(); disconnectErr != nil {
+			log.Printf("warning: MCP disconnect during app swap: %v", disconnectErr)
+		}
+	}
+	*appPtr = newApp
 }
 
 // resolveFlagOverrides reads the four persistent flags (`--config`,

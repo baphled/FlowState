@@ -12,8 +12,8 @@ var _ = Describe("MCP server merge integration", Label("integration"), func() {
 	Context("when merging auto-discovered servers with an empty configured list", func() {
 		It("returns all discovered servers", func() {
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
-				{Name: "vault-rag", Command: "mcp-vault-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
+				{Name: "vault-rag", Command: "mcp-vault-server"},
 			}
 
 			result := app.MergeMCPServersForTest(nil, discovered)
@@ -27,7 +27,7 @@ var _ = Describe("MCP server merge integration", Label("integration"), func() {
 	Context("when merging with an empty discovered list", func() {
 		It("returns all configured servers unchanged", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "filesystem", Command: "npx", Enabled: true},
+				{Name: "filesystem", Command: "npx"},
 			}
 
 			result := app.MergeMCPServersForTest(configured, nil)
@@ -40,10 +40,10 @@ var _ = Describe("MCP server merge integration", Label("integration"), func() {
 	Context("when a discovered server name collides with a configured server", func() {
 		It("configured server's command wins on name collision", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "memory", Command: "custom-memory-server", Enabled: true},
+				{Name: "memory", Command: "custom-memory-server"},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
 			}
 
 			result := app.MergeMCPServersForTest(configured, discovered)
@@ -54,10 +54,10 @@ var _ = Describe("MCP server merge integration", Label("integration"), func() {
 
 		It("does not duplicate a server present in both lists", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "memory", Command: "custom-memory-server", Enabled: true},
+				{Name: "memory", Command: "custom-memory-server"},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
 			}
 
 			result := app.MergeMCPServersForTest(configured, discovered)
@@ -69,39 +69,41 @@ var _ = Describe("MCP server merge integration", Label("integration"), func() {
 	Context("when auto-discovered servers have Enabled=true", func() {
 		It("preserves Enabled=true from discovered servers", func() {
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server", Enabled: mcpEnabled(true)},
 			}
 
 			result := app.MergeMCPServersForTest(nil, discovered)
 
-			Expect(result[0].Enabled).To(BeTrue())
+			Expect(result[0].EnabledOrDefault()).To(BeTrue())
+			Expect(*result[0].Enabled).To(BeTrue())
 		})
 	})
 
 	Context("when configured server has Enabled=false", func() {
 		It("explicit Enabled=false takes precedence over discovered server", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: false},
+				{Name: "memory", Command: "mcp-mem0-server", Enabled: mcpEnabled(false)},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
 			}
 
 			result := app.MergeMCPServersForTest(configured, discovered)
 
 			Expect(result).To(HaveLen(1))
-			Expect(result[0].Enabled).To(BeFalse())
+			Expect(result[0].EnabledOrDefault()).To(BeFalse())
+			Expect(*result[0].Enabled).To(BeFalse())
 		})
 	})
 
 	Context("when merging distinct servers from both lists", func() {
 		It("appends discovered servers not present in configured list", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "filesystem", Command: "npx", Enabled: true},
+				{Name: "filesystem", Command: "npx"},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
-				{Name: "vault-rag", Command: "mcp-vault-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
+				{Name: "vault-rag", Command: "mcp-vault-server"},
 			}
 
 			result := app.MergeMCPServersForTest(configured, discovered)

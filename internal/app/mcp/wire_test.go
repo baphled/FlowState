@@ -16,8 +16,8 @@ var _ = Describe("MergeServers", func() {
 	Context("when discovered list is non-empty and configured list is empty", func() {
 		It("returns all discovered servers", func() {
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
-				{Name: "vault-rag", Command: "mcp-vault-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
+				{Name: "vault-rag", Command: "mcp-vault-server"},
 			}
 
 			result := appmcp.MergeServers(nil, discovered)
@@ -31,7 +31,7 @@ var _ = Describe("MergeServers", func() {
 	Context("when discovered list is empty", func() {
 		It("returns all configured servers unchanged", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "filesystem", Command: "npx", Enabled: true},
+				{Name: "filesystem", Command: "npx"},
 			}
 
 			result := appmcp.MergeServers(configured, nil)
@@ -44,10 +44,10 @@ var _ = Describe("MergeServers", func() {
 	Context("when configured and discovered share a server name", func() {
 		It("preserves the configured server's command", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "memory", Command: "custom-memory-server", Enabled: true},
+				{Name: "memory", Command: "custom-memory-server"},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
 			}
 
 			result := appmcp.MergeServers(configured, discovered)
@@ -58,10 +58,10 @@ var _ = Describe("MergeServers", func() {
 
 		It("does not duplicate the server", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "memory", Command: "custom-memory-server", Enabled: true},
+				{Name: "memory", Command: "custom-memory-server"},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
 			}
 
 			result := appmcp.MergeServers(configured, discovered)
@@ -71,27 +71,27 @@ var _ = Describe("MergeServers", func() {
 
 		It("preserves the configured Enabled=false flag", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: false},
+				{Name: "memory", Command: "mcp-mem0-server", Enabled: mcpEnabled(false)},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
 			}
 
 			result := appmcp.MergeServers(configured, discovered)
 
 			Expect(result).To(HaveLen(1))
-			Expect(result[0].Enabled).To(BeFalse())
+			Expect(result[0].EnabledOrDefault()).To(BeFalse())
 		})
 	})
 
 	Context("when configured and discovered have distinct servers", func() {
 		It("returns the union with configured servers first", func() {
 			configured := []config.MCPServerConfig{
-				{Name: "filesystem", Command: "npx", Enabled: true},
+				{Name: "filesystem", Command: "npx"},
 			}
 			discovered := []config.MCPServerConfig{
-				{Name: "memory", Command: "mcp-mem0-server", Enabled: true},
-				{Name: "vault-rag", Command: "mcp-vault-server", Enabled: true},
+				{Name: "memory", Command: "mcp-mem0-server"},
+				{Name: "vault-rag", Command: "mcp-vault-server"},
 			}
 
 			result := appmcp.MergeServers(configured, discovered)
@@ -123,7 +123,7 @@ var _ = Describe("ConnectServers", func() {
 		}
 
 		servers := []config.MCPServerConfig{
-			{Name: "test-server", Command: "test-cmd", Enabled: true},
+			{Name: "test-server", Command: "test-cmd"},
 		}
 
 		tools, results, names := appmcp.ConnectServers(context.Background(), client, servers)
@@ -138,9 +138,9 @@ var _ = Describe("ConnectServers", func() {
 		Expect(names).To(HaveKeyWithValue("test-server", []string{"echo", "fetch"}))
 	})
 
-	It("skips servers where Enabled is false", func() {
+	It("skips servers whose Enabled resolves to false", func() {
 		servers := []config.MCPServerConfig{
-			{Name: "disabled-server", Command: "test-cmd", Enabled: false},
+			{Name: "disabled-server", Command: "test-cmd", Enabled: mcpEnabled(false)},
 		}
 
 		tools, results, _ := appmcp.ConnectServers(context.Background(), client, servers)
@@ -162,8 +162,8 @@ var _ = Describe("ConnectServers", func() {
 		}
 
 		servers := []config.MCPServerConfig{
-			{Name: "bad-server", Command: "x", Enabled: true},
-			{Name: "good-server", Command: "y", Enabled: true},
+			{Name: "bad-server", Command: "x"},
+			{Name: "good-server", Command: "y"},
 		}
 
 		tools, results, _ := appmcp.ConnectServers(context.Background(), client, servers)
@@ -185,8 +185,8 @@ var _ = Describe("ConnectServers", func() {
 		}
 
 		servers := []config.MCPServerConfig{
-			{Name: "broken-server", Command: "x", Enabled: true},
-			{Name: "ok-server", Command: "y", Enabled: true},
+			{Name: "broken-server", Command: "x"},
+			{Name: "ok-server", Command: "y"},
 		}
 
 		tools, results, _ := appmcp.ConnectServers(context.Background(), client, servers)
@@ -199,6 +199,10 @@ var _ = Describe("ConnectServers", func() {
 		Expect(results[0].Error).To(ContainSubstring("list tools failed"))
 	})
 })
+
+// mcpEnabled builds an explicit MCPServerConfig.Enabled pointer for specs
+// that pin a non-default enabled state; nil already means enabled.
+func mcpEnabled(v bool) *bool { return &v }
 
 // fakeMCPClient is a hand-rolled mcpclient.Client stub. Hand-rolling is
 // preferred over a generated mock here because the surface is small and
