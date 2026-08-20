@@ -7,17 +7,22 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/baphled/flowstate/internal/agent"
 	"github.com/baphled/flowstate/internal/coordination"
+	"github.com/baphled/flowstate/internal/delegation"
 	"github.com/baphled/flowstate/internal/engine"
 	"github.com/baphled/flowstate/internal/provider"
+	"github.com/baphled/flowstate/internal/streaming"
 	"github.com/baphled/flowstate/internal/swarm"
 	"github.com/baphled/flowstate/internal/tool"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
 func reviewerProvider() *mockProvider {
@@ -1436,3 +1441,1480 @@ func readPublicationRecord(store coordination.Store, chainID string) (string, bo
 	}
 	return rec.VaultPath, true
 }
+
+// handoffAtDepth builds a delegation.Handoff metadata-tagged with the
+// requested depth so checkSpawnLimits sees the right value.
+func handoffAtDepth(n int) *delegation.Handoff {
+	return &delegation.Handoff{
+		Metadata: map[string]string{"depth": strconv.Itoa(n)},
+	}
+}
+
+// minimalDelegateTool returns a DelegateTool with default spawn
+// limits and the given swarm registry installed.
+func minimalDelegateTool(reg *swarm.Registry) *engine.DelegateTool {
+	return engine.NewDelegateTool(map[string]*engine.Engine{}, agent.Delegation{CanDelegate: true}, "lead").
+		WithSwarmRegistry(reg)
+}
+
+// codegenManifest returns a swarm manifest with SwarmType=codegen so
+// ResolveMaxDepth picks the addendum-A4 depth-16 default.
+func codegenManifest() *swarm.Manifest {
+	return &swarm.Manifest{
+		SchemaVersion: "1.0.0",
+		ID:            "codegen-swarm",
+		Lead:          "lead",
+		Members:       []string{"worker"},
+		SwarmType:     swarm.SwarmTypeCodegen,
+	}
+}
+
+// pinnedDepthManifest returns a manifest with an explicit MaxDepth.
+func pinnedDepthManifest(depth int) *swarm.Manifest {
+	return &swarm.Manifest{
+		SchemaVersion: "1.0.0",
+		ID:            "pinned-depth-swarm",
+		Lead:          "lead",
+		Members:       []string{"worker"},
+		MaxDepth:      depth,
+	}
+}
+
+// installSwarmCtxOnLead wires a swarm.Context onto the lead engine so
+// checkSpawnLimits's d.activeSwarmContext() lookup succeeds.
+func installSwarmCtxOnLead(dt *engine.DelegateTool, m *swarm.Manifest) {
+	lead := engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "lead"},
+		Manifest: agent.Manifest{
+			ID:                "lead",
+			Name:              "Lead",
+			Instructions:      agent.Instructions{SystemPrompt: "lead"},
+			Delegation:        agent.Delegation{CanDelegate: true},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+	swarmCtx := swarm.NewContext(m.ID, m)
+	lead.SetSwarmContext(&swarmCtx)
+	engines := map[string]*engine.Engine{"lead": lead}
+	dt.SetEnginesForTest(engines)
+}
+
+var _ = Describe("SwarmDepthResolution", func() {
+	Context("with a codegen swarm context", func() {
+		It("permits a depth-10 handoff that the historical default would have rejected", func() {
+			reg := swarm.NewRegistry()
+			manifest := codegenManifest()
+			reg.Register(manifest)
+			dt := minimalDelegateTool(reg)
+			installSwarmCtxOnLead(dt, manifest)
+
+			err := dt.CheckSpawnLimitsForTest(handoffAtDepth(10))
+
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("with an explicit MaxDepth pinned on the manifest", func() {
+		It("rejects a handoff at the pinned ceiling", func() {
+			reg := swarm.NewRegistry()
+			manifest := pinnedDepthManifest(7)
+			reg.Register(manifest)
+			dt := minimalDelegateTool(reg)
+			installSwarmCtxOnLead(dt, manifest)
+
+			err := dt.CheckSpawnLimitsForTest(handoffAtDepth(8))
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("depth limit"))
+		})
+	})
+
+	Context("with no active swarm context", func() {
+		It("falls back to the historical SpawnLimits.MaxDepth=5", func() {
+			dt := minimalDelegateTool(nil)
+
+			err := dt.CheckSpawnLimitsForTest(handoffAtDepth(5))
+
+			Expect(err).To(HaveOccurred())
+		})
+	})
+})
+
+// extGateSwarmContext builds a swarm.Context whose Gates slice
+// includes a single ext: post-member gate targeting the named member.
+func extGateSwarmContext(swarmID, gateKind, target string) swarm.Context {
+	return swarm.Context{
+		SwarmID:   swarmID,
+		LeadAgent: "lead",
+		Members:   []string{target},
+		Gates: []swarm.GateSpec{{
+			Name:   "g1",
+			Kind:   gateKind,
+			When:   swarm.LifecyclePostMember,
+			Target: target,
+		}},
+		ChainPrefix: swarmID,
+	}
+}
+
+var _ = Describe("SwarmExtGateRouting", func() {
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+	})
+
+	Context("when the manifest names an ext gate registered via RegisterExtGateFunc", func() {
+		It("dispatches through the public RunGate path and observes a pass", func() {
+			var calls atomic.Int32
+			err := swarm.RegisterExtGateFunc("echo-pass", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				calls.Add(1)
+				return swarm.ExtGateResponse{Pass: true}, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			runner := swarm.NewMultiRunner()
+			gateErr := runner.Run(context.Background(), swarm.GateSpec{
+				Name: "g1",
+				Kind: "ext:echo-pass",
+				When: swarm.LifecyclePostMember,
+			}, swarm.GateArgs{SwarmID: "s", MemberID: "m"})
+
+			Expect(gateErr).NotTo(HaveOccurred())
+			Expect(calls.Load()).To(Equal(int32(1)))
+		})
+
+		It("surfaces *swarm.GateError when the registered ext gate returns Pass:false", func() {
+			err := swarm.RegisterExtGateFunc("echo-fail", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				return swarm.ExtGateResponse{Pass: false, Reason: "no go"}, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			runner := swarm.NewMultiRunner()
+			gateErr := runner.Run(context.Background(), swarm.GateSpec{
+				Name: "g2",
+				Kind: "ext:echo-fail",
+				When: swarm.LifecyclePostMember,
+			}, swarm.GateArgs{SwarmID: "s", MemberID: "m"})
+
+			Expect(gateErr).To(HaveOccurred())
+			var ge *swarm.GateError
+			Expect(errors.As(gateErr, &ge)).To(BeTrue())
+			Expect(ge.GateKind).To(Equal("ext:echo-fail"))
+		})
+
+		It("times out the gate when Timeout is set and the func sleeps past it", func() {
+			err := swarm.RegisterExtGateFunc("slow-gate", func(ctx context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				select {
+				case <-time.After(500 * time.Millisecond):
+					return swarm.ExtGateResponse{Pass: true}, nil
+				case <-ctx.Done():
+					return swarm.ExtGateResponse{}, ctx.Err()
+				}
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			report := swarm.Dispatch(context.Background(), swarm.NewMultiRunner(), []swarm.GateSpec{{
+				Name:    "g3",
+				Kind:    "ext:slow-gate",
+				When:    swarm.LifecyclePostMember,
+				Timeout: 50 * time.Millisecond,
+			}}, swarm.GateArgs{SwarmID: "s", MemberID: "m"})
+
+			Expect(report.Halted).To(BeTrue())
+			var ge *swarm.GateError
+			Expect(errors.As(report.Err, &ge)).To(BeTrue())
+			Expect(errors.Is(report.Err, context.DeadlineExceeded)).To(BeTrue())
+		})
+	})
+
+	Context("when an ext gate fires through the engine's post-member dispatcher", func() {
+		It("routes via runner.Run for the matching member and the func runs once", func() {
+			var calls atomic.Int32
+			err := swarm.RegisterExtGateFunc("engine-pass", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				calls.Add(1)
+				return swarm.ExtGateResponse{Pass: true}, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			lead := engine.New(engine.Config{
+				ChatProvider: &mockProvider{name: "lead"},
+				Manifest: agent.Manifest{
+					ID:                "lead",
+					Name:              "Lead",
+					Instructions:      agent.Instructions{SystemPrompt: "lead"},
+					Delegation:        agent.Delegation{CanDelegate: true},
+					ContextManagement: agent.DefaultContextManagement(),
+				},
+			})
+			engines := map[string]*engine.Engine{"lead": lead}
+			swarmCtx := extGateSwarmContext("ext-route-swarm", "ext:engine-pass", "qa-agent")
+			lead.SetSwarmContext(&swarmCtx)
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithGateRunner(swarm.NewMultiRunner())
+
+			gateErr := delegateTool.DispatchPostMemberGatesForTest(context.Background(), "qa-agent", "")
+
+			Expect(gateErr).NotTo(HaveOccurred())
+			Expect(calls.Load()).To(Equal(int32(1)))
+		})
+	})
+})
+
+// concurrencyProbeForEngine mirrors internal/swarm/dispatch_test.go's
+// probe — same primitive, exposed so the engine-side tests don't
+// reinvent the helper. Tracks max concurrent enter()/leave() pairs.
+type concurrencyProbeForEngine struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
+	total     int
+}
+
+func newProbe() *concurrencyProbeForEngine {
+	return &concurrencyProbeForEngine{}
+}
+
+func (p *concurrencyProbeForEngine) enter() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active++
+	p.total++
+	if p.active > p.maxActive {
+		p.maxActive = p.active
+	}
+}
+
+func (p *concurrencyProbeForEngine) leave() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.active--
+}
+
+func (p *concurrencyProbeForEngine) snapshotMax() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.maxActive
+}
+
+// sharedBarrier holds the gate state every streamer in a fan-out
+// shares. enterAndWait increments the arrival counter and releases
+// once releaseAt arrivals have accumulated.
+type sharedBarrier struct {
+	gate    chan struct{}
+	arrived int32
+	target  int32
+}
+
+func newSharedBarrier(releaseAt int) *sharedBarrier {
+	return &sharedBarrier{gate: make(chan struct{}), target: int32(releaseAt)}
+}
+
+func (b *sharedBarrier) enterAndWait(ctx context.Context) {
+	if atomic.AddInt32(&b.arrived, 1) >= b.target {
+		select {
+		case <-b.gate:
+		default:
+			close(b.gate)
+		}
+	}
+	select {
+	case <-b.gate:
+	case <-ctx.Done():
+	}
+}
+
+// barrierStreamer returns a streaming.Streamer that blocks every
+// member until the shared barrier hits releaseAt arrivals.
+func barrierStreamer(probe *concurrencyProbeForEngine, barrier *sharedBarrier) streaming.Streamer {
+	return streamerFunc(func(ctx context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		probe.enter()
+		barrier.enterAndWait(ctx)
+		probe.leave()
+		ch := make(chan provider.StreamChunk, 1)
+		ch <- provider.StreamChunk{Content: "ok", Done: true}
+		close(ch)
+		return ch, nil
+	})
+}
+
+// boundedHoldStreamer marks enter/leave around a bounded sleep so
+// MaxParallel clamping can be observed without depending on a fixed
+// barrier-arrival count.
+func boundedHoldStreamer(probe *concurrencyProbeForEngine, hold time.Duration) streaming.Streamer {
+	return streamerFunc(func(ctx context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		probe.enter()
+		select {
+		case <-time.After(hold):
+		case <-ctx.Done():
+		}
+		probe.leave()
+		ch := make(chan provider.StreamChunk, 1)
+		ch <- provider.StreamChunk{Content: "ok", Done: true}
+		close(ch)
+		return ch, nil
+	})
+}
+
+// orderRecorderForEngine mirrors the swarm-package recorder; tracks
+// the start:/end: ordering of member streams.
+type orderRecorderForEngine struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func newRecorder() *orderRecorderForEngine {
+	return &orderRecorderForEngine{}
+}
+
+func (o *orderRecorderForEngine) record(s string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, s)
+}
+
+func (o *orderRecorderForEngine) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]string, len(o.events))
+	copy(out, o.events)
+	return out
+}
+
+// recordingStreamer marks start: and end: events around a fixed wait
+// so the test can confirm sequential mode respects roster order.
+func recordingStreamer(rec *orderRecorderForEngine, member string) streaming.Streamer {
+	return streamerFunc(func(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		rec.record("start:" + member)
+		time.Sleep(2 * time.Millisecond)
+		rec.record("end:" + member)
+		ch := make(chan provider.StreamChunk, 1)
+		ch <- provider.StreamChunk{Content: "ok", Done: true}
+		close(ch)
+		return ch, nil
+	})
+}
+
+// parallelManifest builds a swarm manifest pinned to parallel
+// dispatch with cap, used to drive DispatchSwarmMembers.
+func parallelManifest(id string, members []string, parallel bool, maxParallel int) *swarm.Manifest {
+	return &swarm.Manifest{
+		SchemaVersion: "1.0.0",
+		ID:            id,
+		Lead:          "lead",
+		Members:       members,
+		SwarmType:     swarm.SwarmTypeAnalysis,
+		Harness: swarm.HarnessConfig{
+			Parallel:    parallel,
+			MaxParallel: maxParallel,
+		},
+	}
+}
+
+// stallingStreamer returns a streamer that opens a channel but never
+// emits anything (and never closes it) until the per-call ctx is
+// cancelled. Models a delegate child that goes silent mid-stream — the
+// exact symptom the per-member timeout guards against. The returned
+// signal channel closes once ctx.Done() fires so the test can prove
+// the cancellation observed by the streamer was deadline-driven.
+func stallingStreamer() (streaming.Streamer, <-chan context.Context) {
+	cancelled := make(chan context.Context, 4)
+	s := streamerFunc(func(ctx context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		ch := make(chan provider.StreamChunk)
+		go func() {
+			<-ctx.Done()
+			select {
+			case cancelled <- ctx:
+			default:
+			}
+			close(ch)
+		}()
+		return ch, nil
+	})
+	return s, cancelled
+}
+
+// buildLeadAndMemberEngines creates a lead plus N member engines and
+// returns the engines map ready for DelegateTool wiring.
+func buildLeadAndMemberEngines(memberIDs []string) (*engine.Engine, map[string]*engine.Engine) {
+	lead := engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "lead"},
+		Manifest: agent.Manifest{
+			ID:                "lead",
+			Name:              "Lead",
+			Instructions:      agent.Instructions{SystemPrompt: "lead"},
+			Delegation:        agent.Delegation{CanDelegate: true},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+	engines := map[string]*engine.Engine{"lead": lead}
+	for _, id := range memberIDs {
+		engines[id] = engine.New(engine.Config{
+			ChatProvider: &mockProvider{name: id},
+			Manifest: agent.Manifest{
+				ID:                id,
+				Name:              id,
+				Instructions:      agent.Instructions{SystemPrompt: id},
+				ContextManagement: agent.DefaultContextManagement(),
+			},
+		})
+	}
+	return lead, engines
+}
+
+var _ = Describe("SwarmParallelDispatch", func() {
+	Context("with Parallel=true and MaxParallel=2 over three members", func() {
+		It("never lets more than MaxParallel members run concurrently", func() {
+			members := []string{"alpha", "bravo", "charlie"}
+			lead, engines := buildLeadAndMemberEngines(members)
+			manifest := parallelManifest("parallel-swarm", members, true, 2)
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			probe := newProbe()
+			barrier := newSharedBarrier(2)
+			streamers := map[string]streaming.Streamer{}
+			for _, m := range members {
+				streamers[m] = barrierStreamer(probe, barrier)
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, members, "go")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(probe.snapshotMax()).To(BeNumerically("==", 2))
+		})
+	})
+
+	Context("with Parallel=false (the default)", func() {
+		It("runs members one at a time in roster order", func() {
+			members := []string{"alpha", "bravo", "charlie"}
+			lead, engines := buildLeadAndMemberEngines(members)
+			manifest := parallelManifest("seq-swarm", members, false, 0)
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			rec := newRecorder()
+			streamers := map[string]streaming.Streamer{}
+			for _, m := range members {
+				streamers[m] = recordingStreamer(rec, m)
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, members, "go")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rec.snapshot()).To(Equal([]string{
+				"start:alpha", "end:alpha",
+				"start:bravo", "end:bravo",
+				"start:charlie", "end:charlie",
+			}))
+		})
+	})
+
+	Context("when the manifest's MaxParallel exceeds MaxTotalBudget", func() {
+		It("clamps the fan-out at the spawn-limits budget", func() {
+			members := []string{"alpha", "bravo", "charlie", "delta"}
+			lead, engines := buildLeadAndMemberEngines(members)
+			manifest := parallelManifest("budget-swarm", members, true, 4)
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			probe := newProbe()
+			streamers := map[string]streaming.Streamer{}
+			for _, m := range members {
+				streamers[m] = boundedHoldStreamer(probe, 25*time.Millisecond)
+			}
+
+			limits := delegation.DefaultSpawnLimits()
+			limits.MaxTotalBudget = 2
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg).
+				WithSpawnLimits(limits)
+
+			err := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, members, "go")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(probe.snapshotMax()).To(BeNumerically("<=", 2))
+		})
+	})
+
+	// Per-member timeout guards the parent against a stalled child
+	// hanging the coordinator forever. Symptom: session 3255e2ee — a
+	// coordinator dispatched researcher + executor in parallel; the
+	// executor went silent mid-stream and the parent's
+	// collectWithProgress await loop had no time.After branch, so the
+	// parent session stayed active indefinitely. Fix: HarnessConfig
+	// gains MemberTimeout; the per-member dispatch ctx is wrapped with
+	// WithTimeout (zero = no deadline preserves current behaviour).
+	Context("with Harness.MemberTimeout set and a stalled member stream", func() {
+		It("returns the deadline error and cancels the sibling member", func() {
+			members := []string{"stalls", "sibling"}
+			lead, engines := buildLeadAndMemberEngines(members)
+			manifest := parallelManifest("timeout-swarm", members, true, 2)
+			manifest.Harness.MemberTimeout = 100 * time.Millisecond
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			stallStreamer, stallCancels := stallingStreamer()
+			siblingStreamer, siblingCancels := stallingStreamer()
+			streamers := map[string]streaming.Streamer{
+				"stalls":  stallStreamer,
+				"sibling": siblingStreamer,
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			start := time.Now()
+			err := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, members, "go")
+			elapsed := time.Since(start)
+
+			Expect(err).To(HaveOccurred(), "stalled member must surface as an error, not a forever-hang")
+			Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(),
+				"expected DeadlineExceeded in the error chain; got %v", err)
+			Expect(elapsed).To(BeNumerically("<", 5*time.Second),
+				"with MemberTimeout=100ms the dispatch must unwind well before any default; got %s", elapsed)
+
+			// Both streamer goroutines must observe their per-call ctx
+			// firing — the stalled member from its own deadline, the
+			// sibling from dispatchParallel's first-error cancel cascade.
+			Eventually(stallCancels, "1s").Should(Receive())
+			Eventually(siblingCancels, "1s").Should(Receive())
+		})
+
+		It("does not fire when MemberTimeout is zero (the default) and the streamer completes", func() {
+			members := []string{"alpha"}
+			lead, engines := buildLeadAndMemberEngines(members)
+			manifest := parallelManifest("no-timeout-swarm", members, true, 1)
+			// MemberTimeout left at zero — backwards-compatible default.
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			probe := newProbe()
+			streamers := map[string]streaming.Streamer{
+				"alpha": boundedHoldStreamer(probe, 25*time.Millisecond),
+			}
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, members, "go")
+
+			Expect(err).NotTo(HaveOccurred(),
+				"zero MemberTimeout must preserve the no-deadline contract")
+		})
+	})
+
+	// Bug C — Swarm-target dispatch case-fold. Forensic evidence:
+	// session 7dfdb197-ce21-45a2-b5da-f2fa62dd293b at 17:57:05.214
+	//
+	//   swarm-target dispatch "dev-swarm" failed:
+	//     no engine for swarm member "tech-Lead"
+	//
+	// The orchestrator delegated to a swarm whose Members[] referenced
+	// `tech-Lead`, but the per-agent engines map was keyed under the
+	// canonical `Tech-Lead`. The first lookup (in-swarm gate at
+	// resolveTargetWithOptions, fixed by Bug 2 / 576b8156 via
+	// containsAgent's strings.EqualFold) passed; the SECOND lookup
+	// (d.engines[memberID] at delegation.go:2983 inside buildMemberRunner)
+	// is a raw map access that's case-sensitive — so the dispatch
+	// surfaces "no engine for swarm member" despite the member being
+	// registered under a case-variant of the same id.
+	//
+	// Pin the case-fold contract end-to-end:
+	//   - canonical-registered Tech-Lead resolves under member id
+	//     `tech-Lead`, `TECH-LEAD`, and `tech-lead`.
+	//   - canonical-registered Senior-Engineer resolves under
+	//     `senior-engineer` and `Senior-engineer`.
+	//   - completely unknown ids still error with the existing
+	//     "no engine for swarm member" sentinel.
+	Context("Bug C — case-insensitive engine resolution under swarm-target dispatch", func() {
+		It("resolves Tech-Lead engine when the swarm member id case-differs (tech-Lead)", func() {
+			// Engines registered under canonical case.
+			lead, engines := buildLeadAndMemberEngines([]string{"Tech-Lead"})
+
+			// Manifest Members[] uses the case-variant the orchestrator
+			// actually typed in the forensic session.
+			memberAsCalled := "tech-Lead"
+			manifest := parallelManifest("dev-swarm", []string{memberAsCalled}, false, 0)
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			streamers := map[string]streaming.Streamer{
+				"Tech-Lead": trivialStreamer(nil),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(
+				context.Background(), &swarmCtx, []string{memberAsCalled}, "go")
+
+			Expect(err).NotTo(HaveOccurred(),
+				"buildMemberRunner must case-fold d.engines lookup so a case-variant member id ("+memberAsCalled+") resolves to the canonical engine (Tech-Lead) — mirrors Bug 2 / containsAgent's strings.EqualFold contract")
+		})
+
+		It("resolves the canonical engine across multiple case variants", func() {
+			// Multiple canonical-cased engines registered.
+			lead, engines := buildLeadAndMemberEngines([]string{"Tech-Lead", "Senior-Engineer"})
+
+			cases := []struct {
+				name          string
+				memberAsTyped string
+			}{
+				{"upper-case member id", "TECH-LEAD"},
+				{"all-lower member id", "tech-lead"},
+				{"mixed-case Senior-Engineer", "Senior-engineer"},
+				{"all-lower Senior-Engineer", "senior-engineer"},
+			}
+
+			for _, tc := range cases {
+				By(tc.name)
+				manifest := parallelManifest("dev-swarm-"+tc.memberAsTyped, []string{tc.memberAsTyped}, false, 0)
+				reg := swarm.NewRegistry()
+				reg.Register(manifest)
+				swarmCtx := swarm.NewContext(manifest.ID, manifest)
+				lead.SetSwarmContext(&swarmCtx)
+
+				streamers := map[string]streaming.Streamer{
+					"Tech-Lead":       trivialStreamer(nil),
+					"Senior-Engineer": trivialStreamer(nil),
+				}
+
+				delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+					WithStreamers(streamers).
+					WithSwarmRegistry(reg)
+
+				err := delegateTool.DispatchSwarmMembers(
+					context.Background(), &swarmCtx, []string{tc.memberAsTyped}, "go")
+
+				Expect(err).NotTo(HaveOccurred(),
+					"case variant "+tc.memberAsTyped+" must resolve to the canonical engine")
+			}
+		})
+
+		It("still surfaces 'no engine for swarm member' when the target is genuinely unknown", func() {
+			// Negative case — case-folding must NOT swallow real misses.
+			// A completely unknown member id (no matching engine under
+			// any case) must keep producing the existing sentinel error
+			// so honest typos still surface to the model.
+			lead, engines := buildLeadAndMemberEngines([]string{"Tech-Lead"})
+
+			unknown := "Completely-Unknown-Agent"
+			manifest := parallelManifest("dev-swarm-unknown", []string{unknown}, false, 0)
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithSwarmRegistry(reg)
+
+			err := delegateTool.DispatchSwarmMembers(
+				context.Background(), &swarmCtx, []string{unknown}, "go")
+
+			Expect(err).To(HaveOccurred(),
+				"a member id with no canonical match under any case must still error — case-fold must not swallow real misses")
+			Expect(err.Error()).To(ContainSubstring("no engine for swarm member"),
+				"the sentinel error message stays unchanged so existing log/transcript filters keep working")
+			Expect(err.Error()).To(ContainSubstring(unknown),
+				"the rejected member id appears verbatim in the error so the model sees what it actually typed")
+		})
+	})
+})
+
+// retryStreamerWith returns a streaming.Streamer that fails the first
+// failures attempts with err and then drains a single Done chunk.
+func retryStreamerWith(failures int, err error, calls *atomic.Int32) streaming.Streamer {
+	return streamerFunc(func(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		n := calls.Add(1)
+		if int(n) <= failures {
+			return nil, err
+		}
+		ch := make(chan provider.StreamChunk, 1)
+		ch <- provider.StreamChunk{Content: "ok", Done: true}
+		close(ch)
+		return ch, nil
+	})
+}
+
+// panicStreamer returns a streaming.Streamer that panics inside Stream.
+// Used to assert the runner maps panics to CategoryTerminal.
+func panicStreamer(calls *atomic.Int32) streaming.Streamer {
+	return streamerFunc(func(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		calls.Add(1)
+		panic("streamer boom")
+	})
+}
+
+// streamerFunc adapts a func to streaming.Streamer for tests.
+type streamerFunc func(ctx context.Context, agentID string, msg string) (<-chan provider.StreamChunk, error)
+
+func (s streamerFunc) Stream(ctx context.Context, agentID string, msg string) (<-chan provider.StreamChunk, error) {
+	return s(ctx, agentID, msg)
+}
+
+// retryableSwarmErr returns a CategorisedError tagged retryable so the
+// swarm runner's retry policy fires.
+func retryableSwarmErr() error {
+	return &swarm.CategorisedError{Category: swarm.CategoryRetryable, Cause: errors.New("transient")}
+}
+
+// terminalSwarmErr returns a CategorisedError tagged terminal so the
+// swarm runner short-circuits without retrying.
+func terminalSwarmErr() error {
+	return &swarm.CategorisedError{Category: swarm.CategoryTerminal, Cause: errors.New("permanent")}
+}
+
+// noJitterRetryManifest builds a swarm manifest pinned to fast retries
+// so tests don't pay wall-clock backoff.
+func noJitterRetryManifest(id string) *swarm.Manifest {
+	return &swarm.Manifest{
+		SchemaVersion: "1.0.0",
+		ID:            id,
+		Lead:          "lead",
+		Members:       []string{"qa-agent"},
+		SwarmType:     swarm.SwarmTypeAnalysis,
+		Retry: &swarm.RetryPolicy{
+			MaxAttempts:    3,
+			InitialBackoff: 1 * time.Millisecond,
+			MaxBackoff:     1 * time.Millisecond,
+			Multiplier:     1.0,
+			Jitter:         false,
+		},
+	}
+}
+
+// installSwarmCtxOnEngine wires a swarm.Context into the engine and a
+// matching manifest into a registry the DelegateTool can look up.
+func installSwarmCtxOnEngine(eng *engine.Engine, m *swarm.Manifest) *swarm.Registry {
+	reg := swarm.NewRegistry()
+	reg.Register(m)
+	swarmCtx := swarm.NewContext(m.ID, m)
+	eng.SetSwarmContext(&swarmCtx)
+	return reg
+}
+
+// buildLeadAndTargetEngines constructs a minimal lead + target engine
+// pair the DelegateTool can route between.
+func buildLeadAndTargetEngines() (*engine.Engine, *engine.Engine, map[string]*engine.Engine) {
+	lead := engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "lead"},
+		Manifest: agent.Manifest{
+			ID:                "lead",
+			Name:              "Lead",
+			Instructions:      agent.Instructions{SystemPrompt: "lead"},
+			Delegation:        agent.Delegation{CanDelegate: true},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+	target := engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "qa"},
+		Manifest: agent.Manifest{
+			ID:                "qa-agent",
+			Name:              "QA",
+			Instructions:      agent.Instructions{SystemPrompt: "qa"},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+	engines := map[string]*engine.Engine{"lead": lead, "qa-agent": target}
+	return lead, target, engines
+}
+
+var _ = Describe("SwarmRunnerWiring", func() {
+	Context("when the streamer returns a CategoryRetryable error", func() {
+		It("retries up to the manifest's MaxAttempts and succeeds", func() {
+			lead, _, engines := buildLeadAndTargetEngines()
+			manifest := noJitterRetryManifest("retry-swarm")
+			reg := installSwarmCtxOnEngine(lead, manifest)
+
+			calls := &atomic.Int32{}
+			streamers := map[string]streaming.Streamer{
+				"qa-agent": retryStreamerWith(2, retryableSwarmErr(), calls),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "hello",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(calls.Load()).To(Equal(int32(3)))
+		})
+	})
+
+	Context("when the streamer returns a CategoryTerminal error", func() {
+		It("short-circuits at the first attempt and surfaces *swarm.CategorisedError", func() {
+			lead, _, engines := buildLeadAndTargetEngines()
+			manifest := noJitterRetryManifest("terminal-swarm")
+			reg := installSwarmCtxOnEngine(lead, manifest)
+
+			calls := &atomic.Int32{}
+			streamers := map[string]streaming.Streamer{
+				"qa-agent": retryStreamerWith(99, terminalSwarmErr(), calls),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "hello",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+
+			Expect(err).To(HaveOccurred())
+			Expect(calls.Load()).To(Equal(int32(1)))
+			var ce *swarm.CategorisedError
+			Expect(errors.As(err, &ce)).To(BeTrue())
+			Expect(ce.Category).To(Equal(swarm.CategoryTerminal))
+		})
+	})
+
+	Context("when the streamer panics", func() {
+		It("maps the panic to CategoryTerminal without retrying", func() {
+			lead, _, engines := buildLeadAndTargetEngines()
+			manifest := noJitterRetryManifest("panic-swarm")
+			reg := installSwarmCtxOnEngine(lead, manifest)
+
+			calls := &atomic.Int32{}
+			streamers := map[string]streaming.Streamer{
+				"qa-agent": panicStreamer(calls),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "hello",
+				},
+			}
+
+			_, err := delegateTool.Execute(context.Background(), input)
+
+			Expect(err).To(HaveOccurred())
+			Expect(calls.Load()).To(Equal(int32(1)))
+			var ce *swarm.CategorisedError
+			Expect(errors.As(err, &ce)).To(BeTrue())
+			Expect(ce.Category).To(Equal(swarm.CategoryTerminal))
+		})
+	})
+
+	Context("when the same swarm context drives multiple delegations", func() {
+		It("reuses a single Runner so breaker state accumulates across calls", func() {
+			lead, _, engines := buildLeadAndTargetEngines()
+			manifest := noJitterRetryManifest("cache-swarm")
+			reg := installSwarmCtxOnEngine(lead, manifest)
+
+			calls := &atomic.Int32{}
+			streamers := map[string]streaming.Streamer{
+				"qa-agent": retryStreamerWith(0, nil, calls),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg)
+
+			input := tool.Input{
+				Name: "delegate",
+				Arguments: map[string]interface{}{
+					"subagent_type": "qa-agent",
+					"message":       "hello",
+				},
+			}
+
+			_, err1 := delegateTool.Execute(context.Background(), input)
+			_, err2 := delegateTool.Execute(context.Background(), input)
+
+			Expect(err1).NotTo(HaveOccurred())
+			Expect(err2).NotTo(HaveOccurred())
+			Expect(delegateTool.RunnerForSwarmIDForTest("cache-swarm")).
+				To(BeIdenticalTo(delegateTool.RunnerForSwarmIDForTest("cache-swarm")))
+		})
+	})
+})
+
+func newSwarmLeadEngine(leadID string, registry *agent.Registry) *engine.Engine {
+	return engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "swarm-lead-test"},
+		Manifest: agent.Manifest{
+			ID:   leadID,
+			Name: "Senior Engineer",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are the senior engineer.",
+			},
+		},
+		AgentRegistry: registry,
+	})
+}
+
+func newSwarmLeadEngineWithSwarmRegistry(leadID string, registry *agent.Registry, swarmReg *swarm.Registry) *engine.Engine {
+	return engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "swarm-lead-test"},
+		Manifest: agent.Manifest{
+			ID:   leadID,
+			Name: "Senior Engineer",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are the senior engineer.",
+			},
+		},
+		AgentRegistry: registry,
+		SwarmRegistry: swarmReg,
+	})
+}
+
+// newCoordinatorEngineWithSwarmRegistry builds the engine used by the
+// meta-swarm specs. The coordinator manifest carries `id: coordinator`
+// so the swarm-lead block fires when swarmCtx.LeadAgent == "coordinator",
+// and a populated swarm registry lets the lead-block renderer fall
+// through to swarm-id lookup for members that aren't agents.
+func newCoordinatorEngineWithSwarmRegistry(swarmReg *swarm.Registry) *engine.Engine {
+	return engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "meta-swarm-lead-test"},
+		Manifest: agent.Manifest{
+			ID:   "coordinator",
+			Name: "Coordinator",
+			Instructions: agent.Instructions{
+				SystemPrompt: "You are the coordinator.",
+			},
+		},
+		AgentRegistry: agent.NewRegistry(), // empty — sub-swarm ids must NOT resolve as agents
+		SwarmRegistry: swarmReg,
+	})
+}
+
+func newSwarmTestRegistry() *agent.Registry {
+	registry := agent.NewRegistry()
+	registry.Register(&agent.Manifest{
+		ID:       "senior-engineer",
+		Name:     "Senior Engineer",
+		Metadata: agent.Metadata{Role: "Lead Engineer"},
+	})
+	registry.Register(&agent.Manifest{
+		ID:       "explorer",
+		Name:     "Explorer",
+		Metadata: agent.Metadata{Role: "Codebase Explorer"},
+	})
+	registry.Register(&agent.Manifest{
+		ID:       "Code-Reviewer",
+		Name:     "Code Reviewer",
+		Metadata: agent.Metadata{Role: "Quality Gate"},
+	})
+	return registry
+}
+
+func newBugHuntContext() swarm.Context {
+	return swarm.Context{
+		SwarmID:     "bug-hunt",
+		LeadAgent:   "senior-engineer",
+		Members:     []string{"explorer", "Code-Reviewer"},
+		ChainPrefix: "bug-hunt",
+		Depth:       1,
+	}
+}
+
+var _ = Describe("Engine swarm-lead system prompt", func() {
+	Describe("when no swarm context is attached", func() {
+		It("does not include swarm-lead text in the prompt", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(strings.ToLower(prompt)).NotTo(ContainSubstring("leading swarm"))
+			Expect(prompt).NotTo(ContainSubstring("Swarm Leadership"))
+		})
+	})
+
+	Describe("when a swarm context is attached to the lead", func() {
+		It("emits swarm id, member ids, and delegation guidance", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(prompt).To(ContainSubstring("bug-hunt"))
+			Expect(prompt).To(ContainSubstring("explorer"))
+			Expect(prompt).To(ContainSubstring("Code-Reviewer"))
+			Expect(strings.ToLower(prompt)).To(ContainSubstring("delegate"))
+			Expect(prompt).To(ContainSubstring("bug-hunt/senior-engineer"))
+		})
+
+		// Part 1 of the chainID-identity unification: when the engine has
+		// stamped a per-run chainID (ChainIDAssigned), the lead's prompt MUST
+		// surface that exact value and tell the lead to use it verbatim. The
+		// recurring doom-loop was the planner free-forming its own chainID; the
+		// fix is to give it the engine value and forbid invention. A swarm
+		// WITHOUT an assigned chainID must NOT carry the directive (it would be
+		// false — no engine value exists to reference).
+		It("surfaces the engine-assigned chainID and forbids inventing one when the engine owns it", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+			ctx.AssignRunChainID("session-prompt-test")
+			engineChain := ctx.ChainPrefix
+			Expect(engineChain).To(HavePrefix("bug-hunt-"),
+				"precondition: the engine assigned a per-run chain anchored under the swarm id")
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(prompt).To(ContainSubstring(engineChain),
+				"the lead prompt must surface the exact engine-assigned chainID so the model references it")
+			Expect(strings.ToLower(prompt)).To(ContainSubstring("engine-assigned"),
+				"the lead prompt must mark the chainID as engine-assigned")
+			Expect(strings.ToLower(prompt)).To(
+				SatisfyAny(
+					ContainSubstring("do not invent"),
+					ContainSubstring("is ignored"),
+				),
+				"the lead prompt must forbid the model inventing its own chainID for an engine-owned run",
+			)
+		})
+
+		It("does NOT emit the engine-assigned directive when no per-run chainID was stamped", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext() // static prefix, ChainIDAssigned == false
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(strings.ToLower(prompt)).NotTo(ContainSubstring("engine-assigned"),
+				"a swarm without a stamped per-run chainID must not claim an engine-assigned value exists")
+		})
+
+		// Parallel dispatch: the lead must be instructed to emit independent
+		// member delegate calls in a single assistant message so the engine's
+		// concurrent dispatch path fires. Without this instruction the model
+		// defaults to sequential one-at-a-time dispatch, burning 3–5× more
+		// wall-clock time and tokens on wait overhead between members.
+		// Wave-dependent members (e.g. reviewers that read explorer output)
+		// must still be dispatched after their upstream members complete.
+		It("instructs the lead to dispatch independent members in a single parallel message", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			lowerPrompt := strings.ToLower(prompt)
+			Expect(lowerPrompt).To(
+				SatisfyAny(
+					ContainSubstring("single message"),
+					ContainSubstring("simultaneously"),
+					ContainSubstring("parallel"),
+					ContainSubstring("at once"),
+				),
+				"swarm lead prompt must instruct the model to dispatch all members "+
+					"in one message with multiple tool calls; without this the model "+
+					"dispatches sequentially and blocks on each result before starting the next",
+			)
+		})
+
+		It("resolves member names and roles from the agent registry", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(prompt).To(ContainSubstring("Explorer"))
+			Expect(prompt).To(ContainSubstring("Codebase Explorer"))
+			Expect(prompt).To(ContainSubstring("Quality Gate"))
+		})
+
+		It("appends swarm-owned lead prompt text from the swarm manifest", func() {
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "bug-hunt",
+				Lead:    "senior-engineer",
+				Members: []string{"explorer", "Code-Reviewer"},
+				Context: swarm.ContextConfig{ChainPrefix: "bug-hunt"},
+				Prompt:  swarm.PromptConfig{LeadAppend: "Lead-specific workflow instructions."},
+			})
+			eng := newSwarmLeadEngineWithSwarmRegistry("senior-engineer", newSwarmTestRegistry(), swarmReg)
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(prompt).To(ContainSubstring("Swarm Prompt Injection"))
+			Expect(prompt).To(ContainSubstring("Lead-specific workflow instructions."))
+		})
+	})
+
+	Describe("cache invalidation", func() {
+		It("removes swarm-lead text after SetSwarmContext(nil)", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+			withSwarm := eng.BuildSystemPrompt()
+			Expect(strings.ToLower(withSwarm)).To(ContainSubstring("leading swarm"))
+
+			eng.SetSwarmContext(nil)
+			withoutSwarm := eng.BuildSystemPrompt()
+
+			Expect(strings.ToLower(withoutSwarm)).NotTo(ContainSubstring("leading swarm"))
+			Expect(withoutSwarm).NotTo(ContainSubstring("Swarm Leadership"))
+		})
+
+		It("returns identical prompts on repeated calls with the same context", func() {
+			eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+			eng.SetSwarmContext(&ctx)
+
+			first := eng.BuildSystemPrompt()
+			second := eng.BuildSystemPrompt()
+
+			Expect(first).To(Equal(second))
+		})
+	})
+
+	Describe("non-leading agent", func() {
+		It("does not emit the leadership section even when swarm context is attached", func() {
+			eng := newSwarmLeadEngine("explorer", newSwarmTestRegistry())
+			ctx := newBugHuntContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(strings.ToLower(prompt)).NotTo(ContainSubstring("leading swarm"))
+			Expect(prompt).NotTo(ContainSubstring("Swarm Leadership"))
+		})
+
+		It("appends swarm-owned member prompt text when the swarm scope targets that member", func() {
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:      "bug-hunt",
+				Lead:    "senior-engineer",
+				Members: []string{"explorer", "Code-Reviewer"},
+				Prompt: swarm.PromptConfig{MemberAppends: map[string]swarm.PromptAppendConfig{
+					"explorer": {Append: "Member-specific workflow instructions."},
+				}},
+			})
+			eng := newSwarmLeadEngineWithSwarmRegistry("explorer", newSwarmTestRegistry(), swarmReg)
+			ctx := newBugHuntContext()
+
+			prompt := eng.BuildSystemPromptCtx(swarm.WithScope(context.Background(), &ctx))
+
+			Expect(prompt).NotTo(ContainSubstring("Swarm Leadership"))
+			Expect(prompt).To(ContainSubstring("Swarm Prompt Injection"))
+			Expect(prompt).To(ContainSubstring("Member-specific workflow instructions."))
+		})
+
+		It("loads member prompt text from a swarm-owned file", func() {
+			dir := GinkgoT().TempDir()
+			appendPath := filepath.Join(dir, "explorer.md")
+			Expect(os.WriteFile(appendPath, []byte("File-backed member instructions."), 0o600)).To(Succeed())
+
+			swarmReg := swarm.NewRegistry()
+			swarmReg.Register(&swarm.Manifest{
+				ID:        "bug-hunt",
+				Lead:      "senior-engineer",
+				Members:   []string{"explorer", "Code-Reviewer"},
+				SourceDir: dir,
+				Prompt: swarm.PromptConfig{MemberAppends: map[string]swarm.PromptAppendConfig{
+					"explorer": {File: "explorer.md"},
+				}},
+			})
+			eng := newSwarmLeadEngineWithSwarmRegistry("explorer", newSwarmTestRegistry(), swarmReg)
+			ctx := newBugHuntContext()
+
+			prompt := eng.BuildSystemPromptCtx(swarm.WithScope(context.Background(), &ctx))
+
+			Expect(prompt).To(ContainSubstring("File-backed member instructions."))
+		})
+	})
+
+	// Meta-Swarm Coordinator Architecture (May 2026) — Phase 2.
+	//
+	// When the coordinator leads meta-swarm whose members ARE OTHER
+	// SWARMS, the lead-block renderer (engine.go::appendSwarmLeadSectionFor)
+	// must resolve each swarm-id member through the swarm registry and
+	// render its description with a `(swarm)` suffix so the model can
+	// tell at a glance that delegating to one of these members
+	// dispatches a whole sub-swarm rather than a single agent.
+	//
+	// Without this, the renderer falls back to the bare id (since the
+	// agent registry has no `a-team` / `dev-swarm` / etc. agents), the
+	// model sees no description text, and the routing decision becomes
+	// guesswork. The regression-pin tests below assert: each swarm-id
+	// member appears in the prompt, each renders with its swarm
+	// description, and the `(swarm)` marker is present so the kind is
+	// disambiguated for the model.
+	Describe("when the lead's swarm members are themselves swarms (meta-swarm)", func() {
+		newMetaSwarmRegistry := func() *swarm.Registry {
+			reg := swarm.NewRegistry()
+			reg.Register(&swarm.Manifest{
+				ID:          "meta-swarm",
+				Lead:        "coordinator",
+				Members:     []string{"a-team", "dev-swarm", "planning-loop", "board-room"},
+				Description: "Top-level orchestrator. Coordinator picks the right sub-swarm.",
+			})
+			reg.Register(&swarm.Manifest{
+				ID:          "a-team",
+				Lead:        "coordinator",
+				Description: "A-Team Swarm (research → strategy → critique → writing → execution)",
+			})
+			reg.Register(&swarm.Manifest{
+				ID:          "dev-swarm",
+				Lead:        "Team-Lead",
+				Description: "Dev Swarm (full-lifecycle implementation through Team-Lead)",
+			})
+			reg.Register(&swarm.Manifest{
+				ID:          "planning-loop",
+				Lead:        "planner",
+				Description: "Planning Loop (requirements → research → plan)",
+			})
+			reg.Register(&swarm.Manifest{
+				ID:          "board-room",
+				Lead:        "chair",
+				Description: "Board Room (financial/strategic analysis)",
+			})
+			return reg
+		}
+
+		newMetaSwarmContext := func() swarm.Context {
+			return swarm.Context{
+				SwarmID:     "meta-swarm",
+				LeadAgent:   "coordinator",
+				Members:     []string{"a-team", "dev-swarm", "planning-loop", "board-room"},
+				ChainPrefix: "meta",
+				Depth:       0,
+			}
+		}
+
+		It("renders every sub-swarm member with its description and a (swarm) kind marker", func() {
+			eng := newCoordinatorEngineWithSwarmRegistry(newMetaSwarmRegistry())
+			ctx := newMetaSwarmContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			// All four sub-swarms appear as members in the lead block.
+			Expect(prompt).To(ContainSubstring("a-team"))
+			Expect(prompt).To(ContainSubstring("dev-swarm"))
+			Expect(prompt).To(ContainSubstring("planning-loop"))
+			Expect(prompt).To(ContainSubstring("board-room"))
+
+			// Each sub-swarm's description is rendered so the model can
+			// match user intent against a meaningful blurb.
+			Expect(prompt).To(ContainSubstring("A-Team Swarm"))
+			Expect(prompt).To(ContainSubstring("Dev Swarm"))
+			Expect(prompt).To(ContainSubstring("Planning Loop"))
+			Expect(prompt).To(ContainSubstring("Board Room"))
+
+			// `(swarm)` marker disambiguates kind. Without this, the
+			// model can't tell whether `a-team` is an agent or a
+			// nested swarm and may invoke the wrong tool semantics.
+			Expect(strings.Count(prompt, "(swarm)")).To(BeNumerically(">=", 4),
+				"each sub-swarm member must render with `(swarm)` so the model "+
+					"knows delegate('a-team', ...) dispatches a whole swarm, not an agent")
+		})
+
+		It("renders the coordination namespace under the meta-swarm chain prefix", func() {
+			eng := newCoordinatorEngineWithSwarmRegistry(newMetaSwarmRegistry())
+			ctx := newMetaSwarmContext()
+
+			eng.SetSwarmContext(&ctx)
+
+			prompt := eng.BuildSystemPrompt()
+
+			Expect(prompt).To(ContainSubstring("meta/coordinator"),
+				"meta-swarm uses chain_prefix `meta`; the coord-store namespace "+
+					"must reflect that so sub-swarm runs don't collide with a-team / planning-loop / board-room / dev-swarm namespaces")
+		})
+	})
+})
+
+var _ = Describe("Engine swarm-lead Final Output contract", func() {
+	It("keeps the main thread and scopes the coord-store write to the publisher handoff", func() {
+		eng := newSwarmLeadEngine("senior-engineer", newSwarmTestRegistry())
+		ctx := newBugHuntContext()
+
+		eng.SetSwarmContext(&ctx)
+
+		prompt := eng.BuildSystemPrompt()
+
+		Expect(prompt).To(ContainSubstring("bug-hunt/senior-engineer/output"))
+		Expect(prompt).To(ContainSubstring("inter-agent handoff for the publisher"))
+		Expect(prompt).To(ContainSubstring("keep reporting progress in this thread"))
+	})
+})
+
+// e2eStreamer drains a single Done chunk and counts invocations.
+func e2eStreamer(calls *atomic.Int32) streaming.Streamer {
+	return streamerFunc(func(_ context.Context, _ string, _ string) (<-chan provider.StreamChunk, error) {
+		if calls != nil {
+			calls.Add(1)
+		}
+		ch := make(chan provider.StreamChunk, 1)
+		ch <- provider.StreamChunk{Content: "ok", Done: true}
+		close(ch)
+		return ch, nil
+	})
+}
+
+// buildSmokeWorkerEngine constructs a single worker-engine the smoke
+// test fans out to.
+func buildSmokeWorkerEngine() *engine.Engine {
+	return engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "worker"},
+		Manifest: agent.Manifest{
+			ID:                "worker",
+			Name:              "Worker",
+			Instructions:      agent.Instructions{SystemPrompt: "worker"},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+}
+
+// buildSmokeLeadEngine constructs the lead engine the DelegateTool
+// uses as its source-agent.
+func buildSmokeLeadEngine() *engine.Engine {
+	return engine.New(engine.Config{
+		ChatProvider: &mockProvider{name: "lead"},
+		Manifest: agent.Manifest{
+			ID:                "lead",
+			Name:              "Lead",
+			Instructions:      agent.Instructions{SystemPrompt: "lead"},
+			Delegation:        agent.Delegation{CanDelegate: true},
+			ContextManagement: agent.DefaultContextManagement(),
+		},
+	})
+}
+
+// smokeManifest builds a swarm manifest the e2e test drives end-to-
+// end via NewManifestBuilder. Pinned at fast-no-jitter retry so the
+// test does not pay wall-clock backoff on the panic / retryable
+// edges in adjacent suites.
+func smokeManifest(name, gateKind string) *swarm.Manifest {
+	m := swarm.NewManifestBuilder("smoke-swarm").
+		WithLead("lead").
+		WithMember("worker").
+		WithGate(name, gateKind, swarm.LifecyclePostMember, "worker").
+		Build()
+	return &m
+}
+
+var _ = Describe("SwarmEndToEndSmoke", func() {
+	BeforeEach(func() {
+		swarm.ResetExtGateRegistryForTest()
+	})
+
+	Context("with an ext:always-pass gate", func() {
+		It("dispatches the worker once and the gate runs once on a passing run", func() {
+			var gateCalls atomic.Int32
+			err := swarm.RegisterExtGateFunc("always-pass", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				gateCalls.Add(1)
+				return swarm.ExtGateResponse{Pass: true}, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			manifest := smokeManifest("g1", "ext:always-pass")
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+
+			lead := buildSmokeLeadEngine()
+			worker := buildSmokeWorkerEngine()
+			engines := map[string]*engine.Engine{"lead": lead, "worker": worker}
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			var workerCalls atomic.Int32
+			streamers := map[string]streaming.Streamer{
+				"worker": e2eStreamer(&workerCalls),
+			}
+
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg).
+				WithGateRunner(swarm.NewMultiRunner())
+
+			err = delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, []string{"worker"}, "go")
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(workerCalls.Load()).To(Equal(int32(1)))
+			Expect(gateCalls.Load()).To(Equal(int32(1)))
+		})
+	})
+
+	Context("with an ext:always-fail gate", func() {
+		It("surfaces *swarm.GateError carrying GateKind ext:always-fail", func() {
+			err := swarm.RegisterExtGateFunc("always-fail", func(_ context.Context, _ swarm.ExtGateRequest) (swarm.ExtGateResponse, error) {
+				return swarm.ExtGateResponse{Pass: false, Reason: "no go"}, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			manifest := smokeManifest("g1", "ext:always-fail")
+			reg := swarm.NewRegistry()
+			reg.Register(manifest)
+
+			lead := buildSmokeLeadEngine()
+			worker := buildSmokeWorkerEngine()
+			engines := map[string]*engine.Engine{"lead": lead, "worker": worker}
+			swarmCtx := swarm.NewContext(manifest.ID, manifest)
+			lead.SetSwarmContext(&swarmCtx)
+
+			streamers := map[string]streaming.Streamer{"worker": e2eStreamer(nil)}
+			delegateTool := engine.NewDelegateTool(engines, agent.Delegation{CanDelegate: true}, "lead").
+				WithStreamers(streamers).
+				WithSwarmRegistry(reg).
+				WithGateRunner(swarm.NewMultiRunner())
+
+			dispatchErr := delegateTool.DispatchSwarmMembers(context.Background(), &swarmCtx, []string{"worker"}, "go")
+
+			Expect(dispatchErr).To(HaveOccurred())
+			var ge *swarm.GateError
+			Expect(errors.As(dispatchErr, &ge)).To(BeTrue())
+			Expect(ge.GateKind).To(Equal("ext:always-fail"))
+		})
+	})
+})

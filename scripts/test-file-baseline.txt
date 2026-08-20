@@ -173,13 +173,6 @@ internal/engine/splitter_eviction_test.go
 internal/engine/splitter_idle_sweeper_test.go
 internal/engine/sub_swarm_recursion_test.go
 internal/engine/suite_test.go
-internal/engine/swarm_depth_resolution_test.go
-internal/engine/swarm_e2e_test.go
-internal/engine/swarm_ext_gate_routing_test.go
-internal/engine/swarm_gate_test.go
-internal/engine/swarm_parallel_dispatch_test.go
-internal/engine/swarm_runner_wiring_test.go
-internal/engine/swarm_system_prompt_test.go
 internal/engine/system_prompt_skills_test.go
 internal/engine/thinking_integration_test.go
 internal/engine/todo_completion_test.go
