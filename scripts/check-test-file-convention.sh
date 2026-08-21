@@ -11,6 +11,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="${REPO_ROOT}/scripts/test-file-baseline.txt"
+COUNT_BASELINE="${REPO_ROOT}/.test-file-baseline"
 SCAN_DIRS=(internal cmd tools)
 
 fail=0
@@ -38,7 +39,7 @@ while IFS= read -r line; do
   fi
 done < <(uniq -c "${canonical}")
 
-# --- Rule 2: no new orphans vs baseline --------------------------------------
+# --- Build the current orphan list ------------------------------------------
 current="$(mktemp)"
 for dir in "${SCAN_DIRS[@]}"; do
   find "${REPO_ROOT}/${dir}" -name '*_test.go' -type f 2>/dev/null |
@@ -51,6 +52,22 @@ for dir in "${SCAN_DIRS[@]}"; do
     done
 done | sort -u > "${current}"
 
+# --- Rule 2: orphan ratchet — count must not exceed the baseline count -----
+baseline_count="$(head -1 "${COUNT_BASELINE}" 2>/dev/null | tr -d '[:space:]')"
+if [[ -z "${baseline_count}" ]]; then
+  echo "FAIL: missing count baseline ${COUNT_BASELINE}"
+  exit 1
+fi
+orphan_count="$(wc -l < "${current}" | tr -d ' ')"
+echo "orphan test files: ${orphan_count} (count baseline: ${baseline_count})"
+if (( orphan_count > baseline_count )); then
+  echo "FAIL: orphan test file count exceeds the ratchet baseline."
+  echo "Consolidate orphan test files into canonical <source>_test.go files"
+  echo "and lower the baseline — never raise it."
+  fail=1
+fi
+
+# --- Rule 3: no new orphans vs baseline list -------------------------------
 extra="$(comm -23 "${current}" <(grep -v '^\s*$' "${BASELINE}" | grep -v '^\s*#' | sort -u))"
 if [[ -n "${extra}" ]]; then
   echo "FAIL: new orphan test files detected (no matching source file):"
