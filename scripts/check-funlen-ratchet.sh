@@ -17,7 +17,7 @@ fi
 
 baseline="$(head -1 "${BASELINE_FILE}" | tr -d '[:space:]')"
 
-count="$(golangci-lint run --config "${CONFIG}" ./... 2>/dev/null | grep -c 'funlen' || true)"
+count="$(GOTOOLCHAIN=go1.26.1 golangci-lint run --config "${CONFIG}" ./... 2>/dev/null | grep -c 'funlen' || true)"
 
 echo "funlen violations: ${count} (baseline: ${baseline})"
 if (( count > baseline )); then

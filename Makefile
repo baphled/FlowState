@@ -108,12 +108,12 @@ lint: ## Run linters
 	@echo "Running linters..."
 	$(GOVET) ./...
 	@if command -v staticcheck &> /dev/null; then staticcheck ./...; fi
-	@if command -v golangci-lint &> /dev/null; then golangci-lint run; fi
+	@if command -v golangci-lint &> /dev/null; then GOTOOLCHAIN=go1.26.1 golangci-lint run; fi
 	@if command -v deadcode >/dev/null 2>&1; then deadcode -test ./...; fi
 
 check-docblocks: ## Run structured docblock analyser
 	@echo "Checking docblocks..."
-	@go run ./cmd/docblocks/... ./...
+	@GOTOOLCHAIN=go1.26.1 go run ./cmd/docblocks/... ./...
 
 check-untested-packages: ## Fail if any internal/ package has no test files
 	@echo "Checking for untested internal packages..."
@@ -143,7 +143,7 @@ check-keyword-adr: ## Fail if high-risk policy keywords lack a paired ADR (Guard
 
 check-gating-drift: ## Flag struct fields whose docstring names a gating identifier the package never reads (Guard 3)
 	@echo "Checking docstring-vs-impl gating drift..."
-	@go run ./cmd/gatingdrift/... ./internal/...
+	@GOTOOLCHAIN=go1.26.1 go run ./cmd/gatingdrift/... ./internal/...
 
 check-agent-manifests: build ## Validate embedded agent manifests against category→tools rules
 	@echo "Validating embedded agent manifests..."
