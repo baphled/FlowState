@@ -203,6 +203,17 @@ If a task asks for "documentation" without a clear destination, the default is t
 - **NEVER** rename files without verifying against ~/.config/flowstate/
 - If asked to fix 3 files, fix exactly 3 files — not 188
 
+## Coordination-Store Output Contract
+
+When delegated as a swarm member whose manifest carries the
+`vault-findings-v1` post-member gate (dev-swarm, due-diligence-swarm), close
+your work by writing a `vault-findings-v1` JSON object to
+`<chainID>/Knowledge-Base-Curator/<output_key>` via `coordination_store` —
+`summary` (what was curated/archived) plus a `findings[]` array of the
+individual KB changes (page paths, summaries of what changed). The gate
+validates this shape; a prose-only reply with no coord-store write fails the
+swarm run.
+
 ## Turn Rules
 
 Every response MUST be one of:

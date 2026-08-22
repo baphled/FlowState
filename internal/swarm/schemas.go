@@ -669,6 +669,48 @@ func TrackerAnalysisV1Schema() *jsonschema.Schema {
 	}
 }
 
+// DispatchRecordV1Name is the SchemaRef the meta-swarm's post-swarm
+// gate uses to validate the coordinator's structured dispatch record
+// (see internal/app/swarms/meta-swarm.yml). Routing was previously
+// pure model judgement with zero gates — the least deterministic
+// point of the three-tier orchestration. The record pins the chosen
+// sub-swarm, the reason, and the task summary so a post-hoc audit
+// can verify the routing decision was defensible.
+const DispatchRecordV1Name = "dispatch-record-v1"
+
+// DDVerdictV1Name is the SchemaRef the due-diligence-swarm uses on
+// its specialist post-member gates (bull/bear-flavoured analysts,
+// Tech-Lead, Security-Engineer). It replaces the ext:keyword-coverage
+// pseudo-gates — substring matching on words like "verdict" or "low"
+// is trivially satisfied by boilerplate and cannot distinguish a real
+// verdict from filler. The schema enforces a structured verdict with
+// an explicit confidence percentage so the swarm-level confidence
+// threshold gate reads a number, not prose.
+const DDVerdictV1Name = "dd-verdict-v1"
+
+// CriticVerdictV1Name is the SchemaRef the a-team swarm uses to
+// mechanically enforce its "critic is mandatory" contract (see
+// internal/app/agents/critic.md). Previously the adversarial
+// engagement rule was prose-only; this schema requires at least one
+// substantive objection with a classification, so a clean-pass
+// rubber stamp fails the gate.
+const CriticVerdictV1Name = "critic-verdict-v1"
+
+// BoardDecisionV1Name is the SchemaRef the board-room swarm's
+// post-swarm gate uses to validate the Chair's final structured
+// decision at `board-room/{chainID}/decision`. The decision shape
+// matches the one the chair manifest already documents (decision /
+// rationale / dissent / conditions), so the gate closes the
+// largest single-judgement surface without changing the agent's
+// promised output.
+const BoardDecisionV1Name = "board-decision-v1"
+
+// FinalSynthesisV1Name is the SchemaRef shared by the lead-synthesis
+// post-swarm gates of a-team and mental-health-swarm. It requires a
+// summary and at least one takeaway so a lead that narrates nothing
+// fails honestly instead of shipping an empty synthesis.
+const FinalSynthesisV1Name = "final-synthesis-v1"
+
 // floatPtr is a tiny helper for the *float64 fields the jsonschema-go
 // library uses for numeric bounds. Pulled out so the schema bodies
 // above stay readable.
@@ -682,6 +724,207 @@ func TrackerAnalysisV1Schema() *jsonschema.Schema {
 // Side effects:
 //   - None.
 func floatPtr(v float64) *float64 { return &v }
+
+// DispatchRecordV1Schema returns the schema for the meta-swarm
+// coordinator's dispatch record. Shape:
+//
+//   - object root.
+//   - required string `chosen_swarm` — the sub-swarm id dispatched to.
+//   - required string `route_reason` — why that sub-swarm fits.
+//   - required string `task_summary` — what the user asked for,
+//     restated in one or two sentences.
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func DispatchRecordV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"chosen_swarm": {Type: "string", MinLength: intPtr(1)},
+			"route_reason": {Type: "string", MinLength: intPtr(1)},
+			"task_summary": {Type: "string", MinLength: intPtr(1)},
+		},
+		Required: []string{"chosen_swarm", "route_reason", "task_summary"},
+	}
+}
+
+// DDVerdictV1Schema returns the schema for a due-diligence
+// specialist's structured verdict. Shape:
+//
+//   - object root.
+//   - required string `verdict` — positive / negative / mixed /
+//     inconclusive.
+//   - required integer `confidence_pct` 0–100 — the number the
+//     swarm-level confidence-threshold gate reads.
+//   - required `findings` array of {title, severity, evidence}
+//     objects — each finding must carry at least one evidence
+//     citation so verdicts stay grounded.
+//   - optional string `recommendation`.
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func DDVerdictV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"verdict": {
+				Type: "string",
+				Enum: []any{"positive", "negative", "mixed", "inconclusive"},
+			},
+			"confidence_pct": {Type: "integer", Minimum: floatPtr(0), Maximum: floatPtr(100)},
+			"findings": {
+				Type:     "array",
+				MinItems: intPtr(1),
+				Items: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"title":    {Type: "string", MinLength: intPtr(1)},
+						"severity": {Type: "string", Enum: []any{"critical", "high", "medium", "low", "info"}},
+						"evidence": {Type: "string", MinLength: intPtr(1)},
+					},
+					Required: []string{"title", "severity", "evidence"},
+				},
+			},
+			"recommendation": {Type: "string"},
+		},
+		Required: []string{"verdict", "confidence_pct", "findings"},
+	}
+}
+
+// CriticVerdictV1Schema returns the schema for the a-team critic's
+// structured critique. The load-bearing field is `objections`: an
+// array with minItems 1 whose every entry must carry a
+// `classification` of breaks-strategy or material-risk — the
+// manifest's "a clean pass is a failure" rule, made mechanical.
+// Shape:
+//
+//   - object root.
+//   - required string `summary`.
+//   - required `objections` array (minItems 1) of
+//     {assumption, argument, classification} objects where
+//     classification is breaks-strategy / material-risk /
+//     worth-noting, plus a schema-level contains-style contract
+//     enforced via the `engaged` boolean echo below.
+//   - required boolean `engaged` — must be true; the critic echoes
+//     its own engagement attestation after the red-flag check.
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func CriticVerdictV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"summary": {Type: "string", MinLength: intPtr(1)},
+			"objections": {
+				Type:     "array",
+				MinItems: intPtr(1),
+				Items: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"assumption":     {Type: "string", MinLength: intPtr(1)},
+						"argument":       {Type: "string", MinLength: intPtr(1)},
+						"classification": {Type: "string", Enum: []any{"breaks-strategy", "material-risk", "worth-noting"}},
+					},
+					Required: []string{"assumption", "argument", "classification"},
+				},
+			},
+			"engaged": {Type: "boolean", Enum: []any{true}},
+		},
+		Required: []string{"summary", "objections", "engaged"},
+	}
+}
+
+// BoardDecisionV1Schema returns the schema for the board-room
+// Chair's final decision, matching the JSON shape the chair
+// manifest already documents at `board-room/{chainID}/decision`
+// (decision / confidence / dissents / conditions /
+// dealbreaker_risks). Preserved dissent is the protocol's core
+// contract, so `dissents` is required (it may be an empty array
+// only when the vote was unanimous).
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func BoardDecisionV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"decision": {
+				Type: "string",
+				Enum: []any{"invest", "pass", "conditional"},
+			},
+			"confidence": {Type: "integer", Minimum: floatPtr(1), Maximum: floatPtr(5)},
+			"dissents": {
+				Type: "array",
+				Items: &jsonschema.Schema{
+					Type: "object",
+					Properties: map[string]*jsonschema.Schema{
+						"analyst_role":             {Type: "string", MinLength: intPtr(1)},
+						"decision":                 {Type: "string", MinLength: intPtr(1)},
+						"key_reasons":              {Type: "array", MinItems: intPtr(1), Items: &jsonschema.Schema{Type: "string"}},
+						"most_compelling_evidence": {Type: "string"},
+					},
+					Required: []string{"analyst_role", "decision", "key_reasons"},
+				},
+			},
+			"conditions":        {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+			"dealbreaker_risks": {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+		},
+		Required: []string{"decision", "confidence", "dissents"},
+	}
+}
+
+// FinalSynthesisV1Schema returns the shared schema for a lead's
+// final synthesis output (a-team, mental-health-swarm). Shape:
+//
+//   - object root.
+//   - required string `summary`.
+//   - required `takeaways` array of strings (minItems 1).
+//   - optional `next_steps` array of strings.
+//
+// Returns:
+//   - A fresh *jsonschema.Schema. Callers Resolve before registering.
+//
+// Side effects:
+//   - None.
+func FinalSynthesisV1Schema() *jsonschema.Schema {
+	return &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"summary":   {Type: "string", MinLength: intPtr(1)},
+			"takeaways": {Type: "array", MinItems: intPtr(1), Items: &jsonschema.Schema{Type: "string"}},
+			"next_steps": {
+				Type:  "array",
+				Items: &jsonschema.Schema{Type: "string"},
+			},
+		},
+		Required: []string{"summary", "takeaways"},
+	}
+}
+
+// intPtr is a companion to floatPtr for the *int fields the
+// jsonschema-go library uses for array cardinality bounds.
+//
+// Expected:
+//   - v is the literal integer bound to publish.
+//
+// Returns:
+//   - A heap-allocated *int wrapping v.
+//
+// Side effects:
+//   - None.
+func intPtr(v int) *int { return &v }
 
 // SeedDefaultSchemas registers every Phase 1 builtin schema with the
 // in-process registry and marks those that are prose-tolerant. The CLI /
@@ -720,6 +963,11 @@ func SeedDefaultSchemas() error {
 		{SectionV1Name, SectionV1Schema(), false},
 		{VaultFindingsV1Name, VaultFindingsV1Schema(), true},
 		{TrackerAnalysisV1Name, TrackerAnalysisV1Schema(), true},
+		{DispatchRecordV1Name, DispatchRecordV1Schema(), false},
+		{DDVerdictV1Name, DDVerdictV1Schema(), false},
+		{CriticVerdictV1Name, CriticVerdictV1Schema(), false},
+		{BoardDecisionV1Name, BoardDecisionV1Schema(), false},
+		{FinalSynthesisV1Name, FinalSynthesisV1Schema(), false},
 	}
 	for _, seed := range seeds {
 		if err := RegisterSchema(seed.name, seed.schema); err != nil {

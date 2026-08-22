@@ -57,6 +57,30 @@ harness:
       when: post-member
       target: researcher
       output_key: output
+    # Critic engagement gate — makes "critic is mandatory" mechanical
+    # instead of prose. The critic writes a `critic-verdict-v1` JSON
+    # object to `a-team/{chainID}/critique-verdict` (see internal/
+    # app/agents/critic.md): the schema requires at least one
+    # substantive objection (assumption + argument + classification)
+    # and an `engaged: true` attestation, so a clean-pass rubber
+    # stamp fails the gate and the lead re-prompts for a real
+    # adversarial pass.
+    - name: post-member-critic-verdict
+      kind: builtin:result-schema
+      schema_ref: critic-verdict-v1
+      when: post-member
+      target: critic
+      output_key: "{chainID}/critique-verdict"
+    # Lead synthesis gate — the coordinator's final output was
+    # previously un-gated, the largest single-judgement surface in
+    # this swarm. Requires the `final-synthesis-v1` shape (summary +
+    # takeaways) at `a-team/{chainID}/final-output` so an empty or
+    # narrated-nothing close fails honestly.
+    - name: post-swarm-coordinator-final-synthesis
+      kind: builtin:result-schema
+      schema_ref: final-synthesis-v1
+      when: post
+      output_key: "{chainID}/final-output"
 
 context:
   # Coordination_store namespace for this swarm's runs. Pinned so the

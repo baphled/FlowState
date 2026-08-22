@@ -185,7 +185,8 @@ Read all five positions and all five critiques from the coordination store. Synt
    - Key risks surfaced across all analysts (including any DEALBREAKER risks regardless of majority vote).
    - Conditions for investment if the decision is `conditional`.
 
-2. **Decision** at `board-room/{chainID}/decision` as JSON:
+2. **Decision** at `board-room/{chainID}/decision` as JSON, validated by the
+   `board-decision-v1` result-schema gate on swarm completion:
    ```json
    {
      "decision": "invest|pass|conditional",

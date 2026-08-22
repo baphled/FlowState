@@ -32,6 +32,11 @@ members:
   - dev-swarm
   - planning-loop
   - board-room
+  # NOTE: the live ~/.config/flowstate/swarms/meta-swarm.yml also
+  # lists user-registered review-swarm / engineer-swarm /
+  # due-diligence-swarm / mental-health-swarm. Those are not part
+  # of the embedded swarm set, so the embedded copy stops at the
+  # four canonical sub-swarms above.
 
 harness:
   # Sequential dispatch — the coordinator picks ONE sub-swarm per
@@ -39,7 +44,23 @@ harness:
   # confuse the user. Future work may relax this once sub-swarm
   # outputs are explicitly composable.
   parallel: false
-  gates: []
+
+  # Post-swarm result-schema gate over the coordinator's dispatch
+  # record. Routing was previously pure model judgement with zero
+  # gates — the least deterministic point of the three-tier
+  # orchestration. The coordinator writes a `dispatch-record-v1`
+  # JSON object to `{chainID}/dispatch-record` before dispatching
+  # the chosen sub-swarm (see internal/app/agents/coordinator.md
+  # "Routing dispatch record"); this gate validates the chosen
+  # sub-swarm, the stated reason, and the task summary so every
+  # routing decision is auditable. Naming convention follows
+  # planning-loop.yml's `post-<phase>-<concern>` shape.
+  gates:
+    - name: post-swarm-dispatch-record
+      kind: builtin:result-schema
+      schema_ref: dispatch-record-v1
+      when: post
+      output_key: "{chainID}/dispatch-record"
 
 context:
   # Distinct chain prefix so meta-swarm runs don't collide with

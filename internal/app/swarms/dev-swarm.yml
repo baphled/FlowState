@@ -84,6 +84,33 @@ harness:
       output_key: output
       precedence: HIGH
       failurePolicy: halt
+    # Security-Engineer gate: same evidence-grounding contract as
+    # Code-Reviewer — the Security-Engineer manifest promises the
+    # `bug-findings-v1` shape with verbatim evidence snippets (see
+    # internal/app/agents/Security-Engineer.md "Where to write"),
+    # so the runner validates each finding's snippet appears in the
+    # cited file. Previously Security-Engineer output flowed
+    # un-gated in dev-swarm despite being gated elsewhere.
+    - name: post-member-security-engineer-evidence-grounding
+      kind: builtin:evidence-grounding
+      when: post-member
+      target: Security-Engineer
+      output_key: security-findings
+      precedence: HIGH
+      failurePolicy: halt
+    # Knowledge-Base-Curator gate: `vault-findings-v1` result
+    # schema — the same registered schema due-diligence-swarm and
+    # mental-health-swarm already gate KB-Curator-class output with.
+    # dev-swarm simply omitted it; reusing the reference keeps the
+    # contract identical across swarms.
+    - name: post-member-kb-curator-vault-findings
+      kind: builtin:result-schema
+      schema_ref: vault-findings-v1
+      when: post-member
+      target: Knowledge-Base-Curator
+      output_key: vault-findings
+      precedence: MEDIUM
+      failurePolicy: halt
 
 context:
   chain_prefix: dev-swarm

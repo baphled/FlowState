@@ -165,9 +165,11 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 			// Pin the structural contract this slice ships: lead is
 			// `coordinator`, members include the canonical generalist
 			// roster (researcher, strategist, critic, writer, executor),
-			// and the harness carries one ext:relevance-gate fired
-			// post-member around the researcher with output_key=output.
-			// The gate's multi-key inputs are declared on the gate
+			// one ext:relevance-gate fired post-member around the
+			// researcher with output_key=output, plus (slice 2) a
+			// post-member critic-verdict result-schema gate and a
+			// post-swarm final-synthesis result-schema gate (see
+			// a-team.yml). The relevance gate's multi-key inputs are declared on the gate
 			// manifest (internal/app/gates/relevance-gate/manifest.yml),
 			// not the swarm manifest, so the swarm-level assertion stays
 			// member-shaped.
@@ -185,13 +187,26 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 			Expect(m.Members).To(ConsistOf("researcher", "strategist", "critic", "writer", "executor"))
 			Expect(m.Context.ChainPrefix).To(Equal("a-team"))
 
-			Expect(m.Harness.Gates).To(HaveLen(1))
+			Expect(m.Harness.Gates).To(HaveLen(3))
 			gate := m.Harness.Gates[0]
 			Expect(gate.Name).To(Equal("post-member-researcher-relevance"))
 			Expect(gate.Kind).To(Equal("ext:relevance-gate"))
 			Expect(gate.When).To(Equal(swarm.LifecyclePostMember))
 			Expect(gate.Target).To(Equal("researcher"))
 			Expect(gate.OutputKey).To(Equal("output"))
+
+			criticGate := m.Harness.Gates[1]
+			Expect(criticGate.Name).To(Equal("post-member-critic-verdict"))
+			Expect(criticGate.Kind).To(Equal("builtin:result-schema"))
+			Expect(criticGate.SchemaRef).To(Equal("critic-verdict-v1"))
+			Expect(criticGate.When).To(Equal(swarm.LifecyclePostMember))
+			Expect(criticGate.Target).To(Equal("critic"))
+
+			finalGate := m.Harness.Gates[2]
+			Expect(finalGate.Name).To(Equal("post-swarm-coordinator-final-synthesis"))
+			Expect(finalGate.Kind).To(Equal("builtin:result-schema"))
+			Expect(finalGate.SchemaRef).To(Equal("final-synthesis-v1"))
+			Expect(finalGate.When).To(Equal(swarm.LifecyclePostSwarm))
 
 			// File-load validation against the no-op validator runs the
 			// scalar / gate-prefix / self-reference rules without
@@ -337,12 +352,18 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 			Expect(m.Harness.Parallel).To(BeFalse(),
 				"sequential dispatch keeps all five positions in the coord-store when the post-member gate fires")
 
-			Expect(m.Harness.Gates).To(HaveLen(1))
+			Expect(m.Harness.Gates).To(HaveLen(2))
 			gate := m.Harness.Gates[0]
 			Expect(gate.Kind).To(Equal("ext:quorum-gate"))
 			Expect(gate.When).To(Equal(swarm.LifecyclePostMember))
 			Expect(gate.Target).To(Equal("technical-analyst"))
 			Expect(gate.OutputKey).To(Equal("output"))
+
+			decisionGate := m.Harness.Gates[1]
+			Expect(decisionGate.Name).To(Equal("post-swarm-chair-decision"))
+			Expect(decisionGate.Kind).To(Equal("builtin:result-schema"))
+			Expect(decisionGate.SchemaRef).To(Equal("board-decision-v1"))
+			Expect(decisionGate.When).To(Equal(swarm.LifecyclePostSwarm))
 
 			// File-load validation against the no-op validator runs
 			// the scalar / gate-prefix / self-reference rules without
@@ -433,7 +454,7 @@ var _ = Describe("EmbeddedSwarmsFS", func() {
 			Expect(m.ID).To(Equal("meta-swarm"))
 			Expect(m.Lead).To(Equal("coordinator"))
 			// Members are SWARM ids; they must be the four canonical
-			// sub-swarms the coordinator routes between.
+			// embedded sub-swarms the coordinator routes between.
 			Expect(m.Members).To(ConsistOf(
 				"a-team",
 				"dev-swarm",

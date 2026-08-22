@@ -89,10 +89,13 @@ harness:
       output_key: "{chainID}/sections/security"
 
 context:
-  # Share the parent planning-loop's coordination_store namespace so the
-  # section keys land on the same run chain the publisher (Pass 2) and
-  # plan-writer (Pass 3) read from. The engine-assigned chainID threads
-  # through the sub-swarm dispatch (resolveSubSwarm → DispatchSwarmMembers),
-  # so a member's `{chainID}/sections/<name>` resolves under the run's
-  # chain, not an invented prefix.
-  chain_prefix: planning
+  # chain_prefix is deliberately UNSET. It was previously pinned to
+  # `planning` to share the parent planning-loop's namespace, but the
+  # engine-assigned chainID threads through the sub-swarm dispatch
+  # (resolveSubSwarm → DispatchSwarmMembers), so the section keys
+  # already land on the parent's run chain without a pin. Worse, a
+  # pinned prefix historically disabled AssignRunChainID's
+  # ChainIDAssigned=true normalisation (internal/swarm/context.go),
+  # the exact foot-gun planning-loop.yml documents against. The
+  # `{chainID}/sections/<name>` gate keys below resolve under the
+  # run's chain regardless of the default prefix.

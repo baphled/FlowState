@@ -60,6 +60,18 @@ harness:
       when: post-member
       target: technical-analyst
       output_key: output
+    # Chair synthesis gate — the Chair's final structured decision at
+    # `board-room/{chainID}/decision` was previously enforced only by
+    # Chair discipline. This gate validates it against the
+    # `board-decision-v1` schema (the exact JSON shape the chair
+    # manifest already documents: decision / confidence / dissents /
+    # conditions / dealbreaker_risks), so rounds 2–3 cannot close
+    # without a machine-checkable decision with preserved dissent.
+    - name: post-swarm-chair-decision
+      kind: builtin:result-schema
+      schema_ref: board-decision-v1
+      when: post
+      output_key: "{chainID}/decision"
 
 context:
   # Coordination_store namespace for this swarm's runs. Pinned so the

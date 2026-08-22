@@ -95,6 +95,13 @@ Write to `a-team/{chainID}/critique` via `coordination_store`. Structure it as:
 If not, explain why the strategy is genuinely robust on every dimension that matters.]
 ```
 
+When the swarm manifest carries the `critic-verdict-v1` post-member gate, also
+write the same critique as a `critic-verdict-v1` JSON object to
+`a-team/{chainID}/critique-verdict` via `coordination_store`: `summary`,
+`objections[]` (each `{assumption, argument, classification}`), and
+`engaged: true` (set only after passing the red-flag check above). A critique
+with zero objections or `engaged: false` fails the gate.
+
 ## Rules
 
 - You MUST challenge at least one CORE ASSUMPTION — not peripheral formatting or stylistic choices.
