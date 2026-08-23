@@ -5,6 +5,39 @@ echo "Running make check before commit..."
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
+# Filesystem pollution guard: block untracked stray reports/notes/
+# scratch JSON/MD files at the repo root that are not part of the
+# staged change-set. These are inter-agent or scratch artefacts that
+# must live in the coordination store, never on disk.
+STAGED="$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)"
+UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
+POLLUTING=""
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  base="$(basename "$f")"
+  dir="$(dirname "$f")"
+  # Only guard repo-root level, untracked files whose names look like
+  # stray reports/notes/scratch dumps and are not staged.
+  case "$base" in
+    *report*|*handoff*|*scratch*|*notes*|*summary*|*handover*)
+      case "$f" in
+        *.go|*_test.go|*.feature) continue ;;
+      esac
+      if [ "$dir" = "." ] && ! printf '%s\n' "$STAGED" | grep -qxF "$f"; then
+        POLLUTING="$POLLUTING
+  - $f"
+      fi
+      ;;
+  esac
+done <<EOF2
+$UNTRACKED
+EOF2
+if [ -n "$POLLUTING" ]; then
+  echo "BLOCKED: untracked pollution-pattern files at repo root (not staged):$POLLUTING"
+  echo "Inter-agent and scratch data must flow through the coordination store."
+  exit 1
+fi
+
 if make -C "$REPO_ROOT" check; then
     echo "make check passed — proceeding with commit"
 else
