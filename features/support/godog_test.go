@@ -89,4 +89,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterVaultQueryCollectionSteps(ctx)
 	RegisterTodoSteps(ctx)
 	RegisterMCPServerLifecycleSteps(ctx)
+	RegisterGateAmendmentSteps(ctx)
 }
