@@ -248,12 +248,23 @@ func defaultRunnerFactory(m *swarm.Manifest) *swarm.Runner {
 }
 
 // appendGateDirective appends the gate failure's directive to a member's
-// prompt for re-delegation. The result-schema runner's "no member output
-// found" reason already carries the actionable text ("perform the
-// coordination_store write, do not narrate it" — see
-// internal/swarm/gate_result_schema.go noOutputDirective), so the lead /
-// member receives an explicit instruction to PERFORM the write rather
-// than re-narrate it. A nil error or empty reason leaves the message
+// prompt for re-delegation. The directive names the failing gate and
+// surfaces the GateError.Reason verbatim so custom DD-schema messages
+// (word-count shortfall, missing sections, citation ratio) reach the
+// member as actionable retry feedback, then directs the member to
+// revise and re-write to the coordination_store. This covers BOTH
+// failure families uniformly:
+//   - No-output failures: the result-schema runner's Reason already
+//     carries the actionable text ("perform the coordination_store
+//     write, do not narrate it"), so the member receives an explicit
+//     instruction to PERFORM the write.
+//   - Schema-validation failures: the member DID write to the store
+//     but the payload failed a custom validator; the Reason names
+//     the shortfall (e.g. "Your response was 120 words. Minimum
+//     required: 300 words."), so the directive tells the member to
+//     revise and overwrite the existing store key.
+//
+// A nil error, a non-GateError, or an empty Reason leaves the message
 // unchanged.
 //
 // Expected:
@@ -271,11 +282,29 @@ func appendGateDirective(message string, gateErr error) string {
 	if !errors.As(gateErr, &ge) || ge.Reason == "" {
 		return message
 	}
-	directive := "Your previous attempt did not write its output to the coordination_store. " + ge.Reason
+	directive := "Gate '" + ge.GateName + "' rejected your output. " + ge.Reason +
+		" Please revise your response and write the corrected output to the coordination_store."
 	if message == "" {
 		return directive
 	}
 	return message + "\n\n" + directive
+}
+
+// AppendGateDirective is the exported seam over appendGateDirective for the
+// features/engine/gate_amendment_directive.feature BDD glue. Behaviour is
+// identical to the unexported function.
+//
+// Expected:
+//   - message is the member's current prompt.
+//   - gateErr is the *swarm.GateError the post-member gate returned.
+//
+// Returns:
+//   - The message with the directive appended, or message unchanged.
+//
+// Side effects:
+//   - None.
+func AppendGateDirective(message string, gateErr error) string {
+	return appendGateDirective(message, gateErr)
 }
 
 // appendPlainDirective appends a directive to produce substantive output
