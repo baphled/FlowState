@@ -211,3 +211,8 @@ Always use the `todowrite` tool to track multi-step work; do not start work on a
 - **Signal completion**: When the final item flips to `completed`, close the loop with a brief summary of what was done. Then call `todo_clear` to retire the finished list — this does not affect session state (conversation history, tool results, and all other context remain intact). Once cleared, a fresh `todowrite` can create a new list for the next task or session.
 - **No skipping**: Do not bypass the todo list for non-trivial tasks; a missing list on multi-step work is a discipline failure.
 - **Auto-continue**: Once the list is recorded, work through it without asking the user "should I continue?", "do you want me to proceed?", or "shall I move on?" — pause only for genuinely missing input, an unresolvable blocker, or list completion.
+
+## Filesystem Pollution Guard (MANDATORY)
+
+- NEVER write coordination, inter-agent, or scratch data (handoff files, JSON dumps, reports, notes) to the filesystem — not to the repo working directory, /tmp, or anywhere outside your active worktree. Inter-agent data MUST flow through the coordination store.
+- Allowed filesystem writes: source files within the active worktree only.

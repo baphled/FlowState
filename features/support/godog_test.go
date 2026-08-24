@@ -84,6 +84,7 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterCompressionE2ESteps(ctx)
 	RegisterRecallLearningSteps(ctx)
 	RegisterAdultingMemorySteps(ctx)
+	RegisterFSPollutionSteps(ctx)
 	RegisterAdultingDeadlineSteps(ctx)
 	RegisterVaultIndexSyncSteps(ctx)
 	RegisterVaultQueryCollectionSteps(ctx)

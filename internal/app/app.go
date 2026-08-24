@@ -2295,6 +2295,7 @@ func buildSwarmGateRunner(planOutputDir string) swarm.GateRunner {
 	runner.Register("builtin:result-schema", swarm.NewResultSchemaRunner())
 	runner.Register(swarm.EvidenceGroundingGateKind, swarm.NewEvidenceGroundingRunner(""))
 	runner.Register(swarm.ArtifactPublishedGateKind, swarm.NewArtifactPublishedRunner(planOutputDir, nil))
+	runner.Register(swarm.FSPollutionGateKind, swarm.NewFSPollutionRunner("", nil))
 	return runner
 }
 
