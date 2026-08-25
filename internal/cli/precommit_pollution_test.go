@@ -7,9 +7,11 @@ import (
 
 // TestRunPreCommitPollutionSurfacesGitFailure verifies that a git
 // failure is surfaced as an error instead of silently passing the
-// pollution check (fail loudly, not silently).
+// pollution check (fail loudly, not silently). git is made
+// unfindable via PATH so the failure is deterministic regardless of
+// the host's directory layout.
 func TestRunPreCommitPollutionSurfacesGitFailure(t *testing.T) {
-	// t.TempDir() is outside any git work tree, so git ls-files fails.
+	t.Setenv("PATH", t.TempDir())
 	blocked, reason, err := runPreCommitPollution(t.TempDir())
 	if err == nil {
 		t.Fatal("expected git failure to be surfaced as an error, got nil")

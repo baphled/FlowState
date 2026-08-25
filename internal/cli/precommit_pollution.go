@@ -77,11 +77,7 @@ func runPreCommitPollution(repoRoot string) (bool, string, error) {
 	if err != nil {
 		return false, "", fmt.Errorf("git ls-files failed: %w", err)
 	}
-	return wrapPollutionResult(swarm.PreCommitPollutionCheck(repoRoot, untracked))
-}
-
-// wrapPollutionResult adapts the policy pair to the triple signature.
-func wrapPollutionResult(blocked bool, reason string) (bool, string, error) {
+	blocked, reason := swarm.PreCommitPollutionCheck(repoRoot, untracked)
 	return blocked, reason, nil
 }
 
