@@ -1,39 +1,31 @@
 # Multi-stage Dockerfile for the FlowState HTTP API server.
 #
-# The builder clones the requested branch from the local bare repo
-# (/home/baphled/Projects/FlowState.git). The agent-platform tree is the
-# branch that contains the full Go backend + web/ sources; older
-# branches (e.g. main) may only contain the CLI skeleton.
-#
-# Build args:
-#   BE_REPO   — source repo (default: local bare repo, file:// clone)
-#   BE_BRANCH — branch to build (default: main)
+# Source is NOT cloned inside the container: `make docker-build` clones the
+# requested branch into build/backend-src (worktree-local) and this image
+# simply COPYs it in. See Makefile target `docker-src`.
 #
 # Build:
-#   docker build -f Dockerfile.backend -t flowstate-backend \
-#     --build-arg BE_BRANCH=feature/agent-platform .
+#   make docker-build BE_BRANCH=feature/agent-platform
 
 FROM golang:1.25-bookworm AS builder
 
-ARG BE_REPO=file:///home/baphled/Projects/FlowState.git
-ARG BE_BRANCH=main
-
-# git is required for the file:// clone; ca-certificates for https remotes.
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-
+COPY backend-src /src
 WORKDIR /src
-RUN git clone --depth 1 --branch "${BE_BRANCH}" "${BE_REPO}" /src
 
-# Pure-Go module (CGO not required) — static build for a scratch-adjacent runtime.
+# Pure-Go module (CGO not required) — static build for a minimal runtime.
 ENV CGO_ENABLED=0 GOOS=linux
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags "-s -w" -o /out/flowstate ./cmd/flowstate
 
 # ---------------------------------------------------------------------------
-# Runtime — minimal, non-root, distroless-style base with certs + tzdata.
-FROM gcr.io/distroless/base-debian12:nonroot
+# Runtime — minimal alpine (busybox wget for the compose healthcheck),
+# non-root user, ca-certificates for outbound HTTPS (Ollama/Qdrant remotes).
+FROM alpine:3.20
+
+RUN addgroup -S -g 10001 flowstate \
+    && adduser -S -u 10001 -G flowstate flowstate \
+    && apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 COPY --from=builder /out/flowstate /app/flowstate
@@ -44,6 +36,6 @@ ENV XDG_CONFIG_HOME=/config \
     QDRANT_URL=http://qdrant:6333
 
 EXPOSE 8080
-USER nonroot
+USER flowstate
 ENTRYPOINT ["/app/flowstate"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]

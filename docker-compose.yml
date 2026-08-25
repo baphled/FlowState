@@ -5,22 +5,39 @@
 # with named volumes so it can never touch the host's irreplaceable vault
 # collections.
 #
-# Usage:
-#   docker compose up -d                       # everything
+# Defaults come from `.env` (COMPOSE_PROFILES=all) so a plain
+#   docker compose up -d
+# starts EVERY service. Profiles remain for selective runs:
 #   docker compose --profile backend up -d     # backend (+ qdrant, ollama)
 #   docker compose --profile qdrant up -d      # qdrant + ollama only
 #   docker compose --profile ui up -d          # ui (+ backend, qdrant, ollama)
 #
-# Branch overrides (built into the images at build time):
+# Branch overrides (staged into the build context by `make docker-build`):
 #   make docker-up BE_BRANCH=feature/agent-platform FE_BRANCH=feature/swarm-ui
 
 services:
+  qdrant-init:
+    # One-shot: chowns the fresh named volumes so qdrant (user 1000:1000)
+    # can write to them on first run. Root-owned volumes would otherwise
+    # cause permission errors.
+    image: alpine:3.20
+    container_name: flowstate-qdrant-init
+    profiles: ["qdrant", "backend", "ui", "all"]
+    volumes:
+      - qdrant-storage:/qdrant/storage
+      - qdrant-snapshots:/qdrant/snapshots
+    command: ["sh", "-c", "chown -R 1000:1000 /qdrant/storage /qdrant/snapshots"]
+    restart: "no"
+
   qdrant:
     image: qdrant/qdrant:v1.16.3
     container_name: flowstate-qdrant-full
     user: "1000:1000"
     profiles: ["qdrant", "backend", "ui", "all"]
     restart: unless-stopped
+    depends_on:
+      qdrant-init:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:6333:6333"  # REST
       - "127.0.0.1:6334:6334"  # gRPC
@@ -76,9 +93,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.backend
-      args:
-        BE_REPO: ${BE_REPO:-file:///home/baphled/Projects/FlowState.git}
-        BE_BRANCH: ${BE_BRANCH:-main}
     image: flowstate-backend:latest
     container_name: flowstate-backend
     profiles: ["backend", "ui", "all"]
@@ -112,9 +126,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ui
-      args:
-        FE_REPO: ${FE_REPO:-file:///home/baphled/Projects/flowstate-web.git}
-        FE_BRANCH: ${FE_BRANCH:-main}
     image: flowstate-ui:latest
     container_name: flowstate-ui
     profiles: ["ui", "all"]
