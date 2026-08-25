@@ -98,6 +98,37 @@ harness:
       output_key: security-findings
       precedence: HIGH
       failurePolicy: halt
+    # Filesystem pollution guard: fires post-member for the
+    # write-capable engineer members (Mid/Junior inside
+    # engineer-swarm carry their own entries; this covers the
+    # Senior-Engineer lead of that sub-swarm and the Writer, the
+    # two write-capable members whose output flows at dev-swarm
+    # level). The member publishes an fs-write report
+    # ({"writes":[{path,content_type,role}]}) under "fs-writes";
+    # the builtin runner validates every reported write against
+    # the allow-list policy (worktree source only, vault writes
+    # for the kb-curator role). Non-reporting members pass.
+    - name: post-member-senior-engineer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Senior-Engineer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+    - name: post-member-writer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Writer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+    - name: post-member-kb-curator-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Knowledge-Base-Curator
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
     # Knowledge-Base-Curator gate: `vault-findings-v1` result
     # schema — the same registered schema due-diligence-swarm and
     # mental-health-swarm already gate KB-Curator-class output with.

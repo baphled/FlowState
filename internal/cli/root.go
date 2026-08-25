@@ -204,6 +204,13 @@ func newRootCmd(appPtr **app.App) *cobra.Command {
 		newConfigCmd(getApp),
 	)
 
+	// Package-contributed extras (see precommit_pollution.go). These
+	// register via init() so their home files stay self-contained;
+	// each hook adds its command directly.
+	for _, add := range rootExtraCommands {
+		add(cmd)
+	}
+
 	return cmd
 }
 

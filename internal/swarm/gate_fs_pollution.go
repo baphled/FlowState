@@ -54,7 +54,6 @@ type fsWrite struct {
 type fsPollutionRunner struct {
 	repoRoot   string
 	vaultRoots []string
-	stat       func(path string) (os.FileInfo, error)
 }
 
 // NewFSPollutionRunner returns the production fs-pollution-guard
@@ -86,7 +85,6 @@ func NewFSPollutionRunner(repoRoot string, vaultRoots []string) GateRunner {
 	return &fsPollutionRunner{
 		repoRoot:   repoRoot,
 		vaultRoots: vaultRoots,
-		stat:       os.Stat,
 	}
 }
 
@@ -228,7 +226,7 @@ func expandVaultRoot(root string) string {
 //   - Violations in input order.
 //
 // Side effects:
-//   - None (stat is reserved for future symlink resolution).
+//   - None.
 func (r *fsPollutionRunner) checkWrites(writes []fsWrite) []fsWrite {
 	var out []fsWrite
 	for _, w := range writes {

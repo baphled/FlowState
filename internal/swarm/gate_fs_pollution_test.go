@@ -77,12 +77,10 @@ func TestFSPollutionGateRejectsScratchWrite(t *testing.T) {
 }
 
 func TestFSPollutionGatePassesWorktreeSource(t *testing.T) {
-	runner, root := newFSPollutionHarness(t, t.TempDir())
+	root := t.TempDir()
+	runner := NewFSPollutionRunner(root, nil)
 	payload := `{"writes":[{"path":"internal/swarm/gates.go","content_type":"source","role":"junior"}]}`
-	args := GateArgs{SwarmID: "s", ChainPrefix: "p", MemberID: "worker", CoordStore: fsCoordStore{payload: payload}}
-	r := runner.(*fsPollutionRunner)
-	r.repoRoot = root
-	if err := runner.Run(context.Background(), fsPollutionGate(), args); err != nil {
+	if err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload})); err != nil {
 		t.Fatalf("worktree source write should pass, got: %v", err)
 	}
 }

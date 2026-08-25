@@ -85,6 +85,29 @@ harness:
     # and BDD scenario verification. Evidence-grounding pass over
     # the agent's bug-findings-v1 output — the QA-Engineer
     # manifest (internal/app/agents/QA-Engineer.md) emits
+    # Filesystem pollution guard on Mid-Engineer: validates the
+    # fs-write report the member publishes under "fs-writes".
+    # Write-capable member — source writes must stay inside the
+    # active worktree and all inter-agent data must flow through
+    # the coordination store.
+    - name: post-member-mid-engineer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Mid-Engineer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+
+    # Same guard on Junior-Engineer, the most execution-heavy
+    # write-capable member of the sub-swarm.
+    - name: post-member-junior-engineer-fs-pollution
+      kind: builtin:fs-pollution-guard
+      when: post-member
+      target: Junior-Engineer
+      output_key: fs-writes
+      precedence: MEDIUM
+      failurePolicy: halt
+
     # `bug-findings-v1` (summary + findings[]), and the
     # builtin:evidence-grounding runner projects that shape
     # natively while additionally verifying each finding's
