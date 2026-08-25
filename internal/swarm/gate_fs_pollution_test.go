@@ -191,11 +191,11 @@ func TestNewFSPollutionRunnerEmptyRootFallsBackToCwd(t *testing.T) {
 	}
 }
 
-func TestFSPollutionGateEmptyPathSkipped(t *testing.T) {
+func TestFSPollutionGateEmptyPathFails(t *testing.T) {
 	runner, _ := newFSPollutionHarness(t, t.TempDir())
 	payload := `{"writes":[{"path":"","content_type":"scratch","role":"junior"}]}`
-	if err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload})); err != nil {
-		t.Fatalf("empty path should be skipped, got: %v", err)
+	if err := runner.Run(context.Background(), fsPollutionGate(), fsArgs(fsCoordStore{payload: payload})); err == nil {
+		t.Fatal("empty path should be a gate violation (fail closed), got pass")
 	}
 }
 

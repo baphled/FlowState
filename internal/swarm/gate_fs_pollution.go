@@ -231,6 +231,10 @@ func (r *fsPollutionRunner) checkWrites(writes []fsWrite) []fsWrite {
 	var out []fsWrite
 	for _, w := range writes {
 		if w.Path == "" {
+			// Fail closed: a write entry without a path cannot be
+			// validated, so treat it as a violation rather than
+			// silently skipping it.
+			out = append(out, w)
 			continue
 		}
 		resolved := w.Path
