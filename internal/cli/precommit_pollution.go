@@ -41,7 +41,11 @@ func newPreCommitPollutionCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			blocked, reason := runPreCommitPollution(repoRoot)
+			blocked, reason, err := runPreCommitPollution(repoRoot)
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "ERROR: %v\n", err)
+				return fmt.Errorf("pre-commit pollution check could not run: %w", err)
+			}
 			if blocked {
 				fmt.Fprintln(cmd.ErrOrStderr(), "BLOCKED: "+reason)
 				fmt.Fprintln(cmd.ErrOrStderr(),
@@ -62,16 +66,23 @@ func newPreCommitPollutionCmd() *cobra.Command {
 //   - repoRoot is the repository root path (may be empty for CWD).
 //
 // Returns:
-//   - blocked and reason from the shared Go policy.
+//   - blocked and reason from the shared Go policy; a non-nil error
+//     when git itself fails, so callers surface the failure instead
+//     of silently passing.
 //
 // Side effects:
 //   - Runs `git ls-files --others --exclude-standard` in repoRoot.
-func runPreCommitPollution(repoRoot string) (bool, string) {
+func runPreCommitPollution(repoRoot string) (bool, string, error) {
 	untracked, err := gitUntracked(repoRoot)
 	if err != nil {
-		return false, ""
+		return false, "", fmt.Errorf("git ls-files failed: %w", err)
 	}
-	return swarm.PreCommitPollutionCheck(repoRoot, untracked)
+	return wrapPollutionResult(swarm.PreCommitPollutionCheck(repoRoot, untracked))
+}
+
+// wrapPollutionResult adapts the policy pair to the triple signature.
+func wrapPollutionResult(blocked bool, reason string) (bool, string, error) {
+	return blocked, reason, nil
 }
 
 // gitUntracked returns the untracked file list from git. A nil slice
