@@ -1,0 +1,49 @@
+# Multi-stage Dockerfile for the FlowState HTTP API server.
+#
+# The builder clones the requested branch from the local bare repo
+# (/home/baphled/Projects/FlowState.git). The agent-platform tree is the
+# branch that contains the full Go backend + web/ sources; older
+# branches (e.g. main) may only contain the CLI skeleton.
+#
+# Build args:
+#   BE_REPO   — source repo (default: local bare repo, file:// clone)
+#   BE_BRANCH — branch to build (default: main)
+#
+# Build:
+#   docker build -f Dockerfile.backend -t flowstate-backend \
+#     --build-arg BE_BRANCH=feature/agent-platform .
+
+FROM golang:1.25-bookworm AS builder
+
+ARG BE_REPO=file:///home/baphled/Projects/FlowState.git
+ARG BE_BRANCH=main
+
+# git is required for the file:// clone; ca-certificates for https remotes.
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${BE_BRANCH}" "${BE_REPO}" /src
+
+# Pure-Go module (CGO not required) — static build for a scratch-adjacent runtime.
+ENV CGO_ENABLED=0 GOOS=linux
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -trimpath -ldflags "-s -w" -o /out/flowstate ./cmd/flowstate
+
+# ---------------------------------------------------------------------------
+# Runtime — minimal, non-root, distroless-style base with certs + tzdata.
+FROM gcr.io/distroless/base-debian12:nonroot
+
+WORKDIR /app
+COPY --from=builder /out/flowstate /app/flowstate
+
+# Config is mounted at /config; the binary resolves it via XDG_CONFIG_HOME.
+ENV XDG_CONFIG_HOME=/config \
+    XDG_DATA_HOME=/data \
+    QDRANT_URL=http://qdrant:6333
+
+EXPOSE 8080
+USER nonroot
+ENTRYPOINT ["/app/flowstate"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]

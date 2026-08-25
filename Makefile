@@ -407,3 +407,27 @@ help: ## Show this help
 	@echo "Usage: make [target]"
 	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+#
+# Docker (full stack — see docker-compose.yml)
+#
+
+.PHONY: docker-up docker-up-backend docker-up-qdrant docker-up-ui docker-down docker-logs
+
+docker-up: ## Build and start the full stack (BE_BRANCH/FE_BRANCH override source branches)
+	docker compose up -d --build
+
+docker-up-backend: ## Start backend + dependencies
+	docker compose --profile backend up -d --build
+
+docker-up-qdrant: ## Start qdrant + ollama (pulls nomic-embed-text)
+	docker compose --profile qdrant up -d --build
+
+docker-up-ui: ## Start UI + full stack dependencies
+	docker compose --profile ui up -d --build
+
+docker-down: ## Stop the full stack (data volumes preserved)
+	docker compose down
+
+docker-logs: ## Tail logs for the full stack
+	docker compose logs -f

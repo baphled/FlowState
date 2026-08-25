@@ -1,0 +1,34 @@
+# Dockerfile for the FlowState Vue 3 UI (flowstate-web).
+#
+# The UI lives in a SEPARATE repo (/home/baphled/Projects/flowstate-web.git,
+# remote flowstate-web) — not under web/ in the backend repo (the web/ dir
+# inside the backend is only e2e/ + src fragments of the Vue worktree tree).
+#
+# Build args:
+#   FE_REPO   — UI repo (default: local bare repo file:// URL)
+#   FE_BRANCH — branch to build (default: main)
+
+FROM node:22-bookworm-slim AS builder
+
+ARG FE_REPO=file:///home/baphled/Projects/flowstate-web.git
+ARG FE_BRANCH=main
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${FE_BRANCH}" "${FE_REPO}" /src
+WORKDIR /src
+
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Runtime — static assets served by nginx with API proxy to the backend.
+FROM nginx:1.27-alpine
+
+COPY --from=builder /src/dist /usr/share/nginx/html
+COPY docker/nginx-ui.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+HEALTHCHECK --interval=15s --timeout=3s CMD wget -q -O- http://127.0.0.1/ >/dev/null || exit 1
