@@ -9,8 +9,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -57,6 +61,56 @@ func newPreCommitPollutionCmd() *cobra.Command {
 	}
 }
 
+// UnaccountedWorktreeWrites reconciles `git status --porcelain` ground
+// truth against the gate's self-reported write paths, closing the
+// ADR-0001 gap 2 omission route: the guard no longer trusts that the
+// self-report covers everything. Any changed path absent from the
+// report is an unaccounted write and fails the hook (fail closed).
+//
+// Expected:
+//   - porcelain is the raw `git status --porcelain` output lines; nil
+//     signals no git metadata and skips the check (mirror of the
+//     nil-untracked contract).
+//   - reported is the set of paths the gate's self-report claims.
+//
+// Returns:
+//   - true and a reason listing every unaccounted path when the
+//     porcelain output contains changes the report omits.
+//   - false, "" when every changed path is accounted for.
+//
+// Side effects:
+//   - None.
+func UnaccountedWorktreeWrites(porcelain, reported []string) (bool, string) {
+	if porcelain == nil {
+		return false, ""
+	}
+	reportedSet := make(map[string]struct{}, len(reported))
+	for _, p := range reported {
+		reportedSet[filepath.Clean(p)] = struct{}{}
+	}
+	var unaccounted []string
+	for _, line := range porcelain {
+		if len(line) < 4 {
+			continue
+		}
+		if line[0] == ' ' && line[1] == ' ' {
+			continue
+		}
+		path := strings.TrimSpace(line[3:])
+		if path == "" {
+			continue
+		}
+		if _, ok := reportedSet[filepath.Clean(path)]; !ok {
+			unaccounted = append(unaccounted, path)
+		}
+	}
+	if len(unaccounted) == 0 {
+		return false, ""
+	}
+	sort.Strings(unaccounted)
+	return true, "unreported filesystem write(s); inter-agent data must flow through the coordination store: " + strings.Join(unaccounted, ", ")
+}
+
 // runPreCommitPollution gathers git's untracked list for repoRoot and
 // applies swarm.PreCommitPollutionCheck. When git is unavailable or
 // the directory is not a work tree the check is skipped (nil result),
@@ -78,6 +132,15 @@ func runPreCommitPollution(repoRoot string) (bool, string, error) {
 		return false, "", fmt.Errorf("git ls-files failed: %w", err)
 	}
 	blocked, reason := swarm.PreCommitPollutionCheck(repoRoot, untracked)
+	porcelain, err := gitStatusPorcelain(repoRoot)
+	if err != nil {
+		return false, "", fmt.Errorf("git status failed: %w", err)
+	}
+	reported := reportedGateWrites(repoRoot)
+	omitted, omitReason := UnaccountedWorktreeWrites(porcelain, reported)
+	if omitted {
+		return true, omitReason, nil
+	}
 	return blocked, reason, nil
 }
 
@@ -112,6 +175,71 @@ func gitUntracked(repoRoot string) ([]string, error) {
 		files = []string{}
 	}
 	return files, nil
+}
+
+// gitStatusPorcelain returns the raw `git status --porcelain` lines,
+// the ground truth of worktree changes for the omission check.
+//
+// Expected:
+//   - repoRoot is the repository root path (may be empty for CWD).
+//
+// Returns:
+//   - The porcelain output lines, or nil when git reports no changes.
+//
+// Side effects:
+//   - Executes git as a subprocess.
+func gitStatusPorcelain(repoRoot string) ([]string, error) {
+	gitCmd := exec.Command("git", "status", "--porcelain")
+	if repoRoot != "" {
+		gitCmd.Dir = repoRoot
+	}
+	out, err := gitCmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimRight(line, "\r"); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines, nil
+}
+
+// reportedGateWrites loads the fs-pollution-guard self-report from the
+// active coordination store, returning the paths it claims to have
+// written. An absent or unreadable report yields nil — every porcelain
+// change is then unaccounted, failing the hook closed per ADR-0001.
+//
+// Expected:
+//   - repoRoot is the repository root path.
+//
+// Returns:
+//   - The reported write paths, or nil when no report is available.
+//
+// Side effects:
+//   - Reads the coordination store from disk.
+func reportedGateWrites(repoRoot string) []string {
+	storePath := filepath.Join(repoRoot, "coordination_store", "gate.json")
+	data, err := os.ReadFile(storePath)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Writes []struct {
+			Path string `json:"path"`
+		} `json:"writes"`
+	}
+	if json.Unmarshal(data, &doc) != nil {
+		return nil
+	}
+	var paths []string
+	for _, w := range doc.Writes {
+		if w.Path != "" {
+			paths = append(paths, w.Path)
+		}
+	}
+	return paths
 }
 
 // init registers the hidden subcommand on the root command set. The
