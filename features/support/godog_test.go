@@ -95,4 +95,5 @@ func InitializeScenario(ctx *godog.ScenarioContext) {
 	RegisterMCPServerLifecycleSteps(ctx)
 	RegisterGateAmendmentSteps(ctx)
 	VoiceTalkContext(ctx)
+	VoiceCLIContext(ctx)
 }

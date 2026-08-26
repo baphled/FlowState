@@ -6,14 +6,14 @@ Feature: FlowState talk CLI
   Background:
     Given the FlowState CLI is available
 
-  @voice @f1 @wip
+  @voice @f1
   Scenario: Transcript flows through existing dispatch
     Given a fake STT command that emits the transcript "hello agent"
     And a fake TTS command is configured
     When I run "flowstate talk --help"
     Then I should see usage for "flowstate talk"
 
-  @voice @f1 @wip
+  @voice @f1
   Scenario: Graceful degradation when voice binaries are absent
     Given no voice binaries are available
     When I run "flowstate talk --help"
@@ -21,7 +21,7 @@ Feature: FlowState talk CLI
     And running the talk command should warn and fall back to text-only mode
     And the exit code should be 0
 
-  @voice @f1 @wip
+  @voice @f1
   Scenario: Push-to-talk start and stop
     Given a fake STT command that emits the transcript "push to talk works"
     When the talk command starts in push-to-talk mode
